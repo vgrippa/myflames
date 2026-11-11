@@ -34,6 +34,7 @@ const FPS = 10;
 const MAX_BYTES = 1.5 * 1024 * 1024;
 // The same frozen moment as the README screenshots.
 const CLOCK = "2026-10-14T16:26:00Z";
+const RUN_SQL = "SELECT id, customer_id, status, total FROM orders WHERE status = 'new' ORDER BY id LIMIT 24;";
 
 await fs.access(GIFSKI).catch(() => {
   throw new Error(`gifski not found at ${GIFSKI}: install it (brew install gifski) to record the how-to GIFs.`);
@@ -86,8 +87,15 @@ const explainRun = (sql) => {
       limit: 1000, stopped: null, label: null, server_rows: 1, warnings: 0, duration_ms: 3 }],
     counts: { statements: 1, run: 1, rows: 1, affected_rows: 0, warnings: 0, errors: 0 } };
 };
-const PLAN_RAW = await fs.readFile(path.join(root, "test/fixtures/explain-001-table-scan-users-no-filter.json"), "utf8");
-const CAPTURE = { schema_version: "capture-1.0", raw: PLAN_RAW, query: "SELECT id FROM users", mode: "explain", engine: "mysql",
+// Explore captures EXPLAIN FORMAT=JSON (MySQL format 2), without actual
+// execution counters. Adapt the simple scan fixture to the editor's query.
+const scanFixture = JSON.parse(await fs.readFile(path.join(root, "test/fixtures/explain-001-table-scan-users-no-filter.json"), "utf8"));
+const PLAN_RAW = JSON.stringify({
+  ...Object.fromEntries(Object.entries(scanFixture).filter(([key]) => !key.startsWith("actual_"))),
+  query: RUN_SQL, operation: "Table scan on orders", table_name: "orders", schema_name: "shop",
+  used_columns: ["id", "customer_id", "status", "total"],
+});
+const CAPTURE = { schema_version: "capture-1.0", raw: PLAN_RAW, query: RUN_SQL, mode: "explain", engine: "mysql",
   server_version: "8.4.11", captured_at: CLOCK, conditions: "", warnings: [], runs: [], measurements: { count: 0 },
   schema: {}, table_stats: {}, variables: {}, trace: null };
 const ok = (body) => ({ status: 200, body });
@@ -296,7 +304,6 @@ const MULTI_SQL = [
   "SELECT id FROM orders WHERE status = 'paid';",
   "SELECT id FROM orders WHERE status = 'refunded';",
 ].join("\n");
-const RUN_SQL = "SELECT id, customer_id, status, total FROM orders WHERE status = 'new' ORDER BY id LIMIT 24;";
 
 const GUIDES = [
   ["multi-cursor", async (h, rec) => {
@@ -395,10 +402,10 @@ const GUIDES = [
     await rec.hold(350);
     await rec.caption("click status");
     await pickCompletion(page, "status");
-    await page.waitForFunction(() => document.querySelector(".sql-editor")?.value.startsWith("SELECT o.status"));
+    await page.keyboard.type(" ");
+    await page.waitForFunction(() => document.querySelector(".sql-editor")?.value === "SELECT o.status FROM orders o");
     await rec.hold(400);
-    // On-demand list at the end of the statement: mid-token (right after the
-    // accepted word) the list is empty, so move to the end of the line first.
+    // Show the on-demand list at the end of the statement.
     p = await posPoint(page, 1, 7);
     await page.mouse.click(p.x, p.y);
     await page.keyboard.press("End");
@@ -410,6 +417,7 @@ const GUIDES = [
     await rec.caption("Esc");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector(".cm-tooltip-autocomplete"));
+    assert.equal(await page.$eval(".sql-editor", (e) => e.value), "SELECT o.status FROM orders o");
     await rec.caption("");
   }],
   ["run-explain", async (h, rec) => {
@@ -432,6 +440,9 @@ const GUIDES = [
     await explore.asElement().click();
     await explore.dispose();
     await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
+    await page.waitForFunction(() => [...document.querySelectorAll(".plan-screen svg")]
+      .map((svg) => svg.textContent).join(" ").match(/\borders\b/));
+    assert.match(await page.$$eval(".plan-screen svg", (svgs) => svgs.map((svg) => svg.textContent).join(" ")), /\borders\b/);
     await rec.caption("");
     await rec.hold(900);
   }],
@@ -524,11 +535,12 @@ const GUIDES = [
     await rec.hold(800);
     // Query editor splitter: drag the editor taller.
     const splitter = await (await page.waitForSelector(".editor-splitter")).boundingBox();
+    const beforeHeight = await page.$eval(".editor-splitter", (e) => Number(e.getAttribute("aria-valuenow")));
     await rec.caption("drag editor splitter");
     const sfrom = { x: splitter.x + splitter.width / 2, y: splitter.y + splitter.height / 2 };
     await drag(page, sfrom, { x: sfrom.x, y: sfrom.y + 90 });
     const taller = await page.$eval(".editor-splitter", (e) => Number(e.getAttribute("aria-valuenow")));
-    assert.ok(taller > 208, `editor grew (${taller})`);
+    assert.ok(taller > beforeHeight, `editor grew (${beforeHeight} to ${taller})`);
     await rec.hold(800);
     // Double-click the sidebar edge to reset it (the editor splitter has only
     // drag and arrow keys: QueryLab.tsx "editor-splitter").
