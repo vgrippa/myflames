@@ -52,7 +52,7 @@ export function UpdateBadge() {
   );
 }
 
-/** Settings' menu entry while there is something to do (the badge alone is small on the icon rail). */
+/** The Settings page's entry while there is something to do (the badge alone is small on the icon rail). */
 export function UpdateMenuItem({ onChoose }: { onChoose: () => void }) {
   const s = useUpdateStatus();
   const now = useMinuteClock();
@@ -68,7 +68,7 @@ export function UpdateMenuItem({ onChoose }: { onChoose: () => void }) {
   );
 }
 
-/** The Settings popover switch for the automatic check. */
+/** The Settings page switch for the automatic check. */
 export function AutoUpdateSetting() {
   const s = useUpdateStatus();
   const [error, setError] = useState("");

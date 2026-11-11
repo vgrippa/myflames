@@ -235,7 +235,11 @@ try {
   await idle();
   assert.equal(calls('/api/editor/run').at(-1).cursor, third);
   assert.equal(calls('/api/editor/run').at(-1).explain_format, 'json');
-  assert.equal(await page.evaluate(() => localStorage.getItem('myflames.editor.explainFormat')), 'json');
+  await page.waitForFunction(async () => {
+    const token = localStorage.getItem('myflames.session-proof');
+    const reply = await fetch('/api/settings/ui', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': token }, body: '{}' }).then(r => r.json());
+    return reply.preferences?.explain_format === 'json';
+  });
   await page.select('[aria-label="Explain format"]', 'tree');
   const treeReply = page.waitForResponse(r => new URL(r.url()).pathname === '/api/editor/run');
   await chord();

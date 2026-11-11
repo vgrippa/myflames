@@ -1,5 +1,5 @@
 // The Query editor's persisted settings (/api/settings/editor,
-// workspace_store.py EDITOR_SETTING_DEFAULTS), shared by the Settings popover,
+// workspace_store.py EDITOR_SETTING_DEFAULTS), shared by the Settings page,
 // the command palette and the editor through one small store: the defaults
 // apply until the first read lands, writes go out one at a time in the order
 // they were made so the stored value is always the last choice, and a failed

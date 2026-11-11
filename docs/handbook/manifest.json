@@ -7,6 +7,13 @@
     "public_reference": "README.md"
   },
   {
+    "id": "howto",
+    "title": "How-to guides",
+    "group": "Start here",
+    "file": "howto.md",
+    "public_reference": "README.md"
+  },
+  {
     "id": "motivation",
     "title": "Why myflames",
     "group": "Start here",

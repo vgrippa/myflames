@@ -15,7 +15,7 @@ installer is built and smoke-tested in CI and attached to releases unsigned
 
 ## Install and first launch
 
-Download `myflames-3.4.0-macos-arm64.dmg` from the GitHub release, open it and
+Download `myflames-3.4.1-macos-arm64.dmg` from the GitHub release, open it and
 drag `myflames.app` to Applications. The app is signed with a Developer ID and
 notarized by Apple, so it opens from Finder like any other downloaded app.
 Releases before 3.3.0 were unsigned zips: Control-click those and choose Open

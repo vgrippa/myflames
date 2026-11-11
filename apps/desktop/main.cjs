@@ -48,7 +48,22 @@ else {
   });
   app.whenReady().then(start).catch(fail);
 }
-function stopBackend() {
+async function flushRendererPreferences() {
+  // The renderer owns the serialized preference queue. Bound both sides so
+  // an unresponsive renderer or backend can never prevent normal shutdown.
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+    let timer;
+    try {
+      await Promise.race([
+        window.webContents.executeJavaScript('window.__myflamesFlushUiPreferences?.()'),
+        new Promise(resolve => { timer = setTimeout(resolve, 1600); }),
+      ]);
+    } catch { /* A crashed or closing renderer cannot flush. */ }
+    finally { clearTimeout(timer); }
+  }
+}
+async function stopBackend() {
+  await flushRendererPreferences();
   return Promise.resolve(backend ? backend.stop() : launching?.stop()).catch(() => { fatal = true;
     if (!smoke) dialog.showErrorBox('Backend shutdown incomplete', 'The desktop could not confirm that all owned backend processes stopped. Check your running database operations.');
   });
@@ -209,6 +224,34 @@ async function start() {
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
   ]));
+  // Keep the renderer alive for the bounded flush when the last window is
+  // closed directly, as well as when Quit or an update initiates shutdown.
+  let closing = false, flushingClose = false;
+  let closeTimer;
+  const resetClose = () => {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+    closing = false;
+  };
+  window.on('closed', resetClose);
+  window.on('close', event => {
+    if (exiting || closing) return;
+    event.preventDefault();
+    if (quitting || flushingClose) return;
+    flushingClose = true;
+    void flushRendererPreferences().finally(() => {
+      flushingClose = false;
+      if (!window.isDestroyed()) {
+        // Replay the ordinary close, preserving the renderer's beforeunload
+        // check for unsaved work. A refusal can be followed by another close.
+        closing = true;
+        // Electron may emit close after window.close() returns. Keep the
+        // replay guard until closed, an unload refusal, or a bounded fallback.
+        closeTimer = setTimeout(resetClose, 2000);
+        window.close();
+      }
+    });
+  });
   const contents = window.webContents;
   // The update bridge (preload.cjs): only the workspace's own top frame, no
   // arguments, and a plain { ok: false, reason } instead of a thrown error.
@@ -223,7 +266,10 @@ async function start() {
   // Restart to update asked about unsaved changes in the page first, and the
   // backend has stopped by now: a beforeunload refusal would only leave a
   // window with no backend until the fallback exit, so it is overridden.
-  contents.on('will-prevent-unload', event => { if (restartingForUpdate) event.preventDefault(); });
+  contents.on('will-prevent-unload', event => {
+    resetClose();
+    if (restartingForUpdate) event.preventDefault();
+  });
   contents.on('will-attach-webview', event => event.preventDefault());
   contents.on('will-navigate', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
   contents.on('will-redirect', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });

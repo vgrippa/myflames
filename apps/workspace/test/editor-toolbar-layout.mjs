@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { open } from "./perf-harness.mjs";
+import { open, setUiPreferences } from "./perf-harness.mjs";
 
 // The server's note when Run analysis is unavailable (myflames/privileges.py
 // NO_ANALYZE_NOTE): MySQL before 8.3 has no EXPLAIN ANALYZE FORMAT=JSON.
@@ -111,10 +111,7 @@ async function noOverlap(where) {
 
 async function theme(scheme) {
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
-  await page.evaluate((t) => {
-    try { localStorage.setItem("myflames.theme", t); } catch { /* storage may be unavailable */ }
-    document.documentElement.dataset.theme = t;
-  }, scheme);
+  await setUiPreferences(page, { theme: scheme });
 }
 
 /** Open or close the schema browser pane beside the editor. */

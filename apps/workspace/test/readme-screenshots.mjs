@@ -88,6 +88,7 @@ const extra = {
 const seed = `from myflames.workspace_store import WorkspaceStore
 import json, sys
 store = WorkspaceStore(sys.argv[1]); ids = {}
+store.set_ui_preferences({"theme": "light"})
 for name, host, kind in (("Dev MySQL", "dev.example", "development"), ("Prod MySQL", "prod.example", "production")):
     saved = store.save("profile", dict(name=name, host=host, port=3306, user="dba", database="shop", ssl_mode="REQUIRED", type=kind, read_only=False), password=None, remember=False)
     ids[name] = saved["id"]
@@ -106,7 +107,6 @@ async function fixPage(page) {
     Frozen.parse = Real.parse;
     Frozen.UTC = Real.UTC;
     globalThis.Date = Frozen;
-    try { localStorage.setItem("myflames.theme", "light"); } catch {}
   }, Date.parse(CLOCK));
   await page.emulateTimezone("UTC");
   const cdp = await page.createCDPSession();
@@ -163,7 +163,7 @@ const clickButton = async (text, scope = "") => {
 
 try {
   // Home: saved connections, quick actions, Recent work, News, version footer.
-  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".home-version")?.textContent || ""));
+  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".window-statusbar-updates")?.textContent || ""));
   await page.waitForFunction(() => /Dev MySQL/.test(document.body.textContent) && /Prod MySQL/.test(document.body.textContent));
   await page.waitForFunction(() => /unavailable offline/.test(document.querySelector(".home-news")?.textContent || ""));
   await shoot("home.png");

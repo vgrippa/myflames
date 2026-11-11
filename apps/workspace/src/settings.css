@@ -1,0 +1,192 @@
+/* The Settings page (SettingsPage.tsx): the section list on the left and the
+   section's controls on the right, in the Server place's sub-navigation look
+   (kit.tsx SourceList). At 720 px and below the list becomes a compact list
+   above the controls; the page scrolls inside the main area. */
+.settings-page {
+  --source-w: 200px;
+  display: grid;
+  grid-template-columns: var(--source-w) minmax(0, 1fr);
+  align-items: start;
+  min-height: 100%;
+  background: linear-gradient(to right, var(--surface-pane) var(--source-w), var(--surface) var(--source-w));
+}
+.settings-nav {
+  position: sticky;
+  top: var(--topbar-height);
+  max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+  overflow: auto;
+  padding: var(--space-3) var(--space-2) var(--space-4);
+}
+.settings-nav-more {
+  margin-top: var(--space-3);
+}
+.settings-panel {
+  min-width: 0;
+  max-width: 640px;
+  padding: var(--space-3) var(--space-5) var(--space-6);
+  border-left: 1px solid var(--line);
+}
+.settings-panel-title {
+  margin: 0 0 var(--space-3);
+  outline: none;
+}
+.settings-panel-title:focus-visible {
+  outline: none;
+}
+/* The panel heading names the section, so the Query editor group's own label
+   would repeat it. */
+.settings-panel .settings-editor-group > .section-label {
+  display: none;
+}
+/* The Settings page's option rows. */
+/* Appearance: one card per registry theme (SettingsPage.tsx). The preview
+   uses the registry's inline swatches, so a card keeps the theme's own
+   colors in every current theme. */
+.theme-group + .theme-group {
+  margin-top: var(--space-3);
+}
+.theme-group-label {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.theme-group-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-2);
+}
+.theme-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.theme-card:hover {
+  border-color: var(--line-strong);
+}
+.theme-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.theme-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.theme-card-preview {
+  display: block;
+  margin-bottom: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+}
+.theme-card-surface {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+}
+.theme-card-line {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+}
+.theme-card-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.theme-card-name {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.theme-card-credit {
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.theme-card-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.settings-panel .session-toggle {
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  color: var(--ink);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.settings-panel .session-toggle input {
+  margin: 3px 0 0;
+}
+.settings-panel .news-toggle {
+  border-top: 0;
+  padding-top: 0;
+  white-space: normal;
+}
+.settings-panel .hint.error {
+  color: var(--danger-text);
+}
+.settings-panel .settings-option-row + .hint {
+  margin: calc(-1 * var(--space-1)) 0 0;
+  padding: 0 var(--space-2) 0 calc(var(--space-2) + 22px);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.settings-panel .settings-lead {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+}
+.settings-panel .settings-action-row {
+  justify-content: flex-start;
+}
+.settings-panel .settings-action-row .button svg {
+  color: var(--ink-muted);
+}
+/* An update waiting is its own row at the end of Updates and news. */
+.settings-panel .update-menu-item {
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+@media (max-width: 720px) {
+  /* The compact list above the controls; the page keeps scrolling in the
+     main area, never sideways. */
+  .settings-page {
+    grid-template-columns: minmax(0, 1fr);
+    background: var(--surface);
+  }
+  .settings-nav {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding: var(--space-3) var(--space-3) 0;
+  }
+  .settings-panel {
+    max-width: none;
+    padding: var(--space-3);
+    border-left: 0;
+  }
+}

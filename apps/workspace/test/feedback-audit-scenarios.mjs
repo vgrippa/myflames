@@ -82,7 +82,7 @@ export const SCENARIOS = [
   {
     name: "home-check-updates", label: "Check for updates", owner: "UpdateCheck.tsx", place: "home", away: "plans", connection: false,
     paths: ["/api/app/update/check"], setup: async ({ page }) => { await goPlace(page, "home"); },
-    target: async (page) => waitVisible(page, ".home-version .update-check-button"),
+    target: async (page) => waitVisible(page, ".window-statusbar-updates .update-check-button"),
   },
   {
     name: "home-test-connection", label: "Test connection (form)", owner: "Connections.tsx", place: "home", away: "plans", connection: false,

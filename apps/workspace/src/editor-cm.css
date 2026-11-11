@@ -68,6 +68,14 @@
 .sql-editor-wrap.sql-cm .cm-content ::selection,
 .sql-editor-wrap.sql-cm .cm-content::selection {
   background: var(--editor-selection);
+  color: var(--editor-selection-ink);
+}
+/* drawSelection paints a layer behind the syntax spans. A selection mark
+   supplies readable ink, including unfocused and multiple selections. */
+.sql-editor-wrap.sql-cm .cm-selectedText,
+.sql-editor-wrap.sql-cm .cm-selectedText * {
+  color: var(--editor-selection-ink);
+  background-color: var(--editor-selection);
 }
 .sql-editor-wrap.sql-cm .cm-cursor,
 .sql-editor-wrap.sql-cm .cm-dropCursor {

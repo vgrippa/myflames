@@ -1,3 +1,4 @@
+import { setUiPreference, useUiPreferences, type ExplainFormat } from "./uiPreferences";
 import { captureThreadKey, indexWasApplied, measurementMatches, type SqlOpenOptions, type SuggestedIndexOrigin } from "./statementThread";
 import { DigestBefore, MeasuredStatement } from "./MeasureAgain";
 import { bytes, invalidateSchemaCatalog, useSchemaCatalog } from "./PerfShared";
@@ -132,14 +133,6 @@ const EDITOR_FLOOR = 72;
  * cached read is older than this (never on every focus or keystroke). */
 const CATALOG_STALE_MS = 10_000;
 type Tab = QueryTab;
-type ExplainFormat = "table" | "tree" | "json";
-const EXPLAIN_FORMAT_KEY = "myflames.editor.explainFormat";
-function storedExplainFormat(): ExplainFormat {
-  try {
-    const value = localStorage.getItem(EXPLAIN_FORMAT_KEY);
-    return value === "tree" || value === "json" ? value : "table";
-  } catch { return "table"; }
-}
 /** Options for adding a captured plan: `open: false` keeps the current screen. */
 export type CaptureOptions = { open?: boolean };
 /** The editor part of the restorable lab state (the connection and the
@@ -706,7 +699,7 @@ export const QueryLab = forwardRef<
   const [parametersOpen, setParametersOpen] = useState(false);
   /** The tab whose parameter form is open (a digest that needs values). */
   const [fillFormTab, setFillFormTab] = useState<string | null>(null);
-  const [explainFormat, setExplainFormat] = useState<ExplainFormat>(storedExplainFormat);
+  const { explain_format: explainFormat } = useUiPreferences();
   const [analysisOptionsOpen, setAnalysisOptionsOpen] = useState(false);
   const [measurePending, setMeasurePending] = useState<string | null>(null);
   const capturedStatements = useRef(new Map<string, CapturedStatement>());
@@ -2934,8 +2927,7 @@ export const QueryLab = forwardRef<
                   title="Explain output format; Tree needs MySQL 8.0.16 or later"
                   disabled={running || busy} onChange={e => {
                     const format = e.target.value as ExplainFormat;
-                    setExplainFormat(format);
-                    try { localStorage.setItem(EXPLAIN_FORMAT_KEY, format); } catch { /* Viewer storage may be unavailable. */ }
+                    void setUiPreference("explain_format", format).catch(() => {});
                   }}>
                   <option value="table">Table</option>
                   <option value="tree" disabled={!treeAvailable}>Tree</option>

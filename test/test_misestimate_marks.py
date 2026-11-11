@@ -645,8 +645,8 @@ class TestRendererMarks(unittest.TestCase):
             self.assertIn("const %s = %d;" % (name, getattr(output_workbench, name)), workbench)
         flame = (charts / "flamegraph.ts").read_text(encoding="utf-8")
         self.assertIn('export const MARK_COLOR = "%s";' % flamegraph.MARK_COLOR, flame)
-        styles = (charts / "core" / "styles.ts").read_text(encoding="utf-8")
-        self.assertIn("--mfc-estimate:%s;" % output_workbench.MARK_COLOR, styles)
+        theme_defaults = (charts / "core" / "themeDefaults.ts").read_text(encoding="utf-8")
+        self.assertIn("--mfc-estimate:%s;" % output_workbench.MARK_COLOR, theme_defaults)
         # Never a status or search color.
         self.assertNotIn(output_workbench.MARK_COLOR, (flamegraph.MATCH_COLOR, "#b42318", "#007aff"))
         self.assertNotEqual(flamegraph.MARK_COLOR, flamegraph.MATCH_COLOR)

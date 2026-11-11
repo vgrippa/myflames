@@ -27,6 +27,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { appVersion } from "./api";
+import { currentUiPreferences, setUiPreference, INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT } from "./uiPreferences";
+export { INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT };
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
 import { shortcut } from "./platform";
@@ -1242,17 +1246,25 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
   const ran = stamp(value.lastRunAt);
   const knownNumber = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
   return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
-    {lead}
-    {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
-    {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
-    {value.sessionState && <span data-status="session">{value.sessionState}</span>}
-    {value.transaction && <span data-status="transaction">{value.transaction}</span>}
-    {ran && <span data-status="last-run">Last run {ran}</span>}
-    {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
-    {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
-    {/* Drawn, not announced: the view's own status line announces its read. */}
-    {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
-    {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
+    <div className="window-statusbar-facts">
+      {lead}
+      {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
+      {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
+      {value.sessionState && <span data-status="session">{value.sessionState}</span>}
+      {value.transaction && <span data-status="transaction">{value.transaction}</span>}
+      {ran && <span data-status="last-run">Last run {ran}</span>}
+      {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
+      {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
+      {/* Drawn, not announced: the view's own status line announces its read. */}
+      {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
+      {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
+    </div>
+    <div className="window-statusbar-updates" aria-label="Application version">
+      <strong>myflames {appVersion() || "development"}</strong>
+      <UpdateCheckStatus />
+      <CheckForUpdatesButton />
+      <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+    </div>
   </footer>;
 }
 
@@ -3119,27 +3131,10 @@ export function ConfirmSheet({
 
 // ---- Inspector -------------------------------------------------------------------
 
-export const INSPECTOR_MIN = 280;
-export const INSPECTOR_MAX = 560;
-export const INSPECTOR_DEFAULT = 340;
-const WIDTH_KEY = "myflames.inspector.width";
-
-/** The inspector's width, remembered in this browser (best effort). */
-export function storedInspectorWidth() {
-  try {
-    const value = Number(window.localStorage.getItem(WIDTH_KEY));
-    if (Number.isFinite(value) && value >= INSPECTOR_MIN && value <= INSPECTOR_MAX) return value;
-  } catch {
-    // Storage can be off (private window, blocked site data).
-  }
-  return INSPECTOR_DEFAULT;
-}
+/** The inspector width is shared with the persisted UI preferences. */
+export const storedInspectorWidth = () => currentUiPreferences().inspector_width;
 export function storeInspectorWidth(width: number) {
-  try {
-    window.localStorage.setItem(WIDTH_KEY, String(Math.round(width)));
-  } catch {
-    // Not remembered; the default applies next time.
-  }
+  void setUiPreference("inspector_width", Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, Math.round(width)))).catch(() => {});
 }
 
 /** The place's inspector: open or closed (restored with the workspace), its

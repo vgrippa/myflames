@@ -35,7 +35,7 @@ const stylesheets = sourceFiles.filter((f) => f.endsWith(".css")).sort();
 const listed = [...(await read("styles.ts")).matchAll(/^import "\.\/([^"]+\.css)";$/gm)]
   .map((m) => path.posix.normalize(path.posix.join(path.posix.dirname("styles.ts"), m[1])));
 assert.deepEqual([...listed].sort(), stylesheets, "styles.ts imports every stylesheet in src/ exactly once");
-assert.equal(listed[listed.length - 1], "style.css", "style.css comes last");
+assert.deepEqual(listed.slice(-2), ["style.css", "themes.css"], "theme colors follow the shared styles");
 for (const file of sources) {
   for (const m of (await read(file)).matchAll(/import\s+["']([^"']+\.css)["']/g)) {
     const imported = path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1]));

@@ -1,7 +1,7 @@
 {
   "name": "myflames-desktop",
   "productName": "myflames",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "private": true,
   "description": "Local desktop launcher for the myflames workspace",
   "license": "Apache-2.0",
@@ -15,6 +15,7 @@
     "test": "node --test test/*.test.cjs",
     "smoke": "node scripts/smoke.cjs",
     "smoke:editor-settings": "node scripts/editor-settings-smoke.cjs",
+    "smoke:preferences": "node scripts/preferences-smoke.cjs",
     "build:backend": "python3 scripts/build-backend.py",
     "fetch:mysql-client": "python3 scripts/fetch-mysql-client.py",
     "package:dir": "electron-builder --dir --config electron-builder.json",

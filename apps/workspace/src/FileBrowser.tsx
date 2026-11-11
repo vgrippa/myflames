@@ -1,3 +1,4 @@
+import { setUiPreference, useUiPreferences } from "./uiPreferences";
 // The File transfer browser for one SSH connection, FileZilla style: This
 // computer on the left, the server on the right (stacked in a narrow window),
 // the Transfers panel below. It owns the toolbar, what transfers, renames, new
@@ -41,25 +42,7 @@ import { FileGlyph, FilePane, itemCount, mtimeText, nameStem, storedFolder, useP
 import { TransfersPanel, useTransfers, type TransferScope } from "./Transfers";
 import "./files.css";
 
-const HIDDEN_KEY = "myflames.files.showHidden";
-const PANEL_KEY = "myflames.files.transfersOpen";
 const WINDOWS_TRANSFERS_REASON = "Uploads and downloads are not available on Windows yet.";
-
-function storedFlag(key: string, fallback: boolean): boolean {
-  try {
-    const value = localStorage.getItem(key);
-    return value === null ? fallback : value === "1";
-  } catch {
-    return fallback;
-  }
-}
-function storeFlag(key: string, value: boolean) {
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-    /* A remembered switch is a convenience; it works for this page without storage. */
-  }
-}
 
 type Conflict = { name: string; source: FileEntry | null; existing: FileEntry };
 type Plan = { direction: "upload" | "download"; paths: string[]; targetDir: string; conflicts: Conflict[] };
@@ -89,8 +72,9 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
   const panes = useRef({ local, remote });
   panes.current = { local, remote };
   const dragging = useRef<DragRows | null>(null);
-  const [showHidden, setShowHidden] = useState(() => storedFlag(HIDDEN_KEY, false));
-  const [panelOpen, setPanelOpen] = useState(() => storedFlag(PANEL_KEY, true));
+  const { files_show_hidden: showHidden, files_transfers_open: panelOpen } = useUiPreferences();
+  const setShowHidden = (value: boolean) => { void setUiPreference("files_show_hidden", value).catch(() => {}); };
+  const setPanelOpen = (value: boolean) => { void setUiPreference("files_transfers_open", value).catch(() => {}); };
   const [scope, setScope] = useState<TransferScope>("this");
   const [activeSide, setActiveSide] = useState<Side>("local");
   const [note, setNote] = useState<{ text: string; variant: "note" | "error"; seq: number } | null>(null);
@@ -159,7 +143,6 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
   // ---- Transfers ---------------------------------------------------------------
   async function start(plan: Plan, onExists: OnExists) {
     setPanelOpen(true);
-    storeFlag(PANEL_KEY, true);
     setStartingDirection(plan.direction);
     const what = plan.paths.length === 1 ? baseName(plan.paths[0]) : itemCount(plan.paths.length);
     const result = await starting.run(
@@ -263,7 +246,7 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
           <StatusDot tone={status.tone} label={status.label} />
         </div>
         <div className="files-toolbar-actions">
-          <Checkbox checked={showHidden} onChange={(on) => { setShowHidden(on); storeFlag(HIDDEN_KEY, on); }}>
+          <Checkbox checked={showHidden} onChange={(on) => { setShowHidden(on); }}>
             Show hidden files
           </Checkbox>
           <ToolbarButton icon="edit" onClick={onEditConnection}>Edit</ToolbarButton>
@@ -321,7 +304,7 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
         connection={connection}
         model={jobs}
         open={panelOpen}
-        onToggle={(on) => { setPanelOpen(on); storeFlag(PANEL_KEY, on); if (on) jobs.wake(); }}
+        onToggle={(on) => { setPanelOpen(on); if (on) jobs.wake(); }}
         scope={scope}
         onScope={setScope}
         starting={starting}

@@ -7,13 +7,21 @@
 }
 
 .sql-editor-wrap.sql-cm .cm-selectionMatch {
-  background-color: var(--accent-soft);
+  background-color: var(--editor-selection-match);
+  color: var(--editor-selection-ink);
   border-radius: 2px;
 }
 
 .sql-editor-wrap.sql-cm .cm-selectionMatch-main {
-  background-color: var(--accent-soft);
-  outline: 1px solid var(--accent-soft);
+  background-color: var(--editor-selection-match);
+  color: var(--editor-selection-ink);
+  outline: 1px solid var(--editor-selection-match);
+}
+
+/* Syntax spans nested inside marks must keep the same readable highlight ink. */
+.sql-editor-wrap.sql-cm :is(.cm-selectionMatch, .cm-selectionMatch-main, .sql-find-mark),
+.sql-editor-wrap.sql-cm :is(.cm-selectionMatch, .cm-selectionMatch-main, .sql-find-mark) * {
+  color: var(--editor-selection-ink);
 }
 
 .sql-editor-wrap.sql-cm .cm-specialChar {

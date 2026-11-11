@@ -8,7 +8,7 @@ myflames is a desktop performance workspace for MySQL, MariaDB and Percona Serve
 
 Download the signed, notarized `.dmg` from [official downloads](https://github.com/vgrippa/myflames/releases/latest), open it, and drag `myflames.app` to Applications. Open the app from Applications.
 
-The current downloadable release checked for this site is **3.4.0**. A macOS Intel binary is not advertised in this release.
+The current downloadable release checked for this site is **3.4.1**. A macOS Intel binary is not advertised in this release.
 
 ### Windows x64, preview
 
@@ -18,7 +18,21 @@ The Windows build is a preview tested on Windows 11 x64. A crash can leave a sta
 
 ## Updates
 
-myflames checks for a newer release when it starts and once a day while **Settings > Check for updates automatically** is on (the default); **Check for updates** in Home's footer and About myflames checks on demand. When an update is available, a badge beside the logo at the top of the sidebar follows the download until the update is ready. Choose **Update**, then **Restart to update**, or let the update install when you next quit the app. On macOS, keep `myflames.app` in your Applications folder so it can update in place. On Windows the update installs silently after the app quits.
+myflames checks for a newer release when it starts and once a day while **Settings > Check for updates automatically** is on (the default); **Check for updates** in the window status bar on every screen and About myflames checks on demand. When an update is available, a badge beside the logo at the top of the sidebar follows the download until the update is ready. Choose **Update**, then **Restart to update**, or let the update install when you next quit the app. On macOS, keep `myflames.app` in your Applications folder so it can update in place. On Windows the update installs silently after the app quits.
+
+## Appearance
+
+Try the step-by-step guides for [settings and themes](howto.md#settings-and-themes) and [layout](howto.md#layout).
+
+Choose a theme in **Settings > Appearance**, where a card per theme previews its colors, or open **Search…** (⌘K on macOS, Ctrl+K on Windows) and type **Theme:**. Available themes are System, Light, Dark, Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. The choice is kept on this computer and applies to navigation, views, tables, dialogs, the Query editor and charts. System follows your operating system's light or dark appearance.
+
+Editor palettes are adapted for readable text and selections. Chart operator colors, status meanings and Production (purple) and Development (teal) connection colors keep their meaning in every theme. Palette credits and licenses are in [NOTICE](../../NOTICE).
+
+## Sidebar and status bar
+
+Drag the sidebar's right edge to choose its width. You can also focus the edge and use Left or Right (hold Shift for a larger step). Double-click, Home or End restores the default width. Narrow windows keep their compact navigation rail. Sidebar and Server inspector widths, the Server view navigation choice, Health auto-refresh choices for Production and Development, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices survive app restarts alongside your theme.
+
+Every screen has one window status bar. Its right end shows the installed version, update status, **Check for updates** and **View releases**. The current view's safety, connection, session and refresh facts remain on the left; narrow windows shorten these facts before the update actions.
 
 ## Start with an exported plan
 

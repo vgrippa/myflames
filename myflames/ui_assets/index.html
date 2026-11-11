@@ -14,11 +14,11 @@
     <script>
       try {
         var t = localStorage.getItem("myflames.theme");
-        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        if (["system","light","dark","fire","digital-rain","neon-grid","dracula","nord","solarized-light","solarized-dark","tokyo-night","gruvbox-dark","catppuccin-mocha","catppuccin-latte","github-light","github-dark","one-dark"].includes(t) && t !== "system") document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
-    <script type="module" crossorigin src="/assets/index-C9NISWuJ.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-cmQ5HKb6.css">
+    <script type="module" crossorigin src="/assets/index-B5YvuT_7.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CC0Iz4Pv.css">
   </head>
   <body>
     <div id="root"></div>

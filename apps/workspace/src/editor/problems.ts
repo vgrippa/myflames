@@ -173,7 +173,7 @@ function metadataProblems(words: Word[], database: string, created: Set<string>,
       bind(alias, local || !schema ? null : { schema, table: ref.table, alias });
       if (local || !schema) continue;
       const cached = catalog.peek("tables", { schema });
-      if (!sessionTempTables && cached?.complete && !cached.failed && !cached.truncated && cached.value &&
+      if (!sessionTempTables && cached?.complete && !cached.stale && !cached.failed && !cached.truncated && cached.value &&
           !cached.value.prefix && !cached.value.after && !cached.value.truncated &&
           !cached.value.tables.some(t => fold(t.name) === fold(ref.table))) {
         out.push(warning(ref.token, `No table \`${ref.table}\` in \`${schema}\` (table list read at ${localTime(cached.readAt)}).`));
@@ -186,7 +186,7 @@ function metadataProblems(words: Word[], database: string, created: Set<string>,
       const ref = scope.refs.get(fold(qualifier.name));
       if (!ref) continue;
       const cached = catalog.peek("columns", { schema: ref.schema, table: ref.table });
-      if (cached?.complete && !cached.failed && !cached.truncated && cached.value &&
+      if (cached?.complete && !cached.stale && !cached.failed && !cached.truncated && cached.value &&
           !cached.value.columns.some(c => fold(c.name) === fold(column.name!))) {
         out.push(warning(column, `No column \`${column.name}\` in \`${ref.schema}.${ref.table}\`.`));
       }

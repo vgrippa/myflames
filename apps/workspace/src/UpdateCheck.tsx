@@ -1,4 +1,4 @@
-// Check for updates: the status line and button in Home's version footer and
+// Check for updates: the status line and button in the window footer and
 // in About myflames. GitHub is asked when the button is clicked and by the
 // automatic check (updateStatus.ts); the last check (kept in the workspace
 // store) is shown with its local time.

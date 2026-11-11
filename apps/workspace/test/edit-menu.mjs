@@ -12,6 +12,9 @@ const assets = fileURLToPath(new URL("../../../myflames/ui_assets/", import.meta
 const origin = "http://myflames.test";
 const errors = [], unexpected = [];
 const json = body => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+const uiDefaults = { theme: "system", inspector_width: 340, explain_format: "table",
+  files_show_hidden: false, files_transfers_open: true, sidebar_width: 208,
+  server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1 };
 const mocks = {
   "/api/auth/session": { token: "edit-menu-test" },
   "/api/session/load": { revision: 0, restore: false, skip_restore: false, state: null, saved_at: null },
@@ -20,6 +23,9 @@ const mocks = {
   "/api/app/update/status": { schema_version: "app-update-status-1.0", current_version: "3.3.4",
     last_check: null, auto_check: false, staging: null, staged: null, active_operations: [] },
   "/api/settings/editor": { settings: { completion_auto: false, hover_info: false } },
+  "/api/settings/ui": { schema_version: "ui-preferences-1.0", preferences: uiDefaults, defaults: uiDefaults },
+  "/api/config/versions/names": { schema_version: "param-names-1.0", engine: "mysql", requested: "8.4.0",
+    release: null, exact: false, names: [] },
   "/api/investigations/list": { items: [], next_cursor: null },
   "/api/editor/status": { status: "none", session: null, run: null },
   "/api/editor/preview": { status: "ready", statements: [{ index: 0, kind: "read", action_keys: [],

@@ -343,24 +343,26 @@ try {
   pass(6, "unknown table warned only after a full cached list; UPDATE without WHERE warned without execution");
 
   stage = "7 settings";
-  const autoCheckbox = '#settings-popover input[aria-describedby="editor-setting-completion_auto-hint"]';
+  const autoCheckbox = '.settings-page input[aria-describedby="editor-setting-completion_auto-hint"]';
   const toggleAuto = async on => {
     await page.mouse.move(0, 0);
     await page.click('button[aria-label="Settings"]');
+    await page.waitForSelector('.settings-page .source-item');
+    await page.locator('.settings-page .source-item ::-p-text(Query editor)').click();
     await page.waitForSelector(autoCheckbox, { visible: true });
     assert.equal(await page.$eval(autoCheckbox, input => input.checked), !on, "the switch begins in the expected state");
     const saved = page.waitForResponse(response => pathOf(response.request()) === "/api/settings/editor"
       && JSON.parse(response.request().postData() || "{}").set?.completion_auto === on);
-    await page.click(`#settings-popover label:has(input[aria-describedby="editor-setting-completion_auto-hint"])`);
+    await page.click(`.settings-page label:has(input[aria-describedby="editor-setting-completion_auto-hint"])`);
     const response = await saved;
-    assert.equal(response.status(), 200, "the settings popover saved through the real endpoint");
+    assert.equal(response.status(), 200, "the Settings page saved through the real endpoint");
     assert.equal((await response.json()).settings.completion_auto, on);
     await page.waitForFunction((selector, on) => {
       const input = document.querySelector(selector);
       return input?.checked === on && input.getAttribute("aria-disabled") !== "true";
     }, {}, autoCheckbox, on);
     await page.keyboard.press("Escape");
-    await page.waitForSelector("#settings-popover", { hidden: true });
+    await page.waitForSelector(".settings-page", { hidden: true });
   };
   await toggleAuto(false);
   await typeSuffix("SELECT * FROM ", "us");
@@ -418,9 +420,9 @@ try {
     };
     const closeShotUI = async () => {
       await page.mouse.move(0, 0);
-      if (await page.$("#settings-popover")) {
+      if (await page.$(".settings-page")) {
         await page.keyboard.press("Escape");
-        await page.waitForSelector("#settings-popover", { hidden: true });
+        await page.waitForSelector(".settings-page", { hidden: true });
       }
       if (await page.$(".query-lab .sql-find-close")) {
         await page.click(".query-lab .sql-find-close");
@@ -435,18 +437,22 @@ try {
     };
     const scheme = async value => {
       await closeShotUI();
-      // Match ui-review's myflames.theme/data-theme and media emulation.
+      // Apply the theme through Settings and confirm backend persistence.
       // Use Appearance too, so the Settings buttons reflect the same scheme.
       await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value }]);
       await page.click('button[aria-label="Settings"]');
-      const themeButton = `#settings-popover .theme-segmented button:nth-child(${value === "light" ? 2 : 3})`;
+      const themeButton = `.settings-page .theme-card[data-theme-id="${value}"]`;
       await page.waitForSelector(themeButton, { visible: true });
       await page.click(themeButton);
-      await page.waitForFunction((value, selector) => document.documentElement.dataset.theme === value
-        && localStorage.getItem("myflames.theme") === value
-        && document.querySelector(selector)?.getAttribute("aria-pressed") === "true", {}, value, themeButton);
+      await page.waitForFunction(async (value, selector) => {
+        const reply = await fetch('/api/settings/ui', { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': localStorage.getItem('myflames.session-proof') }, body: '{}' });
+        return document.documentElement.dataset.theme === value
+          && (await reply.json()).preferences?.theme === value
+          && document.querySelector(selector)?.getAttribute("aria-checked") === "true";
+      }, {}, value, themeButton);
       await page.keyboard.press("Escape");
-      await page.waitForSelector("#settings-popover", { hidden: true });
+      await page.waitForSelector(".settings-page", { hidden: true });
     };
     const completionDetail = async (label, detail) => {
       await option(label);
@@ -561,16 +567,12 @@ try {
       ["settings", async () => {
         await setEditorText(page, "SELECT email FROM users;");
         await page.click('button[aria-label="Settings"]');
-        await page.waitForSelector("#settings-popover .settings-editor-group", { visible: true });
-        await page.$eval("#settings-popover", popover => {
-          const group = popover.querySelector(".settings-editor-group");
-          popover.scrollTop += group.getBoundingClientRect().top - popover.getBoundingClientRect().top - 8;
-        });
+        await page.waitForSelector(".settings-page .source-item");
+        await page.locator('.settings-page .source-item ::-p-text(Query editor)').click();
+        await page.waitForSelector(".settings-page .settings-editor-group", { visible: true });
         await page.waitForFunction(() => {
-          const popover = document.querySelector("#settings-popover").getBoundingClientRect();
-          const group = document.querySelector(".settings-editor-group").getBoundingClientRect();
-          return group.top >= popover.top && group.bottom <= popover.bottom
-            && group.top >= 0 && group.bottom <= innerHeight;
+          const group = document.querySelector(".settings-page .settings-editor-group").getBoundingClientRect();
+          return group.top >= 0 && group.bottom <= innerHeight;
         });
       }],
       ["multi-cursor", async () => {

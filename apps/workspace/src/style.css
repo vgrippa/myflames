@@ -179,7 +179,10 @@
   --syntax-ident: #6f42c1;
   --syntax-variable: #8a4b00;
   --syntax-param: #9a3412;
-  --editor-selection: rgba(0, 102, 204, 0.22);
+  --editor-selection: #b0cfee;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #d2e4f7;
+  --editor-find-current: #accae8;
   --editor-current: var(--accent-subtle);
   --editor-match: rgb(17 102 68 / 0.18);
   --editor-line-h: 20px;
@@ -274,6 +277,10 @@
   --shadow-sheet: 0 20px 48px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
   /* The edge of a table with columns scrolled beyond it. */
   --table-edge-shadow: rgba(0, 0, 0, 0.14);
+  --editor-selection: #b0cfee;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #d2e4f7;
+  --editor-find-current: #accae8;
 }
 
 /* Appearance changes surfaces and UI accents, never operator meanings.
@@ -360,7 +367,10 @@
     --syntax-ident: #c4a7ff;
     --syntax-variable: #e6b064;
     --syntax-param: #ff9e6b;
-    --editor-selection: rgba(55, 148, 255, 0.35);
+    --editor-selection: #264f78;
+    --editor-selection-ink: var(--ink);
+    --editor-selection-match: #203b56;
+    --editor-find-current: #315f88;
     --editor-match: rgb(122 215 163 / 0.22);
   }
 }
@@ -445,7 +455,10 @@
   --syntax-ident: #c4a7ff;
   --syntax-variable: #e6b064;
   --syntax-param: #ff9e6b;
-  --editor-selection: rgba(55, 148, 255, 0.35);
+  --editor-selection: #264f78;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #203b56;
+  --editor-find-current: #315f88;
   --editor-match: rgb(122 215 163 / 0.22);
 }
 * {
@@ -727,33 +740,11 @@ details > p {
 .settings-button {
   color: var(--ink-muted);
 }
-.settings-button[aria-expanded="true"] {
+/* The gear opens the Settings page; while the page is on screen the gear
+   reads as the current spot. */
+.settings-button[aria-current="page"] {
   background: var(--surface-hover);
   color: var(--ink);
-}
-/* Settings: a compact menu-style popover (macOS), no title bar or close
-   button; Escape and a click outside close it. Hairlines separate the
-   appearance, the startup option and the menu items. */
-.settings-popover {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--space-2));
-  width: 248px;
-  /* The footer row (41 px) and the sidebar's bottom padding (8 px) sit
-     below the anchor, plus the 8 px gap and a 16 px headroom: 73 px in
-     all. In a 720x520 window the top then stays at least 16 px from the
-     window top; it scrolls below that. */
-  max-height: calc(100vh - 73px);
-  overflow-y: auto;
-  z-index: 20;
-  background: var(--surface-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-raised);
-  padding: var(--space-2) var(--space-1) var(--space-1);
-  display: grid;
-  gap: var(--space-2);
-  animation: chrome-panel-in var(--motion-panel);
 }
 /* The Query editor group: its own label, then one switch row per setting. */
 .settings-editor-group {
@@ -771,18 +762,6 @@ details > p {
   gap: var(--space-1);
   padding: 0 var(--space-2);
 }
-.settings-theme-group .section-label {
-  font-size: var(--text-xs);
-}
-.theme-segmented {
-  width: 100%;
-}
-.theme-segmented button {
-  flex: 1;
-  text-align: center;
-  justify-content: center;
-  font-size: var(--text-sm);
-}
 .settings-option-row {
   display: flex;
   align-items: center;
@@ -793,40 +772,6 @@ details > p {
 }
 .settings-option-row.news-option-row {
   border-top: 0;
-  padding-top: var(--space-1);
-}
-.settings-popover .session-toggle {
-  align-items: flex-start;
-  margin: 0;
-  padding: 0;
-  border-top: 0;
-  font-size: var(--text-md);
-  line-height: var(--leading-md);
-  color: var(--ink);
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.settings-popover .session-toggle input {
-  margin: 3px 0 0;
-}
-/* The news switch joins the startup option's group: no second hairline. */
-.settings-popover .news-toggle {
-  border-top: 0;
-  padding-top: 0;
-  white-space: normal;
-}
-.settings-popover .hint.error {
-  color: var(--danger-text);
-}
-.settings-popover .hint {
-  margin: calc(-1 * var(--space-1)) 0 0;
-  padding: 0 var(--space-2) 0 calc(var(--space-2) + 22px);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
-  color: var(--ink-muted);
-}
-.settings-menu {
-  border-top: 1px solid var(--line);
   padding-top: var(--space-1);
 }
 .settings-item {
@@ -2891,7 +2836,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 }
 @media (max-width: 1200px) {
   :root {
-    --sidebar-width: 208px;
+    --sidebar-width: var(--sidebar-w);
   }
   main {
     padding: var(--space-5) var(--space-5) var(--space-4);
@@ -2986,13 +2931,6 @@ main:has(> .library) { padding: 0; max-width: none; }
     min-width: 0;
     border: 0;
     padding: 0;
-  }
-  .settings-popover {
-    top: calc(100% + var(--space-2));
-    bottom: auto;
-    left: auto;
-    right: 0;
-    width: min(260px, calc(100vw - 24px));
   }
   .sidebar-drawer {
     display: none;
@@ -3533,7 +3471,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 
 /* Home keeps connection management beside a single Recent work list. */
 .home {
-  min-height: calc(100dvh - var(--topbar-height));
+  min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
   display: flex;
   flex-direction: column;
 }
@@ -3762,6 +3700,15 @@ main:has(> .library) { padding: 0; max-width: none; }
   .home-pane + .home-pane {
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+}
+@media (min-width: 1001px) {
+  .home {
+    height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+  }
+  .home-launcher {
+    min-height: 0;
+    overflow: auto;
   }
 }
 @media (max-width: 650px) {
@@ -4507,27 +4454,54 @@ kbd {
   overflow: hidden;
   white-space: nowrap;
 }
-.window-statusbar > span {
+.window-statusbar-facts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.window-statusbar-facts > * {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.window-statusbar > .safety-status,
-.window-statusbar > span[data-status="engine"],
-.window-statusbar > span[data-status="duration"],
-.window-statusbar > span[data-status="rows"],
-.window-statusbar > span[data-status="refreshing"] {
+.window-statusbar-facts > .safety-status { flex-shrink: 0; }
+.window-statusbar-refresh { margin-left: auto; }
+.window-statusbar-updates {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   flex: none;
+  min-width: 0;
 }
-.window-statusbar-refresh {
-  flex: none;
-  margin-left: auto;
+.window-statusbar-updates > strong { font-weight: 500; color: var(--ink-secondary); }
+.window-statusbar-updates a { color: var(--accent-text); }
+.window-statusbar-updates .text-button { font-size: inherit; min-height: 24px; padding: 0; }
+.window-statusbar-updates .update-check { flex-wrap: nowrap; }
+.window-statusbar-updates > * + *::before,
+.window-statusbar-updates .update-check > * + *::before {
+  content: "·";
+  margin-right: var(--space-2);
+  color: var(--ink-muted);
+}
+/* Update state and actions fit beside the 48 px rail at the minimum window
+   width. Full timing and failure detail remain in About myflames. */
+@media (max-width: 1200px) {
+  .window-statusbar { gap: var(--space-2); }
+  .window-statusbar-updates .update-check-time { display: none; }
+  .window-statusbar-updates .update-check-status {
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    white-space: nowrap;
+  }
 }
 @media (max-width: 900px) {
-  .window-statusbar {
-    gap: var(--space-3);
-  }
+  .window-statusbar-facts { gap: var(--space-2); }
 }
 .safety-status {
   display: inline-flex;
@@ -4789,15 +4763,6 @@ kbd {
     justify-content: space-between;
     padding-top: var(--space-2);
     border-top: 1px solid var(--line);
-  }
-  /* Anchored to the drawer's left edge: the drawer is narrower than the
-     popover, so a right anchor pushed it past the left of the screen. */
-  .sidebar .settings-popover {
-    top: auto;
-    bottom: calc(100% + var(--space-2));
-    left: 0;
-    right: auto;
-    max-width: calc(100vw - 32px);
   }
   .main-nav button {
     min-height: 32px;
@@ -5289,3 +5254,24 @@ kbd {
   .plan-fold .plan-statistics-body { margin-right: 0; }
   .plan-fold .plan-chart[data-view="stats"] { max-height: none; }
 }
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 1;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after { background: var(--focus); }
+.sidebar-resizer:focus-visible { outline: none; }
+@media (max-width: 900px) { .sidebar-resizer { display: none; } }

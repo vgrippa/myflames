@@ -17,12 +17,12 @@ const CURSORS = '.query-lab .cm-cursor';
 const SETTINGS = {
   multi_cursor: {
     label: 'Multiple cursors',
-    input: '#settings-popover input[aria-describedby~="editor-setting-multi_cursor-hint"]',
+    input: '.settings-page input[aria-describedby~="editor-setting-multi_cursor-hint"]',
   },
   soft_wrap: {
     label: 'Wrap long lines',
     // This switch has no hint/input id; its error paragraph follows its row.
-    input: '#settings-popover .settings-option-row:has(+ #editor-setting-soft_wrap-error) input',
+    input: '.settings-page .settings-option-row:has(+ #editor-setting-soft_wrap-error) input',
   },
 };
 const DEFAULTS = { multi_cursor: true, soft_wrap: false };
@@ -147,8 +147,10 @@ async function launch(executable, backendExecutable, data, puppeteer) {
 }
 
 async function openSettings(page) {
-  if (!await page.$('#settings-popover')) await page.click('button[aria-label="Settings"]');
-  await page.waitForSelector('#settings-popover .settings-editor-group', { visible: true });
+  if (!await page.$('.settings-page')) await page.click('button[aria-label="Settings"]');
+  await page.waitForSelector('.settings-page .source-item', { visible: true });
+  await page.locator('.settings-page .source-item ::-p-text(Query editor)').click();
+  await page.waitForSelector('.settings-page .settings-editor-group', { visible: true });
   for (const { input, label } of Object.values(SETTINGS)) {
     await page.waitForSelector(input);
     assert.equal(await page.$eval(input, node => node.closest('label').textContent.trim()), label);
@@ -157,7 +159,7 @@ async function openSettings(page) {
 
 async function closeSettings(page) {
   await page.keyboard.press('Escape');
-  await page.waitForSelector('#settings-popover', { hidden: true });
+  await page.waitForSelector('.settings-page', { hidden: true });
 }
 
 async function assertSettings(page, expected, message) {
@@ -327,7 +329,7 @@ async function cleanup(run) {
       await page.click('.main-nav button[data-place="query"]');
       await page.waitForSelector(EDITOR, { visible: true });
       await assertSettings(page, number === 1 ? DEFAULTS : CHANGED,
-        `${stage}: ${number === 1 ? 'fresh defaults' : 'persisted changes'} appear in the popover and backend`);
+        `${stage}: ${number === 1 ? 'fresh defaults' : 'persisted changes'} appear on the Settings page and backend`);
       if (number === 1) {
         await editorChecks(page, DEFAULTS, helpers);
         await setSetting(page, 'soft_wrap', true);
@@ -337,7 +339,7 @@ async function cleanup(run) {
       if (number === 2) {
         await setSetting(page, 'soft_wrap', false);
         await setSetting(page, 'multi_cursor', true);
-        await assertSettings(page, DEFAULTS, 'both settings restored to defaults in the popover and backend');
+        await assertSettings(page, DEFAULTS, 'both settings restored to defaults on the Settings page and backend');
         await editorChecks(page, DEFAULTS, helpers);
       }
       assertNotInterrupted();

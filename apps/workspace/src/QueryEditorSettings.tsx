@@ -1,7 +1,7 @@
-// The Settings popover's Query editor group: one switch per setting of
+// The Settings page's Query editor section: one switch per setting of
 // editorSettings.ts, stored on this computer through /api/settings/editor.
-// Sidebar.tsx loads this group as its own chunk (lazy.tsx), so the store and
-// this UI stay out of the entry chunk.
+// SettingsPage.tsx is its own chunk (lazy.tsx), so the store and this UI stay
+// out of the entry chunk.
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Checkbox } from "./kit";
 import { MAC } from "./platform";

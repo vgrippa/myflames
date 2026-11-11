@@ -826,8 +826,8 @@ try {
     const create = records.find((r) => (r.statements || []).some((s) => /^(\/\*myflames:import_csv\*\/ )?CREATE TABLE `e2e`\.`people_semicolon`/.test(s)));
     check(create, "the new table's CREATE TABLE is recorded in full");
     await page.click('button[aria-label="Settings"]');
-    await page.waitForSelector("#settings-popover");
-    await page.locator("#settings-popover button ::-p-text(Audit log)").click();
+    await page.waitForSelector(".settings-page");
+    await page.locator(".settings-page .source-item ::-p-text(Audit log)").click();
     const view = ".server-view[data-view=audit]";
     await page.waitForSelector(`${view} [aria-label="Audit records"] tbody tr[data-row-key]`, { timeout: 30000 });
     await pause(500);

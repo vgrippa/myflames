@@ -12,6 +12,8 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 ## Current workstation capabilities
 
+The shell remembers theme, sidebar width, Server navigation and Health auto-refresh in the workspace store across desktop restarts. The sidebar has pointer and keyboard resizing, and every place shares the window version and update bar.
+
 The workspace ships as the macOS desktop app (3.3.0): an Apple Silicon
 `.app` that bundles Python and opens directly from Finder, signed with a
 Developer ID, notarized by Apple and attached to the GitHub release as
@@ -134,8 +136,8 @@ table, a matching export, the Audit log's own "Import CSV" operation label,
 live checks through SSH tunnels and on Windows, and lab runs on Percona
 Server, MySQL 8.0 and MariaDB 11.5+ (whose TIMESTAMP reaches 2106).
 
-The workspace includes the Query editor's persistent sessions, light and dark
-appearance, Parameters (AWS RDS-style parameter group table, inline edits, batch review up to 25 changes, and Session handoff to the editor), Users and roles with
+The workspace includes the Query editor's persistent sessions, System, Light, Dark
+and 14 named app-wide themes through Search (the Settings picker follows separately), Parameters (AWS RDS-style parameter group table, inline edits, batch review up to 25 changes, and Session handoff to the editor), Users and roles with
 new grant scopes and batch review, and Database diagram with a Diagram | Mermaid view (`mermaid` 11.17.2), live metadata,
 SQL/Mermaid imports and exports, editable JSON and SVG. Diagram imports do not
 execute SQL; save JSON to retain a layout. The live database picker and Rebuild action refresh tables, keys and relationships while retaining positions for tables that remain. Maintenance has native folder selection, tool-specific dump options, official download links and bounded release checks.
@@ -247,7 +249,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 - **Workspace follow-ups**: richer optimizer-trace summaries, and a verified update channel for the signed desktop builds. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
   Broader SQL editing conveniences shipped: the Query editor is CodeMirror 6,
-  with several cursors, suggestions for the server's own keywords per release,
+  with several cursors, immediate local and cached suggestions for the server's own keywords per release, background catalog refreshes,
   details on hover, problem warnings, per-tab undo history and a Query editor
   settings group.
   Import-dialog layout coverage includes open/error states and short windows;

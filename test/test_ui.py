@@ -765,6 +765,11 @@ class TestWorkspaceLaunchGuidance(unittest.TestCase):
                                       session_secret='test-cookie-secret-unique',
                                       bootstrap_secret='test-launch-secret-unique')
         handler = WorkspaceHandler.__new__(WorkspaceHandler)
+        from myflames.workspace_store import WorkspaceStore
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.server.store = WorkspaceStore(Path(temp.name) / 'workspace.sqlite3')
+        handler.server = self.server
         handler.path = path
         handler._local_request = lambda: True
         sent = []
@@ -964,6 +969,161 @@ class TestEditorSettingsRoutes(unittest.TestCase):
         self.assertNotIn('/api/settings/editor', _CONNECTION_PATHS)
 
 
+class TestUiPreferencesRoutes(unittest.TestCase):
+    setUp = TestEditorSettingsRoutes.setUp
+
+    def test_ui_read_and_round_trip(self):
+        from myflames.workspace_store import UI_PREFERENCE_DEFAULTS, WorkspaceStore
+        expected = {'schema_version': 'ui-preferences-1.0',
+                    'preferences': dict(UI_PREFERENCE_DEFAULTS), 'defaults': dict(UI_PREFERENCE_DEFAULTS)}
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), expected)
+        self.assertFalse(self.workspace.store.path.exists())
+        self.assertEqual(api_response('/api/settings/ui', {'set': {}}, self.workspace), expected)
+        self.assertFalse(self.workspace.store.path.exists())
+        result = api_response('/api/settings/ui', {'set': {'theme': 'fire', 'health_auto_production': 0, 'health_auto_development': 30}}, self.workspace)
+        expected['preferences'].update(theme='fire', health_auto_production=0, health_auto_development=30)
+        self.assertEqual(result, expected)
+        self.workspace.store = WorkspaceStore(self.workspace.store.path)
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), expected)
+
+    def test_ui_inspector_explain_and_file_choices_round_trip(self):
+        from myflames.workspace_store import WorkspaceStore
+        changes = {'inspector_width': 560, 'explain_format': 'tree',
+                   'files_show_hidden': True, 'files_transfers_open': False}
+        result = api_response('/api/settings/ui', {'set': changes}, self.workspace)
+        self.workspace.store = WorkspaceStore(self.workspace.store.path)
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+        for key, value in changes.items():
+            self.assertEqual(result['preferences'][key], value)
+        for key, value in (('inspector_width', 279), ('inspector_width', True),
+                           ('inspector_width', 560.0), ('explain_format', 'analyze'),
+                           ('explain_format', {}), ('files_show_hidden', 1), ('files_transfers_open', 0)):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                api_response('/api/settings/ui', {'set': {key: value}}, self.workspace)
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+
+    def test_ui_rejects_invalid_and_unknown_fields(self):
+        for payload in ({'set': None}, {'set': []}, {'set': {'extra': 1}}, {'extra': 1},
+                        {'set': {'theme': 'unknown'}}, {'set': {'sidebar_width': False}},
+                        {'set': {'server_nav_collapsed': 0}}, {'set': {'health_auto_production': 5}},
+                        {'set': {'health_auto_development': 5}}, {'set': {'health_auto': 30}}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                api_response('/api/settings/ui', payload, self.workspace)
+        self.assertFalse(self.workspace.store.path.exists())
+        with self.assertRaisesRegex(ValueError, 'running workspace'):
+            api_response('/api/settings/ui', {})
+
+    def test_ui_handler_returns_400_without_listening_socket(self):
+        from email.message import Message
+        from myflames.ui import WorkspaceHandler
+        self.workspace.token = 'test-token'
+        for payload in ({'set': None}, {'set': {'theme': 'evil'}}, {'set': {'sidebar_width': True}},
+                        {'set': {'health_auto_production': 5}}, {'unknown': True},
+                        *({'set': {key: value}} for key in ('theme', 'sidebar_width', 'server_nav_collapsed', 'health_auto_production', 'health_auto_development',
+                                                                    'inspector_width', 'explain_format', 'files_show_hidden', 'files_transfers_open')
+                          for value in ({}, [], 10**400, 0.5)),
+                        {'set': {'server_nav_collapsed': 1}}):
+            handler = WorkspaceHandler.__new__(WorkspaceHandler)
+            handler.server = self.workspace
+            handler.path = '/api/settings/ui'
+            handler.headers = Message()
+            body = json.dumps(payload).encode('utf-8')
+            handler.headers['Content-Type'] = 'application/json'
+            handler.headers['Content-Length'] = str(len(body))
+            handler.headers['X-Myflames-Token'] = self.workspace.token
+            handler._local_request = lambda: True
+            handler._authenticated = lambda: True
+            handler._read_body = lambda size: body
+            sent = []
+            handler._send = lambda status, reply: sent.append((status, reply))
+            handler.do_POST()
+            self.assertEqual(sent[0][0], 400, payload)
+        self.assertFalse(self.workspace.store.path.exists())
+
+    def _read_index(self):
+        from myflames.ui import WorkspaceHandler
+        handler = WorkspaceHandler.__new__(WorkspaceHandler)
+        handler.server = self.workspace
+        handler.path = '/'
+        handler._local_request = lambda: True
+        sent = []
+        handler._send = lambda status, body, content_type: sent.append((status, body))
+        handler.do_GET()
+        self.assertEqual(sent[0][0], 200)
+        return re.search(r'<html[^>]*>', sent[0][1]).group(0)
+
+    def test_index_theme_injection_without_listening_socket(self):
+        from myflames.workspace_store import UI_THEME_IDS
+        import contextlib
+        self.assertNotIn('data-theme=', self._read_index())
+        self.assertFalse(self.workspace.store.path.exists())
+        for theme in UI_THEME_IDS:
+            self.workspace.store.set_ui_preferences({'theme': theme})
+            if theme == 'system':
+                self.assertNotIn('data-theme=', self._read_index())
+            else:
+                self.assertIn('data-theme="%s"' % theme, self._read_index())
+        for bad in ('<script>alert(1)</script>', 'dark" onload="alert(1)', 'unknown'):
+            with contextlib.closing(self.workspace.store._connect()) as conn, conn:
+                conn.execute("INSERT OR REPLACE INTO settings VALUES ('ui.theme', ?)", (json.dumps(bad),))
+            self.assertNotIn('data-theme=', self._read_index())
+
+    def test_index_preference_failures_without_listening_socket(self):
+        import contextlib
+        self.workspace.store.path.parent.mkdir(parents=True, exist_ok=True)
+        self.workspace.store.path.write_bytes(b'not a SQLite database\x00\xff')
+        self.assertNotIn('data-theme=', self._read_index())
+        self.workspace.store.path.unlink()
+        self.workspace.store.set_ui_preferences({'theme': 'dark'})
+        with contextlib.closing(self.workspace.store._connect()) as conn, conn:
+            conn.execute("UPDATE settings SET value = 'dark' WHERE key = 'ui.theme'")
+        self.assertNotIn('data-theme=', self._read_index())
+        for error in (RuntimeError('future schema'), PermissionError('private path'), OSError('locked')):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(self.workspace.store, 'ui_theme_for_index', side_effect=error):
+                self.assertNotIn('data-theme=', self._read_index())
+
+    def test_ui_read_ignores_case_variant_stored_keys(self):
+        import contextlib
+        from myflames.workspace_store import UI_PREFERENCE_DEFAULTS
+        with contextlib.closing(self.workspace.store._connect()) as conn, conn:
+            conn.execute("INSERT INTO settings VALUES ('UI.theme', '\"dark\"')")
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace)['preferences'], UI_PREFERENCE_DEFAULTS)
+        self.assertNotIn('data-theme=', self._read_index())
+
+    def test_index_refuses_symlink_store_without_listening_socket(self):
+        store = self.workspace.store
+        store.set_ui_preferences({'theme': 'dark'})
+        target = store.path.with_name('target.sqlite3')
+        store.path.rename(target)
+        store.path.symlink_to(target)
+        self.assertNotIn('data-theme=', self._read_index())
+        self.assertTrue(store.path.is_symlink())
+
+    def test_index_has_short_lock_timeout_without_listening_socket(self):
+        import sqlite3
+        import time
+        store = self.workspace.store
+        store.set_ui_preferences({'theme': 'dark'})
+        conn = sqlite3.connect(str(store.path))
+        try:
+            conn.execute('BEGIN EXCLUSIVE')
+            started = time.monotonic()
+            self.assertNotIn('data-theme=', self._read_index())
+            self.assertLess(time.monotonic() - started, 1.2)
+            self.assertTrue(conn.in_transaction, 'the index must not release the writer lock')
+        finally:
+            conn.rollback()
+            conn.close()
+        self.assertIn('data-theme="dark"', self._read_index())
+
+    def test_ui_route_is_local_only(self):
+        from myflames.ui import _CONNECTION_PATHS, _SERVER_VIEW_PATHS, _SETTINGS_PATHS
+        self.assertIn('/api/settings/ui', _SETTINGS_PATHS)
+        self.assertNotIn('/api/settings/ui', _SERVER_VIEW_PATHS)
+        self.assertNotIn('/api/settings/ui', _CONNECTION_PATHS)
+
+
 class TestWorkspaceHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1099,6 +1259,67 @@ class TestWorkspaceHTTP(unittest.TestCase):
         for secret in (saved, typed, current, repr(saved)[1:-1], repr(typed)[1:-1], json.dumps(saved)[1:-1]):
             self.assertNotIn(secret, logged)
             self.assertNotIn(secret, body.decode())
+
+    def test_ui_preferences_http_validation_and_auth(self):
+        for headers in ({'X-Myflames-Token': 'wrong'},
+                        {'Cookie': self.server.cookie_name + '=wrong'}, {'Origin': 'https://example.com'}):
+            self.assertEqual(self.request('POST', '/api/settings/ui', {}, headers=headers)[0], 403)
+        for changes in ({'theme': 'unknown'}, {'sidebar_width': 321}, {'server_nav_collapsed': 1},
+                        {'health_auto_production': '30'}, {'health_auto_development': True}, {'health_auto': 30}, {'theme': '<img src=x onerror=alert(1)>'}, {'extra': True}):
+            self.assertEqual(self.request('POST', '/api/settings/ui', {'set': changes})[0], 400)
+        status, body, _ = self.request('POST', '/api/settings/ui', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['schema_version'], 'ui-preferences-1.0')
+
+    def test_index_injects_only_valid_stored_theme(self):
+        from myflames.workspace_store import UI_THEME_IDS
+        import contextlib
+        try:
+            for theme in UI_THEME_IDS:
+                self.server.store.set_ui_preferences({'theme': theme})
+                status, body, _ = self.request('GET', '/')
+                self.assertEqual(status, 200)
+                opening = re.search(r'<html[^>]*>', body.decode()).group(0)
+                if theme == 'system':
+                    self.assertNotIn('data-theme=', opening)
+                else:
+                    self.assertIn('data-theme="%s"' % theme, opening)
+            for bad in ('<script>alert(1)</script>', 'dark" onload="alert(1)', 'unknown'):
+                with contextlib.closing(self.server.store._connect()) as conn, conn:
+                    conn.execute("INSERT OR REPLACE INTO settings VALUES ('ui.theme', ?)", (json.dumps(bad),))
+                status, body, _ = self.request('GET', '/')
+                self.assertEqual(status, 200)
+                self.assertNotIn('data-theme=', re.search(r'<html[^>]*>', body.decode()).group(0))
+        finally:
+            self.server.store.set_ui_preferences({'theme': 'system'})
+
+    def test_index_survives_unreadable_or_malformed_preferences(self):
+        import contextlib
+        from pathlib import Path
+        from myflames.workspace_store import WorkspaceStore
+
+        def assert_unthemed_index():
+            status, body, _ = self.request('GET', '/')
+            self.assertEqual(status, 200)
+            self.assertNotIn('data-theme=', re.search(r'<html[^>]*>', body.decode()).group(0))
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(Path(directory) / 'workspace.sqlite3')
+            with mock.patch.object(self.server, 'store', store):
+                store.path.write_bytes(b'not a SQLite database\x00\xff')
+                assert_unthemed_index()
+                store.path.unlink()
+                store.set_ui_preferences({'theme': 'dark'})
+                with contextlib.closing(store._connect()) as conn, conn:
+                    # _loads returns garbage text unchanged, including a bare
+                    # theme id. UI preferences must require valid JSON.
+                    conn.execute("UPDATE settings SET value = 'dark' WHERE key = 'ui.theme'")
+                assert_unthemed_index()
+                for error in (RuntimeError('future schema'), PermissionError('private path'),
+                              OSError('locked store')):
+                    with self.subTest(error=type(error).__name__), \
+                            mock.patch.object(store, 'ui_theme_for_index', side_effect=error):
+                        assert_unthemed_index()
 
     def test_packaged_index_and_bundles(self):
         status, body, headers = self.request('GET', '/')

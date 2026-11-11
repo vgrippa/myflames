@@ -1020,7 +1020,8 @@ print(json.dumps(build_sidecar(root, analyze_plan(root), source_type="file", eng
   assert.equal(prompted, false);
   assert.equal((await page.$$(".plan-item")).length, 2);
   await page.click('[aria-label="Settings"]');
-  await button("Start fresh", ".settings-menu ");
+  await page.locator('.settings-page .source-item ::-p-text(Workspace)').click();
+  await button("Start fresh", ".settings-page ");
   await button("Start fresh without a backup", ".fresh-workspace-sheet ");
   await page.waitForSelector(".home");
   assert.equal((await page.$$(".plan-item")).length, 0);

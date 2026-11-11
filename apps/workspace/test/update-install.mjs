@@ -82,17 +82,19 @@ async function waitFor(check, what, timeout = 10000) {
 }
 async function openSettings() {
   await page.click(".settings-button");
-  await page.waitForSelector("#settings-popover .update-auto-toggle input:not([disabled])");
+  await page.waitForSelector(".settings-page .source-item");
+  await page.locator(".settings-page .source-item ::-p-text(Updates and news)").click();
+  await page.waitForSelector(".settings-page .update-auto-toggle input:not([disabled])");
 }
 async function closeSettings() {
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
 }
 const autoChecked = () => page.$eval(".update-auto-toggle input", (e) => e.checked);
 const badgePhase = (phase) => page.waitForFunction(
   (p) => document.querySelector(".sidebar .brand-group .update-badge")?.dataset.phase === p, { timeout: 10000 }, phase);
 const footerText = (pattern) => page.waitForFunction(
-  (p) => new RegExp(p).test(document.querySelector(".home-version .update-check")?.textContent || ""),
+  (p) => new RegExp(p).test(document.querySelector(".window-statusbar-updates .update-check")?.textContent || ""),
   { timeout: 10000 }, pattern.source);
 const dialogButtons = () => page.$$eval("dialog.update-dialog .dialog-actions button", (els) => els.map((e) => e.textContent.trim()));
 async function shootBadge(name) {
@@ -113,7 +115,7 @@ try {
   // is written to the real server and is still off after a reload.
   await openSettings();
   assert.equal(await autoChecked(), true, "automatic checks on by default");
-  await page.click("#settings-popover .update-auto-toggle");
+  await page.click(".settings-page .update-auto-toggle");
   await page.waitForFunction(() => document.querySelector(".update-auto-toggle input")?.checked === false);
   assert.ok(state.other.some((r) => r.path === "/api/app/update/settings" && r.body.auto_check === false),
     "the off choice was sent to the real server");
@@ -121,7 +123,7 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await openSettings();
   assert.equal(await autoChecked(), false, "the off choice survives a reload");
-  await page.click("#settings-popover .update-auto-toggle");
+  await page.click(".settings-page .update-auto-toggle");
   await page.waitForFunction(() => document.querySelector(".update-auto-toggle input")?.checked === true);
   assert.ok(state.other.some((r) => r.path === "/api/app/update/settings" && r.body.auto_check === true),
     "the on choice was sent to the real server");
@@ -185,7 +187,7 @@ try {
   // B3. Settings lists the pending update; the badge opens the Software
   // update dialog, checking first (nothing fresh is known after a reload).
   await openSettings();
-  assert.deepEqual(await page.$$eval("#settings-popover .update-menu-item", (els) => els.map((e) => e.textContent.trim())),
+  assert.deepEqual(await page.$$eval(".settings-page .update-menu-item", (els) => els.map((e) => e.textContent.trim())),
     ["Update available…"]);
   await closeSettings();
   const checksBeforeBadge = countPath("/api/app/update/check");

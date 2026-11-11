@@ -1,3 +1,4 @@
+import { setUiPreferences } from "./perf-harness.mjs";
 // Presentation regression coverage over real-server recordings. The harness
 // owns a disposable workspace; no production connections are opened.
 import assert from 'node:assert/strict';
@@ -41,7 +42,7 @@ try {
     assert.equal(await page.$eval(root, e => e.dataset.depth), 'off');
     await page.click(`${root} .topology-presentation-controls button:first-child`);
     for (const scheme of ['light', 'dark']) {
-      await page.evaluate(s => { localStorage.setItem('myflames.theme', s); document.documentElement.dataset.theme = s; }, scheme);
+      await setUiPreferences(page, { theme: scheme });
       for (const width of [1440, 720]) {
         await page.setViewport({ width, height: 1000 });
         await pause(250);
@@ -54,7 +55,7 @@ try {
       await h.refresh();
       await page.waitForFunction(() => document.querySelector('.cluster-topology')?.textContent.includes('In the component · not read here'));
       for (const scheme of ['light', 'dark']) {
-        await page.evaluate(s => { localStorage.setItem('myflames.theme', s); document.documentElement.dataset.theme = s; }, scheme);
+        await setUiPreferences(page, { theme: scheme });
         for (const width of [1440, 720]) {
           await page.setViewport({ width, height: 1000 });
           await pause(250);

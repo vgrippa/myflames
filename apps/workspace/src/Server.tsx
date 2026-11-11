@@ -18,6 +18,7 @@ import type { SqlOpenOptions } from "./statementThread";
 // own Refresh (binding.ts sharedRead) and dropped when the connection changes
 // or a newer read of the view started. Stop or Escape ends it; a view that
 // failed keeps its previous report and is marked in the list of views.
+import { useUiPreferences } from "./uiPreferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnalysisFinding,
@@ -411,7 +412,9 @@ export function Server({
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
+  const preferences = useUiPreferences();
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
+  useEffect(() => { setInspectorWidth(preferences.inspector_width); }, [preferences.inspector_width]);
   /** The floating list of views is open (under the view's title, kit.tsx ViewSwitcher). */
   // Held as the view it was opened on: navigation from elsewhere (the command
   // palette, a link) never carries an open list onto another view.
@@ -1144,22 +1147,23 @@ export function Server({
   // ⌥⌘R (Alt+Ctrl+R elsewhere) runs Refresh all while Server is on screen;
   // Escape stops a run unless something else used it (a popover, the inspector).
   const running = refresh?.state === "running" && !!refreshControl.current;
-  // Starting from the Refresh menu closes it under the pointer, which leaves
-  // focus on the page: give it to Stop, the control for the run (focusable
-  // while not yet armed, aria-disabled).
+  // The menu vanishes after the first click. A repeated click can then hit
+  // empty content and blur the trigger, even after several animation frames.
+  // During the same grace period that keeps that click from stopping the run,
+  // repair focus after the click itself, without taking it from another control.
   useEffect(() => {
-    if (!running) return;
-    // The browser may move focus to the page again while the toolbar settles
-    // (the menu item turns disabled, the menu closes): check over two frames.
+    if (!running || stopArmed) return;
+    const place = placeRef.current;
     const toStop = () => {
       const active = document.activeElement;
-      if (!active || active === document.body) document.querySelector<HTMLButtonElement>(".server-place .refresh-all-stop")?.focus();
+      if ((!active || active === document.body) && Date.now() < stopArmedAt.current) {
+        place?.querySelector<HTMLButtonElement>(".refresh-all-stop")?.focus({ preventScroll: true });
+      }
     };
     toStop();
-    let second = 0;
-    const first = requestAnimationFrame(() => { toStop(); second = requestAnimationFrame(toStop); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
-  }, [running]);
+    place?.addEventListener("click", toStop);
+    return () => place?.removeEventListener("click", toStop);
+  }, [running, stopArmed]);
   useWindowStatus(`${place || "server"}:${activeKey}`, {
     connectionState: connectionLabel(connection),
     engineVersion: lastRead.key === activeKey ? lastRead.engineVersion : undefined,

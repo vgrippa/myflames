@@ -1,7 +1,7 @@
 import { connectionAction, connectionRow } from "./connection-helpers.mjs";
 import { chooseView, openConnectionPicker, openViewList } from "./chrome-helpers.mjs";
 // Workspace navigation: places and their active state, the open-plans list,
-// the single status indicator and the Settings popover with the Audit log
+// the single status indicator and the Settings page with the Audit log
 // (a screen with no active place) and About myflames
 // (version, license, credits), the Production / Read-only strip across the
 // Query editor and Server with the picker's type dot, Home's Connections
@@ -329,11 +329,11 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));
   await page.click('button[aria-label="Settings"]');
-  await page.waitForSelector("#settings-popover");
-  assert.equal(await page.$$eval("#settings-popover .settings-item", (els) => els.find((e) => e.textContent.trim() === "Audit log")?.querySelector("svg")?.innerHTML),
+  await page.waitForSelector(".settings-page");
+  assert.equal(await page.$$eval(".settings-page .settings-nav .source-item", (els) => els.find((e) => e.textContent.trim() === "Audit log")?.querySelector("svg")?.innerHTML),
     auditIcon, "the palette uses the Audit log's own icon");
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   // The keyboard focus ring is visible and is not the selection fill.
   await page.focus('.main-nav button[data-place="server"]');
   await page.keyboard.press("ArrowDown");
@@ -371,34 +371,35 @@ try {
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   assert.equal(await text(".session-status"), "All changes saved");
 
-  // 4. Settings: a popover with the startup option; Escape returns focus.
+  // 4. Settings: a page in the main area (the gear). Escape returns to where
+  // the user was, with focus back on the gear.
   const settings = 'button[aria-label="Settings"]';
-  assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-expanded")), "false");
   await page.click(settings);
-  await page.waitForSelector("#settings-popover[role=dialog]");
-  assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-expanded")), "true");
-  assert.match(await text("#settings-popover"), /Restore workspace on startup/);
-  // Saved passwords exist (Keychain); they are never part of the workspace.
+  await page.waitForSelector(".settings-page");
+  assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-current")), "page", "the gear reads as the current spot");
+  assert.deepEqual(await current(), [], "Settings is a page, not a place");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "settings-section-title", "focus moves to the section heading");
+  assert.equal(await text(".settings-panel-title"), "Appearance");
+  assert.deepEqual((await texts(".settings-page .theme-card .theme-card-name")).slice(0, 3), ["System", "Light", "Dark"]);
+  // Workspace: the startup option. Saved passwords exist (Keychain); they are
+  // never part of the workspace.
+  await page.locator(".settings-page .source-item ::-p-text(Workspace)").click();
+  assert.equal(await text(".settings-panel-title"), "Workspace");
+  assert.match(await text(".settings-page"), /Restore workspace on startup/);
   assert.equal(await text("#session-toggle-hint"), "Off clears the saved workspace. Passwords are never saved in it.");
-  assert.equal(await page.$('#settings-popover button[aria-label="About restoring the workspace"]'), null);
-  assert.equal(await page.$('#settings-popover button[aria-label="About Home news"]'), null);
+  assert.equal(await page.$('.settings-page button[aria-label="About restoring the workspace"]'), null);
+  assert.equal(await page.$('.settings-page button[aria-label="About Home news"]'), null);
+  assert.equal(await page.$eval(".settings-page .session-toggle input", (e) => e.checked), true);
+  // Updates and news: the news switch keeps its visible hint.
+  await page.locator(".settings-page .source-item ::-p-text(Updates and news)").click();
   assert.equal(await text("#news-toggle-hint"), "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.");
-  assert.equal(await page.$eval("#settings-popover .session-toggle input", (e) => e.checked), true);
-  assert.equal(
-    await page.evaluate(() => document.activeElement?.closest("#settings-popover") !== null),
-    true,
-    "focus moves into Settings",
-  );
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Settings");
-  await page.click(settings);
-  await page.waitForSelector("#settings-popover");
-  await page.mouse.click(900, 500);
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
+  assert.deepEqual(await current(), ["Plans"], "Escape returns to where the user was");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Settings", "focus returns to the gear");
 
   // 4b. About myflames: the credit lives in an About window opened from the
-  // Settings menu, not in a footer on every screen.
+  // Settings page, not in a footer on every screen.
   assert.equal(await page.$(".app-footer"), null);
   assert.equal(
     await page.evaluate(() => document.body.textContent.includes("Inspired by")),
@@ -409,36 +410,18 @@ try {
   const focused = () => page.evaluate(() => document.activeElement?.textContent.trim());
   const focusLabel = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
   await page.click(settings);
-  await page.waitForSelector("#settings-popover");
-  // The switches keep their visible hints, without duplicate info stops.
-  await page.keyboard.press("Tab");
-  assert.equal(await page.evaluate(() => document.activeElement?.closest(".news-toggle")?.textContent.trim()),
-    "Show MySQL and MariaDB news on Home");
-  await page.keyboard.press("Tab");
-  assert.equal(await page.evaluate(() => document.activeElement?.closest(".update-auto-toggle")?.textContent.trim()),
-    "Check for updates automatically");
-  // The Query editor group is its own chunk; its six switches join the Tab
-  // order once the group has rendered.
-  await page.waitForSelector("#settings-popover .settings-editor-group");
-  for (const label of ["Multiple cursors", "Suggestions while typing", "Close brackets and quotes", "Wrap long lines", "Problem warnings", "Details on hover"]) {
-    await page.keyboard.press("Tab");
-    assert.equal(
-      await page.evaluate(() => document.activeElement?.closest("#settings-popover .settings-editor-group .session-toggle")?.textContent.trim()),
-      label,
-    );
-  }
-
-  await page.keyboard.press("Tab");
-  assert.equal(await focused(), "Start fresh");
-  await page.keyboard.press("Tab");
-  assert.equal(await focused(), "Client tools…");
-  await page.keyboard.press("Tab");
-  assert.equal(await focused(), "Audit log");
-  await page.keyboard.press("Tab");
-  assert.equal(await focused(), "About myflames");
-  await page.keyboard.press("Enter");
+  await page.waitForSelector(".settings-page");
+  // The Query editor section is part of the Settings page's own chunk; its
+  // six switches render when the section opens.
+  await page.locator(".settings-page .source-item ::-p-text(Query editor)").click();
+  await page.waitForSelector(".settings-page .settings-editor-group");
+  assert.deepEqual(await texts(".settings-page .settings-editor-group .session-toggle"), [
+    "Multiple cursors", "Suggestions while typing", "Close brackets and quotes",
+    "Wrap long lines", "Problem warnings", "Details on hover",
+  ], "the Query editor section lists its six switches");
+  // About opens from the bottom of the section list.
+  await page.locator(".settings-page .source-item ::-p-text(About myflames)").click();
   await page.waitForSelector(about + "[open]");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
   assert.deepEqual(
     await page.$eval(about, (e) => ({
       role: e.getAttribute("role"),
@@ -498,33 +481,32 @@ try {
   await page.keyboard.press("Tab");
   await page.keyboard.up("Shift");
   assert.equal(await focused(), "Close");
-  // Escape closes it and focus returns to Settings.
+  // Escape closes it and focus returns to the item that opened it.
   await page.keyboard.press("Escape");
   await page.waitForFunction((s) => !document.querySelector(s), {}, about);
-  assert.equal(await focusLabel(), "Settings");
+  assert.equal(await focused(), "About myflames");
   // The Close button and a click on the backdrop close it too.
   const openAbout = async () => {
-    await page.click(settings);
-    await page.waitForSelector("#settings-popover");
-    await page.locator("#settings-popover button ::-p-text(About myflames)").click();
+    if (!(await page.$(".settings-page"))) {
+      await page.click(settings);
+      await page.waitForSelector(".settings-page");
+    }
+    await page.locator(".settings-page .source-item ::-p-text(About myflames)").click();
     await page.waitForSelector(about + "[open]");
   };
   await openAbout();
   await page.locator(about + " button ::-p-text(Close)").click();
   await page.waitForFunction((s) => !document.querySelector(s), {}, about);
-  assert.equal(await focusLabel(), "Settings");
+  assert.equal(await focused(), "About myflames");
   await openAbout();
   await page.mouse.click(10, 10);
   await page.waitForFunction((s) => !document.querySelector(s), {}, about);
-  assert.equal(await focusLabel(), "Settings");
+  assert.equal(await focused(), "About myflames");
 
   // 4c. The Audit log opens from Settings as a screen of its own: no place is
   // "you are here", the top bar names it, and any place leads back.
-  await page.click(settings);
-  await page.waitForSelector("#settings-popover");
-  await page.locator("#settings-popover button ::-p-text(Audit log)").click();
+  await page.locator(".settings-page .source-item ::-p-text(Audit log)").click();
   await page.waitForSelector(".server-view[data-view=audit]");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
   assert.deepEqual(await active(), []);
   assert.deepEqual(await current(), []);
   assert.match(await text(".topbar-title"), /^Audit log/);
@@ -532,38 +514,38 @@ try {
   await go("Home");
   assert.deepEqual(await active(), ["Home"]);
 
-  // 4d. The command palette's "Query editor settings" action opens the
-  // Settings popover (Meta+K / Ctrl+K): in a narrow window the drawer opens
-  // with it, and the popover fits a 720x520 window and scrolls when its
-  // content is taller. (A switch saving across a reload is step 12: the
-  // reload drops state the steps below build, so it runs last.)
+  // 4d. The command palette's "Settings" action opens the Settings page
+  // (Meta+K / Ctrl+K), at the Query editor section when that is what was
+  // asked for. At 720 px the section list becomes a compact list above the
+  // controls, inside the main area. (A switch saving across a reload is step
+  // 12: the reload drops state the steps below build, so it runs last.)
   await page.setViewport({ width: 720, height: 520 });
   await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
   const MOD = process.platform === "darwin" ? "Meta" : "Control";
   await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
   await page.waitForSelector("dialog.command-palette[open]");
   await page.type('input[aria-label="Search commands"]', "Query editor settings");
-  assert.deepEqual(await texts(".command-option span"), ["Query editor settings"]);
+  assert.deepEqual(await texts(".command-option span"), ["Settings"]);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => !document.querySelector("dialog.command-palette[open]"));
-  // Narrow: the drawer opens too, so the popover is always reachable.
-  await page.waitForSelector(".sidebar-drawer.open");
-  await page.waitForSelector("#settings-popover");
-  assert.ok(await visible("#settings-popover"), "the palette action opens the Settings popover");
-  assert.equal(await text("#settings-popover .settings-editor-group .section-label"), "Query editor");
-  assert.deepEqual(await texts("#settings-popover .settings-editor-group .session-toggle"), [
+  await page.waitForSelector(".settings-page");
+  assert.equal(await text(".settings-panel-title"), "Query editor", "the page opens at the section asked for");
+  await page.waitForSelector(".settings-page .settings-editor-group");
+  assert.deepEqual(await texts(".settings-page .settings-editor-group .session-toggle"), [
     "Multiple cursors", "Suggestions while typing", "Close brackets and quotes",
     "Wrap long lines", "Problem warnings", "Details on hover",
-  ], "the Query editor group lists its six switches");
-  // It fits the window and scrolls: the content is taller than the window.
-  const popoverBox = await page.$eval("#settings-popover", (e) => {
-    const r = e.getBoundingClientRect();
-    return { top: r.top, bottom: r.bottom, view: innerHeight, tall: e.scrollHeight > e.clientHeight + 1, overflowY: getComputedStyle(e).overflowY };
+  ], "the Query editor section lists its six switches");
+  // At 720 px the section list becomes a compact list above the controls, and
+  // the page never scrolls sideways.
+  const settingsLayout = await page.evaluate(() => {
+    const nav = document.querySelector(".settings-nav").getBoundingClientRect();
+    const panel = document.querySelector(".settings-panel").getBoundingClientRect();
+    return { above: nav.bottom <= panel.top + 1, wide: document.documentElement.scrollWidth - innerWidth };
   });
-  assert.ok(popoverBox.top >= 0 && popoverBox.bottom <= popoverBox.view, `the popover fits the window (${JSON.stringify(popoverBox)})`);
-  assert.ok(popoverBox.tall && /^(auto|scroll)$/.test(popoverBox.overflowY), "the popover scrolls when its content is taller");
+  assert.ok(settingsLayout.above, `at 720 px the section list sits above the controls (${JSON.stringify(settingsLayout)})`);
+  assert.ok(settingsLayout.wide <= 0, `no sideways scroll at 720 px (${JSON.stringify(settingsLayout)})`);
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   await page.setViewport({ width: 1440, height: 1000 });
 
   // 4e. The connection in use (the unsaved default) is Production: the window
@@ -572,7 +554,7 @@ try {
   // nothing is drawn over the top bar.
   assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
   assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
-  const safety = '.window-statusbar[aria-label="Workspace status"] > [data-status="safety"]:first-child';
+  const safety = '.window-statusbar[aria-label="Workspace status"] > .window-statusbar-facts > [data-status="safety"]:first-child';
   for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
@@ -602,7 +584,9 @@ try {
     assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"]
       : label === "Query digest" ? ["safety", "engine", "connection"]
       : serverDrawn ? ["safety", "engine", "connection", "refreshed"] : ["safety", "connection"], `${label} status fields`);
-    assert.doesNotMatch(await text(".window-statusbar"), /unknown|not checked|not refreshed/i, "unknown fields are hidden");
+    const facts = await page.$$eval(".window-statusbar [data-status]", els => els.map(e => e.textContent).join(" "));
+    assert.doesNotMatch(facts, /unknown|not checked|not refreshed/i, "unknown view facts are hidden");
+    assert.match(await text(".window-statusbar-updates"), /myflames \d+\.\d+\.\d+/, "update area shows the app version");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
   }
   for (const label of ["Plans", "Learn", "Investigations", "Home"]) {
@@ -662,7 +646,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".plan-heading h1")?.textContent === "after.json");
   assert.match(await text(".open-plans .section-label"), /Open plans\s*2/i);
   assert.equal(await page.$(".save-state"), null, "an imported plan is read-only until an investigation is edited");
-  assert.match(await text(".window-statusbar"), /Imported plan/);
+  assert.match(await text(".window-statusbar-facts"), /Imported plan/);
   assert.deepEqual(await texts(".plan-item .visually-hidden"), ["Baseline"]);
   assert.match(await text(".plan-item:first-child"), /sample-plan\.json.*Baseline/);
   // The open plan is highlighted only while Plans explores it.
@@ -687,7 +671,7 @@ try {
   assert.deepEqual(await texts(".plan-item.selected strong"), ["sample-plan.json"]);
   // Save investigation lives in the top bar with its own status words.
   assert.equal(await page.$(".topbar .save-state"), null, "viewing and importing plans does not edit an investigation");
-  assert.match(await text(".window-statusbar"), /Sample plan/);
+  assert.match(await text(".window-statusbar-facts"), /Sample plan/);
   for (const place of ["Query editor", "Server", "Workload", "Investigations", "Learn"]) {
     await go(place);
     assert.equal(await page.$('.topbar [aria-label="Save investigation"]'), null, place + " has no investigation action");
@@ -1148,18 +1132,20 @@ try {
   await page.waitForFunction(() => !document.querySelector(".sidebar-drawer.open"));
   assert.ok(await visible(".server-place"));
   assert.equal(await overflow(), false);
-  // Settings stays inside the drawer and viewport.
+  // Settings is a page in the main area; it and About fit the small window.
   await page.click(menu);
   await page.waitForSelector(".sidebar-drawer.open");
   await page.click(settings);
-  await page.waitForSelector("#settings-popover");
-  const box = await page.$eval("#settings-popover", (e) => {
+  await page.waitForSelector(".settings-page");
+  await page.waitForFunction(() => !document.querySelector(".sidebar-drawer.open"));
+  assert.equal(await overflow(), false, "Settings fits at 390 px");
+  const box = await page.$eval(".settings-page", (e) => {
     const r = e.getBoundingClientRect();
     return { left: r.left, right: r.right };
   });
   assert.ok(box.left >= 0 && box.right <= 390, JSON.stringify(box));
   // About myflames fits too.
-  await page.locator("#settings-popover button ::-p-text(About myflames)").click();
+  await page.locator(".settings-page .source-item ::-p-text(About myflames)").click();
   await page.waitForSelector("dialog.about-dialog[open]");
   const aboutBox = await page.$eval("dialog.about-dialog", (e) => {
     const r = e.getBoundingClientRect();
@@ -1169,8 +1155,9 @@ try {
   await page.screenshot({ path: path.join(directory, "about-mobile.png") });
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.about-dialog"));
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Settings");
-  await page.click(menu);
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), "About myflames", "focus returns to the item that opened About");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   for (const label of places) {
     await page.click(menu);
     await page.waitForSelector(".sidebar-drawer.open");
@@ -1376,17 +1363,18 @@ try {
   const editorWrite = (on) => page.waitForResponse((r) =>
     r.url().includes("/api/settings/editor") && (r.request().postData() || "").includes(`"soft_wrap":${on}`));
   const wrapSettled = (on) => page.waitForFunction((expected) => {
-    const row = [...document.querySelectorAll("#settings-popover .settings-editor-group .session-toggle")]
+    const row = [...document.querySelectorAll(".settings-page .settings-editor-group .session-toggle")]
       .find((e) => e.textContent.trim() === "Wrap long lines");
     return !!row && row.querySelector("input").checked === expected;
   }, {}, on);
-  const wrapToggle = () => page.locator('#settings-popover .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
+  const wrapToggle = () => page.locator('.settings-page .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
   await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
   await page.waitForSelector("dialog.command-palette[open]");
   await page.type('input[aria-label="Search commands"]', "Query editor settings");
   await page.keyboard.press("Enter");
-  await page.waitForSelector("#settings-popover");
-  await page.waitForSelector("#settings-popover .settings-editor-group");
+  await page.waitForSelector(".settings-page");
+  assert.equal(await text(".settings-panel-title"), "Query editor");
+  await page.waitForSelector(".settings-page .settings-editor-group");
   let saved = editorWrite(true);
   await wrapToggle();
   await saved;
@@ -1397,15 +1385,15 @@ try {
   await page.waitForSelector("dialog.command-palette[open]");
   await page.type('input[aria-label="Search commands"]', "Query editor settings");
   await page.keyboard.press("Enter");
-  await page.waitForSelector("#settings-popover");
-  await page.waitForSelector("#settings-popover .settings-editor-group");
+  await page.waitForSelector(".settings-page");
+  await page.waitForSelector(".settings-page .settings-editor-group");
   await wrapSettled(true);
   saved = editorWrite(false);
   await wrapToggle();
   await saved;
   await wrapSettled(false);
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
 
   assert.deepEqual(errors, []);
   console.log("Navigation checks passed. " + directory);

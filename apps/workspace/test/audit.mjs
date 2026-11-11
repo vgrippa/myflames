@@ -50,7 +50,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -79,8 +79,8 @@ try {
   };
   async function openAudit() {
     await page.click('button[aria-label="Settings"]');
-    await page.waitForSelector("#settings-popover");
-    await page.locator("#settings-popover button ::-p-text(Audit log)").click();
+    await page.waitForSelector(".settings-page");
+    await page.locator(".settings-page .source-item ::-p-text(Audit log)").click();
     await page.waitForSelector(view);
     await idle();
   }

@@ -334,12 +334,15 @@ try {
 
   // 12. The same dialog opens from Settings > Client tools…
   await page.click(".settings-button");
-  await page.waitForSelector("#settings-popover");
-  await h.button("Client tools…", "#settings-popover ");
+  await page.waitForSelector(".settings-page .source-item");
+  await page.locator(".settings-page .source-item ::-p-text(Client tools)").click();
+  await h.button("Client tools…", ".settings-panel ");
   await page.waitForSelector(`${dialog}[open]`);
   await page.waitForSelector(`${dialog} .client-tools-table tbody tr`);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.client-tools-dialog"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
 
   // 13. Test connection refused for a missing client shows the notice.
   await page.click('.main-nav button[data-place="home"]');
