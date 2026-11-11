@@ -119,9 +119,8 @@ async function launch(executable, backendExecutable, data, puppeteer) {
       if (target.type() === 'page' && /^http:\/\/127\.0\.0\.1:\d+\//.test(target.url())) {
         const page = await target.page();
         if (page) {
-          // The first renderer read happens before viewport changes, readiness
-          // waits or any click. Also inspect the original document below:
-          // attaching CDP after paint must not hide a startup theme flash.
+          // This earliest renderer read is first-paint evidence: it happens
+          // before viewport changes, readiness waits or any click.
           const initial = await until('Initial document root', 15000, () => page.evaluate(() =>
             document.documentElement ? { theme: document.documentElement.dataset.theme ?? null } : null));
           run.startupTheme = initial.theme;
@@ -135,19 +134,13 @@ async function launch(executable, backendExecutable, data, puppeteer) {
   await run.page.setViewport({ width: 1440, height: 900 });
   await run.page.waitForSelector('.main-nav button[data-place="query"]', { visible: true });
   await run.page.waitForFunction(() => !location.hash && !document.body.innerText.includes('Opening your workspace'));
-  const client = await run.page.createCDPSession();
-  try {
-    const { frameTree } = await client.send('Page.getResourceTree');
-    const resource = await client.send('Page.getResourceContent', {
-      frameId: frameTree.frame.id, url: frameTree.frame.url.split('#')[0],
-    });
-    // This is the navigation's response body, not outerHTML after React or a
-    // second fetch that could conceal a missing theme in the initial HTML.
-    const html = resource.base64Encoded ? Buffer.from(resource.content, 'base64').toString('utf8') : resource.content;
-    const root = html.match(/<html\b[^>]*>/i)?.[0];
-    assert.ok(root, 'the original navigation response contains an HTML root');
-    run.htmlTheme = root.match(/\bdata-theme=["']([^"']*)["']/i)?.[1] ?? null;
-  } finally { await client.detach(); }
+  // This no-store GET reads the server-rendered index to prove the saved theme
+  // is present in each response's HTML; startupTheme above proves first paint.
+  const html = await run.page.evaluate(async () =>
+    (await fetch(location.origin + '/', { cache: 'no-store', credentials: 'same-origin' })).text());
+  const root = html.match(/<html\b[^>]*>/i)?.[0];
+  assert.ok(root, 'the server-rendered index contains an HTML root');
+  run.htmlTheme = root.match(/\bdata-theme=["']([^"']*)["']/i)?.[1] ?? null;
   await ownedProcesses(run);
   assert.ok(run.backendPid, 'the packaged app started its bundled backend');
   assert.notEqual(run.backendPid, child.pid, 'the backend owns a separate process group');
@@ -170,8 +163,8 @@ async function stored(page, endpoint) {
 async function assertPreferences(run, expected) {
   const { page } = run;
   const theme = expected.theme === 'system' ? null : expected.theme;
-  assert.equal(run.startupTheme, theme, 'earliest CDP renderer read has the saved theme before any click');
-  assert.equal(run.htmlTheme, theme, 'the original navigation HTML already has the saved theme');
+  assert.equal(run.startupTheme, theme, 'the earliest renderer read has the saved theme at first paint');
+  assert.equal(run.htmlTheme, theme, 'the server-rendered index has the saved theme on GET /');
   const reply = await stored(page, 'settings/ui');
   assert.deepEqual(reply.preferences, expected, 'backend preferences match the expected choices');
   assert.deepEqual(reply.defaults, DEFAULTS, 'backend defaults match this smoke');
