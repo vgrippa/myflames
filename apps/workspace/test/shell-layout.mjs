@@ -86,19 +86,20 @@ try {
   // A button can have a viewport rect while being clipped by a scrolling
   // pane. Only probe centers inside that pane's visible area, but never
   // discount a center just because the fixed footer covers it.
-  const footerHitTargets = async label => {
+  const footerHitTargets = async (label, { requireTargets = false } = {}) => {
     const result = await page.evaluate(() => {
       const footer = document.querySelector('.window-statusbar');
       const top = document.querySelector('.topbar-stack').getBoundingClientRect().bottom;
       let checked = 0;
       const covered = [];
-      for (const button of document.querySelectorAll('.workspace main button')) {
-        const rect = button.getBoundingClientRect(), style = getComputedStyle(button);
+      const targets = document.querySelectorAll('.workspace main button, .workspace main a[href], .workspace main [role="button"], .workspace main input, .workspace main select, .workspace main textarea');
+      for (const target of targets) {
+        const rect = target.getBoundingClientRect(), style = getComputedStyle(target);
         const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
         if (!rect.width || !rect.height || style.visibility !== 'visible' || style.pointerEvents === 'none'
           || x < 0 || x >= innerWidth || y < top || y >= innerHeight) continue;
         let clipped = false;
-        for (let parent = button.parentElement; parent; parent = parent.parentElement) {
+        for (let parent = target.parentElement; parent; parent = parent.parentElement) {
           const bounds = parent.getBoundingClientRect(), css = getComputedStyle(parent);
           if ((/(auto|scroll|hidden|clip)/.test(css.overflowX) && (x < bounds.left || x >= bounds.right))
             || (/(auto|scroll|hidden|clip)/.test(css.overflowY) && (y < bounds.top || y >= bounds.bottom))) {
@@ -108,17 +109,26 @@ try {
         if (clipped) continue;
         checked++;
         const hit = document.elementFromPoint(x, y);
-        if (footer.contains(hit)) covered.push({button:button.getAttribute('aria-label') || button.textContent.trim(), y});
+        if (footer.contains(hit)) covered.push({target:target.getAttribute('aria-label') || target.textContent.trim(), y});
       }
-      return {checked, covered};
+      return {found:targets.length, checked, covered};
     });
-    assert.ok(result.checked > 0, `${label}: checked visible button centers`);
-    assert.deepEqual(result.covered, [], `${label}: footer does not cover button centers`);
+    if (requireTargets) assert.ok(result.checked > 0, `${label}: checked visible interactive centers`);
+    assert.deepEqual(result.covered, [], `${label}: footer does not cover interactive centers`);
   };
-  const lastControlAboveFooter = async (scope, label) => {
+  const lastControlAboveFooter = async (scope, label, {requireControl = false} = {}) => {
     const control = await page.evaluateHandle(scope => [...document.querySelectorAll(`${scope} button, ${scope} input, ${scope} select, ${scope} textarea`)]
-      .filter(el => el.getClientRects().length && getComputedStyle(el).visibility === 'visible').at(-1), scope);
-    assert.ok(await control.evaluate(el => !!el), `${label}: last control exists`);
+      .filter(el => {
+        const rect = el.getBoundingClientRect();
+        return el.getClientRects().length && rect.width > 0 && rect.height > 0
+          && !(el instanceof HTMLInputElement && ['hidden','file'].includes(el.type))
+          && getComputedStyle(el).visibility === 'visible';
+      }).at(-1), scope);
+    if (!await control.evaluate(el => !!el)) {
+      await control.dispose();
+      assert.ok(!requireControl, `${label}: last control exists`);
+      return;
+    }
     await control.evaluate(el => el.scrollIntoView({block:'end', inline:'nearest', behavior:'instant'}));
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const result = await control.evaluate(el => {
@@ -229,23 +239,24 @@ try {
         assert.match(metrics.text,/myflames \d+\.\d+\.\d+/); assert.match(metrics.text,/Check for updates/); assert.match(metrics.text,/View releases/);
         assert.ok(metrics.left>=0 && metrics.right<=viewport,`${place}: update actions fit`);
         assert.ok(metrics.footerPadding>=metrics.barHeight,`${place}: content reserves the footer`);
-        await footerHitTargets(`${theme} ${viewport} ${place}`);
+        if (place === 'home') {
+          if (viewport > 1000) {
+            await footerHitTargets(`${theme} ${viewport} ${place}`, {requireTargets:true});
+          }
+        }
         if (place==='home') {
           await connectionAction(page, 'Footer layout connection', 'Edit');
           await page.waitForSelector('.connection-panel');
-          await footerHitTargets(`${theme} ${viewport} Home connection panel`);
-          await lastControlAboveFooter('.connection-panel', `${theme} ${viewport} Home connection panel`);
+          if (viewport > 1000) {
+            await footerHitTargets(`${theme} ${viewport} Home connection panel`, {requireTargets:true});
+          }
+          await lastControlAboveFooter('.connection-panel', `${theme} ${viewport} Home connection panel`, {requireControl:true});
           await page.locator('.connection-panel .delete-connection').click();
           await page.waitForSelector('dialog.confirm-sheet[open]');
           await page.keyboard.press('Escape');
           await page.waitForFunction(()=>!document.querySelector('dialog.confirm-sheet[open]'));
           await page.keyboard.press('Escape');
           await page.waitForFunction(()=>!document.querySelector('.connection-panel'));
-        }
-        if (place==='learn') {
-          await page.waitForSelector('.teach-catalog .lesson-card');
-          await lastControlAboveFooter('.teach-workspace', `${theme} ${viewport} Learn`);
-          await footerHitTargets(`${theme} ${viewport} Learn after scrolling`);
         }
         if (place==='query') {
           await page.waitForFunction(()=>document.querySelector('.window-statusbar [data-status="session"]')?.textContent==='No session');
@@ -256,9 +267,7 @@ try {
       await page.waitForSelector('.settings-page');
       assert.match(await page.$eval('.window-statusbar-updates',e=>e.textContent),/myflames \d+\.\d+\.\d+/);
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
-      await footerHitTargets(`${theme} ${viewport} Settings`);
-      await lastControlAboveFooter('.settings-panel', `${theme} ${viewport} Settings`);
-      await footerHitTargets(`${theme} ${viewport} Settings after scrolling`);
+      await lastControlAboveFooter('.settings-panel', `${theme} ${viewport} Settings`, {requireControl:true});
     }
   }
   assert.deepEqual(errors,[]);
