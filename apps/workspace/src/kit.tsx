@@ -27,6 +27,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { appVersion } from "./api";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
 import { shortcut } from "./platform";
@@ -1242,17 +1244,25 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
   const ran = stamp(value.lastRunAt);
   const knownNumber = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
   return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
-    {lead}
-    {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
-    {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
-    {value.sessionState && <span data-status="session">{value.sessionState}</span>}
-    {value.transaction && <span data-status="transaction">{value.transaction}</span>}
-    {ran && <span data-status="last-run">Last run {ran}</span>}
-    {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
-    {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
-    {/* Drawn, not announced: the view's own status line announces its read. */}
-    {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
-    {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
+    <div className="window-statusbar-facts">
+      {lead}
+      {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
+      {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
+      {value.sessionState && <span data-status="session">{value.sessionState}</span>}
+      {value.transaction && <span data-status="transaction">{value.transaction}</span>}
+      {ran && <span data-status="last-run">Last run {ran}</span>}
+      {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
+      {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
+      {/* Drawn, not announced: the view's own status line announces its read. */}
+      {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
+      {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
+    </div>
+    <div className="window-statusbar-updates" aria-label="Application version">
+      <strong>myflames {appVersion() || "development"}</strong>
+      <UpdateCheckStatus />
+      <CheckForUpdatesButton />
+      <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+    </div>
   </footer>;
 }
 

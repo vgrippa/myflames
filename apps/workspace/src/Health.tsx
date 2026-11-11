@@ -1,3 +1,4 @@
+import { setUiPreference, useUiPreferences } from "./uiPreferences";
 // Server > Health: two SHOW GLOBAL STATUS samples a few seconds apart
 // (health-1.0 from myflames/health.py). One summary line and the server facts,
 // the diagnostics as one-line rows sorted by severity, then compact metric
@@ -637,15 +638,10 @@ export function HealthView({
   onOpenLesson?: (lesson: string) => void;
   onOpenInvestigation?: (id: string) => void;
 }) {
-  const preferenceKey = HEALTH_AUTO_KEY + (connection.type || "production");
-  const [preference, setPreference] = useState<{ key: string; value: number } | null>(null);
-  const storedAuto = () => {
-    try { return healthAutoPreference(localStorage.getItem(preferenceKey)); } catch { return -1; }
-  };
-  const auto = preference?.key === preferenceKey ? preference.value : storedAuto();
+  const autoKey = connection.type === "development" ? "health_auto_development" : "health_auto_production";
+  const auto = useUiPreferences()[autoKey];
   const setAuto = (value: number) => {
-    setPreference({ key: preferenceKey, value });
-    try { localStorage.setItem(preferenceKey, String(value)); } catch { /* Best effort. */ }
+    void setUiPreference(autoKey, value).catch(() => {});
   };
   const [retrySeconds, setRetrySeconds] = useState(0);
   const refreshLoop = useRef<ReturnType<typeof createHealthRefresh> | null>(null);

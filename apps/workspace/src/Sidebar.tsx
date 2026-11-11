@@ -1,24 +1,15 @@
 // The workspace sidebar: places (where you go), open plans (what is open),
-// and one status indicator with Settings (which also opens About myflames).
-// Below 650 px it becomes a compact top bar whose places and open plans open
-// in a drawer.
+// and one status indicator with the Settings gear (which opens the Settings
+// page in the main area). Below 650 px it becomes a compact top bar whose
+// places and open plans open in a drawer.
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { ReactNode } from "react";
-import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
-import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
-import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
-import { NewsSetting } from "./HomeNews";
-import { lazyComponent } from "./lazy";
-import { AutoUpdateSetting, UpdateBadge, UpdateMenuItem } from "./UpdateBadge";
+import { CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
+import { UpdateBadge } from "./UpdateBadge";
+import { applySidebarWidth, clampSidebarWidth, setUiPreference, SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, useUiPreferences } from "./uiPreferences";
 import type { SaveStatus } from "./session";
-
-// The Query editor settings group is its own chunk, loaded when the popover
-// first renders (below), and rendered through lazyComponent so
-// editorSettings.ts stays out of the entry chunk.
-const QueryEditorSettings = lazyComponent(() => import("./QueryEditorSettings").then((m) => m.QueryEditorSettings));
-
 
 export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
@@ -63,19 +54,14 @@ export function Sidebar({
   activeId,
   baselineId,
   saveStatus,
-  ready,
-  restoreEnabled,
-  skipRestore,
   onGo,
   onOpenPlan,
   onRemovePlan,
-  onToggleRestore,
-  onAuditLog,
-  onStartFresh,
+  onOpenSettings,
+  settingsOpen,
   expanded,
   narrow,
   onExpandedChange,
-  settingsRequest,
   placeBadges,
   placeMuted,
 }: {
@@ -84,10 +70,6 @@ export function Sidebar({
   /** The shell updates this together with expansion at the rail breakpoint. */
   narrow: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  /** The command palette (App) raises this counter to ask for the Settings
-   * popover; each change opens the popover, and the drawer too where a
-   * narrow window reaches the popover from the drawer. */
-  settingsRequest: number;
   logo: string;
   /** The place on screen; null while the workspace opens. */
   place: Place | null;
@@ -96,100 +78,49 @@ export function Sidebar({
   activeId: string;
   baselineId: string;
   saveStatus: SaveStatus;
-  ready: boolean;
-  restoreEnabled: boolean;
-  skipRestore: boolean;
   onGo: (place: Place) => void;
   onOpenPlan: (id: string) => void;
   onRemovePlan: (id: string) => void;
-  onToggleRestore: (on: boolean) => void;
-  /** Open the Audit log (writes sent through myflames, kept on this computer). */
-  onAuditLog: () => void;
-  onStartFresh?: () => void;
+  /** Open the Settings page in the main area. */
+  onOpenSettings: () => void;
+  /** The Settings page is on screen: the gear reads as the current spot. */
+  settingsOpen?: boolean;
   placeBadges?: Partial<Record<Place, ReactNode>>;
   /** Places that have nothing for the connection in use (Cluster on a server
    * that is not part of one), with the sentence that says so: the item looks
    * disabled but stays focusable and opens the place, which explains. */
   placeMuted?: Partial<Record<Place, string>>;
 }) {
+  const preferences = useUiPreferences();
+  const [width, setWidth] = useState(preferences.sidebar_width);
+  const drag = useRef<{ pointer: number; x: number; width: number } | null>(null);
+  useEffect(() => { setWidth(preferences.sidebar_width); }, [preferences.sidebar_width]);
+  const previewWidth = (value: number) => {
+    const next = clampSidebarWidth(value);
+    setWidth(next);
+    applySidebarWidth(next);
+    return next;
+  };
+  const saveWidth = (value: number) => {
+    void setUiPreference("sidebar_width", previewWidth(value)).catch(() => {});
+  };
   const [localOpen, setLocalOpen] = useState(false);
   const drawerOpen = expanded ?? localOpen;
   const setDrawerOpen = (open: boolean) => {
     setLocalOpen(open);
     if (narrow) onExpandedChange?.(open);
   };
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
-  const [clientOpen, setClientOpen] = useState(false);
-  // The command palette (App) raises settingsRequest to ask for the
-  // Settings popover; each change opens it, with the drawer in a narrow
-  // window, where the popover is reached from the drawer.
-  const seenSettingsRequest = useRef(settingsRequest);
-  useEffect(() => {
-    if (settingsRequest === seenSettingsRequest.current) return;
-    seenSettingsRequest.current = settingsRequest;
-    setSettingsOpen(true);
-    if (narrow) setDrawerOpen(true);
-  }, [settingsRequest, narrow]);
   const sidebar = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
   const drawer = useRef<HTMLDivElement>(null);
-  const settingsButton = useRef<HTMLButtonElement>(null);
-  const settings = useRef<HTMLDivElement>(null);
-  const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
-    try {
-      const saved = localStorage.getItem("myflames.theme");
-      if (saved === "light" || saved === "dark" || saved === "system") return saved;
-    } catch {}
-    return "system";
-  });
-  const selectTheme = (next: "system" | "light" | "dark") => {
-    setTheme(next);
-    try {
-      localStorage.setItem("myflames.theme", next);
-    } catch {}
-    if (next === "system") {
-      delete document.documentElement.dataset.theme;
-    } else {
-      document.documentElement.dataset.theme = next;
-    }
-  };
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("myflames.theme");
-      if (saved === "light" || saved === "dark") {
-        document.documentElement.dataset.theme = saved;
-      } else {
-        delete document.documentElement.dataset.theme;
-      }
-    } catch {}
-  }, []);
   useFocusScope(sidebar, {
     open: drawerOpen && narrow,
     onClose: () => setDrawerOpen(false),
     initialFocus: () => drawer.current?.querySelector<HTMLElement>("button"),
     returnFocus: () => document.getElementById("window-sidebar-toggle"),
   });
-  useFocusScope(settings, {
-    open: settingsOpen, onClose: () => setSettingsOpen(false),
-    initialFocus: () => settings.current?.querySelector<HTMLInputElement>("input"),
-    returnFocus: () => settingsButton.current,
-  });
   const navRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const outside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (
-        !settings.current?.contains(target) &&
-        !settingsButton.current?.contains(target)
-      )
-        setSettingsOpen(false);
-    };
-    document.addEventListener("mousedown", outside);
-    return () => document.removeEventListener("mousedown", outside);
-  }, [settingsOpen]);
   useEffect(() => {
     if (!drawerOpen || !narrow) return;
     const outside = (event: MouseEvent) => {
@@ -207,17 +138,6 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", outside);
   }, [drawerOpen, narrow]);
 
-  /** About replaces the Settings menu, like a desktop app's About window;
-   * closing it returns focus to Settings. */
-  function openAbout() {
-    setSettingsOpen(false);
-    setAboutOpen(true);
-  }
-  function openClientSettings() {
-    setSettingsOpen(false);
-    setDrawerOpen(false);
-    setClientOpen(true);
-  }
   function go(next: Place) {
     setDrawerOpen(false);
     onGo(next);
@@ -242,6 +162,36 @@ export function Sidebar({
   const status = statusText(saveStatus);
   return (
     <aside ref={sidebar} id="workspace-sidebar" className="sidebar" aria-label="Workspace" tabIndex={-1}>
+      {!narrow && <div className="sidebar-resizer" role="separator" tabIndex={0}
+        aria-label="Sidebar width" aria-orientation="vertical"
+        aria-valuemin={SIDEBAR_MIN} aria-valuemax={SIDEBAR_MAX} aria-valuenow={width}
+        aria-valuetext={`${width} pixels`} title="Drag to resize sidebar. Double-click to reset."
+        onPointerDown={event => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = { pointer: event.pointerId, x: event.clientX, width };
+        }}
+        onPointerMove={event => {
+          if (drag.current?.pointer === event.pointerId) previewWidth(drag.current.width + event.clientX - drag.current.x);
+        }}
+        onPointerUp={event => {
+          if (drag.current?.pointer !== event.pointerId) return;
+          const next = drag.current.width + event.clientX - drag.current.x;
+          drag.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          saveWidth(next);
+        }}
+        onLostPointerCapture={() => { if (drag.current) { drag.current = null; previewWidth(preferences.sidebar_width); } }}
+        onPointerCancel={() => { drag.current = null; previewWidth(preferences.sidebar_width); }}
+        onDoubleClick={() => saveWidth(SIDEBAR_DEFAULT)}
+        onKeyDown={event => {
+          const next = event.key === "Home" || event.key === "End" ? SIDEBAR_DEFAULT
+            : event.key === "ArrowLeft" ? width - (event.shiftKey ? 24 : 8)
+            : event.key === "ArrowRight" ? width + (event.shiftKey ? 24 : 8) : null;
+          if (next !== null) { event.preventDefault(); saveWidth(next); }
+        }} />}
       <div className="sidebar-head">
         <div className="brand-group">
           <button className="brand" onClick={() => go("home")} aria-label="myflames Home">
@@ -379,6 +329,7 @@ export function Sidebar({
                     </small>
                   </button>
                   <button
+                    type="button"
                     className="icon-button remove"
                     aria-label={`Remove ${p.name}`}
                     title={`Remove ${p.name}`}
@@ -404,119 +355,17 @@ export function Sidebar({
           <span>{status}</span>
         </p>
         <button
-          ref={settingsButton}
           className="icon-button settings-button"
           aria-label="Settings"
           title="Settings"
-          aria-haspopup="dialog"
-          aria-expanded={settingsOpen}
-          aria-controls="settings-popover"
-          onClick={() => setSettingsOpen((open) => !open)}
+          aria-current={settingsOpen ? "page" : undefined}
+          onClick={() => {
+            setDrawerOpen(false);
+            onOpenSettings();
+          }}
         >
           <Icon name="settings" size={16} />
         </button>
-        {settingsOpen && (
-          <div
-            id="settings-popover"
-            ref={settings}
-            className="settings-popover"
-            role="dialog"
-            tabIndex={-1}
-            aria-labelledby="settings-title"
-
-          >
-            {/* A menu-style popover: Escape and a click outside close it. */}
-            <h2 id="settings-title" className="visually-hidden">Settings</h2>
-            <div className="settings-theme-group">
-              <span className="section-label">Appearance</span>
-              <div className="segmented theme-segmented" role="group" aria-label="Appearance theme">
-                <button
-                  type="button"
-                  className={theme === "system" ? "active" : ""}
-                  aria-pressed={theme === "system"}
-                  onClick={() => selectTheme("system")}
-                >
-                  System
-                </button>
-                <button
-                  type="button"
-                  className={theme === "light" ? "active" : ""}
-                  aria-pressed={theme === "light"}
-                  onClick={() => selectTheme("light")}
-                >
-                  Light
-                </button>
-                <button
-                  type="button"
-                  className={theme === "dark" ? "active" : ""}
-                  aria-pressed={theme === "dark"}
-                  onClick={() => selectTheme("dark")}
-                >
-                  Dark
-                </button>
-              </div>
-            </div>
-            <div className="settings-option-row">
-              <Checkbox
-                className="check-field session-toggle"
-                checked={restoreEnabled}
-                disabled={!ready}
-                describedBy="session-toggle-hint"
-                onChange={onToggleRestore}
-              >
-                Restore workspace on startup
-              </Checkbox>
-            </div>
-            <p className="hint" id="session-toggle-hint">
-              {skipRestore
-                ? "Off for this launch (--no-restore); the saved workspace is kept."
-                : "Off clears the saved workspace. Passwords are never saved in it."}
-            </p>
-            <NewsSetting />
-            <AutoUpdateSetting />
-            <QueryEditorSettings />
-            <div className="settings-menu">
-              <UpdateMenuItem onChoose={() => { setSettingsOpen(false); setDrawerOpen(false); }} />
-              {onStartFresh && <button type="button" className="settings-item" disabled={!ready}
-                aria-haspopup="dialog" onClick={() => { setSettingsOpen(false); setDrawerOpen(false); onStartFresh(); }}>
-                <Icon name="plus" size={16} />Start fresh
-              </button>}
-              <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openClientSettings}>
-                <Icon name="wrench" size={16} />
-                Client tools…
-              </button>
-              <button
-                type="button"
-                className="settings-item"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  setDrawerOpen(false);
-                  onAuditLog();
-                }}
-              >
-                <Icon name="audit" size={16} />
-                Audit log
-              </button>
-              <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openAbout}>
-                <Icon name="info" size={16} />
-                About myflames
-              </button>
-            </div>
-          </div>
-        )}
-        {aboutOpen && (
-          <AboutDialog
-            logo={logo}
-            returnFocus={settingsButton}
-            onClose={() => setAboutOpen(false)}
-          />
-        )}
-        {clientOpen && (
-          <ClientToolsDialog
-            returnFocus={settingsButton}
-            onClose={() => setClientOpen(false)}
-          />
-        )}
       </div>
     </aside>
   );

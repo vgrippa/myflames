@@ -93,7 +93,7 @@ export function HomeNews() {
   );
 }
 
-/** The Settings popover switch. Off hides the section and stops every news read. */
+/** The Settings page switch. Off hides the section and stops every news read. */
 export function NewsSetting() {
   const enabled = useNewsEnabled();
   const [error, setError] = useState("");

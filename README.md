@@ -62,7 +62,7 @@ The Windows app is a preview: it has been tested on Windows 11 x64, but a crash 
 
 The app includes the official MySQL 8.4 LTS client (`mysql` and `mysqldump`) and finds installed tools on PATH and in standard installation folders. For each server, automatic selection uses its engine and major.minor series first (authentication plugins, then newest patch, then installed before bundled), otherwise the nearest newer series or the newest older series with a warning; MariaDB accounts using `ed25519` or `parsec` need MariaDB client tools. **Settings > Client tools…** shows the programs used for the connection in use and lets you keep **Automatic (best match for each server)** or choose an installation separately for MySQL and MariaDB servers; an unavailable choice is reported without switching to another installation.
 
-While Home is open, the app fetches up to six headlines from Planet MySQL and the MariaDB Foundation over HTTPS and caches them for six hours. Turn this off in **Settings** with **Show MySQL and MariaDB news on Home**; nothing is fetched while it is off.
+While Home is open, the app fetches up to six headlines from Planet MySQL and the MariaDB Foundation over HTTPS and caches them for six hours. Turn this off in **Settings** with **Show MySQL and MariaDB news on Home**; nothing is fetched while it is off. Settings opens as a page from the gear at the bottom of the sidebar, **⌘,** (**Ctrl+,** on Windows and Linux) or the command palette, with sections for Appearance, Query editor, Workspace, Updates and news, and Client tools.
 
 ## Engine compatibility
 
@@ -80,6 +80,16 @@ While Home is open, the app fetches up to six headlines from Planet MySQL and th
 For manual MySQL JSON generation on 8.3+, select format version 2 with `SET SESSION explain_json_format_version=2` before EXPLAIN. Timed JSON analysis needs MySQL 8.3 or later (8.4 LTS); on earlier versions myflames refuses it before sending anything. MySQL 5.7 is end of life; myflames reads it and says in plain sentences what 5.7 lacks (roles, `SET PERSIST`, `EXPLAIN ANALYZE`, `CLONE`, `performance_schema.error_log`, invisible indexes). A MySQL 5.6 or older server gets a note that results may be missing or wrong.
 
 ProxySQL 2.x and 3.x are supported in the ProxySQL place when connected to a ProxySQL Admin interface. Readyset is supported in the Readyset place when connected to a Readyset SQL listener (default port 3307) or admin SQL listener (default port 6036).
+
+## Appearance
+
+Open **Search…** (⌘K on macOS, Ctrl+K on Windows) and type **Theme:** to choose System, Light, Dark or a named theme. Available themes are Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. The choice survives app restarts on this computer and applies to navigation, views, tables, dialogs, the Query editor and charts. System follows your operating system's light or dark appearance.
+
+Editor palettes are adapted for readable text and selections. Chart operator colors, status meanings and Production (purple) and Development (teal) connection colors keep their meaning in every theme. Palette credits and licenses are in [NOTICE](NOTICE).
+
+Drag the sidebar's right edge to resize it, or focus the edge and use the arrow keys. Double-click, Home or End restores its default width. The width, Server view navigation choice and Health auto-refresh choice survive app restarts. Narrow windows keep the compact navigation rail.
+
+The window status bar shows the installed version and update status on every screen, with **Check for updates** and **View releases** beside the current view's facts.
 
 ## Documentation
 

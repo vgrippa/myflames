@@ -193,14 +193,14 @@ for (const filter of ['time']) for (const [engine, server_version, server_produc
   assert.match(textReport.getText(), /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product\)\}/);
 });
 
-// Render the real Settings root's JSX attributes, then run the runner's actual
-// readiness expression against a minimal selector surface. Geometry is not
-// asserted here; perf-measure's __perf.vis still checks visibility in Chrome.
-const sidebar = source('../src/Sidebar.tsx'), runner = source('./perf-measure.mjs');
+// Render the real Settings page root's JSX attributes, then run the runner's
+// actual readiness expression against a minimal selector surface. Geometry is
+// not asserted here; perf-measure's __perf.vis still checks visibility in Chrome.
+const sidebar = source('../src/SettingsPage.tsx'), runner = source('./perf-measure.mjs');
 const settings = find(sidebar, n => ts.isJsxOpeningElement(n) && n.attributes.properties.some(p =>
-  ts.isJsxAttribute(p) && p.name.text === 'id' && p.initializer?.text === 'settings-popover'));
-const root = run(`(${settings.getText().replace(/>$/, '/>')})`, { React, settings: { current: null } });
-const step = find(runner, n => ts.isCallExpression(n) && n.expression.getText() === 'interact' && n.arguments[1]?.text === 'settings menu open');
+  ts.isJsxAttribute(p) && p.name.text === 'className' && p.initializer?.text === 'settings-page'));
+const root = run(`(${settings.getText().replace(/>$/, '/>')})`, { React, section: 'appearance' });
+const step = find(runner, n => ts.isCallExpression(n) && n.expression.getText() === 'interact' && n.arguments[1]?.text === 'settings page open');
 const ready = step.arguments[3].text;
 function matches(node, selector) {
   return selector.split(',').some(part => {
@@ -215,8 +215,9 @@ function matches(node, selector) {
     return ok;
   });
 }
-test('Settings readiness targets the rendered dialog root', () => {
-  assert.equal(root.props.role, 'dialog');
+test('Settings readiness targets the rendered page root', () => {
+  assert.equal(root.props.className, 'settings-page');
+  assert.equal(root.props.role, undefined, 'the Settings page is not a dialog');
   assert.equal(run(ready, { __perf: { vis: selector => matches(root, selector) ? root : null } }), true);
 });
 test('unrelated menus and popovers cannot satisfy Settings readiness', () => {

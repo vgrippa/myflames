@@ -56,11 +56,35 @@ HISTORY_KIND = 'editor_history'
 SAVED_QUERY_KIND = 'saved_query'
 _RECORD_ID = re.compile(r'[0-9a-f]{32}')
 
-#: The Query editor's persisted settings (Settings popover,
-#: /api/settings/editor): the defaults; a stored row is 'editor.<key>' =
+#: The Query editor's persisted settings (the Settings page's Query editor
+#: section, /api/settings/editor): the defaults; a stored row is 'editor.<key>' =
 #: 'on'/'off' in the settings table.
 EDITOR_SETTING_DEFAULTS = {'multi_cursor': True, 'completion_auto': True, 'close_brackets': True,
                            'soft_wrap': False, 'problem_warnings': True, 'hover_info': True}
+
+
+# Keep this one literal list equal to the TypeScript THEME_IDS registry.
+UI_THEME_IDS = ['system', 'light', 'dark', 'fire', 'digital-rain', 'neon-grid',
+                'dracula', 'nord', 'solarized-light', 'solarized-dark', 'tokyo-night',
+                'gruvbox-dark', 'catppuccin-mocha', 'catppuccin-latte', 'github-light',
+                'github-dark', 'one-dark']
+UI_SIDEBAR_MIN = 208
+UI_SIDEBAR_MAX = 320
+UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'sidebar_width': 208,
+                          'server_nav_collapsed': True, 'health_auto_production': -1,
+                          'health_auto_development': -1}
+
+
+def _valid_ui_preference(key, value):
+    if key == 'theme':
+        return isinstance(value, str) and value in UI_THEME_IDS
+    if key == 'sidebar_width':
+        return type(value) is int and UI_SIDEBAR_MIN <= value <= UI_SIDEBAR_MAX
+    if key == 'server_nav_collapsed':
+        return isinstance(value, bool)
+    if key in ('health_auto_production', 'health_auto_development'):
+        return type(value) is int and value in (-1, 0, 10, 30, 60)
+    return False
 
 
 class SessionConflict(ValueError):
@@ -998,6 +1022,42 @@ class WorkspaceStore:
                 conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
                              ('editor.' + key, 'on' if value else 'off'))
         return self.editor_settings()
+
+    # -- Shell preferences (UI_PREFERENCE_DEFAULTS) ---------------------------
+
+    def ui_preferences(self):
+        """Validated shell preferences. A read never creates the database.
+        Unknown or malformed stored values keep their defaults."""
+        merged = dict(UI_PREFERENCE_DEFAULTS)
+        if not self.path.exists():
+            return merged
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'ui.%'").fetchall()
+        for key, text in rows:
+            name = key[len('ui.'):]
+            try:
+                value = json.loads(text)
+            except (TypeError, ValueError):
+                # Unlike _loads, do not accept unquoted text as a theme id.
+                continue
+            if _valid_ui_preference(name, value):
+                merged[name] = value
+        return merged
+
+    def set_ui_preferences(self, changes):
+        """Validate the whole write before opening storage; commit once."""
+        if not isinstance(changes, dict):
+            raise ValueError('Expected a dict of UI preferences.')
+        for key, value in changes.items():
+            if key not in UI_PREFERENCE_DEFAULTS:
+                raise ValueError('Unknown UI preference %r.' % (key,))
+            if not _valid_ui_preference(key, value):
+                raise ValueError('Invalid value for UI preference %s.' % key)
+        with closing(self._connect()) as conn, conn:
+            for key, value in changes.items():
+                conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                             ('ui.' + key, json.dumps(value, allow_nan=False)))
+        return self.ui_preferences()
 
     # -- Application database client ----------------------------------------
 

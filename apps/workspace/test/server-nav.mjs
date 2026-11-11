@@ -8,7 +8,7 @@ import { openRefreshMenu } from "./chrome-helpers.mjs";
 // the inspector, including view names saved by earlier versions.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { DOCK_KEY, load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause } from "./perf-harness.mjs";
 
 const config = await load("config-mysql-8.4.json");
 const tableReport = await load("tables-mysql-8.4.json");
@@ -38,6 +38,11 @@ const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: config };
 // state.seen holds this suite's own endpoint (/api/live/config) without a path.
 const live = () => [...state.seen.map((body) => ({ path: "/api/live/config", body })), ...state.other.filter((o) => o.path.startsWith("/api/live/"))];
+const storedNavigation = expected => page.waitForFunction(async expected => {
+  const response = await fetch('/api/settings/ui', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': localStorage.getItem('myflames.session-proof') }, body: '{}' });
+  return (await response.json()).preferences?.server_nav_collapsed === expected;
+}, {}, expected);
 const current = () => page.$eval(".source-list [aria-current=page]", (e) => e.dataset.view);
 const active = () => page.evaluate(() => document.activeElement?.id || "");
 const switcher = (view) => page.$eval(`#${view}-switcher`, (e) => ({
@@ -47,7 +52,7 @@ const switcher = (view) => page.$eval(`#${view}-switcher`, (e) => ({
 const popover = () => page.$('.view-switcher-popover[role=dialog][aria-label="Server views"]');
 try {
   // ---- The floating list of views (the default when nothing is stored) ----
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), null, "nothing stored: the default applies");
+  await storedNavigation(true); // The backend default is floating.
   // Users and roles loads late (its chunk is held back) for the focus check below.
   state.slowAssets = /\/Accounts-[^/]*\.js$/;
   await h.server();
@@ -211,7 +216,7 @@ try {
   await page.waitForFunction(() => document.activeElement?.matches(".place-toolbar .server-sidebar-toggle"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Float the list of views",
     "docking from the list keeps focus on the Dock/Float toggle");
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), "false");
+  await storedNavigation(false);
   await page.reload({ waitUntil: "networkidle0" });
   // The reloaded workspace starts over: count its reads only.
   state.seen.length = 0;
@@ -547,7 +552,7 @@ try {
   await page.click('.place-toolbar button[aria-label="Float the list of views"]');
   await page.waitForSelector(".server-place.is-nav-collapsed .view-switcher");
   assert.equal(await page.$(".server-source-wrap"), null);
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), "true");
+  await storedNavigation(true);
   assert.ok(await page.$('.place-toolbar button[aria-label="Dock the list of views"]'), "the toggle now docks it");
   await page.reload({ waitUntil: "networkidle0" });
   await h.server();

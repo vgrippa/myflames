@@ -1,6 +1,6 @@
 // Every workspace stylesheet, in cascade order: when two rules tie, the later
-// file wins, and style.css comes last. main.tsx imports this module first, so
-// the order is fixed here and does not depend on which places load their
+// file wins; themes.css follows style.css to override color roles.
+// main.tsx imports this module first, so the order is fixed here and does not depend on which places load their
 // chunk first (lazy.tsx). Modules still import their own stylesheet; those
 // imports find it already loaded. A new stylesheet is added here too, at the
 // position its importer has in this list (test/styles-order.mjs checks).
@@ -46,6 +46,7 @@ import "./cluster.css";
 import "./proxysql.css";
 import "./readyset.css";
 import "./server.css";
+import "./settings.css";
 import "./audit.css";
 import "./objectChanges.css";
 import "./ddl-progress.css";
@@ -56,3 +57,4 @@ import "./files.css";
 import "./ssh-connections.css";
 import "./files-place.css";
 import "./style.css";
+import "./themes.css";

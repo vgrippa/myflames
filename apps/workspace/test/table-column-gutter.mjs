@@ -83,7 +83,8 @@ try {
     await page.setViewport({width:1440,height:900});
   }
   await page.click('button[aria-label="Settings"]');
-  await page.locator('#settings-popover button ::-p-text(Audit log)').click();
+  await page.waitForSelector(".settings-page");
+  await page.locator('.settings-page .source-item ::-p-text(Audit log)').click();
   await page.waitForSelector('table[aria-label="Audit records"]');
   await sizes('audit');
   await h.button('Home','.main-nav ');

@@ -26,6 +26,8 @@ import {
   type View,
 } from "./api";
 import { Icon, ImportDialog, type IconName } from "./components";
+import { currentUiPreferences, loadUiPreferences, setUiPreference, useUiPreferences } from "./uiPreferences";
+import { THEME_CHOICES, applyTheme } from "./themes";
 import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
 import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
@@ -59,6 +61,7 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
+import type { SettingsSection } from "./SettingsPage";
 import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopovers, ColumnStoreContext, Disclosure, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
@@ -101,6 +104,9 @@ const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => 
 const SchemaVersionsPlace = lazyComponent(() => import("./SchemaVersions").then((m) => m.SchemaVersionsPlace));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
+// Settings: a page in the main area (the sidebar gear, ⌘, / Ctrl+,, the
+// command palette), not a place in the sidebar's navigation.
+const SettingsPage = lazyComponent(() => import("./SettingsPage").then((m) => m.SettingsPage));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
 const ContextPanel = lazyComponent(() => import("./ContextPanel").then((m) => m.ContextPanel));
 const ExecutionContext = lazyComponent(() => import("./ContextPanel").then((m) => m.ExecutionContext));
@@ -123,13 +129,14 @@ const metrics: [string, string][] = [
 // The screen in the saved session. Stored values keep the names earlier
 // versions wrote (inspect, compare, query, library, teach), so a session opens
 // in either direction; home and server are new. Each maps to one place, except
-// audit: the Audit log is local to this computer and opens from Settings, so
-// no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit"];
+// audit and settings: the Audit log and Settings are local to this computer
+// and open from the gear, so no place is "you are here" while one is on screen.
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit" | "settings";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit", "settings"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
+    case "settings":
       return null;
     case "inspect":
     case "compare":
@@ -187,6 +194,7 @@ function navEntryLabel(mode: Mode, view: ServerKind | null): { label: string; ic
     return { label: placeLabel, icon: mode === "server" ? "server" : "statements" };
   }
   if (mode === "compare") return { label: "Plans · Compare", icon: "compare" };
+  if (mode === "settings") return { label: "Settings", icon: "settings" };
   const place = placeOf(mode);
   const found = place ? PLACES.find((p) => p.key === place) : null;
   return { label: found?.label || "Audit log", icon: found?.icon || "audit" };
@@ -1470,7 +1478,7 @@ function App() {
     setMisestimateNote(<>Misestimate {index + 1} of {misestimated.length}: <bdi>{target.label}</bdi>, <bdi>{target.mark.label}</bdi></>);
   }
   const place = placeOf(mode);
-  const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : "Audit log";
+  const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : mode === "settings" ? "Settings" : "Audit log";
   const activeConnection: ActiveConnection = {
     id: labState.profile_id,
     fields: labState.connection,
@@ -1605,6 +1613,7 @@ function App() {
     setLinkBack(null);
     if (entry.mode === "inspect" || entry.mode === "compare") setMode(entry.mode);
     else if (entry.mode === "audit") { setAuditFocus(""); setMode("audit"); }
+    else if (entry.mode === "settings") setMode("settings");
     else {
       const place = placeOf(entry.mode);
       if (place) go(place, true);
@@ -1766,7 +1775,7 @@ function App() {
     setRestored(null);
     setConfirmFresh(false);
   }
-  /** The Audit log (Settings menu): a screen of its own, not a place. */
+  /** The Audit log (Settings): a screen of its own, not a place. */
   function openAuditLog() {
     setMode("audit");
     setAuditFocus("");
@@ -1775,6 +1784,33 @@ function App() {
     setRestored(null);
     setConfirmFresh(false);
   }
+  /** Settings: a page of its own, not a place in the sidebar's navigation.
+   * The gear, ⌘, / Ctrl+, and the palette open it; Back (⌘[) and Esc return
+   * to where the user was. */
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  function openSettings(section: SettingsSection = "appearance") {
+    traversing.current = null;
+    pendingObjectLink.current = null;
+    setSettingsSection(section);
+    setMode("settings");
+    setLinkBack(null);
+    setError("");
+    setNotice("");
+    setRestored(null);
+    setConfirmFresh(false);
+  }
+  const openSettingsRef = useRef(openSettings);
+  openSettingsRef.current = openSettings;
+  // Esc on the Settings page is Back: the previous history stop, or Home when
+  // the page was the first one. A reload that restored the Settings page can
+  // leave several Settings entries in a row; step past them.
+  const settingsBack = useCallback(() => {
+    const h = navHistory.current;
+    let index = h.index - 1;
+    while (index >= 0 && h.entries[index].mode === "settings") index--;
+    if (index >= 0) applyNavEntryRef.current(h.entries[index], index);
+    else go("home");
+  }, []);
   // A reviewed change's result opens the Audit log at its record
   // (ActionReview.tsx openAuditLog sends "myflames-open-audit" with the id).
   const [auditFocus, setAuditFocus] = useState("");
@@ -1903,7 +1939,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : (mode === "inspect" ? `plans:${activeId}` : `place:${mode}`);
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1911,21 +1947,10 @@ function App() {
   // The Server and Workload list of views floats (opened from the view's
   // title) unless the person docked it: only a stored "false" docks it. This
   // is the one copy of the preference; Server reads it from here.
-  const [serverNavCollapsed, setServerNavCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("myflames.serverNavCollapsed") !== "false";
-    } catch {
-      return true;
-    }
-  });
+  const uiPreferences = useUiPreferences();
+  const serverNavCollapsed = uiPreferences.server_nav_collapsed;
   const toggleServerNavCollapsed = useCallback(() => {
-    setServerNavCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("myflames.serverNavCollapsed", String(next));
-      } catch {}
-      return next;
-    });
+    void setUiPreference("server_nav_collapsed", !currentUiPreferences().server_nav_collapsed).catch(() => {});
   }, []);
   function chooseServerView(viewId: ServerKind) {
     traversing.current = null;
@@ -1944,14 +1969,16 @@ function App() {
   }
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  // The Settings popover owns its open state (Sidebar.tsx); the palette asks
-  // for it through this counter, which raises once per palette run.
-  const [settingsRequest, setOpenSettingsRequest] = useState(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setCommandPaletteOpen((open) => !open);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        // ⌘, / Ctrl+, opens Settings; an open dialog keeps its keys.
+        if (document.querySelector("dialog[open]")) return;
+        e.preventDefault();
+        openSettingsRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2100,18 +2127,22 @@ function App() {
       keywords: `${v.label} ${v.group} workload`,
       run: () => { go("workload"); chooseServerView(v.id); },
     })),
+    ...THEME_CHOICES.map(theme => ({
+      id: `theme-${theme.id}`, label: `Theme: ${theme.name}`, group: "Appearance",
+      icon: "settings" as const,
+      run: () => applyTheme(theme.id),
+    })),
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
     { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
     { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
     { id: "action-new-connection", label: "New connection", group: "Actions", icon: "plus", keywords: "add connection server host profile new", run: newConnection },
+    // Settings is a page (the gear, ⌘,): the palette's one Settings action
+    // opens it, at the Query editor section when that is what was asked for.
+    { id: "action-settings", label: "Settings", group: "Actions", icon: "settings", keywords: "settings preferences appearance theme dark light query editor startup restore updates news client tools about", run: () => openSettings(/editor/.test(paletteQuery.toLowerCase()) ? "editor" : "appearance") },
     // Query editor actions on the current tab (QueryLabHandle).
     { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
     { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
     { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
-    // The editor settings live as switches in the Settings popover (its Query
-    // editor group); the palette asks Sidebar to open the popover rather than
-    // naming each switch.
-    { id: "query-editor-settings", label: "Query editor settings", group: "Query editor", icon: "settings", keywords: "settings multiple cursors suggestions brackets quotes wrap problems hover", run: () => setOpenSettingsRequest((n) => n + 1) },
   ];
 
   return (
@@ -2131,16 +2162,11 @@ function App() {
         activeId={mode === "inspect" ? activeId : ""}
         baselineId={baseline}
         saveStatus={saveStatus}
-        ready={ready}
-        restoreEnabled={restoreEnabled}
-        skipRestore={skipRestore}
         onGo={go}
         onOpenPlan={openPlan}
         onRemovePlan={removePlan}
-        onToggleRestore={toggleRestore}
-        onAuditLog={openAuditLog}
-        onStartFresh={() => setConfirmFresh(true)}
-        settingsRequest={settingsRequest}
+        onOpenSettings={() => openSettings()}
+        settingsOpen={ready && mode === "settings"}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
         placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {
           ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
@@ -2149,7 +2175,7 @@ function App() {
           ...(readysetMuted ? { readyset: NOT_A_READYSET } : {}),
         } : undefined}
       />
-      <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
+      <div ref={chrome} data-place={place || (mode === "settings" ? "settings" : "audit")} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
         {ready && connectionPlace && <ConnectionTypeStrip safety={safety} />}
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
@@ -2261,6 +2287,7 @@ function App() {
             mode === "diagram" ||
             mode === "schema" ||
             mode === "audit" ||
+            mode === "settings" ||
             mode === "home" ||
             mode === "teach"
               ? "is-flush"
@@ -2597,6 +2624,20 @@ function App() {
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
             onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} initialSelectedId={selectedInvestigationId} />}
           {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
+          {ready && mode === "settings" && (
+            <SettingsPage
+              logo={logo}
+              section={settingsSection}
+              onSection={setSettingsSection}
+              onBack={settingsBack}
+              ready={ready}
+              restoreEnabled={restoreEnabled}
+              skipRestore={skipRestore}
+              onToggleRestore={toggleRestore}
+              onStartFresh={() => setConfirmFresh(true)}
+              onAuditLog={openAuditLog}
+            />
+          )}
           <Teach
             key={resetKey}
             active={ready && mode === "teach"}
@@ -3114,11 +3155,11 @@ function App() {
             </section>
           )}
         </main>
-        {ready && (plansStatus || connectionPlace) && <WindowStatusBar scope={statusScope} lead={safetyStatus}
+        {ready && <WindowStatusBar scope={statusScope} lead={safetyStatus}
           fallback={plansStatus ? {
             engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
             connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
-          } : { connectionState: request.host ? connectionLabel(request) : "No connection" }} />}
+          } : connectionPlace ? { connectionState: request.host ? connectionLabel(request) : "No connection" } : {}} />}
       </div>
       <input
         ref={file}
@@ -3278,7 +3319,10 @@ const root = createRoot(document.getElementById("root")!);
 let launchGeneration = 0;
 function openWorkspace() {
   const generation = ++launchGeneration;
-  authenticate().then(() => {
+  authenticate().then(async () => {
+    // Reserve the stored width before mounting the first sidebar. The server
+    // already painted the stored theme in index.html.
+    await loadUiPreferences().catch(() => {});
     if (generation === launchGeneration) root.render(<WindowStatusProvider><App /></WindowStatusProvider>);
   }).catch(error => {
     if (generation === launchGeneration) root.render(<main className="launch-refusal" role="alert"><div className="launch-brand"><img src="/assets/myflames-logo.png" alt="" width="48" height="48" /><strong>myflames</strong></div><h1>Open your workspace</h1><p>{error instanceof Error ? error.message : "Open the launch URL printed by myflames ui."}</p></main>);

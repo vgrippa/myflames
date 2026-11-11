@@ -1,3 +1,4 @@
+import { setUiPreferences } from "./perf-harness.mjs";
 // Plans: the "Misestimates N" chip in the plan header and the inspector's
 // Row estimate section, on the packaged UI with an isolated server (temporary
 // HOME and USERPROFILE, vault backend). Plans come from files through the
@@ -233,7 +234,7 @@ try {
   // 720 px window, light and dark: the chip is on screen, the page never
   // scrolls sideways, the chip text keeps contrast on its tint.
   for (const theme of ["light", "dark"]) {
-    await page.evaluate((t) => { localStorage.setItem("myflames.theme", t); document.documentElement.dataset.theme = t; }, theme);
+    await setUiPreferences(page, { theme });
     for (const width of [1440, 720]) {
       await page.setViewport({ width, height: width === 720 ? 520 : 900 });
       // Controls ease their colors: wait for the theme's color to settle.

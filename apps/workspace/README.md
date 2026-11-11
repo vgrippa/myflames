@@ -76,7 +76,7 @@ The API and command-line regressions run with the repository's Python suite.
 ## Navigation checks
 
 `npm run test:navigation` checks the ten places and their active state, the
-Open plans list, the status indicator and Settings popover, Home's
+Open plans list, the status indicator and the Settings page, Home's
 Connections (add, edit, test, use, forget, delete), the connection picker in
 the Query editor and Server, keyboard movement between places, and the
 390-pixel layout with its Menu drawer. The profile API is mocked; nothing

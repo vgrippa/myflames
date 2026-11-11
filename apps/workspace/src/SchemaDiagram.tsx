@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { appliedThemeBase } from "./themes";
 import { api, type Connection } from "./api";
 import { connectionKey, connectionLabel, nextGeneration, useConnectionReads } from "./binding";
 import { useSchemaCatalog } from "./PerfShared";
@@ -81,8 +82,8 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
   const [file, setFile] = useState<ExportFile | null>(null), [error, setError] = useState("");
   const [renderError, setRenderError] = useState(""), [rendering, setRendering] = useState(false);
   const [svg, setSvg] = useState<{text:string; width:number; height:number} | null>(null);
-  const [dark, setDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
-  const [template, setTemplate] = useState<string>(() => matchMedia("(prefers-color-scheme: dark)").matches ? "dark_modern" : "apple_light");
+  const [dark, setDark] = useState(() => appliedThemeBase() === "dark");
+  const [template, setTemplate] = useState<string>("auto");
   const [copied, setCopied] = useState(false), [copyError, setCopyError] = useState("");
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [size, setSize] = useState({width:800,height:500});
@@ -91,11 +92,14 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
   const [isDragging, setIsDragging] = useState(false);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)"), update = () => {
-      const isDark = media.matches;
+      const isDark = appliedThemeBase() === "dark";
       setDark(isDark);
     };
-    media.addEventListener("change", update); update();
-    return () => media.removeEventListener("change", update);
+    media.addEventListener("change", update);
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    update();
+    return () => { observer.disconnect(); media.removeEventListener("change", update); };
   }, []);
   useEffect(() => {
     const el = frame.current; if (!el) return;
@@ -250,6 +254,7 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
             onChange={(e) => setTemplate(e.target.value)}
             style={{ fontSize: "11px", padding: "2px 8px", height: "24px" }}
           >
+            <option value="auto">Follow appearance</option>
             {Object.entries(MERMAID_TEMPLATES).map(([k, t]) => (
               <option key={k} value={k}>{t.label}</option>
             ))}

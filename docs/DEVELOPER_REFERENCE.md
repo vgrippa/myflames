@@ -412,6 +412,8 @@ authentication, validation, wire fields, removed routes and typed errors).
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
 
+**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read never creates the workspace database. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), and `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index page omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup loads preferences before mounting the sidebar. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
+
 **Query editor settings and variable names.** `POST /api/settings/editor`
 (ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
 writes the Query editor's settings in the workspace store's `settings` table
@@ -467,7 +469,7 @@ compact neutral navigation, open-query links, a command palette and full-width
 Server details.
 
 Update checks run only when the workspace asks: **Check for updates** in
-Home's version footer and in About myflames (`UpdateCheck.tsx`, shared state in
+the window status bar on every screen and in About myflames (`UpdateCheck.tsx`, shared state in
 `updateStatus.ts`) posts `/api/app/update/check` with `force: true`. The
 `app-update-1.0` answer carries `checked_at` (UTC, when the release metadata was
 read; a cached answer keeps its time), and a failed check carries `error` plus a
@@ -495,15 +497,16 @@ workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
 after it opens when there is no stored check, the last one is older than 24
 hours, or the last one failed more than an hour ago, re-testing that hourly; an
 automatic check uses the same `/api/app/update/check` as the button, and a
-failed automatic check shows no badge (Home's footer shows the reason as
+failed automatic check shows no badge (the window status bar shows the reason as
 before). When a current check found a newer version, a round badge appears
 beside the flame logo and the myflames name at the top of the sidebar
 (`UpdateBadge.tsx`): available (a download arrow), the download's progress (a
 ring with the percent in its tooltip), preparing (a spinner) and ready (a green
 restart arrow); on the 48 px icon rail (651–900 px windows) it is a dot on the
 logo's corner, and a result older than 24 hours shows no badge. While an update
-is pending, the Settings popover also lists **Update available…**, **Update
-progress…** or **Restart to update…**; clicking the badge or the menu item
+is pending, the Settings page's Updates and news section also lists **Update
+available…**, **Update progress…** or **Restart to update…**; clicking the
+badge or the menu item
 opens the Software update dialog.
 **Download…** appears for a current newer release (unavailable while a check
 runs) and opens the update dialog with the result captured at the click;
@@ -734,7 +737,8 @@ or titles. The Settings switch (`settings` key `home_news`,
 `/api/news/settings`; while it is off `/api/news` returns `enabled: false`
 without reading, and the page sends no `/api/news` request at all. In the
 page, `newsApi.ts` shares the switch between `HomeNews` (under Recent work;
-`HomeNews.tsx`, `home.css`) and the Settings popover (`NewsSetting`, busy
+`HomeNews.tsx`, `home.css`) and the Settings page's Updates and news section
+(`NewsSetting`, busy
 while a change is saved: `aria-disabled` through `Checkbox busy`, never
 `disabled`, so it keeps keyboard focus and ignores changes until the answer;
 **Refresh news** stays focusable the same way while it reads, as does the
@@ -810,9 +814,17 @@ the window-open handler always denies a new app window. Tests:
   tooltips, accessible names, compact status markers and an Open plans (N)
   popover. Its toggle opens the full sidebar as an overlay and Escape returns
   focus to the toggle. At 650 px and below it keeps the Menu drawer.
-  The footer has one autosave status and a Settings popover (Restore
-  workspace on startup, Show MySQL and MariaDB news on Home, Audit log, About
-  myflames). The two switches carry their explanation in a visible hint tied by
+  The footer has one autosave status and the Settings gear, which opens the
+  Settings page (`SettingsPage.tsx`): a page in the main area, not a place in
+  the sidebar's navigation, with a section list on the left (the Server
+  place's `SourceList`): Appearance, Query editor, Workspace (Restore
+  workspace on startup and Start fresh), Updates and news (Check for updates
+  automatically, Show MySQL and MariaDB news on Home, and the update item
+  while one is pending) and Client tools, with Audit log and About myflames
+  as actions at the bottom of the list. It opens from the gear, ⌘, (Ctrl+,
+  on Windows and Linux) or the command palette, and closes with Escape, Back
+  or choosing a place, returning focus to the gear.
+  The two switches carry their explanation in a visible hint tied by
   `aria-describedby` ("Off clears the saved workspace. Passwords are never
   saved in it.", or "Off for this launch (--no-restore); the saved workspace is
   kept."; "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home
@@ -1072,6 +1084,61 @@ messages, never in the notes.
 
 ### Shared view presentation
 
+
+Appearance is registered in `apps/workspace/src/themes.ts`. `THEME_CHOICES`
+contains stable ids, display names and a light/dark base; `THEMES` pairs each
+choice with credit and picker swatches. The shell imports only choices so
+picker metadata stays out of the entry chunk. `THEME_IDS` is exported for the
+backend preferences allowlist comparison. System resolves through the OS
+media query; `appliedThemeBase()` resolves explicit ids through the registry.
+The command palette offers `Theme: <name>` for every choice. Settings > Appearance offers System, Light, Dark and the named themes.
+
+`applyTheme()` and `savedTheme()` use the shared UI preferences store, including Settings > Appearance and palette actions. `ui.py` injects a validated stored `data-theme` on `<html>` for every non-System theme, so desktop launches paint the saved theme before JavaScript runs. System omits the attribute. Vite's blocking boot script still accepts only ids generated from `THEME_IDS`; it never removes an injected attribute. Legacy localStorage is a one-time browser development fallback, and the backend answer wins. `UI_THEME_IDS` is the backend's one literal list, checked against the registry by `test/themes.mjs`.
+
+`themes.css` loads after `style.css` through `styles.ts`. Every named theme
+sets `color-scheme` and every color property set by the explicit Dark block,
+plus all chart surface roles. Light and Dark retain their existing values.
+Adapted palettes retain official syntax colors when they pass; changes tune
+HSL lightness only and show `official #xxxxxx` beside each adjusted syntax
+color. Credits say `Based on <name> (MIT)`; exact upstream copyright notices
+and license permissions are in NOTICE. Fire, Digital Rain and Neon Grid are
+myflames originals under Apache-2.0.
+
+The contrast contract is ink and muted ink at least 4.5:1 on background,
+content and muted surfaces, lines and control lines at least 3:1, accent at
+least 3:1 on background, each syntax role at least 4.5:1 on the editor surface,
+and status text at least 4.5:1. Selection and current Find fill contrast at
+least 1.8:1 against a dark editor or 1.5:1 against a light editor; selected
+ink contrasts at least 4.5:1 against each highlight. Matching words use a
+subtler fill, at least 0.3 lower in contrast than selection, yet at least
+1.3:1 against a dark editor or 1.2:1 against a light one. Opaque hex literals
+for measured tokens make source-based and computed-style tests comparable.
+Status hues retain OK green, warning amber, danger red and information blue;
+Production stays purple and Development teal. The estimate role stays violet.
+Operator families, including Join and Scan, retain their bands and dark ink.
+Only chart canvas, cards, panes, ink, lines, focus and selection follow the
+workspace palette, through `--mfc-*` roles. Injected chart defaults match
+System, Light or Dark only; a late chart style cannot overwrite a named palette.
+
+Sandboxed previews receive the resolved base, accents and allowlisted chart
+surface colors from `bindFrameAppearance()`. `themeFrame()` uses fixed script
+text, accepts messages only from its parent, validates colors with
+`CSS.supports`, rejects variable and URL references, and assigns them with
+`style.setProperty`. Empty host overrides remove the inline property so a
+return to Light, Dark or System restores the frame defaults. Values never
+enter markup or executable code. The
+sandbox remains opaque. SchemaDiagram watches both the root `data-theme`
+attribute and OS appearance through `appliedThemeBase()`; its default Mermaid
+color template follows appearance while explicit templates stay selectable.
+
+To add a theme: add one choice and matching picker details, a complete CSS
+block, upstream copyright/license attribution and user documentation. Extend
+the backend allowlist only in its single existing location once preferences
+are present. Run `theme-contrast-unit.mjs` for every token and selection pair,
+then build and run `theme-contrast.mjs` for computed styles and `themes.mjs`
+for registry completeness, palette actions, restore, base resolution and frame
+isolation. Recheck 1440 and 720 px layouts and light/dark OS preferences.
+
 Measured durations and ages use `durationText` (`duration.ts`). Duration table
 cells and the Processlist inspector, Locks summary facts and Replication lag
 facts use `Duration` (`PerfShared.tsx`) for exact seconds, including decimal
@@ -1098,8 +1165,7 @@ and Unknown.
 `FactStrip` uses the same breakpoint to collapse into Details. `Fields`
 uses a label column sized to its longest label up to 40% of the available
 width, with a flexible value column; at 900 px and below each value follows
-its label on a separate line. `WindowStatusBar` keeps safety words and the
-reported server version visible while flexible text truncates. Server,
+its label on a separate line. `WindowStatusBar` keeps safety words visible while other facts truncate before the version and update actions. Server,
 Workload, Tuning and Database diagram share the latest version read for the
 connection in use; other connection places publish their own read version.
 Unknown fields stay hidden. Visible Esc hints use a keycap.
@@ -1184,8 +1250,8 @@ workspace did not load." with Reload):
   `@codemirror/state`, `view`, `commands`, `language`, `autocomplete`,
   `search` and `lint` packages with `@lezer/common`, `highlight` and `lr`;
   only `QueryLab.tsx` imports them, so the entry chunk stays free of them).
-  The Settings popover's Query editor group is its own chunk loaded from
-  `Sidebar.tsx`, which keeps `editorSettings.ts` and the settings UI out of
+  The Settings page is its own chunk (`SettingsPage.tsx`, loaded lazily from
+  `main.tsx`), which keeps `editorSettings.ts` and the settings UI out of
   the entry chunk.
 
 Rules for code that splits:
@@ -1200,7 +1266,7 @@ Rules for code that splits:
   fine); one static value import puts it back in the entry chunk. The shell
   reads the lists of Server and Workload views from `serverViews.ts`.
 - Styles are not split. `src/styles.ts` imports every stylesheet in cascade
-  order (`style.css` last) and `main.tsx` imports it first, so the order never
+  order (`style.css`, then `themes.css` last) and `main.tsx` imports it first, so the order never
   depends on which chunk loads first; the built stylesheet is identical to the
   unsplit build. Add a new stylesheet to `styles.ts` too.
 - Code that looks up a lazy part's elements right after switching to it must
@@ -1209,7 +1275,7 @@ Rules for code that splits:
   heading once it exists.
 - `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
   `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
-  last and `main.tsx` importing it first, that no lazily loaded module is
+  followed by `themes.css` last and `main.tsx` importing it first, that no lazily loaded module is
   also imported statically by `main.tsx`, `Server.tsx` or `QueryLab.tsx`,
   that the committed build has exactly one stylesheet, and that the entry
   chunk stays under 500,000 bytes (about 475 KB in 3.3.3; Home, the sidebar
@@ -1280,6 +1346,8 @@ read deadline, so trickling body bytes cannot extend that deadline. The usual bo
 Account requests have an additional 256 KiB encoded-data budget.
 
 ### Client and local-storage boundaries
+
+The desktop renderer uses an in-memory session partition, so UI preferences belong in the workspace SQLite store, not localStorage. Theme, sidebar width, Server view navigation collapse and Health auto-refresh are persisted through `/api/settings/ui`. Browser development reads legacy localStorage once as a fallback and never promotes it over the backend answer. The renderer's session proof remains origin-scoped localStorage authentication data. Query editor split height remains part of the autosaved `editor_layout` session state.
 
 Read clients, capture jobs, writes, and editor sessions use the connector's
 clean environment, an empty temporary HOME, and an exclusive `--defaults-file`.
@@ -3532,7 +3600,9 @@ screen they stop.
 
 Health's Auto-refresh (a `ToolbarSelect`: **While visible**, the default,
 **Off**, **Every 10 s**, **Every 30 s**, **Every 60 s**; the choice is kept
-per connection type in localStorage, `myflames.health.auto.<type>`) needs no
+per connection type in workspace.sqlite3, `health_auto_production` and
+`health_auto_development`; legacy `myflames.health.auto.<type>` localStorage
+values are separate startup fallbacks until the backend answers) needs no
 user action: with any value but Off, the first read starts as soon as Health
 is on screen. `createHealthRefresh` schedules `every` from `finished()`, so
 **While visible** waits one full sampling interval (the Health interval, 1 to
@@ -6243,13 +6313,15 @@ that `~/.ssh/known_hosts` is unchanged.
 
 ## Workspace navigation and configuration controls
 
+The sidebar's right-edge separator uses pointer capture to resize `--sidebar-w` on the document root; `--sidebar-width` aliases it for every fixed layer. Width is clamped to 208–320 px (at least 400 px remains from a 720 px window before compact navigation applies). Its focusable vertical separator exposes current/minimum/maximum ARIA values. Left/Right move 8 px, Shift moves 24 px, and Home, End or double-click restores 208 px. The existing rail/drawer breakpoint stays at 900 px and ignores the stored width. The window footer renders on every ready place, including Home, Settings, Learn and Investigations. Facts retain their existing scoped publishers on the left; the right end owns version, shared update state and update/release actions. At narrower widths the update timestamp hides and outcome text compacts; left facts truncate first. Home has no separate version footer. `.workspace` reserves `--statusbar-h` below every place, retaining the top-level wrappers and sticky headers.
+
 Automatic first reads use `useOpenRead` and the report's connection key. Opening a view without a report for the connection in use reads once; a failed attempt waits for Refresh. Switching connections while the view stays on screen keeps its old report greyed until Refresh or a later reopening. Parameters, Instruments and Users and roles follow this rule too. Health, InnoDB, Locks, Processlist, Waits, I/O, Indexes, Tables and Replication retain their single-flight and stale-response guards. Every `useConnectionReads` request forwards its AbortSignal to `api()`. Tables and Indexes retain schema-size consent and pass visibility to `useSchemaCatalog(connection, enabled)`, including when compact navigation hides their detail. Explicit Refresh and Refresh all remain independent of these automatic-read gates.
 
 Query Digest stores its report as `Bound<DigestReport>` through `useConnectionReads`, keyed by `connectionKey` (profile, endpoint, user, TLS and write policy). Editor and Explain callbacks carry that report key to `QueryLab.openDigest`; stale actions are disabled and rechecked at dispatch. Late responses cannot replace a newer connection's report. Exports name the report's original connection and filter. Their statistics cover only the loaded digests: sums and execution-weighted means, plus the maximum of collected execution maxima. Execution minima, row/lock extrema and percentiles remain unknown; digest averages and per-digest totals are not individual execution samples.
 
 Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog.tsx`; `/api/live/kill/bulk/prepare` then `/api/live/kill/bulk`, `kill-bulk-1.0`, whose `message` reads "Kill sessions finished: N killed, …"). Its **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
 
-Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
+The window status bar reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
 the SQL workspace navigation group.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools; refresh never starts jobs or upgrade checks,
@@ -6259,6 +6331,8 @@ Session editor ownership remain mandatory.
 Back and Forward (`main.tsx` `navHistory`, `QueryLab.tsx`), cross-link chips and `⌘K` object search (`CommandPalette.tsx`, `myflames/schema_browser.py`, `POST /api/live/object-search`):
 - **Back and Forward**: in-memory `navHistory` (capped at 100 entries) records settled places, `Server` and `Workload` views, `Plans` active plan (`selection.plan`) or `Compare` pair (`selection.compare`), and `Query editor` tab and schema-browser reveal (`selection.query = {tabId, reveal}`). `⌘[` and `⌘]` (`Ctrl+[` / `Ctrl+]`, plus `Alt+Left` / `Alt+Right` on Windows and Linux when no `<dialog open>` is active) and the top bar's Back / Forward controls step through the history. Traversal never switches the connection in use; when an entry was recorded on another connection, a notice says `"<label> was open on <entry.connectionName>; this window is on <now.name>. Nothing was switched: views read the connection in use."` Cross-links (`openServerTable`, `openDigest`, `openInstrumentsRow`, `openAudit`, `onNavigatePlace`, `SchemaVersionsPlace` `onOpenSql`, `Server` `onOpenSql` / `onOpenInvestigation`, `openObject` from `⌘K`) capture the origin via `linkOrigin()` and render a `.nav-back-chip` (**Back to `<label>`**) in the top bar that jumps back to the captured origin entry (re-inserting it if aged past 100 entries).
 - **`⌘K` / `Ctrl+K` recent destinations and object search**: when the search input is empty, up to five deduplicated **Recent** destinations from `navHistory` lead the list (`group: "Recent"`). Typing 2 to 128 characters filters commands (ranking commands whose `label` contains every word before keyword or group matches) and searches schema objects on the connection in use: first matching cached schema names from `useSchemaCatalog` (`group: "Database"`), then after a 250 ms debounce calling `POST /api/live/object-search` (`ui._OBJECT_SEARCH_PATHS`, read-only, saved-password helper, 2 s `query_timeout`, tagged `/*myflames:editor*/ `). `schema_browser.object_search` answers `object-search-1.0` (`{schema_version: "object-search-1.0", text, objects, limit: 50, truncated}`) from one `UNION ALL` over `information_schema.{TABLES, ROUTINES, TRIGGERS, EVENTS}` with `LIKE <hex-literal> ESCAPE '!'` (filtering `ROUTINE_TYPE IN ('PROCEDURE', 'FUNCTION')`), ordered by `BINARY obj_name, BINARY obj_schema, obj_kind`, bounded to `OBJECT_SEARCH_LIMIT = 50`. `perf_common.named_rows` reversibly escapes XML-forbidden control characters and its own escape marker before parsing client XML, then restores them in field names and values, so object groups and search retain exact names rather than stripping controls or failing the whole read (lone surrogates become U+FFFD). Choosing a database, table or view opens **Query editor** and calls `revealInSchemaBrowser` (setting the table filter to the table name so targets past the first unfiltered page are reachable in one bounded catalog read); choosing a procedure, function, trigger or event opens `SHOW CREATE {PROCEDURE|FUNCTION|TRIGGER|EVENT} <schema>.<name>` in a new query tab, selected and not run.
+
+The Settings page (`SettingsPage.tsx`, `settings.css`) is a page in the main area, not a place: while it is shown the gear carries `aria-current=page` and no place is current. The gear at the bottom of the sidebar, ⌘, (Ctrl+, on Windows and Linux) and the command palette's Settings action open it (a palette query about the editor opens it at the Query editor section); Escape and Back return to where the user was, skipping the consecutive Settings entries a reload that restored the page can leave, and focus returns to the gear. Its section list (the kit `SourceList`) holds Appearance, Query editor, Workspace, Updates and news and Client tools, with Audit log and About myflames as actions at the bottom; at 720 px and below the list sits above the controls. `main.tsx` loads the page lazily, so the settings UI and `editorSettings.ts` stay out of the entry chunk. Every control keeps its own storage and behavior; the page only lays them out. `test/settings-page.mjs` covers it.
 
 ### Action feedback
 

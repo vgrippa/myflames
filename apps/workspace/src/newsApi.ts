@@ -1,6 +1,6 @@
 // Home news (myflames/news.py): headlines from fixed official feeds, read by
 // the Python backend, never by the page. The Settings switch is shared by the
-// Settings popover and Home through one small store, so turning it off hides
+// Settings page and Home through one small store, so turning it off hides
 // the section at once and no /api/news request follows.
 import { useEffect, useState } from "react";
 import { api } from "./api";

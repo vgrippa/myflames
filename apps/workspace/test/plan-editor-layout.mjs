@@ -30,7 +30,7 @@ async function capture(state, width, theme) {
     return { overflow: document.documentElement.scrollWidth - innerWidth,
       inspector: box('.plan-inspector'), chart: box('.plan-chart'), toolbar: box('.editor-toolbar'),
       toolbarButtons: [...document.querySelectorAll('.editor-toolbar button')].filter(e => e.checkVisibility()).map(e => ({ label: e.getAttribute('aria-label') || e.textContent.trim(), x: e.getBoundingClientRect().x, y: e.getBoundingClientRect().y, width: e.getBoundingClientRect().width })),
-      settings: box('.settings-popover'), schemas: box('.schema-browser') };
+      settings: box('.settings-page'), schemas: box('.schema-browser') };
   });
   measures.push({ state, width, theme, ...m });
   assert.equal(m.overflow, 0, `${state}: no horizontal page overflow`);
@@ -93,8 +93,8 @@ try {
     }
     await h.button('Explore', '.plans-bar ');
     await page.click('button[aria-label="Settings"]');
-    await page.waitForSelector('.settings-popover');
-    if (!baseline) assert.equal(await page.$('.settings-option-row .info-button'), null);
+    await page.waitForSelector('.settings-page');
+    if (!baseline) assert.equal(await page.$('.settings-page .settings-option-row .info-button'), null);
     await capture('settings', width, theme);
     await page.keyboard.press('Escape');
     await h.button('Query editor', '.main-nav ');

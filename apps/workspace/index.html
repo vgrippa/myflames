@@ -14,7 +14,7 @@
     <script>
       try {
         var t = localStorage.getItem("myflames.theme");
-        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        if (__MYFLAMES_THEME_IDS__.includes(t) && t !== "system") document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
   </head>

@@ -173,8 +173,10 @@ try {
   }
   const place = (p, label) => button(p, label, ".main-nav ");
   async function openSettings(p) {
-    if (!(await p.$("#settings-popover"))) await p.click('button[aria-label="Settings"]');
-    await p.waitForSelector("#settings-popover .session-toggle input");
+    if (!(await p.$(".settings-page"))) await p.click('button[aria-label="Settings"]');
+    await p.waitForSelector(".settings-page .source-item");
+    await p.locator(".settings-page .source-item ::-p-text(Workspace)").click();
+    await p.waitForSelector(".settings-page .session-toggle input");
   }
   async function diskHasPassword() {
     for (const name of await fs.readdir(storeDir)) {
@@ -206,7 +208,8 @@ try {
     window.__saveObserver.observe(document.querySelector(".session-status"), { subtree: true, childList: true, characterData: true, attributes: true });
   });
   await page.click('button[aria-label="Settings"]');
-  await button(page, "Audit log", "#settings-popover ");
+  await page.waitForSelector(".settings-page");
+  await button(page, "Audit log", ".settings-nav ");
   await until(page, r => r.state?.mode === "audit", "Audit navigation restored");
   assert.equal(await page.evaluate(() => window.__saveStates.some(s => /Saving…/.test(s))), false);
   await page.evaluate(() => window.__saveObserver.disconnect());
@@ -383,14 +386,13 @@ try {
   // 5. Start fresh offers a backup of unsaved plans, then clears the session.
   await page.reload({ waitUntil: "networkidle0" });
   await chart(page);
-  await page.click('[aria-label="Settings"]');
-  await button(page, "Start fresh", ".settings-menu ");
+  await openSettings(page);
+  await button(page, "Start fresh", ".settings-panel ");
   await page.waitForSelector(".fresh-workspace-sheet[open]");
   await (await page.$(".fresh-workspace-sheet")).screenshot({ path: path.join(directory, "fresh-workspace.png") });
   await button(page, "Cancel", ".fresh-workspace-sheet ");
   assert.equal((await page.$$(".plan-item")).length, 1, "cancel preserves plans");
-  await page.click('[aria-label="Settings"]');
-  await button(page, "Start fresh", ".settings-menu ");
+  await button(page, "Start fresh", ".settings-panel ");
   await button(page, "Download backup and start fresh", ".fresh-workspace-sheet ");
   await page.waitForFunction(() => !document.querySelector(".plan-item"));
   const backupPath = path.join(directory, "unsaved-investigation.json");
@@ -431,6 +433,8 @@ try {
     () => document.querySelector(".session-status")?.dataset.state === "off",
   );
   assert.equal((await status(page))[1], "Autosave is off");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   await button(page, "Explore sample plan");
   await chart(page);
   await new Promise((r) => setTimeout(r, 1500));
@@ -449,6 +453,8 @@ try {
   assert.equal(await page.$eval(".session-toggle input", (e) => e.checked), false);
   // Back on: the current workspace is saved right away.
   await page.click(".session-toggle input");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   await button(page, "Explore sample plan");
   await chart(page);
   await until(page, (s) => s.restore && s.state?.plans.length === 1, "toggle on did not save");
@@ -481,7 +487,7 @@ try {
   await openSettings(page);
   assert.match(await page.$eval("#session-toggle-hint", (e) => e.textContent), /--no-restore/);
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   await page.setViewport({ width: 390, height: 844 });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),

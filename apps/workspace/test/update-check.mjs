@@ -33,7 +33,7 @@ const h = await open("/api/unused-update-test", "update-check", {
 const { page, state } = h;
 const shots = path.resolve(process.env.PERF_SHOTS || h.shots);
 await fs.mkdir(shots, { recursive: true });
-const footer = ".home-version";
+const footer = ".window-statusbar-updates";
 // The visible line: status and time, joined by the separator CSS draws between them.
 const status = (scope = footer) => page.$eval(`${scope} .update-check`, (e) => [...e.children]
   .map((c) => c.textContent.replace(/\s+/g, " ").trim()).join(" · "));
@@ -74,13 +74,15 @@ try {
   // 0. Turn "Check for updates automatically" off so the automatic check's
   // start-up tick (10 s after load) never races the steps below.
   await page.click(".settings-button");
-  await page.waitForSelector("#settings-popover .update-auto-toggle input:not([disabled])");
-  await page.click("#settings-popover .update-auto-toggle");
+  await page.waitForSelector(".settings-page .source-item");
+  await page.locator(".settings-page .source-item ::-p-text(Updates and news)").click();
+  await page.waitForSelector(".settings-page .update-auto-toggle input:not([disabled])");
+  await page.click(".settings-page .update-auto-toggle");
   await page.waitForFunction(() => document.querySelector(".update-auto-toggle input")?.checked === false);
   assert.ok(state.other.some((r) => r.path === "/api/app/update/settings" && r.body.auto_check === false),
     "the automatic check setting was turned off");
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
 
   // 1. Before the first check: the stored status is read, GitHub is not.
   await waitStatus(/Not checked yet/);
@@ -185,8 +187,8 @@ try {
 
   // 9. About myflames: the same status and button, sharing one check.
   await page.click(".settings-button");
-  await page.waitForSelector("#settings-popover");
-  await page.locator("#settings-popover button ::-p-text(About myflames)").click();
+  await page.waitForSelector(".settings-page");
+  await page.locator(".settings-page .source-item ::-p-text(About myflames)").click();
   const about = "dialog.about-dialog";
   await page.waitForSelector(about + "[open]");
   await waitStatus(/^99\.0\.0 available · Checked today at/, about);
@@ -194,7 +196,6 @@ try {
   await page.click(`${about} .update-check-button`);
   await waitStatus(/Checking for updates…/, about);
   await waitStatus(/^Up to date · Checked today at/, about);
-  await waitStatus(/^Up to date · Checked today at/);
   for (const theme of ["light", "dark"]) for (const width of [1440, 720]) {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme }]);
     await page.setViewport({ width, height: width === 720 ? 520 : 900 });
@@ -205,6 +206,10 @@ try {
   }
   await page.keyboard.press("Escape");
   await page.waitForFunction((s) => !document.querySelector(s), {}, about);
+  // Home's footer reads the same stored check once the Settings page closes.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
+  await waitStatus(/^Up to date · Checked today at/);
 
   assert.deepEqual(h.errors, []);
   console.log(`Check for updates passed (${checkCalls()} checks, all from clicks). Screenshots: ${shots}`);

@@ -63,9 +63,43 @@ export async function assertPrivilege(page, selector, state, need, { unverifiedB
   assert.equal(await page.$eval(selector, e => document.activeElement === e), true);
 }
 
-/** The stored preference that docks the Server and Workload list of views
- * (main.tsx); without it the list floats, opened from the view's title. */
-export const DOCK_KEY = "myflames.serverNavCollapsed";
+/** Seed only a throwaway WorkspaceStore, before its server starts. Existing
+ * rows win when onlyMissing is set, including an explicit floating choice. */
+export function seedUiPreferences(store, preferences, { onlyMissing = false } = {}) {
+  const result = spawnSync(process.env.PYTHON || "python3", ["-c", `
+import json, sys
+from contextlib import closing
+from myflames.workspace_store import WorkspaceStore
+store = WorkspaceStore(sys.argv[1])
+changes = json.loads(sys.argv[2])
+if sys.argv[3] == "true" and store.path.exists():
+    with closing(store._connect()) as conn:
+        stored = {row[0] for row in conn.execute("SELECT key FROM settings WHERE key LIKE 'ui.%'")}
+    changes = {key: value for key, value in changes.items() if 'ui.' + key not in stored}
+if changes:
+    store.set_ui_preferences(changes)
+`, store, JSON.stringify(preferences), String(onlyMissing)], {
+    cwd: root, encoding: "utf8", env: { ...process.env, HOME: path.dirname(store), USERPROFILE: path.dirname(store), MYFLAMES_SECRET_BACKEND: "vault" },
+  });
+  if (result.status !== 0) throw new Error(`UI preference seed failed: ${result.stderr}`);
+}
+
+/** Runtime appearance sweeps persist the same value that they paint. Avoid a
+ * reload, which would discard the editor or topology state being measured. */
+export async function setUiPreferences(page, changes) {
+  const preferences = await page.evaluate(async set => {
+    const response = await fetch('/api/settings/ui', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': localStorage.getItem('myflames.session-proof') },
+      body: JSON.stringify({ set }) });
+    if (!response.ok) throw Error(`UI preferences HTTP ${response.status}`);
+    return (await response.json()).preferences;
+  }, changes);
+  if ('theme' in changes) await page.evaluate(theme => {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+  }, preferences.theme);
+  return preferences;
+}
 
 /** Start the workspace, open the Server place, and mock *endpoint*.
  * *extra* maps other paths to fixed responses ({status, body, delay?}), for
@@ -96,6 +130,7 @@ export async function open(endpoint, name, extra = {}, {
     if (result.status !== 0) throw new Error(`seed failed: ${result.stderr}`);
     seeded = JSON.parse(result.stdout || "null");
   }
+  if (list === "docked") seedUiPreferences(store, { server_nav_collapsed: false }, { onlyMissing: true });
   const proc = spawn(
     process.env.PYTHON || "python3",
     ["-c", "import os,sys; from pathlib import Path; import myflames.ui as u; u.ASSET_DIR=Path(os.environ.get('MYFLAMES_TEST_ASSETS',u.ASSET_DIR)); s=u.WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()", store],
@@ -165,12 +200,6 @@ export async function open(endpoint, name, extra = {}, {
       state.delay,
     );
   });
-  if (list === "docked") {
-    // Only when nothing is stored: a test that floats it again keeps that choice across reloads.
-    await page.evaluateOnNewDocument((key) => {
-      try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
-    }, DOCK_KEY);
-  }
   await page.setViewport(viewport);
   if (beforeGoto) await beforeGoto(page);
   await page.goto(url, { waitUntil: "networkidle0" });

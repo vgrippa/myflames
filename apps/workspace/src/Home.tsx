@@ -1,9 +1,8 @@
 // Home is a launcher: the shell owns its title and toolbar, Connections owns
 // server settings, and recent work uses the same compact rows as other places.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { appVersion, getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
+import { getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
 import { Icon } from "./components";
-import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { HomeNews } from "./HomeNews";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
@@ -132,14 +131,6 @@ export function Home({
         </section>
         <HomeNews />
       </div>
-      <footer className="home-version" aria-label="Application version">
-        <strong>myflames {appVersion() || "development"}</strong>
-        <UpdateCheckStatus />
-        <span className="home-version-actions">
-          <CheckForUpdatesButton />
-          <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
-        </span>
-      </footer>
     </section>
   );
 }

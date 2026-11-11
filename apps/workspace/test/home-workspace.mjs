@@ -29,10 +29,10 @@ async function screenshots(name) {
   await page.setViewport({ width: 1440, height: 1000 });
 }
 try {
-  await page.waitForSelector(".home-version");
-  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".home-version")?.textContent || ""));
-  assert.match(await page.$eval(".home-version", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
-  assert.equal(await page.$eval(".home-version a", el => el.href), "https://github.com/vgrippa/myflames/releases");
+  await page.waitForSelector(".window-statusbar-updates");
+  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".window-statusbar-updates")?.textContent || ""));
+  assert.match(await page.$eval(".window-statusbar-updates", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
+  assert.equal(await page.$eval(".window-statusbar-updates a", el => el.href), "https://github.com/vgrippa/myflames/releases");
   assert.equal(h.state.other.some(item => item.path === "/api/app/update/check"), false, "no update check without a click");
   assert.deepEqual(await page.$$eval(".nav-group-label", els => els.map(el => el.textContent)), ["SQL workspace", "Library"]);
   await screenshots("home");

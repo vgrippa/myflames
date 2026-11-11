@@ -643,7 +643,7 @@ side.
   caret, or expands several selections containing the same text.
   The multiple-cursor rows need **Multiple cursors** on, the problem rows
   need **Problem warnings** on; with the setting off, the keys do nothing.
-- **Settings** (the sidebar's Settings popover, **Query editor** group) are
+- **Settings** (the Settings page's **Query editor** section) are
   kept on this computer, not on the server: **Multiple cursors** (on;
   Option/Alt-click, occurrence and add-cursor keys), **Suggestions while
   typing** (on; **Ctrl+Space** also requests suggestions when off, up to the

@@ -44,11 +44,13 @@ async function refresh(mock, line) {
 }
 async function toggleNews() {
   await page.click('button[aria-label="Settings"]');
-  await page.waitForSelector("#settings-popover .news-toggle input");
+  await page.waitForSelector(".settings-page .source-item");
+  await page.locator(".settings-page .source-item ::-p-text(Updates and news)").click();
+  await page.waitForSelector(".settings-page .news-toggle input");
   // One change at a time: the switch is busy until the stored answer, and it
   // keeps keyboard focus meanwhile (aria-disabled, never disabled).
   const whileSaving = await page.evaluate(async () => {
-    const input = document.querySelector("#settings-popover .news-toggle input");
+    const input = document.querySelector(".settings-page .news-toggle input");
     input.focus();
     input.click();
     for (let i = 0; i < 3; i++) await Promise.resolve();
@@ -56,12 +58,12 @@ async function toggleNews() {
       look: input.closest(".checkbox").classList.contains("is-busy") };
   });
   assert.deepEqual(whileSaving, { busy: "true", disabled: false, focused: true, look: true }, "the switch waits for its saved answer and keeps focus");
-  await page.waitForFunction(() => !document.querySelector('#settings-popover .news-toggle input[aria-disabled="true"]'));
-  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector("#settings-popover .news-toggle input")), true,
+  await page.waitForFunction(() => !document.querySelector('.settings-page .news-toggle input[aria-disabled="true"]'));
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".settings-page .news-toggle input")), true,
     "focus stays on the switch after the save");
-  const checked = await page.$eval("#settings-popover .news-toggle input", (e) => e.checked);
+  const checked = await page.$eval(".settings-page .news-toggle input", (e) => e.checked);
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   return checked;
 }
 async function go(place) {
@@ -182,10 +184,13 @@ try {
   assert.equal(state.seen.length, seen, "no /api/news request while the switch is off");
   assert.equal(await page.$(".home-news"), null);
   await page.click('button[aria-label="Settings"]');
-  await page.waitForSelector("#settings-popover .news-toggle input");
-  assert.equal(await page.$eval("#settings-popover .news-toggle input", (e) => e.checked), false, "the switch is stored");
+  await page.waitForSelector(".settings-page .source-item");
+  await page.locator(".settings-page .source-item ::-p-text(Updates and news)").click();
+  await page.waitForSelector(".settings-page .news-toggle input");
+  assert.equal(await page.$eval(".settings-page .news-toggle input", (e) => e.checked), false, "the switch is stored");
   assert.match(await page.$eval("#news-toggle-hint", (e) => e.textContent), /while Home is open/);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
 
   // On again: one read, and none while another place is on screen.
   assert.equal(await toggleNews(), true);

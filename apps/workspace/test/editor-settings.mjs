@@ -1,10 +1,10 @@
 // The Query editor settings store in src/editorSettings.ts, shared by the
-// Settings popover, the command palette and the editor: the defaults show
-// until the first read lands, one read is shared, writes go out one at a time
-// in the order they were made, only the latest answer is published, a failed
-// latest write reads the stored value again, and a change made while the
-// first read is on its way wins over that read. No build or browser: the
-// module is bundled with esbuild against an in-memory /api/settings/editor.
+// Settings page and the editor: the defaults show until the first read lands,
+// one read is shared, writes go out one at a time in the order they were
+// made, only the latest answer is published, a failed latest write reads the
+// stored value again, and a change made while the first read is on its way
+// wins over that read. No build or browser: the module is bundled with
+// esbuild against an in-memory /api/settings/editor.
 // Run: node test/editor-settings.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -58,7 +58,7 @@ const reset = () => { server.stored = { ...DEFAULTS }; server.sent.length = 0; s
   assert.deepEqual(mod.EDITOR_SETTING_KEYS.map((k) => mod.EDITOR_SETTING_LABELS[k]), [
     "Multiple cursors", "Suggestions while typing", "Close brackets and quotes",
     "Wrap long lines", "Problem warnings", "Details on hover",
-  ], "the labels the Settings popover and the palette show");
+  ], "the labels the Settings page shows");
 }
 
 // The defaults show until the first read lands; one read is shared.
@@ -138,7 +138,7 @@ const reset = () => { server.stored = { ...DEFAULTS }; server.sent.length = 0; s
 }
 console.log("Editor settings store: defaults, shared read, ordered writes, re-read after a failed write, change during read passed.");
 
-// Render the real popover callbacks with stubbed hooks and controls. This
+// Render the real section's callbacks with stubbed hooks and controls. This
 // checks overlapping saves without a browser, transport or running service.
 {
   const root = fileURLToPath(new URL("..", import.meta.url));
@@ -229,9 +229,9 @@ console.log("Editor settings store: defaults, shared read, ordered writes, re-re
     change("hover_info", false);
     unmount(); const before = updates;
     pending[5].reject(Error("unmounted")); await tick();
-    assert.equal(updates, before, "settled saves cannot update an unmounted popover");
+    assert.equal(updates, before, "settled saves cannot update an unmounted section");
   } finally {
     unmount(); delete globalThis.__settingsUi;
   }
-  console.log("Editor settings popover: concurrent keys, independent errors, stale saves, mounted alerts and unmount passed.");
+  console.log("Editor settings section: concurrent keys, independent errors, stale saves, mounted alerts and unmount passed.");
 }

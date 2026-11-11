@@ -1,3 +1,4 @@
+import { setUiPreferences } from "./perf-harness.mjs";
 // Build first: npm run build && node test/editor-insights.mjs.
 // The real isolated workspace serves assets and saves UI state. All database
 // and editor requests are intercepted; no fixture can contact a server.
@@ -297,7 +298,7 @@ try {
   // Both themes at desktop/minimum width; readable summary, no page overflow.
   for (const scheme of ["light", "dark"]) for (const width of [1440, 720]) {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
-    await page.evaluate(theme => { localStorage.setItem("myflames.theme", theme); document.documentElement.dataset.theme = theme; }, scheme);
+    await setUiPreferences(page, { theme: scheme });
     await page.setViewport({ width, height: width === 720 ? 720 : 1000 });
     await page.evaluate(() => document.fonts.ready);
     // A theme switch animates colors: shoot the settled frame, not a mid-transition one.

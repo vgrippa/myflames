@@ -1407,7 +1407,7 @@ _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/
                      '/api/app/update/stage', '/api/app/update/settings')
 #: Local application settings kept in the workspace store (workspace_store.py):
 #: the Query editor's settings. No connection, no server read, no audit.
-_SETTINGS_PATHS = ('/api/settings/editor',)
+_SETTINGS_PATHS = ('/api/settings/editor', '/api/settings/ui')
 # Application client selection is separate from saved connection credentials.
 _CLIENT_PATHS = ('/api/client/tools', '/api/client/tools/choose')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
@@ -1518,6 +1518,15 @@ def _settings_response(path, payload, workspace):
     """Local application settings in the workspace store; never opens a connection."""
     if workspace is None:
         raise ValueError("This operation requires a running workspace.")
+    if path == "/api/settings/ui":
+        from .workspace_store import UI_PREFERENCE_DEFAULTS
+        if set(payload) - {"set"}:
+            raise ValueError("Unexpected UI preferences field.")
+        if "set" in payload:
+            workspace.store.set_ui_preferences(payload["set"])
+        return {"schema_version": "ui-preferences-1.0",
+                "preferences": workspace.store.ui_preferences(),
+                "defaults": dict(UI_PREFERENCE_DEFAULTS)}
     if path == "/api/settings/editor":
         from .workspace_store import EDITOR_SETTING_DEFAULTS
         if set(payload) - {"set"}:
@@ -2586,6 +2595,17 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/":
             index = (ASSET_DIR / "index.html").read_text(encoding="utf-8")
+            # Only a validated registry id may enter HTML. This also rejects
+            # malformed rows in a store written by an older or external tool.
+            from .workspace_store import UI_THEME_IDS
+            try:
+                theme = self.server.store.ui_preferences()['theme']
+            except Exception:
+                # Preferences must never prevent startup. Do not log storage
+                # errors, which may contain private paths or stored values.
+                theme = None
+            if theme in UI_THEME_IDS and theme != 'system':
+                index = index.replace('<html lang="en">', '<html lang="en" data-theme="%s">' % theme, 1)
             # About myflames shows the installed package version.
             index = index.replace("__MYFLAMES_VERSION__", html.escape(__version__))
             index = index.replace("</head>", _LAUNCH_REFUSAL_STYLE + "</head>")

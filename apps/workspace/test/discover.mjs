@@ -9,12 +9,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { SERVER_VIEW_LABELS, WORKLOAD_VIEW_LABELS, DOCK_KEY } from "./perf-harness.mjs";
+import { SERVER_VIEW_LABELS, WORKLOAD_VIEW_LABELS, seedUiPreferences } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-discover-"));
 const shots = process.env.PERF_SHOTS || directory;
 await fs.mkdir(shots, {recursive:true});
+seedUiPreferences(path.join(directory, "workspace.sqlite3"), { server_nav_collapsed: false }, { onlyMissing: true });
 const server = spawn(
   process.env.PYTHON || "python3",
   [
@@ -162,9 +163,6 @@ try {
   await page.setViewport({ width: 1440, height: 1000 });
   // The list of views docked, as a person who docked it: this suite asserts
   // the list's markers and keys (server-nav covers the floating default).
-  await page.evaluateOnNewDocument((key) => {
-    try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
-  }, DOCK_KEY);
   await page.goto(url, { waitUntil: "networkidle0" });
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
   const text = (selector) => page.$eval(selector, (e) => e.textContent);

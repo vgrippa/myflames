@@ -229,7 +229,8 @@ assert.equal(defer.timers.size, 0);
 console.log("health refresh scheduling unit: ok");
 
 // Render the actual Health component and connection-read hook without a DOM
-// or socket. Only transport and React's hook storage are replaced. This keeps
+// or socket. Transport, persisted UI preferences and React's hook storage
+// are replaced (the preference queue has its own unit suite). This keeps
 // sharedRead and the generation counters used by Refresh all under test.
 const componentBuild = await build({
   stdin: {
@@ -240,6 +241,11 @@ const componentBuild = await build({
   jsx: "automatic", loader: { ".css": "empty", ".svg": "text" },
   external: ["react", "react-dom", "react-dom/server"], logLevel: "silent",
   plugins: [{ name: "health-transport", setup(b) {
+    b.onResolve({ filter: /^\.\/uiPreferences$/ }, args => args.importer.endsWith("/Health.tsx")
+      ? { path: "health-preferences", namespace: "preferences" } : undefined);
+    b.onLoad({ filter: /.*/, namespace: "preferences" }, () => ({
+      contents: "export const useUiPreferences = () => environment.preferences; export const setUiPreference = (key,value) => { environment.preferences[key]=value; return Promise.resolve(); };", loader: "js",
+    }));
     b.onResolve({ filter: /^\.\/api$/ }, args => args.importer.endsWith("/Health.tsx")
       ? { path: "health-transport", namespace: "test" } : undefined);
     b.onLoad({ filter: /.*/, namespace: "test" }, () => ({
@@ -318,6 +324,7 @@ function healthHarness(initialAuto = null) {
   let connection = { host: "health-unit", port: 3306, user: "reader", ssl_mode: "disabled" };
   const view = { offsetParent: {}, parentElement: null, querySelector: () => null };
   environment.localStorage.getItem = () => initialAuto;
+  environment.preferences = { health_auto_production: healthAutoPreference(initialAuto), health_auto_development: -1 };
   environment.read = (path, body, signal) => {
     assert.equal(path, "live/health");
     let resolve, reject;
@@ -499,3 +506,23 @@ for (const fixture of healthFixtures) {
   assert.equal(timers.size, 0);
 }
 console.log("health connection switch: 2 cases passed");
+
+// The type, rather than the server identity, selects the stored refresh choice.
+{
+  const h = healthHarness("0");
+  try {
+    let tree = h.render();
+    const auto = tree => nodes(tree, n => n.props.label === "Auto-refresh")[0].props.value;
+    assert.equal(auto(tree), 0, "an omitted type uses Production");
+    h.select("Auto-refresh", 30);
+    tree = h.switchConnection({ ...h.connection, type: "development" });
+    assert.equal(auto(tree), -1, "Development starts with its own default");
+    h.select("Auto-refresh", 60);
+    assert.equal(environment.preferences.health_auto_production, 30);
+    assert.equal(environment.preferences.health_auto_development, 60);
+    tree = h.switchConnection({ ...h.connection, type: "production" });
+    assert.equal(auto(tree), 30, "switching back restores Production");
+  } finally { h.close(); }
+  assert.equal(timers.size, 0);
+}
+console.log("health per-type preference selection: passed");

@@ -51,6 +51,8 @@ URL. If browser storage is blocked, the current tab works but cannot recover
 after a reload without a fresh launch. See the [authentication contract](DEVELOPER_REFERENCE.md#local-authentication-and-request-limits).
 
 
+Drag the sidebar's right edge to resize it (208–320 px), or focus the edge and use Left and Right. Shift moves it in larger steps; double-click, Home or End restores 208 px. The compact rail and drawer stay unchanged in narrow windows. Width, theme, Server navigation and Health auto-refresh choices survive app restarts.
+
 ## Find your way around
 
 Actions show a busy label and keep keyboard focus while waiting. Top statements,
@@ -64,7 +66,7 @@ The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
-| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which checks on demand (the app also checks at start and once a day while **Settings > Check for updates automatically** is on) and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). When a current check finds a newer version, a round badge beside the flame logo at the top of the sidebar shows the update available, the download's progress, preparing or ready, and while an update is pending the Settings popover lists **Update available…**, **Update progress…** or **Restart to update…**; either opens the Software update dialog, whose **Update** stages the verified update file and **Restart to update** installs it in place. About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
+| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits in the window status bar on every screen with **Check for updates**, which checks on demand (the app also checks at start and once a day while **Settings > Check for updates automatically** is on) and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). When a current check finds a newer version, a round badge beside the flame logo at the top of the sidebar shows the update available, the download's progress, preparing or ready, and while an update is pending the Settings page's Updates and news section lists **Update available…**, **Update progress…** or **Restart to update…**; either opens the Software update dialog, whose **Update** stages the verified update file and **Restart to update** installs it in place. About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes; while Save is running it continues and reports its outcome in the window |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Query digest** | Right below the Query editor: statement rankings with a named source, totals, a sortable table and a shared inspector. **Open in Query editor** and **Explain** are in the inspector and row menu; **Export** offers Text report and CSV. See [Query digest](#query-digest) |
@@ -81,8 +83,8 @@ The sidebar separates where you go from what you have open:
 | **Investigations** | Saved investigations: search, open, delete; an investigation saved by Health's **Capture when…** lists its **Evidence** (processlist, InnoDB status, locks) with Copy and Download. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
 
-The app follows the system light or dark appearance. Check chart labels,
-Compare highlights, tables, dialogs, and Audit status colors in both appearances;
+System follows the operating system light or dark appearance. Search (⌘K / Ctrl+K) offers `Theme: <name>` for every app-wide palette. Check chart labels,
+Compare highlights, tables, dialogs, and Audit status colors in each theme;
 status text and icons remain available alongside color.
 
 ### Query editor results and connection changes
@@ -1082,7 +1084,8 @@ screen is highlighted; an open plan is highlighted while Plans shows it.
 
 The footer holds one status: **All changes saved**, **Saving…**, or **Not
 saved:** with the reason. **Settings**, next to it, opens a compact menu (Escape
-or a click outside closes it) with the appearance (System, Light, Dark),
+or a click outside closes it) with the appearance (System, Light, Dark; named
+themes are available through Search as **Theme: &lt;name&gt;**),
 **Restore workspace on startup** (its hint: off clears the saved workspace, and
 passwords are never saved in it),
 **Show MySQL and MariaDB news on Home** (on by default; off hides News and stops
@@ -2270,7 +2273,7 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 - Home news (`/api/news`, `news-1.0`, and `/api/news/settings` for the Settings switch); see [Session and scope](#session-and-scope).
 - Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`, which also returns `databases`, `/api/ssh/hosts` for the SSH host pick list, `/api/live/readiness` for the cached server facts on Home, and `/api/connections/import` for MySQL Workbench and DBeaver imports).
 - Saved queries (`/api/editor/saved/list`, `save`, `rename`, `move`, `delete`; local only).
-- Query editor settings (`/api/settings/editor`: the Settings popover's Query editor group, kept on this computer; local only) and the editor's system-variable names (`/api/config/versions/names`, answered offline from the shipped parameter version catalogs).
+- Query editor settings (`/api/settings/editor`: the Settings page's Query editor section, kept on this computer; local only) and the editor's system-variable names (`/api/config/versions/names`, answered offline from the shipped parameter version catalogs).
 - Schema versions (`/api/schema-versions/*`, including `sync` for a new choice of objects and `lint` for Checks).
 - CSV import (`/api/import/csv/choose`, `open-path`, `inspect`, `plan`, `apply`, `progress` and `stop`; apply is a reviewed write).
 - Parameter snapshots and server comparison (`/api/config/snapshots/list`, `save`, `get`, `delete`, `/api/config/compare`, `/api/accounts/compare`, `/api/accounts/export`; each side reads with its own connection and nothing is executed).
