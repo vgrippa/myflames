@@ -1147,22 +1147,23 @@ export function Server({
   // ⌥⌘R (Alt+Ctrl+R elsewhere) runs Refresh all while Server is on screen;
   // Escape stops a run unless something else used it (a popover, the inspector).
   const running = refresh?.state === "running" && !!refreshControl.current;
-  // Starting from the Refresh menu closes it under the pointer, which leaves
-  // focus on the page: give it to Stop, the control for the run (focusable
-  // while not yet armed, aria-disabled).
+  // The menu vanishes after the first click. A repeated click can then hit
+  // empty content and blur the trigger, even after several animation frames.
+  // During the same grace period that keeps that click from stopping the run,
+  // repair focus after the click itself, without taking it from another control.
   useEffect(() => {
-    if (!running) return;
-    // The browser may move focus to the page again while the toolbar settles
-    // (the menu item turns disabled, the menu closes): check over two frames.
+    if (!running || stopArmed) return;
+    const place = placeRef.current;
     const toStop = () => {
       const active = document.activeElement;
-      if (!active || active === document.body) document.querySelector<HTMLButtonElement>(".server-place .refresh-all-stop")?.focus();
+      if ((!active || active === document.body) && Date.now() < stopArmedAt.current) {
+        place?.querySelector<HTMLButtonElement>(".refresh-all-stop")?.focus({ preventScroll: true });
+      }
     };
     toStop();
-    let second = 0;
-    const first = requestAnimationFrame(() => { toStop(); second = requestAnimationFrame(toStop); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
-  }, [running]);
+    place?.addEventListener("click", toStop);
+    return () => place?.removeEventListener("click", toStop);
+  }, [running, stopArmed]);
   useWindowStatus(`${place || "server"}:${activeKey}`, {
     connectionState: connectionLabel(connection),
     engineVersion: lastRead.key === activeKey ? lastRead.engineVersion : undefined,

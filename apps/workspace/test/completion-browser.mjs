@@ -74,6 +74,26 @@ try {
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await openConnectionPicker(page);
   await page.waitForFunction(B=>!!document.querySelector(`.window-toolbar option[value="${B}"]`),{},B);await page.keyboard.press('Escape');await chooseConnection(page,A);
   await setEditorText(page,'');
+  // A mouse-accepted option must leave Ctrl+Space usable without refocusing.
+  await set('SELECT * FROM u|');await has('users');
+  const mouseOptionId=await page.$$eval('.sql-completion-option',rows=>
+    rows.find(row=>row.querySelector('.sql-completion-label')?.textContent==='users')?.id);
+  assert.ok(mouseOptionId,'the users option has a mouse-click target');
+  await page.click(`.sql-completion-option[id="${mouseOptionId}"]`);
+  await page.waitForFunction(()=>document.querySelector('.sql-editor')?.value==='SELECT * FROM users',{timeout:2000});
+  assert.equal(await value(),'SELECT * FROM users','mouse acceptance inserts the table name');
+  await page.waitForFunction(()=>!document.querySelector('.sql-completion'),{timeout:2000});
+  assert.equal(await page.$eval(EDITOR,e=>e.getAttribute('aria-expanded')),'false','mouse acceptance closes the list');
+  assert.ok(await page.$eval(EDITOR,e=>e.contains(document.activeElement)),'mouse acceptance keeps editor focus');
+  await page.keyboard.press('End');
+  assert.equal(await page.$eval(EDITOR,e=>e.selectionStart),'SELECT * FROM users'.length,'End moves the caret to the document end without clicking');
+  await shortcut('Space');
+  await page.waitForFunction(()=>[...document.querySelectorAll('.sql-completion-option .sql-completion-label')]
+    .some(e=>e.textContent==='users'&&e.getClientRects().length),{timeout:2000});
+  assert.equal(await page.$eval(EDITOR,e=>e.getAttribute('aria-expanded')),'true','Ctrl+Space reopens the list after mouse acceptance');
+  console.log('PASS: Ctrl+Space reopens suggestions within 2 s after mouse acceptance without clicking the editor.');
+  await page.keyboard.press('Escape');
+  if (!process.env.ONLY_MOUSE_ACCEPT) {
   // Keywords come from the connected engine and release (the mocked MySQL
   // 8.4.3: OPTIMIZER_COSTS is not in the fallback vocabulary). The loop also
   // waits for the privileges report that supplies the engine and version.
@@ -193,4 +213,5 @@ try {
   for(let i=0;i<100&&!seen.some(s=>s.path==='/api/editor/run');i++)await pause(20);
   assert.ok(seen.some(s=>s.path==='/api/editor/run'),'Run shortcut is never captured by completion');
   assert.deepEqual(errors,[]);console.log(`Completion browser checks passed. Screenshots: ${dir}`);
+  }
 } finally {await browser?.close();server.kill('SIGTERM');}

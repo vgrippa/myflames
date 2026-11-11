@@ -3469,14 +3469,18 @@ main:has(> .library) { padding: 0; max-width: none; }
   margin-top: var(--space-1);
 }
 
-/* Home keeps connection management beside a single Recent work list. */
+/* Home keeps connection management beside a single Recent work list.
+   A bounded launcher scrolls long forms above the fixed window footer;
+   a minimum height alone lets their controls run underneath it. */
 .home {
-  min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+  height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
   display: flex;
   flex-direction: column;
 }
 .home-launcher {
   display: grid;
+  min-height: 0;
+  overflow: auto;
   /* Recent work is a list of names: it needs less room than the
      connections table beside it. Both panes run down to the version
      footer, so the divider between them is full height. */
@@ -3704,6 +3708,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 }
 @media (max-width: 650px) {
   .home {
+    height: auto;
     min-height: 0;
   }
   .pane-head {

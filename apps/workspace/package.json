@@ -115,7 +115,7 @@
     "test:sql-ident": "node test/sql-ident.mjs",
     "test:duration-text": "node test/duration-text.mjs",
     "test:latency-histogram": "node test/latency-histogram.mjs",
-    "test:action-feedback": "npm run build && node test/action-feedback-regressions.mjs && node test/action-feedback-unit.mjs && node test/action-feedback.mjs",
+    "test:action-feedback": "npm run build && node test/action-feedback-regressions.mjs && node test/server-refresh-focus-unit.mjs && node test/action-feedback-unit.mjs && node test/action-feedback.mjs",
     "test:perf-regressions": "node test/performance-regressions.mjs && node test/perf-budgets-regressions.mjs",
     "test:perf-budgets": "npm run build && node test/perf-budgets.mjs",
     "test:perf-measure": "node test/perf-measure.mjs",

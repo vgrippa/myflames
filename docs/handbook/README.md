@@ -8,6 +8,7 @@ Markdown chapters here; do not maintain a second prose copy in the website.
 ## Start here
 
 - [Installation & first steps](quickstart.md)
+- [How-to guides](howto.md)
 - [Why myflames](motivation.md)
 
 ## Workflows

@@ -169,7 +169,11 @@ const localTree = new Tree(dir({
 }), '/Users/me');
 
 const NAMES = { c1: 'lab-box', c2: 'prod-db-1', c3: 'new-box' };
+const uiDefaults = { theme: 'system', inspector_width: 340, explain_format: 'table',
+  files_show_hidden: false, files_transfers_open: true, sidebar_width: 208,
+  server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1 };
 const backend = {
+  preferences: { ...uiDefaults },
   localTransfers: true,
   failures: new Map(), // "remote:<path>" → {error, code}
   delays: new Map(), // "remote:<path>" → ms
@@ -218,6 +222,9 @@ const fail = (error, code) => ({ status: 400, body: code ? { error, code } : { e
 async function answer(route, body) {
   switch (route) {
     case 'auth/session': return { body: { token: 't' } };
+    case 'settings/ui':
+      Object.assign(backend.preferences, body.set || {});
+      return { body: { schema_version: 'ui-preferences-1.0', preferences: { ...backend.preferences }, defaults: uiDefaults } };
     case 'lifecycle/choose-directory': return { body: { path: '/Volumes/Backup', cancelled: false } };
     case 'files/remote/list':
     case 'files/local/list': {
@@ -397,6 +404,11 @@ try {
   const selected = (side) => page.$$eval(`${pane(side)} .files-grid-body [aria-selected="true"]`, (els) => els.map((e) => e.dataset.name));
   const pathOf = (side) => page.$eval(`${pane(side)} .files-crumbs`, (e) => e.dataset.path);
   const summary = (side) => page.$eval(`${pane(side)} .files-pane-summary`, (e) => e.textContent);
+  const preference = (key, value) => page.waitForFunction(async (key, value) => {
+    const token = localStorage.getItem('myflames.session-proof');
+    const reply = await fetch('/api/settings/ui', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': token }, body: '{}' }).then(r => r.json());
+    return reply.preferences?.[key] === value;
+  }, {}, key, value);
   async function settled(side, p) {
     await page.waitForFunction((s, want) => {
       const crumbs = document.querySelector(`[data-side="${s}"] .files-crumbs`);
@@ -529,7 +541,7 @@ try {
   await page.evaluate(() => [...document.querySelectorAll('.files-toolbar .checkbox')].find((l) => l.textContent.includes('Show hidden files')).click());
   await page.waitForSelector(row('remote', '.hidden'));
   assert.ok((await names('remote')).includes('.config'));
-  assert.equal(await page.evaluate(() => localStorage.getItem('myflames.files.showHidden')), '1');
+  await preference('files_show_hidden', true);
   assert.equal(await summary('remote'), '9 items');
   assert.ok((await names('local')).includes('.zshrc'), 'the switch covers both panes');
   await page.evaluate(() => [...document.querySelectorAll('.files-toolbar .checkbox')].find((l) => l.textContent.includes('Show hidden files')).click());
@@ -1073,11 +1085,11 @@ try {
   await sleep(2500);
   assert.equal(since(polls, 'files/jobs').length, 0, 'no polling while nothing is active');
   await page.click('.files-transfers-toggle');
-  assert.equal(await page.evaluate(() => localStorage.getItem('myflames.files.transfersOpen')), '0');
+  await preference('files_transfers_open', false);
   assert.ok(await page.$eval('.files-transfers-body', (e) => e.hidden));
   m = mark();
   await page.click('.files-transfers-toggle');
-  assert.equal(await page.evaluate(() => localStorage.getItem('myflames.files.transfersOpen')), '1');
+  await preference('files_transfers_open', true);
   await one(m, 'files/jobs', 'opening Transfers wakes the poll');
 
   step('pane Refresh and F5 keep the selection and send one request');

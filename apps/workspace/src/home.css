@@ -18,7 +18,7 @@
 .about-updates .update-check-download { padding-block: 0; }
 .about-updates .update-check { flex-direction: column; align-items: flex-start; }
 .about-updates .update-check-time { color: var(--ink-muted); }
-.home-workflows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); padding: var(--space-3) var(--space-4); gap: var(--space-2); }
+.home-workflows { flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); padding: var(--space-3) var(--space-4); gap: var(--space-2); }
 .home-workflows button { display: flex; align-items: center; text-align: left; gap: var(--space-3); padding: var(--space-3); border: 0; background: transparent; color: var(--ink); border-radius: var(--radius-md); min-width: 0; }
 .home-workflows button:hover { background: var(--surface-hover); }
 .home-workflows button > svg { flex: none; color: var(--accent-text); }

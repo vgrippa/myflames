@@ -13,7 +13,7 @@
 .settings-nav {
   position: sticky;
   top: var(--topbar-height);
-  max-height: calc(100dvh - var(--topbar-height));
+  max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
   overflow: auto;
   padding: var(--space-3) var(--space-2) var(--space-4);
 }

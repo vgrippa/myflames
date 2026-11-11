@@ -73,6 +73,12 @@ export function loadUiPreferences(): Promise<UiPreferences> {
   }
   return loading;
 }
+/** Let startup render while a slow read continues to publish through the listeners. */
+export async function loadUiPreferencesWithin(timeoutMs = 1500): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { await Promise.race([loadUiPreferences(), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]); }
+  finally { clearTimeout(timer); }
+}
 /** Optimistic display, serialized writes and latest-answer publication. A
  * failed latest write re-reads the server instead of guessing its outcome. */
 export function setUiPreference<K extends keyof UiPreferences>(key: K, value: UiPreferences[K]): Promise<void> {

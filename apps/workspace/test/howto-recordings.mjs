@@ -371,10 +371,8 @@ const GUIDES = [
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
     await rec.hold(350);
     await rec.caption("Tab");
-    console.log(`  [suggestions] before Tab value=${JSON.stringify(await page.$eval(EDITOR, (el) => el.value))} tooltip=${!!(await page.$(".cm-tooltip-autocomplete"))} sel=${await page.$eval(".cm-tooltip-autocomplete li[aria-selected=true]", (e) => e.textContent).catch(() => "none")} focus=${await page.$eval(EDITOR, (el) => el.contains(document.activeElement))}`);
     await page.keyboard.press("Tab");
     await pause(300);
-    console.log(`  [suggestions] after Tab value=${JSON.stringify(await page.$eval(EDITOR, (el) => el.value))}`);
     await page.waitForFunction(() => document.querySelector(".sql-editor")?.value === "SELECT");
     await rec.hold(350);
     await rec.caption("type: FROM o");
@@ -399,6 +397,12 @@ const GUIDES = [
     await pickCompletion(page, "status");
     await page.waitForFunction(() => document.querySelector(".sql-editor")?.value.startsWith("SELECT o.status"));
     await rec.hold(400);
+    // On-demand list at the end of the statement: mid-token (right after the
+    // accepted word) the list is empty, so move to the end of the line first.
+    p = await posPoint(page, 1, 7);
+    await page.mouse.click(p.x, p.y);
+    await page.keyboard.press("End");
+    await pause(150);
     await rec.caption("Ctrl+Space");
     await press(page, "Control", "Space");
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
@@ -412,16 +416,16 @@ const GUIDES = [
     const { page } = h;
     await openEditor(h);
     await setEditorText(page, RUN_SQL);
-    await rec.hold(400);
+    await rec.hold(700);
     await rec.caption("⌘Enter");
     await press(page, "Meta", "Enter");
     await page.waitForFunction(() => /24 rows/.test(document.body.textContent));
-    await rec.hold(600);
+    await rec.hold(900);
     await rec.caption("click Explain");
     await page.click("[data-action=explain]");
     await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
-    await rec.hold(700);
+    await rec.hold(1000);
     await rec.caption("click Explore");
     const explore = await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .find((b) => b.textContent.trim() === "Explore" && b.getClientRects().length));
@@ -429,7 +433,7 @@ const GUIDES = [
     await explore.dispose();
     await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
     await rec.caption("");
-    await rec.hold(400);
+    await rec.hold(900);
   }],
   ["find-replace", async (h, rec) => {
     const { page } = h;
@@ -458,13 +462,13 @@ const GUIDES = [
     await rec.caption("click Replace all");
     await clickButton(page, "Replace all", ".sql-find");
     await page.waitForFunction(() => (document.querySelector(".sql-editor")?.value.match(/state =/g) || []).length === 3);
-    await rec.hold(600);
+    await rec.hold(900);
     await rec.caption("⌘Z");
     await page.$eval(EDITOR, (el) => el.focus());
     await press(page, "Meta", "z");
     await page.waitForFunction(() => (document.querySelector(".sql-editor")?.value.match(/status =/g) || []).length === 3);
     await rec.caption("");
-    await rec.hold(300);
+    await rec.hold(500);
   }],
   ["settings-theme", async (h, rec) => {
     const { page } = h;
@@ -477,16 +481,16 @@ const GUIDES = [
     await page.click('[data-theme-id="dark"]');
     await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
     await rec.hold(800);
-    await rec.caption("click Light");
-    await page.click('[data-theme-id="light"]');
-    await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+    await rec.caption("click System");
+    await page.click('[data-theme-id="system"]');
+    await page.waitForFunction(() => !document.documentElement.dataset.theme);
     await rec.hold(800);
     await rec.caption("click Query editor");
     await page.click("#settings-section-editor");
     await page.waitForFunction(() => /Multiple cursors/.test(document.querySelector(".settings-panel")?.textContent || ""));
     await rec.hold(350);
     const toggle = async (on) => {
-      await page.locator('.settings-editor-group .check-field:has-text("Multiple cursors")').click();
+      await page.locator('.settings-page .settings-editor-group .session-toggle ::-p-text(Multiple cursors)').click();
       await page.waitForFunction((want) => {
         const field = [...document.querySelectorAll(".settings-editor-group .check-field")]
           .find((f) => /Multiple cursors/.test(f.textContent));
@@ -499,7 +503,7 @@ const GUIDES = [
     await rec.caption("Multiple cursors: on");
     await toggle(true);
     await rec.caption("");
-    await rec.hold(300);
+    await rec.hold(800);
   }],
   ["layout", async (h, rec) => {
     const { page } = h;
@@ -517,7 +521,7 @@ const GUIDES = [
     await drag(page, from, { x: from.x + 80, y: from.y });
     const widened = await page.$eval(".sidebar-resizer", (e) => Number(e.getAttribute("aria-valuenow")));
     assert.ok(widened > 208, `sidebar widened (${widened})`);
-    await rec.hold(400);
+    await rec.hold(800);
     // Query editor splitter: drag the editor taller.
     const splitter = await (await page.waitForSelector(".editor-splitter")).boundingBox();
     await rec.caption("drag editor splitter");
@@ -525,15 +529,16 @@ const GUIDES = [
     await drag(page, sfrom, { x: sfrom.x, y: sfrom.y + 90 });
     const taller = await page.$eval(".editor-splitter", (e) => Number(e.getAttribute("aria-valuenow")));
     assert.ok(taller > 208, `editor grew (${taller})`);
-    await rec.hold(400);
-    // Double-click the sidebar edge to reset it.
+    await rec.hold(800);
+    // Double-click the sidebar edge to reset it (the editor splitter has only
+    // drag and arrow keys: QueryLab.tsx "editor-splitter").
     box = await (await page.waitForSelector(".sidebar-resizer")).boundingBox();
     await rec.caption("double-click to reset");
     const p = resizerPoint();
     await page.mouse.click(p.x, p.y, { clickCount: 2 });
     await page.waitForFunction(() => document.querySelector(".sidebar-resizer")?.getAttribute("aria-valuenow") === "208");
     await rec.caption("");
-    await rec.hold(300);
+    await rec.hold(700);
   }],
 ];
 

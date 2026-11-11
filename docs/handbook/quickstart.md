@@ -8,7 +8,7 @@ myflames is a desktop performance workspace for MySQL, MariaDB and Percona Serve
 
 Download the signed, notarized `.dmg` from [official downloads](https://github.com/vgrippa/myflames/releases/latest), open it, and drag `myflames.app` to Applications. Open the app from Applications.
 
-The current downloadable release checked for this site is **3.4.0**. A macOS Intel binary is not advertised in this release.
+The current downloadable release checked for this site is **3.4.1**. A macOS Intel binary is not advertised in this release.
 
 ### Windows x64, preview
 
@@ -21,6 +21,8 @@ The Windows build is a preview tested on Windows 11 x64. A crash can leave a sta
 myflames checks for a newer release when it starts and once a day while **Settings > Check for updates automatically** is on (the default); **Check for updates** in the window status bar on every screen and About myflames checks on demand. When an update is available, a badge beside the logo at the top of the sidebar follows the download until the update is ready. Choose **Update**, then **Restart to update**, or let the update install when you next quit the app. On macOS, keep `myflames.app` in your Applications folder so it can update in place. On Windows the update installs silently after the app quits.
 
 ## Appearance
+
+Try the step-by-step guides for [settings and themes](howto.md#settings-and-themes) and [layout](howto.md#layout).
 
 Choose a theme in **Settings > Appearance**, where a card per theme previews its colors, or open **Search…** (⌘K on macOS, Ctrl+K on Windows) and type **Theme:**. Available themes are System, Light, Dark, Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. The choice is kept on this computer and applies to navigation, views, tables, dialogs, the Query editor and charts. System follows your operating system's light or dark appearance.
 

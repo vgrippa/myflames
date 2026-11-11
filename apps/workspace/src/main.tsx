@@ -26,7 +26,7 @@ import {
   type View,
 } from "./api";
 import { Icon, ImportDialog, type IconName } from "./components";
-import { currentUiPreferences, loadUiPreferences, setUiPreference, useUiPreferences } from "./uiPreferences";
+import { currentUiPreferences, loadUiPreferencesWithin, setUiPreference, useUiPreferences } from "./uiPreferences";
 import { THEME_CHOICES, applyTheme } from "./themes";
 import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
@@ -1785,7 +1785,7 @@ function App() {
     setConfirmFresh(false);
   }
   /** Settings: a page of its own, not a place in the sidebar's navigation.
-   * The gear, ⌘, / Ctrl+, and the palette open it; Back (⌘[) and Esc return
+   * The gear, Command-comma or Ctrl-comma, and the palette open it; Back and Esc return
    * to where the user was. */
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   function openSettings(section: SettingsSection = "appearance") {
@@ -3320,9 +3320,9 @@ let launchGeneration = 0;
 function openWorkspace() {
   const generation = ++launchGeneration;
   authenticate().then(async () => {
-    // Reserve the stored width before mounting the first sidebar. The server
-    // already painted the stored theme in index.html.
-    await loadUiPreferences().catch(() => {});
+    // Reserve the stored width if it arrives promptly; late preferences still
+    // update the mounted workspace. The server painted the theme in index.html.
+    await loadUiPreferencesWithin().catch(() => {});
     if (generation === launchGeneration) root.render(<WindowStatusProvider><App /></WindowStatusProvider>);
   }).catch(error => {
     if (generation === launchGeneration) root.render(<main className="launch-refusal" role="alert"><div className="launch-brand"><img src="/assets/myflames-logo.png" alt="" width="48" height="48" /><strong>myflames</strong></div><h1>Open your workspace</h1><p>{error instanceof Error ? error.message : "Open the launch URL printed by myflames ui."}</p></main>);
