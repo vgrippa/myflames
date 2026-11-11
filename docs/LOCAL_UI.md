@@ -2270,6 +2270,7 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 - Home news (`/api/news`, `news-1.0`, and `/api/news/settings` for the Settings switch); see [Session and scope](#session-and-scope).
 - Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`, which also returns `databases`, `/api/ssh/hosts` for the SSH host pick list, `/api/live/readiness` for the cached server facts on Home, and `/api/connections/import` for MySQL Workbench and DBeaver imports).
 - Saved queries (`/api/editor/saved/list`, `save`, `rename`, `move`, `delete`; local only).
+- Query editor settings (`/api/settings/editor`: the Settings popover's Query editor group, kept on this computer; local only) and the editor's system-variable names (`/api/config/versions/names`, answered offline from the shipped parameter version catalogs).
 - Schema versions (`/api/schema-versions/*`, including `sync` for a new choice of objects and `lint` for Checks).
 - CSV import (`/api/import/csv/choose`, `open-path`, `inspect`, `plan`, `apply`, `progress` and `stop`; apply is a reviewed write).
 - Parameter snapshots and server comparison (`/api/config/snapshots/list`, `save`, `get`, `delete`, `/api/config/compare`, `/api/accounts/compare`, `/api/accounts/export`; each side reads with its own connection and nothing is executed).

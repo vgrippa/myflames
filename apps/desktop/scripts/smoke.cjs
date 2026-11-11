@@ -32,7 +32,7 @@ const path = require('node:path');
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
     if (code !== 0) throw new Error('Desktop smoke did not complete successfully. ' + diagnostics.replace(/http:\/\/\S+/g, '[private URL]'));
     const report = JSON.parse(await fs.readFile(path.join(home, 'smoke.json'), 'utf8'));
-    if (!report.ready || !report.shellNavigation || !report.completion || !report.authenticated || !report.reloadAuthenticated || !report.preload || !report.sandbox || report.nodeIntegration) throw new Error('Desktop isolation checks failed.');
+    if (!report.ready || !report.shellNavigation || !report.completion || !report.undoRedo || !report.authenticated || !report.reloadAuthenticated || !report.preload || !report.sandbox || report.nodeIntegration) throw new Error('Desktop isolation checks failed.');
     const samePath = (a, b) => windows ? String(a).toLowerCase() === b.toLowerCase() : a === b;
     if (appPath && (!report.packaged || !samePath(report.backendExecutable, bundledBackend)))
       throw new Error('The packaged app did not use its bundled backend.');

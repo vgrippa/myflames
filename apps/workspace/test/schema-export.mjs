@@ -209,7 +209,7 @@ try {
   // Open in Query editor: a new tab with the script, nothing runs.
   await page.locator(`${sheet} .sheet-actions button.primary ::-p-text(Open in Query editor)`).click();
   await closed();
-  await page.waitForFunction(() => /-- myflames schema export/.test(document.querySelector("textarea.sql-editor")?.value || ""));
+  await page.waitForFunction(() => /-- myflames schema export/.test(document.querySelector(".sql-editor")?.value || ""));
   assert.equal(state.other.filter((r) => r.path.startsWith("/api/editor/run")).length, 0, "nothing runs");
 
   // ---- Table structure (Server > Tables) -----------------------------------

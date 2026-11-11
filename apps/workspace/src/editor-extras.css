@@ -1,0 +1,45 @@
+.sql-editor-wrap.sql-cm .cm-activeLine {
+  background-color: var(--surface-subtle);
+}
+
+.sql-editor-wrap.sql-cm .cm-activeLineGutter {
+  background-color: var(--surface-subtle);
+}
+
+.sql-editor-wrap.sql-cm .cm-selectionMatch {
+  background-color: var(--accent-soft);
+  border-radius: 2px;
+}
+
+.sql-editor-wrap.sql-cm .cm-selectionMatch-main {
+  background-color: var(--accent-soft);
+  outline: 1px solid var(--accent-soft);
+}
+
+.sql-editor-wrap.sql-cm .cm-specialChar {
+  color: var(--danger-text);
+  background-color: var(--surface-subtle);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+.sql-editor-wrap.sql-cm .cm-lintRange-warning {
+  background-image: none;
+  text-decoration: underline wavy var(--warn);
+  text-underline-offset: 3px;
+}
+
+.sql-editor-wrap.sql-cm .cm-lint-marker-warning {
+  content: none;
+  background-color: var(--warn);
+  clip-path: polygon(50% 5%, 98% 95%, 2% 95%);
+}
+
+.sql-editor-wrap.sql-cm .cm-diagnostic-warning {
+  border-left-color: var(--warn);
+}
+
+.sql-editor-wrap.sql-cm .cm-lintRange-active {
+  background-color: var(--warn-soft);
+}

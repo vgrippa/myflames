@@ -433,7 +433,7 @@ try {
   assert.match(await h.text(".schema-script"), /-- ALGORITHM: INPLACE, rebuilds the table/);
   assert.match(await h.text(".schema-script"), /-- ALGORITHM: not predicted/);
   await page.click(".schema-migration-actions button.primary");
-  await page.waitForFunction(() => /-- myflames schema sync/.test(document.querySelector("textarea.sql-editor")?.value || ""));
+  await page.waitForFunction(() => /-- myflames schema sync/.test(document.querySelector(".sql-editor")?.value || ""));
   assert.equal(await visible('.main-nav button[data-place="query"].active'), true, "the Query editor is on screen");
   assert.equal(state.other.filter((r) => r.path.startsWith("/api/editor/run")).length, 0, "nothing runs");
 

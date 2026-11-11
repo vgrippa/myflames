@@ -126,3 +126,18 @@
     box-shadow: inset 0 0 0 1px Highlight;
   }
 }
+
+/* Go to line shares the find bar's input and button styles. */
+.sql-find-line-row {
+  gap: var(--space-1);
+}
+.sql-find-line-row label {
+  padding-left: var(--space-1);
+  color: var(--ink);
+}
+.sql-find-line-hint {
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}

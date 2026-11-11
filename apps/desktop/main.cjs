@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, dialog, session, shell, Menu, ipcMain, autoUpdater } = require('electron');
+const { app, BrowserWindow, dialog, session, shell, Menu, ipcMain, autoUpdater, webContents } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -181,9 +181,31 @@ async function start() {
   });
   app.setAboutPanelOptions({ applicationName: 'myflames', applicationVersion: app.getVersion(),
     copyright: 'Apache-2.0', credits: "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs." });
+  const editCommand = async command => {
+    if (!window || window.isDestroyed()) return;
+    // The single workspace window is also the target during the smoke's
+    // emulated focus, when the desktop itself is not the foreground app.
+    const target = webContents.getFocusedWebContents() || window.webContents;
+    if (!target || target.isDestroyed()) return;
+    let handled = false;
+    try {
+      // Fixed scripts only: no renderer input or arbitrary command names.
+      handled = await target.executeJavaScript(command === 'undo'
+        ? "window.__myflamesEditCommand?.('undo')"
+        : "window.__myflamesEditCommand?.('redo')");
+    } catch { /* An unavailable page keeps the native editing fallback. */ }
+    if (handled !== true && window && !window.isDestroyed() && !target.isDestroyed()) {
+      if (command === 'undo') target.undo();
+      else target.redo();
+    }
+  };
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: 'myflames', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'Edit', submenu: [
+      { id: 'edit-undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => editCommand('undo') },
+      { id: 'edit-redo', label: 'Redo', accelerator: process.platform === 'darwin' ? 'Shift+CmdOrCtrl+Z' : 'CmdOrCtrl+Y', click: () => editCommand('redo') },
+      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
   ]));
@@ -254,19 +276,23 @@ async function smokeWindow(origin) {
       await window.webContents.executeJavaScript(`document.querySelector('.command-trigger').click()`);
       await waitForSmoke(`!!document.querySelector('dialog.command-palette[open]')`);
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.command-option')).find(element => element.innerText.includes('Query editor')).click()`);
-      await waitForSmoke(`!!document.querySelector('textarea.sql-editor') && !document.querySelector('dialog.command-palette')`);
-      await window.webContents.executeJavaScript(`
-        const ed = document.querySelector('textarea.sql-editor');
-        ed.focus();
-        ed.select();
-        document.execCommand('insertText', false, 'SEL');
-      `);
+      await waitForSmoke(`!!document.querySelector('.sql-editor') && !document.querySelector('dialog.command-palette')`);
+      // A new tab already holds text: select it all so the typed text replaces it.
+      const before = await window.webContents.executeJavaScript(`(() => { const ed = document.querySelector('.sql-editor'); ed.focus(); ed.select(); return ed.value; })()`);
+      // Native input, the way a user's keystrokes arrive.
+      window.webContents.insertText('SEL');
+      await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'editor input');
       await waitForSmoke(`!!document.querySelector('.sql-completion [role=option]')`);
+      // The Edit menu path: Undo and Redo reach the CodeMirror history.
+      Menu.getApplicationMenu().getMenuItemById('edit-undo').click();
+      await waitForSmoke(`document.querySelector('.sql-editor').value === ${JSON.stringify(before)}`, 'Edit menu Undo');
+      Menu.getApplicationMenu().getMenuItemById('edit-redo').click();
+      await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'Edit menu Redo');
       // DOM readiness can precede Chromium's next painted frame after reload.
       // Capture the completed editor, not a cached startup/refusal frame.
       await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       fs.writeFileSync(path.join(dataDirectory, 'smoke.png'), (await window.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
+      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, undoRedo: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
       process.stdout.write('Desktop smoke passed: authenticated workspace, sandboxed renderer, isolated data.\n');
       app.quit(); return;
     }

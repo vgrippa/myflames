@@ -50,6 +50,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Schema versions](#schema-versions)
   - [Compare servers: parameters and accounts](#compare-servers-parameters-and-accounts)
   - [Parameter version catalogs](#parameter-version-catalogs)
+  - [Engine words for the Query editor](#engine-words-for-the-query-editor)
   - [MySQL 5.7 support](#mysql-57-support)
   - [Export as SQL and Table structure](#export-as-sql-and-table-structure)
   - [Query digest sources and Time range](#query-digest-sources-and-time-range)
@@ -410,6 +411,41 @@ authentication, validation, wire fields, removed routes and typed errors).
 `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`): pinned
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
+
+**Query editor settings and variable names.** `POST /api/settings/editor`
+(ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
+writes the Query editor's settings in the workspace store's `settings` table
+(rows `editor.<key>` = `on`/`off`). `{}` returns `editor-settings-1.0` with
+`settings` (the defaults merged with the stored rows; unknown keys and
+malformed values fall back to the default) and `defaults`;
+`{"set": {key: bool}}` writes the given keys in one transaction and returns
+the same shape. The keys are `multi_cursor`, `completion_auto`,
+`close_brackets`, `soft_wrap`, `problem_warnings` and `hover_info`
+(`EDITOR_SETTING_DEFAULTS`; `soft_wrap` defaults off, the rest on). A read
+never creates the database. An omitted or null `set` reads without writing.
+A payload with any field besides `set`, a non-null `set` that is not a dict,
+an unknown key or a non-boolean value is a 400 through
+the shared `request_error_text` ("Unexpected editor settings field.",
+"Expected a dict of editor settings.", "Unknown editor setting ...",
+"The editor setting ... must be true or false."), as is a call without a
+running workspace. `POST /api/config/versions/names` (`_PARAM_VERSION_PATHS`)
+answers offline from the generated parameter catalogs: `{engine, version}`
+returns `param-names-1.0` with `engine`, `requested`, `release` (null when
+the series is not cataloged or the version predates its first release),
+`exact` (true when the numeric version extracted from the request is
+cataloged, including a suffixed build; false when an uncataloged patch
+resolves to the nearest earlier cataloged release of the same series) and
+`names` (`name`, `scope` `global`/`session`/`both`, `type`,
+`dynamic`, `deprecated`; `type` and `dynamic` are null where the catalogs do
+not record them, never a guessed false). The Query editor's completion reads
+it for `@@` system-variable suggestions and caches the answer per engine and
+version in the page. A bad engine or version is a 400 ("Choose engine mysql
+or mariadb.", "Choose a cataloged version of at most 32 characters.").
+Tests: `test/test_ui.py` (editor-settings round trip, bad payloads, local
+routing) and `apps/workspace/test/editor-settings.mjs`.
+`QueryEditorSettings.tsx` tracks saves and errors per setting, with a request
+sequence per key that ignores stale completions. Each row keeps an empty
+`role="alert"` node mounted until an error fills it.
 
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
@@ -1143,7 +1179,14 @@ workspace did not load." with Reload):
 - `QueryLab.tsx`: Table data, and Format SQL (`import("./sqlFormat")` on
   first use: sql-formatter 15.9.0, pinned in `package.json` and
   `package-lock.json`, with only its MySQL and MariaDB dialects and nearley,
-  about 90 KB). Mermaid keeps its own chunks (Database diagram).
+  about 90 KB). Mermaid keeps its own chunks (Database diagram). The Query
+  editor chunk carries the CodeMirror 6 editor (`src/editor/`: the pinned
+  `@codemirror/state`, `view`, `commands`, `language`, `autocomplete`,
+  `search` and `lint` packages with `@lezer/common`, `highlight` and `lr`;
+  only `QueryLab.tsx` imports them, so the entry chunk stays free of them).
+  The Settings popover's Query editor group is its own chunk loaded from
+  `Sidebar.tsx`, which keeps `editorSettings.ts` and the settings UI out of
+  the entry chunk.
 
 Rules for code that splits:
 
@@ -1164,9 +1207,14 @@ Rules for code that splits:
   wait for them: the Server toolbar measurement in `main.tsx` watches for the
   strip to appear, and `focusWhenMounted` in `Server.tsx` focuses a view's
   heading once it exists.
-- `test/bundle-split.mjs` (`npm run test:bundle-split`) checks the stylesheet
-  list, that no lazily loaded module is also imported statically, one built
-  stylesheet, and an entry chunk under 450 KB. The chart runtime has its own
+- `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
+  `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
+  last and `main.tsx` importing it first, that no lazily loaded module is
+  also imported statically by `main.tsx`, `Server.tsx` or `QueryLab.tsx`,
+  that the committed build has exactly one stylesheet, and that the entry
+  chunk stays under 500,000 bytes (about 475 KB in 3.3.3; Home, the sidebar
+  and the shell only, a place or view belongs in a lazy chunk). The chart
+  runtime has its own
   80 KB budget (`test_chart_data.py`).
 
 Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
@@ -2336,9 +2384,13 @@ planner, write gate and session engine from the CLI.
   results; closing a tab calls `/close` and only on `transaction_open` or
   `transaction_unknown` asks Commit and close or Roll back and close
   (`discard: true`). After a reload the active tab asks `/status` once and
-  adopts a session still open. `SqlEditor.tsx` (textarea plus colored layer,
-  gutter, statement tint, bracket match, error underline; `sqlHighlight.ts`
-  tokenizer, off above `HIGHLIGHT_LIMIT` characters), `ResultsPane.tsx`
+  adopts a session still open. `editor/SqlEditor.tsx` (the CodeMirror 6
+  component: `editor/sqlLanguage.ts` builds one Lezer tree per document from
+  the `sqlHighlight.ts` tokenizer, driving the syntax colors and the bracket
+  or quote pair next to the caret, both off above `HIGHLIGHT_LIMIT` (60,000)
+  characters; `editor/marks.ts` draws the statement tint, the run flash, the
+  error underline and the gutter line marks, and `editor/visual.ts` the
+  active-line and selection-match highlights), `ResultsPane.tsx`
   (results tabs, `DataTable` grid, Messages, Export, copy menu),
   `SchemaBrowser.tsx` (`/api/live/schemas` through `useSchemaCatalog` once
   per connection identity, the first time the pane is visible with a
@@ -2349,6 +2401,44 @@ planner, write gate and session engine from the CLI.
   `limit`, `selection`, `result_tab`, and `query_lab.editor_layout` (height,
   browser and width, history, run time limit), reported only once changed
   from the defaults. Browser suite `test/editor.mjs` (`npm run test:editor`).
+- Editor component (`apps/workspace/src/editor/`, CodeMirror 6): one
+  `EditorState` per tab in a per-tab document store (`createDocumentStore`;
+  the state carries the tab's own undo history, so undo is per tab, and
+  external value replacements are one undo step through `isolateHistory`).
+  Settings reconfigure Compartments, never remount the view.
+  Every document includes the phrase overrides **Problems**, **No problem
+  warnings**, **Close** and **SQL suggestions**. The host captures the lint
+  panel's Close click, closes it and focuses the editor; CodeMirror content
+  event handlers do not receive panel clicks. The shortcuts popover renders
+  arrow glyphs and uses Esc, Space, Tab and platform-specific Return/Enter. Several
+  selections: Run, Explain and Run analysis read only the main cursor or
+  selection (`getSelection()`; `getSelections()` exists for checks). Run all
+  runs the whole tab (`sqlSelection.sqlRun`, `all: true`), and
+  Format SQL refuses several ranges ("Format SQL works with one cursor or
+  selection; several are set. Keep one and try again."). Escape closes
+  suggestions, else keeps only the main cursor, else closes Find, Replace or
+  Go to line through `findHooks.close`, else closes the lint panel when open.
+  Each handled step consumes Escape; otherwise it falls through to Stop and
+  CodeMirror's Escape-then-Tab focus handling. Closing the Find controller
+  clears marks and returns focus without changing the current selection or
+  scrolling to the last match. Select all occurrences (`Shift-Mod-l`, only
+  with Multiple cursors on) expands an empty caret using `state.wordAt`, or
+  accepts several ranges with identical selected text, then delegates to
+  CodeMirror's selection-match search. Unequal ranges are left unchanged.
+  The standard macOS `Ctrl-k` binding prevents the default event and stops
+  propagation so deleting to line end does not also open the command palette.
+  The Next match label mentions Ctrl+G opening Go to line only off macOS.
+  The desktop Edit menu's
+  Undo and Redo reach the focused editor's CodeMirror history through the
+  `window.__myflamesEditCommand` bridge, which accepts only the two literal
+  commands `"undo"` and `"redo"` and reports an empty history as handled so
+  Chromium's own undo never runs (`apps/desktop/main.cjs` falls back to the
+  native editing command when no editor has focus). Feature suites:
+  `test/editor-core.mjs` (`npm run test:editor-core`), `test/edit-menu.mjs`
+  (`npm run test:edit-menu`), and the renderless unit suites
+  `test/editor-core-unit.mjs`, `test/editor-commands-unit.mjs`,
+  `test/editor-find-unit.mjs`, `test/sql-tree-parity.mjs` (Node, no
+  browser).
 - Safe updates explanation: `SafeUpdatesInfo.tsx` is the standard `InfoPopover`
   (ⓘ, "About safe updates") beside the Safe updates checkbox in Run options
   (`.safe-updates-row`). Its wording follows the server source, not the
@@ -2481,7 +2571,7 @@ planner, write gate and session engine from the CLI.
   (`TABLE_ROWS`, the server's estimate) and `bytes` (`DATA_LENGTH + INDEX_LENGTH`) to each table,
   None for views, and `stats` to the report; Maintenance > Dump reads it for the one chosen database
   (MariaDB opens each table of that schema to answer). In `SchemaBrowser.tsx`, expanding a schema lists **Routines**, **Triggers** and **Events** folders after its tables and views; opening a folder loads its group on demand, double-click or Enter/Space on an object inserts `<quoted_schema>.<quoted_name>` at the editor cursor, and its context menu offers **Insert name** and **Show CREATE PROCEDURE / FUNCTION / TRIGGER / EVENT** (appended and run via `onQuery`). Tests: `test/test_schema_browser.py`, `test/test_ui.py`.
-- Find and replace (`apps/workspace/src/SqlEditor.tsx`, `editor-find.css`): `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux) opens Find and replace above the SQL textarea. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches; Escape closes the bar and returns to the SQL textarea. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks while the syntax layer is enabled (`HIGHLIGHT_LIMIT`, 60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They use `document.execCommand("insertText")` with a `setRangeText` + input-event fallback. Replace all makes one editor replacement; single Replace remembers `lastReplaceStart`, and an immediate `historyUndo` restores the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs`.
+- Find and replace (`apps/workspace/src/editor/FindBar.tsx`, `editor/find.ts`, `editor/findMarks.ts`, `editor-find.css`): `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux; `Ctrl+Alt+F` also works there) opens Find and replace above the editor. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches (`Ctrl+G` opens Go to line when Find is closed on Windows and Linux); Escape closes the bar and returns to the editor. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks, including above `HIGHLIGHT_LIMIT` (60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They plan CodeMirror changes (`planReplace`) dispatched as one transaction with `isolateHistory`, so one undo restores the text; a single Replace remembers its undo anchor, and an immediate undo returns the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs` and `test/editor-find-unit.mjs`.
 - Open and save `.sql` files, Continue on error, and the tab's default database picker (`QueryLab.tsx`, `QueryTabMenu.tsx`, `ResultsPane.tsx`, `session.ts`, `myflames/editor_session.py`, `myflames/file_picker.py`):
   - **Open and save `.sql` files**: **Open SQL file…** in the query tab menu or `⌘O` / `Ctrl+O` inside the Query editor calls `POST /api/editor/file/open` (`{}`). The native file dialog (`file_picker.choose_sql_file`, `.sql` and `.txt`, serialized by `folder_picker._DIALOG_LOCK`, 120 s timeout) resolves and checks its chosen path. The reader then opens through the checked parent without following a file or folder swapped for a symbolic link; it refuses anything but a regular file and checks the 5 MiB limit (`SQL_MAX_BYTES`, 5,242,880 bytes) both on the open descriptor and by reading at most one byte beyond the limit, so a file that grows during the read is refused too. It strips a UTF-8 BOM, replaces invalid UTF-8 bytes with `U+FFFD` with a `warning`, and opens a new tab named after the file (without `.sql` / `.txt`, clipped to 64 characters).
     The process-local `_FILE_TOKENS` map keeps at most 200 opaque tokens bound to the resolved path and its parent directory's device/inode; the renderer never supplies a write path. `⌘S` / `Ctrl+S` saves via `POST /api/editor/file/save` (`{sql, token}`). `⇧⌘S` / `Ctrl+Shift+S`, or Save without a binding, uses `{sql, save_as: true, name}` and `choose_save_file`. An `unknown_token` after a backend restart opens Save as within the same Save operation; success, cancellation or failure is reported, and a cancelled or failed save or close keeps the tab's unsaved edits. Save as suggests the bound file's name, or `<tab.name>.sql` without a binding. `_clean_suggested_name` removes path components and controls, replaces colons with hyphens, appends `.sql` when needed and clips the suggested name to 255 characters. On macOS and Windows the sanitized name reaches the native dialog through `MYFLAMES_SAVE_NAME` unchanged, including quotes and Unicode, never as script source.
@@ -5016,6 +5106,87 @@ against a tiny git repository), `test/test_record_sysvar_catalog.py`
 `apps/workspace/test/parameter-versions.mjs` (`npm run
 test:parameter-versions`; mocked replies validated against the schemas).
 
+### Engine words for the Query editor
+
+The Query editor's keyword suggestions come from a generated per-release
+catalog of the engines' own vocabularies, which also records every native
+function's argument-count bounds; nothing is hand-kept. Files:
+`scripts/gen_sql_words.py` (the generator, Python
+3.7, stdlib only), the generated
+`apps/workspace/src/editor/engineWords.generated.ts` (committed; its own lazy
+chunk, loaded the first time completion needs it), the decoder and resolver
+`apps/workspace/src/editor/engineWords.ts`, and the consumers
+`apps/workspace/src/editor/completion.ts` (suggestions) and
+`apps/workspace/src/editor/argumentHints.ts` (the caret's argument hint).
+Currently the catalog covers the
+MySQL tags 5.7.9 to 26.10.0 (102 tags) and the MariaDB tags 10.6.3 to
+13.0.2 (113 tags), the same releases as the parameter version catalogs.
+
+**How it is generated.** The generator reads every release tag listed in
+`myflames/sysvar_history_mysql.py` and `myflames/sysvar_history_mariadb.py`
+out of local MySQL and MariaDB git checkouts with `git ls-tree` and
+`git cat-file --batch`, never the working tree, and parses `sql/lex.h`,
+`sql/sql_yacc.yy` and `sql/item_create.cc` (plus MariaDB's
+`sql/item_geofunc.cc`). Keyword rules follow MySQL's
+`sql/gen_keyword_list.cc`: `SYM` and `SYM_HK` words whose first character is
+a letter are keywords, `SYM_H` optimizer-hint tokens are dropped, `SYM_FN`
+words are kept apart as grammar functions, and parser-internal tokens are
+excluded (for example `PARSE_GCOL_EXPR`, which only the server may use while
+reading a .frm file: mysql-5.7.44 `sql/lex.h:448`,
+`sql/sql_yacc.yy:6471-6481`). A keyword is marked non-reserved when the
+grammar accepts it as an unquoted identifier: MySQL 8.0.11+ from the
+`%token<lexer.keyword>` declarations (5.7 predates `gen_keyword_list.cc`, so
+the `keyword` and `keyword_sp` rules are expanded instead), MariaDB from the
+`keyword_ident` rule family after `%ifdef` preprocessing. Function argument
+counts come from `func_array` in `sql/item_create.cc` on MySQL 8.0+ (the
+explicit `SQL_FN*` bounds and `SQL_FACTORY` instantiator constants) and from
+the `Create_func_argN` classes and `create_native` bodies on MySQL 5.7 and
+MariaDB (only universal rejection guards and exhaustive `switch (arg_count)`
+arms count; mode- or parity-dependent validation stays unknown). Bounds are
+counts only, never parameter names: `?` marks an unknown bound, `*` an
+unbounded one (`MAX_ARGLIST_SIZE`). Each `major.minor` series is stored as a
+base release plus per-release deltas (keywords added, removed or re-flagged,
+grammar functions, function bounds). Regenerate with
+`python3 scripts/gen_sql_words.py --mysql-source <checkout> --mariadb-source <checkout>`;
+`--check` regenerates in memory and exits 1 when the committed file differs.
+
+**Resolution and use.** `wordsFor(engine, version)` answers the keywords
+with a reserved flag for the exact cataloged release, or, for an
+uncataloged patch or a suffixed build (a Percona `8.0.36-28`), the nearest
+earlier cataloged release of the same series with `exact: false`; a series
+the catalog does not have resolves to nothing, and completion falls back to
+the small common word list (`commonCompletionWords`, `sqlCompletion.ts`).
+`isKeyword` drives engine-aware backtick quoting in completion: a name that
+is a keyword on the connected server's own release is quoted. The suggestion
+detail is `reserved` for reserved keywords and empty for other keywords. The
+detail names the release when the match is not exact (", MySQL 8.0.36 list").
+`functionsFor` resolves the native and grammar functions with their
+argument-count bounds under the same policy. Completion lists each function
+with a `function` kind and an argument-count detail such as `N arguments` (a `min` to
+`max` range reads `N to M arguments`, an unbounded maximum `at least N
+arguments`, singular counts use `argument`, unknown bounds omitted). Accepting
+one inserts `NAME()` with the caret inside, or only the name when the text already holds an
+opening `(` (`completion.ts`). `argumentHints.ts` shows the call the caret
+sits in as `NAME(…) · N arguments · argument k` with the same count
+strings, never parameter names, behind the **Details on hover** setting: it
+needs one empty caret, the document within the highlight limit, a cataloged
+or nearest-earlier release list, and the call's opening `(` within the
+4,000-character window scanned before the caret; strings, quoted
+identifiers and comments are skipped, and a name the list does not hold, or
+one qualified by a dot, shows no hint. A WeakMap keyed by the shared
+`functionsFor` function array holds an uppercase-name index, so each call
+lookup is independent of the catalog's size. The tooltip anchors after the
+call's opening parenthesis and reuses its object and create function while
+the anchor and label stay unchanged. Tests:
+`apps/workspace/test/engine-words.mjs` (`node test/engine-words.mjs`,
+no browser: exact, uncataloged-patch, Percona- and MariaDB-suffixed,
+earlier-than-base and unknown-series resolution, case-insensitive keyword
+lookup, and a verified sample of keyword and function facts from both
+engines) and `apps/workspace/test/argument-hints-unit.mjs` (hint labels, the
+no-hint rules, lazy vocabulary loading, indexed lookups, tooltip identity
+and text-only rendering; Node, no
+browser).
+
 ### MySQL 5.7 support
 
 MySQL 5.7 (tested on 5.7.44) is the support floor: `server_info.SUPPORTED_MINIMUM = {"mysql": (5, 7), "mariadb": (10, 11)}`. A MySQL 5.6 or older server gets "myflames supports MySQL 5.7 or later; ...", and 5.7, 8.0, 8.4 and 9.x no longer get the "supports MySQL 8.4 or later" warning. MySQL 5.7 is end of life (Oracle Sustaining Support since 2023-10-25, from the vendor's notice; `lifecycle` has `(5, 7): ("maintenance", "2023-10-25")`). What 5.7 does not record is reported as unknown, never as an error, and what it lacks (roles, SET PERSIST and RESET PERSIST, EXPLAIN ANALYZE so no Run analysis, CLONE, LOCK INSTANCE FOR BACKUP, `performance_schema.error_log`, invisible indexes and columns, ALTER algorithm prediction) is said in one plain sentence. No JSON contract gained or lost a field for the Server views; the 5.7 values are additive in meaning (`statistics.fresh`, `persisted: false`, `test_sql: ""`, notes). Tests: `test/test_mysql57_views.py` (the Server place replays of the 5.7.44 recordings), `test/test_mysql57.py` (privileges, Users and roles, Run analysis, editor probe, plans, ALTER, Import CSV), fixtures `test/fixtures/perf/*-mysql-5.7*.json`, `test/fixtures/health/mysql-5.7.json`, `test/fixtures/cluster/cluster-gr-5.7-*.json`, `test/fixtures/accounts/mysql-5.7.json` and ten `test/fixtures/mysql-5.7-*.json` plans; `scripts/ga-matrix.sh` has `mysql-5.7` and `mysql-5.7-replica`.
@@ -5463,11 +5634,67 @@ statement in the inspector is copy-only.
 
 ### Completion and table-data contracts
 
-`sqlCompletion.ts` supplies bounded lexical context and suggestions;
-`useSqlCompletion.ts` reads the existing catalog routes. The metadata cache is
-in-memory and identity-scoped, including configured database and credential
-changes. It is not a model of the persistent editor session. Keep native
-textarea input, undo, IME and Run shortcuts intact. Completion cancels stale catalog reads.
+`sqlCompletion.ts` supplies the bounded lexical context (statement bounds,
+place, qualifiers, aliases, CTE names and the `@@` variable context);
+`editor/completion.ts` is the CodeMirror completion source, and
+`editor/catalog.ts` (`CatalogService`) is the metadata cache that
+completion, hover and the problem warnings share. The cache is in-memory
+and identity-scoped: the connection key, its configured database and any
+credential change bump an epoch that aborts pending reads and invalidates
+every entry. It has `schemas`, `tables` and `columns` keys read through
+`/api/live/schemas` and `/api/live/catalog`, a 30 s lifetime (10 s after a
+failed read), at most 32 entries, `failed`/`complete`/`truncated` coverage
+flags with a `readAt` time on every result, and a `peek` that inspects only
+live entries and never starts a read. It is not a model of the persistent
+editor session. Completion cancels stale catalog reads.
+
+Suggestions while typing (a 220 ms debounce on catalog reads; Ctrl+Space
+also asks when automatic suggestions are off, up to `HIGHLIGHT_LIMIT`) cover
+the target tables' columns with `schema.table · type` details, aliases, CTE
+names, tables, schemas, the engine's own keywords
+and functions for the connected server's release (see [Engine words for the
+Query editor](#engine-words-for-the-query-editor); functions carry a
+`N arguments` detail; a small common word list when the release
+is not cataloged) and `@@` system variables from
+`/api/config/versions/names`, filtered to the typed scope (`global`,
+`session`, or both when no scope was typed) with deprecated names marked.
+Fuzzy table matching requires a complete table inventory: when the schema
+list reports at most 200 tables, the table list is read without a prefix;
+otherwise it is read with the typed prefix, and a truncated answer shows
+"More tables match. Keep typing to narrow the list." Catalog reads time out after 8 s ("Catalog
+suggestions timed out. Try Ctrl+Space again.", "System variable suggestions
+timed out. Try Ctrl+Space again."); failures show "Some catalog suggestions
+are unavailable." or "System variable suggestions are unavailable." in a
+status panel that never accepts HTML. At most 40 options, prefix matches
+first. Inserts are quoted engine-aware: a name that is not a plain
+identifier, or that is a keyword on the connected server's own release,
+gets backticks with embedded backticks doubled; completing inside an
+opening backtick keeps it and adds the closing one; accepting a function
+inserts `NAME()` with the caret inside the parentheses, or only the name
+when an opening `(` already follows.
+
+Hover (`editor/hover.ts`, 350 ms) shows a table's columns (name, type, key
+and null flags; the first 12, then "and N more") or one column's type and
+flags, plus the table's estimated row count when a cached table list
+already holds it: it reads columns through the catalog service and peeks
+cached lists, never sending `stats: true`. Row estimates prefer the exact
+table name; a case-insensitive fallback must identify exactly one table. Problem warnings
+(`editor/problems.ts`; lint delay 750 ms, a gutter marker per warning, and
+the panel and F8 navigation from `editor/commands.ts`) are a bounded
+reading aid, not an SQL validity checker: above `HIGHLIGHT_LIMIT`, with a
+DELIMITER line anywhere in the text, or inside strings and comments,
+nothing is diagnosed; a statement containing an executable comment or
+`USE`, and every statement after it, are not diagnosed (the
+default database can no longer be trusted), nor is an unbalanced or
+routine/compound statement. UPDATE or DELETE without
+WHERE is warned, and an unknown table or qualified column is warned only
+against a complete, untruncated cached list of that schema or table (`peek`
+never fetches one; the table warning names the list's read time). References
+to CTE names, `DUAL` and tables created earlier in the current script are
+exempt from missing-name warnings. `env.sessionTempTables` suppresses all
+missing-table warnings, but not missing-column or missing-WHERE warnings.
+Warnings re-run when a catalog entry arrives or expires, never inside
+CodeMirror's update loop.
 
 `table_data.py` owns dedicated editor sessions and private, opaque snapshots. Snapshots and baselines stay server-owned and bounded. Exact review is
 required for Development connections too. Apply only to supported InnoDB

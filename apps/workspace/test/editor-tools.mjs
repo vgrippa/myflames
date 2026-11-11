@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { EDITOR, setEditorText, selectEditor, editorUndo, editorRedo } from "./editor-helpers.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-editor-tools-"));
@@ -51,7 +52,6 @@ function reply(p) {
   return undefined;
 }
 
-const EDITOR = '[aria-label="SQL editor"]';
 const MENU = '[role=menu].query-tab-menu';
 const ACTIVE_TAB = ".query-tablist [role=tab][aria-selected=true]";
 const FORMAT = 'button[data-action="format"]';
@@ -111,15 +111,10 @@ try {
   const sql = () => page.$eval(EDITOR, (e) => e.value);
   const feedback = () => page.$eval(FEEDBACK, (e) => (e.hidden ? "" : e.textContent));
   const active = (selector) => page.$eval(selector, (e) => e === document.activeElement).catch(() => false);
-  /** Replace the editor's text the way typing does (an input event React
-   * sees), so the tab's state holds it too. */
+  /** Replace the editor's text (one paste, as if dropped in at once), so the
+   * tab's state holds it too. */
   async function setText(value) {
-    await page.$eval(EDITOR, (el, v) => {
-      el.focus();
-      el.select();
-      document.execCommand("insertText", false, v);
-    }, value);
-    await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, value);
+    await setEditorText(page, value);
     await pause(30);
     assert.equal(await sql(), value, "the tab keeps the new text");
   }
@@ -147,10 +142,7 @@ try {
   /** True when *value* has a lone surrogate (half of an emoji). */
   const broken = (value) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value);
   async function select(start, end) {
-    await page.$eval(EDITOR, (el, start, end) => {
-      el.focus();
-      el.setSelectionRange(start, end);
-    }, start, end);
+    await selectEditor(page, start, end);
   }
   async function until(check, message, timeout = 8000) {
     const end = Date.now() + timeout;
@@ -338,9 +330,9 @@ try {
   // The caret keeps its latest place: still before WHERE.
   assert.equal(await page.$eval(EDITOR, (e) => e.value.slice(e.selectionStart, e.selectionStart + 5)), "WHERE");
   // One undo step brings the original text back.
-  await page.$eval(EDITOR, (e) => { e.focus(); document.execCommand("undo"); });
+  await editorUndo(page);
   await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, ORIGINAL);
-  await page.$eval(EDITOR, (e) => document.execCommand("redo"));
+  await editorRedo(page);
   await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, FORMATTED);
 
   // 9. Shift+Option+F formats only the selection and keeps it selected.
@@ -358,7 +350,7 @@ try {
   await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, `select 1;\n${PART};\nselect 3`);
   assert.deepEqual(await page.$eval(EDITOR, (e) => [e.selectionStart, e.selectionEnd]), [from, from + PART.length], "the selection covers the formatted text");
   await until(async () => /^Formatted the selection\./.test(await feedback()), "the selection is formatted");
-  await page.$eval(EDITOR, (e) => { e.focus(); document.execCommand("undo"); });
+  await editorUndo(page);
   await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, SCRIPT);
 
   // 10. A change of meaning is refused: nothing changes, the message says where.
@@ -431,7 +423,7 @@ try {
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector('[aria-label="SQL editor"]')?.value === "SELECT\n  1\nFROM\n  DUAL");
   assert.equal(await page.$eval(".query-lab", (e) => !e.closest("[hidden]")), true, "the palette opens the Query editor");
-  await page.$eval(EDITOR, (e) => { e.focus(); document.execCommand("undo"); });
+  await editorUndo(page);
   await page.waitForFunction(() => document.querySelector('[aria-label="SQL editor"]').value === "select 1 from dual");
   await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
   await page.waitForSelector("dialog.command-palette[open]");

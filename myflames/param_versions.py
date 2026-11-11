@@ -15,6 +15,7 @@ from .server_info import PRODUCT_NAMES
 CATALOG_SCHEMA = 'parameter-version-catalog-1.0'
 COMPARE_SCHEMA = 'parameter-version-compare-1.0'
 HISTORY_SCHEMA = 'parameter-history-1.0'
+NAMES_SCHEMA = 'param-names-1.0'
 ENGINES = ('mysql', 'mariadb')
 FIELDS = ('scope', 'type', 'dynamic', 'default', 'default_note', 'min', 'max',
           'values', 'deprecated', 'replacement', 'alias_of', 'plugin')
@@ -323,6 +324,49 @@ def resolve_version(engine, text):
         return None
     version = match.group(0)
     return version if version in catalog.by_version else None
+
+
+def names(engine, version):
+    """param-names-1.0: the system variables of one release with scope, type,
+    dynamic and deprecated, for the editor's completion and warnings.
+
+    An uncataloged patch or a Percona build ("8.0.36-28") resolves to the
+    nearest earlier cataloged release of the same major.minor series with
+    exact false; a series the catalog does not have (or one whose releases
+    are all later) answers an empty names list with release null. ``type``
+    is null where the catalogs do not record it (MySQL releases before 9.0),
+    and ``dynamic`` is null where they do not record it, never false for
+    "unknown"."""
+    catalog = load(engine)
+    if not isinstance(version, str) or not version.strip() or len(version) > MAX_VERSION_LENGTH:
+        raise ValueError('Choose a cataloged version of at most %d characters.' % MAX_VERSION_LENGTH)
+    match = _VERSION_TEXT.search(version.strip())
+    parsed = match.group(0) if match else None
+    index = catalog.by_version.get(parsed) if parsed is not None else None
+    exact = index is not None
+    if parsed is not None and index is None:
+        series = '.'.join(parsed.split('.')[:2])
+        key = _version_key(parsed)
+        earlier = [i for i, entry in enumerate(catalog.versions)
+                   if entry['series'] == series and _version_key(entry['version']) < key]
+        index = earlier[-1] if earlier else None
+    if index is None:
+        return {'schema_version': NAMES_SCHEMA, 'engine': catalog.engine, 'requested': version,
+                'release': None, 'exact': False, 'names': []}
+    found = []
+    for name in catalog.names:
+        row = catalog.row(name, index)
+        if row is None:
+            continue
+        found.append({'name': name,
+                      'scope': row[_FIELD_INDEX['scope']],
+                      'type': row[_FIELD_INDEX['type']],
+                      # None where the catalogs do not record it; the editor
+                      # must not read "unknown" as "not dynamic".
+                      'dynamic': row[_FIELD_INDEX['dynamic']],
+                      'deprecated': bool(row[_FIELD_INDEX['deprecated']])})
+    return {'schema_version': NAMES_SCHEMA, 'engine': catalog.engine, 'requested': version,
+            'release': catalog.versions[index]['version'], 'exact': exact, 'names': found}
 
 
 def _version_index(catalog, text):

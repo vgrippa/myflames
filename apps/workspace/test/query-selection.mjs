@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { EDITOR, setEditorText, selectEditor } from "./editor-helpers.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-selection-"));
@@ -69,7 +70,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [], diagnostics = [];
   page.on("pageerror", e => errors.push(String(e)));
@@ -115,15 +116,14 @@ try {
   assert.equal(calls('/api/live/schemas').length, 0, "hidden editor reads no schemas");
   const editorPlace = () => page.locator(".main-nav button ::-p-text(Query editor)").click();
   await editorPlace();
-  const EDITOR = '[aria-label="SQL editor"]';
   await page.waitForSelector('.tree-row.kind-schema');
   assert.equal(calls('/api/live/schemas').length, 1, "visible editor reads once");
-  const select = (a, b = a) => page.$eval(EDITOR, (el, a, b) => { el.focus(); el.setSelectionRange(a, b); }, a, b);
+  const select = (a, b = a) => selectEditor(page, a, b);
   const idle = () => page.waitForFunction(() => !document.querySelector('.results-running') && document.querySelector('[data-action=explain]')?.getAttribute('aria-busy') !== 'true');
   const requested = (pathname, match = () => true) => page.waitForRequest(request =>
     new URL(request.url()).pathname === pathname && match(JSON.parse(request.postData() || '{}')), { timeout: 5000 });
   const sql = "SELECT 1;\nUPDATE t SET name = REPLACE(name, 'a', 'b');\nSELECT 3";
-  await page.locator(EDITOR).fill(sql);
+  await setEditorText(page, sql);
   nativeText = "UPDATE t SET name = REPLACE(name, 'a', 'b')";
   const at = sql.indexOf('UPDATE');
   await select(at, at + nativeText.length);
@@ -183,7 +183,7 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await page.keyboard.press('Escape');
-  await page.locator(EDITOR).fill(updateSql);
+  await setEditorText(page, updateSql);
   await select(updateStart, updateStart + nativeText.length);
   const limitedReply = page.waitForResponse(r => new URL(r.url()).pathname === '/api/editor/run');
   await page.click('[data-action=explain]');
@@ -213,7 +213,7 @@ try {
   assert.equal(calls('/api/live/start').length, 0);
 
   // Format persists per viewer. Keyboard Explain uses the server's cursor selection.
-  await page.locator(EDITOR).fill(sql);
+  await setEditorText(page, sql);
   await page.select('[aria-label="Explain format"]', 'json');
   nativeText = 'SELECT 3';
   const third = sql.indexOf(nativeText) + 3;
@@ -247,7 +247,7 @@ try {
   assert.equal(calls('/api/editor/run').at(-1).explain_format, 'tree');
 
   // Explore is the only navigation. It uses the captured statement, even after editing.
-  await page.locator(EDITOR).fill('SELECT 99');
+  await setEditorText(page, 'SELECT 99');
   await page.locator('.results-tabs-actions button ::-p-text(Explore)').click();
   await page.waitForSelector('.plan-heading h1');
   assert.equal(calls('/api/live/start').length, 1);
@@ -259,7 +259,7 @@ try {
   // Server errors go to Messages. A :name with no value in Parameters is sent
   // as typed: nothing is invented for it.
   nativeText = 'SELECT :missing'; nativeError = "Syntax error near ':missing' at line 1";
-  await page.locator(EDITOR).fill(nativeText);
+  await setEditorText(page, nativeText);
   await page.click('[data-action=explain]');
   await page.waitForSelector('.message-error');
   assert.match(await page.$eval('.message-error', e => e.textContent), /ERROR 1064 \(42000\).*:missing/);
@@ -270,7 +270,7 @@ try {
   // A long-running Explain is polled and stays busy until the stopped state
   // arrives. A successful KILL request alone is not the terminal run outcome.
   nativeText = 'SELECT 1'; runningNative = true; heldStatus = undefined;
-  await page.locator(EDITOR).fill(nativeText);
+  await setEditorText(page, nativeText);
   const runningReply = page.waitForResponse(r => new URL(r.url()).pathname === '/api/editor/run');
   const statusRequest = requested('/api/editor/status', body => !!body.run_id);
   await page.click('[data-action=explain]');
@@ -307,7 +307,7 @@ try {
   assert.equal(await page.$eval('[data-action=stop]', e => e.disabled), true);
 
   // Analysis still scopes and binds parameters, and refuses several statements.
-  await page.locator(EDITOR).fill(sql);
+  await setEditorText(page, sql);
   await select(0, sql.length);
   await chord(true);
   await page.waitForFunction(() => document.querySelector('.editor-panel .error')?.textContent.includes('holds 3 statements'));
@@ -316,7 +316,7 @@ try {
   await page.click('.editor-parameters summary');
   await page.locator('[aria-label="Query parameters"]').fill('{"c": 42}');
   const analysisSql = 'SELECT 0;\nSELECT :c;\nSELECT 2';
-  await page.locator(EDITOR).fill(analysisSql);
+  await setEditorText(page, analysisSql);
   await select(analysisSql.indexOf('SELECT :c'), analysisSql.indexOf('SELECT :c') + 9);
   await chord(true);
   await page.waitForSelector('.confirm-sheet');

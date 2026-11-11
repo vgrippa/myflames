@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { setEditorText } from './editor-helpers.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-file-safety-'));
@@ -110,9 +111,7 @@ try {
     return { status: result.status(), body: await result.json() };
   }
   async function edit(text) {
-    await page.$eval(editor, (element, value) => {
-      element.focus(); element.select(); document.execCommand('insertText', false, value);
-    }, text);
+    await setEditorText(page, text);
     await page.waitForSelector(dirty);
   }
   const opened = await action('/api/editor/file/open', 'o');

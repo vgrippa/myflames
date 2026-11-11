@@ -56,6 +56,12 @@ HISTORY_KIND = 'editor_history'
 SAVED_QUERY_KIND = 'saved_query'
 _RECORD_ID = re.compile(r'[0-9a-f]{32}')
 
+#: The Query editor's persisted settings (Settings popover,
+#: /api/settings/editor): the defaults; a stored row is 'editor.<key>' =
+#: 'on'/'off' in the settings table.
+EDITOR_SETTING_DEFAULTS = {'multi_cursor': True, 'completion_auto': True, 'close_brackets': True,
+                           'soft_wrap': False, 'problem_warnings': True, 'hover_info': True}
+
 
 class SessionConflict(ValueError):
     """The client saved over an older revision than the stored one."""
@@ -959,6 +965,39 @@ class WorkspaceStore:
         with closing(self._connect()) as conn, conn:
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_auto', ?)", ('on' if enabled else 'off',))
         return enabled
+
+    # -- Query editor settings (EDITOR_SETTING_DEFAULTS) ----------------------
+
+    def editor_settings(self):
+        """The Query editor settings: EDITOR_SETTING_DEFAULTS merged with the
+        stored rows ('editor.<key>' = 'on'/'off'). Unknown keys and malformed
+        values fall back to the default. Never creates the database."""
+        merged = dict(EDITOR_SETTING_DEFAULTS)
+        if not self.path.exists():
+            return merged
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'editor.%'").fetchall()
+        for key, value in rows:
+            name = key[len('editor.'):]
+            if name in merged and value in ('on', 'off'):
+                merged[name] = value == 'on'
+        return merged
+
+    def set_editor_settings(self, changes):
+        """Write *changes* (a dict of EDITOR_SETTING_DEFAULTS keys to booleans)
+        in one transaction; an unknown key or a non-boolean value is refused."""
+        if not isinstance(changes, dict):
+            raise ValueError('Expected a dict of editor settings.')
+        for key, value in changes.items():
+            if key not in EDITOR_SETTING_DEFAULTS:
+                raise ValueError('Unknown editor setting %r.' % (key,))
+            if not isinstance(value, bool):
+                raise ValueError('The editor setting %s must be true or false.' % key)
+        with closing(self._connect()) as conn, conn:
+            for key, value in changes.items():
+                conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                             ('editor.' + key, 'on' if value else 'off'))
+        return self.editor_settings()
 
     # -- Application database client ----------------------------------------
 

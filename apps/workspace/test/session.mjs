@@ -1,5 +1,6 @@
 import { connectionAction } from "./connection-helpers.mjs";
 import { chooseView, currentView, openConnectionPicker } from "./chrome-helpers.mjs";
+import { setEditorText } from "./editor-helpers.mjs";
 // Session restore: reload, server restart, Start fresh, a two-tab conflict,
 // the startup toggle, and --no-restore, against the packaged UI and server.
 // Run after `npm run build`: node test/session.mjs
@@ -63,7 +64,7 @@ async function stop() {
 let browser;
 try {
   let url = await start();
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   const dialogs = [];
@@ -239,7 +240,7 @@ try {
     await page.$eval(".window-toolbar .connection-picker", (e) => e.textContent),
     /analyst@db\.internal:3306/,
   );
-  await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM users WHERE id = :id");
+  await setEditorText(page, "SELECT * FROM users WHERE id = :id");
   // The sticky top bar can cover the tab strip once the page has scrolled.
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.locator('button[aria-label="New query tab"]').click();
@@ -249,7 +250,7 @@ try {
   await page.keyboard.press("F2");
   await page.locator('[aria-label="Query name"]').fill("Orders by customer");
   await page.keyboard.press("Enter");
-  await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM orders WHERE customer_id = :c");
+  await setEditorText(page, "SELECT * FROM orders WHERE customer_id = :c");
   // Parameters and the trace option live in the Run analysis options popover.
   await page.click('button[aria-label="Run analysis options"]');
   await page.click(".editor-parameters summary");

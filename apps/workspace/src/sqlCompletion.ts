@@ -120,3 +120,59 @@ export function suggestions(context: CompletionContext, metadata: {
   const seen = new Set<string>();
   return out.filter(s => { const key = `${s.kind}:${s.insert}`; if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 40);
 }
+
+/** The legacy API above keeps its exact prefix matching and fallback vocabulary. */
+export const commonCompletionWords: readonly string[] = COMMON_WORDS;
+
+export type VariableContext = {
+  start: number; end: number; prefix: string; scope: "global" | "session" | null;
+};
+/** Separate from identifier completion: a single @ remains a user variable. */
+export function variableContext(sql: string, caret: number, backslashEscapes = true): VariableContext | null {
+  if (sql.length > MAX_SQL || caret < 0 || caret > sql.length || /^\s*DELIMITER\b/im.test(sql)) return null;
+  const match = /@@(?:(global|session|local)\.)?([\p{L}\p{N}_$]*)$/iu.exec(sql.slice(0, caret));
+  if (!match || sql[match.index - 1] === "@") return null;
+  const scanSql = backslashEscapes ? sql : sql.replace(/\\/g, " ");
+  if (tokenize(scanSql).some(t => ["string", "comment", "ident"].includes(t.kind) &&
+    match.index >= t.start && match.index < t.end)) return null;
+  const prefix = match[2];
+  let end = caret;
+  while (end < sql.length && word.test(sql[end])) end++;
+  const scope = match[1]?.toLowerCase();
+  return { start: caret - prefix.length, end, prefix, scope: scope === "global" ? "global" : scope ? "session" : null };
+}
+
+/** CTE declarations visible at the caret, without treating them as stored tables.
+ * Only complete AS (...) declarations count, except a recursive self-reference.
+ * This deliberately does not infer the columns projected by a CTE. */
+export function cteNames(sql: string, caret: number, backslashEscapes = true): string[] {
+  if (sql.length > MAX_SQL || caret < 0 || caret > sql.length || /^\s*DELIMITER\b/im.test(sql)) return [];
+  const tokens = lex(sql, backslashEscapes ? sql : sql.replace(/\\/g, " "));
+  const first = tokens.reduce((at, t) => t.text === ";" && t.end <= caret ? t.end : at, 0);
+  const last = tokens.find(t => t.text === ";" && t.start >= caret)?.start ?? sql.length;
+  const statement = tokens.filter(t => t.start >= first && t.end <= last);
+  const found = new Map<string, string>();
+  for (let at = 0; at < statement.length; at++) {
+    const withToken = statement[at];
+    if (withToken.text.toUpperCase() !== "WITH" || withToken.start > caret) continue;
+    // A nested WITH stops being visible when its containing query closes.
+    if (statement.some(t => t.start > withToken.start && t.end <= caret && t.depth < withToken.depth)) continue;
+    const scoped = statement.slice(at + 1).filter(t => t.depth === withToken.depth);
+    let i = 0;
+    const recursive = scoped[i]?.text.toUpperCase() === "RECURSIVE";
+    if (recursive) i++;
+    while (i < scoped.length) {
+      const name = scoped[i++];
+      if (!name || !(name.identifier || /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name.text))) break;
+      // An optional column list has only its parentheses at this depth.
+      if (scoped[i]?.text === "(" && scoped[i + 1]?.text === ")") i += 2;
+      if (scoped[i++]?.text.toUpperCase() !== "AS" || scoped[i]?.text !== "(") break;
+      const open = scoped[i++], close = scoped[i++];
+      if (close?.text !== ")") break;
+      if (close.end <= caret || (recursive && open.end <= caret && caret <= close.start))
+        found.set(name.name.toLowerCase(), name.name);
+      if (scoped[i++]?.text !== ",") break;
+    }
+  }
+  return [...found.values()];
+}
