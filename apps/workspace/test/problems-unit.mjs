@@ -75,9 +75,9 @@ function cache(p, kind, params, value, flags = {}) {
   const key = JSON.stringify([kind, params]);
   const previous = p.catalog.cache.get(key);
   if (previous) clearTimeout(previous.timer);
-  const result = { value, complete: true, failed: false, truncated: false, readAt: now, ...flags };
+  const result = { value, complete: true, failed: false, truncated: false, stale: false, readAt: now, ...flags };
   const entry = { result, until: now + 30000, kind, params,
-    timer: setTimeout(() => p.catalog.remove(key, entry, 'expired'), 30000) };
+    timer: setTimeout(() => p.catalog.expire(entry), 30000) };
   p.catalog.cache.set(key, entry);
   p.catalog.notify({ kind, params, reason: 'arrived' });
   return result;
@@ -416,7 +416,15 @@ try {
     assert.equal(messages(p, 'SELECT t.bad FROM t').length, 2);
     now += 30000;
     assert.deepEqual(messages(p, 'SELECT t.bad FROM t'), []);
-    assert.equal(p.catalog.cache.size, 0);
+    assert.equal(p.catalog.cache.size, 2);
+    assert.equal(p.catalog.peek("tables", { schema: "app" }).stale, true);
+  });
+  await test('complete stale inventories cannot prove a missing table or column', () => {
+    const p = pair(); tables(p, [], 'app', { stale: true });
+    columns(p, 't', [], 'app', { stale: true });
+    assert.deepEqual(messages(p, 'SELECT t.missing FROM t'), []);
+    assert.ok(p.catalog.peek('tables', { schema: 'app' }).value);
+    assert.ok(p.catalog.peek('columns', { schema: 'app', table: 't' }).value);
   });
   await test('peek invalidates on changed database, credentials or connection', () => {
     const p = pair();

@@ -5643,13 +5643,32 @@ and identity-scoped: the connection key, its configured database and any
 credential change bump an epoch that aborts pending reads and invalidates
 every entry. It has `schemas`, `tables` and `columns` keys read through
 `/api/live/schemas` and `/api/live/catalog`, a 30 s lifetime (10 s after a
-failed read), at most 32 entries, `failed`/`complete`/`truncated` coverage
-flags with a `readAt` time on every result, and a `peek` that inspects only
-live entries and never starts a read. It is not a model of the persistent
-editor session. Completion cancels stale catalog reads.
+failed read), at most 64 entries (stale entries evicted first),
+`failed`/`complete`/`truncated` coverage flags, `stale` and a `readAt` time
+on every result. Expired entries from the same identity epoch remain usable
+for suggestions and hover while one refresh per key runs in the background.
+A failed refresh retains good stale data and delays automatic retries for
+10 s. `peek` never starts a read and marks expired entries stale even before
+their expiry timer fires. Completion also reuses names from other cached
+prefix inventories without granting them complete coverage; a new prefix still
+gets its own read. Shared reads track each owner separately: cancelling
+one owner does not abort another owner's wait; identity or credential changes
+abort all reads and clear fresh and stale entries at once. Nothing is written
+to disk. This cache is not a model of the persistent editor session.
 
-Suggestions while typing (a 220 ms debounce on catalog reads; Ctrl+Space
-also asks when automatic suggestions are off, up to `HIGHLIGHT_LIMIT`) cover
+Suggestions use two CodeMirror completion sources. Local words, aliases, CTEs,
+known variables and cached catalog names appear from the first typed character
+without a debounce or waiting for IO. The remote source reads only missing or
+stale metadata, debouncing those reads by 220 ms; Ctrl+Space reads immediately
+and also asks when automatic suggestions are off, up to `HIGHLIGHT_LIMIT`.
+CodeMirror merges arrivals into the existing open list, retaining the local
+option objects and the highlighted option, without restarting completion.
+The editor's `aria-expanded` follows CodeMirror's open-list `aria-controls`
+attribute, including a disabled list retained during a read; a pending read
+with no list stays collapsed. The content-attribute callback runs on every
+view update, including completion effects with no document change.
+The editor preloads engine words and variable names in an idle callback on
+mount and when the engine or version becomes known. Suggestions cover
 the target tables' columns with `schema.table · type` details, aliases, CTE
 names, tables, schemas, the engine's own keywords
 and functions for the connected server's release (see [Engine words for the
@@ -5688,7 +5707,7 @@ nothing is diagnosed; a statement containing an executable comment or
 default database can no longer be trusted), nor is an unbalanced or
 routine/compound statement. UPDATE or DELETE without
 WHERE is warned, and an unknown table or qualified column is warned only
-against a complete, untruncated cached list of that schema or table (`peek`
+against a fresh, complete, untruncated cached list of that schema or table (`peek`
 never fetches one; the table warning names the list's read time). References
 to CTE names, `DUAL` and tables created earlier in the current script are
 exempt from missing-name warnings. `env.sessionTempTables` suppresses all

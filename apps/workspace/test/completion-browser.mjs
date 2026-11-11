@@ -20,7 +20,7 @@ delete env.MYFLAMES_VAULT_PASSPHRASE;
 const server=spawn(process.env.PYTHON||'python3',['-c',"import os,sys; from pathlib import Path; import myflames.ui as u; u.ASSET_DIR=Path(os.environ.get('MYFLAMES_TEST_ASSETS',u.ASSET_DIR)); s=u.WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()",path.join(dir,'workspace.sqlite3')],{cwd:root,env});
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 let browser;
-const seen=[],held=[]; let hold=false, fail=false;
+const seen=[],held=[]; let hold=false, fail=false, catalogDelay=0, delayedCompleted=0;
 const columnAnswer=(body,name='name')=>({schema_version:'catalog-1.0',level:'table',schema:body.schema,table:body.table,columns:[{name,type:'varchar(20)',nullable:true,key:'',default:null,extra:'',generated:false},{name:'na`me',type:'text',nullable:true,key:'',default:null,extra:'',generated:false}],indexes:[]});
 try {
   const url=await new Promise((resolve,reject)=>{let output=''; const timer=setTimeout(()=>reject(Error(output)),10000);server.stderr.on('data',b=>{output+=b;const m=output.match(/http:\/\/127\.0\.0\.1:\d+\/#launch=[A-Za-z0-9_-]+/);if(m){clearTimeout(timer);resolve(m[0]);}});server.on('error',reject);});
@@ -47,7 +47,10 @@ try {
     else if(p==='/api/editor/history')answer={items:[],has_more:false};
     else if(p==='/api/editor/preview')answer={status:'ready',statements:[],aggregate:{state:'unknown',missing:[],reason:''},policy:{action:'confirm',text:'Review before running.'}};
     else return void req.respond({status:400,contentType:'application/json',body:'{"error":"Synthetic test does not execute SQL"}'});
-    void req.respond({status:200,contentType:'application/json',body:JSON.stringify(answer)});
+    const respond=()=>req.respond({status:200,contentType:'application/json',body:JSON.stringify(answer)}).catch(()=>{});
+    if(catalogDelay&&(p==='/api/live/schemas'||p==='/api/live/catalog')) {
+      setTimeout(()=>{delayedCompleted++;void respond();},catalogDelay);
+    } else void respond();
   });
   await page.goto(url,{waitUntil:'networkidle0'});
   await page.locator('.main-nav button ::-p-text(Query editor)').click();
@@ -93,6 +96,46 @@ try {
   await page.keyboard.press('Escape');
   await page.waitForFunction(()=>document.querySelector('.sql-editor')?.getAttribute('aria-expanded')==='false');
   assert.equal(await page.$('.sql-completion'),null,'Escape closes the list');
+  // Timing gate only: the worker adds this check; the coordinator runs it.
+  // Measure from the actual input event to a visible option in the browser,
+  // avoiding CDP round-trip time and polling latency in the measurement.
+  async function observeOptionLatency(label) {
+    await page.evaluate(label=>{
+      window.__completionLatency={start:null,elapsed:null};
+      document.addEventListener('beforeinput',()=>{window.__completionLatency.start=performance.now();},{once:true,capture:true});
+      const observer=new MutationObserver(()=>{
+        const timing=window.__completionLatency;
+        const visible=[...document.querySelectorAll('.sql-completion-label')].some(e=>e.textContent===label&&e.getClientRects().length);
+        if(timing.start!==null&&visible){timing.elapsed=performance.now()-timing.start;observer.disconnect();}
+      });
+      observer.observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});
+    },label);
+  }
+  async function instant(label) {
+    await page.waitForFunction(()=>typeof window.__completionLatency?.elapsed==='number',{timeout:3000,polling:10});
+    const elapsed=await page.evaluate(()=>window.__completionLatency.elapsed);
+    assert.ok(elapsed<150,`${label} appears in ${elapsed.toFixed(1)} ms, before a 600 ms catalog response`);
+  }
+  catalogDelay=600;
+  await setEditorText(page,'');await selectEditor(page,0);
+  await observeOptionLatency('SELECT');await page.keyboard.type('S');await instant('SELECT');
+  await page.keyboard.press('Escape');
+  // Fill the complete table inventory, then expire its freshness while keeping
+  // the real browser clock/timers intact. The second statement must use stale
+  // names immediately while delayed revalidation runs in the background.
+  await set('SELECT * FROM u|');await has('users');await page.keyboard.press('Escape');
+  await page.evaluate(()=>{window.__completionOriginalNow=Date.now;const later=Date.now()+30001;Date.now=()=>later;});
+  try {
+    await setEditorText(page,'SELECT 1; SELECT * FROM u');await selectEditor(page,'SELECT 1; SELECT * FROM u'.length);
+    const completed=delayedCompleted;
+    await observeOptionLatency('users');await page.keyboard.type('s');await instant('users');
+    assert.equal(delayedCompleted,completed,'cached table names appear before any delayed refresh response');
+    await page.waitForFunction(()=>!document.querySelector('.sql-completion-hint')?.textContent.includes('Reading'),{timeout:8000});
+  } finally {
+    await page.evaluate(()=>{Date.now=window.__completionOriginalNow;delete window.__completionOriginalNow;delete window.__completionLatency;});
+    catalogDelay=0;
+  }
+  await page.keyboard.press('Escape');
   await set('SELECT u.na| FROM users AS u');await has('name');
   assert.ok((await list()).some(s=>s.includes('app.users · varchar')));
   // NAME is a MySQL keyword (non-reserved), so the accepted column is quoted.

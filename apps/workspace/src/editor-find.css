@@ -102,11 +102,12 @@
 /* Match marks on the highlight layer: every match tinted, the current one
    ringed. */
 .sql-layer .sql-find-mark {
-  background: var(--accent-soft);
+  background: var(--editor-selection-match);
+  color: var(--editor-selection-ink);
   border-radius: 2px;
 }
 .sql-layer .sql-find-current {
-  background: var(--accent-soft);
+  background: var(--editor-find-current);
   box-shadow: 0 0 0 1px var(--accent);
 }
 @media (forced-colors: active) {

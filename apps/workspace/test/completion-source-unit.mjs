@@ -4,12 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const built = await build({ stdin: { resolveDir: root, contents: `
+  export {selectedText} from './src/editor/visual';
   export * from './src/editor/catalog'; export * from './src/editor/completion';
   export {variableContext, cteNames} from './src/sqlCompletion';
   export {EditorView} from '@codemirror/view';
   export {history, undo} from '@codemirror/commands';
   export {Transaction} from '@codemirror/state';
-  export {pickedCompletion} from '@codemirror/autocomplete';
+  export {pickedCompletion, selectedCompletion, setSelectedCompletion} from '@codemirror/autocomplete';
   export {wordsFor, functionsFor} from './src/editor/engineWords';
   export {EditorState, EditorSelection} from '@codemirror/state';
   export {CompletionContext, autocompletion, startCompletion, closeCompletion, completionStatus, currentCompletions} from '@codemirror/autocomplete';
@@ -44,7 +45,8 @@ const resources = [], owner = (generation = 1, editor = {}) => ({ editor, genera
 function service(get = () => conn()) { const value = new cm.CatalogService(get); resources.push(value); return value; }
 function sourceEnv() {
   const env = { current: { connection: conn(), docId: 'tab1', backslashEscapes: true } };
-  const source = cm.completionSources(env)[0]; resources.push(cm.catalogFor(env)); return { env, source };
+  const sources = cm.completionSources(env), [source, localSource] = sources;
+  resources.push(cm.catalogFor(env)); return { env, source, localSource, sources };
 }
 function context(marked, explicit = false, selection) {
   const pos = marked.indexOf('|'), doc = marked.replace('|', '');
@@ -54,26 +56,9 @@ function context(marked, explicit = false, selection) {
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 // Exercise the app's lifecycle plugin with real transactions but without a DOM.
 // CodeMirror's own tooltip rendering remains a browser-suite gate.
-async function editor(pair, marked, automatic = true) {
-  const extension = cm.completionExtension({ completion_auto: automatic }, pair.env);
-  const lifecycle = extension.find(value => value.baseExtensions && !value.domEventHandlers);
-  const handlers = extension.find(value => value.domEventHandlers?.compositionstart).domEventHandlers;
-  const observers = extension.find(value => value.domEventObservers?.keydown).domEventObservers;
-  const initial = context(marked);
-  let state = cm.EditorState.create({ doc: initial.state.doc, selection: initial.state.selection,
-    extensions: [cm.autocompletion({ override: [pair.source], activateOnTyping: automatic, defaultKeymap: false }), extension] });
-  let plugin;
-  const view = { hasFocus: true, composing: false, get state() { return state; }, dispatch(spec) {
-    const before = state, tr = state.update(spec); state = tr.state;
-    plugin?.update({ view, startState: before, state, docChanged: tr.docChanged, selectionSet: !!tr.selection, transactions: [tr] });
-  } };
-  plugin = lifecycle.create(view); await flush();
-  return { view, handlers, observers, destroy: () => plugin.destroy(),
-    query: (explicit = false) => pair.source(new cm.CompletionContext(state, state.selection.main.head, explicit, view)) };
-}
 async function nativeEditor(pair, marked, restoredPending = false) {
   const extension = cm.completionExtension({ completion_auto: true }, pair.env);
-  const nativeExtension = cm.autocompletion({ override: [pair.source], defaultKeymap: false });
+  const nativeExtension = cm.autocompletion({ override: pair.sources, defaultKeymap: false });
   const initial = context(marked);
   let state = cm.EditorState.create({ doc: initial.state.doc, selection: initial.state.selection, extensions: [nativeExtension, extension] });
   let native, app;
@@ -89,7 +74,8 @@ async function nativeEditor(pair, marked, restoredPending = false) {
   app = extension.find(value => value.baseExtensions && !value.domEventHandlers && !value.domEventObservers).create(view);
   const observer = extension.find(value => value.domEventObservers?.keydown).domEventObservers;
   await flush();
-  return { view, escape() { observer.keydown({ key: 'Escape' }, view); cm.closeCompletion(view); }, destroy() {
+  const handlers = extension.find(value => value.domEventHandlers?.compositionstart).domEventHandlers;
+  return { view, observer, handlers, escape() { observer.keydown({ key: 'Escape' }, view); cm.closeCompletion(view); }, destroy() {
     app.destroy(); clearTimeout(native.debounceUpdate); clearTimeout(native.debounceAccept);
     for (const query of native.running) {
       for (const listener of query.context.abortListeners || []) listener();
@@ -104,9 +90,201 @@ async function test(name, run) {
   finally { for (const resource of resources.splice(0)) resource.dispose(); timers.clear(); }
 }
 try {
+  handler = () => Promise.resolve({ names: [] });
+  await cm.preloadCompletion({ current: { engine: 'mysql', serverVersion: '8.4.6' } });
+  sent = [];
+  await test('local keywords and cached names return before a pending catalog read', async () => {
+    const pair = sourceEnv(), held = deferred(); handler = () => held.promise;
+    const pending = pair.source(context('S|'));
+    assert.equal((await pair.localSource(context('S|'))).options[0].label, 'SELECT');
+    assert.equal(sent.length, 0); await advance(220); assert.equal(sent.length, 1);
+    held.resolve({ schemas: [{ name: 'app', tables: 2 }] }); await pending;
+    handler = () => Promise.resolve(tables(['users', 'usage']));
+    await pair.source(context('SELECT * FROM u|', true));
+    const reads = sent.length;
+    assert.deepEqual((await pair.localSource(context('SELECT 1; SELECT * FROM us|'))).options.map(o => o.label), ['users', 'usage']);
+    assert.equal(sent.length, reads);
+  });
+  await test('preload makes release keywords, functions and variables available on the first local call', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { engine: 'mysql', serverVersion: '8.4.3' });
+    handler = () => Promise.resolve({ names: [{ name: 'max_connections', scope: 'global', deprecated: false }] });
+    await cm.preloadCompletion(pair.env); const reads = sent.length;
+    assert.ok((await pair.localSource(context('OPTIM|'))).options.some(o => o.label === 'OPTIMIZER_COSTS'));
+    assert.ok((await pair.localSource(context('SELECT POW|'))).options.some(o => o.type === 'function' && o.label === 'POW'));
+    assert.equal((await pair.localSource(context('SELECT @@max_c|'))).options[0].label, 'max_connections');
+    assert.equal(sent.length, reads);
+  });
+  await test('native sources merge catalog names into the same open dialog and retain the highlighted object', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, '|'), held = deferred(); handler = () => held.promise;
+    live.view.dispatch({ changes: { from: 0, insert: 'SE' }, selection: { anchor: 2 }, userEvent: 'input.type' });
+    await advance(0);
+    assert.ok(cm.currentCompletions(live.view.state).some(o => o.label === 'SELECT'), 'no debounce before local words');
+    live.view.dispatch({ effects: cm.setSelectedCompletion(1) });
+    const highlighted = cm.selectedCompletion(live.view.state);
+    // aria-controls identifies CM's existing dialog, independently of DOM rendering.
+    const attributes = () => live.view.state.facet(cm.EditorView.contentAttributes)
+      .map(value => typeof value === 'function' ? value(live.view) : value).find(value => value['aria-controls']);
+    const dialog = attributes()?.['aria-controls'];
+    await advance(220); assert.equal(sent.length, 1);
+    held.resolve(schemas(['SE_database'])); await advance(0);
+    assert.ok(cm.currentCompletions(live.view.state).some(o => o.label === 'SE_database'));
+    assert.equal(cm.selectedCompletion(live.view.state), highlighted, 'the exact local option object stays highlighted');
+    assert.equal(attributes()?.['aria-controls'], dialog);
+    live.destroy();
+  });
+  await test('native cached stale table names appear immediately and merge refreshed names', async () => {
+    const pair = sourceEnv(), catalog = cm.catalogFor(pair.env);
+    handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 1 }] } : tables(['users']));
+    await pair.source(context('SELECT * FROM u|', true)); await advance(30000);
+    const schemasRead = deferred(), tablesRead = deferred();
+    handler = path => path === 'live/schemas' ? schemasRead.promise : tablesRead.promise;
+    const live = await nativeEditor(pair, 'SELECT 1; SELECT * FROM u|');
+    const pos = live.view.state.selection.main.head;
+    live.view.dispatch({ changes: { from: pos, insert: 's' }, selection: { anchor: pos + 1 }, userEvent: 'input.type' });
+    await advance(0); const users = cm.currentCompletions(live.view.state).find(o => o.label === 'users');
+    assert.ok(users, 'stale complete table names do not wait for debounce or refresh');
+    const before = sent.length; await advance(219); assert.equal(sent.length, before);
+    await advance(1); assert.equal(sent.length, before + 1);
+    schemasRead.resolve({ schemas: [{ name: 'app', tables: 2 }] }); await flush();
+    tablesRead.resolve(tables(['users', 'usage'])); await advance(0);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['usage', 'users']);
+    assert.equal(cm.currentCompletions(live.view.state).find(o => o.label === 'users'), users);
+    assert.equal(catalog.peek('tables', { schema: 'app' }).stale, false); live.destroy();
+  });
+  await test('native saturated local vocabulary leaves room for arriving names within the shared cap', async () => {
+    const pair = sourceEnv(), held = deferred();
+    Object.assign(pair.env.current, { engine: 'mysql', serverVersion: '8.4.3' });
+    handler = path => path === 'config/versions/names' ? Promise.resolve({ names: [] }) : held.promise;
+    const live = await nativeEditor(pair, '|'); cm.startCompletion(live.view); await advance(50);
+    assert.equal(cm.currentCompletions(live.view.state).length, 20);
+    held.resolve(schemas(Array.from({ length: 60 }, (_, i) => `db${i}`))); await advance(0);
+    assert.equal(cm.currentCompletions(live.view.state).length, 40);
+    assert.ok(cm.currentCompletions(live.view.state).some(o => o.type === 'schema'));
+    live.destroy();
+  });
+  await test('native no-option failure and timeout hints survive; Ctrl+Space retries immediately', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, 'SELECT * FROM zz|');
+    handler = () => Promise.reject(new Error('denied'));
+    cm.startCompletion(live.view); await advance(50);
+    assert.equal(live.view.state.field(cm.completionHint), 'Some catalog suggestions are unavailable.');
+    const before = sent.length;
+    live.observer.keydown({ ctrlKey: true, key: ' ' });
+    handler = () => new Promise(() => {}); cm.startCompletion(live.view); await advance(50);
+    assert.ok(sent.length > before, 'manual retry bypasses the cached failure');
+    await advance(8000);
+    assert.equal(live.view.state.field(cm.completionHint), 'Catalog suggestions timed out. Try Ctrl+Space again.');
+    live.destroy();
+  });
+  await test('native inherited explicit status respects failure cache; both shortcuts retry', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, 'SE|'); handler = () => Promise.reject(new Error('denied'));
+    cm.startCompletion(live.view); await advance(50); assert.equal(sent.length, 1);
+    live.view.dispatch({ changes: { from: 2, insert: 'L' }, selection: { anchor: 3 }, userEvent: 'input.type' });
+    await advance(220); assert.equal(sent.length, 1, 'typing must not inherit explicit retry privileges');
+    for (const shiftKey of [false, true]) {
+      live.observer.keydown({ ctrlKey: true, shiftKey, code: 'Space' });
+      cm.startCompletion(live.view); await advance(50);
+    }
+    assert.equal(sent.length, 3); live.destroy();
+  });
+  await test('native disabling automatic suggestions closes the list and keeps manual completion', async () => {
+    const pair = sourceEnv(); pair.env.current.connection = undefined;
+    const live = await nativeEditor(pair, 'SE|'); cm.startCompletion(live.view); await advance(50);
+    assert.ok(cm.currentCompletions(live.view.state).length);
+    cm.completionExtension({ completion_auto: false }, pair.env); live.view.dispatch({}); await advance(0);
+    assert.equal(cm.completionStatus(live.view.state), null);
+    live.view.dispatch({ changes: { from: 2, insert: 'L' }, selection: { anchor: 3 }, userEvent: 'input.type' });
+    await advance(0); assert.equal(cm.completionStatus(live.view.state), null);
+    live.observer.keydown({ ctrlKey: true, key: ' ' }); cm.startCompletion(live.view); await advance(50);
+    assert.ok(cm.currentCompletions(live.view.state).some(o => o.label === 'SELECT')); live.destroy();
+  });
+  await test('native composition, edits, selection, credentials and destruction cancel reads', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, 'SE|'); handler = () => new Promise(() => {});
+    cm.startCompletion(live.view); await advance(50);
+    live.handlers.compositionstart({}, live.view); await advance(0);
+    assert.equal(sent.at(-1).signal.aborted, true); assert.equal(cm.completionStatus(live.view.state), null);
+    cm.startCompletion(live.view); await advance(50); assert.deepEqual(cm.currentCompletions(live.view.state), []);
+    live.handlers.compositionend();
+    cm.startCompletion(live.view); await advance(50);
+    live.view.dispatch({ changes: { from: 2, insert: 'L' }, selection: { anchor: 3 }, userEvent: 'input.type' });
+    assert.equal(sent.at(-1).signal.aborted, true); await advance(220);
+    live.view.dispatch({ selection: { anchor: 2 } }); assert.equal(sent.at(-1).signal.aborted, true);
+    cm.startCompletion(live.view); await advance(50);
+    pair.env.current.connection = { ...conn(), password: 'new' }; live.view.dispatch({}); await advance(0);
+    assert.equal(sent.at(-1).signal.aborted, true); assert.equal(cm.completionStatus(live.view.state), null);
+    cm.startCompletion(live.view); await advance(50); live.destroy(); assert.equal(sent.at(-1).signal.aborted, true);
+  });
+  await test('stale names survive one shared refresh, failure and identity invalidation', async () => {
+    let connection = conn(); const catalog = service(() => connection);
+    const first = await catalog.read('tables', { schema: 'app' }, owner());
+    await advance(30000); const stale = catalog.peek('tables', { schema: 'app' });
+    assert.equal(stale.stale, true); assert.equal(stale.value, first.value);
+    const held = deferred(); handler = () => held.promise;
+    assert.equal(await catalog.read('tables', { schema: 'app' }, owner()), stale);
+    assert.equal(await catalog.read('tables', { schema: 'app' }, owner()), stale);
+    assert.equal(sent.length, 2, 'only one refresh per key');
+    held.reject(new Error('offline')); await flush();
+    assert.equal(catalog.peek('tables', { schema: 'app' }), stale);
+    assert.equal(await catalog.read('tables', { schema: 'app' }, owner()), stale);
+    assert.equal(sent.length, 2, 'failed refresh has a bounded retry delay');
+    connection = { ...connection, password: 'changed' }; catalog.syncConnection();
+    assert.equal(catalog.peek('tables', { schema: 'app' }), null);
+  });
+  await test('single flight cancellation rejects only the cancelled owner', async () => {
+    const catalog = service(), held = deferred(), one = owner(), two = owner(); handler = () => held.promise;
+    const a = catalog.read('schemas', {}, one), b = catalog.read('schemas', {}, two);
+    const rejected = assert.rejects(a, { name: 'AbortError' }); catalog.cancelOwner(one); await rejected;
+    assert.equal(sent.length, 1); assert.equal(sent[0].signal.aborted, false);
+    held.resolve(schemas(['app'])); assert.equal((await b).value.schemas[0].name, 'app');
+  });
+  await test('prefix changes immediately reuse cached names without enabling fuzzy matching', async () => {
+    const pair = sourceEnv();
+    handler = path => Promise.resolve(path === 'live/schemas' ? schemas(['app']) : tables(['users']));
+    await pair.source(context('SELECT * FROM us|', true));
+    const before = sent.length;
+    const wider = await pair.localSource(context('SELECT 1; SELECT * FROM u|'));
+    assert.equal(wider.options[0].label, 'users'); assert.equal(sent.length, before);
+    assert.equal((await pair.localSource(context('SELECT * FROM usr|'))).options.length, 0, 'partial lists stay prefix-only');
+    const pending = pair.source(context('SELECT * FROM u|'));
+    await advance(219); assert.equal(sent.length, before);
+    await advance(1); await pending; assert.equal(sent.length, before + 1, 'a new prefix still gets its own bounded read');
+  });
+  await test('idle preload runs on mount and when engine/version become known', async () => {
+    const pair = sourceEnv();
+    handler = () => Promise.resolve({ names: [{ name: 'max_connections', scope: 'global' }] });
+    const live = await nativeEditor(pair, '|'); await advance(0);
+    assert.equal(sent.length, 0, 'mount without engine preloads the chunk without asking for variables');
+    Object.assign(pair.env.current, { engine: 'mysql', serverVersion: '8.4.3' });
+    live.view.dispatch({}); assert.equal(sent.length, 0, 'preloading waits for idle');
+    await advance(0); assert.equal(sent.length, 1); assert.equal(sent[0].path, 'config/versions/names');
+    assert.equal((await pair.localSource(context('SELECT @@max_c|'))).options[0].label, 'max_connections');
+    live.destroy();
+  });
+  await test('selected text marks follow multiple ranges, edits and focus-independent state', () => {
+    let state = cm.EditorState.create({ doc: 'SELECT 1, 2',
+      selection: cm.EditorSelection.create([cm.EditorSelection.range(0, 6), cm.EditorSelection.range(10, 11)]),
+      extensions: [cm.EditorState.allowMultipleSelections.of(true), cm.selectedText] });
+    const ranges = () => { const out = []; state.field(cm.selectedText).between(0, state.doc.length,
+      (from, to, mark) => out.push([from, to, mark.spec.class])); return out; };
+    assert.deepEqual(ranges(), [[0, 6, 'cm-selectedText'], [10, 11, 'cm-selectedText']]);
+    state = state.update({ changes: { from: 0, insert: ' ' } }).state;
+    assert.deepEqual(ranges(), [[1, 7, 'cm-selectedText'], [11, 12, 'cm-selectedText']]);
+    state = state.update({ selection: { anchor: 1 } }).state; assert.deepEqual(ranges(), []);
+  });
+  await test('entry cap evicts stale failures before fresh good entries', async () => {
+    const catalog = service(); handler = (_path, body) => body.table === 'denied'
+      ? Promise.reject(new Error('denied')) : Promise.resolve(columns(['id']));
+    await catalog.read('columns', { schema: 'app', table: 'first' }, owner());
+    await catalog.read('columns', { schema: 'app', table: 'denied' }, owner());
+    for (let i = 0; i < 62; i++) await catalog.read('columns', { schema: 'app', table: `t${i}` }, owner());
+    await advance(10000);
+    await catalog.read('columns', { schema: 'app', table: 'new' }, owner());
+    assert.ok(catalog.peek('columns', { schema: 'app', table: 'first' }));
+    assert.equal(catalog.peek('columns', { schema: 'app', table: 'denied' }), null);
+    assert.equal(catalog.cache.size, 64);
+  });
   await test('automatic threshold and explicit local completion', async () => {
     const { source, env } = sourceEnv(); env.current.connection = undefined;
-    assert.equal(await source(context('S|')), null); assert.equal(await source(context('|')), null);
+    assert.equal((await source(context('S|'))).options[0].label, 'SELECT'); assert.equal(await source(context('|')), null);
     assert.equal((await source(context('SE|'))).options[0].label, 'SELECT');
     assert.equal((await source(context('S|', true))).options[0].apply, 'SELECT');
     assert.ok((await source(context('|', true))).options.length > 0); assert.equal(sent.length, 0);
@@ -149,7 +327,7 @@ try {
     assert.equal(first.complete, true); assert.equal(first.truncated, false); assert.equal(first.readAt, now);
     await advance(29999); assert.equal(await catalog.read('schemas', {}, owner()), first); assert.equal(sent.length, 1);
     await advance(1); assert.deepEqual(events.map(e => e.reason), ['arrived', 'expired']);
-    await catalog.read('schemas', {}, owner()); assert.equal(sent.length, 2);
+    await catalog.read('schemas', {}, owner(), false, true); assert.equal(sent.length, 2);
     off(); await advance(30000); assert.equal(events.length, 3);
   });
   await test('10 second failure TTL and explicit bypass', async () => {
@@ -170,13 +348,13 @@ try {
     }
     connection = conn(); await catalog.read('schemas', {}, owner()); assert.equal(sent.length, 7);
   });
-  await test('32 entry FIFO cap; cache hits do not reorder', async () => {
+  await test('64 entry FIFO cap; cache hits do not reorder', async () => {
     const catalog = service(); handler = () => Promise.resolve(columns(['id']));
-    for (let i = 0; i < 32; i++) await catalog.read('columns', { schema: 'app', table: `t${i}` }, owner());
-    await catalog.read('columns', { schema: 'app', table: 't0' }, owner()); assert.equal(sent.length, 32);
-    await catalog.read('columns', { schema: 'app', table: 't32' }, owner()); assert.equal(sent.length, 33);
-    await catalog.read('columns', { schema: 'app', table: 't1' }, owner()); assert.equal(sent.length, 33);
-    await catalog.read('columns', { schema: 'app', table: 't0' }, owner()); assert.equal(sent.length, 34);
+    for (let i = 0; i < 64; i++) await catalog.read('columns', { schema: 'app', table: `t${i}` }, owner());
+    await catalog.read('columns', { schema: 'app', table: 't0' }, owner()); assert.equal(sent.length, 64);
+    await catalog.read('columns', { schema: 'app', table: 't64' }, owner()); assert.equal(sent.length, 65);
+    await catalog.read('columns', { schema: 'app', table: 't1' }, owner()); assert.equal(sent.length, 65);
+    await catalog.read('columns', { schema: 'app', table: 't0' }, owner()); assert.equal(sent.length, 66);
   });
   await test('filtered or truncated reads never claim a complete inventory', async () => {
     const catalog = service(); handler = () => Promise.resolve(tables(['users']));
@@ -222,7 +400,7 @@ try {
   await test('new request and CM abort cancel transport/debounce', async () => {
     const { source } = sourceEnv(); handler = () => new Promise(() => {});
     const first = source(context('SE|')); await advance(100);
-    assert.equal(await source(context('S|')), null); assert.equal(await first, null); await advance(1000); assert.equal(sent.length, 0);
+    assert.equal(await source(context('|')), null); assert.equal(await first, null); await advance(1000); assert.equal(sent.length, 0);
     const ctx = context('SE|', true), pending = source(ctx); await flush(); assert.equal(ctx.abortOnDocChange, true);
     for (const listener of ctx.abortListeners) listener(); ctx.abortListeners = null;
     assert.equal(await pending, null); assert.equal(sent[0].signal.aborted, true);
@@ -257,54 +435,6 @@ try {
     const table = await pair.source(context('SELECT * FROM |', true));
     assert.deepEqual(table.options, [{ label: tick, detail: name, type: 'table', apply: '`a``b`' }]);
   });
-  await test('live source publishes local words and Reading catalog before metadata', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|'), held = deferred();
-    handler = () => held.promise;
-    const first = await live.query(); await flush();
-    assert.equal(first.options[0].label, 'SELECT'); assert.equal(sent.length, 0);
-    assert.equal(live.view.state.field(cm.completionHint), 'Reading catalog…');
-    await advance(220); assert.equal(sent.length, 1);
-    held.resolve(schemas(['SE_database'])); await flush();
-    assert.equal(cm.completionStatus(live.view.state), 'pending', 'catalog arrival asks CM to refresh the one source');
-    const refreshed = await live.query(true);
-    assert.deepEqual(refreshed.options.map(o => o.label), ['SE_database', 'SELECT', 'SET', 'INSERT INTO']);
-    assert.equal(sent.length, 1, 'internal refresh does not start another request');
-    assert.equal(live.view.state.field(cm.completionHint), ''); live.destroy();
-  });
-  await test('no-option loading, failure and timeout notes survive without a list', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SELECT * FROM zz|');
-    handler = () => Promise.reject(new Error('denied'));
-    assert.deepEqual((await live.query()).options, []); await flush();
-    assert.equal(live.view.state.field(cm.completionHint), 'Reading catalog…');
-    await advance(220);
-    assert.equal(live.view.state.field(cm.completionHint), 'Some catalog suggestions are unavailable.');
-    assert.deepEqual((await live.query(true)).options, []);
-    live.observers.keydown({ key: 'Escape' }, live.view); await flush();
-    assert.equal(live.view.state.field(cm.completionHint), '');
-    handler = () => new Promise(() => {}); await live.query(true); await advance(8000);
-    assert.equal(live.view.state.field(cm.completionHint), 'Catalog suggestions timed out. Try Ctrl+Space again.'); live.destroy();
-  });
-  await test('composition closes completion, aborts reads, blocks source until end', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|'); handler = () => new Promise(() => {});
-    cm.startCompletion(live.view); await live.query(true); await flush();
-    live.handlers.compositionstart({}, live.view); await flush();
-    assert.equal(sent[0].signal.aborted, true); assert.equal(cm.completionStatus(live.view.state), null);
-    assert.equal(await live.query(true), null); assert.equal(live.view.state.field(cm.completionHint), '');
-    live.handlers.compositionend({}, live.view); handler = () => Promise.resolve(schemas(['app']));
-    assert.equal((await live.query(true)).options[0].label, 'SELECT'); await flush(); live.destroy();
-  });
-  await test('edits, selection, environment switch and destroy cancel live work', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|'); handler = () => new Promise(() => {});
-    await live.query(true); await flush();
-    live.view.dispatch({ changes: { from: 2, insert: 'L' }, selection: { anchor: 3 }, userEvent: 'input.type' });
-    assert.equal(sent[0].signal.aborted, true);
-    live.observers.keydown({ ctrlKey: true, key: ' ' }, live.view);
-    await live.query(true); await flush(); live.view.dispatch({ selection: { anchor: 2 } });
-    assert.equal(sent[1].signal.aborted, true);
-    await live.query(true); await flush(); pair.env.current.connection = { ...conn(), password: 'new' }; live.view.dispatch({});
-    assert.equal(sent[2].signal.aborted, true);
-    await live.query(true); await flush(); live.destroy(); assert.equal(sent[3].signal.aborted, true);
-  });
   await test('alias targets preserve table order despite reverse response order', async () => {
     const { source } = sourceEnv(), first = deferred(), second = deferred();
     handler = (_path, body) => body.table === 'users' ? first.promise : second.promise;
@@ -313,57 +443,7 @@ try {
     second.resolve(columns(['name_role'])); await flush(); first.resolve(columns(['name_user']));
     assert.deepEqual((await pending).options.map(o => o.apply), ['u.name_user', 'r.name_role']);
   });
-  await test('typing after a public refresh cannot inherit explicit status or skip debounce', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SELECT * FROM us|');
-    await live.query(true); await flush(); await live.query(true); assert.equal(sent.length, 2);
-    const pos = live.view.state.selection.main.head;
-    live.view.dispatch({ changes: { from: pos, insert: 'e' }, selection: { anchor: pos + 1 }, userEvent: 'input.type' });
-    // CM preserves the old result's explicit bit on typing (autocomplete:1023).
-    await live.query(true); await flush();
-    assert.equal(sent.length, 2, 'typing must not become an explicit catalog request');
-    await advance(219); assert.equal(sent.length, 2); await advance(1); assert.equal(sent.length, 3);
-    await live.query(true); await flush();
-    const end = live.view.state.selection.main.head;
-    live.view.dispatch({ changes: { from: end, insert: 'r' }, selection: { anchor: end + 1 }, userEvent: 'input.type' });
-    live.observers.keydown({ ctrlKey: true, shiftKey: true, key: ' ' }, live.view);
-    await live.query(true); await flush(); assert.equal(sent.length, 4, 'Shift-Ctrl-Space is explicit after typing');
-    live.destroy();
-  });
-  await test('inherited explicit status cannot bypass a failure, but either shortcut can', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|'); handler = () => Promise.reject(new Error('denied'));
-    await live.query(true); await flush(); await live.query(true); assert.equal(sent.length, 1);
-    live.view.dispatch({ changes: { from: 2, insert: 'L' }, selection: { anchor: 3 }, userEvent: 'input.type' });
-    await live.query(true); await advance(220);
-    assert.equal(sent.length, 1, 'typing respects the cached schema failure');
-    await live.query(true); // Consume only the internal result refresh.
-    for (const shiftKey of [false, true]) {
-      live.observers.keydown({ ctrlKey: true, shiftKey, code: 'Space' }, live.view);
-      await live.query(true); await flush(); await live.query(true);
-    }
-    assert.equal(sent.length, 3, 'Ctrl-Space and Shift-Ctrl-Space each retry'); live.destroy();
-  });
-  await test('switching credentials or disabling automatic suggestions closes the CM session', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|');
-    cm.startCompletion(live.view); assert.equal(cm.completionStatus(live.view.state), 'pending');
-    pair.env.current.connection = { ...conn(), password: 'changed' }; live.view.dispatch({}); await flush();
-    assert.equal(cm.completionStatus(live.view.state), null);
-    cm.startCompletion(live.view);
-    cm.completionExtension({ completion_auto: false }, pair.env); live.view.dispatch({}); await flush();
-    assert.equal(cm.completionStatus(live.view.state), null); assert.equal(await live.query(false), null);
-    live.observers.keydown({ ctrlKey: true, key: ' ' }, live.view);
-    assert.equal((await live.query(true)).options[0].label, 'SELECT'); await flush(); live.destroy();
-  });
-  await test('manual retry wins over a catalog refresh waiting in CM debounce', async () => {
-    const pair = sourceEnv(), live = await editor(pair, 'SE|'); handler = () => Promise.reject(new Error('denied'));
-    await live.query(true); await flush(); assert.equal(sent.length, 1);
-    // The failed result is ready, but CM has not called the source again yet.
-    live.observers.keydown({ ctrlKey: true, key: ' ' }, live.view);
-    handler = () => Promise.resolve(schemas(['SE_database']));
-    await live.query(true); await flush();
-    assert.equal(sent.length, 2, 'manual retry must not be consumed as an internal refresh');
-    const result = await live.query(true); assert.equal(result.options[0].label, 'SE_database'); live.destroy();
-  });
-  await test('native scheduler: 50 ms manual start/refresh, then 220 ms automatic debounce', async () => {
+  await test('native scheduler: manual reads immediately, cached names survive typing without another read', async () => {
     const pair = sourceEnv(), live = await nativeEditor(pair, 'SELECT * FROM us|');
     cm.startCompletion(live.view); await advance(49); assert.equal(sent.length, 0);
     await advance(1); assert.equal(sent.length, 2);
@@ -612,6 +692,16 @@ try {
     const pair = sourceEnv(); handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 200 }] } : tables(['users'], true));
     assert.deepEqual((await pair.source(context('SELECT * FROM usr|', true))).options, [], 'truncated full read cannot enable fuzzy tables');
   });
+  await test('a schema growing beyond 200 tables refreshes by prefix despite a stale complete list', async () => {
+    const pair = sourceEnv();
+    handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 1 }] } : tables(['users']));
+    await pair.source(context('SELECT * FROM u|', true)); await advance(30000);
+    handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 201 }] } : tables(['user_new']));
+    const result = await pair.source(context('SELECT * FROM user|', true));
+    assert.equal(sent.at(-1).body.prefix, 'user', 'stale completeness cannot override the current schema size');
+    assert.equal(result.filter, false);
+    assert.equal((await pair.localSource(context('SELECT * FROM user|'))).filter, false, 'the fresh prefix result stays prefix-only');
+  });
   await test('engine-aware catalog quoting covers reserved and non-reserved keywords and hostile names', async () => {
     const pair = sourceEnv(); Object.assign(pair.env.current, { engine: 'mysql', serverVersion: '8.4.6' });
     assert.deepEqual(cm.wordsFor('mysql', '8.4.6').keywords.find(k => k.name === 'BULK'), { name: 'BULK', reserved: false });
@@ -620,6 +710,42 @@ try {
     assert.deepEqual(result.options.map(o => o.label), ['select', 'bulk', 'a b', 'a`b', 'ordinary']);
     assert.deepEqual(result.options.map(o => o.apply), ['`select`', '`bulk`', '`a b`', '`a``b`', 'ordinary']);
     assert.ok(result.options.every(o => typeof o.apply === 'string'));
+  });
+  await test('native aria-expanded follows visible lists while remote reads are pending', async () => {
+    const pair = sourceEnv(), held = deferred(), live = await nativeEditor(pair, '|');
+    handler = () => held.promise;
+    // Keep the same facet callback across completion-only transactions, as the
+    // view does. Opening or closing must not depend on editing the document.
+    const attributes = live.view.state.facet(cm.EditorView.contentAttributes)
+      .find(value => typeof value === 'function' && 'aria-expanded' in value(live.view));
+    assert.equal(typeof attributes, 'function');
+    const expanded = () => attributes(live.view)['aria-expanded'];
+    assert.equal(expanded(), 'false');
+    live.view.dispatch({ changes: { from: 0, insert: 'SEL' }, selection: { anchor: 3 }, userEvent: 'input.type' });
+    const doc = live.view.state.doc;
+    assert.equal(cm.completionStatus(live.view.state), 'pending');
+    assert.deepEqual(cm.currentCompletions(live.view.state), []);
+    assert.equal(expanded(), 'false', 'pending without a displayed list stays collapsed');
+    await advance(50);
+    assert.equal(live.view.state.doc, doc);
+    assert.equal(cm.completionStatus(live.view.state), 'pending');
+    assert.ok(cm.currentCompletions(live.view.state).some(o => o.label === 'SELECT'));
+    assert.equal(expanded(), 'true', 'local list is expanded while the remote lane is pending');
+    live.escape();
+    assert.equal(live.view.state.doc, doc); assert.equal(expanded(), 'false');
+    cm.startCompletion(live.view); await advance(50);
+    assert.equal(live.view.state.doc, doc); assert.equal(expanded(), 'true');
+    live.view.dispatch({ changes: { from: 3, insert: 'Z' }, selection: { anchor: 4 }, userEvent: 'input.type' });
+    await advance(220);
+    assert.equal(cm.completionStatus(live.view.state), 'pending');
+    assert.deepEqual(cm.currentCompletions(live.view.state), [], 'the retained list is disabled during the read');
+    assert.equal(expanded(), 'true', 'a disabled but displayed list is still expanded');
+    const pendingDoc = live.view.state.doc;
+    held.resolve(schemas([])); await advance(0);
+    assert.equal(live.view.state.doc, pendingDoc);
+    assert.equal(cm.completionStatus(live.view.state), null);
+    assert.equal(expanded(), 'false', 'an empty remote result closes the list without an edit');
+    live.destroy();
   });
   await test('native matcher ranks prefixes before fuzzy columns and toggles editor aria-expanded', async () => {
     const pair = sourceEnv(), live = await nativeEditor(pair, 'SELECT app.people.usr|');

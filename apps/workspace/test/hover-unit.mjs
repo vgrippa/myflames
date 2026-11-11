@@ -229,9 +229,22 @@ try {
   }
   {
     const h = harness("SELECT id FROM users"), second = harness("SELECT id FROM users", { env: h.env, source: h.source });
-    const a = h.open("id"), callA = calls[0], b = second.open("id"), callB = calls[1];
-    a.destroy(); assert.equal(callA.signal.aborted, true); assert.equal(callB.signal.aborted, false);
-    await answer(callB); assert.ok(b.dom.textContent.includes("app.users.id")); b.destroy();
+    const a = h.open("id"), call = calls[0], b = second.open("id");
+    assert.equal(calls.length, 1, "two owners share one catalog read");
+    a.destroy(); assert.equal(call.signal.aborted, false, "one owner cannot abort the other's read");
+    await answer(call); assert.equal(a.dom.textContent, "");
+    assert.ok(b.dom.textContent.includes("app.users.id")); b.destroy();
+  }
+  {
+    const h = harness("SELECT id FROM users"), first = await ready(h, "id"); first.destroy();
+    for (const entry of h.catalog.cache.values()) entry.until = Date.now() - 1;
+    const second = h.open("id"); await tick();
+    assert.ok(second.dom.textContent.includes("app.users.id"), "stale metadata remains usable during refresh");
+    assert.equal(calls.length, 2, "hover starts one stale refresh");
+    calls[1].reject(new Error("offline")); await tick();
+    assert.ok(second.dom.textContent.includes("app.users.id"), "refresh failure keeps stale hover content");
+    assert.equal(h.catalog.peek("columns", { schema: "app", table: "users" }).stale, true);
+    second.destroy();
   }
   // Fake transport ignores AbortSignal, proving stale answers cannot paint.
   for (const change of [

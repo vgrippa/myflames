@@ -247,7 +247,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 - **Workspace follow-ups**: richer optimizer-trace summaries, and a verified update channel for the signed desktop builds. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
   Broader SQL editing conveniences shipped: the Query editor is CodeMirror 6,
-  with several cursors, suggestions for the server's own keywords per release,
+  with several cursors, immediate local and cached suggestions for the server's own keywords per release, background catalog refreshes,
   details on hover, problem warnings, per-tab undo history and a Query editor
   settings group.
   Import-dialog layout coverage includes open/error states and short windows;

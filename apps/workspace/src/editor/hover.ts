@@ -174,7 +174,10 @@ export function hoverSource(env: Environment,
     };
     void (async () => {
       for (let i = 0; i < results.length; i++) {
-        if (results[i]) continue;
+        if (results[i]) {
+          if (results[i]!.stale) void catalog.read("columns", { schema: target.tables[i].schema, table: target.tables[i].table }, owner).catch(() => {});
+          continue;
+        }
         const t = target.tables[i];
         results[i] = await catalog.read("columns", { schema: t.schema, table: t.table }, owner);
         if (!valid()) { dismiss(); return; }

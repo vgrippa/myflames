@@ -179,7 +179,10 @@
   --syntax-ident: #6f42c1;
   --syntax-variable: #8a4b00;
   --syntax-param: #9a3412;
-  --editor-selection: rgba(0, 102, 204, 0.22);
+  --editor-selection: #b0cfee;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #d2e4f7;
+  --editor-find-current: #accae8;
   --editor-current: var(--accent-subtle);
   --editor-match: rgb(17 102 68 / 0.18);
   --editor-line-h: 20px;
@@ -274,6 +277,10 @@
   --shadow-sheet: 0 20px 48px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
   /* The edge of a table with columns scrolled beyond it. */
   --table-edge-shadow: rgba(0, 0, 0, 0.14);
+  --editor-selection: #b0cfee;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #d2e4f7;
+  --editor-find-current: #accae8;
 }
 
 /* Appearance changes surfaces and UI accents, never operator meanings.
@@ -360,7 +367,10 @@
     --syntax-ident: #c4a7ff;
     --syntax-variable: #e6b064;
     --syntax-param: #ff9e6b;
-    --editor-selection: rgba(55, 148, 255, 0.35);
+    --editor-selection: #264f78;
+    --editor-selection-ink: var(--ink);
+    --editor-selection-match: #203b56;
+    --editor-find-current: #315f88;
     --editor-match: rgb(122 215 163 / 0.22);
   }
 }
@@ -445,7 +455,10 @@
   --syntax-ident: #c4a7ff;
   --syntax-variable: #e6b064;
   --syntax-param: #ff9e6b;
-  --editor-selection: rgba(55, 148, 255, 0.35);
+  --editor-selection: #264f78;
+  --editor-selection-ink: var(--ink);
+  --editor-selection-match: #203b56;
+  --editor-find-current: #315f88;
   --editor-match: rgb(122 215 163 / 0.22);
 }
 * {

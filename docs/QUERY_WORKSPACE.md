@@ -449,8 +449,15 @@ that release's system variables with their scope. They do not represent
 temporary tables or a database
 selected by running `USE` in an editor session. Complex nested scopes and
 CTEs are deliberately limited.
-Metadata reads are bounded and cached briefly in memory. Switching connection,
+Metadata reads are bounded and cached in memory. Switching connection,
 database or credentials discards that cache and cancels stale requests.
+
+Keywords, functions and cached database names appear without waiting for a
+catalog read. Names read in the background join the same open list. Cached
+names remain usable during refresh, while missing-name warnings require fresh,
+complete lists. A connection or credential change clears all cached metadata.
+Selections, matching words and the current Find result have distinct highlights
+in both themes; selected text remains readable when the editor loses focus.
 
 Open a table's data from the schema browser to work in a dedicated full-width
 grid. Stage cell edits, inserted rows or deletions, then choose Review. The

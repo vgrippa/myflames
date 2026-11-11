@@ -169,8 +169,8 @@ export function findExtension(): Extension {
   // The old CSS targets .sql-layer, which the CodeMirror editor does not use.
   // Keep mark styling local to this extension, including forced-colors support.
   return [findMarkState, findViewPlugin, EditorView.baseTheme({
-    ".sql-find-mark": { backgroundColor: "var(--accent-soft)", borderRadius: "2px" },
-    ".sql-find-current": { boxShadow: "0 0 0 1px var(--accent)" },
+    ".sql-find-mark": { backgroundColor: "var(--editor-selection-match)", color: "var(--editor-selection-ink)", borderRadius: "2px" },
+    ".sql-find-current": { backgroundColor: "var(--editor-find-current)", boxShadow: "0 0 0 1px var(--accent)" },
     "@media (forced-colors: active)": {
       ".sql-find-mark": { backgroundColor: "transparent", boxShadow: "0 0 0 1px Highlight" },
       ".sql-find-current": { backgroundColor: "Highlight", boxShadow: "0 0 0 1px Highlight" },
