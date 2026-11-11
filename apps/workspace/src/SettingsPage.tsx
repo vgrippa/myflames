@@ -7,7 +7,7 @@
 // they have always opened. Every setting keeps its own storage and behavior;
 // this page only lays the controls out. main.tsx loads it lazily, so the
 // settings UI and editorSettings.ts stay out of the entry chunk.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AboutDialog } from "./About";
 import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
@@ -16,6 +16,7 @@ import { NewsSetting } from "./HomeNews";
 import { QueryEditorSettings } from "./QueryEditorSettings";
 import { AutoUpdateSetting, UpdateMenuItem } from "./UpdateBadge";
 import { applyTheme, appliedThemeId, type ThemeId } from "./themes";
+import { THEMES } from "./theme-picker";
 import "./settings.css";
 
 /** The sections with controls, in list order. Audit log and About myflames
@@ -31,10 +32,50 @@ const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
 ];
 const sectionLabel = (id: SettingsSection) => SECTIONS.find((s) => s.id === id)?.label || "Appearance";
 
-/** Appearance: System, Light or Dark (themes.ts applies and stores the
- * choice). Self-contained: a later lane adds the theme picker here. */
+/** Appearance: a theme picker with one card per registry theme (themes.ts
+ * applies and stores the choice). The cards draw their previews from the
+ * registry's inline swatches, so each card shows the theme's own colors
+ * whatever the current theme is. */
+const THEME_GROUPS: { label: string; ids: ThemeId[] }[] = [
+  { label: "myflames", ids: ["system", "light", "dark", "fire", "digital-rain", "neon-grid"] },
+  { label: "Dark", ids: ["dracula", "nord", "solarized-dark", "tokyo-night", "gruvbox-dark", "catppuccin-mocha", "github-dark", "one-dark"] },
+  { label: "Light", ids: ["solarized-light", "catppuccin-latte", "github-light"] },
+];
+const THEME_ORDER = THEME_GROUPS.flatMap(group => group.ids);
+
+function ThemeCard({ id, checked, onSelect }: { id: ThemeId; checked: boolean; onSelect: (id: ThemeId) => void }) {
+  const theme = THEMES.find(t => t.id === id)!;
+  const accent = theme.swatches[theme.swatches.length - 1];
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={checked}
+      tabIndex={checked ? 0 : -1}
+      className={checked ? "theme-card selected" : "theme-card"}
+      data-theme-id={theme.id}
+      onClick={() => onSelect(theme.id)}
+    >
+      <span className="theme-card-preview" style={{ background: theme.swatches[0] }} aria-hidden="true">
+        <span className="theme-card-surface" style={{ background: theme.swatches[1] }}>
+          <span className="theme-card-line" style={{ background: accent }} />
+          {theme.syntax.map(color => <span key={color} className="theme-card-dot" style={{ background: color }} />)}
+        </span>
+      </span>
+      <span className="theme-card-name">{theme.name}</span>
+      <span className="theme-card-credit">{theme.credit}</span>
+      {checked && (
+        <span className="theme-card-check" aria-hidden="true">
+          <Icon name="check" size={12} />
+        </span>
+      )}
+    </button>
+  );
+}
+
 function AppearanceSettings() {
   const [theme, setTheme] = useState<ThemeId>(appliedThemeId);
+  const group = useRef<HTMLDivElement>(null);
   // Palette theme actions change the same root attribute.
   useEffect(() => {
     const observer = new MutationObserver(() => setTheme(appliedThemeId()));
@@ -45,33 +86,35 @@ function AppearanceSettings() {
     applyTheme(next);
     setTheme(appliedThemeId());
   };
+  // One tab stop on the checked card; the arrows, Home and End move and
+  // select, wrapping through the visual order. Space and Enter click.
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    const card = (event.target as HTMLElement).closest<HTMLElement>("[role=radio]");
+    const id = card?.dataset.themeId as ThemeId | undefined;
+    if (!id) return;
+    event.preventDefault();
+    const index = THEME_ORDER.indexOf(id);
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? THEME_ORDER.length - 1
+      : (index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + THEME_ORDER.length) % THEME_ORDER.length;
+    selectTheme(THEME_ORDER[next]);
+    group.current?.querySelector<HTMLElement>(`[data-theme-id="${THEME_ORDER[next]}"]`)?.focus();
+  };
   return (
     <div className="settings-theme-group">
-      <div className="segmented theme-segmented" role="group" aria-label="Appearance theme">
-        <button
-          type="button"
-          className={theme === "system" ? "active" : ""}
-          aria-pressed={theme === "system"}
-          onClick={() => selectTheme("system")}
-        >
-          System
-        </button>
-        <button
-          type="button"
-          className={theme === "light" ? "active" : ""}
-          aria-pressed={theme === "light"}
-          onClick={() => selectTheme("light")}
-        >
-          Light
-        </button>
-        <button
-          type="button"
-          className={theme === "dark" ? "active" : ""}
-          aria-pressed={theme === "dark"}
-          onClick={() => selectTheme("dark")}
-        >
-          Dark
-        </button>
+      <div className="theme-picker" role="radiogroup" aria-label="Theme" ref={group} onKeyDown={onKeyDown}>
+        {THEME_GROUPS.map(section => (
+          <div className="theme-group" key={section.label}>
+            <h3 className="theme-group-label">{section.label}</h3>
+            <div className="theme-group-cards">
+              {section.ids.map(id => (
+                <ThemeCard key={id} id={id} checked={theme === id} onSelect={selectTheme} />
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

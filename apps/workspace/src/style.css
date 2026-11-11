@@ -762,18 +762,6 @@ details > p {
   gap: var(--space-1);
   padding: 0 var(--space-2);
 }
-.settings-theme-group .section-label {
-  font-size: var(--text-xs);
-}
-.theme-segmented {
-  width: 100%;
-}
-.theme-segmented button {
-  flex: 1;
-  text-align: center;
-  justify-content: center;
-  font-size: var(--text-sm);
-}
 .settings-option-row {
   display: flex;
   align-items: center;

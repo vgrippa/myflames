@@ -51,6 +51,8 @@ await withThemeWorkspace(async page => {
     await page.type('[aria-label="Search commands"]', `Theme: ${theme.name}`);
     const option = await page.waitForFunction(label => [...document.querySelectorAll('.command-option')].find(node => node.querySelector('bdi')?.textContent === label), {}, `Theme: ${theme.name}`);
     await option.asElement().click(); await option.dispose();
+    // The palette runs the command on the next tick (CommandPalette.tsx).
+    await page.waitForFunction(id => (document.documentElement.dataset.theme || 'system') === id, {}, theme.id);
     const state = await page.evaluate(() => ({ id:document.documentElement.dataset.theme || 'system',scheme:getComputedStyle(document.documentElement).colorScheme,base:ThemeTest.appliedThemeBase() }));
     assert.equal(state.id,theme.id);
     await page.waitForFunction(async id => {

@@ -11,7 +11,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Settings opens as a page with sections for Appearance, Query editor, Workspace, Updates and news, and Client tools, from the gear at the bottom of the sidebar, ⌘, (Ctrl+, on Windows and Linux) or the command palette.
 - The sidebar can be resized by dragging its right edge or using the keyboard, and remembers its width across app restarts.
 - The version and update bar appears on every screen, with Check for updates and View releases beside the current view's status.
-- Added themes: Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. Choose a theme from Search to apply it across the workspace, including the Query editor and charts.
+- Added themes: Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. Choose a theme in Settings > Appearance, where a card per theme previews its colors, or from Search; the choice applies across the workspace, including the Query editor and charts.
 - Query editor suggestions show keywords, functions and cached names as you type, while database names load in the background. Cached names stay available while they refresh.
 - Text selections, matching words and the current Find result are easier to see in light and dark themes, including when the Query editor loses focus.
 

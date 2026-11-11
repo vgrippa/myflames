@@ -1086,12 +1086,28 @@ messages, never in the notes.
 
 
 Appearance is registered in `apps/workspace/src/themes.ts`. `THEME_CHOICES`
-contains stable ids, display names and a light/dark base; `THEMES` pairs each
-choice with credit and picker swatches. The shell imports only choices so
-picker metadata stays out of the entry chunk. `THEME_IDS` is exported for the
-backend preferences allowlist comparison. System resolves through the OS
+contains stable ids, display names and a light/dark base. `theme-picker.ts`
+pairs each choice with credit and picker swatches (background, surface,
+accent and two syntax colors) as `THEMES`; only the lazy Settings chunk
+imports it, so picker metadata stays out of the entry chunk. `THEME_IDS` is
+exported for the backend preferences allowlist comparison. System resolves through the OS
 media query; `appliedThemeBase()` resolves explicit ids through the registry.
-The command palette offers `Theme: <name>` for every choice. Settings > Appearance offers System, Light, Dark and the named themes.
+The command palette offers `Theme: <name>` for every choice. The Settings >
+Appearance picker (`AppearanceSettings` in `SettingsPage.tsx`, inside the
+lazy Settings chunk, so picker metadata stays out of the entry chunk) shows
+one card per registry theme, grouped and ordered myflames (System, Light,
+Dark and the Fire, Digital Rain and Neon Grid originals), then the popular
+dark themes, then the popular light themes, under small group labels. Each
+card draws its preview from the registry's inline swatches (background,
+surface, accent and two syntax colors) plus the credit line, so it keeps the
+theme's own colors whatever the current theme is. The group is a
+`role="radiogroup"` named Theme; each card is a `role="radio"` with
+`aria-checked`, a single tab stop roves to the checked card, arrow keys move
+and select with wraparound in the visual order, Home and End go to the first
+and last card, and Space and Enter select the focused card. The selected card
+pairs an accent border with a check icon. A MutationObserver on the root
+`data-theme` attribute keeps the checked card in step with palette Theme
+actions while the page is open.
 
 `applyTheme()` and `savedTheme()` use the shared UI preferences store, including Settings > Appearance and palette actions. `ui.py` injects a validated stored `data-theme` on `<html>` for every non-System theme, so desktop launches paint the saved theme before JavaScript runs. System omits the attribute. Vite's blocking boot script still accepts only ids generated from `THEME_IDS`; it never removes an injected attribute. Legacy localStorage is a one-time browser development fallback, and the backend answer wins. `UI_THEME_IDS` is the backend's one literal list, checked against the registry by `test/themes.mjs`.
 

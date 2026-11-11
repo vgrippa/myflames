@@ -441,7 +441,7 @@ try {
       // Use Appearance too, so the Settings buttons reflect the same scheme.
       await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value }]);
       await page.click('button[aria-label="Settings"]');
-      const themeButton = `.settings-page .theme-segmented button:nth-child(${value === "light" ? 2 : 3})`;
+      const themeButton = `.settings-page .theme-card[data-theme-id="${value}"]`;
       await page.waitForSelector(themeButton, { visible: true });
       await page.click(themeButton);
       await page.waitForFunction(async (value, selector) => {
@@ -449,7 +449,7 @@ try {
           headers: { 'Content-Type': 'application/json', 'X-Myflames-Token': localStorage.getItem('myflames.session-proof') }, body: '{}' });
         return document.documentElement.dataset.theme === value
           && (await reply.json()).preferences?.theme === value
-          && document.querySelector(selector)?.getAttribute("aria-pressed") === "true";
+          && document.querySelector(selector)?.getAttribute("aria-checked") === "true";
       }, {}, value, themeButton);
       await page.keyboard.press("Escape");
       await page.waitForSelector(".settings-page", { hidden: true });

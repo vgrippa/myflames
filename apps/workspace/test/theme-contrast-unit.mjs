@@ -33,9 +33,8 @@ export function contrast(a, b) {
   const [low, high] = [luminance(a), luminance(b)].sort((a, b) => a - b);
   return (high + .05) / (low + .05);
 }
-const registryBuild = await build({ entryPoints: [fileURLToPath(new URL('../src/themes.ts', import.meta.url))], bundle: true, write: false, format: 'esm', platform: 'browser' });
-const registryJs = registryBuild.outputFiles[0].text;
-export const themeRegistry = (await import('data:text/javascript;base64,' + Buffer.from(registryJs).toString('base64'))).THEMES;
+const registryBundle = await build({ stdin: { contents: 'export { THEMES } from "./src/theme-picker";', resolveDir: fileURLToPath(new URL('../', import.meta.url)) }, bundle: true, write: false, format: 'esm', platform: 'browser' });
+export const themeRegistry = (await import('data:text/javascript;base64,' + Buffer.from(registryBundle.outputFiles[0].text).toString('base64'))).THEMES;
 export const themeCss = read('themes.css');
 export function measureTokens(tokens, dark) {
   const c = key => color(tokens[key], tokens);

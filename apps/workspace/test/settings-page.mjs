@@ -74,7 +74,9 @@ try {
   assert.equal(await page.$eval("#settings-section-appearance", (e) => e.getAttribute("aria-current")), "page");
 
   // 2. Each section shows its controls, with its hints.
-  assert.deepEqual(await texts(".settings-page .theme-segmented button"), ["System", "Light", "Dark"]);
+  const cardNames = await texts(".settings-page .theme-card .theme-card-name");
+  assert.deepEqual(cardNames.slice(0, 3), ["System", "Light", "Dark"]);
+  assert.equal(cardNames.length, 17);
   await openSection("Query editor");
   await page.waitForSelector(".settings-page .settings-editor-group");
   assert.deepEqual(await texts(".settings-page .settings-editor-group .session-toggle"), [
@@ -134,7 +136,7 @@ try {
   // switches (the workspace store through their real endpoints).
   await page.click(settings);
   await page.waitForSelector(".settings-page");
-  await page.locator(".settings-page .theme-segmented button ::-p-text(Dark)").click();
+  await page.locator('.settings-page .theme-card[data-theme-id="dark"]').click();
   await page.waitForFunction(async () => {
     const reply = await fetch('/api/settings/ui', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof')}, body:'{}'}).then(r => r.json());
     return document.documentElement.dataset.theme === "dark" && reply.preferences?.theme === "dark";
@@ -181,7 +183,7 @@ try {
   await page.locator('.settings-page .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
   await saved;
   await openSection("Appearance");
-  await page.locator(".settings-page .theme-segmented button ::-p-text(System)").click();
+  await page.locator('.settings-page .theme-card[data-theme-id="system"]').click();
   await page.waitForFunction(() => !document.documentElement.dataset.theme);
   // The startup option: off stops autosave and clears the saved workspace,
   // so the reload lands on Home with the switch off; on again saves at once.

@@ -380,7 +380,7 @@ try {
   assert.deepEqual(await current(), [], "Settings is a page, not a place");
   assert.equal(await page.evaluate(() => document.activeElement?.id), "settings-section-title", "focus moves to the section heading");
   assert.equal(await text(".settings-panel-title"), "Appearance");
-  assert.deepEqual(await texts(".settings-page .theme-segmented button"), ["System", "Light", "Dark"]);
+  assert.deepEqual((await texts(".settings-page .theme-card .theme-card-name")).slice(0, 3), ["System", "Light", "Dark"]);
   // Workspace: the startup option. Saved passwords exist (Keychain); they are
   // never part of the workspace.
   await page.locator(".settings-page .source-item ::-p-text(Workspace)").click();

@@ -22,7 +22,7 @@ myflames checks for a newer release when it starts and once a day while **Settin
 
 ## Appearance
 
-Open **Search…** (⌘K on macOS, Ctrl+K on Windows) and type **Theme:** to choose System, Light, Dark or a named theme. Available themes are Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. The choice survives app restarts on this computer and applies to navigation, views, tables, dialogs, the Query editor and charts. System follows your operating system's light or dark appearance.
+Choose a theme in **Settings > Appearance**, where a card per theme previews its colors, or open **Search…** (⌘K on macOS, Ctrl+K on Windows) and type **Theme:**. Available themes are System, Light, Dark, Fire, Digital Rain, Neon Grid, Dracula, Nord, Solarized Light, Solarized Dark, Tokyo Night, Gruvbox Dark, Catppuccin Mocha, Catppuccin Latte, GitHub Light, GitHub Dark and One Dark. The choice is kept on this computer and applies to navigation, views, tables, dialogs, the Query editor and charts. System follows your operating system's light or dark appearance.
 
 Editor palettes are adapted for readable text and selections. Chart operator colors, status meanings and Production (purple) and Development (teal) connection colors keep their meaning in every theme. Palette credits and licenses are in [NOTICE](../../NOTICE).
 
