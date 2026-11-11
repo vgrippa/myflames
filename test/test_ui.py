@@ -978,6 +978,8 @@ class TestUiPreferencesRoutes(unittest.TestCase):
                     'preferences': dict(UI_PREFERENCE_DEFAULTS), 'defaults': dict(UI_PREFERENCE_DEFAULTS)}
         self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), expected)
         self.assertFalse(self.workspace.store.path.exists())
+        self.assertEqual(api_response('/api/settings/ui', {'set': {}}, self.workspace), expected)
+        self.assertFalse(self.workspace.store.path.exists())
         result = api_response('/api/settings/ui', {'set': {'theme': 'fire', 'health_auto_production': 0, 'health_auto_development': 30}}, self.workspace)
         expected['preferences'].update(theme='fire', health_auto_production=0, health_auto_development=30)
         self.assertEqual(result, expected)
@@ -1000,7 +1002,10 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         from myflames.ui import WorkspaceHandler
         self.workspace.token = 'test-token'
         for payload in ({'set': None}, {'set': {'theme': 'evil'}}, {'set': {'sidebar_width': True}},
-                        {'set': {'health_auto_production': 5}}, {'unknown': True}):
+                        {'set': {'health_auto_production': 5}}, {'unknown': True},
+                        *({'set': {key: value}} for key in ('theme', 'sidebar_width', 'server_nav_collapsed', 'health_auto_production', 'health_auto_development')
+                          for value in ({}, [], 10**400, 0.5)),
+                        {'set': {'server_nav_collapsed': 1}}):
             handler = WorkspaceHandler.__new__(WorkspaceHandler)
             handler.server = self.workspace
             handler.path = '/api/settings/ui'
@@ -1058,8 +1063,42 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         self.assertNotIn('data-theme=', self._read_index())
         for error in (RuntimeError('future schema'), PermissionError('private path'), OSError('locked')):
             with self.subTest(error=type(error).__name__), \
-                    mock.patch.object(self.workspace.store, 'ui_preferences', side_effect=error):
+                    mock.patch.object(self.workspace.store, 'ui_theme_for_index', side_effect=error):
                 self.assertNotIn('data-theme=', self._read_index())
+
+    def test_ui_read_ignores_case_variant_stored_keys(self):
+        import contextlib
+        from myflames.workspace_store import UI_PREFERENCE_DEFAULTS
+        with contextlib.closing(self.workspace.store._connect()) as conn, conn:
+            conn.execute("INSERT INTO settings VALUES ('UI.theme', '\"dark\"')")
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace)['preferences'], UI_PREFERENCE_DEFAULTS)
+        self.assertNotIn('data-theme=', self._read_index())
+
+    def test_index_refuses_symlink_store_without_listening_socket(self):
+        store = self.workspace.store
+        store.set_ui_preferences({'theme': 'dark'})
+        target = store.path.with_name('target.sqlite3')
+        store.path.rename(target)
+        store.path.symlink_to(target)
+        self.assertNotIn('data-theme=', self._read_index())
+        self.assertTrue(store.path.is_symlink())
+
+    def test_index_has_short_lock_timeout_without_listening_socket(self):
+        import sqlite3
+        import time
+        store = self.workspace.store
+        store.set_ui_preferences({'theme': 'dark'})
+        conn = sqlite3.connect(str(store.path))
+        try:
+            conn.execute('BEGIN EXCLUSIVE')
+            started = time.monotonic()
+            self.assertNotIn('data-theme=', self._read_index())
+            self.assertLess(time.monotonic() - started, 1.2)
+            self.assertTrue(conn.in_transaction, 'the index must not release the writer lock')
+        finally:
+            conn.rollback()
+            conn.close()
+        self.assertIn('data-theme="dark"', self._read_index())
 
     def test_ui_route_is_local_only(self):
         from myflames.ui import _CONNECTION_PATHS, _SERVER_VIEW_PATHS, _SETTINGS_PATHS
@@ -1262,7 +1301,7 @@ class TestWorkspaceHTTP(unittest.TestCase):
                 for error in (RuntimeError('future schema'), PermissionError('private path'),
                               OSError('locked store')):
                     with self.subTest(error=type(error).__name__), \
-                            mock.patch.object(store, 'ui_preferences', side_effect=error):
+                            mock.patch.object(store, 'ui_theme_for_index', side_effect=error):
                         assert_unthemed_index()
 
     def test_packaged_index_and_bundles(self):

@@ -96,6 +96,26 @@ and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Conne
 API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
 `.app` using the packaged smoke, which removes system Python from the startup path
 and checks owned cleanup.
+Run `node apps/desktop/scripts/editor-settings-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
+(`smoke:editor-settings` in `apps/desktop`) against that same built bundle for
+the two-launch Query editor settings check. It changes wrapping and multiple
+cursors through Settings, checks their stored and rendered behavior after
+restart, then restores the defaults.
+Beside it, `node apps/desktop/scripts/preferences-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
+(`smoke:preferences`) uses three launches sharing one isolated data folder:
+System theme, 208 px sidebar and floating Server views; Dracula, a 280 px
+sidebar, a 160 px Query editor split and docked Server views after restart;
+then restored defaults, including the 260 px editor split, after another
+restart. All changes use real UI controls. Before any click on each launch,
+it reads the root theme at the earliest CDP opportunity and checks the original
+navigation HTML through CDP, so a later theme repaint cannot conceal missing
+startup HTML. It also reads `/api/settings/ui` and the autosaved session,
+checks the rendered sizes and docking state, and waits for the expected stored
+layout, current place and All changes saved before normal SIGTERM quit.
+Both checks use the bundled backend, temporary HOME/USERPROFILE, the vault
+backend and a minimal PATH, need no database connection or SQL execution,
+report numbered `PASS` lines, and remove their isolated data and owned
+processes on success or failure. They never restart an existing server.
 Releases ship `myflames-<version>-macos-arm64.dmg` and
 `myflames-<version>-macos-arm64.zip` from `package:mac:release`
 (`apps/desktop/scripts/package-mac-release.sh`), with a `.sha256` for each;
@@ -412,7 +432,7 @@ authentication, validation, wire fields, removed routes and typed errors).
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
 
-**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read never creates the workspace database. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), and `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index page omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup loads preferences before mounting the sidebar. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
+**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), and `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup loads preferences before mounting the sidebar. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
 
 **Query editor settings and variable names.** `POST /api/settings/editor`
 (ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
@@ -1109,7 +1129,7 @@ pairs an accent border with a check icon. A MutationObserver on the root
 `data-theme` attribute keeps the checked card in step with palette Theme
 actions while the page is open.
 
-`applyTheme()` and `savedTheme()` use the shared UI preferences store, including Settings > Appearance and palette actions. `ui.py` injects a validated stored `data-theme` on `<html>` for every non-System theme, so desktop launches paint the saved theme before JavaScript runs. System omits the attribute. Vite's blocking boot script still accepts only ids generated from `THEME_IDS`; it never removes an injected attribute. Legacy localStorage is a one-time browser development fallback, and the backend answer wins. `UI_THEME_IDS` is the backend's one literal list, checked against the registry by `test/themes.mjs`.
+`applyTheme()` and `savedTheme()` use the shared UI preferences store, including Settings > Appearance and palette actions. `ui.py` injects a validated stored `data-theme` on `<html>` for every non-System theme, so desktop launches paint the saved theme before JavaScript runs. System omits the attribute. Vite validates every registry id against `^[a-z]+(-[a-z]+)*$` before substituting the boot list through a literal replacer. Its blocking boot script still accepts only ids generated from `THEME_IDS`; it never removes an injected attribute. Legacy localStorage is a one-time browser development fallback, and the backend answer wins. `UI_THEME_IDS` is the backend's one literal list, checked against the registry by `test/themes.mjs`.
 
 `themes.css` loads after `style.css` through `styles.ts`. Every named theme
 sets `color-scheme` and every color property set by the explicit Dark block,
@@ -1138,10 +1158,13 @@ System, Light or Dark only; a late chart style cannot overwrite a named palette.
 
 Sandboxed previews receive the resolved base, accents and allowlisted chart
 surface colors from `bindFrameAppearance()`. `themeFrame()` uses fixed script
-text, accepts messages only from its parent, validates colors with
-`CSS.supports`, rejects variable and URL references, and assigns them with
-`style.setProperty`. Empty host overrides remove the inline property so a
-return to Light, Dark or System restores the frame defaults. Values never
+text, accepts messages only from its parent, and assigns allowlisted properties with
+`style.setProperty`. Both color paths accept only strings up to 128 characters:
+3/4/6/8-digit hex or rgb/rgba/hsl/hsla/hwb/lab/lch/oklab/oklch/color/color-mix
+functions with ASCII color characters, followed by `CSS.supports` validation.
+Backslashes, var/attr/env/if/url/from tokens, empty strings and CSS-wide keywords
+are refused. Missing host surface overrides are sent as literal values from the
+shared chart defaults, so returning to Light, Dark or System restores them. Values never
 enter markup or executable code. The
 sandbox remains opaque. SchemaDiagram watches both the root `data-theme`
 attribute and OS appearance through `appliedThemeBase()`; its default Mermaid

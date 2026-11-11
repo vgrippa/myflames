@@ -120,7 +120,7 @@ try {
   await drag(72); await stored('sidebar_width',280);
   await page.click('button[aria-label="Settings"]');
   await page.waitForSelector('.settings-page');
-  await page.locator('.theme-segmented button ::-p-text(Dark)').click();
+  await page.locator('.settings-page .theme-card[data-theme-id="dark"]').click();
   await stored('theme','dark');
   await go('server');
   await page.waitForSelector('button[aria-label="Dock the list of views"]');

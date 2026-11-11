@@ -2599,7 +2599,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             # malformed rows in a store written by an older or external tool.
             from .workspace_store import UI_THEME_IDS
             try:
-                theme = self.server.store.ui_preferences()['theme']
+                theme = self.server.store.ui_theme_for_index()
             except Exception:
                 # Preferences must never prevent startup. Do not log storage
                 # errors, which may contain private paths or stored values.

@@ -39,7 +39,7 @@ assert.match(schemaSource,/useState\(\(\) => appliedThemeBase\(\) === "dark"\)/)
 assert.match(schemaSource,/new MutationObserver\(update\)/);
 assert.match(schemaSource,/attributeFilter: \["data-theme"\]/);
 assert.match(schemaSource,/<option value="auto">Follow appearance<\/option>/);
-const bundle = await build({stdin:{contents:'export * from "./src/themes"; export * from "./src/charts/core/appearance";',resolveDir:fileURLToPath(new URL('../',import.meta.url))},bundle:true,write:false,format:'iife',globalName:'ThemeTest',platform:'browser'});
+const bundle = await build({stdin:{contents:'export * from "./src/themes"; export * from "./src/charts/core/appearance"; export { CHART_THEME_DEFAULTS } from "./src/charts/core/styles";',resolveDir:fileURLToPath(new URL('../',import.meta.url))},bundle:true,write:false,format:'iife',globalName:'ThemeTest',platform:'browser'});
 await withThemeWorkspace(async page => {
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   // Every palette action applies and persists its registry id. Under a dark
@@ -77,19 +77,41 @@ await withThemeWorkspace(async page => {
     await page.evaluate(id=>ThemeTest.applyTheme(id),theme.id);
     const expected=theme.id==='system'?'dark':theme.base;
     await frame.waitForFunction(base=>document.documentElement.dataset.theme===base,{},expected);
-    const wanted=await page.evaluate(()=>Object.fromEntries(ThemeTest.CHART_SURFACES.map(name=>[name,getComputedStyle(document.querySelector('.workspace')).getPropertyValue(name).trim()])));
+    const wanted=await page.evaluate(()=>{
+      const chart=getComputedStyle(document.querySelector('.workspace'));
+      return Object.fromEntries(ThemeTest.CHART_SURFACES.map(name=>[name,chart.getPropertyValue(name).trim() || ThemeTest.CHART_THEME_DEFAULTS[ThemeTest.appliedThemeBase()][name]]));
+    });
+    const accents=await page.evaluate(()=>{
+      const root=getComputedStyle(document.documentElement);
+      return Object.fromEntries(['--accent',...'text fill hover soft line ink'.split(' ').map(role=>'--accent-'+role),'--focus'].map(name=>[name,root.getPropertyValue(name).trim()]));
+    });
+    // Inspect every computed token, not just whether CSS.supports accepts it.
+    for(const [name,value] of Object.entries({...wanted,...accents})) {
+      assert.match(value,/^(#[0-9a-f]{3,8}|rgba?\([0-9.,%/ ()+-]+\))$/i,`${theme.id}: ${name} = ${value}`);
+    }
+    await frame.waitForFunction(values=>Object.entries(values).every(([key,value])=>document.documentElement.style.getPropertyValue(key)===value),{},accents);
     await frame.waitForFunction(values=>Object.entries(values).every(([key,value])=>document.documentElement.style.getPropertyValue(key)===value),{},wanted);
   }
-  // Abuse cases: non-parent source, invalid colors, var chains and unknown
-  // properties never enter the frame style; valid color values use setProperty.
-  const before=await frame.$eval('html',e=>e.style.getPropertyValue('--mfc-canvas'));
-  await frame.evaluate(()=>window.postMessage({type:'myflames-appearance',theme:'dark',surfaces:{'--mfc-canvas':'#ff0000'}},'*'));
-  await page.evaluate(()=>document.querySelector('#theme-test-frame').contentWindow.postMessage({type:'myflames-appearance',theme:'dark',surfaces:{'--mfc-canvas':'red; background:url(https://example.invalid)','--mfc-card':'var(--evil)','--evil':'#ff0000'}},'*'));
-  await new Promise(resolve=>setTimeout(resolve,100));
-  assert.equal(await frame.$eval('html',e=>e.style.getPropertyValue('--mfc-canvas')),before);
-  assert.equal(await frame.$eval('html',e=>e.style.getPropertyValue('--evil')),'');
+  // A marker listener runs after the fixed script, so assertions wait for
+  // message processing instead of sleeping and potentially missing a write.
+  // Stop normal sync so it cannot overwrite an abusive value before a check.
+  await page.evaluate(()=>window.stopThemeFrame());
+  await frame.evaluate(()=>{window.appearanceMessages=0;window.addEventListener('message',event=>{if(event.data?.type==='myflames-appearance')window.appearanceMessages++;});});
+  const baseline=await frame.$eval('html',e=>Object.fromEntries(['--mfc-canvas','--mfc-card','--accent','--accent-text'].map(key=>[key,e.style.getPropertyValue(key)])));
+  const beforeCount=await frame.evaluate(()=>window.appearanceMessages);
+  await frame.evaluate(()=>window.postMessage({type:'myflames-appearance',theme:'dark',surfaces:{'--mfc-canvas':'#ff0000'},accents:{'--accent':'#ff0000'}},'*'));
+  await frame.waitForFunction(count=>window.appearanceMessages>count,{},beforeCount);
+  assert.deepEqual(await frame.$eval('html',e=>Object.fromEntries(['--mfc-canvas','--mfc-card','--accent','--accent-text'].map(key=>[key,e.style.getPropertyValue(key)]))),baseline,'non-parent source refused');
+  const abuse=[String.raw`v\61r(--mfc-card)`,String.raw`\76 ar(--mfc-card)`,String.raw`rgb(from v\61r(--x) r g b)`,'attr(data-x type(<color>))','env(x, red)','if(media(width > 1px): red; else: blue)','inherit','initial','unset','revert',17,{},[],'','x'.repeat(200000),'var(--evil)','url(https://example.invalid)','rgb(from red r g b)','red; background:url(https://example.invalid)'];
+  for(const [index,value] of abuse.entries()) {
+    const count=await frame.evaluate(()=>window.appearanceMessages);
+    await page.evaluate(value=>document.querySelector('#theme-test-frame').contentWindow.postMessage({type:'myflames-appearance',theme:'dark',surfaces:{'--mfc-canvas':value,'--mfc-card':value,'--evil':'#ff0000'},accents:{'--accent':value,'--accent-text':value,'--evil':'#ff0000'}},'*'),value);
+    await frame.waitForFunction(count=>window.appearanceMessages>count,{},count);
+    assert.deepEqual(await frame.$eval('html',e=>Object.fromEntries(['--mfc-canvas','--mfc-card','--accent','--accent-text'].map(key=>[key,e.style.getPropertyValue(key)]))),baseline,`abuse payload ${index} refused on both paths`);
+    assert.equal(await frame.$eval('html',e=>e.style.getPropertyValue('--evil')),'');
+  }
   assert.equal(await frame.evaluate(()=>{try{return !!parent.document}catch{return false}}),false,'sandbox still isolates parent');
-  await page.evaluate(()=>{window.stopThemeFrame();document.querySelector('#theme-test-frame').remove()});
+  await page.evaluate(()=>document.querySelector('#theme-test-frame').remove());
   // Exercise the mounted React observer too. Importing schema SQL only parses
   // a local document; the harness refuses every database connection/read.
   const clickText = async (text, scope = 'body') => {

@@ -26,17 +26,19 @@ const screenshots = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-theme-pick
 await withThemeWorkspace(async page => {
   const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
   const card = id => `.settings-page .theme-card[data-theme-id="${id}"]`;
-  const state = () => page.evaluate(() => ({
+  const state = () => page.evaluate(async () => ({
     theme: document.documentElement.dataset.theme || 'system',
-    saved: localStorage.getItem('myflames.theme'),
+    saved: (await fetch('/api/settings/ui', {method:'POST', headers:{'Content-Type':'application/json','X-Myflames-Token':localStorage.getItem('myflames.session-proof')}, body:'{}'}).then(reply => reply.json())).preferences.theme,
     checked: document.querySelector('.theme-card[aria-checked="true"]')?.dataset.themeId,
     tabStops: [...document.querySelectorAll('.theme-card[tabindex="0"]')].map(e => e.dataset.themeId),
     active: document.activeElement?.dataset?.themeId,
   }));
-  const waitTheme = id => page.waitForFunction(
-    expected => (document.documentElement.dataset.theme || 'system') === expected
-      && document.querySelector(`.theme-card[data-theme-id="${expected}"]`)?.getAttribute('aria-checked') === 'true',
-    {}, id);
+  const waitTheme = id => page.waitForFunction(async expected => {
+    if ((document.documentElement.dataset.theme || 'system') !== expected
+      || document.querySelector(`.theme-card[data-theme-id="${expected}"]`)?.getAttribute('aria-checked') !== 'true') return false;
+    const reply = await fetch('/api/settings/ui', {method:'POST', headers:{'Content-Type':'application/json','X-Myflames-Token':localStorage.getItem('myflames.session-proof')}, body:'{}'}).then(reply => reply.json());
+    return reply.preferences?.theme === expected;
+  }, {}, id);
 
   await page.click('button[aria-label="Settings"]');
   await page.waitForSelector('.settings-page');

@@ -1032,7 +1032,7 @@ class WorkspaceStore:
         if not self.path.exists():
             return merged
         with closing(self._connect()) as conn, conn:
-            rows = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'ui.%'").fetchall()
+            rows = conn.execute("SELECT key, value FROM settings WHERE substr(key, 1, 3) = 'ui.'").fetchall()
         for key, text in rows:
             name = key[len('ui.'):]
             try:
@@ -1053,11 +1053,38 @@ class WorkspaceStore:
                 raise ValueError('Unknown UI preference %r.' % (key,))
             if not _valid_ui_preference(key, value):
                 raise ValueError('Invalid value for UI preference %s.' % key)
+        if not changes:
+            return self.ui_preferences()
         with closing(self._connect()) as conn, conn:
             for key, value in changes.items():
                 conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
                              ('ui.' + key, json.dumps(value, allow_nan=False)))
         return self.ui_preferences()
+
+    def ui_theme_for_index(self):
+        """Best-effort startup read, without creating or migrating storage.
+
+        The index must remain available while a writer holds the store lock.
+        The handler falls back to an unthemed page on any storage error.
+        """
+        from .secret_store import _open_private_file, _storage_stat
+        if not self.path.exists():
+            return None
+        _storage_stat(self.path.parent, directory=True)
+        fd, _created = _open_private_file(self.path, os.O_RDONLY, protect=False)
+        os.close(fd)
+        # as_uri quotes path characters before adding SQLite's read-only mode.
+        uri = self.path.absolute().as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'ui.theme'").fetchone()
+        if row:
+            try:
+                value = json.loads(row[0])
+            except (TypeError, ValueError):
+                return None
+            if _valid_ui_preference('theme', value):
+                return value
+        return None
 
     # -- Application database client ----------------------------------------
 

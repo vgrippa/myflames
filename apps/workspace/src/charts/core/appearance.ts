@@ -1,4 +1,5 @@
 import { appliedThemeBase } from "../../themes";
+import { CHART_THEME_DEFAULTS } from "./themeDefaults";
 // Sandboxed previews have opaque origins, so appearance travels by message.
 // Only the owning parent can change it; no host DOM or API access is granted.
 const MESSAGE = "myflames-appearance";
@@ -15,7 +16,10 @@ export function themeFrame(html: string): string {
   // Fixed script text only. Lesson/plan content never enters executable code.
   const script = `<script>(function(){
     function validColor(value){
-      return typeof value==="string" && !/var\\(|url\\(/i.test(value) && CSS.supports("color",value);
+      if(typeof value!=="string" || value.length>128 || value.includes("\\\\")) return false;
+      var hex=/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+      var fn=/^(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix)\\([0-9a-z.,%/ ()+-]+\\)$/i;
+      return (hex.test(value) || fn.test(value)) && !/\\b(?:var|attr|env|if|url|from)\\b/i.test(value) && CSS.supports("color",value);
     }
     window.addEventListener("message",function(event){
       var data=event.data;
@@ -31,8 +35,7 @@ export function themeFrame(html: string): string {
       var surfaces=${JSON.stringify(CHART_SURFACES)};
       surfaces.forEach(function(name){
         var value=data.surfaces?.[name];
-        if(value==="") root.style.removeProperty(name);
-        else if(validColor(value)) root.style.setProperty(name,value);
+        if(validColor(value)) root.style.setProperty(name,value);
       });
     });
   })();</script>`;
@@ -52,7 +55,7 @@ export function bindFrameAppearance(frame: HTMLIFrameElement): () => void {
     // Chart mappings live on .workspace, while accent roles live at the root.
     const chartStyles = win.getComputedStyle(doc.querySelector(".workspace") || doc.documentElement);
     const surfaces: Record<string, string> = {};
-    CHART_SURFACES.forEach(name => { surfaces[name] = chartStyles.getPropertyValue(name).trim(); });
+    CHART_SURFACES.forEach(name => { surfaces[name] = chartStyles.getPropertyValue(name).trim() || CHART_THEME_DEFAULTS[theme][name]; });
     frame.contentWindow?.postMessage({ type: MESSAGE, theme, accents, surfaces }, "*");
   };
   const observer = new MutationObserver(send);

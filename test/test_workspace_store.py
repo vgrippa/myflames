@@ -138,6 +138,11 @@ class TestWorkspaceStore(unittest.TestCase):
         self.assertEqual(self.store.ui_preferences(), workspace_store.UI_PREFERENCE_DEFAULTS)
         self.assertFalse(self.path.exists())
         self.assertFalse(self.path.parent.exists())
+        self.assertEqual(self.store.set_ui_preferences({}), workspace_store.UI_PREFERENCE_DEFAULTS)
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.path.parent.exists())
+        self.assertIsNone(self.store.ui_theme_for_index())
+        self.assertFalse(self.path.exists())
 
     def test_ui_preferences_round_trip_and_partial_update(self):
         changes = {'theme': 'one-dark', 'sidebar_width': 296,
@@ -156,14 +161,16 @@ class TestWorkspaceStore(unittest.TestCase):
 
     def test_ui_preferences_validation_is_atomic_and_strict(self):
         invalid = [None, [], {'unknown': True}, {'theme': '<script>alert(1)</script>'},
-                   {'theme': 'Dark'}, {'theme': None}, {'theme': ['dark']},
+                   {'theme': 'Dark'}, {'theme': None}, {'theme': ['dark']}, {'theme': {}},
                    {'sidebar_width': 207}, {'sidebar_width': 321}, {'sidebar_width': 208.0},
                    {'sidebar_width': True}, {'server_nav_collapsed': 1},
                    {'server_nav_collapsed': 'false'}, {'health_auto_production': True},
                    {'health_auto_production': 1}, {'health_auto_production': '30'}, {'health_auto_production': 30.0},
                    {'health_auto': 30}]
         invalid.extend({key: value} for key in ('health_auto_production', 'health_auto_development')
-                       for value in (True, 1, '30', 30.0))
+                       for value in (True, 1, '30', 30.0, {}, [], 10**400))
+        invalid.extend({key: value} for key in ('theme', 'sidebar_width', 'server_nav_collapsed')
+                       for value in ({}, [], 10**400, 0.5))
         for changes in invalid:
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.store.set_ui_preferences(changes)
@@ -181,6 +188,24 @@ class TestWorkspaceStore(unittest.TestCase):
                                ('unknown', '"dark"')]:
                 conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', ('ui.' + key, value))
         self.assertEqual(self.store.ui_preferences(), workspace_store.UI_PREFERENCE_DEFAULTS)
+
+    def test_ui_preferences_ignore_case_variant_prefixes(self):
+        with contextlib.closing(self.store._connect()) as conn, conn:
+            for key in ('UI.theme', 'Ui.theme', 'uI.theme', 'ui.Theme'):
+                conn.execute('INSERT INTO settings VALUES (?, ?)', (key, '"dark"'))
+        self.assertEqual(self.store.ui_preferences(), workspace_store.UI_PREFERENCE_DEFAULTS)
+        self.assertIsNone(self.store.ui_theme_for_index())
+
+    def test_ui_preferences_ignore_invalid_stored_json_types(self):
+        for key in workspace_store.UI_PREFERENCE_DEFAULTS:
+            values = [{}, [], 10**400, 0.5, 1 if key == 'server_nav_collapsed' else True]
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    with contextlib.closing(self.store._connect()) as conn, conn:
+                        conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                                     ('ui.' + key, json.dumps(value)))
+                    self.assertEqual(self.store.ui_preferences(), workspace_store.UI_PREFERENCE_DEFAULTS)
+                    self.assertIsNone(self.store.ui_theme_for_index())
 
     def test_editor_settings_default_without_creating_storage(self):
         self.assertEqual(self.store.editor_settings(), workspace_store.EDITOR_SETTING_DEFAULTS)
