@@ -62,10 +62,12 @@ async function nativeEditor(pair, marked, restoredPending = false) {
   const initial = context(marked);
   let state = cm.EditorState.create({ doc: initial.state.doc, selection: initial.state.selection, extensions: [nativeExtension, extension] });
   let native, app;
+  const updates = [];
   const view = { hasFocus: true, composing: false, get state() { return state; }, dispatch(spec) {
     const before = state, tr = state.update(spec); state = tr.state;
     const update = { view, startState: before, state, docChanged: tr.docChanged, selectionSet: !!tr.selection, transactions: [tr] };
     native?.update(update); app?.update(update);
+    updates.push({ status: cm.completionStatus(state), labels: cm.currentCompletions(state).map(o => o.label) });
   } };
   if (restoredPending) cm.startCompletion(view);
   // Installed autocomplete 6.20.4's actual scheduler, ahead of our lifecycle
@@ -75,7 +77,7 @@ async function nativeEditor(pair, marked, restoredPending = false) {
   const observer = extension.find(value => value.domEventObservers?.keydown).domEventObservers;
   await flush();
   const handlers = extension.find(value => value.domEventHandlers?.compositionstart).domEventHandlers;
-  return { view, observer, handlers, escape() { observer.keydown({ key: 'Escape' }, view); cm.closeCompletion(view); }, destroy() {
+  return { view, updates, observer, handlers, escape() { observer.keydown({ key: 'Escape' }, view); cm.closeCompletion(view); }, destroy() {
     app.destroy(); clearTimeout(native.debounceUpdate); clearTimeout(native.debounceAccept);
     for (const query of native.running) {
       for (const listener of query.context.abortListeners || []) listener();
@@ -147,9 +149,47 @@ try {
     await advance(1); assert.equal(sent.length, before + 1);
     schemasRead.resolve({ schemas: [{ name: 'app', tables: 2 }] }); await flush();
     tablesRead.resolve(tables(['users', 'usage'])); await advance(0);
-    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['usage', 'users']);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['users', 'usage']);
     assert.equal(cm.currentCompletions(live.view.state).find(o => o.label === 'users'), users);
     assert.equal(catalog.peek('tables', { schema: 'app' }).stale, false); live.destroy();
+  });
+  await test('native refresh replaces renamed table inventory without closing or flickering', async () => {
+    const pair = sourceEnv();
+    handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 1 }] } : tables(['users']));
+    await pair.source(context('SELECT * FROM u|', true)); await advance(30000);
+    const held = deferred();
+    handler = path => path === 'live/schemas' ? Promise.resolve({ schemas: [{ name: 'app', tables: 1 }] }) : held.promise;
+    const live = await nativeEditor(pair, 'SELECT * FROM u|');
+    live.view.dispatch({ userEvent: 'input.type' }); await advance(220);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['users']);
+    const attrs = () => live.view.state.facet(cm.EditorView.contentAttributes)
+      .map(value => typeof value === 'function' ? value(live.view) : value).find(value => value['aria-controls']);
+    const dialog = attrs()['aria-controls']; live.updates.length = 0;
+    held.resolve(tables(['usage'])); await advance(0);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['usage']);
+    assert.equal(attrs()['aria-controls'], dialog, 'same open dialog');
+    assert.ok(live.updates.every(update => update.status !== null && update.labels.length > 0 && update.labels.length <= 40), JSON.stringify(live.updates));
+    live.destroy();
+  });
+  await test('native column type refresh replaces detail and retains the highlighted identifier', async () => {
+    const pair = sourceEnv();
+    const inventory = type => ({ columns: [{ name: 'user_id', type: 'int' }, { name: 'user_name', type }] });
+    handler = () => Promise.resolve(inventory('int'));
+    await pair.source(context('SELECT u.user_| FROM app.users u', true)); await advance(30000);
+    const held = deferred(); handler = () => held.promise;
+    const live = await nativeEditor(pair, 'SELECT u.user_| FROM app.users u');
+    live.view.dispatch({ userEvent: 'input.type' }); await advance(220);
+    live.view.dispatch({ effects: cm.setSelectedCompletion(1) });
+    assert.equal(cm.selectedCompletion(live.view.state).label, 'user_name');
+    live.updates.length = 0;
+    held.resolve(inventory('varchar(200)')); await advance(0);
+    const options = cm.currentCompletions(live.view.state);
+    assert.equal(options.length, 2);
+    assert.equal(options.filter(o => o.label === 'user_name').length, 1);
+    assert.match(options.find(o => o.label === 'user_name').detail, /varchar\(200\)/);
+    assert.equal(cm.selectedCompletion(live.view.state).label, 'user_name', 'type change keeps logical highlight');
+    assert.ok(live.updates.every(update => update.status !== null && update.labels.length > 0 && update.labels.length <= 40));
+    live.destroy();
   });
   await test('native saturated local vocabulary leaves room for arriving names within the shared cap', async () => {
     const pair = sourceEnv(), held = deferred();

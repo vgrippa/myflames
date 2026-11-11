@@ -28,6 +28,8 @@ import {
   type RefObject,
 } from "react";
 import { appVersion } from "./api";
+import { currentUiPreferences, setUiPreference, INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT } from "./uiPreferences";
+export { INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT };
 import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
@@ -3129,27 +3131,10 @@ export function ConfirmSheet({
 
 // ---- Inspector -------------------------------------------------------------------
 
-export const INSPECTOR_MIN = 280;
-export const INSPECTOR_MAX = 560;
-export const INSPECTOR_DEFAULT = 340;
-const WIDTH_KEY = "myflames.inspector.width";
-
-/** The inspector's width, remembered in this browser (best effort). */
-export function storedInspectorWidth() {
-  try {
-    const value = Number(window.localStorage.getItem(WIDTH_KEY));
-    if (Number.isFinite(value) && value >= INSPECTOR_MIN && value <= INSPECTOR_MAX) return value;
-  } catch {
-    // Storage can be off (private window, blocked site data).
-  }
-  return INSPECTOR_DEFAULT;
-}
+/** The inspector width is shared with the persisted UI preferences. */
+export const storedInspectorWidth = () => currentUiPreferences().inspector_width;
 export function storeInspectorWidth(width: number) {
-  try {
-    window.localStorage.setItem(WIDTH_KEY, String(Math.round(width)));
-  } catch {
-    // Not remembered; the default applies next time.
-  }
+  void setUiPreference("inspector_width", Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, Math.round(width)))).catch(() => {});
 }
 
 /** The place's inspector: open or closed (restored with the workspace), its

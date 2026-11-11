@@ -87,7 +87,7 @@ Choose a theme in **Settings > Appearance**, where a card per theme previews its
 
 Editor palettes are adapted for readable text and selections. Chart operator colors, status meanings and Production (purple) and Development (teal) connection colors keep their meaning in every theme. Palette credits and licenses are in [NOTICE](NOTICE).
 
-Drag the sidebar's right edge to resize it, or focus the edge and use the arrow keys. Double-click, Home or End restores its default width. The width, Server view navigation choice and Health auto-refresh choice survive app restarts. Narrow windows keep the compact navigation rail.
+Drag the sidebar's right edge to resize it, or focus the edge and use the arrow keys. Double-click, Home or End restores its default width. Sidebar and Server inspector widths, the Server view navigation choice, Health auto-refresh, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices survive app restarts. Narrow windows keep the compact navigation rail.
 
 The window status bar shows the installed version and update status on every screen, with **Check for updates** and **View releases** beside the current view's facts.
 

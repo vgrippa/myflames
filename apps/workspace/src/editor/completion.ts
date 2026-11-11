@@ -1,6 +1,6 @@
-import { autocompletion, closeCompletion, completionStatus, pickedCompletion, type Completion, type CompletionContext as CMContext,
+import { autocompletion, closeCompletion, completionStatus, pickedCompletion, currentCompletions, selectedCompletion, setSelectedCompletion, type Completion, type CompletionContext as CMContext,
   type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
-import { EditorSelection, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorState, EditorSelection, Annotation, Transaction, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, showPanel, type Panel } from "@codemirror/view";
 import { paramNames, type Connection, type ParamNames } from "../api";
 import { columnTargets, commonCompletionWords, completionContext, cteNames, variableContext,
@@ -11,6 +11,7 @@ import type { EditorEnv, EditorFeatureSettings } from "./types";
 
 type Environment = { current: EditorEnv };
 export type SqlCompletionResult = CompletionResult & { note: string };
+const catalogRefresh = Annotation.define<boolean>();
 const setHint = StateEffect.define<string>();
 /** Independent of the completion list: failures and loading remain visible even
  * when the source has no matching options. The panel never accepts HTML. */
@@ -121,6 +122,8 @@ function resultFor(context: { start: number; end: number; prefix: string; quoted
     } : context.quoted ? item.insert.slice(1) : item.insert,
       ...(nativeFilter ? { boost: (item.label.toLowerCase().startsWith(prefix) ? 1e6 : 0) - index * 10000 } : {}) })) };
 }
+const optionKey = (option: Completion) => JSON.stringify([option.type, option.label,
+  typeof option.apply === "string" ? option.apply : null]);
 type Job = { owner: CatalogOwner; key: string; cancel: () => void; valid: () => boolean };
 class CompletionSession {
   readonly catalog;
@@ -135,6 +138,7 @@ class CompletionSession {
   readonly names = new Map<string, ParamNames>();
   source: CompletionSource;
   localSource: CompletionSource;
+  refreshed?: { selected: string; result: SqlCompletionResult; key: string };
   local?: { key: string; result: SqlCompletionResult };
   private namesReads = new Map<string, Promise<ParamNames>>();
   constructor(readonly env: Environment) {
@@ -152,6 +156,7 @@ class CompletionSession {
     });
   }
   cancel(): void {
+    this.refreshed = undefined;
     this.generation++;
     this.job?.cancel();
     this.job = undefined;
@@ -257,11 +262,22 @@ class CompletionSession {
         label: item.name, insert: item.name, kind: "column" as const, fuzzy: true,
         detail: (item.scope === "both" ? "global, session" : item.scope) + (item.deprecated ? ", deprecated" : ""),
       })));
-    // The same local option objects survive the remote arrival. CodeMirror's
-    // multi-source merge preserves the highlighted option by object identity.
+    // Reuse unchanged objects: CM preserves the highlighted option by identity.
     const localKey = JSON.stringify([key, !!words, cached?.metadata, cached?.note, names]);
-    if (this.local?.key !== localKey) this.local = { key: localKey, result: variable ? variableResult(names)
-      : resultFor(context!, candidates(context!, cached?.metadata || {}, ctes, env, words), cached?.note) };
+    if (this.local?.key !== localKey) {
+      const previous = new Map(this.local?.result.options.map(option => [optionKey(option), option]));
+      const result = variable ? variableResult(names)
+        : resultFor(context!, candidates(context!, cached?.metadata || {}, ctes, env, words), cached?.note);
+      result.options = result.options.map(option => {
+        const old = previous.get(optionKey(option));
+        return old && old.detail === option.detail ? old : option;
+      });
+      result.update = (_result, _from, _to, context) => {
+        const fresh = this.refreshed;
+        return fresh?.key === key && context.state.doc.toString() === sql && context.pos === cm.pos ? fresh.result : null;
+      };
+      this.local = { key: localKey, result };
+    }
     // Reserve space for names still being read. Both native sources remain
     // within the shared 40-option bound, even for an empty explicit prefix.
     if (cached?.missing && this.local.result.options.length > 20)
@@ -356,14 +372,24 @@ class CompletionSession {
       return result;
     });
     if (!cm.view) return finished;
-    return finished.then(result => {
+    return finished.then(async result => {
       if (!result) return null;
-      const keyFor = (option: Completion) => JSON.stringify([option.type, option.label, option.detail,
-        typeof option.apply === "string" ? option.apply : null]);
-      const present = new Set(local.options.map(keyFor));
-      // Keep the combined list bounded. The local lane retains its option
-      // objects and the remote lane contributes only newly discovered names.
-      return { ...result, options: result.options.filter(option => !present.has(keyFor(option))).slice(0, 40 - local.options.length) };
+      if (valid() && (variable ? this.names.has(JSON.stringify([engine, version]))
+        : context && connection && !this.cached(context, connection, explicit).missing)) {
+        // Refresh the local lane through CM's public result.update hook.
+        // That hook runs for typing transactions: a no-document transaction
+        // replaces the result atomically, without closing/disabling the list,
+        // changing SQL, starting another query or entering the undo history.
+        const fresh = await this.complete(cm, true);
+        if (!valid() || !fresh) return null;
+        if (!local.options.length) return fresh;
+        const selected = selectedCompletion(cm.view!.state);
+        this.refreshed = { selected: selected ? optionKey(selected) : "", result: fresh, key };
+        return { ...result, options: [], validFor: (_text, _from, _to, state) =>
+          state.doc.toString() === sql && state.selection.main.head === cm.pos };
+      }
+      const present = new Set(local.options.map(option => JSON.stringify([optionKey(option), option.detail])));
+      return { ...result, options: result.options.filter(option => !present.has(JSON.stringify([optionKey(option), option.detail]))).slice(0, 40 - local.options.length) };
     });
   }
 }
@@ -389,6 +415,20 @@ export function completionExtension(settings: EditorFeatureSettings, env: Enviro
   session.auto = settings.completion_auto;
   const existing = extensions.get(env);
   if (existing) return existing;
+  // A column can retain its identifier while its type/detail changes. Restore
+  // that logical selection in the same transaction that installs fresh options.
+  const retainSelection = EditorState.transactionExtender.of(tr => {
+    const refresh = session.refreshed;
+    if (!refresh || tr.docChanged || tr.selection || tr.annotation(catalogRefresh) || completionStatus(tr.state) !== "active") return null;
+    // CM calls result.update for typing transactions. Extend the transaction
+    // that installs the remote answer, so the local replacement happens in
+    // that same state transition. Preview its native ordering to restore a
+    // surviving identifier even when its detail/type text changed.
+    const annotations = [Transaction.userEvent.of("input.type"), catalogRefresh.of(true)];
+    const preview = tr.startState.update({ changes: tr.changes, effects: tr.effects, annotations });
+    const index = currentCompletions(preview.state).findIndex(option => optionKey(option) === refresh.selected);
+    return { annotations, ...(index >= 0 ? { effects: setSelectedCompletion(index) } : {}) };
+  });
   const lifecycle = ViewPlugin.fromClass(class {
     epoch = session.catalog.syncConnection();
     docId = env.current.docId;
@@ -426,6 +466,7 @@ export function completionExtension(settings: EditorFeatureSettings, env: Enviro
       queueMicrotask(() => { if (session.view === view) closeCompletion(view); });
     }
     update(update: import("@codemirror/view").ViewUpdate) {
+      if (update.transactions.some(tr => tr.annotation(catalogRefresh))) session.refreshed = undefined;
       const epoch = session.catalog.syncConnection();
       const environmentChanged = epoch !== this.epoch || env.current.docId !== this.docId || env.current.backslashEscapes !== this.backslashEscapes ||
         env.current.engine !== this.engine || env.current.serverVersion !== this.version;
@@ -453,7 +494,7 @@ export function completionExtension(settings: EditorFeatureSettings, env: Enviro
     span.textContent = text;
     return span;
   };
-  const extension = [completionHint, lifecycle,
+  const extension = [completionHint, lifecycle, retainSelection,
     EditorView.contentAttributes.of(view => ({
       // CM supplies aria-controls exactly while its list is open, including
       // disabled lists retained during a read (currentCompletions omits those).

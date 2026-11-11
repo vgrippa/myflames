@@ -145,9 +145,10 @@ class TestWorkspaceStore(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
     def test_ui_preferences_round_trip_and_partial_update(self):
-        changes = {'theme': 'one-dark', 'sidebar_width': 296,
-                   'server_nav_collapsed': False, 'health_auto_production': 30,
-                   'health_auto_development': 60}
+        changes = dict(workspace_store.UI_PREFERENCE_DEFAULTS, theme='one-dark', sidebar_width=296,
+                       inspector_width=420, explain_format='json', files_show_hidden=True,
+                       files_transfers_open=False, server_nav_collapsed=False,
+                       health_auto_production=30, health_auto_development=60)
         self.assertEqual(self.store.set_ui_preferences(changes), changes)
         self.assertEqual(WorkspaceStore(self.path).ui_preferences(), changes)
         self.assertEqual(self.store.set_ui_preferences({'health_auto_production': 0}), dict(changes, health_auto_production=0))
@@ -158,6 +159,25 @@ class TestWorkspaceStore(unittest.TestCase):
         for key in ('health_auto_production', 'health_auto_development'):
             for auto in (-1, 0, 10, 30, 60):
                 self.assertEqual(self.store.set_ui_preferences({key: auto})[key], auto)
+
+    def test_ui_inspector_explain_and_file_choices(self):
+        for width in (280, 340, 560):
+            self.store.set_ui_preferences({'inspector_width': width})
+            self.assertEqual(WorkspaceStore(self.path).ui_preferences()['inspector_width'], width)
+        for fmt in ('table', 'tree', 'json'):
+            self.assertEqual(self.store.set_ui_preferences({'explain_format': fmt})['explain_format'], fmt)
+        for key in ('files_show_hidden', 'files_transfers_open'):
+            for flag in (True, False):
+                self.assertEqual(self.store.set_ui_preferences({key: flag})[key], flag)
+        before = self.store.ui_preferences()
+        for key, values in (('inspector_width', (279, 561, True, 340.0, '340', None)),
+                            ('explain_format', ('JSON', 'analyze', '', None, [], {})),
+                            ('files_show_hidden', (1, 'true', None)),
+                            ('files_transfers_open', (0, 'false', None))):
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    self.store.set_ui_preferences({'theme': 'fire', key: value})
+                self.assertEqual(self.store.ui_preferences(), before)
 
     def test_ui_preferences_validation_is_atomic_and_strict(self):
         invalid = [None, [], {'unknown': True}, {'theme': '<script>alert(1)</script>'},
@@ -198,7 +218,7 @@ class TestWorkspaceStore(unittest.TestCase):
 
     def test_ui_preferences_ignore_invalid_stored_json_types(self):
         for key in workspace_store.UI_PREFERENCE_DEFAULTS:
-            values = [{}, [], 10**400, 0.5, 1 if key == 'server_nav_collapsed' else True]
+            values = [{}, [], 10**400, 0.5, 1 if key in ('server_nav_collapsed', 'files_show_hidden', 'files_transfers_open') else True]
             for value in values:
                 with self.subTest(key=key, value=value):
                     with contextlib.closing(self.store._connect()) as conn, conn:

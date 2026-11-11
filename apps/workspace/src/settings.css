@@ -125,7 +125,7 @@
   height: 16px;
   border-radius: 50%;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-ink);
 }
 .settings-panel .session-toggle {
   align-items: flex-start;

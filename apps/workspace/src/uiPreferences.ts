@@ -8,14 +8,22 @@ export const SIDEBAR_MIN = 208;
 export const SIDEBAR_MAX = 320;
 export const SIDEBAR_DEFAULT = 208;
 export const clampSidebarWidth = (value: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(value)));
+export const INSPECTOR_MIN = 280;
+export const INSPECTOR_MAX = 560;
+export const INSPECTOR_DEFAULT = 340;
+export type ExplainFormat = "table" | "tree" | "json";
 export type UiPreferences = {
   theme: ThemeId;
+  inspector_width: number;
+  explain_format: ExplainFormat;
+  files_show_hidden: boolean;
+  files_transfers_open: boolean;
   sidebar_width: number;
   server_nav_collapsed: boolean;
   health_auto_production: number;
   health_auto_development: number;
 };
-const defaults: UiPreferences = { theme: "system", sidebar_width: SIDEBAR_DEFAULT, server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1 };
+const defaults: UiPreferences = { theme: "system", inspector_width: INSPECTOR_DEFAULT, explain_format: "table", files_show_hidden: false, files_transfers_open: true, sidebar_width: SIDEBAR_DEFAULT, server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1 };
 // Read legacy browser development values once. The server's complete answer
 // always wins, including its defaults. Never copy browser values to the store.
 function legacyPreferences(): UiPreferences {
@@ -26,6 +34,14 @@ function legacyPreferences(): UiPreferences {
     value.server_nav_collapsed = localStorage.getItem("myflames.serverNavCollapsed") !== "false";
     const width = Number(localStorage.getItem("myflames.sidebarWidth"));
     if (Number.isInteger(width) && width >= SIDEBAR_MIN && width <= SIDEBAR_MAX) value.sidebar_width = width;
+    const inspector = Number(localStorage.getItem("myflames.inspector.width"));
+    if (Number.isInteger(inspector) && inspector >= INSPECTOR_MIN && inspector <= INSPECTOR_MAX) value.inspector_width = inspector;
+    const format = localStorage.getItem("myflames.editor.explainFormat");
+    if (format === "tree" || format === "json") value.explain_format = format;
+    for (const [key, legacy] of [["files_show_hidden", "showHidden"], ["files_transfers_open", "transfersOpen"]] as const) {
+      const flag = localStorage.getItem(`myflames.files.${legacy}`);
+      if (flag !== null) value[key] = flag === "1";
+    }
     for (const type of ["production", "development"] as const) {
       const auto = localStorage.getItem(`myflames.health.auto.${type}`);
       if (auto !== null && auto.trim() && [-1, 0, 10, 30, 60].includes(Number(auto))) value[`health_auto_${type}`] = Number(auto);
@@ -91,3 +107,16 @@ export function useUiPreferences() {
   }, []);
   return value;
 }
+
+/** Drain writes queued before or during shutdown, without hanging on an offline backend. */
+export async function flushUiPreferences(timeoutMs = 1500): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const drain = async () => {
+    let pending;
+    do { pending = queue; await pending; } while (pending !== queue);
+  };
+  try { await Promise.race([drain(), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]); }
+  finally { clearTimeout(timer); }
+}
+// The desktop invokes this in the renderer before stopping its owned backend.
+if (typeof window !== "undefined") Object.assign(window, { __myflamesFlushUiPreferences: flushUiPreferences });

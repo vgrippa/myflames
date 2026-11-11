@@ -986,6 +986,22 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         self.workspace.store = WorkspaceStore(self.workspace.store.path)
         self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), expected)
 
+    def test_ui_inspector_explain_and_file_choices_round_trip(self):
+        from myflames.workspace_store import WorkspaceStore
+        changes = {'inspector_width': 560, 'explain_format': 'tree',
+                   'files_show_hidden': True, 'files_transfers_open': False}
+        result = api_response('/api/settings/ui', {'set': changes}, self.workspace)
+        self.workspace.store = WorkspaceStore(self.workspace.store.path)
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+        for key, value in changes.items():
+            self.assertEqual(result['preferences'][key], value)
+        for key, value in (('inspector_width', 279), ('inspector_width', True),
+                           ('inspector_width', 560.0), ('explain_format', 'analyze'),
+                           ('explain_format', {}), ('files_show_hidden', 1), ('files_transfers_open', 0)):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                api_response('/api/settings/ui', {'set': {key: value}}, self.workspace)
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+
     def test_ui_rejects_invalid_and_unknown_fields(self):
         for payload in ({'set': None}, {'set': []}, {'set': {'extra': 1}}, {'extra': 1},
                         {'set': {'theme': 'unknown'}}, {'set': {'sidebar_width': False}},
@@ -1003,7 +1019,8 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         self.workspace.token = 'test-token'
         for payload in ({'set': None}, {'set': {'theme': 'evil'}}, {'set': {'sidebar_width': True}},
                         {'set': {'health_auto_production': 5}}, {'unknown': True},
-                        *({'set': {key: value}} for key in ('theme', 'sidebar_width', 'server_nav_collapsed', 'health_auto_production', 'health_auto_development')
+                        *({'set': {key: value}} for key in ('theme', 'sidebar_width', 'server_nav_collapsed', 'health_auto_production', 'health_auto_development',
+                                                                    'inspector_width', 'explain_format', 'files_show_hidden', 'files_transfers_open')
                           for value in ({}, [], 10**400, 0.5)),
                         {'set': {'server_nav_collapsed': 1}}):
             handler = WorkspaceHandler.__new__(WorkspaceHandler)

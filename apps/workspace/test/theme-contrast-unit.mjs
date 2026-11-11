@@ -107,3 +107,12 @@ assert.match(extras, /\.cm-selectionMatch[\s\S]*?var\(--editor-selection-match\)
 assert.match(find, /\.sql-find-current[\s\S]*?var\(--editor-find-current\)/);
 assert.match(marks, /"\.sql-find-current": \{ backgroundColor: "var\(--editor-find-current\)"/);
 console.log(`${themes.length} theme blocks and focused/unfocused selection consumers passed.`);
+
+assert.match(read('settings.css'), /\.theme-card-check\s*\{[^}]*color: var\(--accent-ink\)/, 'selected theme check uses accent ink');
+
+for (const theme of themeRegistry) {
+  const accent = theme.swatches.at(-1);
+  assert.ok(contrast(color(theme.checkInk, {}), color(accent, {})) >= 3, `${theme.id}: selected card check / own accent`);
+}
+assert.match(read('SettingsPage.tsx'), /className="theme-card-check" style=\{\{ background: accent, color: theme.checkInk \}\}/, 'card check uses its own tested foreground and accent');
+console.log(`${themeRegistry.length} registry theme card check pairs passed (at least 3:1).`);

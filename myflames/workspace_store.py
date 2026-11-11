@@ -70,7 +70,10 @@ UI_THEME_IDS = ['system', 'light', 'dark', 'fire', 'digital-rain', 'neon-grid',
                 'github-dark', 'one-dark']
 UI_SIDEBAR_MIN = 208
 UI_SIDEBAR_MAX = 320
-UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'sidebar_width': 208,
+UI_INSPECTOR_MIN = 280
+UI_INSPECTOR_MAX = 560
+UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'inspector_width': 340, 'explain_format': 'table',
+                          'files_show_hidden': False, 'files_transfers_open': True, 'sidebar_width': 208,
                           'server_nav_collapsed': True, 'health_auto_production': -1,
                           'health_auto_development': -1}
 
@@ -80,7 +83,11 @@ def _valid_ui_preference(key, value):
         return isinstance(value, str) and value in UI_THEME_IDS
     if key == 'sidebar_width':
         return type(value) is int and UI_SIDEBAR_MIN <= value <= UI_SIDEBAR_MAX
-    if key == 'server_nav_collapsed':
+    if key == 'inspector_width':
+        return type(value) is int and UI_INSPECTOR_MIN <= value <= UI_INSPECTOR_MAX
+    if key == 'explain_format':
+        return isinstance(value, str) and value in ('table', 'tree', 'json')
+    if key in ('server_nav_collapsed', 'files_show_hidden', 'files_transfers_open'):
         return isinstance(value, bool)
     if key in ('health_auto_production', 'health_auto_development'):
         return type(value) is int and value in (-1, 0, 10, 30, 60)

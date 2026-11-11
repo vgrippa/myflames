@@ -65,7 +65,7 @@ function ThemeCard({ id, checked, onSelect }: { id: ThemeId; checked: boolean; o
       <span className="theme-card-name">{theme.name}</span>
       <span className="theme-card-credit">{theme.credit}</span>
       {checked && (
-        <span className="theme-card-check" aria-hidden="true">
+        <span className="theme-card-check" style={{ background: accent, color: theme.checkInk }} aria-hidden="true">
           <Icon name="check" size={12} />
         </span>
       )}

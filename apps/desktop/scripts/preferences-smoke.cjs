@@ -13,7 +13,8 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const SIDEBAR = '.sidebar-resizer';
 const SPLITTER = '.query-lab .editor-splitter';
 const DEFAULTS = { theme: 'system', sidebar_width: 208, server_nav_collapsed: true,
-  health_auto_production: -1, health_auto_development: -1 };
+  health_auto_production: -1, health_auto_development: -1, inspector_width: 340,
+  explain_format: 'table', files_show_hidden: false, files_transfers_open: true };
 const DEFAULT_HEIGHT = 260;
 let stage = 'preflight', active = null, interrupted = null, check = 0;
 const pass = message => console.log(`PASS ${++check}: ${message}`);
@@ -119,7 +120,7 @@ async function launch(executable, backendExecutable, data, puppeteer) {
       if (target.type() === 'page' && /^http:\/\/127\.0\.0\.1:\d+\//.test(target.url())) {
         const page = await target.page();
         if (page) {
-          // This earliest renderer read is first-paint evidence: it happens
+          // This is the earliest renderer read after CDP attaches. It happens
           // before viewport changes, readiness waits or any click.
           const initial = await until('Initial document root', 15000, () => page.evaluate(() =>
             document.documentElement ? { theme: document.documentElement.dataset.theme ?? null } : null));
@@ -134,8 +135,8 @@ async function launch(executable, backendExecutable, data, puppeteer) {
   await run.page.setViewport({ width: 1440, height: 900 });
   await run.page.waitForSelector('.main-nav button[data-place="query"]', { visible: true });
   await run.page.waitForFunction(() => !location.hash && !document.body.innerText.includes('Opening your workspace'));
-  // This no-store GET reads the server-rendered index to prove the saved theme
-  // is present in each response's HTML; startupTheme above proves first paint.
+  // This later no-store GET checks the theme in server-rendered HTML.
+  // Neither this response nor the CDP read captures the original navigation.
   const html = await run.page.evaluate(async () =>
     (await fetch(location.origin + '/', { cache: 'no-store', credentials: 'same-origin' })).text());
   const root = html.match(/<html\b[^>]*>/i)?.[0];
@@ -163,14 +164,14 @@ async function stored(page, endpoint) {
 async function assertPreferences(run, expected) {
   const { page } = run;
   const theme = expected.theme === 'system' ? null : expected.theme;
-  assert.equal(run.startupTheme, theme, 'the earliest renderer read has the saved theme at first paint');
+  assert.equal(run.startupTheme, theme, 'the earliest renderer read after CDP attaches has the saved theme');
   assert.equal(run.htmlTheme, theme, 'the server-rendered index has the saved theme on GET /');
   const reply = await stored(page, 'settings/ui');
   assert.deepEqual(reply.preferences, expected, 'backend preferences match the expected choices');
   assert.deepEqual(reply.defaults, DEFAULTS, 'backend defaults match this smoke');
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme ?? null), theme);
   await assertWidth(page, expected.sidebar_width);
-  pass(`${stage}: original HTML, earliest renderer read and backend agree on ${expected.theme}; sidebar is ${expected.sidebar_width} px`);
+  pass(`${stage}: GET / HTML, earliest renderer read and backend agree on ${expected.theme}; sidebar is ${expected.sidebar_width} px`);
 }
 
 async function assertWidth(page, width) {

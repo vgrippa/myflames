@@ -206,38 +206,48 @@ try {
   assert.equal(await page.$eval(".settings-page .session-toggle input", (e) => e.checked), true, "the startup option is back on");
 
   // 5. Layouts: 1440 and 720 px, light and dark. No horizontal overflow, and
-  // the top bar stays put while the page scrolls inside the main area. At
+  // the top bar and sidebar stay put while the page scrolls. At
   // 720 px the section list sits above the controls.
-  const layout = () => page.evaluate(() => {
+  await openSection("Appearance");
+  const layout = () => page.evaluate(async () => {
     const nav = document.querySelector(".settings-nav")?.getBoundingClientRect();
     const panel = document.querySelector(".settings-panel")?.getBoundingClientRect();
     const topbar = document.querySelector(".window-toolbar")?.getBoundingClientRect();
+    const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();
     let scroller = null;
     for (let e = document.querySelector(".settings-page"); e; e = e.parentElement) {
       if (e.scrollHeight > e.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(e).overflowY)) { scroller = e; break; }
     }
+    scroller ||= document.scrollingElement;
     const before = topbar?.top;
     let scrolled = 0;
-    if (scroller) { scroller.scrollTop = 150; scrolled = scroller.scrollTop; scroller.scrollTop = 0; }
+    if (scroller) { scroller.scrollTop = 150; await new Promise(requestAnimationFrame); scrolled = scroller.scrollTop; }
+    const sidebarAfter = document.querySelector(".sidebar")?.getBoundingClientRect();
     return {
       wide: document.documentElement.scrollWidth - innerWidth,
       above: nav && panel ? nav.bottom <= panel.top + 1 : null,
       sideBySide: nav && panel ? panel.left >= nav.right - 1 : null,
-      topbarStays: scrolled > 0 ? Math.abs((document.querySelector(".window-toolbar")?.getBoundingClientRect().top ?? -1) - before) < 1 : "content fits",
-      windowStays: document.scrollingElement.scrollTop === 0,
+      scrolled,
+      topbarStays: scrolled > 0 ? Math.abs((document.querySelector(".window-toolbar")?.getBoundingClientRect().top ?? -1) - before) < 1 : false,
+      sidebarStays: sidebar && sidebarAfter ? Math.abs(sidebarAfter.left - sidebar.left) < 1 && Math.abs(sidebarAfter.top - sidebar.top) < 1 : false,
     };
   });
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
-    for (const [width, height] of [[1440, 900], [720, 520]]) {
+    // The wide panel needs a shorter viewport for its multi-row theme grid to
+    // overflow; keep 720 px at the minimum supported window height.
+    for (const [width, height] of [[1440, 360], [720, 520]]) {
       await page.setViewport({ width, height });
       await page.waitForSelector(".settings-page");
       await new Promise((r) => setTimeout(r, 150));
       const m = await layout();
       assert.ok(m.wide <= 0, `${theme} at ${width} px: no horizontal overflow (${JSON.stringify(m)})`);
-      assert.ok(m.windowStays, `${theme} at ${width} px: the window does not scroll (${JSON.stringify(m)})`);
+      assert.ok(m.scrolled > 0, `${theme} at ${width} px: Appearance genuinely overflows (${JSON.stringify(m)})`);
+      assert.equal(m.topbarStays, true, `${theme} at ${width} px: toolbar stays at the top while scrolled (${JSON.stringify(m)})`);
+      assert.ok(m.sidebarStays, `${theme} at ${width} px: sidebar stays put while scrolled (${JSON.stringify(m)})`);
       if (width === 720) assert.equal(m.above, true, `${theme} at 720 px: the section list sits above the controls (${JSON.stringify(m)})`);
       else assert.equal(m.sideBySide, true, `${theme} at 1440 px: the section list sits beside the controls (${JSON.stringify(m)})`);
+      await page.evaluate(() => { for (let e = document.querySelector(".settings-page"); e; e = e.parentElement) e.scrollTop = 0; });
       await page.screenshot({ path: path.join(directory, `settings-${theme}-${width}.png`) });
     }
   }

@@ -222,5 +222,13 @@ const PICKER_DETAILS = {
     ]
   }
 } satisfies Record<ThemeId, { credit: string; swatches: readonly string[]; syntax: readonly string[] }>;
+// Pick the higher-contrast ink for the card's own accent, independently of
+// the active theme. --accent-ink serves filled buttons whose fill is darker.
+function checkInk(accent: string) {
+  const channels = [1, 3, 5].map(at => parseInt(accent.slice(at, at + 2), 16) / 255)
+    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+  const light = channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+  return light > .179 ? "#000000" : "#ffffff";
+}
 /** Full registry: palette attribution and swatches are keyed by stable id. */
-export const THEMES = /* @__PURE__ */ THEME_CHOICES.map(theme => ({ ...theme, ...PICKER_DETAILS[theme.id] }));
+export const THEMES = /* @__PURE__ */ THEME_CHOICES.map(theme => ({ ...theme, ...PICKER_DETAILS[theme.id], checkInk: checkInk(PICKER_DETAILS[theme.id].swatches.slice(-1)[0]) }));

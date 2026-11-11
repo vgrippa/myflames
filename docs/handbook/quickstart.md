@@ -28,7 +28,7 @@ Editor palettes are adapted for readable text and selections. Chart operator col
 
 ## Sidebar and status bar
 
-Drag the sidebar's right edge to choose its width. You can also focus the edge and use Left or Right (hold Shift for a larger step). Double-click, Home or End restores the default width. Narrow windows keep their compact navigation rail. Sidebar width, the Server view navigation choice and Health auto-refresh choices for Production and Development survive app restarts alongside your theme.
+Drag the sidebar's right edge to choose its width. You can also focus the edge and use Left or Right (hold Shift for a larger step). Double-click, Home or End restores the default width. Narrow windows keep their compact navigation rail. Sidebar and Server inspector widths, the Server view navigation choice, Health auto-refresh choices for Production and Development, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices survive app restarts alongside your theme.
 
 Every screen has one window status bar. Its right end shows the installed version, update status, **Check for updates** and **View releases**. The current view's safety, connection, session and refresh facts remain on the left; narrow windows shorten these facts before the update actions.
 

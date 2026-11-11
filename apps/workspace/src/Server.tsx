@@ -18,6 +18,7 @@ import type { SqlOpenOptions } from "./statementThread";
 // own Refresh (binding.ts sharedRead) and dropped when the connection changes
 // or a newer read of the view started. Stop or Escape ends it; a view that
 // failed keeps its previous report and is marked in the list of views.
+import { useUiPreferences } from "./uiPreferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnalysisFinding,
@@ -411,7 +412,9 @@ export function Server({
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
+  const preferences = useUiPreferences();
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
+  useEffect(() => { setInspectorWidth(preferences.inspector_width); }, [preferences.inspector_width]);
   /** The floating list of views is open (under the view's title, kit.tsx ViewSwitcher). */
   // Held as the view it was opened on: navigation from elsewhere (the command
   // palette, a link) never carries an open list onto another view.

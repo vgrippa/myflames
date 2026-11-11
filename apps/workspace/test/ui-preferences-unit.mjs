@@ -4,10 +4,10 @@ import { build } from 'esbuild';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 const bundled = await build({entryPoints:[fileURLToPath(new URL('../src/uiPreferences.ts',import.meta.url))],bundle:true,write:false,format:'iife',globalName:'Preferences',platform:'browser'});
-const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1};
+const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1,inspector_width:340,explain_format:'table',files_show_hidden:false,files_transfers_open:true};
 function harness() {
-  const requests=[],style={},storage=new Map([['myflames.serverNavCollapsed','false'],['myflames.health.auto.production','30'],['myflames.health.auto.development','0']]);
-  const sandbox={console,URLSearchParams,AbortController,window:{location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)}},document:{documentElement:{dataset:{theme:'dark'},style:{setProperty:(k,v)=>style[k]=v}}}};
+  const requests=[],style={},storage=new Map([['myflames.inspector.width','420'],['myflames.editor.explainFormat','json'],['myflames.files.showHidden','1'],['myflames.files.transfersOpen','0'],['myflames.serverNavCollapsed','false'],['myflames.health.auto.production','30'],['myflames.health.auto.development','0']]);
+  const sandbox={console,setTimeout,clearTimeout,URLSearchParams,AbortController,window:{location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)}},document:{documentElement:{dataset:{theme:'dark'},style:{setProperty:(k,v)=>style[k]=v}}}};
   sandbox.localStorage=sandbox.window.localStorage;
   sandbox.fetch=async (url,options)=>{
     if (url==='/api/auth/session') return {ok:true,json:async()=>({token:'test-token'})};
@@ -15,17 +15,25 @@ function harness() {
     return new Promise(resolve=>requests.push({body:JSON.parse(options.body),reply:(preferences,ok=true)=>resolve({ok,status:ok?200:500,json:async()=>ok?{preferences}:{error:'failed'}})}));
   };
   vm.runInNewContext(bundled.outputFiles[0].text,sandbox);
-  return {store:sandbox.Preferences,requests,style};
+  return {store:sandbox.Preferences,requests,style,storage};
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 {
   const {store,requests,style}=harness();
   assert.equal(store.currentUiPreferences().theme,'dark');
+  assert.equal(store.currentUiPreferences().inspector_width,420);
+  assert.equal(store.currentUiPreferences().explain_format,'json');
+  assert.equal(store.currentUiPreferences().files_show_hidden,true);
+  assert.equal(store.currentUiPreferences().files_transfers_open,false);
   assert.equal(store.currentUiPreferences().server_nav_collapsed,false);
   assert.equal(store.currentUiPreferences().health_auto_production,30);
   assert.equal(store.currentUiPreferences().health_auto_development,0,'each legacy type keeps its own choice');
   const load=store.loadUiPreferences(); await tick(); requests.shift().reply(defaults); await load;
   assert.equal(store.currentUiPreferences().theme,'system','backend default wins over legacy theme');
+  assert.equal(store.currentUiPreferences().inspector_width,340);
+  assert.equal(store.currentUiPreferences().explain_format,'table');
+  assert.equal(store.currentUiPreferences().files_show_hidden,false);
+  assert.equal(store.currentUiPreferences().files_transfers_open,true);
   assert.equal(store.currentUiPreferences().health_auto_production,-1);
   assert.equal(store.currentUiPreferences().health_auto_development,-1);
   assert.equal(style['--sidebar-w'],'208px');
@@ -61,3 +69,37 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(style['--sidebar-w'],'208px','failed startup read still reserves fallback width');
 }
 console.log('UI preferences: backend precedence, optimistic choices, serial latest writes, stale reads and failed-write readback passed.');
+
+{
+  const {store,requests}=harness();
+  const write=store.setUiPreference('inspector_width',560);
+  let done=false;
+  const flush=store.flushUiPreferences().then(()=>{done=true;});
+  await tick(); assert.equal(done,false,'flush waits for a delayed write');
+  const next=store.setUiPreference('explain_format','tree');
+  requests.shift().reply({...defaults,inspector_width:560}); await write; await tick();
+  assert.equal(done,false,'flush includes a write queued during the drain');
+  requests.shift().reply({...defaults,inspector_width:560,explain_format:'tree'}); await next; await flush;
+  assert.equal(done,true); assert.equal(store.currentUiPreferences().explain_format,'tree');
+  for (const [key,value] of [['files_show_hidden',true],['files_transfers_open',false]]) {
+    const saved=store.setUiPreference(key,value); await tick();
+    assert.deepEqual(requests[0].body.set,{[key]:value});
+    requests.shift().reply({...store.currentUiPreferences(),[key]:value}); await saved;
+  }
+}
+{
+  const {store,requests}=harness();
+  const write=store.setUiPreference('explain_format','json'); await tick();
+  const started=Date.now(); await store.flushUiPreferences(25);
+  assert.ok(Date.now()-started>=20,'hung write waits for the timeout');
+  assert.ok(Date.now()-started<1000,'hung write cannot block shutdown indefinitely');
+  requests.shift().reply({...defaults,explain_format:'json'}); await write;
+}
+console.log('UI preference delayed drains, concurrent queued writes, hung-write timeout and additional stored choices passed.');
+
+{
+  const {store,storage}=harness();
+  storage.set('myflames.inspector.width','560'); storage.set('myflames.editor.explainFormat','tree');
+  assert.equal(store.currentUiPreferences().inspector_width,420,'legacy width is read only once');
+  assert.equal(store.currentUiPreferences().explain_format,'json','legacy Explain format is read only once');
+}

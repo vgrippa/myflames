@@ -8,6 +8,7 @@
     "build:charts": "tsc --noEmit && vite build -c vite.charts.config.ts",
     "dev": "vite build --watch",
     "docs:screenshots": "node test/readme-screenshots.mjs",
+    "docs:howtos": "node test/howto-recordings.mjs",
     "test:review-auth": "npm run build && node test/review-auth.mjs",
     "test:accounts-all": "npm run build && node test/accounts-all-grants.mjs",
     "test:auth": "npm run build && node test/auth.mjs",
