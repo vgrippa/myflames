@@ -22,8 +22,9 @@ export type UiPreferences = {
   server_nav_collapsed: boolean;
   health_auto_production: number;
   health_auto_development: number;
+  diagram_zoom_speed: number;
 };
-const defaults: UiPreferences = { theme: "system", inspector_width: INSPECTOR_DEFAULT, explain_format: "table", files_show_hidden: false, files_transfers_open: true, sidebar_width: SIDEBAR_DEFAULT, server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1 };
+const defaults: UiPreferences = { theme: "system", inspector_width: INSPECTOR_DEFAULT, explain_format: "table", files_show_hidden: false, files_transfers_open: true, sidebar_width: SIDEBAR_DEFAULT, server_nav_collapsed: true, health_auto_production: -1, health_auto_development: -1, diagram_zoom_speed: 100 };
 // Read legacy browser development values once. The server's complete answer
 // always wins, including its defaults. Never copy browser values to the store.
 function legacyPreferences(): UiPreferences {

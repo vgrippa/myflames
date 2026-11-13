@@ -156,6 +156,16 @@
   line-height: var(--leading-sm);
   color: var(--ink-muted);
 }
+/* A labeled select row: its label reads like the checkbox rows' text, and its
+ * hint starts under the label (no checkbox indent). */
+.settings-panel .settings-select-row label {
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  color: var(--ink);
+}
+.settings-panel .settings-select-row + .hint {
+  padding-left: var(--space-2);
+}
 .settings-panel .settings-lead {
   margin: 0 0 var(--space-2);
   color: var(--ink-muted);
