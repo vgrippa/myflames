@@ -55,6 +55,8 @@ const ddl = await load("locks-mysql-26.7-ddl.json");
 const ddlLikely = await load("locks-mariadb-11.4-ddl-likely.json");
 // Synthetic identities supplement the reports captured before identity binding.
 ddl.server_identity = { server_uuid: "locks-server-uuid" };
+// The reports predate this additive capability flag; these scenarios read all transactions.
+ddl.trx_checked = true;
 ddlLikely.server_identity = { server_id: "1", hostname: "locks-mariadb", version: ddlLikely.server_version };
 const reportConnectionKey = (c) => JSON.stringify([
   c.profile_id || "", c.host || "", Number(c.port) || 0, c.user || "", c.ssl_mode || "", c.ssl_ca || "",
@@ -120,7 +122,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean) });
   await browser.defaultBrowserContext().overridePermissions(url, ["clipboard-read", "clipboard-write"]);
   const page = await browser.newPage();
   const errors = [];
@@ -133,7 +135,13 @@ try {
     const body = JSON.parse(request.postData() || "{}");
     if (pathname === "/api/live/kill") assert.match(body.review_token, /^[A-Za-z0-9_-]{43}$/);
     seen.push({ path: pathname, ...body });
-    request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) });
+    // A lock report is captured when its read ends: a moment after the request,
+    // as a real read takes time. The Kill note only trusts reports read after its answer.
+    const payload = () => (pathname === "/api/live/locks" && mock.body && typeof mock.body === "object"
+      ? { ...mock.body, captured_at: new Date(Date.now() + 1000).toISOString() } : mock.body);
+    const reply = () => request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(payload()) });
+    if (mock.wait) void mock.wait.then(reply);
+    else void reply();
   });
   await page.setViewport({ width: 1440, height: 1000 });
   // The list of views docked, as a person who docked it: this suite asserts
@@ -497,7 +505,14 @@ try {
   assert.doesNotMatch(dialogText, /Connection 55/, "the queued session is counted with the DDL, not listed again");
   assert.match(dialogText, /KILL QUERY would not help: there is no statement to stop, and its transaction keeps its locks/);
   assert.doesNotMatch(dialogText, /Kill query only/, "an idle session has no statement to stop");
-  assert.equal(await page.$(".kill-warning"), null);
+  // The Kill connection consequence box: amber, not dismissible, with the
+  // sessions that keep waiting named.
+  const idleCaution = await text("dialog.kill-dialog .kill-caution");
+  assert.match(idleCaution, /Kill connection 53 rolls back its open transaction\./);
+  assert.match(idleCaution, /Its 1 uncommitted row change is undone and lost; the application cannot commit it\./);
+  assert.match(idleCaution, /Connection 53 keeps its locks until it ends, so connections 54 and 55 keep waiting until then\./);
+  assert.match(idleCaution, /The application loses its connection and gets an error\./);
+  assert.ok(await page.$("dialog.kill-dialog .kill-caution-head svg"), "the box carries the warning icon");
   assert.equal(await page.$eval('input[name="kill-mode"][value="connection"]', (e) => e.checked), true);
   assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel");
   assert.equal(await sheetLabel(), "Kill connection 53");
@@ -532,7 +547,11 @@ try {
     summary: { ...ddl.summary, blocked_sessions: 0, root_blockers: 0, ddl_waits: 0 } };
   mocks["/api/live/kill"] = { status: 200, body: { schema_version: "kill-1.0", status: "killed", connection_id: 53,
     mode: "connection", statement: "KILL CONNECTION 53", verified: ["user", "host", "not this session", "server thread", "transaction"],
-    message: "Ended connection 53. Its open transaction was rolled back and its locks were released.", after: { present: false } } };
+    message: "Ended connection 53. Its open transaction was rolled back (1 row changed) and its locks were released.",
+    target: { connection_id: 53, user: "app", host: "172.17.0.1", command: "Sleep", state: null, info: null, time_s: 5,
+      trx: { trx_id: "2123", state: "RUNNING", started: "2026-10-14 16:57:12", age_s: 5, rows_locked: 1, rows_modified: 1 },
+      trx_checked: true },
+    after: { present: false, trx_checked: true, trx_started: null, rows_locked: null, same_trx: null } } };
   mocks["/api/live/locks"] = { status: 200, body: after };
   let before = lockCalls().length;
   await page.locator(killButton).click();
@@ -549,9 +568,18 @@ try {
   assert.equal(declined().length, 2, "a confirmed Kill is not recorded as declined");
   assert.equal(lockCalls().length, before + 1, "the report refreshes after the kill");
   const result = await text(".kill-result");
-  assert.match(result, /^Done\. Ended connection 53\. Its open transaction was rolled back/);
+  assert.match(result, /^Done\. Ended connection 53\. Its open transaction was rolled back \(1 row changed\) and its locks were released\./);
   assert.match(result, /The ALTER TABLE on connection 54 no longer waits; it is running or done\./);
   assert.match(result, /Connection 55 no longer waits\./);
+  // The state line and the before/after evidence: the waiters are free at once.
+  assert.equal(await text(".kill-result .kill-state.ok"), "Lock released: connections 54 and 55 no longer wait.");
+  const evidence = await page.$$eval(".kill-result .kill-evidence > div", (rows) =>
+    rows.map((e) => `${e.querySelector("dt").textContent}: ${e.querySelector("dd").textContent}`));
+  assert.deepEqual(evidence, [
+    "Statement: none → unknown",
+    "Transaction: open since 2026-10-14 16:57:12 → none",
+    "Rows locked: 1 → none",
+  ]);
   assert.equal(await page.$eval(".kill-result", (e) => e.getAttribute("role")), "status");
   await page.waitForFunction(() => document.activeElement?.classList.contains("kill-result"));
   assert.equal(await page.$(`${view} .ddl-section`), null);
@@ -582,13 +610,18 @@ try {
   await openBlocker();
   await page.locator(killButton).click();
   await page.waitForSelector("dialog.kill-dialog[open]");
-  assert.match(await text(".kill-warning"), /It changed about 250,000 rows \(InnoDB's undo record count, so a row changed twice counts twice\)\. Ending the connection rolls them all back, which can take a long time, and it keeps its locks until the rollback finishes/);
+  assert.equal(await page.$("dialog.kill-dialog .kill-caution"), null, "the consequence box waits for Kill connection to be chosen");
   assert.match(await text("dialog.kill-dialog"), /Running\s*UPDATE t SET v = v \+ 1/);
   assert.equal(await page.$eval('input[name="kill-mode"][value="query"]', (e) => e.checked), true, "a running statement defaults to Kill query only");
   assert.match(await text(".kill-choices"), /Its transaction stays open with its locks unless the session runs in autocommit mode/);
   assert.equal(await sheetLabel(), "Kill query on connection 53");
   await (await page.$("dialog.kill-dialog")).screenshot({ path: path.join(directory, "kill-dialog.png") });
   await page.locator('input[name="kill-mode"][value="connection"]').click();
+  // The amber box: the rollback, the lost changes and the sessions that keep waiting.
+  const bigCaution = await text("dialog.kill-dialog .kill-caution");
+  assert.match(bigCaution, /Kill connection 53 rolls back its open transaction\./);
+  assert.match(bigCaution, /Its 250,000 uncommitted row changes \(InnoDB's undo record count, so a row changed twice counts twice\) are undone and lost; the application cannot commit them\./);
+  assert.match(bigCaution, /Connection 53 keeps its locks until it ends, so connections 54 and 55 keep waiting until then\./);
   assert.equal(await sheetLabel(), "Kill connection 53");
   await page.locator('input[name="kill-mode"][value="query"]').click();
   // Escape with Kill query only chosen: declined as kill_query, KILL QUERY 53.
@@ -643,6 +676,256 @@ try {
   await page.locator(".sheet-actions .danger-solid").click();
   await page.waitForSelector(".kill-result.denied");
   assert.match(await text(".kill-result"), /The server refused\. The server refused to end connection 53/);
+
+  // trx_scope chooses the default: "multi" preselects Kill connection (KILL
+  // QUERY cannot free the locks); "statement" or unknown keeps Kill query only.
+  const multi = clone(ddl);
+  Object.assign(multi.blocking_tree[0], { command: "Query", query: "UPDATE t SET v = v + 1", last_statement: null,
+    idle_in_transaction: false, trx_scope: "multi", trx_scope_source: "timing", trx_age_s: 17, time_s: 5, rows_modified: 3, rows_locked: 3 });
+  mocks["/api/live/locks"] = { status: 200, body: multi };
+  await reload();
+  await select(treeRow(53));
+  await page.waitForSelector(killButton);
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await page.$eval('input[name="kill-mode"][value="connection"]', (e) => e.checked), true,
+    "a transaction spanning more than the statement defaults to Kill connection");
+  await page.locator('input[name="kill-mode"][value="query"]').click();
+  // Under Kill query only: why its locks stay, with the timing named.
+  assert.equal((await text("dialog.kill-dialog .kill-caution-line")).trim(),
+    "Connections 54 and 55 will keep waiting: this statement runs inside a longer transaction that started 12 s before it, so its locks stay after the statement stops.");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  // Waiting DDL's blocker projection carries the same scope as the tree.
+  const ddlMulti = clone(multi);
+  Object.assign(ddlMulti.ddl_waits[0].blockers[0], { command: "Query", running: true,
+    idle_in_transaction: false, statement: "UPDATE t SET v = v + 1", trx_scope: "multi",
+    trx_scope_source: "timing", trx_age_s: 17, time_s: 5 });
+  mocks["/api/live/locks"] = { status: 200, body: ddlMulti };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await page.$eval('input[name="kill-mode"][value="connection"]', e => e.checked), true,
+    "a running Waiting DDL blocker in a longer transaction defaults to Kill connection");
+  await page.locator('input[name="kill-mode"][value="query"]').click();
+  assert.match(await text("dialog.kill-dialog .kill-caution-line"), /longer transaction that started 12 s before it/);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  const single = clone(multi);
+  single.blocking_tree[0].trx_scope = "statement";
+  single.blocking_tree[0].trx_scope_source = "performance_schema";
+  mocks["/api/live/locks"] = { status: 200, body: single };
+  await reload();
+  await select(treeRow(53));
+  await page.waitForSelector(killButton);
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await page.$eval('input[name="kill-mode"][value="query"]', (e) => e.checked), true,
+    "an autocommit statement defaults to Kill query only");
+  assert.equal(await page.$("dialog.kill-dialog .kill-caution-line"), null, "no keep-waiting warning for a single statement");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  // The same warning without a waiting session loses its first clause.
+  const noWaiters = clone(multi);
+  noWaiters.blocking_tree[0].blocked = [];
+  noWaiters.blocking_tree[0].blocked_count = 0;
+  noWaiters.ddl_waits = [];
+  mocks["/api/live/locks"] = { status: 200, body: noWaiters };
+  await reload();
+  await select(treeRow(53));
+  await page.waitForSelector(killButton);
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  await page.locator('input[name="kill-mode"][value="query"]').click();
+  assert.equal((await text("dialog.kill-dialog .kill-caution-line")).trim(),
+    "This statement runs inside a longer transaction that started 12 s before it, so its locks stay after the statement stops.");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  // No open transaction, and the report read INNODB_TRX: a neutral hint, not amber.
+  const noTrx = clone(ddl);
+  noTrx.trx_checked = true;
+  Object.assign(noTrx.ddl_waits[0].blockers[0], { trx_started: null, trx_age_s: null, rows_modified: null, idle_in_transaction: false });
+  mocks["/api/live/locks"] = { status: 200, body: noTrx };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await text("dialog.kill-dialog .kill-note-plain"),
+    "Closes the connection. It had no open transaction when the list was read, so nothing would be rolled back. The application loses its connection and gets an error.");
+  assert.equal(await page.$("dialog.kill-dialog .kill-caution"), null, "no amber box without an open transaction");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  // Transaction unknown (the report does not say whether INNODB_TRX was read): amber.
+  const unknownTrx = clone(noTrx);
+  delete unknownTrx.trx_checked;
+  mocks["/api/live/locks"] = { status: 200, body: unknownTrx };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  const unknownCaution = await text("dialog.kill-dialog .kill-caution");
+  assert.match(unknownCaution, /Kill connection 53 closes the connection\./);
+  assert.match(unknownCaution, /Could not read its transaction\. If one is open, its uncommitted changes are rolled back and lost, and it keeps its locks until the rollback ends\. The application loses its connection and gets an error\./);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+
+  // KILL QUERY that leaves the transaction open: amber headline and evidence.
+  const directionalStatement = "UPDATE t SET v = v + 1\u202E";
+  mocks["/api/live/locks"] = { status: 200, body: multi };
+  await reload();
+  await select(treeRow(53));
+  await page.waitForSelector(killButton);
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  mocks["/api/live/kill"] = { status: 200, body: { schema_version: "kill-1.0", status: "killed", connection_id: 53,
+    mode: "query", statement: "KILL QUERY 53", verified: ["user", "host"],
+    message: "Stopped the running statement on connection 53. Its transaction is still open (started 2026-10-14 16:57:12, 3 rows locked) and keeps its locks until it commits or rolls back. Kill connection 53 to roll it back.",
+    target: { connection_id: 53, user: "app", host: "172.17.0.1", command: "Query", state: "updating", info: directionalStatement, time_s: 5,
+      trx: { trx_id: "2123", state: "RUNNING", started: "2026-10-14 16:57:12", age_s: 17, rows_locked: 3, rows_modified: 3 }, trx_checked: true },
+    after: { present: true, command: "Query", state: "updating", statement: null, trx_state: "RUNNING", rows_modified: 3,
+      trx_checked: true, trx_started: "2026-10-14 16:57:12", rows_locked: 3, same_trx: true } } };
+  const queryStopped = clone(multi);
+  Object.assign(queryStopped.blocking_tree[0], { command: "Sleep", query: null });
+  Object.assign(queryStopped.transactions[0], { command: "Sleep", current_statement: null, rows_modified: 3, rows_locked: 3 });
+  mocks["/api/live/locks"] = { status: 200, body: queryStopped };
+  await page.locator('input[name="kill-mode"][value="query"]').click();
+  assert.equal(await sheetLabel(), "Kill query on connection 53");
+  await page.locator(".sheet-actions .danger-solid").click();
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
+  assert.equal(await text(".kill-result .kill-state.warn"), "Query ended; transaction and locks still open.");
+  // Locks still held: the whole note is amber, never the green of success.
+  assert.ok(await page.$(".kill-result.killed.held"), "an open transaction makes the note amber");
+  const queryEvidence = await page.$$eval(".kill-result .kill-evidence > div", (rows) =>
+    rows.map((e) => `${e.querySelector("dt").textContent}: ${e.querySelector("dd").textContent}`));
+  assert.deepEqual(queryEvidence, [
+    `Statement: ${directionalStatement} → none`,
+    "Transaction: open since 2026-10-14 16:57:12 → still open",
+    "Rows locked: 3 → 3",
+  ]);
+  const statementDirection = await page.$eval(".kill-result .kill-evidence > div:first-child dd", (dd) => ({
+    sides: [...dd.querySelectorAll(":scope > bdi")].map((bdi) => bdi.textContent),
+    nodes: [...dd.childNodes].map((node) => node.nodeType === Node.TEXT_NODE ? node.textContent : node.nodeName),
+  }));
+  assert.deepEqual(statementDirection.sides, [directionalStatement, "none"]);
+  assert.deepEqual(statementDirection.nodes, ["BDI", " → ", "BDI"], "the arrow stays outside both direction isolates");
+  assert.match(await text(".kill-result"), /The ALTER TABLE on connection 54 still waits/);
+  await page.locator(".kill-result ::-p-text(Dismiss)").click();
+  assert.equal(await page.$(".kill-result"), null);
+
+  // KILL QUERY may roll back just its statement, then return to RUNNING
+  // in the same transaction. Every fresh state replaces the kill-time state.
+  mocks["/api/live/locks"] = { status: 200, body: multi };
+  await reload();
+  await select(treeRow(53));
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  const queryResult = clone(mocks["/api/live/kill"].body);
+  queryResult.after = { ...queryResult.after, command: "Query", trx_state: "ROLLING BACK", rows_modified: 120 };
+  queryResult.message = "Sent KILL QUERY 53. The statement is still stopping.";
+  mocks["/api/live/kill"] = { status: 200, body: queryResult };
+  const statementRolling = clone(multi);
+  Object.assign(statementRolling.transactions[0], { state: "ROLLING BACK", rows_modified: 120, command: "Query" });
+  Object.assign(statementRolling.blocking_tree[0], { trx_state: "ROLLING BACK", rows_modified: 120, command: "Query" });
+  mocks["/api/live/locks"] = { status: 200, body: statementRolling };
+  await page.locator('input[name="kill-mode"][value="query"]').click();
+  await page.locator(".sheet-actions .danger-solid").click();
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
+  assert.equal(await text(".kill-result .kill-state.warn"), "Rolling back: about 120 changes left to undo.");
+  mocks["/api/live/locks"] = { status: 200, body: queryStopped };
+  await page.waitForFunction(() => document.querySelector(".kill-result .kill-update")?.textContent ===
+    "Checked again: its transaction is still open.", { timeout: 9000 });
+  assert.equal(await text(".kill-result .kill-state.warn"), "Query ended; transaction and locks still open.");
+  assert.match(await text(".kill-result"), /Sent KILL QUERY 53\. The statement is still stopping\./,
+    "the original server message remains verbatim beside its later update");
+  assert.doesNotMatch(await text(".kill-result"), /Still rolling back after 30 s/);
+  const statementDoneReads = lockCalls().length;
+  await new Promise(resolve => setTimeout(resolve, 4500));
+  assert.equal(lockCalls().length, statementDoneReads, "polling stops when the statement rollback finishes, even with waiters");
+  await page.locator(".kill-result ::-p-text(Dismiss)").click();
+
+  // KILL CONNECTION still rolling back: the amber headline, then the follow-up
+  // re-reads (2, 4, 8, 16 s) until the session is gone and the waiters are free.
+  mocks["/api/live/locks"] = { status: 200, body: ddl };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  mocks["/api/live/kill"] = { status: 200, body: { schema_version: "kill-1.0", status: "killed", connection_id: 53,
+    mode: "connection", statement: "KILL CONNECTION 53", verified: ["user", "host"],
+    message: "Connection 53 is ending: it is rolling back its transaction (about 120 changes left to undo) and keeps its locks until the rollback finishes.",
+    target: { connection_id: 53, user: "app", host: "172.17.0.1", command: "Sleep", state: null, info: null, time_s: 5,
+      trx: { trx_id: "2123", state: "RUNNING", started: "2026-10-14 16:57:12", age_s: 5, rows_locked: 1, rows_modified: 120 }, trx_checked: true },
+    after: { present: true, command: "Killed", state: "Killed", statement: null, trx_state: "ROLLING BACK", rows_modified: 120,
+      trx_checked: true, trx_started: "2026-10-14 16:57:12", rows_locked: 1, same_trx: null } } };
+  const connectionRolling = clone(ddl);
+  Object.assign(connectionRolling.transactions[0], { state: "ROLLING BACK", rows_modified: 120, command: "Killed" });
+  Object.assign(connectionRolling.blocking_tree[0], { trx_state: "ROLLING BACK", rows_modified: 120, command: "Killed" });
+  mocks["/api/live/locks"] = { status: 200, body: connectionRolling };
+  await page.locator(".sheet-actions .danger-solid").click();
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
+  assert.equal(await text(".kill-result .kill-state.warn"), "Rolling back: about 120 changes left to undo.");
+  assert.match(await text(".kill-result"), /The ALTER TABLE on connection 54 still waits/);
+  // The next read finds the session gone and the waiters free.
+  mocks["/api/live/locks"] = { status: 200, body: after };
+  const readsBeforeFollow = lockCalls().length;
+  await page.waitForFunction(
+    () => document.querySelector(".kill-result .kill-state.ok")?.textContent === "Lock released: connections 54 and 55 no longer wait.",
+    { timeout: 9000 },
+  );
+  assert.equal(await page.$(".kill-result.held"), null, "a released lock turns the note green");
+  assert.ok(lockCalls().length > readsBeforeFollow, "the follow-up re-read ran");
+  assert.equal(await text(".kill-result .kill-update"), "Checked again: its transaction is no longer open.");
+  assert.match(await text(".kill-result .kill-evidence"), /Transactionopen since 2026-10-14 16:57:12 → rolled back/);
+  await page.locator(".kill-result ::-p-text(Dismiss)").click();
+  assert.equal(await page.$(".kill-result"), null);
+
+  // The bounded follow-ups can end during a long rollback; Refresh then
+  // reconciles the retained note and clears its stale warning.
+  mocks["/api/live/locks"] = { status: 200, body: ddl };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  mocks["/api/live/locks"] = { status: 200, body: connectionRolling };
+  await page.locator(".sheet-actions .danger-solid").click();
+  await page.waitForSelector(".kill-result .kill-stale", { timeout: 45000 });
+  assert.match(await text(".kill-result .kill-stale"), /Still rolling back after 30 s/);
+  mocks["/api/live/locks"] = { status: 200, body: after };
+  await page.locator(".kill-result button ::-p-text(Refresh)").click();
+  await page.waitForSelector(".kill-result .kill-state.ok");
+  assert.equal(await text(".kill-result .kill-update"), "Checked again: its transaction is no longer open.");
+  assert.equal(await page.$(".kill-result .kill-stale"), null);
+  await page.locator(".kill-result ::-p-text(Dismiss)").click();
+
+  // Dismiss during the FIRST post-kill read must prevent a follow-up loop.
+  mocks["/api/live/locks"] = { status: 200, body: ddl };
+  await reload();
+  await openBlocker();
+  await page.locator(killButton).click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  let releaseFirstReport;
+  const heldFirstReport = new Promise((resolve) => { releaseFirstReport = resolve; });
+  mocks["/api/live/locks"] = { status: 200, body: ddl, wait: heldFirstReport };
+  const firstReportStarted = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/live/locks");
+  await page.locator(".sheet-actions .danger-solid").click();
+  await firstReportStarted;
+  await page.waitForSelector(".kill-result[data-refreshing=true]");
+  assert.equal(await text(".kill-result .kill-state.warn"), "Rolling back: about 120 changes left to undo.");
+  await page.locator(".kill-result ::-p-text(Dismiss)").click();
+  assert.equal(await page.$(".kill-result"), null);
+  const readsAtDismiss = lockCalls().length;
+  const firstReportAnswered = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/locks");
+  releaseFirstReport();
+  await firstReportAnswered;
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.equal(lockCalls().length, readsAtDismiss, "dismiss during the first re-read prevents follow-up requests");
+  assert.equal(await page.$(".kill-result"), null, "the late answer cannot restore the dismissed note");
 
   // Without the privilege: focusable disabled Kill, its reason, and copyable SQL.
   const unprivileged = clone(ddl);

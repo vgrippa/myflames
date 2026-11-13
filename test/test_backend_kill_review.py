@@ -153,9 +153,11 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(sum('FROM performance_schema.threads' in s and ' IN (' in s for s in conn.calls), 1)
         self.assertEqual(sum('PROCESSLIST_ID = ' in s for s in conn.calls), 5)
         self.assertEqual(len(conn.calls), 3 + 2 * 5 + 4)
-        self.assertTrue(all(r['after'] == {'present': False} for r in result['results'] if r['status'] == 'killed'))
+        self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
+                                            'rows_locked': None, 'same_trx': None, 'trx_survived': None} for r in result['results'] if r['status'] == 'killed'))
         self.assertEqual(len(self.records()), 5)
-        self.assertTrue(all(r['after'] == {'present': False} for r in self.records() if r['status'] == 'ok'))
+        self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
+                                            'rows_locked': None, 'same_trx': None, 'trx_survived': None} for r in self.records() if r['status'] == 'ok'))
 
     def test_target_read_verifies_server_identity_without_an_extra_client_call(self):
         conn = BatchConnection(server_changed=2)

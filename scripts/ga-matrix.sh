@@ -14,6 +14,8 @@
 #   scripts/ga-matrix.sh seed NAME           seed testdb + review schema if absent
 #   scripts/ga-matrix.sh workload NAME       warm-up statements (digests) + one deadlock
 #   scripts/ga-matrix.sh locks NAME SECONDS  row lock held by one session, a second waits
+#   scripts/ga-matrix.sh locks-busy NAME SECONDS  running statement in an explicit blocking transaction
+#   scripts/ga-matrix.sh rollback NAME ROWS SECONDS  large update left idle for rollback
 #   scripts/ga-matrix.sh idle-trx NAME SECONDS   open transaction left idle
 #   scripts/ga-matrix.sh mdl NAME SECONDS    metadata lock wait (open trx + waiting ALTER)
 #   scripts/ga-matrix.sh profiles            create the saved connections in $MYFLAMES_HOME
@@ -524,17 +526,56 @@ scenario_check() {
   case "${2:-}" in ''|*[!0-9]*) die "SECONDS must be a whole number" ;; esac
 }
 # bg_session NAME SECONDS-before-start SQL-first SECONDS-hold SQL-last: runs inside the container, detached.
+# BG_CLIENT_OPTS accepts only an empty value or --force.
 bg_session() {
   local n="$1" delay="$2" first="$3" hold="$4" last="$5"
+  # This value is embedded in sh -c text: refuse everything except a literal flag.
+  case "${BG_CLIENT_OPTS:-}" in
+    ''|--force) ;;
+    *) die "BG_CLIENT_OPTS must be empty or --force" ;;
+  esac
   ( export MYSQL_PWD="$ROOT_PASSWORD"
     docker exec -d -e MYSQL_PWD "$(cname "$n")" sh -c \
-      'sleep "$1"; (printf "%s\n" "$2"; sleep "$3"; printf "%s\n" "$4") | '"$(client "$n")"' -uroot' _ "$delay" "$first" "$hold" "$last" )
+      'sleep "$1"; (printf "%s\n" "$2"; sleep "$3"; printf "%s\n" "$4") | '"$(client "$n")"' -uroot '"${BG_CLIENT_OPTS:-}" _ "$delay" "$first" "$hold" "$last" )
 }
 cmd_locks() {
   scenario_check "$1" "${2:-}"; local s="$2"
   bg_session "$1" 0 "BEGIN; UPDATE review.lock_probe SET v=v+1 WHERE id=1;" "$s" "COMMIT;"
   bg_session "$1" 1 "SET SESSION innodb_lock_wait_timeout=$((s + 10)); UPDATE review.lock_probe SET v=v+1 WHERE id=1;" 1 "SELECT 1;"
   log "$1: row lock held for ${s}s, one session waiting (both clean up)."
+}
+cmd_locks_busy() {
+  scenario_check "$1" "${2:-}"; local s="$2"
+  rq "$1" "INSERT IGNORE INTO review.lock_probe VALUES (3, 0);" > /dev/null
+  # The holder behaves like an application that keeps its connection: COMMIT
+  # arrives only after it has stayed idle in the transaction for another
+  # SECONDS + 30, and --force keeps the client connected after an error. On
+  # MySQL a SLEEP stopped by KILL QUERY returns 1 without an error (a COMMIT in
+  # the same batch would end the transaction at once); on MariaDB it fails with
+  # ERROR 1317, which ends a batch client without --force (a rollback).
+  BG_CLIENT_OPTS=--force bg_session "$1" 0 "BEGIN; UPDATE review.lock_probe SET v=v+1 WHERE id=3; SELECT SLEEP($s);" $((s + 30)) "COMMIT;"
+  bg_session "$1" 1 "SET SESSION innodb_lock_wait_timeout=$((2 * s + 40)); UPDATE review.lock_probe SET v=v+1 WHERE id=3;" 0 ""
+  log "$1: running SLEEP inside a blocking transaction for ${s}s."
+}
+cmd_rollback() {
+  scenario_check "$1" "${3:-}"; local rows="$2" s="$3" count remaining
+  case "$rows" in ''|*[!0-9]*) die "ROWS must be a positive whole number" ;; esac
+  [ "$rows" -gt 0 ] || die "ROWS must be a positive whole number"
+  rq "$1" "CREATE TABLE IF NOT EXISTS review.rollback_probe (id INT AUTO_INCREMENT PRIMARY KEY, v INT NOT NULL) ENGINE=InnoDB;" > /dev/null
+  count="$(rq "$1" "SELECT COUNT(*) FROM review.rollback_probe;")"
+  if [ "$count" -eq 0 ]; then
+    rq "$1" "INSERT INTO review.rollback_probe (v) VALUES (0);" > /dev/null
+    count=1
+  fi
+  # Double the existing population, bounding the final insert to the deficit.
+  # INSERT ... SELECT works on MySQL 5.7 as well as newer engines.
+  while [ "$count" -lt "$rows" ]; do
+    remaining=$((rows - count))
+    rq "$1" "INSERT INTO review.rollback_probe (v) SELECT 0 FROM review.rollback_probe LIMIT $remaining;" > /dev/null
+    count="$(rq "$1" "SELECT COUNT(*) FROM review.rollback_probe;")"
+  done
+  bg_session "$1" 0 "BEGIN; UPDATE review.rollback_probe SET v=v+1;" "$s" "ROLLBACK;"
+  log "$1: updated ${count} rows, transaction idle for ${s}s before rollback."
 }
 cmd_idle_trx() {
   scenario_check "$1" "${2:-}"; local s="$2"
@@ -692,11 +733,13 @@ main() {
     seed) [ "$#" -eq 1 ] || die "usage: seed NAME"; valid "$1"; load_creds; seed_one "$1" ;;
     workload) [ "$#" -eq 1 ] || die "usage: workload NAME"; valid "$1"; load_creds; workload_one "$1" ;;
     locks) [ "$#" -eq 2 ] || die "usage: locks NAME SECONDS"; cmd_locks "$@" ;;
+    locks-busy) [ "$#" -eq 2 ] || die "usage: locks-busy NAME SECONDS"; cmd_locks_busy "$@" ;;
+    rollback) [ "$#" -eq 3 ] || die "usage: rollback NAME ROWS SECONDS"; cmd_rollback "$@" ;;
     idle-trx) [ "$#" -eq 2 ] || die "usage: idle-trx NAME SECONDS"; cmd_idle_trx "$@" ;;
     mdl) [ "$#" -eq 2 ] || die "usage: mdl NAME SECONDS"; cmd_mdl "$@" ;;
     profiles) cmd_profiles ;;
     env) cmd_env ;;
-    *) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
+    *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
   esac
 }
 main "$@"

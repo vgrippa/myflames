@@ -119,6 +119,9 @@ export async function setUiPreferences(page, changes) {
 export async function open(endpoint, name, extra = {}, {
   fallback = null, list = "floating", seed = "", beforeGoto = null, viewport = { width: 1440, height: 1000 }, refuse = null,
   offline = false, launchArgs = [],
+  /** A report field (e.g. "taken_at") set to the moment each view read is answered,
+   * for views that only trust reports read after an action (a Kill note). */
+  stampReport = "",
 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-${name}-`));
   const store = path.join(directory, "workspace.sqlite3");
@@ -195,10 +198,13 @@ export async function open(endpoint, name, extra = {}, {
     }
     state.seen.push(JSON.parse(request.postData() || "{}"));
     const mock = state.queue.shift() || state.fallback;
-    setTimeout(
-      () => request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) }),
-      state.delay,
-    );
+    const stamped = () => (stampReport && mock.body && typeof mock.body === "object"
+      // A moment after the request, as a real read takes time.
+      ? { ...mock.body, [stampReport]: new Date(Date.now() + 1000).toISOString() } : mock.body);
+    const reply = () => request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(stamped()) });
+    // A queued report can be held until a test releases an in-flight read.
+    if (mock.wait) void mock.wait.then(reply);
+    else setTimeout(reply, state.delay);
   });
   await page.setViewport(viewport);
   if (beforeGoto) await beforeGoto(page);
