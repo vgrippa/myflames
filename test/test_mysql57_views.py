@@ -257,6 +257,11 @@ class TestLocks(unittest.TestCase):
 
     def report(self):
         conn, data = replay('locks', SERVER)
+        # The live recording predates the optional scope read. MySQL 5.7
+        # defaults leave this consumer off, so explicitly supplement no rows.
+        conn.answers[locks.LOCKS_TAG + "SELECT THREAD_ID, AUTOCOMMIT FROM "
+                               "performance_schema.events_transactions_current WHERE STATE = 'ACTIVE' "
+                               "AND THREAD_ID IN (1101)"] = [""]
         return locks.lock_report(conn, **data['args']), conn
 
     def test_row_locks_come_from_information_schema(self):

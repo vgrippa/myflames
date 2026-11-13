@@ -67,7 +67,8 @@ Verified against server source (mysql-server 9.7 trunk "M/", mariadb-server
   strategy for SCHEMA only and its own strategy for BACKUP (Ma/sql/mdl.cc:
   1110-1124). P_S names: M/storage/perfschema/pfs_column_types.cc:42-62,
   table_helper.cc:1345-1390; Ma/storage/perfschema/table_helper.cc:520-660.
-* MariaDB ships the ``wait/lock/metadata/sql/mdl`` instrument disabled
+* MariaDB ships ``performance_schema`` itself OFF (Ma/sql/sys_vars.cc:90-92),
+  the ``wait/lock/metadata/sql/mdl`` instrument disabled
   (Ma/storage/perfschema/pfs_instr_class.cc:233-236) and the
   ``events_statements_current`` consumer off (Ma/sql/mysqld.cc:861-865);
   MySQL enables both (M/sql/sys_vars.cc:650-655). Metadata locks are recorded
@@ -106,8 +107,9 @@ Verified against server source (mysql-server 9.7 trunk "M/", mariadb-server
 * The process list's "Killed" command is not proof that a session is ending:
   MariaDB also shows it after KILL QUERY on an idle session, and MySQL's
   performance_schema.threads never shows it (Ma/sql/sql_show.cc,
-  M/sql/sql_show.cc). INNODB_TRX trx_state 'ROLLING BACK' is, and a second
-  KILL is harmless on both engines.
+  M/sql/sql_show.cc). INNODB_TRX trx_state 'ROLLING BACK' can describe either
+  statement or full rollback; a second KILL CONNECTION is harmless on both
+  engines and ends a transaction left open after statement rollback.
 * trx_rows_modified is InnoDB's undo record count (trx->undo_no): roughly the
   rows inserted, updated or deleted, where a row changed twice counts twice.
 * ALTER TABLE opens the table with SHARED_UPGRADABLE and upgrades it to
@@ -149,6 +151,8 @@ MAX_TREE_DEPTH = 128
 MAX_TREE_NODES = 5000
 MAX_TREE_EDGES = 5000
 TEXT_CAP = 4096
+# P_S threads silently caps PROCESSLIST_INFO at this many UTF-8 bytes.
+PS_INFO_BYTES = 1024
 LOCK_DATA_CAP = 512
 SERVER_LOCK_DATA_MAX = 8192
 SERVER_TRX_QUERY_MAX = 1024
@@ -442,6 +446,7 @@ class _Report(object):
             "deadlock": False, "data_locks_global_latch": data_locks_latch_caution(engine, ver),
             "metadata_lock_info": None,
         }
+        self.trx_autocommit = {}
         self.trx = []
         self.trx_by_id = {}
         self.waits = []
@@ -526,6 +531,13 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
         _resolve_owners(r)
         _read_last_statements(conn, r)
         _read_xa_states(conn, r)
+        # One best-effort transaction-scope read for the running InnoDB sessions.
+        trx_connections = {t["connection_id"] for t in r.trx}
+        candidates = [session for cid, session in r.sessions.items()
+                      if _running(session) and cid in trx_connections]
+        r.trx_autocommit = _read_trx_autocommit(
+            lambda sql: _q(conn, sql),
+            [session.get("ps_thread_id") for session in candidates]) if ps_on else {}
         r.kill_privilege = read_kill_privilege(conn, engine, ver)
     deadlock = None
     if not waits_only:
@@ -1073,7 +1085,9 @@ def _session_from_row(row):
         seconds = None
     return {"connection_id": _int(row[1]) or None, "ps_thread_id": _int(row[0]), "user": row[2],
             "host": row[3], "db": row[4], "command": row[5], "time_s": seconds,
-            "state": row[7], "info": row[8]}
+            "state": row[7], "info": row[8],
+            "info_truncated": bool(row[0] is not None and row[8] and
+                                   len(row[8].encode("utf-8")) >= PS_INFO_BYTES)}
 
 
 def _session_sql(engine, ps_on, where, order_limit=""):
@@ -1434,7 +1448,9 @@ def _view(r, cid, last, trx_by_conn, holds_trx_lock=False):
     trx = trx_by_conn.get(cid) or {}
     info = session.get("info") or trx.get("query")
     command = session.get("command")
+    scope, scope_source = transaction_scope(session, trx, r.trx_autocommit.get(session.get("ps_thread_id")))
     return {
+        "trx_scope": scope, "trx_scope_source": scope_source,
         "connection_id": cid, "user": session.get("user"), "host": session.get("host"),
         "db": session.get("db"), "command": command, "state": session.get("state"),
         "time_s": session.get("time_s"), "statement": info,
@@ -1930,12 +1946,14 @@ def _build_tree(r, rows_waits, mdl_waits, last_statements):
             session = r.sessions.get(cid) or {}
             command = session.get("command")
             query = session.get("info") or (trx or {}).get("query")
+            scope, scope_source = transaction_scope(session, trx, r.trx_autocommit.get(session.get("ps_thread_id")))
             nodes[key] = {
                 "key": key, "connection_id": cid, "trx_id": (trx or {}).get("trx_id") or trx_id,
                 "user": session.get("user"), "host": session.get("host"), "db": session.get("db"),
                 "command": command, "state": session.get("state"), "time_s": session.get("time_s"),
                 "query": query, "last_statement": last_statements.get(cid) if not query else None,
                 "idle_in_transaction": False,
+                "trx_scope": scope, "trx_scope_source": scope_source,
                 "trx_state": (trx or {}).get("state"), "trx_age_s": (trx or {}).get("age_s"),
                 "trx_started": (trx or {}).get("started"),
                 "rows_locked": (trx or {}).get("rows_locked"),
@@ -2091,6 +2109,8 @@ def _assemble(r, deadlock, waits_only):
         if waits_only and key not in involved:
             continue
         item = dict(t)
+        scope, scope_source = transaction_scope(session, t, r.trx_autocommit.get(session.get("ps_thread_id")))
+        item.update({"trx_scope": scope, "trx_scope_source": scope_source})
         command = session.get("command")
         item.update({
             "user": session.get("user"), "host": session.get("host"), "db": session.get("db"),
@@ -2224,6 +2244,7 @@ def _assemble(r, deadlock, waits_only):
         "server_product": getattr(r, "identity", {}).get("server_product"),
         "server_version": r.version, "server_identity": r.server_identity,
         "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "trx_checked": r.caps["transactions"] and not r.truncated["transactions"],
         "scope": r.scope, "limit": r.limit, "capabilities": r.caps, "notes": notes,
         "summary": summary, "ddl_waits": ddl_waits, "kill_privilege": r.kill_privilege,
         "blocking_tree": tree, "blocking_tree_budget": r.tree_stats, "transactions": transactions,
@@ -2559,6 +2580,118 @@ def _running(session):
     return (session or {}).get("command") not in (None, "Sleep", "Killed") and bool((session or {}).get("info"))
 
 
+def _plain_read(statement):
+    """Recognize read text conservatively, without depending on SQL mode.
+
+    Blank ordinary comments and quoted text before checking clauses. Reject
+    executable comments, unclosed quotes/comments and ambiguous backslash escapes: a
+    hidden locking clause must never become evidence of earlier changes.
+    """
+    if not isinstance(statement, str):
+        return False
+    code, pos = [], 0
+    while pos < len(statement):
+        ch = statement[pos]
+        if statement.startswith("/*", pos):
+            end = statement.find("*/", pos + 2)
+            if (end < 0 or statement.startswith(("/*!", "/*M!", "/*m!"), pos) or
+                    "/*" in statement[pos + 2:end]):
+                return False
+            code.append(" ")
+            pos = end + 2
+        elif ch in "'\"`":
+            quote = ch
+            pos += 1
+            while pos < len(statement):
+                if statement[pos] == "\\":
+                    return False  # NO_BACKSLASH_ESCAPES is not known here.
+                if statement[pos] == quote:
+                    pos += 1
+                    if pos < len(statement) and statement[pos] == quote:
+                        pos += 1
+                        continue
+                    break
+                pos += 1
+            else:
+                return False
+            code.append(" ? ")  # Keep clauses on either side separate.
+        elif ch == "#" or statement.startswith("--", pos) or ch == "\\":
+            return False  # Leave line comments and client syntax unknown.
+        else:
+            code.append(ch)
+            pos += 1
+    raw_code = "".join(code).strip()
+    code = raw_code.upper()
+    if not re.match(r"^(?:SELECT\b|WITH\b|\(\s*(?:\(\s*)*SELECT\b)", code):
+        return False
+    # WITH can introduce a write; semicolons can introduce another statement.
+    if ";" in (code[:-1] if code.endswith(";") else code):
+        return False
+    if re.search(r"\b(?:INTO|UPDATE|INSERT|DELETE|REPLACE)\b|\bFOR\s+SHARE\b|"
+                 r"\bLOCK\s+IN\s+SHARE\s+MODE\b", code):
+        return False
+    # A stored function can write inside the SELECT's own transaction, while
+    # processlist shows the outer SELECT between calls (MySQL sql/sp_instr.cc:
+    # 971-983,1062; MariaDB sql/sp_instr.cc:1143,1158,1214). Only these common
+    # unqualified built-ins can support the earlier-changes signal. Quoted
+    # names were blanked to '?', and schema-qualified calls are always unknown.
+    builtins = {"SLEEP", "NOW", "CURRENT_TIMESTAMP", "COUNT", "SUM", "MIN", "MAX", "AVG",
+                "CONCAT", "COALESCE", "IFNULL", "LENGTH", "LOWER", "UPPER", "SUBSTRING",
+                "DATE", "CAST", "CONVERT", "ROUND", "ABS"}
+    # These tokens introduce SQL grouping/subqueries, rather than calls.
+    grouping = {"SELECT", "AS", "IN", "EXISTS", "NOT", "AND", "OR", "XOR", "WHERE",
+                "HAVING", "ON", "WHEN", "THEN", "ELSE", "DISTINCT", "ALL"}
+    for call in re.finditer(r"([\w$\x80-\uffff]+|\?)(\s*)\(", raw_code):
+        name = call.group(1)
+        # Do not let Unicode uppercasing turn a distinct stored-function name
+        # such as long-s 'ſleep' into an allowlisted ASCII built-in.
+        if (not name.isascii() or re.search(r"\.\s*$", raw_code[:call.start()]) or
+                name.upper() not in builtins | grouping):
+            return False
+        # Without IGNORE_SPACE, a gap can resolve a built-in name to a stored
+        # function. Blanked comments count as gaps too; SQL grouping is exempt.
+        if name.upper() in builtins and call.group(2):
+            return False
+    return True
+
+
+def transaction_scope(session, trx, autocommit=None):
+    """Return (scope, evidence) for a running statement's InnoDB transaction.
+
+    A whole-second timing gap below two seconds cannot establish that the
+    transaction predates this statement. Timing never proves autocommit.
+    """
+    if not trx or not _running(session):
+        return None, None
+    if autocommit in ("NO", "YES"):
+        return ("multi" if autocommit == "NO" else "statement"), "performance_schema"
+    modified = trx.get("rows_modified")
+    statement = session.get("info")
+    # A read without potentially writing function calls indicates earlier
+    # changes. Reject capped text too:
+    # a locking clause might have been cut off by the process-list projection.
+    if (modified is not None and modified > 0 and not session.get("info_truncated") and
+            isinstance(statement, str) and len(statement) < TEXT_CAP and _plain_read(statement)):
+        return "multi", "earlier_changes"
+    age, elapsed = trx.get("age_s"), session.get("time_s")
+    if age is not None and elapsed is not None and age - elapsed >= 2:
+        return "multi", "timing"
+    return None, None
+
+
+def _read_trx_autocommit(query, thread_ids):
+    """One bounded read; unavailable instrumentation is not a report warning."""
+    ids = _ids(thread_ids)
+    if not ids:
+        return {}
+    try:
+        rows = query("SELECT THREAD_ID, AUTOCOMMIT FROM performance_schema.events_transactions_current "
+                     "WHERE STATE = 'ACTIVE' AND THREAD_ID IN (%s)" % ",".join(str(t) for t in ids))
+    except ConnectorError:
+        return {}
+    return {_int(row[0]): row[1] for row in rows if len(row) >= 2}
+
+
 def read_target(conn, engine, ps_on, connection_id, server_identity=False):
     """Read one session and its open InnoDB transaction now.
 
@@ -2660,9 +2793,13 @@ def _kill_problem(target, own, cid, mode, expect):
         return "refused", ("Connection %d ran XA PREPARE: its locks belong to the prepared XA transaction, "
                            "which survives the end of the session, so ending it would release nothing. "
                            "End the transaction with %s. Nothing was sent." % (cid, how))
-    if ((target.get("trx") or {}).get("state") or "") == "ROLLING BACK":
-        return "refused", ("Connection %d is already rolling back its transaction and keeps its locks "
-                           "until that finishes. Nothing more was sent." % cid)
+    # Statement rollback also reports ROLLING BACK and leaves the enclosing
+    # transaction open (MySQL trx0roll.cc:1153-1157; MariaDB trx0roll.cc:619).
+    # KILL CONNECTION can end it; a second KILL during full rollback is harmless.
+    if mode == "query" and ((target.get("trx") or {}).get("state") or "") == "ROLLING BACK":
+        return "refused", ("Connection %d is already rolling back a statement or transaction and keeps "
+                           "its locks. KILL QUERY would not release them. Choose Kill connection to end "
+                           "the connection and roll back any open transaction. Nothing more was sent." % cid)
     if command == "Killed" and mode == "query":
         return "refused", ("Connection %d already received a KILL. If it was KILL CONNECTION, it is rolling "
                            "back its transaction and keeps its locks until that finishes. On MariaDB it may "
@@ -2694,37 +2831,113 @@ def _kill_error(engine, exc, cid, ver=None):
     raise ValueError("Could not end connection %d: %s" % (cid, _reason(exc)))
 
 
-def _after_view(session):
-    if session is None:
-        return {"present": False}
-    trx = session.get("trx") or {}
-    return {"present": True, "command": session.get("command"), "state": session.get("state"),
-            "statement": session.get("info"), "trx_state": trx.get("state"),
-            "rows_modified": trx.get("rows_modified")}
+def _after_view(session, target=None):
+    """Describe only observed transaction state; a batch may lack a trx read."""
+    trx = (session or {}).get("trx") or {}
+    checked = bool((session or {}).get("trx_checked"))
+    before_trx = (target or {}).get("trx")
+    same = None
+    if checked and (target or {}).get("trx_checked") and before_trx:
+        # A timestamp missing on either existing transaction cannot prove identity.
+        if not trx:
+            same = False
+        elif before_trx.get("started") is not None and trx.get("started") is not None:
+            same = before_trx["started"] == trx["started"]
+            # trx_started is DATETIME(0): replacement transactions can start
+            # within the same second. Compare ids too whenever both are known.
+            if before_trx.get("trx_id") is not None and trx.get("trx_id") is not None:
+                same = same and before_trx["trx_id"] == trx["trx_id"]
+    fields = {"present": session is not None, "trx_checked": checked,
+              "trx_started": trx.get("started"), "rows_locked": trx.get("rows_locked"),
+              "same_trx": same, "trx_survived": None}
+    if session is not None:
+        fields.update({"command": session.get("command"), "state": session.get("state"),
+                       "statement": session.get("info"), "trx_state": trx.get("state"),
+                       "rows_modified": trx.get("rows_modified")})
+    return fields
+
+
+def _check_trx_survived(conn, target, after):
+    """One best-effort read by id after a session disappears; never another KILL."""
+    # Skips for non-unique or unavailable ids follow the existing rule. Only
+    # a failed attempted lookup makes the connection-gone result uncertain.
+    after["trx_survival_checked"] = True
+    trx_id = ((target or {}).get("trx") or {}).get("trx_id")
+    # INNODB_TRX ids are decimal strings. Do not interpolate any server text
+    # unless it is at most 20 digits, even if a proxy supplied an invalid id.
+    if isinstance(trx_id, bool) or not isinstance(trx_id, (str, int)) or \
+            (isinstance(trx_id, str) and not re.fullmatch(r"[0-9]{1,20}", trx_id)):
+        return
+    trx_id = int(trx_id)
+    # Zero and address-derived read-only ids can match unrelated transactions.
+    if not 0 < trx_id < 2 ** 48:
+        return
+    try:
+        rows = _q(conn, "SELECT trx_rows_locked FROM information_schema.INNODB_TRX "
+                       "WHERE trx_id = %d AND trx_mysql_thread_id = 0 LIMIT 1" % trx_id)
+    except (ConnectorError, ValueError):
+        after["trx_survival_checked"] = False
+        return
+    after["trx_survived"] = bool(rows)
+    if rows:
+        after["rows_locked"] = _int(rows[0][0]) if rows[0] else None
 
 
 def _kill_message(mode, cid, target, after):
-    # Acknowledging KILL is not evidence of completion. None means the
-    # verification read was unavailable; {"present": False} means it succeeded.
+    # Acceptance of KILL does not prove completion. Only the re-read does.
     if after is None:
         statement = "KILL QUERY" if mode == "query" else "KILL CONNECTION"
         return ("Sent; could not verify completion of %s %d. Refresh the session list to check."
                 % (statement, cid))
-    rows = ((target or {}).get("trx") or {}).get("rows_modified")
+    trx = (target or {}).get("trx")
+    rows = (trx or {}).get("rows_modified")
+    if not after.get("present") and after.get("trx_survived") is True:
+        # Prepared read-write XA survives its session with thread id 0 and
+        # keeps row locks (MariaDB sql/xa.cc:893-903, trx/trx0i_s.cc:419-425).
+        return ("Ended connection %d, but its transaction is still open as a prepared XA transaction "
+                "(%s locked) and keeps its locks. Resolve it with XA RECOVER and then XA COMMIT or "
+                "XA ROLLBACK." % (cid, _rows(after.get("rows_locked"))))
+    if not after.get("present") and after.get("trx_survival_checked") is False:
+        return ("Ended connection %d. Could not check whether its transaction survived as a prepared XA "
+                "transaction; otherwise it was rolled back and its locks were released." % cid)
     if mode == "query":
         if after.get("present") and _running(_after_session(after)) and \
                 after.get("statement") == (target or {}).get("info"):
             return ("Sent KILL QUERY %d. The statement is still stopping (it rolls back its own changes "
                     "first). If it ran inside a transaction, that transaction stays open with its locks."
                     % cid)
+        if not after.get("present"):
+            return ("Stopped the running statement on connection %d, and the connection has since closed; "
+                    "its locks are released." % cid)
+        if after.get("trx_checked"):
+            if after.get("same_trx") is True:
+                return ("Stopped the running statement on connection %d. Its transaction is still open "
+                        "(started %s, %s locked) and keeps its locks until it commits or rolls back. "
+                        "Kill connection %d to roll it back."
+                        % (cid, after.get("trx_started"), _rows(after.get("rows_locked")), cid))
+            if after.get("trx_state") is None and after.get("trx_started") is None:
+                return ("Stopped the running statement on connection %d. It has no open transaction now, "
+                        "so the row locks it held are released." % cid)
+            if after.get("same_trx") is False or (not trx and (target or {}).get("trx_checked")):
+                return ("Stopped the running statement on connection %d. It has since started another "
+                        "transaction (%s locked)." % (cid, _rows(after.get("rows_locked"))))
         return ("Stopped the running statement on connection %d. If it ran inside a transaction, that "
                 "transaction stays open with its locks until it commits or rolls back." % cid)
     if not after.get("present"):
-        return ("Ended connection %d. Its open transaction was rolled back and its locks were released."
-                % cid)
+        if trx:
+            return ("Ended connection %d. Its open transaction was rolled back%s and its locks were released."
+                    % (cid, " (%s changed)" % _rows(rows) if rows else ""))
+        if (target or {}).get("trx_checked"):
+            return "Ended connection %d. It had no open transaction, so nothing was rolled back." % cid
+        return ("Ended connection %d. Any open transaction was rolled back and its locks were released." % cid)
     if after.get("command") == "Killed" or after.get("trx_state") == "ROLLING BACK":
+        # MySQL marks every disconnecting session Killed (sql/sql_class.cc:1331).
+        if after.get("trx_checked") and after.get("trx_state") is None and after.get("trx_started") is None:
+            return ("Connection %d is closing; it has no open transaction, so nothing is rolled back." % cid)
+        left = after.get("rows_modified")
         return ("Connection %d is ending: it is rolling back its transaction%s and keeps its locks until "
-                "the rollback finishes." % (cid, " (%s changed)" % _rows(rows) if rows else ""))
+                "the rollback finishes." % (cid, " (about %s changes left to undo)" % format(left, ",")
+                                           if left is not None else ""))
     return "Sent KILL %d. The connection is still listed; refresh in a moment." % cid
 
 
@@ -2788,7 +3001,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     is gone, is now a different session (an id reused, or COM_CHANGE_USER),
     its transaction changed, it is this session or a myflames statement, it
     is a server thread, it holds a prepared XA transaction (MySQL: ending the
-    session releases nothing), it is already rolling back, or KILL QUERY would
+    session releases nothing), or KILL QUERY would
     not help (an idle session). A "Killed" command alone does not refuse KILL
     CONNECTION: MariaDB also shows it after KILL QUERY on an idle session, and
     a second KILL is harmless. Connection ids are unique among live sessions,
@@ -2909,7 +3122,9 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             time.sleep(settle_s)
         try:
             after, _ = read_target(conn, engine, ps_on, connection_id)
-            result["after"] = _after_view(after)
+            result["after"] = _after_view(after, target)
+            if after is None:
+                _check_trx_survived(conn, target, result["after"])
         except (ConnectorError, ValueError):
             result["after"] = None
     except KeyboardInterrupt:
@@ -3150,4 +3365,6 @@ def format_kill(result):
                 "s" if len(item["blocked_by"]) > 1 else "", ", ".join(str(i) for i in item["blocked_by"])))
         else:
             out.append("%s still waits." % what)
-    return "\n".join(out) + "\n"
+    # Server values can contain terminal escape sequences (including OSC 52).
+    # Keep tab/newline layout, but strip the remaining C0 controls and all C1.
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x80-\x9f]", "", "\n".join(out) + "\n")

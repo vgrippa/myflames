@@ -736,5 +736,51 @@ class TestAPI(unittest.TestCase):
 
 
 
+class TestTransactionScope(unittest.TestCase):
+    def test_mariadb_earlier_changes_without_ps_transactions(self):
+        conn = synthetic([processlist_row(1, seconds=3, info='SELECT SLEEP(12)')],
+                         trx=[trx_row(1, 3)], version='11.4.13-MariaDB', ps='OFF')
+        report = sessions_report(conn, active_only=False)
+        row = report['sessions'][0]
+        self.assertEqual((row['trx_scope'], row['trx_scope_source']), ('multi', 'earlier_changes'))
+        self.assertEqual(row['trx']['age_s'], row['time_s'])
+        self.assertFalse(any('events_transactions_current' in sql for sql in conn.calls))
+
+    def test_sessions_use_timing_without_thread_mapping(self):
+        # These transactions have made no changes: exercise the timing fallback.
+        transactions = [trx_row(1, 12), trx_row(2, 11), trx_row(4, 100)]
+        for trx in transactions:
+            trx[8] = 0
+        report = sessions_report(synthetic([processlist_row(1, seconds=10), processlist_row(2, seconds=10),
+                                            processlist_row(3, seconds=10),
+                                            processlist_row(4, seconds=10, command='Sleep', info=None)],
+                                           trx=transactions),
+                                 active_only=False)
+        self.assertTrue(report['trx_checked'])
+        rows = {s['id']: s for s in report['sessions']}
+        for cid, expected in ((1, ('multi', 'timing')), (2, (None, None)),
+                              (3, (None, None)), (4, (None, None))):
+            self.assertEqual((rows[cid]['trx_scope'], rows[cid]['trx_scope_source']), expected)
+
+    def test_transaction_read_cap_cannot_prove_absence(self):
+        for count, checked in ((2, True), (3, False)):
+            with self.subTest(rows=count), mock.patch.object(sessions, 'READ_CAP', 2):
+                report = sessions_report(synthetic([processlist_row(99)],
+                                                   trx=[trx_row(i, 3) for i in range(1, count + 1)]))
+                self.assertIs(report['trx_checked'], checked)
+                self.assertTrue(report['capabilities']['process_privilege'])
+                self.assertTrue(report['capabilities']['transactions'])
+                self.assertIsNone(report['sessions'][0]['trx'])
+                self.assertEqual(any('More than 2 open transactions' in n for n in report['notes']),
+                                 not checked)
+
+    def test_transaction_read_denied_is_not_no_transaction(self):
+        for server in ('mysql-8.4-noproc', 'mariadb-11.4-noproc'):
+            report = report_for(server)
+            self.assertFalse(report['trx_checked'])
+            self.assertTrue(all(s['trx_scope'] is None and s['trx_scope_source'] is None
+                                for s in report['sessions']))
+
+
 if __name__ == '__main__':
     unittest.main()

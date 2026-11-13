@@ -119,12 +119,14 @@ PATTERNS = (
     # the transaction read filters on one thread, so neither matches below.
     ('target', ', CONNECTION_ID() FROM '),
     ('target_trx', 'WHERE trx_mysql_thread_id = '),
+    ('survived_trx', 'WHERE trx_id = '),
     ('kill', KILL_TAG),
     ('target_last', 'ORDER BY EVENT_ID DESC LIMIT 1'),
     ('ddl', "LIKE 'Waiting for %metadata lock'"),
     ('who', 'SELECT USER(), CURRENT_USER()'),
     ('grants', 'SHOW GRANTS'),
     ('mli', 'FROM information_schema.METADATA_LOCK_INFO'),
+    ('trx_scope', 'FROM performance_schema.events_transactions_current'),
     ('trx', 'FROM information_schema.INNODB_TRX'),
     ('waits', 'FROM performance_schema.data_lock_waits'),
     ('setup', 'FROM performance_schema.setup_instruments'),
@@ -151,7 +153,7 @@ def fake(version, ps_on=True, **answers):
     """A FakeConn for *version*; each answer is rows, batch text, a callable, or an exception."""
     mariadb = 'mariadb' in version.lower()
     for key, value in (('ddl', []), ('who', WHO_APP), ('grants', MARIADB_GRANTS if mariadb else MYSQL_GRANTS),
-                       ('mli', NO_MLI), ('target_last', [])):
+                       ('mli', NO_MLI), ('target_last', []), ('trx_scope', []), ('survived_trx', [])):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
                  ('SELECT @@server_uuid', batch([['server-uuid-1']])),
@@ -1296,6 +1298,13 @@ class TestExplainLockMode(unittest.TestCase):
 # ---- 9. limits and truncation -------------------------------------------------------------------
 
 class TestLimits(LockCase):
+    def test_transaction_read_cap_cannot_prove_absence(self):
+        for count, checked in ((2, True), (3, False)):
+            with self.subTest(rows=count):
+                report = self.report(empty_mysql(trx=MYSQL_TRX[:count]), limit=2)
+                self.assertIs(report['trx_checked'], checked)
+                self.assertTrue(report['capabilities']['transactions'])
+
     def test_bad_limits_raise_before_any_sql(self):
         for bad in (0, 5001, -1, True, False, '5', 5.0, None):
             with self.subTest(limit=bad):
@@ -1332,6 +1341,7 @@ class TestLimits(LockCase):
                           mdl=self.mdl_pages(first_page, contested), status=status_row(NO_DEADLOCK))
         r = self.report(conn, limit=2)
         self.assertEqual(len(r['transactions']), 2)
+        self.assertFalse(r['trx_checked'], "a capped read cannot prove no open transaction")
         self.assertEqual(len(r['waits']), 2)
         self.assertTrue(r['row_locks_truncated'])
         self.assertTrue(r['waits_truncated'])
@@ -1754,6 +1764,29 @@ def ddl_rows(threads, ids):
 
 
 class TestDDLBlockers(LockCase):
+    def test_ddl_blocker_carries_transaction_scope_from_the_shared_helper(self):
+        threads = [list(row) for row in MYSQL_THREADS]
+        blocker = next(row for row in threads if row[1] == 26)
+        blocker[5:] = ['Query', 5, 'executing', 'UPDATE m SET v = 1']
+        for autocommit, expected in (([[66, 'NO']], ('multi', 'performance_schema')),
+                                     ([[66, 'YES']], ('statement', 'performance_schema')),
+                                     ([], ('multi', 'timing')),
+                                     (process_denied(), ('multi', 'timing'))):
+            with self.subTest(expected=expected, autocommit=autocommit):
+                report = self.report(mysql_conn(threads=threads_answer(threads),
+                    ddl=ddl_rows(threads, (28, 29)), trx_scope=autocommit))
+                b = report['ddl_waits'][0]['blockers'][0]
+                self.assertTrue(b['running'])
+                self.assertEqual((b['trx_scope'], b['trx_scope_source']), expected)
+        # Earlier changes evidence also reaches Waiting DDL when P_S is absent.
+        blocker[8] = 'SELECT * FROM m'
+        trx = [list(row) for row in MYSQL_TRX]
+        next(row for row in trx if row[7] == 26)[14] = 3
+        report = self.report(mysql_conn(threads=threads_answer(threads), trx=trx,
+            ddl=ddl_rows(threads, (28, 29)), trx_scope=[]))
+        b = report['ddl_waits'][0]['blockers'][0]
+        self.assertEqual((b['trx_scope'], b['trx_scope_source']), ('multi', 'earlier_changes'))
+
     def test_mysql_exact_blocker_is_the_idle_transaction_and_the_select_queues(self):
         conn = mysql_conn(ddl=ddl_rows(MYSQL_THREADS, (28, 29)))
         r = self.report(conn)
@@ -1985,7 +2018,7 @@ class TestDDLBlockers(LockCase):
         self.assertEqual({n['connection_id']: n['xa_prepared'] for n in r['blocking_tree']},
                          {23: None, 26: expected})
         self.assertIn(locks.XA_NOTE, r['notes'])
-        self.assertEqual(conn.sql('events_transactions_current'), [], 'only tables the report already reads')
+        self.assertEqual(len(conn.sql('events_transactions_current')), 1, 'one batched scope read')
         text = locks.format_text(r)
         self.assertIn("    prepared XA transaction: ending the session releases nothing; end it with "
                       "XA COMMIT 'mf1' or XA ROLLBACK 'mf1'", text)
@@ -2238,8 +2271,9 @@ class TestKillSession(LockCase):
                          {'schema_version': 'kill-1.0', 'engine': 'mysql', 'connection_id': 41, 'mode': 'connection',
                           'statement': 'KILL CONNECTION 41', 'status': 'killed',
                           'verified': ['connection', 'server identity', 'user', 'host', 'not this session', 'server thread', 'transaction'],
-                          'after': {'present': False}})
-        self.assertEqual(result['message'], 'Ended connection 41. Its open transaction was rolled back and its '
+                          'after': {'present': False, 'trx_checked': False, 'trx_started': None,
+                                    'rows_locked': None, 'same_trx': None, 'trx_survived': False, 'trx_survival_checked': True}})
+        self.assertEqual(result['message'], 'Ended connection 41. Its open transaction was rolled back (1 row changed) and its '
                                             'locks were released.')
         self.assertEqual(result['target']['trx']['rows_modified'], 1)
         # The identity is re-read right before the KILL, from threads, bounded.
@@ -2306,12 +2340,95 @@ class TestKillSession(LockCase):
                       result['message'])
         self.assertIn('On MariaDB it may instead have received KILL QUERY while idle', result['message'])
 
-    def test_a_transaction_rolling_back_is_already_ending(self):
+    def test_rolling_back_allows_connection_but_refuses_query(self):
         rolling = [['1837', 'ROLLING BACK', '2026-10-14 10:00:00', 120, 1, 1]]
         result, scenario = self.kill(KillScenario(target_trx=rolling))
+        self.assertEqual((result['status'], scenario.kills()), ('killed', [KILL_TAG + 'KILL CONNECTION 41']))
+        result, scenario = self.kill(KillScenario(target_trx=rolling), mode='query')
         self.assertEqual((result['status'], scenario.kills()), ('refused', []))
-        self.assertIn('already rolling back its transaction and keeps its locks until that finishes',
-                      result['message'])
+        self.assertIn('already rolling back a statement or transaction and keeps its locks', result['message'])
+        self.assertIn('Choose Kill connection to end the connection and roll back any open transaction', result['message'])
+
+    def test_disappeared_connection_checks_prepared_xa_by_transaction_id(self):
+        for version in ('8.4.6', '11.4.13-MariaDB'):
+            for mode in ('connection', 'query'):
+                for rows, survived in (([[7]], True), ([[0]], True), ([], False),
+                                       (process_denied(), None)):
+                    with self.subTest(version=version, mode=mode, rows=rows):
+                        target = list(K_TARGET)
+                        target[5], target[8] = 'Query', 'SELECT SLEEP(60)'
+                        scenario = KillScenario(target=target, survived_trx=rows)
+                        scenario.conn.responses[0] = (VERSION_SQL, batch([[version, 1]]))
+                        result, scenario = self.kill(scenario, mode=mode)
+                        self.assertIs(result['after']['trx_survived'], survived)
+                        self.assertIs(result['after']['trx_survival_checked'], survived is not None)
+                        if survived is None:
+                            self.assertEqual(result['message'],
+                                'Ended connection 41. Could not check whether its transaction survived as a prepared XA '
+                                'transaction; otherwise it was rolled back and its locks were released.')
+                        self.assertFalse(result['after']['present'])
+                        checks = scenario.conn.sql('WHERE trx_id = ')
+                        self.assertEqual(checks, [LOCKS_TAG +
+                            'SELECT trx_rows_locked FROM information_schema.INNODB_TRX '
+                            'WHERE trx_id = 1837 AND trx_mysql_thread_id = 0 LIMIT 1'])
+                        self.assertEqual(len(scenario.kills()), 1)
+                        if survived:
+                            self.assertEqual(result['after']['rows_locked'], rows[0][0])
+                            self.assertEqual(result['message'],
+                                'Ended connection 41, but its transaction is still open as a prepared XA transaction '
+                                '(%s rows locked) and keeps its locks. Resolve it with XA RECOVER and then XA COMMIT '
+                                'or XA ROLLBACK.' % rows[0][0])
+
+    def test_disappeared_connection_skips_non_unique_transaction_ids(self):
+        for version, trx_id in (('11.4.13-MariaDB', '0'), ('8.4.6', '421249382947328'),
+                                ('8.4.6', str(2 ** 48)), ('8.4.6', '0' * 20 + '1837')):
+            with self.subTest(version=version, trx_id=trx_id):
+                target_trx = [list(K_TARGET_TRX[0])]
+                target_trx[0][0] = trx_id
+                # An unrelated matching row must never become survival evidence.
+                scenario = KillScenario(target_trx=target_trx, survived_trx=[[7]])
+                scenario.conn.responses[0] = (VERSION_SQL, batch([[version, 1]]))
+                result, scenario = self.kill(scenario)
+                self.assertEqual(result['status'], 'killed')
+                self.assertFalse(result['after']['present'])
+                self.assertIsNone(result['after']['trx_survived'])
+                self.assertTrue(result['after']['trx_survival_checked'])
+                self.assertEqual(scenario.conn.sql('WHERE trx_id = '), [])
+                self.assertEqual(len(scenario.kills()), 1)
+                self.assertEqual(result['message'],
+                    'Ended connection 41. Its open transaction was rolled back (1 row changed) '
+                    'and its locks were released.')
+
+    def test_surviving_transaction_lookup_accepts_valid_id_boundaries(self):
+        for trx_id in ('1', str(2 ** 48 - 1), '00000000000000001837'):
+            with self.subTest(trx_id=trx_id):
+                target_trx = [list(K_TARGET_TRX[0])]
+                target_trx[0][0] = trx_id
+                result, scenario = self.kill(KillScenario(target_trx=target_trx, survived_trx=[[7]]))
+                self.assertIs(result['after']['trx_survived'], True)
+                self.assertEqual(scenario.conn.sql('WHERE trx_id = '), [LOCKS_TAG +
+                    'SELECT trx_rows_locked FROM information_schema.INNODB_TRX '
+                    'WHERE trx_id = %d AND trx_mysql_thread_id = 0 LIMIT 1' % int(trx_id)])
+
+    def test_surviving_transaction_lookup_requires_a_safe_id(self):
+        for trx_id in (None, True, '', '1837 OR 1=1', "1837'; SELECT 1", '-1', '1.2', '１２'):
+            with self.subTest(trx_id=trx_id):
+                target_trx = [list(K_TARGET_TRX[0])]
+                target_trx[0][0] = trx_id
+                result, scenario = self.kill(KillScenario(target_trx=target_trx))
+                self.assertIsNone(result['after']['trx_survived'])
+                self.assertEqual(scenario.conn.sql('WHERE trx_id = '), [])
+        result, scenario = self.kill(KillScenario(target_trx=[]), expect={'trx_started': None})
+        self.assertIsNone(result['after']['trx_survived'])
+        self.assertEqual(scenario.conn.sql('WHERE trx_id = '), [])
+
+    def test_killed_session_without_transaction_is_only_closing(self):
+        after = [[81, 41, 'app', '172.17.0.1', 'lk', 'Killed', 0, None, None, 99]]
+        result, scenario = self.kill(KillScenario(after=after, after_trx=[]))
+        self.assertEqual(result['message'],
+                         'Connection 41 is closing; it has no open transaction, so nothing is rolled back.')
+        self.assertIsNone(result['after']['trx_survived'])
+        self.assertEqual(scenario.conn.sql('WHERE trx_id = '), [])
 
     def test_a_prepared_xa_transaction_is_refused_with_its_xid(self):
         for statement, xid in (("XA PREPARE 'mf1'", "'mf1'"), ("xa prepare 'it''s','b',2", "'it''s','b',2"),
@@ -2346,7 +2463,7 @@ class TestKillSession(LockCase):
                                                   after_trx=K_TARGET_TRX), mode='query')
         self.assertEqual(scenario.kills(), [KILL_TAG + 'KILL QUERY 41'])
         self.assertEqual(result['status'], 'killed')
-        self.assertIn('stays open with its locks', result['message'])
+        self.assertIn('is still open', result['message'])
         result, _ = self.kill(KillScenario(target=running, after=after, after_trx=K_TARGET_TRX), mode='query')
         self.assertIn('The statement is still stopping', result['message'])
 
@@ -2355,8 +2472,10 @@ class TestKillSession(LockCase):
         after_trx = [['1837', 'ROLLING BACK', '2026-10-14 10:00:00', 121, 1, 250000]]
         result, _ = self.kill(KillScenario(after=after, after_trx=after_trx))
         self.assertEqual(result['after'], {'present': True, 'command': 'Killed', 'state': 'rolling back',
-                                           'statement': None, 'trx_state': 'ROLLING BACK', 'rows_modified': 250000})
-        self.assertIn('is ending: it is rolling back its transaction (1 row changed)', result['message'])
+                                           'statement': None, 'trx_state': 'ROLLING BACK', 'rows_modified': 250000,
+                                           'trx_checked': True, 'trx_started': '2026-10-14 10:00:00',
+                                           'rows_locked': 1, 'same_trx': True, 'trx_survived': None})
+        self.assertIn('is ending: it is rolling back its transaction (about 250,000 changes left to undo)', result['message'])
 
     def test_server_errors(self):
         cases = (
@@ -2546,7 +2665,7 @@ class TestKillCLI(LockCase):
                      '  KILL CONNECTION 41 closes the connection and rolls back its open transaction.',
                      'End it with KILL CONNECTION 41? [y/N] '):
             self.assertIn(line, err)
-        self.assertEqual(out, 'Ended connection 41. Its open transaction was rolled back and its locks were released.\n'
+        self.assertEqual(out, 'Ended connection 41. Its open transaction was rolled back (1 row changed) and its locks were released.\n'
                               'The ALTER TABLE on connection 42 no longer waits for a lock; it is running or done.\n'
                               'Connection 43 no longer waits.\n')
 
@@ -3156,6 +3275,247 @@ class TestLockScaleBudgets(unittest.TestCase):
     def test_lock_tsv_crlf_keeps_embedded_carriage_return(self):
         conn = FakeConn('8.4.11', [('SELECT', 'ON\tvalue\rinside\r\nNULL\tlast\r\n')])
         self.assertEqual(locks._q(conn, 'SELECT 1'), [['ON', 'value\rinside'], [None, 'last']])
+
+
+class TestTransactionVerification(unittest.TestCase):
+    def test_ps_statement_byte_cap_refuses_earlier_changes(self):
+        prefix = 'WITH c AS (SELECT 1) SELECT '
+        # P_S can omit a following UPDATE once the first 1024 bytes are full.
+        for fill in ('x', '界'):
+            statement = prefix + fill * ((1024 - len(prefix)) // len(fill.encode('utf-8')))
+            statement += ' ' * (1024 - len(statement.encode('utf-8')))
+            self.assertTrue(locks._plain_read(statement))
+            for thread, info, expected in ((64, statement, True), (None, statement, False),
+                                            (64, statement[:-1], False)):
+                with self.subTest(fill=fill, thread=thread, bytes=len(info.encode('utf-8'))):
+                    session = locks._session_from_row([thread, 24, 'app', 'host', 'lk', 'Query', 3,
+                                                       'executing', info])
+                    self.assertIs(session['info_truncated'], expected)
+                    result = locks.transaction_scope(session, {'age_s': 3, 'rows_modified': 1})
+                    self.assertEqual(result, (None, None) if expected else ('multi', 'earlier_changes'))
+
+    def test_format_kill_strips_terminal_controls_but_keeps_layout(self):
+        after = {'present': True, 'command': 'Sleep', 'trx_checked': True, 'same_trx': True,
+                 'trx_started': '2026-11-13 10:00:00\x1b]52;c;ZXZpbA==\x07\u009b31m\u009d52;c;x\x07',
+                 'rows_locked': 1}
+        result = {'schema_version': 'kill-1.0', 'status': 'killed', 'after': after,
+                  'message': locks._kill_message('query', 41, {'trx': {}}, after)}
+        formatted = locks.format_kill(result)
+        self.assertIn('2026-11-13 10:00:00', formatted)
+        self.assertNotIn('\x1b', formatted)
+        self.assertNotIn('\x07', formatted)
+        self.assertNotIn('\u009b', formatted)
+        self.assertNotIn('\u009d', formatted)
+        result['message'] = 'start' + ''.join(chr(c) for c in range(32)) + \
+            ''.join(chr(c) for c in range(0x80, 0xa0)) + 'end'
+        self.assertEqual(locks.format_kill(result), 'start\t\nend\n')
+
+    def test_scope_earlier_changes_table(self):
+        multi = ('multi', 'earlier_changes')
+        unknown = (None, None)
+        for info, modified, ac, expected in (
+            ('SELECT SLEEP(60)', 1, None, multi),
+            ('SELECT now ()', 1, None, unknown),
+            ('SELECT count/**/(1)', 1, None, unknown),
+            ('SELECT sum\n(1)', 1, None, unknown),
+            ('SELECT a FROM t WHERE id IN (1, 2)', 1, None, multi),
+            ('SELECT f(id) FROM t', 1, None, unknown),
+            ('SELECT f /* gap */ (id) FROM t', 1, None, unknown),
+            ('SELECT COALESCE(f(id), 0) FROM t', 1, None, unknown),
+            ('SELECT a.b(id) FROM t', 1, None, unknown),
+            ('SELECT a.SLEEP(60)', 1, None, unknown),
+            ('SELECT `a` . NOW()', 1, None, unknown),
+            ('SELECT `SLEEP`(60)', 1, None, unknown),
+            ('SELECT "f"(id) FROM t', 1, None, unknown),
+            ('SELECT café(id) FROM t', 1, None, unknown),
+            ('SELECT ſleep(60)', 1, None, unknown),
+            ('SELECT f\u0301(id) FROM t', 1, None, unknown),
+            ("SELECT 'f(id)', `f(id)` FROM t", 1, None, multi),
+            ('SELECT (id) FROM t WHERE id IN (1,2)', 1, None, multi),
+            ('SELECT SLEEP(12)', 1, None, multi),
+            ('SELECT SLEEP(12)', 0, None, unknown),
+            ('SELECT SLEEP(12)', None, None, unknown),
+            ('SELECT * FROM t FOR UPDATE', 1, None, unknown),
+            ('select * from t for share', 1, None, unknown),
+            ('SELECT * FROM t LOCK IN SHARE MODE', 1, None, unknown),
+            ('SELECT * FROM t FOR /* gap */ UPDATE', 1, None, unknown),
+            ('INSERT INTO t SELECT * FROM u', 1, None, unknown),
+            ('SELECT v INTO @x FROM t', 1, None, unknown),
+            ('SELECT v INTO OUTFILE \'out\' FROM t', 1, None, unknown),
+            (' \n/* probe */ /* second */ select SLEEP(12)', 1, None, multi),
+            ('( /* probe */ SELECT SLEEP(12))', 1, None, multi),
+            ('WITH c AS (SELECT 1) SELECT * FROM c', 1, None, multi),
+            ('WITH c AS (SELECT 1) UPDATE t SET v=1', 1, None, unknown),
+            ('SELECT \'FOR UPDATE INTO\', "FOR SHARE", `INTO` FROM t', 1, None, multi),
+            ("SELECT 'it''s INTO', 'LOCK IN SHARE MODE'", 1, None, multi),
+            ('SELECT /* FOR UPDATE */ SLEEP(12);', 1, None, multi),
+            ('SELECT 1 /*! FOR UPDATE */', 1, None, unknown),
+            ('SELECT 1 /*M! FOR UPDATE */', 1, None, unknown),
+            ('SELECT 1 /* outer /* nested */ FOR UPDATE */', 1, None, unknown),
+            ('SELECT \'unfinished', 1, None, unknown),
+            ('SELECT 1 /* unfinished', 1, None, unknown),
+            (r"SELECT 'ambiguous\' FOR UPDATE'", 1, None, unknown),
+            ('SELECT 1; SELECT 2', 1, None, unknown),
+            ('SELECT 1;;', 1, None, unknown),
+            ('-- probe\nSELECT SLEEP(12)', 1, None, unknown),
+            ('SELECT SLEEP(12)', 1, 'YES', ('statement', 'performance_schema')),
+            ('SELECT SLEEP(12)', 1, 'NO', ('multi', 'performance_schema')),
+        ):
+            with self.subTest(info=info, modified=modified, ac=ac):
+                self.assertEqual(locks.transaction_scope(
+                    {'command': 'Query', 'info': info, 'time_s': 3},
+                    {'age_s': 3, 'rows_modified': modified}, ac), expected)
+        # Earlier changes outrank timing and do not rely on a whole-second gap.
+        session = {'command': 'Query', 'info': 'SELECT SLEEP(12)', 'time_s': 3}
+        self.assertEqual(locks.transaction_scope(session, {'age_s': 30, 'rows_modified': 1}), multi)
+        session['info_truncated'] = True
+        self.assertEqual(locks.transaction_scope(session, {'age_s': 3, 'rows_modified': 1}), unknown)
+        session = {'command': 'Query', 'info': 'SELECT ' + ' ' * locks.TEXT_CAP, 'time_s': 3}
+        self.assertEqual(locks.transaction_scope(session, {'age_s': 3, 'rows_modified': 1}), unknown)
+        for name in ('SLEEP', 'NOW', 'CURRENT_TIMESTAMP', 'COUNT', 'SUM', 'MIN', 'MAX', 'AVG',
+                     'CONCAT', 'COALESCE', 'IFNULL', 'LENGTH', 'LOWER', 'UPPER', 'SUBSTRING',
+                     'DATE', 'CAST', 'CONVERT', 'ROUND', 'ABS'):
+            with self.subTest(builtin=name):
+                self.assertTrue(locks._plain_read('SELECT %s(1)' % name.lower()))
+                self.assertFalse(locks._plain_read('SELECT schema_name.%s(1)' % name))
+                for gap in (' ', '\t', '\n', '/**/'):
+                    self.assertFalse(locks._plain_read('SELECT %s%s(1)' % (name, gap)))
+
+    def test_mariadb_report_earlier_changes_without_ps_transactions(self):
+        trx = [list(row) for row in MA_TRX]
+        trx[0][3] = 3  # Same age as the running read: timing proves nothing.
+        processlist = [list(row) for row in MA_PROCESSLIST]
+        processlist[0][5:9] = ['Query', 3, 'User sleep', 'SELECT SLEEP(12)']
+        conn = ma_conn(trx=trx, processlist=processlist_answer(processlist))
+        report = locks.lock_report(conn)
+        node = next(n for n in report['blocking_tree'] if n['connection_id'] == 5)
+        transaction = next(t for t in report['transactions'] if t['connection_id'] == 5)
+        for item in (node, transaction):
+            self.assertEqual((item['trx_scope'], item['trx_scope_source']), ('multi', 'earlier_changes'))
+        self.assertFalse(conn.sql('events_transactions_current'))
+
+    def test_scope_evidence_table(self):
+        for command, info, age, elapsed, ac, expected in (
+            ('Query', 'UPDATE t SET v=1', 10, 10, 'NO', ('multi', 'performance_schema')),
+            ('Query', 'UPDATE t SET v=1', 99, 1, 'YES', ('statement', 'performance_schema')),
+            ('Query', 'SELECT 1', 11, 10, None, (None, None)),
+            ('Query', 'SELECT 1', 12, 10, None, ('multi', 'timing')),
+            ('Query', 'SELECT 1', None, 10, None, (None, None)),
+            ('Query', 'SELECT 1', 12, None, None, (None, None)),
+            ('Sleep', None, 99, 1, 'NO', (None, None)),
+            ('Killed', 'SELECT 1', 99, 1, 'NO', (None, None)),
+            (None, 'SELECT 1', 99, 1, 'NO', (None, None)),
+            ('Query', None, 99, 1, 'NO', (None, None)),
+        ):
+            with self.subTest(command=command, age=age, ac=ac):
+                self.assertEqual(locks.transaction_scope({'command': command, 'info': info, 'time_s': elapsed},
+                                                        {'age_s': age}, ac), expected)
+        self.assertEqual(locks.transaction_scope({'command': 'Query', 'info': 'SELECT 1'}, None, 'NO'),
+                         (None, None))
+
+    def test_scope_report_read_is_batched_optional_and_tagged(self):
+        for ac, expected in (([[64, 'NO'], [65, 'YES']], ('multi', 'performance_schema')),
+                             ([], ('multi', 'timing')),
+                             (ConnectorError('ERROR 1142: SELECT denied'), ('multi', 'timing'))):
+            conn = mysql_conn(trx_scope=ac)
+            report = locks.lock_report(conn)
+            self.assertTrue(report['trx_checked'])
+            reads = conn.sql('FROM performance_schema.events_transactions_current')
+            self.assertEqual(len(reads), 1)
+            self.assertTrue(reads[0].startswith(LOCKS_TAG))
+            self.assertIn("WHERE STATE = 'ACTIVE' AND THREAD_ID IN (", reads[0])
+            self.assertNotIn('setup_', reads[0])
+            self.assertFalse(any('events_transactions_current' in n for n in report['notes']))
+            def walk(nodes):
+                for node in nodes:
+                    yield node
+                    for child in walk(node['blocked']):
+                        yield child
+            nodes = list(walk(report['blocking_tree']))
+            for item in nodes + report['transactions']:
+                self.assertIn('trx_scope', item)
+                self.assertIn('trx_scope_source', item)
+            # Connection 24's older transaction also supplies timing evidence.
+            for item in [n for n in nodes if n['connection_id'] == 24] + [
+                    t for t in report['transactions'] if t['connection_id'] == 24]:
+                self.assertEqual((item['trx_scope'], item['trx_scope_source']), expected)
+            if isinstance(ac, list) and ac:
+                for item in [n for n in nodes if n['connection_id'] == 25] + [
+                        t for t in report['transactions'] if t['connection_id'] == 25]:
+                    self.assertEqual((item['trx_scope'], item['trx_scope_source']),
+                                     ('statement', 'performance_schema'))
+        denied_report = locks.lock_report(mysql_conn(trx=process_denied(), status=process_denied()))
+        self.assertFalse(denied_report['trx_checked'])
+        self.assertFalse(locks.lock_report(empty_mysql(), deadlock_only=True)['trx_checked'])
+
+    def test_after_transaction_identity(self):
+        target = {'trx_checked': True, 'trx': {'started': 'first'}}
+        for checked, trx, expected in ((True, {'started': 'first'}, True),
+                                       (True, {'started': 'second'}, False),
+                                       (True, None, False), (False, None, None),
+                                       (True, {'started': None}, None)):
+            after = locks._after_view({'trx_checked': checked, 'trx': trx}, target)
+            self.assertIs(after['same_trx'], expected)
+            self.assertIs(after['trx_checked'], checked)
+            self.assertIn('trx_started', after)
+            self.assertIn('rows_locked', after)
+        self.assertIsNone(locks._after_view({'trx_checked': True}, {'trx_checked': True})['same_trx'])
+        self.assertIsNone(locks._after_view({'trx_checked': True, 'trx': {'started': 'first'}},
+                                           {'trx_checked': False, 'trx': {'started': 'first'}})['same_trx'])
+        self.assertFalse(locks._after_view(None, target)['present'])
+        for before_id, after_id, started, expected in (
+                ('1', '1', 'first', True), ('1', '2', 'first', False),
+                ('1', '1', 'second', False), ('1', None, 'first', True),
+                (None, '2', 'first', True)):
+            with self.subTest(before_id=before_id, after_id=after_id, started=started):
+                after = locks._after_view(
+                    {'trx_checked': True, 'trx': {'started': started, 'trx_id': after_id}},
+                    {'trx_checked': True, 'trx': {'started': 'first', 'trx_id': before_id}})
+                self.assertIs(after['same_trx'], expected)
+                self.assertIsNone(after['trx_survived'])
+
+    def test_verified_kill_messages(self):
+        target = {'info': 'UPDATE t SET v=1', 'trx_checked': True,
+                  'trx': {'started': 'first', 'rows_modified': 10000}}
+        open_after = {'present': True, 'command': 'Sleep', 'trx_checked': True,
+                      'trx_started': 'first', 'trx_state': 'RUNNING', 'rows_locked': 2500, 'same_trx': True}
+        cases = [
+            ('query', target, None, 'Sent; could not verify completion of KILL QUERY 41. Refresh the session list to check.'),
+            ('connection', target, None, 'Sent; could not verify completion of KILL CONNECTION 41. Refresh the session list to check.'),
+            ('query', target, dict(open_after, command='Query', statement=target['info']),
+             'Sent KILL QUERY 41. The statement is still stopping (it rolls back its own changes first). If it ran inside a transaction, that transaction stays open with its locks.'),
+            ('query', target, open_after,
+             'Stopped the running statement on connection 41. Its transaction is still open (started first, 2,500 rows locked) and keeps its locks until it commits or rolls back. Kill connection 41 to roll it back.'),
+            ('query', target, {'present': True, 'trx_checked': True, 'same_trx': False},
+             'Stopped the running statement on connection 41. It has no open transaction now, so the row locks it held are released.'),
+            ('query', target, {'present': False},
+             'Stopped the running statement on connection 41, and the connection has since closed; its locks are released.'),
+            ('query', target, dict(open_after, same_trx=False, trx_started='second'),
+             'Stopped the running statement on connection 41. It has since started another transaction (2,500 rows locked).'),
+            ('query', target, {'present': True, 'trx_checked': False},
+             'Stopped the running statement on connection 41. If it ran inside a transaction, that transaction stays open with its locks until it commits or rolls back.'),
+            ('connection', target, {'present': False},
+             'Ended connection 41. Its open transaction was rolled back (10,000 rows changed) and its locks were released.'),
+            ('connection', {'trx_checked': True}, {'present': False},
+             'Ended connection 41. It had no open transaction, so nothing was rolled back.'),
+            ('connection', {}, {'present': False},
+             'Ended connection 41. Any open transaction was rolled back and its locks were released.'),
+            ('connection', target, {'present': True, 'command': 'Killed', 'rows_modified': 250000},
+             'Connection 41 is ending: it is rolling back its transaction (about 250,000 changes left to undo) and keeps its locks until the rollback finishes.'),
+            ('connection', target, {'present': True, 'trx_state': 'ROLLING BACK', 'rows_modified': 0},
+             'Connection 41 is ending: it is rolling back its transaction (about 0 changes left to undo) and keeps its locks until the rollback finishes.'),
+            ('connection', target, {'present': True, 'trx_state': 'ROLLING BACK'},
+             'Connection 41 is ending: it is rolling back its transaction and keeps its locks until the rollback finishes.'),
+            ('connection', target, {'present': True},
+             'Sent KILL 41. The connection is still listed; refresh in a moment.'),
+        ]
+        for mode, before, after, expected in cases:
+            with self.subTest(mode=mode, after=after):
+                self.assertEqual(locks._kill_message(mode, 41, before, after), expected)
+        for count in (None, 0):
+            self.assertEqual(locks._kill_message('connection', 41, {'trx': {'rows_modified': count}},
+                                                {'present': False}),
+                             'Ended connection 41. Its open transaction was rolled back and its locks were released.')
 
 
 if __name__ == '__main__':

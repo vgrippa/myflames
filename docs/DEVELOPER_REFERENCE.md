@@ -3377,7 +3377,210 @@ without an automatic retry; light and dark at 1440 and 720 px).
 
 ### Locks
 
-`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+Transaction evidence is additive in `locks-1.1`: report-level `trx_checked`
+is true only when `INNODB_TRX` was read successfully. An empty transaction list
+with `trx_checked: false` cannot establish that no transactions are open.
+Locks and Processlist also set `trx_checked: false` when their `INNODB_TRX`
+read reaches its row cap and omits transactions.
+Every blocking-tree node and `transactions[]` item has `trx_scope` (`multi`,
+`statement`, or null) and `trx_scope_source` (`performance_schema`, `earlier_changes`, `timing`,
+or null). Scope applies only to a running statement (command other than null,
+Sleep or Killed, with statement text) with an InnoDB transaction. `multi`
+means KILL QUERY leaves the transaction open with its locks; `statement`
+means a single autocommit statement, whose transaction ends with the statement.
+A single best-effort, batched read of
+`SELECT THREAD_ID, AUTOCOMMIT FROM performance_schema.events_transactions_current WHERE STATE = 'ACTIVE' AND THREAD_ID IN (...)`
+uses the existing connection and Locks tag: NO gives `multi`, YES gives
+`statement`. Missing tables, denied reads and other ConnectorError failures
+silently fall back to earlier changes, then timing. Instruments maps this optional evidence as the
+advisory `locks_scope` feature (transaction instrument and current consumer,
+without timing); it is never counted as an unready view. No setup tables are changed.
+In the coordinator's 2026-11-13 lab repro (`BEGIN; UPDATE review.lock_probe SET v=v+1 WHERE id=3; SELECT SLEEP(12); COMMIT;`), transaction age and statement time were both 3 s on MySQL 5.7.44, 8.0.46, 8.4.11, 9.7.2 and MariaDB 10.11.19, 11.4.13, 11.8.9: MySQL 8.0+ recorded ACTIVE / AUTOCOMMIT=NO with the transaction instrument and current consumer on, while both were off on MySQL 5.7 and MariaDB.
+After P_S and before timing, `rows_modified > 0` during a plain SELECT or WITH
+(also a parenthesized SELECT) indicates `multi` with source `earlier_changes`.
+A stored function called by SELECT can write inside that SELECT's own autocommit
+transaction, and the process list shows the outer SELECT between calls (MySQL
+`sql/sp_instr.cc:971-983,1062`; MariaDB `sql/sp_instr.cc:1143,1158,1214`).
+Therefore function calls are ambiguous except this small allowlist of common
+unqualified built-ins: SLEEP, NOW, CURRENT_TIMESTAMP, COUNT, SUM, MIN, MAX, AVG,
+CONCAT, COALESCE, IFNULL, LENGTH, LOWER, UPPER, SUBSTRING, DATE, CAST, CONVERT,
+ROUND and ABS. Schema-qualified calls, including qualified built-in names,
+and quoted function names are always ambiguous. SELECT SLEEP(60) still supports
+`earlier_changes`. This signal excludes locking clauses (FOR UPDATE, FOR SHARE,
+LOCK IN SHARE MODE), INTO and write keywords outside quoted text, and leaves
+unclosed quotes/comments, truncated text and ambiguous SQL unknown.
+Locks marks text from `performance_schema.threads` as `info_truncated` at
+1024 UTF-8 bytes, its server-side cap, so a hidden write after a WITH prefix
+cannot supply `earlier_changes` evidence.
+MariaDB's `performance_schema` itself is OFF by default (`sql/sys_vars.cc:90-92`),
+in addition to its transaction instrumentation and current consumer being off.
+Ordinary block comments are ignored; executable comments, line comments and
+backslash escapes are conservatively excluded from this signal.
+An allowlisted function name separated from `(` by whitespace or a comment is
+ambiguous because it can resolve to a stored function without `IGNORE_SPACE`;
+SQL grouping keywords such as IN and AS may retain that gap.
+Timing proves only `multi`, when
+`trx_age_s - time_s >= 2`; a gap under two whole seconds proves nothing.
+A client `SET timestamp` can fool this timing signal, which only preselects
+a mode and adds a caution; the user still confirms the exact KILL statement.
+Idle sessions, sessions without an InnoDB transaction and otherwise unknown
+scope have null scope and source.
+
+The single-session Kill sheet (`Locks.tsx` `KillDialog`, shared with
+Processlist) honors a row menu's explicit `initialMode`; query mode is offered
+only for a running statement. Without an explicit choice, `!target.running`
+or `trx_scope === "multi"` selects **Kill connection**; other running
+statements start on **Kill query only**. Scope evidence follows
+`transaction_scope`: P_S AUTOCOMMIT first, then a plain read with earlier row
+changes, then a transaction at least 2 s older than the statement. The latter
+two signals work without transaction instrumentation, including on MySQL 5.7
+and MariaDB.
+
+For **Kill connection**, a non-null `trx_started` or `trx_age_s` triggers the
+amber `kill-caution` box: uncommitted row changes are undone and lost, with
+the positive `rows_modified` count when known; rollback can take a long time;
+the connection keeps its locks until rollback ends, naming `target.waiting`
+when present; and the application loses its connection and gets an error.
+For large counts the warning explains that InnoDB counts undo records, so
+changing one row twice counts twice. With no transaction evidence and
+`trx_checked === true`, a neutral line says the session had no open transaction when the list was read
+and nothing would be rolled back. With no transaction evidence and `trx_checked !== true`,
+an amber caution says the transaction could not be read and explains the
+possible rollback and loss of changes. **Kill query only** with
+`trx_scope === "multi"` adds an amber line naming the waiting sessions and
+explaining why locks stay after the statement stops: `timing` gives the age
+gap, `earlier_changes` gives the earlier changed-row count, and P_S evidence
+uses the longer-transaction explanation without either detail.
+
+Single Kill's additive `kill-1.0` `after` fields are `trx_checked`,
+`trx_started`, `rows_locked`, `same_trx`, `trx_survived` and
+`trx_survival_checked`, alongside existing fields.
+`same_trx` requires matching pre-kill and post-kill `trx_started` and, when
+both reads provide `trx_id`, matching ids too: `trx_started` is DATETIME(0),
+so a replacement transaction can start in the same second. False means a
+different or now absent transaction when both transaction reads succeeded;
+null means either was unchecked, the target had no transaction, or an existing
+transaction's start timestamp is unavailable.
+A session absent from the process list has `present: false`, `trx_checked: false`
+and `same_trx: null`. When the target had a transaction id, single Kill makes one
+best-effort, Locks-tagged `SELECT trx_rows_locked FROM information_schema.INNODB_TRX
+WHERE trx_id = N AND trx_mysql_thread_id = 0 LIMIT 1`, using a validated decimal
+integer. `trx_survived` is
+true when that transaction is still present, false when the lookup succeeded
+without a match, and null when not checked or unavailable. A surviving
+transaction's observed locked-row count fills `after.rows_locked`.
+`trx_survival_checked` is true when that lookup succeeded or was skipped by
+its id rules, and false when an attempted lookup failed. On failure, either
+mode's connection-gone message says: "Ended connection N. Could not check
+whether its transaction survived as a prepared XA transaction; otherwise it
+was rolled back and its locks were released." The evidence stays unknown;
+absence from the process list alone does not prove transaction rollback.
+The lookup accepts at most 20 decimal digits, skips id 0 and ids at least `2**48`
+(leaving `trx_survived` null), and requires thread id 0 so read-only ids and
+other sessions cannot produce false XA survival evidence.
+Prepared read-write XA transactions outlive KILL CONNECTION and keep their
+InnoDB row locks, appearing with `trx_mysql_thread_id = 0` (MariaDB
+`sql/xa.cc:893-903`, `storage/innobase/trx/trx0i_s.cc:419-425`); MySQL can reach
+the same case when its pre-kill XA PREPARE check was unavailable. Both modes'
+connection-gone messages warn about this surviving prepared XA transaction and
+instruct XA RECOVER, then XA COMMIT or XA ROLLBACK, rather than claiming its locks
+were released. An unavailable session verification read leaves `after` null.
+
+Kill result messages use the verified after-state. KILL QUERY reports a
+statement still stopping before considering transaction state. Once it has
+stopped, a surviving same transaction is described with its observed start
+time and locked-row count, explains that it keeps its locks until commit or
+rollback, and recommends Kill connection to roll it back. A successful
+transaction read with no transaction reports the row locks released. A closed
+session reports its locks released unless `trx_survived` is true or
+`trx_survival_checked` is false; a different transaction reports that it
+has since started another transaction and gives its locked-row count. Without
+a transaction check, the conditional transaction warning remains. KILL
+CONNECTION with a closed session reports the original transaction rolled back
+(with its original changed-row count when positive), no transaction to roll
+back when that was checked, or any open transaction rolled back when unknown.
+A surviving Killed session with a successful transaction read and no transaction
+reports that the connection is closing, with nothing to roll back: MySQL marks
+every disconnecting session Killed (`sql/sql_class.cc:1331`). Otherwise a
+surviving Killed or ROLLING BACK session reports that rollback still holds
+its locks; its approximate changes left to undo come from the AFTER
+`trx_rows_modified` undo-record count, including zero, omitted only when unavailable.
+These are changes, not distinct rows: changing one row twice counts twice.
+Other surviving connections keep the refresh message. The deprecated CLI's
+`format_kill` shares these corrected messages and strips C0 controls except tab
+and newline from terminal output; no flags or commands are added.
+
+The retained UI note's evidence model reconciles accepted bound reports,
+including Server Refresh all and auto refresh, through shared `useKillReport`;
+adapters and presentation use explicit connection and transaction evidence
+(see [Action feedback](#action-feedback)). The note records the client receipt
+time of the Kill answer (`answeredAt`) and a snapshot of the reviewed
+`target.server_identity` (`reviewedServerIdentity`). Reconciliation ignores
+reports unless Locks `captured_at` or Processlist `taken_at` is strictly later
+than that answer and `server_identity` matches the reviewed server. Missing or
+invalid timestamps and missing identities are not verification. MySQL compares
+`server_uuid`; MariaDB compares all of `server_id`, `hostname` and `version`.
+A matching connection key alone cannot establish server identity.
+
+Processlist proves a missing connection gone only with a complete, unfiltered,
+uncapped All read with PROCESS visibility. A present row supplies command/state;
+transaction evidence needs `trx_checked === true`. Connection absence does not
+resolve a failed XA survival lookup: `after.trx_survival_checked === false`
+stays unknown across Processlist reads, with an unknown transaction cell and
+an amber note. The update says "Checked again: the connection has ended;
+whether its transaction survived as a prepared XA transaction is unknown."
+Only a successful transaction-id survival check from Locks resolves that
+uncertainty. Processlist Killed with a checked open transaction proves rollback
+unless detached XA uncertainty remains.
+
+Locks never proves a disconnect: a listed transaction is open (same when start
+and available ids match), or rolling back from its transaction state. An absent
+transaction is none only on a checked, untruncated full read, otherwise unknown.
+A detached transaction with the pre-kill id proves prepared XA survival.
+Earlier `trx_survived: true` survives Processlist and incomplete Locks reads
+(waits-only, `trx_checked !== true` or any truncation). A complete Locks
+transaction read that no longer lists the original transaction id clears that
+evidence to none and says "Checked again: its prepared XA transaction is no
+longer listed." This does not assert that the XA transaction rolled back.
+A reused connection or replacement transaction cannot disprove XA survival
+without that complete transaction-id check.
+
+A Locks waiter missing from both the blocking tree and waiting DDL is no longer
+waiting only when both wait sources were readable (`capabilities.lock_waits`
+and `capabilities.metadata_locks`), the scope includes waits, and no truncation
+or materialization budget hid evidence: `waits_truncated`,
+`row_locks_truncated`, `blocking_tree_budget.truncated`, metadata lock/metadata
+wait truncation (including per-wait truncation), and DDL blocker truncation.
+A listed `transactions[]` state of LOCK WAIT proves it is waiting even without
+a tree edge. Otherwise the outcome is unknown and says "Connection N: this
+read cannot show whether it still waits." Unknown or still-waiting outcomes
+keep the note amber and prevent "Lock released".
+
+The later update states observed facts without claiming statement completion
+or rollback completion from a mere state change. Query-ended wording additionally
+needs a changed or empty statement. Null verification and unknown held state
+remain amber, with unknown after-cells. Evidence says rolled back only for a
+proven disconnect or none after an observed rollback, excluding cleared XA
+survival. The view is read once right after the KILL answer (as before: its
+table or tree shows the change), with the current view settings. Timed
+follow-ups run only when that view can settle the open question: rollback, or
+unknown transaction evidence resolvable by a complete read. Locks requires
+`trx_checked === true`, full scope and no truncation; Processlist requires a
+complete, unfiltered, uncapped All read with checked transactions and no
+unresolved detached XA lookup. Timed follow-ups also require a fresh report
+from the reviewed server, and Locks schedules none while
+`capabilities.data_locks_global_latch` is set. When automatic verification
+cannot continue, the note says "Refresh to check again." and keeps Refresh.
+Only a final observed rollback produces the stale warning.
+
+The shared guard refuses KILL QUERY while INNODB_TRX reports ROLLING BACK,
+with guidance to choose Kill connection. KILL CONNECTION is allowed in that
+state: it also appears during statement rollback after KILL QUERY inside a
+longer transaction, which remains open with its locks afterwards (MySQL
+`trx0roll.cc:1153-1157`; MariaDB `trx0roll.cc:619`). A second KILL CONNECTION
+during full rollback is harmless. All other kill refusals remain in force.
+
 Bulk Kill (`/api/live/kill/bulk`, `kill-bulk-1.0`) validates every target before
 policy gating and records an audit row per target even for unconfirmed,
 read-only, expired-review, credential and connection failures. It reads server
@@ -3405,12 +3608,35 @@ Sessions uses the same helper for `thread_kind` and `kill_blocked_reason`.
 ### Sessions
 
 `python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`) so Kill session in the workspace is bound to connection and server identity. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py` (replays in `test/fixtures/perf/sessions-*.json`).
+Report-level `trx_checked` is true only when `INNODB_TRX` was read without truncation; false
+means absence of a transaction cannot be asserted. Each sessions row carries
+the same additive `trx_scope` and `trx_scope_source` fields and uses the shared
+pure Locks helper. Locks also projects these fields on every Waiting DDL
+blocker using `transaction_scope`; `targetFromBlocker` retains them for the
+same default mode and longer-transaction warning as the blocking tree. The processlist reader has connection ids but no P_S thread
+ids, so Sessions first uses `earlier_changes` to indicate `multi` for a plain
+read with changes, as described in Locks above. The stored-function exception
+and the common unqualified built-in allowlist apply here too; a schema-qualified
+call is always ambiguous. MariaDB ships `performance_schema` OFF by default
+(`sql/sys_vars.cc:90-92`). The measured MySQL 5.7 and MariaDB repro used
+transaction instrumentation off and equal transaction/statement ages.
+Otherwise, a running statement with an InnoDB
+transaction at least two seconds older than its processlist time has `multi`
+with source `timing`. It never infers `statement`; unknown, idle and no
+transaction cases have null scope and source. Locks can use the optional
+P_S transaction read described above, with the engine consumer defaults and
+silent earlier-changes and timing fallbacks specified there. Schema versions remain `locks-1.1`,
+`sessions-1.0` and `kill-1.0` under the additive-field rule.
+
 `myflames sessions --kill ID [--query] [--yes] [--json] [-o PATH] [-q]` is an
 alias of `locks --kill`: `cmd_sessions` calls the same `_kill_command(args,
 locks.kill_cli)`, returning the same `kill-1.0` result and exit codes (0 ended,
 1 a sent operation failed, 2 an unsent refusal, decline, or error). It keeps the same
 confirmation, connection/server identity binding, target re-read, write policy
-and audit. `--kill` and `--explain` are mutually exclusive; `--query` and `--yes`
+and audit. It shares Locks' transaction-id comparison, the vanished-session
+XA lookup and `after.trx_survived`, the closing-without-a-transaction message,
+and the ROLLING BACK guard that allows connection mode but refuses query mode.
+`--kill` and `--explain` are mutually exclusive; `--query` and `--yes`
 require `--kill ID`. Listing remains read-only.
 
 Processlist rows have a context menu (right click, Shift+F10, the context
@@ -6467,6 +6693,91 @@ Rules:
   no Refresh, which would read the connection in use. Without `currentKey` only
   a late note (its sheet was closed) is named. Locks' waiting line names the
   connection too once another one is in use.
+  For a single Kill, `KillNote.mode`, `target` (the pre-kill read) and
+  `after` (the latest verification) drive the shared evidence helpers in
+  `Locks.tsx`. Front-end `KillObservation` adds `connectionEvidence`
+  (`present`, `gone`, `unknown`) and `transactionEvidence` (`open`, `same`,
+  `other`, `none`, `rolling_back`, `survived`, `unknown`) without changing
+  the wire schema. Each view's pure `reconcileKillNote` adapts its report:
+  - **Processlist (`sessions-1.0`)**: a row for C proves command, state and
+    statement. Only `trx_checked === true` proves an open transaction or
+    none; otherwise transaction evidence is unknown. A missing row proves
+    `gone` only with All scope (neither active-only nor locked-only), no
+    user/host/database/minimum-duration filter, PROCESS visibility and no
+    truncation. Other absence means only "not in this list", with unknown
+    transaction evidence.
+  - **Locks (`locks-1.1`)**: there is no session list, so it never proves a
+    disconnect. A transaction listed for C proves open or rolling_back from
+    `transactions[].state === "ROLLING BACK"`. Absence proves `none` only
+    when `trx_checked === true`, scope is `all` (not waits-only or deadlock)
+    and the read is not truncated. Other absence is unknown. A detached
+    transaction (connection id 0 or null) matching the pre-kill transaction
+    id proves `survived`: its prepared XA transaction still holds locks.
+  Open transaction identity is `same` only when the start matches the target,
+  and ids match too when both are known; a mismatch is `other`. Missing
+  identity remains `open`. Processlist command Killed with a checked open
+  transaction also proves rolling_back; Killed alone does not. Positive XA
+  survival evidence is retained because a later session read cannot disprove
+  a detached transaction.
+
+  The original server `message` stays verbatim. `note.update` states only
+  the later read's evidence: "Checked again: still rolling back, about N
+  changes left to undo." (omit the count if unavailable), "Checked again:
+  the connection has ended.", "Checked again: its transaction is no longer
+  open.", "Checked again: its transaction is still open.", "Checked again:
+  it has started another transaction.", "Checked again: its transaction is
+  still open as a prepared XA transaction." or "Checked again: this list
+  cannot show whether its transaction is still open." An open transaction
+  with unavailable identity uses the still-open wording. No update claims
+  rollback or statement rollback finished merely because ROLLING BACK ended.
+
+  Evidence compares **Statement**, **Transaction** and **Rows locked**;
+  without `target` there is no evidence list. With `after: null` every
+  after-cell says unknown. Report reconciliation replaces after-cells with
+  the new evidence; statement absence in Locks says unknown. Transaction
+  evidence says "rolled back" only with Processlist gone (or the initial
+  kill verification's proven disconnect), or `none` after an observed
+  rollback (`rollbackObserved`). Prepared XA stays "prepared XA still open"
+  with its observed row-lock count. Unknown transaction evidence never
+  becomes a none or rolled-back cell.
+
+  State lines prioritize prepared XA, then rolling_back with the approximate
+  undo count (zero included). "Query ended; transaction and locks still
+  open." requires query mode, `same_trx === true`, and a statement that is
+  empty or different from `target.info`; the same running statement proves
+  no completion. The `kill-result killed` container uses the existing amber
+  `held` style whenever verification is null, a waiter outcome is unknown or
+  waiting, or transaction evidence is rolling_back, same, open, survived or
+  unknown. Only a verified none/other state with all waiters known and free
+  is green; a nonempty waiter list then supplies the green Lock released line.
+
+  Each view uses shared `useKillReport`, whose bound-report layout effect is
+  the single reconciliation path for accepted loads, the note's Refresh,
+  filter changes, automatic refresh and Server Refresh all's direct setters.
+  It checks note identity, its retained `on` identity and the report's
+  connection key. Reads used by polling await reconciliation's commit before
+  interpreting the model. A refused/denied note only clears its reading line.
+  Locks retains its existing waiter outcome logic. Processlist uses fresh
+  `blocked_by`, `lock_wait` and positive `blocking_edges` collected before
+  filters. A missing waiter is unknown on an incomplete read; positive edges
+  still prove a wait. Missing bounded edges cannot prove release. Unknown
+  outcomes say "Connection N is not in this list; show all sessions and
+  Refresh to check." and keep the container amber.
+
+  Unknown or rolling-back verification uses `followKill` with successive
+  delays of 2, 4, 8 and 16 s, single-flight, through `loadRef`, preserving
+  current scope, source, minimum duration and waits-only settings. A null
+  result from a superseded read is not completion: wait for the next delay;
+  the superseding bound report reconciles through the same effect. Stop when
+  transaction evidence is neither rolling_back nor unknown, regardless of
+  whether waiters still wait. Dismiss, replacement, unmount and switching
+  connection stop scheduled reads. Only a last step still observing
+  rolling_back sets `rollbackStale` and Refresh, showing "Still rolling back
+  after 30 s. Refresh to check again." An unchecked read after an observed
+  rollback keeps polling and never claims completion. The delays total 30 s
+  plus read time. Front-end tests: `apps/workspace/test/locks.mjs`,
+  `apps/workspace/test/sessions.mjs` and browser-free production-function
+  tests in `apps/workspace/test/kill-reconcile-unit.mjs` (also run by `test:locks`).
 - Try again repeats the failed action on what it acted on (Investigations
   keeps the investigation an Open all or Export failed for, even after another
   one is selected).

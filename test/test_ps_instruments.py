@@ -284,7 +284,7 @@ class TestLiveReplay(unittest.TestCase):
                 features = by(result['features'], 'key')
                 for key in ('top', 'waits', 'indexes', 'io'):
                     self.assertEqual(features[key]['status'], 'ready', key)
-                for key in ('capture', 'locks_mdl', 'locks_last', 'replication_receiver'):
+                for key in ('capture', 'locks_mdl', 'locks_last', 'locks_scope', 'replication_receiver'):
                     self.assertEqual(features[key]['status'], 'off', key)
                 self.assertEqual(features['locks_rows']['status'], 'not_needed')
                 self.assertIn('consumer events_statements_history is off', features['capture']['missing'])
@@ -387,6 +387,7 @@ class TestLiveReplay(unittest.TestCase):
         self.assertFalse(by(result['presets'], 'key')['defaults']['applied'])
         statuses = {f['key']: f['status'] for f in result['features']}
         self.assertEqual(statuses.pop('replication_receiver'), 'off')
+        self.assertEqual(statuses.pop('locks_scope'), 'off')
         self.assertEqual(statuses.pop('locks_rows'), 'not_needed')
         # Minimal setup intentionally leaves most MariaDB memory instruments off.
         self.assertEqual(statuses.pop('memory'), 'partial')
@@ -561,6 +562,18 @@ class TestReplicationReceiverFeature(unittest.TestCase):
             self.assertEqual(entry['view'], 'replication')
             self.assertTrue(entry['required'])
         self.assertEqual(m.TABLES['events_stages_summary_by_thread_by_event_name'], ('replication_receiver',))
+
+
+class TestTransactionScopeFeature(unittest.TestCase):
+    def test_scope_is_advisory_and_needs_no_timing(self):
+        feature = next(f for f in m.FEATURES if f['key'] == 'locks_scope')
+        self.assertTrue(feature['advisory'])
+        self.assertFalse(feature['timed'])
+        self.assertEqual(m.TABLES['events_transactions_current'], ('locks_scope',))
+        for name in MYSQL + MARIADB_PS:
+            result, _ = report(name)
+            entry = by(result['features'], 'key')['locks_scope']
+            self.assertEqual(entry['status'], 'ready' if name.startswith('mysql') else 'off')
 
 
 class TestFeatureMapStaysInSync(unittest.TestCase):

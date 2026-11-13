@@ -13,7 +13,9 @@ import {
   api,
   killLockSession,
   prepareKill,
+  type KillAfter,
   type KillReview,
+  type KillTargetRead,
   number,
   recordDeclined,
   type Connection,
@@ -29,6 +31,7 @@ import {
   type RowLock,
   type XaPrepared,
 } from "./api";
+import { Icon } from "./components";
 import { PrivilegeGate, PrivilegeConfirmLabel, targetPrivilege, useLoginUser, usePrivilege } from "./privileges";
 import { InstrumentsLink } from "./Instruments";
 import { PriorityTable, CompactNumber, Duration } from "./PerfShared";
@@ -176,6 +179,17 @@ export type KillTarget = {
   rows_modified: number | null;
   ps_thread_id: number | null;
   xa_prepared: XaPrepared | null;
+  /** "multi": the open transaction spans more than the running statement, so
+   * KILL QUERY leaves it open with its locks. */
+  trx_scope?: "multi" | "statement" | null;
+  /** "timing": the transaction started at least 2 s before the statement. */
+  trx_scope_source?: "performance_schema" | "earlier_changes" | "timing" | null;
+  rows_locked?: number | null;
+  /** Whether the report read INNODB_TRX (null: the report does not say). */
+  trx_checked?: boolean | null;
+  /** The connections it blocks (lock-tree children and DDL waiters in Locks,
+   * blocks_ids in Processlist). */
+  waiting?: number[];
   /** The connection the report was read from and the dialog was opened on:
    * the KILL goes there, and only while it is still the connection in use. */
   via?: KillVia;
@@ -218,6 +232,9 @@ function targetFromNode(n: LockNode): KillTarget {
     rows_modified: n.rows_modified ?? null,
     ps_thread_id: n.ps_thread_id ?? null,
     xa_prepared: n.xa_prepared ?? null,
+    trx_scope: n.trx_scope ?? null,
+    trx_scope_source: n.trx_scope_source ?? null,
+    rows_locked: n.rows_locked ?? null,
   };
 }
 
@@ -237,8 +254,11 @@ function targetFromBlocker(b: DdlBlocker): KillTarget {
     trx_age_s: b.trx_age_s,
     trx_started: b.trx_started,
     rows_modified: b.rows_modified,
+    rows_locked: b.rows_locked,
     ps_thread_id: b.ps_thread_id,
     xa_prepared: b.xa_prepared ?? null,
+    trx_scope: b.trx_scope ?? null,
+    trx_scope_source: b.trx_scope_source ?? null,
   };
 }
 
@@ -259,7 +279,72 @@ function blockingOf(report: LocksReport, id: number) {
   return { ids, ddls };
 }
 
-export type Outcome = { id: number; waiting: boolean; blockedBy: number[]; ddl: string | null; likely: boolean };
+export type Outcome = { unknown?: boolean; id: number; waiting: boolean; blockedBy: number[]; ddl: string | null; likely: boolean };
+
+/** Every cap or materialization budget can hide evidence of a continuing wait. */
+function locksReadTruncated(report: LocksReport): boolean {
+  return !!(report.waits_truncated || report.row_locks_truncated || report.blocking_tree_budget?.truncated ||
+    report.metadata_locks?.truncated || report.metadata_locks?.waits_truncated ||
+    report.metadata_locks?.waits.some(w => w.truncated) || report.ddl_waits?.some(d => d.blockers_truncated));
+}
+
+/** Waits-only output omits transactions not involved in the visible waits. */
+function completeLockTransactions(report: LocksReport): boolean {
+  return report.trx_checked === true && report.scope === "all" && !locksReadTruncated(report);
+}
+
+/** A fresh read with these settings can resolve transaction uncertainty. */
+export function locksCanRecheck(report: LocksReport): boolean {
+  return completeLockTransactions(report) && !report.capabilities.data_locks_global_latch;
+}
+
+/** Locks has no session list: even an empty full read cannot prove disconnect. */
+function killSessionState(report: LocksReport, id: number): KillObservation {
+  const nodes: LockNode[] = [];
+  const walk = (n: LockNode) => {
+    nodes.push(n);
+    if (!n.repeat) n.blocked.forEach(walk);
+  };
+  report.blocking_tree.forEach(walk);
+  const node = nodes.find(n => n.connection_id === id);
+  const blocker = (report.ddl_waits || []).flatMap(d => d.blockers).find(b => b.connection_id === id);
+  const t = report.transactions.find(x => x.connection_id === id);
+  const complete = completeLockTransactions(report);
+  return {
+    present: !!(t || node || blocker), connectionEvidence: "unknown",
+    transactionEvidence: t ? (t.state === "ROLLING BACK" ? "rolling_back" : "open") : complete ? "none" : "unknown",
+    command: node?.command ?? blocker?.command ?? t?.command ?? null,
+    trx_checked: report.trx_checked === true,
+    trx_state: t?.state ?? null, trx_started: t?.started ?? null,
+    rows_modified: t?.rows_modified ?? null, rows_locked: t?.rows_locked ?? null,
+    statement: node ? node.query : blocker ? blocker.statement : t ? t.current_statement : undefined,
+  };
+}
+
+/** Reconcile only observations supplied by this report, retaining the write's message. */
+export function reconcileKillNote(note: KillNote, report: LocksReport): KillNote {
+  if (!killReportMatches(note, report.captured_at, report.server_identity)) return note;
+  if (note.status !== "killed" || note.connectionId === undefined) return note.refreshing ? { ...note, refreshing: false } : note;
+  let state = killSessionState(report, note.connectionId);
+  const detached = report.transactions.find(t => !t.connection_id && note.target?.trx?.trx_id != null && t.trx_id === note.target.trx.trx_id);
+  if (detached) state = { ...state, transactionEvidence: "survived", trx_survived: true,
+    trx_survival_checked: true, rows_locked: detached.rows_locked, rows_modified: detached.rows_modified };
+  // Only a complete transaction-id read can disprove earlier detached XA evidence.
+  const trxId = note.target?.trx?.trx_id;
+  if (!detached && trxId != null && completeLockTransactions(report) && !report.transactions.some(t => t.trx_id === trxId))
+    state = { ...state, trx_survival_checked: true, trx_survived: false,
+      ...(note.after?.trx_survived === true ? { transactionEvidence: "none", xaCleared: true, trx_state: null,
+        trx_started: null, rows_modified: null, rows_locked: null } : {}) };
+  // A complete id lookup also resolves a failed XA check when the original
+  // transaction is still attached. Confirmed detached survival remains sticky.
+  if (!detached && trxId != null && completeLockTransactions(report) && note.after?.trx_survived !== true)
+    state = { ...state, trx_survival_checked: true };
+  const t = report.transactions.find(x => x.connection_id === note.connectionId);
+  const after = reconcileTransaction(note, state, t?.trx_id);
+  const kinds = new Map(note.outcome.flatMap(o => o.ddl ? [[o.id, o.ddl] as const] : []));
+  const next = reconcileKillState({ ...note, outcome: outcomeOf(report, note.outcome.map(o => o.id), kinds) }, after);
+  return !locksCanRecheck(report) && !killPollDone(next) ? manualKillRefresh(next) : next;
+}
 
 /** After a Kill: for each session that waited, is it still waiting, and on whom (locks.kill_outcome)? */
 function outcomeOf(report: LocksReport, ids: number[], kinds: Map<number, string>): Outcome[] {
@@ -274,15 +359,19 @@ function outcomeOf(report: LocksReport, ids: number[], kinds: Map<number, string
   };
   report.blocking_tree.forEach((root) => walk(root, null));
   const ddl = new Map((report.ddl_waits || []).map((d) => [d.connection_id, d] as const));
+  const complete = report.scope !== "deadlock" && report.capabilities.lock_waits === true &&
+    report.capabilities.metadata_locks === true && !locksReadTruncated(report);
   return ids.map((id) => {
     const blockers = new Set(parents.get(id) || []);
     const entry = ddl.get(id);
     entry?.blockers.forEach((b) => {
       if (b.connection_id) blockers.add(b.connection_id);
     });
+    const waiting = parents.has(id) || !!entry || report.transactions.some(t => t.connection_id === id && t.state === "LOCK WAIT");
     return {
       id,
-      waiting: parents.has(id) || !!entry,
+      unknown: !waiting && !complete,
+      waiting,
       blockedBy: Array.from(blockers).sort((a, b) => a - b),
       ddl: entry?.kind ?? kinds.get(id) ?? null,
       likely: entry?.precision === "likely",
@@ -294,7 +383,8 @@ function list(ids: number[]) {
   return ids.length > 1 ? `connections ${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : `connection ${ids[0]}`;
 }
 
-function outcomeText(o: Outcome) {
+export function outcomeText(o: Outcome) {
+  if (o.unknown) return `Connection ${o.id}: this read cannot show whether it still waits.`;
   const what = o.ddl ? `The ${o.ddl} on connection ${o.id}` : `Connection ${o.id}`;
   if (!o.waiting) return `${what} no longer waits${o.ddl ? "; it is running or done" : ""}.`;
   if (o.blockedBy.length) return `${what} still waits, ${o.likely ? "probably for" : "now for"} ${list(o.blockedBy)}.`;
@@ -372,8 +462,17 @@ export function KillDialog({
    * the owner shows its outcome when it arrives. */
   onLeave?: () => void;
 }) {
+  // A row menu's choice wins; otherwise an idle session or one whose
+  // transaction spans more than the running statement (KILL QUERY cannot free
+  // its locks) starts on Kill connection.
   const [mode, setMode] = useState<"connection" | "query">(
-    initialMode === "connection" || !target.running ? "connection" : "query");
+    initialMode === "connection" || !target.running
+      ? "connection"
+      : initialMode === "query"
+        ? "query"
+        : target.trx_scope === "multi"
+          ? "connection"
+          : "query");
   const [review, setReview] = useState<KillReview | null>(null);
   const [reviewError, setReviewError] = useState("");
   useEffect(() => {
@@ -397,6 +496,20 @@ export function KillDialog({
   const confirmGate = blocked ? { ...gate, disabledReason: blocked } : gate;
   const id = target.connection_id;
   const rows = target.rows_modified;
+  const waiting = target.waiting ?? [];
+  const hasTrx = target.trx_started != null || target.trx_age_s != null;
+  // The waiting-sessions clause of the Kill connection warning.
+  const waiters = waiting.length
+    ? `, so ${list(waiting)} ${waiting.length > 1 ? "keep" : "keeps"} waiting until then`
+    : "";
+  // Under Kill query only: why its locks stay (a longer transaction). Name the
+  // evidence trx_scope came from: the start times, or rows a read cannot change.
+  const queryWait =
+    target.trx_scope_source === "timing" && target.trx_age_s != null && target.time_s != null
+      ? ` that started ${seconds(Math.max(0, target.trx_age_s - target.time_s))} before it`
+      : target.trx_scope_source === "earlier_changes" && rows
+        ? ` that already changed ${rows.toLocaleString("en-US")} ${rows === 1 ? "row" : "rows"} before it`
+        : "";
   const state = target.idle
     ? `Idle in transaction for ${seconds(target.time_s)}`
     : target.running
@@ -448,6 +561,48 @@ export function KillDialog({
           </label>
         )}
       </fieldset>
+      {mode === "connection" && hasTrx && (
+        <div className="kill-caution" role="note">
+          <p className="kill-caution-head">
+            <Icon name="warning" /> Kill connection {id} rolls back its open transaction.
+          </p>
+          <ul>
+            <li>
+              {rows !== null && rows > 0
+                ? `Its ${number(rows)} uncommitted row ${rows === 1 ? "change" : "changes"}${rows >= LARGE_ROLLBACK_ROWS ? " (InnoDB's undo record count, so a row changed twice counts twice)" : ""} ${rows === 1 ? "is" : "are"} undone and lost; the application cannot commit ${rows === 1 ? "it" : "them"}.`
+                : "Any uncommitted changes in it are undone and lost; the application cannot commit them."}
+            </li>
+            <li>
+              The rollback runs before the connection closes and can take a long time for a large transaction. Connection{" "}
+              {id} keeps its locks until it ends{waiters}.
+            </li>
+            <li>The application loses its connection and gets an error.</li>
+          </ul>
+        </div>
+      )}
+      {mode === "connection" && !hasTrx && target.trx_checked === true && (
+        <p className="hint kill-note-plain">
+          Closes the connection. It had no open transaction when the list was read, so nothing would be rolled back. The application loses its connection
+          and gets an error.
+        </p>
+      )}
+      {mode === "connection" && !hasTrx && target.trx_checked !== true && (
+        <div className="kill-caution" role="note">
+          <p className="kill-caution-head">
+            <Icon name="warning" /> Kill connection {id} closes the connection.
+          </p>
+          <p>
+            Could not read its transaction. If one is open, its uncommitted changes are rolled back and lost, and it keeps
+            its locks until the rollback ends. The application loses its connection and gets an error.
+          </p>
+        </div>
+      )}
+      {mode === "query" && target.trx_scope === "multi" && (
+        <p className="kill-caution-line" role="note">
+          <Icon name="warning" /> {waiting.length ? `${list(waiting).replace(/^c/, "C")} will keep waiting: this` : "This"}{" "}
+          statement runs inside a longer transaction{queryWait}, so its locks stay after the statement stops.
+        </p>
+      )}
       {blocking && (
         <div className="kill-blocking">
           <span className="lock-sql-label">Blocking</span>
@@ -489,13 +644,6 @@ export function KillDialog({
           <dd>{rows === null ? "Unknown" : number(rows)}</dd>
         </div>
       </dl>
-      {rows !== null && rows >= LARGE_ROLLBACK_ROWS && (
-        <p className="kill-warning" role="note">
-          It changed about {number(rows)} rows (InnoDB's undo record count, so a row changed twice counts twice). Ending the
-          connection rolls them all back, which can take a long time, and it keeps its locks until the rollback finishes, so
-          the sessions it blocks keep waiting until then.
-        </p>
-      )}
       {target.statement ? (
         <Sql text={target.statement} label="Running" />
       ) : target.last_statement ? (
@@ -569,7 +717,7 @@ export async function sendKill(active: Connection, target: KillTarget, mode: "co
       connection_identity: target.via.key,
       server_identity: target.server_identity,
     }, reviewToken);
-    return { status: result.status as string, message: result.message, refresh: result.status === "refused", on };
+    return { status: result.status as string, message: result.message, refresh: result.status === "refused", after: result.after ?? null, target: result.target ?? null, on };
   } catch (e) {
     // The server answered with an error (nothing was ended), or no answer
     // arrived: then the KILL may have run, and it is never sent again.
@@ -580,10 +728,39 @@ export async function sendKill(active: Connection, target: KillTarget, mode: "co
   }
 }
 
+export type TransactionEvidence = "unknown" | "none" | "open" | "same" | "other" | "rolling_back" | "survived";
+/** Front-end observations extend kill-1.0 without changing its wire contract. */
+export type KillObservation = KillAfter & {
+  connectionEvidence?: "present" | "gone" | "unknown";
+  transactionEvidence?: TransactionEvidence;
+  /** A complete transaction-id read cleared previously confirmed XA survival. */
+  xaCleared?: boolean;
+};
+
 export type KillNote = {
   status: string; message: string; outcome: Outcome[]; refresh?: boolean;
   /** Which KILL was sent (one session). */
   mode?: "connection" | "query";
+  /** The single target, retained even when the server could not return its before-read. */
+  connectionId?: number;
+  /** Client receipt time of the Kill answer; older reports cannot verify it. */
+  answeredAt?: number;
+  /** Snapshot of target.server_identity from the reviewed Kill, never the active connection. */
+  reviewedServerIdentity?: KillServerIdentity;
+  /** Automatic verification cannot resolve this view's uncertainty. */
+  manualRefresh?: boolean;
+  /** Latest read observation, separate from the original server message. */
+  update?: string;
+  /** kill-1.0: the session read right after the KILL. */
+  after?: KillObservation | null;
+  /** At least one read actually observed rollback, including the kill answer. */
+  rollbackObserved?: boolean;
+  /** kill-1.0: the session read just before the KILL. */
+  target?: KillTargetRead | null;
+  /** Follow-up re-reads of a rolling-back kill: rows still left to undo. */
+  rollbackLeft?: number | null;
+  /** The follow-up re-reads ended with the rollback still running. */
+  rollbackStale?: boolean;
   /** The list is being read again after the KILL (the view's loading line
    * says so; the note marks it with data-refreshing). */
   refreshing?: boolean;
@@ -595,6 +772,122 @@ export type KillNote = {
    * when the owner cannot say which connection is in use (no currentKey). */
   late?: boolean;
 };
+/** Bind reconciliation to a post-answer read of the exact reviewed server.
+ * Compare identity fields explicitly so object key order has no meaning. */
+export function killReportMatches(note: KillNote, timestamp: string, identity?: KillServerIdentity): boolean {
+  const expected = note.reviewedServerIdentity;
+  if (note.answeredAt === undefined || !(Date.parse(timestamp) > note.answeredAt) || !expected || !identity) return false;
+  return "server_uuid" in expected
+    ? "server_uuid" in identity && !!expected.server_uuid && expected.server_uuid === identity.server_uuid
+    : "server_id" in identity && !!expected.server_id && !!expected.hostname && !!expected.version &&
+      expected.server_id === identity.server_id && expected.hostname === identity.hostname && expected.version === identity.version;
+}
+
+/** Keep a manual way to verify when repeating this view cannot settle the question. */
+export function manualKillRefresh(note: KillNote): KillNote {
+  return { ...note, refreshing: false, refresh: true, manualRefresh: true };
+}
+
+/** One acceptance path for view loads and Server Refresh all. Awaiting its
+ * acknowledgement keeps polling independent of React's commit scheduling. */
+export function useKillReport<T extends object>(bound: Bound<T> | null, currentNote: React.MutableRefObject<KillNote | null>,
+  setNote: (note: KillNote) => void, reconcile: (note: KillNote, report: T) => KillNote) {
+  const mounted = useRef(true);
+  const observed = useRef(new WeakSet<T>());
+  const waiting = useRef(new Set<() => void>());
+  const noteAtRender = currentNote.current;
+  useLayoutEffect(() => {
+    const current = currentNote.current;
+    if (bound && current && current === noteAtRender && current.on === noteAtRender.on && current.on?.key === bound.key)
+      setNote(reconcile(current, bound.report));
+    if (bound) observed.current.add(bound.report);
+    // A newer committed report also settles a superseded accepted report.
+    waiting.current.forEach(resolve => resolve());
+    waiting.current.clear();
+  }, [bound]);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      waiting.current.forEach(resolve => resolve());
+      waiting.current.clear();
+    };
+  }, []);
+  return async (read: () => Promise<T | null>): Promise<T | null> => {
+    const fresh = await read();
+    // The exact report might already have committed before this continuation.
+    if (fresh && mounted.current && !observed.current.has(fresh))
+      await new Promise<void>(resolve => { waiting.current.add(resolve); });
+    return fresh;
+  };
+}
+
+/** Normalize the initial kill-1.0 answer or use explicit report evidence. */
+export function killTransactionEvidence(note: KillNote): TransactionEvidence {
+  const a = note.after;
+  if (!a) return "unknown";
+  if (a.trx_survived === true) return "survived";
+  if (a.transactionEvidence) return a.transactionEvidence;
+  if (!a.present) return a.trx_survival_checked === false ? "unknown" : "none";
+  if (a.trx_state === "ROLLING BACK") return "rolling_back";
+  if (a.trx_checked !== true) return "unknown";
+  if (!a.trx_state && !a.trx_started) return "none";
+  if (a.command === "Killed") return "rolling_back";
+  return a.same_trx === true ? "same" : a.same_trx === false ? "other" : "open";
+}
+
+/** Match starts and ids when both ids are known; an unknown identity stays open. */
+export function reconcileTransaction(note: KillNote, state: KillObservation, trxId?: string | null): KillObservation {
+  // Neither a process list nor a connection reused with this id disproves XA survival.
+  if (note.after?.trx_survived === true && state.transactionEvidence !== "survived" && state.trx_survival_checked !== true)
+    return { ...state, transactionEvidence: "survived", trx_survived: true,
+      trx_survival_checked: true, rows_locked: note.after.rows_locked };
+  // Processlist cannot observe detached XA, even after it proves a disconnect.
+  if (note.after?.trx_survival_checked === false && state.trx_survival_checked !== true)
+    return { ...state, transactionEvidence: "unknown", trx_survival_checked: false };
+  const before = note.target?.trx;
+  let same: boolean | null = null;
+  if (["open", "rolling_back"].includes(state.transactionEvidence || "") && before?.started && state.trx_started) {
+    same = before.started === state.trx_started;
+    if (before.trx_id != null && trxId != null) same = same && before.trx_id === trxId;
+  }
+  return { ...state, same_trx: same,
+    transactionEvidence: state.transactionEvidence === "open" && same !== null ? (same ? "same" : "other") : state.transactionEvidence };
+}
+
+/** One fresh observation supplies the update; never infer statement completion. */
+export function reconcileKillState(note: KillNote, after: KillObservation): KillNote {
+  const next = { ...note, after, refreshing: false, rollbackLeft: after.rows_modified ?? null,
+    rollbackObserved: note.rollbackObserved || killRollingBack(note), rollbackStale: false, refresh: false, manualRefresh: false };
+  const evidence = killTransactionEvidence(next);
+  next.rollbackObserved = next.rollbackObserved || evidence === "rolling_back";
+  // Refresh stays on the note while anything is still open: a rollback, an
+  // unknown transaction, or a waiter that still waits or cannot be seen.
+  next.refresh = evidence === "unknown" || evidence === "rolling_back" ||
+    next.outcome.some(o => o.unknown || o.waiting);
+  if (evidence === "rolling_back") {
+    next.update = next.rollbackLeft === null ? "Checked again: still rolling back."
+      : `Checked again: still rolling back, about ${number(next.rollbackLeft)} changes left to undo.`;
+  } else if (evidence === "survived") {
+    next.update = "Checked again: its transaction is still open as a prepared XA transaction.";
+  } else if (note.after?.trx_survived === true && after.trx_survived === false) {
+    next.update = "Checked again: its prepared XA transaction is no longer listed.";
+  } else if (after.connectionEvidence === "gone") {
+    next.update = evidence === "unknown"
+      ? "Checked again: the connection has ended; whether its transaction survived as a prepared XA transaction is unknown."
+      : "Checked again: the connection has ended.";
+  } else if (evidence === "none") {
+    next.update = "Checked again: its transaction is no longer open.";
+  } else if (evidence === "same" || evidence === "open") {
+    next.update = "Checked again: its transaction is still open.";
+  } else if (evidence === "other") {
+    next.update = "Checked again: it has started another transaction.";
+  } else {
+    next.update = "Checked again: this list cannot show whether its transaction is still open.";
+  }
+  return next;
+}
+
 /** The first words of a Kill note: what happened, never more than is known. */
 export function killStatusWord(status: string): string {
   switch (status) {
@@ -623,6 +916,107 @@ export function killHeadline(note: Pick<KillNote, "status" | "message" | "mode">
   return note.status === "error" && /outcome is unknown|may have reached the server/i.test(note.message)
     ? "Outcome unknown." : killStatusWord(note.status);
 }
+
+/** Re-read delays after a kill whose connection is still ending (KILL
+ * CONNECTION rolls its transaction back first): 2, 4, 8 and 16 s, then stop. */
+export const KILL_FOLLOW_UP_S = [2, 4, 8, 16];
+
+/** The after-read says the connection is ending: it is rolling back. */
+export function killRollingBack(note: KillNote): boolean {
+  return killTransactionEvidence(note) === "rolling_back";
+}
+
+/** An open question is pollable only when the view can supply complete evidence. */
+export function killPollDone(note: KillNote): boolean {
+  const evidence = killTransactionEvidence(note);
+  return evidence !== "rolling_back" && evidence !== "unknown";
+}
+
+/** Green requires a verification read and no remaining or unknown held state. */
+export function killHeld(note: KillNote): boolean {
+  const evidence = killTransactionEvidence(note);
+  return !note.after || !["none", "other"].includes(evidence) || note.outcome.some(o => o.unknown || o.waiting);
+}
+
+/** Timed re-reads while a kill rolls back. Single-flight: the next wait starts
+ * when the previous read ends. *step* answers true when the rollback is done
+ * or the note is stale; on the last delay it marks the note instead. The
+ * returned function cancels the rest. */
+export function followKill(step: (last: boolean) => Promise<boolean>, delays: number[] = [...KILL_FOLLOW_UP_S]): () => void {
+  let cancelled = false;
+  let index = 0;
+  let timer = 0;
+  const run = () => {
+    if (cancelled) return;
+    void step(index === delays.length - 1).then((done) => {
+      if (cancelled || done) return;
+      index += 1;
+      if (index < delays.length) timer = window.setTimeout(run, delays[index] * 1000);
+    });
+  };
+  timer = window.setTimeout(run, delays[0] * 1000);
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}
+
+/** The state-colored line of a Kill note, when the after-read (or a follow-up
+ * re-read) proves one: amber while the transaction or its rollback goes on,
+ * green once the waiters are free. */
+export function killStateLine(note: KillNote): { tone: "warn" | "ok"; text: string } | null {
+  const after = note.after;
+  if (after?.trx_survived === true)
+    return { tone: "warn", text: "Prepared XA transaction and locks still open." };
+  if (killRollingBack(note)) {
+    // trx_rows_modified falls as the rollback undoes records; rows_locked does not.
+    const left = note.rollbackLeft ?? after?.rows_modified;
+    return left !== null && left !== undefined
+      ? { tone: "warn", text: `Rolling back: about ${number(left)} changes left to undo.` }
+      : { tone: "warn", text: "Rolling back." };
+  }
+  if (note.mode === "query" && after?.same_trx === true &&
+      (after.statement === null || after.statement === "" || (after.statement !== undefined && after.statement !== note.target?.info)))
+    return { tone: "warn", text: "Query ended; transaction and locks still open." };
+  if (!killHeld(note) && note.outcome.length > 0) {
+    const ids = note.outcome.map((o) => o.id);
+    return { tone: "ok", text: `Lock released: ${list(ids)} no longer ${ids.length > 1 ? "wait" : "waits"}.` };
+  }
+  return null;
+}
+
+/** One line of the running statement, clipped for the evidence list. */
+function clipStatement(text: string | null | undefined): string {
+  const flat = (text || "").replace(/\s+/g, " ").trim();
+  return flat.length > 80 ? `${flat.slice(0, 79)}…` : flat;
+}
+
+/** The before/after evidence of a Kill note (from the kill-1.0 target and
+ * after reads); the waiting sessions are the outcome list below it. */
+export function killEvidence(note: KillNote): { label: string; before: string; after: string }[] {
+  const target = note.target;
+  if (!target) return [];
+  const after = note.after ?? null;
+  const evidence = killTransactionEvidence(note);
+  const gone = after?.connectionEvidence === "gone" || (after && !after.connectionEvidence && !after.present);
+  const rows: { label: string; before: string; after: string }[] = [];
+  rows.push({ label: "Statement", before: clipStatement(target.info) || "none",
+    after: !after ? "unknown" : gone ? "none" : after.statement !== undefined
+      ? clipStatement(after.statement) || "none" : "unknown" });
+  const beforeTrx = target.trx ? `open since ${target.trx.started || "unknown"}` : target.trx_checked ? "none" : "unknown";
+  const afterTrx = evidence === "survived" ? "prepared XA still open"
+    : evidence === "rolling_back" ? "rolling back"
+    : evidence === "same" ? "still open"
+    : evidence === "none" ? (after?.xaCleared ? "none"
+      : target.trx && (gone || note.rollbackObserved) ? "rolled back" : "none")
+    : evidence === "open" || evidence === "other" ? `open since ${after?.trx_started || "unknown"}` : "unknown";
+  rows.push({ label: "Transaction", before: beforeTrx, after: afterTrx });
+  rows.push({ label: "Rows locked", before: target.trx?.rows_locked != null ? number(target.trx.rows_locked) : "unknown",
+    after: !after ? "unknown" : evidence === "none" ? "none" : evidence === "unknown" ? "unknown"
+      : after.rows_locked != null ? number(after.rows_locked) : "unknown" });
+  return rows;
+}
+
 /** The answer to a Kill, announced and focused. Status "pending": the sheet
  * was closed before the reply came (Kill sessions); the outcome replaces it.
  * A note about another connection than the one in use (*currentKey*) names
@@ -637,8 +1031,10 @@ export function KillResultNote({ note, onDismiss, noteRef, onRefresh, currentKey
   const differs = !!note.on && known && note.on.key !== currentKey;
   const named = differs || (!known && !!note.on && !!note.late) ? note.on!.label : "";
   const done = note.status === "killed" || note.status === "ok" || note.status === "pending";
+  const stateLine = killStateLine(note);
+  const evidence = killEvidence(note);
   return (
-    <div ref={noteRef} tabIndex={-1} className={`kill-result ${note.status}`} role={done ? "status" : "alert"}
+    <div ref={noteRef} tabIndex={-1} className={`kill-result ${note.status}${killHeld(note) ? " held" : ""}`} role={done ? "status" : "alert"}
       aria-busy={note.status === "pending" || undefined} data-connection={note.on?.key}
       data-status={note.status} data-refreshing={note.refreshing ? "true" : undefined}>
       <p>
@@ -646,21 +1042,37 @@ export function KillResultNote({ note, onDismiss, noteRef, onRefresh, currentKey
         <strong>{killHeadline(note)}</strong>{" "}
         {note.message}
       </p>
+      {note.update && <p className="hint kill-update">{note.update}</p>}
+      {stateLine && <p className={`kill-state ${stateLine.tone}`}>{stateLine.text}</p>}
       {named && (
         <p className="hint kill-result-on">
           {note.sent === false ? "Reviewed on" : "Sent on"} {named}{differs ? ", not the connection in use" : ""}.
         </p>
       )}
       {note.refreshing && <p className="hint kill-result-rereading"><span className="spinner" aria-hidden="true" /> Reading the sessions again to show what changed…</p>}
+      {evidence.length > 0 && (
+        <dl className="kill-evidence">
+          {evidence.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>
+                <bdi>{row.before}</bdi> → <bdi>{row.after}</bdi>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {note.outcome.length > 0 && (
         <ul>
           {note.outcome.map((o) => (
-            <li key={o.id} className={o.waiting ? "still" : "free"}>
+            <li key={o.id} className={o.unknown ? "unknown" : o.waiting ? "still" : "free"}>
               {outcomeText(o)}
             </li>
           ))}
         </ul>
       )}
+      {note.manualRefresh && <p className="hint kill-manual-refresh">Refresh to check again.</p>}
+      {note.rollbackStale && <p className="hint kill-stale">Still rolling back after 30 s. Refresh to check again.</p>}
       <button type="button" className="text-button" onClick={onDismiss}>
         Dismiss
       </button>
@@ -838,7 +1250,30 @@ export function LocksView({
   // The Kill sheet was closed while its KILL had no reply yet: the view says so.
   const [killLeft, setKillLeft] = useState<{ id: number; startedAt: number; key: string; label: string } | null>(null);
   const killSentAt = useRef(0);
-  const [killNote, setKillNote] = useState<KillNote | null>(null);
+  const [killNote, setKillNoteState] = useState<KillNote | null>(null);
+  // Update synchronously so an in-flight answer observes Dismiss or replacement.
+  const currentKillNote = useRef<KillNote | null>(null);
+  function setKillNote(update: KillNote | null | ((current: KillNote | null) => KillNote | null)) {
+    const next = typeof update === "function" ? update(currentKillNote.current) : update;
+    currentKillNote.current = next;
+    setKillNoteState(next);
+  }
+  const killMounted = useRef(false);
+  // The follow-up re-reads of a rolling-back kill: cancelled when the note is
+  // dismissed or replaced, or when the view unmounts; each re-read also stops
+  // when the connection in use is no longer the one the Kill was sent on.
+  const killFollowCancel = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    killMounted.current = true;
+    return () => {
+      killMounted.current = false;
+      killFollowCancel.current?.();
+    };
+  }, []);
+  function cancelKillFollow() {
+    killFollowCancel.current?.();
+    killFollowCancel.current = null;
+  }
   const root = useRef<HTMLDivElement>(null);
   const killTrigger = useRef<HTMLElement | null>(null);
   const killNoteRef = useRef<HTMLDivElement>(null);
@@ -856,6 +1291,12 @@ export function LocksView({
     );
     return fresh ? fresh.report : null;
   }
+  const reportReconciled = useKillReport(bound, currentKillNote, setKillNote, reconcileKillNote);
+  // Timers use the current scope/report, including changes made after confirmation.
+  const canRecheckKill = useRef<(note?: KillNote) => boolean>(() => false);
+  canRecheckKill.current = note => !!report && !other && !waitsOnly && locksCanRecheck(report) &&
+    (!note || killReportMatches(note, report.captured_at, report.server_identity));
+
   const loadRef = useRef(load);
   loadRef.current = load;
 
@@ -881,8 +1322,15 @@ export function LocksView({
   function openKill(target: KillTarget, trigger: HTMLElement) {
     if (other) return;
     killTrigger.current = trigger;
+    cancelKillFollow();
     setKillNote(null);
-    setKillTarget({ ...target, via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
+    setKillTarget({
+      ...target,
+      waiting: report ? blockingOf(report, target.connection_id).ids : [],
+      trx_checked: report?.trx_checked ?? null,
+      via: killVia(connection),
+      server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
+    });
   }
   function closeKill() {
     setKillTarget(null);
@@ -898,24 +1346,56 @@ export function LocksView({
     setKilling(true);
     killSentAt.current = Date.now();
     const sent = await sendKill(connection, target, mode, policy, reviewToken);
+    if (!killMounted.current) return;
     // Re-read and infer the outcome only while the connection in use is still
     // the one the Kill was confirmed for (checked now, after the await); a
     // report of another server says nothing about this Kill. The answer is
     // shown at once, and says the list is read again meanwhile.
     const changed = !target.via || reads.currentKey() !== target.via.key;
+    // The report is always read once after the answer (the tree shows the
+    // change); only the timed follow-ups need a read that can settle it.
     const reread = !changed && !sent.refresh;
-    const note: KillNote = { ...sent, mode, outcome: [], refreshing: reread };
+    let note: KillNote = { ...sent, mode, connectionId: target.connection_id,
+      answeredAt: Date.now(), reviewedServerIdentity: target.server_identity ? { ...target.server_identity } : undefined,
+      outcome: sent.status === "killed" ? outcomeOf(report, ids, kinds) : [], refreshing: reread };
     setKillTarget(null);
     setKillLeft(null);
     setKilling(false);
     setKillNote(note);
     window.setTimeout(() => killNoteRef.current?.focus(), 0);
     if (!reread) return;
-    const fresh = await load(true);
-    const outcome = note.status === "killed" && fresh && ids.length ? outcomeOf(fresh, ids, kinds) : [];
-    // Only this KILL's note: a newer note (or Dismiss) wins.
-    setKillNote((current) => (current === note ? { ...note, refreshing: false, outcome } : current));
+    const fresh = await reportReconciled(() => loadRef.current(true));
+    if (!killMounted.current || currentKillNote.current?.on !== note.on) return;
+    const answered = currentKillNote.current!;
+    if (!fresh || answered.refreshing) setKillNote({ ...answered, refreshing: false });
+    // Only a KILL the server ran can still change: never time follow-ups for a
+    // refused, denied, gone or failed answer.
+    if (answered.status !== "killed" || killPollDone(answered) || !target.via) return;
+    if (!canRecheckKill.current(answered)) { setKillNote(manualKillRefresh(answered)); return; }
+    const key = target.via.key;
+    cancelKillFollow();
+    killFollowCancel.current = followKill(async (last) => {
+      const current = currentKillNote.current;
+      if (!killMounted.current || !current || current.on !== note.on || reads.currentKey() !== key) return true;
+      if (killPollDone(current)) return true;
+      if (!canRecheckKill.current(current)) { setKillNote(manualKillRefresh(current)); return true; }
+      setKillNote({ ...current, refreshing: true });
+      const again = await reportReconciled(() => loadRef.current(true));
+      const latest = currentKillNote.current;
+      if (!killMounted.current || !latest || latest.on !== note.on) return true;
+      if (reads.currentKey() !== key) {
+        setKillNote({ ...latest, refreshing: false });
+        return true;
+      }
+      // A superseded read is not completion; the accepted bound report reconciles it.
+      if (!again) { setKillNote({ ...latest, refreshing: false }); return false; }
+      const rolling = killRollingBack(latest);
+      const done = killPollDone(latest) || !canRecheckKill.current(latest);
+      setKillNote({ ...latest, refreshing: false, rollbackStale: last && rolling, refresh: (last && rolling) || latest.refresh });
+      return done;
+    });
   }
+
   async function showPlan(id: number) {
     if (!bound || other) return;
     setPlanError("");
@@ -1410,7 +1890,7 @@ export function LocksView({
           />
         </>
       }
-      onRefresh={() => void load()}
+      onRefresh={() => void loadRef.current()}
       refreshDisabled={disabled || !!loading || killing}
       // Refresh reads "Refreshing…" only for its own read, not for Show plan.
       loading={!!reads.loading}
@@ -1422,7 +1902,7 @@ export function LocksView({
         {/* A KILL whose sheet was closed, and its answer, name their connection once another is in use. */}
         {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,
           message: `Waiting for the reply to the KILL of connection ${killLeft.id}${killLeft.key !== reads.key ? ` on ${killLeft.label}` : ""}. Its outcome shows here.` }} /></div>}
-        {killNote && <KillResultNote note={killNote} noteRef={killNoteRef} currentKey={reads.key} onDismiss={() => setKillNote(null)} onRefresh={() => void load(true)} />}</>}
+        {killNote && <KillResultNote note={killNote} noteRef={killNoteRef} currentKey={reads.key} onDismiss={() => { cancelKillFollow(); setKillNote(null); }} onRefresh={() => void loadRef.current(true)} />}</>}
     >
       <div ref={root}>
       {caution && (

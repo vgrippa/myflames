@@ -508,7 +508,7 @@ complexity models for ordered/multidimensional aggregates.
 
 ### Workspace refinement, October 2026
 
-Successful Kill feedback in Locks, Processlist and Kill sessions uses **Done.** followed by the server's message.
+Successful Kill feedback in Locks, Processlist and Kill sessions uses **Done.** followed by the server's message. Single Kill checks for prepared XA transactions that survive a disconnected session, compares transaction ids when available, allows Kill connection during statement rollback, and reports rollback progress as approximate changes left to undo. Every fresh report reconciles the note and keeps the current filters; hidden waiters and failed XA survival checks remain uncertain, and Waiting DDL blockers share the transaction-aware Kill default.
 
 Implemented shared action feedback for Processlist Kill, Parameters change/reset and batch apply, and Replication preflight, skip, loop start and Stop. Slow write sheets can close while their progress and outcomes remain in the view; reads expose Stop, Try again and their completion time. Delayed-reply browser scenarios are in the action-feedback harness, including preflight button stability, Cancel focus on review opening and return to the initiating control on dismissal.
 

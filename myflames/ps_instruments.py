@@ -282,6 +282,13 @@ FEATURES = (
      "needs": {"consumers": ("global_instrumentation", "thread_instrumentation", "events_statements_current"),
                "instruments": ("statement/%",)},
      "explain": "What a session holding locks ran last, when it now sits idle in an open transaction."},
+    {"key": "locks_scope", "label": "Locks: transaction scope", "view": "locks", "modules": ("locks",),
+     "tables": ("events_transactions_current", "threads"),
+     "needs": {"consumers": ("global_instrumentation", "thread_instrumentation", "events_transactions_current"),
+               "instruments": ("transaction",)},
+     "timed": False, "advisory": True,
+     "explain": ("Whether KILL QUERY leaves a running statement's transaction open with its locks. "
+                 "Without transaction instrumentation, Locks uses timing evidence when available.")},
     {"key": "locks_rows", "label": "Locks: InnoDB row locks", "view": "locks", "modules": ("locks",),
      "tables": ("data_locks", "data_lock_waits"), "needs": {}, "engine": "mysql",
      "explain": ("MySQL lists row locks in performance_schema.data_locks, which needs Performance Schema on but "
@@ -334,6 +341,7 @@ TABLES = {
     "events_statements_histogram_by_digest": ("top",),
     "events_statements_history": ("capture",),
     "events_statements_current": ("locks_last",),
+    "events_transactions_current": ("locks_scope",),
     "events_waits_summary_global_by_event_name": ("waits",),
     "events_stages_summary_by_thread_by_event_name": ("replication_receiver",),
     "table_io_waits_summary_by_index_usage": ("indexes",),

@@ -204,5 +204,111 @@ class TestGaMatrixServers(unittest.TestCase):
         self.assertIn("CREDS_FILE", out)  # the whole header, through Settings
 
 
+@unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs bash")
+class TestKillLabScenarios(unittest.TestCase):
+    """Execute scenario functions with server operations replaced by a shell lab.
+
+    These validate orchestration and the 5.7-compatible doubling loop, not
+    database behavior. The coordinator runs the actual live scenarios.
+    """
+    def run_lab(self, command, initial=0):
+        text = (SCRIPTS / "ga-matrix.sh").read_text(encoding="utf-8")
+        functions = text.rsplit('\nmain "$@"', 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            count_file = Path(tmp) / "count"
+            count_file.write_text(str(initial))
+            harness = r'''
+valid() { [ "$1" = mysql-5.7 ]; }
+load_creds() { :; }
+is_up() { return 0; }
+f() { echo primary; }
+bg_session() { printf 'BG|%s|%s|%s|%s|%s\n' "$@"; }
+rq() {
+  local sql="$2" count
+  printf 'SQL|%s\n' "$sql" >&2
+  count=$(cat "$LAB_COUNT")
+  case "$sql" in
+    'SELECT COUNT(*)'*) echo "$count" ;;
+    'INSERT INTO review.rollback_probe (v) VALUES'*) echo 1 > "$LAB_COUNT" ;;
+    'INSERT INTO review.rollback_probe (v) SELECT'*)
+      local deficit="${sql##*LIMIT }"; deficit="${deficit%;}"
+      [ "$deficit" -lt "$count" ] || deficit="$count"
+      echo "$((count + deficit))" > "$LAB_COUNT" ;;
+  esac
+}
+'''
+            result = subprocess.run(["bash", "-c", functions + harness + "\n" + command],
+                                    env=dict(os.environ, LAB_COUNT=str(count_file)),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            return result, int(count_file.read_text())
+
+    def test_background_client_options_allowlist(self):
+        text = (SCRIPTS / 'ga-matrix.sh').read_text(encoding='utf-8')
+        functions = text.rsplit('\nmain "$@"', 1)[0]
+        # Run the real bg_session, stubbing Docker so no service is touched.
+        harness = r'''
+cname() { echo lab; }
+client() { echo mysql; }
+docker() { printf 'DOCKER|%s\n' "$*"; }
+ROOT_PASSWORD=test
+bg_session mysql-5.7 0 'SELECT 1;' 0 ''
+'''
+        for value in ('', '--force', '--force; echo INJECTED', '$(echo INJECTED)', '--force\ntrue', '-v'):
+            with self.subTest(value=value):
+                result = subprocess.run(['bash', '-c', functions + harness],
+                                        env=dict(os.environ, BG_CLIENT_OPTS=value),
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                if value in ('', '--force'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('DOCKER|exec', result.stdout.decode())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('BG_CLIENT_OPTS must be empty or --force', result.stderr.decode())
+                    self.assertNotIn('DOCKER|', result.stdout.decode())
+                    self.assertNotIn('INJECTED', result.stdout.decode())
+
+    def test_busy_statement_runs_inside_the_blocking_transaction(self):
+        result, _ = self.run_lab('cmd_locks_busy mysql-5.7 30')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('INSERT IGNORE INTO review.lock_probe VALUES (3, 0);', result.stderr.decode())
+        output = result.stdout.decode()
+        # COMMIT comes after the session stays idle in its transaction: a SLEEP
+        # stopped by KILL QUERY returns without an error and would otherwise commit.
+        self.assertIn('BG|mysql-5.7|0|BEGIN; UPDATE review.lock_probe SET v=v+1 WHERE id=3; '
+                      'SELECT SLEEP(30);|60|COMMIT;', output)
+        self.assertIn('BG|mysql-5.7|1|SET SESSION innodb_lock_wait_timeout=100; '
+                      'UPDATE review.lock_probe SET v=v+1 WHERE id=3;', output)
+
+    def test_rollback_doubles_and_bounds_the_last_insert(self):
+        for initial, expected_inserts in ((0, 4), (2, 2), (10, 0)):
+            with self.subTest(initial=initial):
+                result, count = self.run_lab('cmd_rollback mysql-5.7 5 30', initial)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(count, max(5, initial))
+                sql = result.stderr.decode()
+                self.assertEqual(sql.count('SQL|INSERT INTO review.rollback_probe'), expected_inserts)
+                self.assertIn('ENGINE=InnoDB;', sql)
+                self.assertNotIn('WITH RECURSIVE', sql)
+                self.assertIn('BG|mysql-5.7|0|BEGIN; UPDATE review.rollback_probe SET v=v+1;|30|ROLLBACK;',
+                              result.stdout.decode())
+        for rows in ('0', '-1', 'x'):
+            result, _ = self.run_lab('cmd_rollback mysql-5.7 %s 30' % rows)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('ROWS must be a positive whole number', result.stderr.decode())
+
+    def test_help_and_dispatcher_include_scenarios(self):
+        result = subprocess.run(["bash", str(SCRIPTS / "ga-matrix.sh")], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('locks-busy NAME SECONDS', result.stdout.decode())
+        self.assertIn('rollback NAME ROWS SECONDS', result.stdout.decode())
+        for command, usage in (("locks-busy", "locks-busy NAME SECONDS"),
+                                ("rollback", "rollback NAME ROWS SECONDS")):
+            result = subprocess.run(["bash", str(SCRIPTS / "ga-matrix.sh"), command],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('usage: ' + usage, result.stderr.decode())
+
+
 if __name__ == "__main__":
     unittest.main()
