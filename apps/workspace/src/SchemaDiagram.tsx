@@ -9,12 +9,18 @@ import { autoLayout, boundedCoordinate, COLUMN_HEIGHT, conceptualRelationship, d
   MAX_IMPORT_BYTES, relationshipPath, relationshipMarkerPath, relationshipEndpoints, cardinalityLabel, TABLE_WIDTH, tableHeight, tableLabel, validateDiagram, withDiagramLayout, rebuildDiagramLayout,
   type DiagramDocument, type DiagramRelationship, type Point, type SchemaDiagram } from "./schemaDiagramModel";
 import { Icon } from "./components";
+import { useUiPreferences } from "./uiPreferences";
+import { useWheelZoom } from "./wheelZoom";
 import "./schema-diagram.css";
 
 type Format = "sql" | "mermaid" | "json";
 type Viewport = { x: number; y: number; zoom: number };
 type ExportFile = { text: string; extension: string; mime: string; warnings: string[] };
 const clampZoom = (zoom: number) => Math.max(.15, Math.min(2, zoom));
+function zoomAt(v: Viewport, factor: number, cx: number, cy: number): Viewport {
+  const zoom = clampZoom(v.zoom * factor), scale = zoom / v.zoom;
+  return { zoom, x: cx + (v.x - cx) * scale, y: cy + (v.y - cy) * scale };
+}
 function download(file: ExportFile) {
   const url = URL.createObjectURL(new Blob([file.text], { type: file.mime }));
   const a = document.createElement("a"); a.href = url; a.download = `database-diagram.${file.extension}`; a.click();
@@ -79,6 +85,7 @@ const MERMAID_TEMPLATES: Record<string, { label: string; theme: "dark" | "defaul
 };
 
 function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
+  const preferences = useUiPreferences();
   const [file, setFile] = useState<ExportFile | null>(null), [error, setError] = useState("");
   const [renderError, setRenderError] = useState(""), [rendering, setRendering] = useState(false);
   const [svg, setSvg] = useState<{text:string; width:number; height:number} | null>(null);
@@ -206,24 +213,11 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
     }
   }
 
-  useEffect(() => {
-    const el = frame.current;
-    if (!el) return;
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const rect = el.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      setViewport(v => {
-        const zoom = clampZoom(v.zoom * factor);
-        const scale = zoom / v.zoom;
-        return { zoom, x: cx + (v.x - cx) * scale, y: cy + (v.y - cy) * scale };
-      });
-    };
-    el.addEventListener("wheel", handleWheel, { passive: false });
-    return () => el.removeEventListener("wheel", handleWheel);
-  }, []);
+  useWheelZoom(frame, (factor, clientX, clientY) => {
+    const el = frame.current; if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setViewport(v => zoomAt(v, factor, clientX - rect.left - el.clientLeft, clientY - rect.top - el.clientTop));
+  }, preferences.diagram_zoom_speed);
 
   function onKeyDown(e: React.KeyboardEvent) {
     const step = 40;
@@ -311,6 +305,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   selectedDatabase?: string; onDatabaseChange?: (key: string, database: string) => void;
 }) {
   const reads = useConnectionReads(connection), key = connectionKey(connection);
+  const preferences = useUiPreferences();
   const [view, setView] = useState<"diagram"|"mermaid">("diagram");
   const [database, setDatabase] = useState(selectedDatabase ?? connection.database ?? ""), [search, setSearch] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState("");
@@ -330,6 +325,11 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   const [viewport, setViewport] = useState<Viewport>({ x: 30, y: 30, zoom: 1 });
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const canvas = useRef<HTMLDivElement>(null), fileInput = useRef<HTMLInputElement>(null);
+  useWheelZoom(canvas, (factor, clientX, clientY) => {
+    const el = canvas.current; if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setViewport(v => zoomAt(v, factor, clientX - rect.left - el.clientLeft, clientY - rect.top - el.clientTop));
+  }, preferences.diagram_zoom_speed);
   const request = useRef<AbortController | null>(null), revision = useRef(0), mounted = useRef(true), fileRead = useRef(0);
   const latestDoc = useRef(doc); latestDoc.current = doc;
   const dragged = useRef(false);

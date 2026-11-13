@@ -200,6 +200,25 @@ class TestWorkspaceStore(unittest.TestCase):
             self.store.set_ui_preferences({'theme': 'light', 'health_auto_production': 99})
         self.assertEqual(self.store.ui_preferences()['theme'], 'nord')
 
+    def test_diagram_zoom_speed_is_persisted_and_strict(self):
+        self.assertEqual(self.store.ui_preferences()['diagram_zoom_speed'], 100)
+        for speed in (25, 50, 100, 150, 200):
+            with self.subTest(speed=speed):
+                self.store.set_ui_preferences({'diagram_zoom_speed': speed})
+                self.assertEqual(WorkspaceStore(self.path).ui_preferences()['diagram_zoom_speed'], speed)
+        before = self.store.ui_preferences()
+        for value in (0, 300, '100', True, False, 100.0, None, [], {}):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.store.set_ui_preferences({'theme': 'fire', 'diagram_zoom_speed': value})
+                self.assertEqual(self.store.ui_preferences(), before)
+                # Invalid persisted JSON also falls back to Normal.
+                with contextlib.closing(self.store._connect()) as conn, conn:
+                    conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                                 ('ui.diagram_zoom_speed', json.dumps(value)))
+                self.assertEqual(self.store.ui_preferences()['diagram_zoom_speed'], 100)
+                self.store.set_ui_preferences({'diagram_zoom_speed': before['diagram_zoom_speed']})
+
     def test_ui_preferences_ignore_malformed_and_unknown_rows(self):
         self.store.set_ui_preferences({'theme': 'dark', 'health_auto_production': 60})
         with contextlib.closing(self.store._connect()) as conn, conn:

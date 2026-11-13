@@ -75,7 +75,7 @@ UI_INSPECTOR_MAX = 560
 UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'inspector_width': 340, 'explain_format': 'table',
                           'files_show_hidden': False, 'files_transfers_open': True, 'sidebar_width': 208,
                           'server_nav_collapsed': True, 'health_auto_production': -1,
-                          'health_auto_development': -1}
+                          'health_auto_development': -1, 'diagram_zoom_speed': 100}
 
 
 def _valid_ui_preference(key, value):
@@ -91,6 +91,8 @@ def _valid_ui_preference(key, value):
         return isinstance(value, bool)
     if key in ('health_auto_production', 'health_auto_development'):
         return type(value) is int and value in (-1, 0, 10, 30, 60)
+    if key == 'diagram_zoom_speed':
+        return type(value) is int and value in (25, 50, 100, 150, 200)
     return False
 
 

@@ -2,6 +2,8 @@
 
 Database diagram helps you explore the relationships in a schema. Schema versions lets you save definitions locally and compare them with another version, a file, or a live database.
 
+Use the mouse wheel or trackpad to zoom the Database diagram and Mermaid preview around the pointer. Adjust **Diagram wheel zoom speed** in **Settings > Workspace** to make each step slower or faster.
+
 ## Compare the intended source with the target
 
 The **source** is the schema to match. The **target** is the schema that would change. The comparison lists differing objects and objects found only on one side, with definitions side by side.
