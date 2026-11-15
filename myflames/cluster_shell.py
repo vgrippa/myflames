@@ -89,12 +89,15 @@ def error_text(stderr, stdout=""):
     where = next((int(m.group(1)) for m in map(_STDIN_LINE.search, lines) if m), None)
     shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
     mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
-    message = next((_STDIN_LINE.sub("", line).strip() for line in lines
-                    if re.search(r"Error|error|\(\w+Error\)", line)), None)
+    # The numbered exception is more specific than preceding progress or ERROR lines.
+    message = next((line for line in lines if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
+    if message is None:
+        message = next((line for line in lines if re.search(r"^ERROR:|Error|error|\(\w+Error\)", line)), None)
     if message is None and where is None and shell_code is None and mysql_code is None:
         return None
     message = message if message is not None else lines[0]
     message = _STDIN_LINE.sub("", message).strip()
+    message = re.sub(r"^ERROR:\s*", "", message)
     if where is None and shell_code is None and mysql_code in CONNECT_ERRORS:
         # The first session could not be opened: no statement was read.
         return "ERROR %d: %s" % (mysql_code, message)

@@ -448,6 +448,29 @@ class TestEffects(unittest.TestCase):
 
 
 class TestErrorText(unittest.TestCase):
+    def test_live_force_primary_exception_takes_priority_over_noise(self):
+        stderr = ("Cannot set LC_ALL to locale en_US.UTF-8: No such file or directory\n"
+                  "Failing-over primary cluster of the clusterset to 'csb'\n"
+                  "* Verifying primary cluster status\n"
+                  "\x1b[31mERROR: \x1b[0mThe PRIMARY cluster 'csa' is still available and has quorum.\n"
+                  "ClusterSet.forcePrimaryCluster: PRIMARY cluster 'csa' is still available (MYSQLSH 51615)\n"
+                  " at STDIN:1\n")
+        expected = ("ERROR 51615 at line 1: ClusterSet.forcePrimaryCluster: PRIMARY cluster 'csa' is still "
+                    "available (MYSQLSH 51615)")
+        for locale_warning in (True, False):
+            with self.subTest(locale_warning=locale_warning):
+                output = stderr if locale_warning else stderr.split('\n', 1)[1]
+                self.assertEqual(cluster_shell.error_text(output), expected)
+
+    def test_coloured_error_prefix_without_a_number(self):
+        self.assertEqual(cluster_shell.error_text("\x1b[31mERROR: \x1b[0mSomething failed\n at STDIN:1\n"),
+                         'ERROR 0 at line 1: Something failed')
+
+    def test_server_error_takes_priority_over_other_error_lines(self):
+        self.assertEqual(cluster_shell.error_text(
+            'ERROR: Operation failed\nCluster.operation: MySQL Error 3092: Not configured\n at STDIN:2\n'),
+            'ERROR 3092 at line 2: Cluster.operation: MySQL Error 3092: Not configured')
+
     def test_progress_without_exception_evidence_is_not_an_error(self):
         self.assertIsNone(cluster_shell.error_text('INFO: Connecting\n', 'Synchronizing transactions...\n'))
         self.assertIsNone(cluster_shell.error_text('', 'MYSQLSH is working\n'))
