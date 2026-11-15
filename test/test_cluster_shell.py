@@ -415,9 +415,12 @@ class TestEffects(unittest.TestCase):
     def test_clusterset_channel_is_copied_from_the_local_read(self):
         report = F.report('ic-8.4-clusterset-replica')
         after = m._after(report, {})
-        self.assertEqual(after['cs_channel'], {'source': 'mf-main-1:3306', 'receiver_state': 'ON'})
+        self.assertEqual(after['cs_channel'], {'source': 'mf-main-1:3306', 'receiver_state': 'ON',
+                                              'applier_state': 'ON'})
         report['clusterset']['channel']['receiver_state'] = 'OFF'
+        report['clusterset']['channel']['applier_state'] = 'OFF'
         self.assertEqual(after['cs_channel']['receiver_state'], 'ON', 'the before read stays unchanged')
+        self.assertEqual(after['cs_channel']['applier_state'], 'ON', 'the before read stays unchanged')
 
     def test_channel_row_appears_only_when_either_read_has_a_channel(self):
         report = F.report('ic-8.4-clusterset-primary')
@@ -432,9 +435,9 @@ class TestEffects(unittest.TestCase):
                             [['Primary cluster', 'mfcluster', 'mfcluster'], ['Invalidated', 'none', 'none']])
                 self.assertEqual(m._effect(plan, before, before), expected)
                 self.assertEqual(m._effect(plan, before, after),
-                                 expected + [['ClusterSet channel', 'Not readable', 'mf-a:3306 ON']])
+                                 expected + [['ClusterSet channel', 'Not readable', 'mf-a:3306 receiver ON']])
                 self.assertEqual(m._effect(plan, after, before),
-                                 expected + [['ClusterSet channel', 'mf-a:3306 ON', 'Not readable']])
+                                 expected + [['ClusterSet channel', 'mf-a:3306 receiver ON', 'Not readable']])
 
     def test_channel_does_not_change_other_actions_effects(self):
         report = F.report('ic-8.4-clusterset-replica')
@@ -698,11 +701,38 @@ class Endpoints(Home):
                         result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
                     self.assertEqual(result['status'], 'partial', result)
                     now = ('Not readable' if change == 'removed' else
-                           '%s %s' % (after['clusterset']['channel']['source'],
-                                      after['clusterset']['channel']['receiver_state']))
-                    self.assertEqual(result['effect'], [['ClusterSet channel', '%s %s' % (
-                        before_channel['source'], before_channel['receiver_state']), now]])
+                           '%s receiver %s, applier %s' % (after['clusterset']['channel']['source'],
+                                                          after['clusterset']['channel']['receiver_state'],
+                                                          after['clusterset']['channel']['applier_state']))
+                    self.assertEqual(result['effect'], [['ClusterSet channel', '%s receiver %s, applier %s' % (
+                        before_channel['source'], before_channel['receiver_state'], before_channel['applier_state']),
+                        now]])
                     self.assertEqual(audit.complete.call_args[1]['message'], result['message'])
+
+    def test_shell_error_after_an_applier_only_change_is_partial(self):
+        for action in ('set_primary_cluster:mfcluster', 'force_primary_cluster', 'rejoin_cluster:mfcluster',
+                       'switchover'):
+            with self.subTest(action=action):
+                report = F.report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
+                                  else 'ic-8.4-clusterset-replica')
+                target = (next(x for x in report['members'] if x['role'] == 'SECONDARY')
+                          if action == 'switchover' else local(report))
+                plan = m.plan_action(report, action, target['key'], CHECKS)
+                after = json.loads(json.dumps(report))
+                self.assertEqual(report['clusterset']['channel']['applier_state'], 'ON')
+                after['clusterset']['channel']['applier_state'] = 'OFF'
+                conn = Writes(F.conn('ic-8.4-clusterset-replica'))
+                shell = FakeShell(ConnectorError('mysqlsh exited 1: ERROR 51615 at line 1: operation refused'))
+                audit = mock.Mock(password=None)
+                with mock.patch.object(m, 'read_status', side_effect=[report, after]), \
+                        mock.patch.object(cluster_shell.ShellWriter, 'run_write', autospec=True,
+                                          side_effect=shell):
+                    result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
+                self.assertEqual(result['status'], 'partial', result)
+                self.assertEqual(result['effect'], [['ClusterSet channel',
+                                                    'mf-main-1:3306 receiver ON, applier ON',
+                                                    'mf-main-1:3306 receiver ON, applier OFF']])
+                self.assertEqual(audit.complete.call_args[1]['message'], result['message'])
 
     def test_sql_refusal_keeps_the_default_message(self):
         report = F.report('ic-8.4-healthy')

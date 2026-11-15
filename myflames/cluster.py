@@ -2435,7 +2435,9 @@ def _effect(plan, before, after):
 
     def channel(side):
         item = side.get("cs_channel") or {}
-        return " ".join(x for x in (item.get("source"), item.get("receiver_state")) if x) or None
+        states = ", ".join("%s %s" % (label, item[key]) for label, key in
+                           (("receiver", "receiver_state"), ("applier", "applier_state")) if item.get(key))
+        return " ".join(x for x in (item.get("source"), states) if x) or None
 
     action = _action_name(plan["action"])[0]
     if action in ("switchover", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
@@ -2741,7 +2743,8 @@ def _after(report, plan):
         out["cs_primary"] = cs.get("primary_cluster")
         out["cs_invalidated"] = sorted(c.get("name") or "?" for c in cs.get("clusters") or () if c.get("invalidated"))
         if cs.get("channel") is not None:
-            out["cs_channel"] = {key: cs["channel"].get(key) for key in ("source", "receiver_state")}
+            out["cs_channel"] = {key: cs["channel"].get(key) for key in
+                                 ("source", "receiver_state", "applier_state")}
     return out
 
 
