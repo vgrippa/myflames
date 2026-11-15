@@ -139,7 +139,8 @@ Server, MySQL 8.0 and MariaDB 11.5+ (whose TIMESTAMP reaches 2106).
 The workspace includes the Query editor's persistent sessions, System, Light, Dark
 and 14 named app-wide themes through Search (the Settings picker follows separately), Parameters (AWS RDS-style parameter group table, inline edits, batch review up to 25 changes, and Session handoff to the editor), Users and roles with
 new grant scopes and batch review, and Database diagram with a Diagram | Mermaid view (`mermaid` 11.17.2), live metadata,
-SQL/Mermaid imports and exports, editable JSON and SVG. Diagram imports do not
+SQL/Mermaid imports and exports, editable JSON and SVG, and
+pointer-anchored wheel and trackpad zoom with a stored speed setting. Diagram imports do not
 execute SQL; save JSON to retain a layout. The live database picker and Rebuild action refresh tables, keys and relationships while retaining positions for tables that remain. Maintenance has native folder selection, tool-specific dump options, official download links and bounded release checks.
 
 Top statement details now use the available width. Supported DML can prepare a SELECT projection for individual review before capture, with the original SQL retained. Optimize table and Instruments selection (up to 2,000 rows, 500-name batched `UPDATE` statements, consumer dependencies) provide optional operations through exact SQL confirmation. A view reads when opened on screen (once per connection, while Tables and Indexes keep their schema-size consent and Error log reads on open). Learn and standalone `myflames teach` lessons share the workspace's light and dark tokens, semantic `--svg-*` drawing palette and embedded lesson toolbar. Ordinary InnoDB free space remains informational; true storage capacity monitoring is still a separate gap.

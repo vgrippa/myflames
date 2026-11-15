@@ -46,8 +46,20 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setViewport({ width: 1440, height: 1000 });
-  await page.goto(url, { waitUntil: "networkidle0" });
-  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
+  // Hold the first preference read past bounded startup: the new select
+  // must not overwrite a stored value before that read arrives.
+  let releasePreferences;
+  await page.setRequestInterception(true);
+  page.on("request", request => {
+    if (!releasePreferences && request.url().endsWith("/api/settings/ui") && request.postData() === "{}") {
+      releasePreferences = () => { void request.continue(); };
+    } else void request.continue();
+  });
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    const status = document.querySelector(".session-status");
+    return status && status.dataset.state !== "loading";
+  });
 
   const MOD = process.platform === "darwin" ? "Meta" : "Control";
   const settings = 'button[aria-label="Settings"]';
@@ -88,6 +100,14 @@ try {
   assert.equal(await text("#session-toggle-hint"), "Off clears the saved workspace. Passwords are never saved in it.");
   assert.equal(await page.$eval(".settings-page .session-toggle input", (e) => e.checked), true);
   assert.ok(await page.$(".settings-panel button ::-p-text(Start fresh)"));
+  assert.equal(await text('label[for="diagram-zoom-speed"]'), "Diagram wheel zoom speed");
+  assert.equal(await text("#diagram-zoom-speed-hint"), "How far one mouse-wheel step zooms the Database diagram and the Mermaid preview.");
+  assert.equal(await page.$eval("#diagram-zoom-speed", e => e.disabled), true, "speed is disabled while preferences load");
+  assert.ok(releasePreferences); releasePreferences();
+  await page.waitForFunction(() => document.querySelector("#diagram-zoom-speed")?.disabled === false);
+  assert.equal(await page.$eval("#diagram-zoom-speed", e => e.value), "100");
+  assert.deepEqual(await page.$$eval("#diagram-zoom-speed option", els => els.map(e => [e.value,e.textContent])),
+    [["25","Slowest"],["50","Slow"],["100","Normal"],["150","Fast"],["200","Fastest"]]);
   await openSection("Updates and news");
   assert.equal(await text("#update-auto-hint"), "Asks GitHub for the latest release when myflames opens and once a day.");
   assert.equal(await text("#news-toggle-hint"), "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.");
@@ -125,7 +145,7 @@ try {
   assert.deepEqual(await currentPlace(), ["Home"], "Back returns to the previous place");
   await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
   await page.waitForSelector("dialog.command-palette[open]");
-  await page.type('input[aria-label="Search commands"]', "Settings");
+  await page.type('input[aria-label="Search commands"]', "zoom");
   await page.keyboard.press("Enter");
   await page.waitForSelector(".settings-page");
   await page.keyboard.press("Escape");
@@ -141,6 +161,13 @@ try {
     const reply = await fetch('/api/settings/ui', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof')}, body:'{}'}).then(r => r.json());
     return document.documentElement.dataset.theme === "dark" && reply.preferences?.theme === "dark";
   });
+  await openSection("Workspace");
+  for (const speed of ["25","50","100","150","200"]) {
+    const saving = page.waitForResponse(r => r.url().endsWith("/api/settings/ui") &&
+      (r.request().postData() || "").includes(`"diagram_zoom_speed":${speed}`));
+    await page.select("#diagram-zoom-speed", speed);
+    assert.equal((await saving).status(),200);
+  }
   await openSection("Query editor");
   await page.waitForSelector(".settings-page .settings-editor-group");
   let saved = page.waitForResponse((r) => r.url().includes("/api/settings/editor") && (r.request().postData() || "").includes('"soft_wrap":true'));
@@ -161,6 +188,9 @@ try {
 
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark", "the reload applies the theme");
   await page.waitForSelector(".settings-page");
+  await openSection("Workspace");
+  await page.waitForFunction(() => document.querySelector("#diagram-zoom-speed")?.value === "200");
+  assert.equal(await page.$eval("#diagram-zoom-speed", e => e.disabled), false, "saved speed is usable after reload");
   await openSection("Query editor");
   await page.waitForFunction(() => {
     const row = [...document.querySelectorAll(".settings-page .settings-editor-group .session-toggle")]
@@ -249,6 +279,11 @@ try {
       else assert.equal(m.sideBySide, true, `${theme} at 1440 px: the section list sits beside the controls (${JSON.stringify(m)})`);
       await page.evaluate(() => { for (let e = document.querySelector(".settings-page"); e; e = e.parentElement) e.scrollTop = 0; });
       await page.screenshot({ path: path.join(directory, `settings-${theme}-${width}.png`) });
+      await openSection("Workspace");
+      assert.equal(await overflow(),0,`Workspace at ${width} px has no horizontal overflow`);
+      assert.ok(await page.$eval("#diagram-zoom-speed", e => { const r=e.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth; }));
+      await page.screenshot({ path: path.join(directory, `settings-workspace-${theme}-${width}.png`) });
+      await openSection("Appearance");
     }
   }
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });

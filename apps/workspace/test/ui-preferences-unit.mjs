@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 const bundled = await build({stdin:{contents:'export * from "./src/uiPreferences"; export * from "./src/themes";',resolveDir:fileURLToPath(new URL('../',import.meta.url))},bundle:true,write:false,format:'iife',globalName:'Preferences',platform:'browser'});
-const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1,inspector_width:340,explain_format:'table',files_show_hidden:false,files_transfers_open:true};
+const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1,inspector_width:340,explain_format:'table',files_show_hidden:false,files_transfers_open:true,diagram_zoom_speed:100};
 function harness(timers = {setTimeout,clearTimeout}) {
   const requests=[],style={},storage=new Map([['myflames.inspector.width','420'],['myflames.editor.explainFormat','json'],['myflames.files.showHidden','1'],['myflames.files.transfersOpen','0'],['myflames.serverNavCollapsed','false'],['myflames.health.auto.production','30'],['myflames.health.auto.development','0']]);
   const sandbox={console,...timers,URLSearchParams,AbortController,window:{location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)}},document:{documentElement:{dataset:{theme:'dark'},style:{setProperty:(k,v)=>style[k]=v}}}};
@@ -140,3 +140,104 @@ console.log('UI preference delayed drains, concurrent queued writes, hung-write 
   assert.equal(store.currentUiPreferences().inspector_width,420,'legacy width is read only once');
   assert.equal(store.currentUiPreferences().explain_format,'json','legacy Explain format is read only once');
 }
+
+{
+  const {store,requests}=harness();
+  assert.equal(store.currentUiPreferences().diagram_zoom_speed,100,'Normal is the fallback');
+  const load=store.loadUiPreferences(); await tick();
+  requests.shift().reply({...defaults,diagram_zoom_speed:50}); await load;
+  assert.equal(store.currentUiPreferences().diagram_zoom_speed,50,'stored speed is restored');
+  const published=[];
+  const stop=store.subscribeUiPreferences(value=>published.push(value.diagram_zoom_speed));
+  const first=store.setUiPreference('diagram_zoom_speed',25);
+  const last=store.setUiPreference('diagram_zoom_speed',200);
+  assert.equal(store.currentUiPreferences().diagram_zoom_speed,200,'speed changes publish immediately');
+  await tick(); assert.equal(requests.length,1);
+  assert.deepEqual(requests[0].body.set,{diagram_zoom_speed:25});
+  requests.shift().reply({...defaults,diagram_zoom_speed:25}); await first; await tick();
+  assert.equal(store.currentUiPreferences().diagram_zoom_speed,200,'stale speed answer cannot undo the latest change');
+  assert.deepEqual(requests[0].body.set,{diagram_zoom_speed:200});
+  requests.shift().reply({...defaults,diagram_zoom_speed:200}); await last;
+  assert.deepEqual(published,[25,200,200]);
+  for (const speed of [25,50,100,150,200]) {
+    const saved=store.setUiPreference('diagram_zoom_speed',speed); await tick();
+    assert.deepEqual(requests[0].body.set,{diagram_zoom_speed:speed});
+    requests.shift().reply({...defaults,diagram_zoom_speed:speed}); await saved;
+    assert.equal(store.currentUiPreferences().diagram_zoom_speed,speed);
+  }
+  stop();
+}
+console.log('Diagram zoom speed: Normal fallback, stored restore, live subscribers and serialized persistence passed.');
+
+// Execute the real wheel hook's effects against controlled DOM/RAF probes.
+// Browser geometry is exercised separately by schema-diagram.mjs.
+{
+  const wheelBundle=await build({
+    stdin:{contents:'export * from "./src/wheelZoom";',resolveDir:fileURLToPath(new URL('../',import.meta.url))},
+    bundle:true,write:false,format:'iife',globalName:'WheelZoom',platform:'browser',
+    plugins:[{name:'controlled-hooks',setup(builder){
+      builder.onResolve({filter:/^react$/},()=>({path:'react',namespace:'controlled-hooks'}));
+      builder.onLoad({filter:/.*/,namespace:'controlled-hooks'},()=>({contents:'export const {useRef,useEffect}=globalThis.__hooks;'}));
+    }}],
+  });
+  const refs=[],effects=[],pending=[],frames=new Map();
+  let refIndex=0,effectIndex=0,nextFrame=0,canceledFrames=0;
+  const sandbox={
+    __hooks:{
+      useRef:initial=>refs[refIndex++] ||= {current:initial},
+      useEffect:(callback,deps)=>{
+        const index=effectIndex++,old=effects[index];
+        if (!old || !deps || deps.some((value,i)=>value!==old.deps?.[i])) pending.push(()=>{
+          old?.cleanup?.(); effects[index]={deps,cleanup:callback()};
+        });
+      },
+    },
+    requestAnimationFrame:callback=>{const id=++nextFrame;frames.set(id,callback);return id;},
+    cancelAnimationFrame:id=>{canceledFrames++;frames.delete(id);},
+  };
+  vm.runInNewContext(wheelBundle.outputFiles[0].text,sandbox);
+  const {wheelZoomStep,useWheelZoom}=sandbox.WheelZoom;
+  const near=(value,expected)=>assert.ok(Math.abs(value-expected)<1e-12,`${value} vs ${expected}`);
+  for (const [event,expected] of [
+    [{deltaX:0,deltaY:20,deltaMode:0},-.02],
+    [{deltaX:0,deltaY:-2,deltaMode:1},.032],
+    [{deltaX:0,deltaY:.1,deltaMode:2},-.06],
+    [{deltaX:0,deltaY:10000,deltaMode:0},-.1],
+    [{deltaX:0,deltaY:-10000,deltaMode:0},.1],
+  ]) for (const speed of [25,50,100,150,200]) near(wheelZoomStep(event,speed,600),expected*speed/100);
+  for (const event of [{deltaX:0,deltaY:0},{deltaX:20,deltaY:0},{deltaX:30,deltaY:20},
+    {deltaX:0,deltaY:.001},{deltaX:0,deltaY:NaN},{deltaX:0,deltaY:Infinity}]) {
+    assert.equal(wheelZoomStep({...event,deltaMode:0},100,600),null);
+  }
+  const target=()=>({clientHeight:600,adds:0,removes:0,listener:null,
+    addEventListener(type,listener,options){assert.equal(type,'wheel');assert.equal(options.passive,false);this.listener=listener;this.adds++;},
+    removeEventListener(type,listener){assert.equal(type,'wheel');assert.equal(listener,this.listener);this.listener=null;this.removes++;},
+    fire(event){let prevented=false;this.listener({...event,deltaX:event.deltaX??0,deltaY:event.deltaY??0,deltaMode:event.deltaMode??0,
+      clientX:event.clientX??40,clientY:event.clientY??60,preventDefault(){prevented=true;}});return prevented;},
+  });
+  const ref={current:null},applied=[],element=target();
+  const render=(node,speed,apply=(...args)=>applied.push(args))=>{
+    ref.current=node;refIndex=effectIndex=0;useWheelZoom(ref,apply,speed);pending.splice(0).forEach(effect=>effect());
+  };
+  const flush=()=>{const callbacks=[...frames.values()];frames.clear();callbacks.forEach(callback=>callback());};
+  render(null,100);render(element,100);
+  assert.equal(element.adds,1,'conditional canvas attaches after mounting');
+  for (let i=0;i<40;i++) assert.equal(element.fire({deltaY:.5,ctrlKey:true,clientX:i,clientY:i+1}),true);
+  assert.equal(frames.size,1,'forty trackpad events share one frame');
+  assert.equal(applied.length,0,'zoom waits for the frame');flush();
+  near(applied[0][0],Math.exp(-.02));assert.deepEqual(applied[0].slice(1),[39,40],'last pointer is used');
+  for (const event of [{deltaX:20},{deltaX:30,deltaY:20},{deltaY:0}]) assert.equal(element.fire(event),false);
+  assert.equal(frames.size,0,'ignored events do not schedule work');
+  const latest=[];render(element,200,(...args)=>latest.push(args));
+  assert.equal(element.adds,1,'ordinary renders retain the listener');
+  element.fire({deltaY:20});flush();near(latest[0][0],Math.exp(-.04));
+  assert.equal(applied.length,1,'the callback is current');
+  element.fire({deltaY:50});render(null,200);
+  assert.equal(element.removes,1);assert.equal(frames.size,0,'detach cancels pending work');
+  const replacement=target();render(replacement,50);
+  replacement.fire({deltaY:-2,deltaMode:1});flush();near(applied.at(-1)[0],Math.exp(.016));
+  replacement.fire({deltaY:20});effects.forEach(effect=>effect.cleanup?.());
+  assert.equal(replacement.removes,1);assert.equal(frames.size,0,'unmount cancels the pending frame');
+  assert.equal(canceledFrames,2);
+}
+console.log('Wheel normalization, caps, speed, trackpad/pinch batching, current callbacks, conditional mounts and unmount cancellation passed.');
