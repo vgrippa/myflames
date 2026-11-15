@@ -78,6 +78,24 @@ export async function openRefreshMenu(page) {
 export async function layoutMatrix(page, shotsDir, name, { frame } = {}) {
   const height = page.viewport()?.height || 900;
   const written = [];
+  const settleFrame = () => page.evaluate(async () => {
+    // Finish finite motion without blocking on continuous topology animations.
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(document.getAnimations()
+          .filter((animation) => {
+            const timing = animation.effect?.getComputedTiming?.();
+            return timing && timing.iterations !== Infinity;
+          })
+          .map((animation) => animation.finished.catch(() => {}))),
+        new Promise((resolve) => { timer = setTimeout(resolve, 2000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   for (const width of [1440, 720]) {
     await page.setViewport({ width, height });
     for (const theme of ['light', 'dark']) {
@@ -87,6 +105,7 @@ export async function layoutMatrix(page, shotsDir, name, { frame } = {}) {
           localStorage.setItem('myflames.theme', t);
         } catch {}
       }, theme);
+      await settleFrame();
       const metrics = await page.evaluate((selector) => {
         const doc = document.documentElement;
         const pageScrollWidth = doc.scrollWidth;
@@ -128,6 +147,7 @@ export async function layoutMatrix(page, shotsDir, name, { frame } = {}) {
         );
       }
       const file = path.join(shotsDir, `${name}-${width}-${theme}.png`);
+      await settleFrame();
       await page.screenshot({ path: file });
       written.push(file);
     }
