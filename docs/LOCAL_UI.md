@@ -724,6 +724,17 @@ once per connection; **Refresh** reads again, and the Server place's
 **Refresh all** reads it too. A member's inspector offers the changes that do
 what they say on that server (see [Cluster changes](#cluster-changes)).
 
+For an InnoDB ClusterSet (metadata 2.1.0 or later), **Topology** draws a band
+above the group, with an arrow from the primary cluster to each replica
+cluster. The link is broken when the channel stops or the cluster is
+invalidated. It lists the other clusters' instances from shared metadata,
+with **Use** for a saved connection to one of them. On a replica cluster's
+primary, the view shows the `clusterset_replication` channel's receiver and
+applier state, last error and source. Findings flag invalidated clusters, a
+missing primary cluster, or a stopped, reconnecting or errored channel. A
+replica cluster's view is its replicated metadata copy and may be behind;
+the view says so.
+
 One scale for every kind: **OK** with quorum and every expected member present
 and healthy; **Watch** while quorum holds but a member is missing (a Galera
 node not in the component, an InnoDB Cluster member missing from the group or
@@ -799,7 +810,9 @@ A member's inspector shows the changes it offers as buttons, and only these:
   member is recovering or unreachable: `group_replication_set_as_primary` with
   the member's UUID. The current primary becomes a read-only secondary once its
   running transactions finish. In an InnoDB ClusterSet replica cluster the
-  server refuses; use MySQL Shell's `setPrimaryInstance` there.
+  change uses MySQL Shell's `Cluster.setPrimaryInstance()` when MySQL Shell
+  8.0.27 or later is installed: the server's Group Replication switchover
+  function refuses while the replica channel runs on the primary.
 - **Stop Group Replication…** on the member you are connected to: it leaves the
   group and becomes read-only. You type its name when it is the primary (the
   group elects another) or the last ONLINE member (the group stops and needs a
@@ -810,8 +823,25 @@ A member's inspector shows the changes it offers as buttons, and only these:
   offered Stop first: fix the cause in the error log, then start it.
 - **Switch the group to multi-primary…** or **single-primary…** for Group
   Replication without InnoDB Cluster metadata, with the member's name typed.
-  For InnoDB Cluster use MySQL Shell, which also sets `auto_increment` and the
-  metadata.
+- **Switch the cluster to multi-primary…** or **Switch the cluster to
+  single-primary…** for MySQL InnoDB Cluster, with MySQL Shell (`mysqlsh`)
+  8.0 or later installed on this computer, only outside a ClusterSet and with
+  every member ONLINE. MySQL Shell also sets `auto_increment_increment` and
+  `auto_increment_offset` on every member and the mode in the metadata. You
+  type the cluster name.
+- **Rejoin to the cluster…** for a MISSING member in the metadata, with MySQL
+  Shell 8.1 or later installed, through the connected ONLINE member with
+  quorum. Recovery is incremental only: if the transactions it needs are
+  gone from every member's binary logs, MySQL Shell refuses and nothing
+  changes. Run `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in
+  MySQL Shell for clone recovery. The same account must exist on the missing
+  member too. You type the member name.
+- With MySQL Shell 8.0.27 or later installed, make a replica cluster the
+  ClusterSet's primary cluster (a controlled switchover), **Fail over to this
+  cluster…** when the primary cluster is lost, or rejoin an invalidated
+  cluster. You type the target cluster name. Failover is refused while the
+  primary cluster is reachable and healthy; transactions it committed that
+  this cluster did not receive are lost.
 - On MariaDB Galera, on the node you are connected to: **Desync this node…**
   (`wsrep_desync = ON`: out of flow control, for example for a backup; it keeps
   applying writes and its reads can be stale) and **Resync this node…**
@@ -826,6 +856,15 @@ Percona XtraDB Cluster and Galera Cluster for MySQL offer no change yet, and
 `SET GLOBAL wsrep_on` is never offered. Every change works like ProxySQL's
 (below): the review, the policy, the typed name, the check right before
 sending, the result panel and the Audit log.
+
+The review shows the exact MySQL Shell call. Before sending, myflames checks
+it again against a fresh read; a mismatch sends nothing. The account passes
+through a private option file, and MySQL Shell runs with an empty temporary home. A
+socket connection uses that socket. Over SSH, the review warns that only the
+connected member is reached through the tunnel; MySQL Shell connects to the
+other members at their metadata addresses directly. An operation has a
+600-second time limit. After an error, myflames reads the cluster again and
+reports a partial change if anything it can see changed.
 
 **ProxySQL** (a place of its own, right after Cluster) reads the ProxySQL
 Admin interface the connection in use reaches (port 6032 by default; save a

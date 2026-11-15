@@ -1099,8 +1099,10 @@ messages, never in the notes.
   ranges), no chains of semicolons or stacked parentheses, no "not X, but Y"
   frames unless the contrast is the news, no lists padded to three, no filler
   such as seamless, robust, comprehensive, leverage, ensure or notably, no
-  emojis, no notes about who wrote or reviewed the change. Every fact comes
-  from the change itself.
+  emojis, no notes about who wrote or reviewed the change. A community
+  contribution is credited at the end of its entry: 'Contributed by <name>
+  ([@handle](https://github.com/handle)) in [#N](pull request URL).' Every fact
+  comes from the change itself.
 
 ### Shared view presentation
 
@@ -4249,6 +4251,8 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 - `python3 -m myflames cluster [--fail-on {problem,watch}] [--json] [-o PATH] [-q]` (`cluster-1.0`, `read_status`), connection flags and `--profile` as the other live commands, query timeout 30 s. Tag `/*myflames:cluster*/`; every statement is a `SELECT` or `SHOW GLOBAL`. Exit 0 (also for a server that is not part of a cluster), 1 when a finding is at the `--fail-on` level or worse, 2 for bad input, an account that cannot read the cluster tables (`available: false`; `--json` still writes the report to stdout or `-o`) or a connection failure.
 - Detection: Galera when the global `wsrep_on` is ON (MariaDB), or, when SHOW GLOBAL VARIABLES has no `wsrep_on` (Percona XtraDB Cluster 8.4, verified live on 8.4.11, where it is session-only), when `wsrep_provider` names a provider. MariaDB with the global `wsrep_on` OFF and a provider loaded reads the wsrep status anyway: while `wsrep_connected` is ON or `wsrep_cluster_size` above 0 the node is still in the component (the server-level names stay listed, the provider's are hidden) and is reported as Galera with the problem finding `wsrep_off`; when the account cannot read that status, `available: false` (unreadable is not disconnected); otherwise not a cluster ("the Galera provider is not connected"). `kind` is `pxc` when `version_comment` names Percona XtraDB Cluster, else `galera` (labelled MariaDB Galera Cluster on MariaDB and Galera Cluster for MySQL on MySQL, `cluster.kind_label`, `kindLabel`). Otherwise, on MySQL 8.0+, Group Replication from `performance_schema.replication_group_members` (with `MEMBER_COMMUNICATION_STACK` from 8.0.27); a single OFFLINE row without a group name is the idle plugin. `innodb_cluster` when `mysql_innodb_cluster_metadata.v2_gr_clusters` lists the group name, else `group_replication`. Without a group, a server whose `@@server_uuid` is a `read-replica` instance in its replicated copy of `v2_instances` is an InnoDB Cluster read replica (`kind: innodb_cluster`, the local member with role `READ_REPLICA` judged by its `read_replica_replication` channel in `replication_connection_status` and `replication_applier_status`: both ON ok, the receiver CONNECTING watch (also with its last error kept while it retries, as MySQL Shell tells it apart), a stopped receiver or applier, or an error while not connecting, problem; a table that cannot be read leaves it unknown unless what was read shows a failure; the group instances from the metadata with state null, never MISSING). MariaDB without wsrep and MySQL without a group return `kind: "none"` with `message`.
 - Reads: preflight `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)` and `Uptime`; Galera `SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\_%'`, `mysql.wsrep_cluster_members` (membership of the last Primary view; on a non-Primary node the members come from `wsrep_incoming_addresses`), and on PXC `performance_schema.pxc_cluster_view`; Group Replication `replication_group_member_stats`, then `information_schema.SCHEMATA`, `schema_version`, `v2_gr_clusters`, `v2_instances` (`attributes->>'$.instance_type'`: read replicas from 2.2.0 are listed apart, never MISSING) and `v2_routers` (the five port keys only, by `attributes->>'$.KEY'`, so the router configuration and its metadata account never leave the server; from metadata 2.4.0 `COALESCE(router_stats.last_check_in, routers.last_check_in)`, as MySQL Shell reads it; also `UNIX_TIMESTAMP` of the check-in for its UTC time).
+- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): `v2_cs_members` and `v2_cs_clustersets` identify the set's clusters, primary cluster and invalidated clusters. The other clusters' instances come from the shared `v2_instances` metadata, without reading their live member states. On an ONLINE primary of a replica cluster, read the `clusterset_replication` channel from `performance_schema.replication_connection_status`, `replication_applier_status` and `replication_connection_configuration`: receiver and applier state, last error number and message, and source address. Findings flag this or another invalidated cluster, no recorded primary cluster, and a stopped, reconnecting or errored channel. A replica cluster's view comes from its replicated metadata copy and may be behind; the report notes this. `ClusterTopology` draws a ClusterSet band above the group with an arrow from the primary cluster to each replica cluster, broken when the channel stops or a cluster is invalidated, and Use for saved connections to the other clusters' instances.
+- The `cluster-1.0` JSON report has an optional `clusterset` object (`docs/schemas/cluster-1.0.json`), absent outside a ClusterSet: `name, local_cluster, local_role, invalidated, primary_cluster, clusters[] {name, role, invalidated, local, instances[] {label, address, server_uuid, instance_type, source}}, channel {receiver_state?, applier_state?, last_error_number?, last_error_message?, source?} | null, from_local_copy`. The deprecated command line's text output does not show the ClusterSet.
 - Envelope: `schema_version, engine, server_version, version_comment, captured_at, uptime_s, performance_schema, available, message, kind, server {hostname, port, report_host, server_uuid}, cluster {name, uuid, size, expected_size, expected_source, component, quorum, failures_tolerated, topology, provider}, status, status_why, local, members[] {key, name, address, host, port, uuid, state, state_source, role, version, local, status, status_why, metrics, label?, endpoint?, in_metadata?, instance_type?, communication_stack?, pxc_status?, segment?}, galera {..., wsrep_on, address_nodes, address_names_this_node, missing, incomplete}, group_replication, metadata {..., local_copy}, routers[] {id, name, product, address, version, last_check_in, last_check_in_age_s, last_check_in_utc, from_local_copy, ports}, findings[] {id, status, title, text, member?}, summary, statements, notes`. Members are sorted by name; `member.host` and `port` are separate (an IPv6 host is bracketed only in `address`).
 - Severity, one scale for every kind (CLI, JSON, MCP, the place, the sidebar, `--fail-on`): `ok` with quorum and every expected member present and healthy; `watch` while quorum holds but a member is missing (a Galera node not in the component, an InnoDB Cluster member MISSING or UNREACHABLE), in a transitional state (Donor/Desynced, Joiner, Joined, Joining, RECOVERING), or one more failure would lose the majority (`no_tolerance`, "Cannot survive another failure"); `problem` without quorum or outside a Primary component, for a member in ERROR, when the connected member is OFFLINE or in ERROR, or a Galera node that does not replicate (`wsrep_off`).
 - Members as this server sees them: on Galera only the connected node has a state (`wsrep_local_state_comment`); the others have `state: null`, status `unknown` and read In the component (state and queues are read on that node), never a guess. On PXC the other nodes' states come from `pxc_cluster_view`, shown in the node's own words (DONOR as Donor/Desynced, JOINER Joiner, JOINED Joined, PRIMARY Joining, NON-PRIMARY Non-Primary, SYNCED Synced; SYNCED is ok, the others watch, each with its own sentence) and the raw STATUS in `pxc_status`. Group Replication members carry MEMBER_STATE and MEMBER_ROLE; an UNREACHABLE member keeps the role of its status (`ps_information.cc` overrides only the state). A group instance in the metadata but not in the group is `MISSING` (as MySQL Shell calls it) unless the connected member is OFFLINE or in ERROR, which sees no group: then `cluster.size` is null (it lists only itself), the other instances read Not visible here with a reason that names the connected member, `metadata.local_copy` is `left_group` and each router's `from_local_copy` marks its check-in as this member's frozen copy. Galera port 0 in an incoming address (`wsrep_node_incoming_address` AUTO) is `port: null` and every surface shows the host alone, with one note (names in member order). When `mysql.wsrep_cluster_members` cannot be used, PXC's `pxc_cluster_view` rows are matched to the incoming addresses by `LOCAL_INDEX` (the same view order). This node keeps the key `node:<gcomm uuid>` and its UUID in Primary and non-Primary components.
@@ -4267,7 +4271,7 @@ tab or context menu; `cluster.available_actions(report, member_key, checks)`, `a
 
 | Action | Statement (tagged `/*myflames:cluster_op*/`) | Offered when | Typed name |
 | --- | --- | --- | --- |
-| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+, single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
+| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+, except a ClusterSet replica cluster (MySQL Shell route below); single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
 | `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member, ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member |
 | `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member, OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read at plan and send time; ON or unreadable refuses) | no |
 | `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication only (not InnoDB Cluster), on the connected member, group ready as for switchover | the connected member's name |
@@ -4275,7 +4279,87 @@ tab or context menu; `cluster.available_actions(report, member_key, checks)`, `a
 | `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node, `wsrep_desync` ON | no |
 | `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node, `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name |
 
-Never use "GCache" wording. Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), InnoDB Cluster mode switches (MySQL Shell's commands also set `auto_increment_*` and the metadata), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). The send waits up to 120 s (START and the UDFs wait for the group). The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
+MySQL Shell actions are offered only in the Cluster place for a MySQL InnoDB
+Cluster when `mysqlsh` is installed on this computer. `cluster_shell.find_shell`
+uses the client inventory and its ownership and version checks. Mode switches
+need MySQL Shell 8.0 or later, ClusterSet changes (including Make primary within
+a replica cluster) need 8.0.27 or later, and member rejoin needs 8.1 or later.
+The connected member must be ONLINE with quorum, with no group member
+RECOVERING or UNREACHABLE. Group-wide actions appear on the connected member;
+rejoin appears on the MISSING member and Make primary on the target secondary.
+
+The reviewed statements below are JavaScript AdminAPI calls, tagged
+`/*myflames:cluster_op*/`. `Cluster` and `ClusterSet` name the AdminAPI objects;
+the sent calls get them with `dba.getCluster()` and `dba.getClusterSet()`.
+
+| Action | Reviewed call | Additional offering conditions | Typed name |
+| --- | --- | --- | --- |
+| `switch_to_multi_primary` | `dba.getCluster().switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
+| `switch_to_single_primary` | `dba.getCluster().switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
+| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | target in metadata but MISSING from the group, valid metadata address, cluster not invalidated | member name |
+| `switchover` Make primary… | `dba.getCluster().setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
+| `set_primary_cluster:<name>` | `dba.getClusterSet().setPrimaryCluster("<name>");` | target a non-invalidated replica cluster in the set, local cluster not invalidated | target cluster name |
+| `force_primary_cluster` Fail over to this cluster… | `dba.getClusterSet().forcePrimaryCluster("<local_cluster>");` | connected to a non-invalidated replica cluster | local cluster name |
+| `rejoin_cluster:<name>` | `dba.getClusterSet().rejoinCluster("<name>");` | target an invalidated cluster in the set | target cluster name |
+
+Mode switches run `Cluster.switchToMultiPrimaryMode()` or
+`Cluster.switchToSinglePrimaryMode()`: MySQL Shell runs the Group Replication
+switch, sets `auto_increment_increment` and `auto_increment_offset` on every
+member, and updates the mode in the cluster metadata. Multi-primary uses
+increment 7, or the group size when larger, and offset
+`1 + server_id % increment`; single-primary uses increment 1 and offset 2.
+Member rejoin runs through the connected ONLINE member with quorum and allows
+incremental recovery only. If the missing transactions are gone from every
+member's binary logs, MySQL Shell refuses and nothing changes; the user then
+runs `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in MySQL Shell.
+MySQL Shell connects to the missing member with this connection's account,
+which must exist there too.
+
+`ClusterSet.setPrimaryCluster(name)` is a controlled switchover: MySQL Shell
+waits for the new primary cluster to catch up and moves the replication
+channels; the old primary becomes a replica cluster. MySQL Shell refuses
+an unreachable or unhealthy primary or target, or a target with transactions
+the primary does not have. `ClusterSet.forcePrimaryCluster(name)` is an
+emergency failover to this replica cluster and invalidates the old primary.
+It refuses while the primary cluster is reachable and healthy. Transactions
+the old primary committed that this cluster did not receive are lost; the
+review warns to fence the old primary or confirm it is down before proceeding.
+`ClusterSet.rejoinCluster(name)` rejoins an invalidated cluster as a replica
+cluster, refusing errant transactions. In a replica cluster, Make primary
+uses `Cluster.setPrimaryInstance()` because the server refuses the Group
+Replication switchover function while the replica channel runs on its primary.
+ClusterSet plans warn when their metadata view comes from a replica cluster.
+
+Every MySQL Shell change uses the same reviewed-change policy, review token
+and audit path as the other Cluster changes. The exact call is shown at
+review; before sending, the plan is made again from a fresh cluster read and
+the statements and `expect` are compared. A mismatch sends nothing.
+For MySQL Shell, `expect` also binds the group members' states and roles,
+the MISSING member keys, the Shell path and, when present, the ClusterSet's
+cluster names, roles and invalidation flags. Metadata instance addresses and
+cluster names are validated before being offered, and arguments are encoded
+as JavaScript string literals.
+
+`cluster_shell.ShellWriter` sends the reviewed script on standard input to
+`mysqlsh --js --no-wizard --quiet-start=2`. The account is passed in a private
+0600 option file, never on the command line or in the environment. The Shell
+runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
+startup script or saved credential takes part. A socket connection passes
+through that socket. Over SSH, the plan warns that MySQL Shell reaches the
+connected member through the tunnel but connects to the other members at
+their metadata addresses directly. The time limit is 600 s.
+
+`cluster_shell.error_text` strips colour codes and maps a connection or login
+failure before any statement to `ERROR <n>: <message>` without a line, so the
+reviewed-write result is failed with nothing sent. A statement exception maps
+to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
+number, or 0 when neither is present. Since one AdminAPI call can fail after
+some steps ran, `verify_on_error` reads the cluster again and reports partial
+when the before/after comparison shows a visible change. A timeout or Shell
+exit without an error message leaves the outcome unknown and is never retried
+automatically. This read does not prove the state of members it cannot see.
+
+Never use "GCache" wording. Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), direct SQL mode switches on InnoDB Cluster (use the MySQL Shell calls above), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). Direct SQL sends wait up to 120 s (START and the UDFs wait for the group); MySQL Shell sends wait up to 600 s. The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
 
 ### ProxySQL
 
