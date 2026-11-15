@@ -976,6 +976,21 @@ class TestShellWriter(unittest.TestCase):
                 self.writer(socket=socket).run_write('NEVER SEND', timeout=30)
             self.assertFalse(os.path.exists(self.out))
 
+    def test_ssh_connection_sends_nothing(self):
+        from myflames import lifecycle, reviewed_writes
+        password = 'ssh-connection-secret'
+        with mock.patch.object(lifecycle, '_credentials', wraps=lifecycle._credentials) as credentials:
+            with self.assertRaises(ConnectorError) as caught:
+                self.writer(password=password, ssh_host='bastion.example').run_write('NEVER SEND', timeout=30)
+        text = str(caught.exception)
+        self.assertEqual(text, "MySQL Shell changes are not run over an SSH connection: MySQL Shell would "
+                         "connect to the other members directly, outside the tunnel, with this connection's "
+                         "user and password; nothing was sent.")
+        self.assertNotIn(password, text)
+        self.assertIsNone(reviewed_writes.error_number(text))
+        credentials.assert_not_called()
+        self.assertFalse(os.path.exists(self.out))
+
     def test_errors_in_the_reviewed_writes_shape(self):
         if os.name != 'posix':
             self.skipTest('POSIX program')

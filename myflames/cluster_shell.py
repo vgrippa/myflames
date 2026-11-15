@@ -113,6 +113,10 @@ class ShellWriter(object):
     (every other attribute is the connection's)."""
 
     def __init__(self, conn, shell):
+        if getattr(conn, "ssh_host", None):
+            raise ConnectorError("MySQL Shell changes are not run over an SSH connection: MySQL Shell would "
+                                 "connect to the other members directly, outside the tunnel, with this connection's "
+                                 "user and password; nothing was sent.")
         self._conn = conn
         self._shell = dict(shell or {})
         if not self._shell.get("path"):
