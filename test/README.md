@@ -100,7 +100,8 @@ thread pool and the slow log with `log_slow_verbosity=full`; Percona Server 8.4
 foreign key, reusable free space, view, procedure), a warm-up workload and one
 deadlock. Accounts: `root`, `mf_admin` (ALL), `mf_read` (read only); passwords
 are random, in `local/ga-matrix/credentials.env`. `up`, `down`, `status`,
-`seed`, `workload`, `locks|idle-trx|mdl NAME SECONDS`, `profiles` (saved
+`seed`, `workload`, `locks|locks-busy|idle-trx|mdl NAME SECONDS`,
+`rollback NAME ROWS SECONDS`, `profiles` (saved
 connections in an isolated `$MYFLAMES_HOME`, never `~/.myflames`: before it
 creates anything, `profiles` and `env` resolve `MYFLAMES_HOME` physically
 (`cd -P`, so `$HOME/.`, `..` after a symlink and symlinks count; a relative
@@ -109,6 +110,22 @@ anything inside `~/.myflames`, and a `$MYFLAMES_HOME/.myflames` that is the
 real store; `test/test_ga_matrix.py`) and `env`
 (JSON) are the subcommands. Run myflames against a profile with
 `HOME=$MYFLAMES_HOME MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile ga-mysql-8.4`.
+
+`locks-busy NAME SECONDS` holds row 3 of `review.lock_probe` inside an
+explicit transaction while running `SELECT SLEEP(SECONDS)`, then stays idle in
+that transaction for SECONDS + 30 before COMMIT, as an application holding its
+connection would. On MySQL, a lone SLEEP stopped by KILL QUERY returns 1
+without an error, so a COMMIT in the same batch would end the transaction at
+once. On MariaDB it fails with ERROR 1317, which ends a batch client unless
+it runs with `--force` (this scenario passes `--force`); a second session
+tries to update that row one second later. KILL QUERY stops the statement but
+leaves the transaction and its locks open until the client commits or rolls
+back, or KILL CONNECTION rolls it back. `rollback NAME ROWS SECONDS` creates
+`review.rollback_probe` if absent, fills it to at least ROWS using doubling
+`INSERT ... SELECT` (MySQL 5.7 compatible), updates every row in one transaction,
+then leaves it idle for SECONDS before ROLLBACK. Existing rows are retained.
+Use it to observe rollback progress after KILL CONNECTION; the lock report's
+post-kill changed-row count is the approximate undo still to process.
 
 ## Cluster matrix (live servers)
 

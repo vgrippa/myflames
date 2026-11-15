@@ -13,7 +13,7 @@ import type { ServerKind } from "./session";
 import { connectionKey, useConnectionReads, type Bound } from "./binding";
 import { PriorityTable, Duration, engineLabel, ms } from "./PerfShared";
 import { durationText } from "./duration";
-import { KillDialog, KillResultNote, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget } from "./Locks";
+import { KillDialog, KillResultNote, followKill, useKillReport, killRollingBack, killPollDone, killReportMatches, manualKillRefresh, reconcileTransaction, reconcileKillState, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget, type Outcome } from "./Locks";
 import { MassKillDialog } from "./MassKillDialog";
 import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege, type PrivilegeGateResult } from "./privileges";
 import { useWritePolicy } from "./Connections";
@@ -148,7 +148,61 @@ function killTarget(s: Session): KillTarget {
     rows_modified: s.trx?.rows_modified ?? null,
     ps_thread_id: null,
     xa_prepared: null,
+    trx_scope: s.trx_scope ?? null,
+    trx_scope_source: s.trx_scope_source ?? null,
+    rows_locked: s.trx?.rows_locked ?? null,
+    waiting: s.blocks_ids ?? [],
   };
+}
+
+/** After a Kill: for each session that waited on the target, is it still
+ * waiting, and on whom (the fresh rows' blocked_by). */
+export function sessionOutcome(report: SessionsReport, ids: number[]): Outcome[] {
+  return ids.map((id) => {
+    const row = report.sessions.find((s) => s.id === id);
+    // Edges are collected before the list's filters and row cap. Positive
+    // edges still prove a wait when a filter hides the session; missing edges
+    // cannot prove disappearance (their own snapshot is bounded too).
+    const edges = (report.blocking_edges ?? []).filter(e => e.waiter === id).map(e => e.blocker);
+    const blockedBy = [...new Set([...(row?.blocked_by ?? []), ...edges])].sort((a, b) => a - b);
+    return { id, unknown: !row && !blockedBy.length && !completeSessionList(report), waiting: blockedBy.length > 0 || !!row?.lock_wait,
+      blockedBy, ddl: null, likely: false };
+  });
+}
+
+/** Absence only proves a disconnect in a complete, unfiltered process list. */
+function completeSessionList(report: SessionsReport): boolean {
+  const f = report.filters;
+  return report.capabilities.process_privilege === true && !report.truncated && !f.active_only && !f.locked_only &&
+    !f.user && !f.host && !f.db && !f.min_seconds;
+}
+
+/** Processlist cannot resolve detached XA or an unreadable transaction list. */
+export function sessionsCanRecheck(report: SessionsReport, note: KillNote): boolean {
+  return completeSessionList(report) && report.trx_checked === true && note.after?.trx_survival_checked !== false;
+}
+
+/** The same reconciliation is used for automatic reads, follow-ups and Refresh. */
+export function reconcileKillNote(note: KillNote, report: SessionsReport): KillNote {
+  if (!killReportMatches(note, report.taken_at, report.server_identity)) return note;
+  // A refused or denied Kill changed nothing to reconcile; the read only ends
+  // its "reading again" line.
+  if (note.status !== "killed" || note.connectionId === undefined) return note.refreshing ? { ...note, refreshing: false } : note;
+  const outcome = sessionOutcome(report, note.outcome.map(o => o.id));
+  const row = report.sessions.find(s => s.id === note.connectionId);
+  const after = reconcileTransaction(note, row ? {
+    present: true, connectionEvidence: "present", command: row.command, state: row.state, statement: row.info,
+    trx_checked: report.trx_checked === true,
+    transactionEvidence: report.trx_checked !== true ? "unknown" : !row.trx ? "none"
+      : row.trx.state === "ROLLING BACK" || row.command === "Killed" ? "rolling_back" : "open",
+    trx_state: report.trx_checked === true ? row.trx?.state ?? null : null,
+    trx_started: report.trx_checked === true ? row.trx?.started ?? null : null,
+    rows_modified: report.trx_checked === true ? row.trx?.rows_modified ?? null : null,
+    rows_locked: report.trx_checked === true ? row.trx?.rows_locked ?? null : null,
+  } : { present: false, connectionEvidence: completeSessionList(report) ? "gone" : "unknown",
+    transactionEvidence: completeSessionList(report) ? "none" : "unknown" }, row?.trx?.id);
+  const next = reconcileKillState({ ...note, outcome }, after);
+  return !sessionsCanRecheck(report, next) && !killPollDone(next) ? manualKillRefresh(next) : next;
 }
 
 function RecentStatements({ connection, id, onInstruments }: { connection: Connection; id: number; onInstruments: () => void }) {
@@ -228,7 +282,30 @@ export function SessionsView({
   const [killing, setKilling] = useState(false);
   const [killLeft, setKillLeft] = useState<{ id: number; startedAt: number; key: string; label: string } | null>(null);
   const killSentAt = useRef(0);
-  const [note, setNote] = useState<KillNote | null>(null);
+  const [note, setNoteState] = useState<KillNote | null>(null);
+  // Update synchronously so an in-flight answer observes Dismiss or replacement.
+  const currentKillNote = useRef<KillNote | null>(null);
+  function setNote(update: KillNote | null | ((current: KillNote | null) => KillNote | null)) {
+    const next = typeof update === "function" ? update(currentKillNote.current) : update;
+    currentKillNote.current = next;
+    setNoteState(next);
+  }
+  const killMounted = useRef(false);
+  // The follow-up re-reads of a rolling-back kill: cancelled when the note is
+  // dismissed or replaced, or when the view unmounts; each re-read also stops
+  // when the connection in use is no longer the one the Kill was sent on.
+  const killFollowCancel = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    killMounted.current = true;
+    return () => {
+      killMounted.current = false;
+      killFollowCancel.current?.();
+    };
+  }, []);
+  function cancelKillFollow() {
+    killFollowCancel.current?.();
+    killFollowCancel.current = null;
+  }
   const reads = useConnectionReads(connection);
   const policy = useWritePolicy();
   const report = bound?.report ?? null;
@@ -251,7 +328,7 @@ export function SessionsView({
     lockedOnly = scope === "locked",
   ) {
     setPlanError("");
-    return reads.run(
+    const fresh = await reads.run(
       `sessions:${activeOnly}:${minSeconds}:${source}:${lockedOnly}`,
       "Reading the sessions…",
       (c, signal) =>
@@ -265,7 +342,13 @@ export function SessionsView({
       onReport,
       { force, onError: () => setAuto(0) },
     );
+    return fresh?.report ?? null;
   }
+
+  const reportReconciled = useKillReport(bound, currentKillNote, setNote, reconcileKillNote);
+  const canRecheckKill = useRef<(note: KillNote, requireFresh?: boolean) => boolean>(() => false);
+  canRecheckKill.current = (note, requireFresh = true) => !!report && !other && scope === "all" && !minSeconds &&
+    sessionsCanRecheck(report, note) && (!requireFresh || killReportMatches(note, report.taken_at, report.server_identity));
 
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -303,9 +386,11 @@ export function SessionsView({
   }
   async function confirmKill(mode: "connection" | "query", reviewToken: string) {
     if (!target || killing) return;
+    const waiting = target.waiting ?? [];
     setKilling(true);
     killSentAt.current = Date.now();
     const sent = await sendKill(connection, target, mode, policy, reviewToken);
+    if (!killMounted.current) return;
     setTarget(null);
     setKillLeft(null);
     setKilling(false);
@@ -313,13 +398,45 @@ export function SessionsView({
     // while the connection in use is still the one the Kill was confirmed for
     // (checked now, after the await, not with this render's connection);
     // after a switch there is nothing of that server to show.
-    const reread = !!target.via && reads.currentKey() === target.via.key && !sent.refresh;
-    const shown: KillNote = { ...sent, mode, outcome: [], refreshing: reread };
+    const sameConnection = !!target.via && reads.currentKey() === target.via.key;
+    let shown: KillNote = { ...sent, mode, connectionId: target.connection_id,
+      answeredAt: Date.now(), reviewedServerIdentity: target.server_identity ? { ...target.server_identity } : undefined,
+      outcome: sent.status === "killed" ? waiting.map(id => ({ id, unknown: true, waiting: false, blockedBy: [], ddl: null, likely: false })) : [] };
+    // The list is always read once after the answer (the table shows the
+    // change); only the timed follow-ups need a list that can settle it.
+    const reread = sameConnection && !sent.refresh;
+    shown = { ...shown, refreshing: reread };
     setNote(shown);
     window.setTimeout(() => noteRef.current?.focus(), 0);
     if (!reread) return;
-    await load(scope === "active", true);
-    setNote((current) => current === shown ? { ...shown, refreshing: false } : current);
+    const key = target.via!.key;
+    const fresh = await reportReconciled(() => loadRef.current(undefined, true));
+    if (!killMounted.current || currentKillNote.current?.on !== shown.on) return;
+    const answered = currentKillNote.current!;
+    if (!fresh || answered.refreshing) setNote({ ...answered, refreshing: false });
+    // Only a KILL the server ran can still change: never time follow-ups for a
+    // refused, denied, gone or failed answer.
+    if (answered.status !== "killed" || killPollDone(answered)) return;
+    if (!canRecheckKill.current(answered)) { setNote(manualKillRefresh(answered)); return; }
+    cancelKillFollow();
+    killFollowCancel.current = followKill(async (last) => {
+      const current = currentKillNote.current;
+      if (!killMounted.current || !current || current.on !== shown.on || reads.currentKey() !== key) return true;
+      if (killPollDone(current)) return true;
+      if (!canRecheckKill.current(current)) { setNote(manualKillRefresh(current)); return true; }
+      setNote({ ...current, refreshing: true });
+      const again = await reportReconciled(() => loadRef.current(undefined, true));
+      const latest = currentKillNote.current;
+      if (!killMounted.current || !latest || latest.on !== shown.on) return true;
+      if (reads.currentKey() !== key) {
+        setNote({ ...latest, refreshing: false });
+        return true;
+      }
+      if (!again) { setNote({ ...latest, refreshing: false }); return false; }
+      const rolling = killRollingBack(latest);
+      setNote({ ...latest, refreshing: false, rollbackStale: last && rolling, refresh: (last && rolling) || latest.refresh });
+      return killPollDone(latest) || !canRecheckKill.current(latest);
+    });
   }
 
   /** Open the Kill sheet for *x*; focus returns to *opener* when it closes.
@@ -327,10 +444,11 @@ export function SessionsView({
   function openKill(x: Session, opener: HTMLElement | null, mode?: "connection" | "query") {
     if (other) return;
     trigger.current = opener;
+    cancelKillFollow();
     setNote(null);
     setTargetMode(mode);
     setTargetBlocking(x.blocks_total ? `Blocks ${x.blocks_total} sessions now (longest wait ${seconds(x.longest_wait_s ?? null)}).` : "");
-    setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
+    setTarget({ ...killTarget(x), trx_checked: report?.trx_checked ?? null, via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
   }
   // The generic Kill privilege answers (own sessions need none), for the row
   // menu, which cannot call a hook per row; the sheet checks its own target.
@@ -757,7 +875,7 @@ export function SessionsView({
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
         </>
       }
-      onRefresh={() => void load()}
+      onRefresh={() => void loadRef.current()}
       refreshDisabled={busy}
       loading={!!reads.loading}
       otherConnection={other}
@@ -768,7 +886,7 @@ export function SessionsView({
         onRetry={reads.error ? () => void load(scope === "active") : undefined} doneAt={reads.doneAt} />
         {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,
           message: `Waiting for the reply to the KILL of connection ${killLeft.id}${killLeft.key !== reads.key ? ` on ${killLeft.label}` : ""}. Its outcome shows here.` }} /></div>}
-        {note && <KillResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
+        {note && <KillResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => { cancelKillFollow(); setNote(null); }} onRefresh={() => void loadRef.current(undefined, true)} />}</>}
     >
       <div ref={root}>
 
@@ -802,6 +920,7 @@ export function SessionsView({
             serverIdentity={report.server_identity}
             onClose={() => setMassKillOpen(false)}
             onSuccess={(n) => {
+              cancelKillFollow();
               setNote(n);
               if (n.status !== "pending") void load(scope === "active", true);
               if (!n.late) window.setTimeout(() => noteRef.current?.focus(), 0);

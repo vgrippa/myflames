@@ -73,7 +73,7 @@ from .connector import ConnectorError
 from .discover import _processlist_source
 from .health import CONNECTIONS_USED_PCT, _grade
 from .perf_common import _count_text, _duration_text, _number, _round
-from .locks import is_mdl_wait_state, is_group_replication_command, GROUP_REPLICATION_KILL_REASON
+from .locks import transaction_scope, is_mdl_wait_state, is_group_replication_command, GROUP_REPLICATION_KILL_REASON
 from .perf_common import Reader, Server, base_report, denied, reason, show_variables
 
 SCHEMA_VERSION = "sessions-1.0"
@@ -218,7 +218,7 @@ def _needs_process(exc):
 
 
 def _read_transactions(reader, notes):
-    """{connection id: trx}, every trx (oldest first), and whether PROCESS was granted."""
+    """Connection map, oldest-first transactions, PROCESS grant, and read completeness."""
     try:
         rows = reader.rows(_TRX_SQL)
     except ConnectorError as exc:
@@ -226,10 +226,11 @@ def _read_transactions(reader, notes):
                 or "timed out" in str(exc):
             raise
         if _needs_process(exc) or denied(exc):
-            return {}, [], False
+            return {}, [], False, False
         notes.append("Could not read information_schema.INNODB_TRX: %s" % reason(exc))
-        return {}, [], None
-    if len(rows) > READ_CAP:
+        return {}, [], None, False
+    complete = len(rows) <= READ_CAP
+    if not complete:
         rows = rows[:READ_CAP]
         notes.append("More than %s open transactions; only the %s oldest were read." % (
             "{:,}".format(READ_CAP), "{:,}".format(READ_CAP)))
@@ -247,7 +248,7 @@ def _read_transactions(reader, notes):
         every.append(dict(trx, connection_id=cid or None))
         if cid and cid not in by_conn:
             by_conn[cid] = trx
-    return by_conn, every, True
+    return by_conn, every, True, complete
 
 
 def _int(value):
@@ -457,6 +458,10 @@ def _session(row, engine, source, trx):
         session["rows_examined"] = _int(row[13])
     if trx is not None:
         session["trx"] = dict(trx)
+    # Processlist sources have connection ids, not P_S thread ids. Use only
+    # earlier-changes or timing evidence, without another mapping read.
+    scope, evidence = transaction_scope(session, session["trx"])
+    session.update({"trx_scope": scope, "trx_scope_source": evidence})
     return session
 
 
@@ -710,7 +715,7 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
             raise ValueError("Could not read the process list: " + reason(exc))
     truncated_read = len(rows) > READ_CAP
     rows = rows[:READ_CAP]
-    by_conn, every, process = _read_transactions(reader, notes)
+    by_conn, every, process, trx_checked = _read_transactions(reader, notes)
     history = _history_list(reader, server, status, notes, process)
 
     sessions = [_assess(_session(row, server.engine, source, by_conn.get(_int(row[0]))))
@@ -834,6 +839,7 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
     report = base_report(SCHEMA_VERSION, server)
     report.update({
         "server_identity": server_identity,
+        "trx_checked": trx_checked,
         "source": source,
         "source_mode": "show_processlist" if source == "show_processlist" else "auto",
         "ps_show_processlist": ps_show_pl,

@@ -863,6 +863,13 @@ export type LockNode = {
   ps_thread_id?: number | null;
   kill_allowed?: boolean | null;
   xa_prepared?: XaPrepared | null;
+  /** locks-1.1: "multi" means the open transaction spans more than the running
+   * statement, so KILL QUERY leaves it open with its locks; "statement" is a
+   * single autocommit statement; null when unknown. */
+  trx_scope?: "multi" | "statement" | null;
+  /** Where trx_scope comes from; "timing" means the transaction started at
+   * least 2 s before the running statement. */
+  trx_scope_source?: "performance_schema" | "earlier_changes" | "timing" | null;
 };
 /** A prepared XA transaction (MySQL): ending its session releases nothing; XA COMMIT or XA ROLLBACK does. */
 export type XaPrepared = { xid: string | null; commit: string | null; rollback: string | null };
@@ -887,6 +894,9 @@ export type LockTransaction = {
   last_statement: string | null;
   query_truncated: boolean;
   idle_in_transaction: boolean;
+  /** locks-1.1: see LockNode.trx_scope. */
+  trx_scope?: "multi" | "statement" | null;
+  trx_scope_source?: "performance_schema" | "earlier_changes" | "timing" | null;
 };
 export type MetadataLock = {
   object_type: string | null;
@@ -1010,6 +1020,8 @@ export type LocksReport = {
   /** locks-1.1 (absent in locks-1.0 reports). */
   ddl_waits?: DdlWait[];
   kill_privilege?: KillPrivilege | null;
+  /** locks-1.1: whether INNODB_TRX was read for this report (absent: unknown). */
+  trx_checked?: boolean;
 };
 /** locks-1.1: what this account may KILL, read from SHOW GRANTS (a hint; the server decides). */
 export type KillPrivilege = {
@@ -1035,6 +1047,8 @@ export type DdlBlocker = {
   last_statement: string | null;
   ps_thread_id: number | null;
   trx_id: string | null;
+  trx_scope?: "multi" | "statement" | null;
+  trx_scope_source?: "performance_schema" | "earlier_changes" | "timing" | null;
   trx_state: string | null;
   trx_started: string | null;
   trx_age_s: number | null;
@@ -1148,6 +1162,45 @@ export function readDigestTables(connection: Connection, schema: string | null, 
 export function readDigestHistogram(connection: Connection, schema: string | null, digest: string, signal?: AbortSignal) {
   return api<DigestHistogram>("live/digest-histogram", { connection, schema, digest }, signal);
 }
+/** kill-1.0: the session as read just before the KILL was sent. */
+export type KillTargetRead = {
+  connection_id: number;
+  user: string | null;
+  host: string | null;
+  command: string | null;
+  state: string | null;
+  info: string | null;
+  time_s: number | null;
+  trx: {
+    trx_id: string | null;
+    state: string | null;
+    started: string | null;
+    age_s: number | null;
+    rows_locked: number | null;
+    rows_modified: number | null;
+  } | null;
+  /** Whether INNODB_TRX was read for this answer. */
+  trx_checked: boolean;
+};
+/** kill-1.0: the session re-read right after the KILL. */
+export type KillAfter = {
+  present: boolean;
+  command?: string | null;
+  state?: string | null;
+  statement?: string | null;
+  trx_state?: string | null;
+  rows_modified?: number | null;
+  /** Whether INNODB_TRX was read for this answer. */
+  trx_checked?: boolean;
+  trx_started?: string | null;
+  rows_locked?: number | null;
+  /** The same transaction is still open (a KILL QUERY leaves it). */
+  same_trx?: boolean | null;
+  /** After the connection disappeared, its transaction id was found in INNODB_TRX. */
+  trx_survived?: boolean | null;
+  /** False when the detached XA survival lookup failed; true after a read or rule-based skip. */
+  trx_survival_checked?: boolean;
+};
 export type KillResult = {
   schema_version: "kill-1.0";
   status: "killed" | "refused" | "denied" | "gone";
@@ -1156,7 +1209,8 @@ export type KillResult = {
   connection_id: number;
   mode: "connection" | "query";
   verified: string[];
-  after: { present: boolean; command?: string | null; trx_state?: string | null; rows_modified?: number | null } | null;
+  target?: KillTargetRead | null;
+  after: KillAfter | null;
 };
 /** health-1.0: a status from two SHOW GLOBAL STATUS samples (rules of thumb). */
 export type HealthStatus = "ok" | "watch" | "problem" | "info" | "unknown";
@@ -1900,12 +1954,17 @@ export type Session = {
   is_locked?: boolean;
   lock_status?: "waiting" | "holding" | null;
   lock_detail?: string | null;
+  /** sessions-1.0: see LockNode.trx_scope. */
+  trx_scope?: "multi" | "statement" | null;
+  trx_scope_source?: "performance_schema" | "earlier_changes" | "timing" | null;
 };
 export type SessionBreakdown = { key: string | null; count: number; other?: boolean }[];
 export type SessionsReport = PerfBase & {
   /** Server observed while reading the report; absent in older reports. */
   server_identity?: KillServerIdentity;
   schema_version: "sessions-1.0";
+  /** Whether INNODB_TRX was read for this report (absent: unknown). */
+  trx_checked?: boolean;
   /** Collected direct wait edges before list filters, capped at 5,000. */
   blocking_edges?: { waiter: number; blocker: number }[];
   ddl?: DdlProgress;
