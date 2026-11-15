@@ -2229,7 +2229,8 @@ def available_actions(report, member_key=None, checks=None):
                 elif topology == "multi_primary":
                     out.append(_action("switch_to_single_primary", "Switch the group to single-primary…", True,
                                        "The group elects one primary; the others become read-only."))
-            elif ic and shell and _group_ready(report) is None and not cs and not _missing(report):
+            elif (ic and shell and _group_ready(report) is None and not cs and not _missing(report)
+                  and all(m.get("state") == "ONLINE" for m in _group_members(report))):
                 # MySQL Shell's switchTo*Mode: every member ONLINE, an InnoDB
                 # Cluster only, never one in a ClusterSet
                 # (Cluster_impl::switch_to_multi_primary_mode, All_online).

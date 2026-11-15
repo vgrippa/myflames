@@ -208,6 +208,22 @@ class TestOffered(unittest.TestCase):
         self.assertFalse(any(a.startswith('switch_to') for x in degraded['members']
                              for a in offered(degraded, x['key'])))
 
+    def test_no_mode_switch_with_an_error_or_offline_group_member(self):
+        healthy = F.report('ic-8.4-healthy')
+        for state in ('ERROR', 'OFFLINE'):
+            for topology in ('single_primary', 'multi_primary'):
+                with self.subTest(state=state, topology=topology):
+                    report = json.loads(json.dumps(healthy))
+                    report['cluster']['topology'] = topology
+                    next(x for x in report['members'] if not x['local'])['state'] = state
+                    target = local(report)
+                    self.assertEqual(target['state'], 'ONLINE')
+                    ids = offered(report, target['key'])
+                    for action in ('switch_to_multi_primary', 'switch_to_single_primary'):
+                        self.assertNotIn(action, ids)
+                        with self.assertRaises(ValueError):
+                            m.plan_action(report, action, target['key'], CHECKS)
+
     def test_no_mode_switch_in_a_clusterset(self):
         for name in ('ic-8.4-clusterset-primary', 'ic-8.4-clusterset-replica'):
             report = F.report(name)
