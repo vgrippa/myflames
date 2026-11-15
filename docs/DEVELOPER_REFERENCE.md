@@ -1028,7 +1028,9 @@ are the contracts of the tools that check them.
   or to a `docs/release-notes/*.md` page fails unless the PR has the
   `no-changelog` label, and a
   change of the `apps/desktop/package.json` version runs
-  `check_release_sync.py` for the new version. When a release is published, or
+  `check_release_sync.py` and `check_release_verification.py` for the new
+  version (the checkout fetches full history, so the evidence commits are
+  there). When a release is published, or
   by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
   out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
   replaces the release notes with `release_notes.py`'s text when they differ
@@ -1053,6 +1055,47 @@ are the contracts of the tools that check them.
   that job, which can push) and commits to its default branch when something
   changed. The site goes live only when someone clicks Publish
   in Lovable.
+
+#### Release verification record
+
+A release is verified, not only in sync: every entry of its release notes page
+carries evidence from the code that ships. The record for X.Y.Z is
+`docs/release-verification/X.Y.Z.json`, a JSON object with `version` (X.Y.Z)
+and `items`, one item per bullet under New features, Improvements and Bug
+fixes in `docs/release-notes/X.Y.Z.md` (Release highlights, Packaging notes
+and the other sections have no items):
+
+- `entry` is the start of the bullet's text as plain words (Markdown emphasis,
+  links and code marks removed, link text kept, whitespace collapsed), long
+  enough to name exactly that one bullet, and `section` is the bullet's
+  section. Every bullet matches exactly one item and every item matches a
+  bullet.
+- `needs` is a non-empty subset of `tests`, `live`, `layout`, `reviews`,
+  always with `tests`. A need is met by at least one evidence entry of that
+  kind, or by an `unverified` entry (`what`, `need`, `accepted_by_owner`)
+  whose `accepted_by_owner` records, in the owner's words, why the release
+  ships without it.
+- An evidence entry carries the `commit` it ran on: `tests` (with `command`
+  and `result`), `live` (with `driver`, `servers`, `tools` and `checks` of
+  `action`/`outcome`), `layout` (with `view`, `looked_at` true and `shots`)
+  and `reviews` (with `reviewer` and `verdict`). A layout entry has four
+  shots, 1440 and 720 px in light and dark, each with its `file` and a 64-hex
+  `sha256`; when the file exists locally its hash must match (CI has no local
+  shots: only the format is checked).
+- An evidence commit must exist and be an ancestor of the release commit, and
+  only release-only paths may differ between it and the release commit:
+  `pyproject.toml`, `myflames/__init__.py`, `apps/desktop/package.json`,
+  `apps/desktop/package-lock.json`, `CHANGELOG.md`, `ROADMAP.md`, `README.md`,
+  any `*.md` and anything under `docs/`. Anything else means the check ran on
+  code that is not shipping, and the evidence must be produced again on the
+  final code.
+
+`python3 scripts/check_release_verification.py X.Y.Z [--head REV]` (the head
+defaults to HEAD) reports every problem at once, one per line with a summary,
+and exits 1 on any, 0 otherwise; stdlib only. The Docs and release sync
+pull-request check runs it next to `check_release_sync.py` when the version
+changes. `test/test_release_verification.py` covers each rule against a
+fixture git repository.
 
 ### Release notes
 
