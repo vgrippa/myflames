@@ -99,9 +99,12 @@ for name, server, profile, source in (
          "mariadb-11.8-srcver-profile")):
     rp.reset_source_cache()
     conn = tsv.source_conn(source) if source else None
-    write("replication-%s.json" % name, rp.read_status(
-        tr.ReplayConn(tsv.replica_calls(server)), source_versions=True, profiles=[profile] if profile else (),
-        open_profile=lambda _p, conn=conn: conn, replica_host="127.0.0.1"))
+    # The captures' loopback source is on the synthetic replica hostname.
+    with mock.patch.object(rp.socket, "gethostname", return_value=tsv.HOST):
+        write("replication-%s.json" % name, rp.read_status(
+            tr.ReplayConn(tsv.replica_calls(server)), source_versions=True, profiles=[profile, tsv.CURRENT] if profile else (),
+            current_profile_id=tsv.CURRENT["id"] if profile else None,
+            open_profile=lambda _p, conn=conn: conn, replica_host="127.0.0.1"))
 
 
 # ---- Maintenance -----------------------------------------------------------

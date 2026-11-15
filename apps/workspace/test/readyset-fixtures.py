@@ -53,10 +53,10 @@ def write(name, value):
 
 def _lab_topology_env():
     profiles = [
-        {"id": "p-px", "name": "ProxySQL lab", "host": "127.0.0.1", "port": 6032, "remember_password": True},
-        {"id": "p-rs", "name": "Readyset lab", "host": "127.0.0.1", "port": 3307, "remember_password": True},
-        {"id": "p-pri", "name": "MySQL Primary", "host": "mysql-primary", "port": 3306, "remember_password": True},
-        {"id": "p-rep", "name": "MySQL Replica", "host": "mysql-replica", "port": 3306, "remember_password": True},
+        {"id": "p-px", "name": "ProxySQL lab", "host": "127.0.0.1", "port": 6032, "remember_password": True, "group": "readyset-lab"},
+        {"id": "p-rs", "name": "Readyset lab", "host": "127.0.0.1", "port": 3307, "remember_password": True, "group": "readyset-lab"},
+        {"id": "p-pri", "name": "MySQL Primary", "host": "mysql-primary", "port": 3306, "remember_password": True, "group": "readyset-lab"},
+        {"id": "p-rep", "name": "MySQL Replica", "host": "mysql-replica", "port": 3306, "remember_password": True, "group": "readyset-lab"},
     ]
     conns = {
         "p-px": FakeProbeConn(

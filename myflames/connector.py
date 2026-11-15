@@ -873,6 +873,7 @@ class MySQLConnection:
 
     def _create_defaults_file(self, endpoint=None, client_engine=None):
         """Write a fresh, private option file without storing shared state."""
+        self._check_login_consent()
         # mkstemp creates the file with mode 0600 on POSIX. Windows has no
         # os.fchmod and ignores the mode; the file sits in the user's own
         # %TEMP% directory, whose ACL keeps other accounts out.
@@ -900,6 +901,7 @@ class MySQLConnection:
 
     def _acquire_tunnel(self):
         """A lease on this connection's SSH tunnel (ssh_tunnel.TUNNELS)."""
+        self._check_login_consent()
         from .ssh_tunnel import TUNNELS, spec_of
         try:
             spec = spec_of(self)
@@ -926,6 +928,7 @@ class MySQLConnection:
 
         Through SSH the option file names the tunnel's local end, and the
         invocation holds the tunnel until it ends."""
+        self._check_login_consent()
         binary = binary or self._resolve_binary()
         engine = self._defaults_engine(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
@@ -1061,6 +1064,23 @@ class MySQLConnection:
 
     # ---- query execution -------------------------------------------------
 
+    def _check_login_consent(self):
+        """Saved-peer probes authorize each login, not just this Python object.
+
+        Only the trusted profile opener installs the guard. Check before
+        acquiring transport and again at spawn, after any setup that can wait.
+        """
+        guard = getattr(self, '_login_guard', None)
+        if guard is not None:
+            guard()
+
+    def _run_client(self, argv, **options):
+        """Check immediately before spawning, and retain sent probe attempts."""
+        self._check_login_consent()
+        if getattr(self, '_login_guard', None) is not None:
+            self._group_login_started = True
+        return _run_bounded(argv, **options)
+
     def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None):
         """Run SQL through the resolved client and return its decoded stdout."""
         return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start)
@@ -1087,7 +1107,7 @@ class MySQLConnection:
                     if on_tail_start is not None:
                         options['on_tail_start'] = on_tail_start
                 argv = self._build_argv(sql, extra_flags=flags, defaults_path=defaults_path, binary=binary)
-                proc = _run_bounded(argv, timeout=timeout or self.query_timeout, env=env, **options)
+                proc = self._run_client(argv, timeout=timeout or self.query_timeout, env=env, **options)
         except subprocess.TimeoutExpired as exc:
             from .dbops import redact
             message = (
@@ -1140,7 +1160,7 @@ class MySQLConnection:
                 if extra_flags:
                     argv += list(extra_flags)
                 with client_environment() as env:
-                    proc = _run_bounded(argv, input=(sql or "").encode("utf-8"),
+                    proc = self._run_client(argv, input=(sql or "").encode("utf-8"),
                                         timeout=timeout or self.query_timeout, env=env)
         except subprocess.TimeoutExpired:
             raise ConnectorError("Query timed out after {}s.".format(timeout or self.query_timeout)) from None
@@ -1204,7 +1224,7 @@ class MySQLConnection:
             argv += list(extra_flags)
         argv += list(WRITE_CLIENT_FLAGS)
         with client_environment() as env:
-            proc = _run_bounded(argv, input=(sql or "").encode("utf-8"),
+            proc = self._run_client(argv, input=(sql or "").encode("utf-8"),
                                 timeout=timeout or self.query_timeout, env=env)
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()

@@ -83,6 +83,7 @@ import hashlib
 import json
 import re
 
+from .connection_groups import grouped_read
 from .connector import ConnectorError
 from .perf_common import named_rows, now
 
@@ -265,6 +266,7 @@ def _summary(servers):
     return out
 
 
+@grouped_read
 def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None):
     """The ``proxysql-1.0`` report. Read-only; see the module docstring."""
     ok, detail = identify(conn)

@@ -27,6 +27,7 @@ import json
 import re
 
 from . import dbops
+from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import named_rows, now
 from .server_info import is_readyset_comment
@@ -461,6 +462,7 @@ def _fingerprint(value):
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+@grouped_read
 def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None, schema="readyset"):
     """Read the complete ``readyset-1.0`` report (read-only)."""
     schema_name = schema if isinstance(schema, str) and _SAFE_SCHEMA_RE.match(schema) else "readyset"

@@ -757,6 +757,8 @@ class WorkspaceStore:
         if remember not in (None, True, False):
             raise ValueError('remember_password must be true or false.')
         safety = _check_safety(payload.get('type'), payload.get('read_only'))
+        from .connection_groups import validate_group
+        group = validate_group(payload['group']) if 'group' in payload else None
         value = {field: options[field] for field in PROFILE_FIELDS if field in options}
         value['name'] = name
         key = str(key or uuid.uuid4().hex)
@@ -816,6 +818,9 @@ class WorkspaceStore:
                 if requested['type'] is None and existing and not _same_endpoint(value, existing):
                     requested['type'] = 'production'
                 value.update(_safety_fields(requested, existing or {}))
+                value['group'] = group if group is not None else (existing or {}).get('group', '')
+                if existing and _same_endpoint(value, existing) and 'topology_identity' in existing:
+                    value['topology_identity'] = existing['topology_identity']
                 updated = _now()
                 conn.execute('INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)',
                              (key, 'profile', updated, json.dumps(value, allow_nan=False)))
@@ -881,6 +886,9 @@ class WorkspaceStore:
             else:
                 value = {field: existing[field] for field in PROFILE_FIELDS if field in existing}
                 value.update(_safety_fields(existing, existing))
+                value['group'] = existing.get('group', '')
+                if 'topology_identity' in existing:
+                    value['topology_identity'] = existing['topology_identity']
                 value.update(remember_password=False, secret_backend='')
                 conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                              (_now(), json.dumps(value, allow_nan=False), key))
@@ -895,6 +903,80 @@ class WorkspaceStore:
             # Saved by another request between the delete above and this transaction.
             _delete_quietly(_stored_ref(key, existing), existing.get('secret_backend'))
         return value
+
+    def assign_profile_group(self, profile_ids, group):
+        """Validate every ID before changing any row, in one write transaction."""
+        from .connection_groups import validate_group
+        group = validate_group(group)
+        if not isinstance(profile_ids, list) or not 1 <= len(profile_ids) <= 100 or any(
+                not isinstance(key, str) or not key or len(key) > 200 for key in profile_ids):
+            raise ValueError('Choose 1 to 100 saved connection IDs.')
+        ids = list(dict.fromkeys(profile_ids))
+        conn = self._transaction()
+        try:
+            rows = []
+            for key in ids:
+                kind, value = self._record(conn, key)
+                if kind != 'profile':
+                    raise ValueError('Unknown saved connection ID: %s' % key)
+                rows.append((key, value))
+            for key, value in rows:
+                value['group'] = group
+                conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                             (_now(), json.dumps(value, allow_nan=False), key))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return {'updated': ids, 'group': group}
+
+    def record_topology_identity(self, profile_id, identity, expected=None):
+        """Record evidence from the opened connection without touching other fields.
+
+        An endpoint edit during the read invalidates its evidence. The timestamp
+        of the profile itself stays unchanged: this is not a credential edit.
+        """
+        from .connection_groups import IDENTITY_FIELDS
+        if not isinstance(identity, dict) or not identity:
+            return
+        # Refuse oversized values instead of truncating: shared prefixes must
+        # never turn unrelated servers into an apparent topology match.
+        inspected = set(identity) & (set(IDENTITY_FIELDS) | {'source_uuids'})
+        clean = {key: identity[key] for key in IDENTITY_FIELDS
+                 if isinstance(identity.get(key), str) and 0 < len(identity[key]) <= 128}
+        sources = identity.get('source_uuids')
+        if (isinstance(sources, (list, tuple)) and len(sources) <= 32 and
+                all(isinstance(value, str) and 0 < len(value) <= 128 for value in sources)):
+            clean['source_uuids'] = list(dict.fromkeys(sources))
+        if not inspected:
+            return
+        clean['recorded_at'] = _now()
+        conn = self._transaction()
+        try:
+            kind, value = self._record(conn, profile_id)
+            if kind == 'profile' and (expected is None or _same_endpoint(expected, value)):
+                previous = dict(value.get('topology_identity') or {})
+                if clean.get('server_uuid') and clean['server_uuid'] != previous.get('server_uuid'):
+                    # The same endpoint can reach another server. None of the
+                    # old server's evidence belongs to the newly observed UUID.
+                    previous.clear()
+                # Otherwise each view owns only the fields it inspected. An
+                # absent or refused value clears its evidence, not other views.
+                for field in inspected:
+                    previous.pop(field, None)
+                value['topology_identity'] = dict(previous, **clean)
+                conn.execute('UPDATE records SET payload=? WHERE id=? AND kind=?',
+                             (json.dumps(value, allow_nan=False), profile_id, 'profile'))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
 
     def set_profile_safety(self, key, connection_type=None, read_only=None):
         """Change a profile's type ('production' or 'development') and/or
@@ -2054,6 +2136,7 @@ def _present(kind, record):
     if kind == 'profile':
         from .secret_store import backend_label
         record.pop('secret_ref', None)
+        record.setdefault('group', '')
         record.setdefault('remember_password', False)
         record.setdefault('secret_backend', '')
         record['has_saved_password'] = bool(record['remember_password'])

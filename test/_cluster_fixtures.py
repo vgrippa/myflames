@@ -100,7 +100,12 @@ def recorded(name, edit=None):
     """(ReplayConn, data) for a recorded fixture; *edit(sql, text, n)* may
     change an answer."""
     data = load(name)
-    return ReplayConn(_with_clusterset_answer(data["calls"]), edit=edit, version=_version(data)), data
+    from myflames import topology_links as tl
+    # Explicit synthetic denial: these captures predate local client footprints.
+    calls = _with_clusterset_answer(data["calls"]) + [
+        [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
+        [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, '']]
+    return ReplayConn(calls, edit=edit, version=_version(data)), data
 
 
 # ---- editing recorded answers --------------------------------------------------

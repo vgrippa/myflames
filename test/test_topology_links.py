@@ -148,10 +148,10 @@ class TestMultiTierTopology(unittest.TestCase):
 
     def test_full_proxysql_readyset_mysql_primary_replica_topology(self):
         profiles = [
-            {"id": "p-px", "name": "ProxySQL Admin", "host": "127.0.0.1", "port": 16032, "remember_password": True},
-            {"id": "p-rs", "name": "Readyset Cache", "host": "127.0.0.1", "port": 13307, "remember_password": True},
-            {"id": "p-pri", "name": "MySQL Primary", "host": "127.0.0.1", "port": 13306, "remember_password": True},
-            {"id": "p-rep", "name": "MySQL Replica", "host": "127.0.0.1", "port": 13308, "remember_password": True},
+            {"id": "p-px", "name": "ProxySQL Admin", "host": "127.0.0.1", "port": 16032, "remember_password": True, "group": "lab"},
+            {"id": "p-rs", "name": "Readyset Cache", "host": "127.0.0.1", "port": 13307, "remember_password": True, "group": "lab"},
+            {"id": "p-pri", "name": "MySQL Primary", "host": "127.0.0.1", "port": 13306, "remember_password": True, "group": "lab"},
+            {"id": "p-rep", "name": "MySQL Replica", "host": "127.0.0.1", "port": 13308, "remember_password": True, "group": "lab"},
         ]
         conns = {
             "p-px": FakeProbeConn(
@@ -245,6 +245,9 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual(px_topo["readyset_nodes"][0]["profile_id"], "p-rs")
         self.assertEqual(px_topo["readyset_nodes"][0]["cache_count"], 5)
 
+        # The source is deliberately outside the replica's consent group.
+        profiles[2]["group"] = "sources"
+
         # 3. From MySQL Replica's perspective: discovers both ProxySQL and Readyset WITHOUT opening p-pri!
         topology_links._reset_cache_for_tests()
         opened_from_db = []
@@ -268,7 +271,7 @@ class TestMultiTierTopology(unittest.TestCase):
 
     def test_galera_and_innodb_cluster_downstream_of_readyset(self):
         profiles = [
-            {"id": "p-galera", "name": "Galera Node 1", "host": "127.0.0.1", "port": 13316, "remember_password": True},
+            {"id": "p-galera", "name": "Galera Node 1", "host": "127.0.0.1", "port": 13316, "remember_password": True, "group": "lab"},
         ]
         galera_conn = FakeProbeConn(
             "database",
@@ -289,7 +292,8 @@ class TestMultiTierTopology(unittest.TestCase):
             [],
             "adapter",
             "stable-250605",
-            profiles=profiles,
+            profiles=profiles + [{"id": "current", "group": "lab"}],
+            current_profile_id="current",
             open_profile=lambda p: galera_conn,
             observer_host="127.0.0.1",
         )
@@ -301,10 +305,11 @@ class TestMultiTierTopology(unittest.TestCase):
         # A saved profile over an SSH tunnel to 127.0.0.1:3306 must never match local 127.0.0.1:3306.
         ssh_profile = {
             "id": "p-ssh", "name": "Remote Tunnel", "host": "127.0.0.1", "port": 3306,
-            "ssh_host": "bastion.example.com", "remember_password": True,
+            "ssh_host": "bastion.example.com", "remember_password": True, "group": "lab",
         }
         db_conn = FakeProbeConn("database", hostname="remote-db", port=3306)
-        probed, _ = topology_links.probe_saved_profiles([ssh_profile], lambda p: db_conn)
+        probed, _ = topology_links.probe_saved_profiles([ssh_profile], lambda p: db_conn,
+            skip_profile_id="current", current={"id": "current", "group": "lab"})
         match, ev = topology_links.match_database_endpoint("127.0.0.1", 3306, probed, observer_host="127.0.0.1")
         self.assertIsNone(match)
         self.assertIsNone(ev)
@@ -321,12 +326,14 @@ class TestMultiTierTopology(unittest.TestCase):
             def run(self, sql, extra_flags=None, timeout=None):
                 raise ConnectorError("Failed using super-secret-probe-pw on mysql://u:url-pw@db:3306/s")
 
-        bad_profile = {"id": "p-bad", "name": "Broken RS", "host": "127.0.0.1", "port": 3307, "remember_password": True}
-        _, notes = topology_links.probe_saved_profiles([bad_profile], lambda p: FailingConn())
+        bad_profile = {"id": "p-bad", "name": "Broken RS", "host": "127.0.0.1", "port": 3307, "remember_password": True, "group": "lab"}
+        _, notes = topology_links.probe_saved_profiles([bad_profile], lambda p: FailingConn(),
+            skip_profile_id="current", current={"id": "current", "group": "lab"})
         joined = "\n".join(notes)
         self.assertNotIn("super-secret-probe-pw", joined)
         self.assertNotIn("url-pw", joined)
-        self.assertIn("[redacted]", joined)
+        self.assertIn("could not be read: the connection could not be read.", joined)
+        self.assertNotIn("mysql://", joined)
 
     def test_classify_proxysql_topology_with_real_proxysql_nested_shape(self):
         # proxysql.read_status nests comment/weight under settings/config,
@@ -400,11 +407,11 @@ class TestMultiTierTopology(unittest.TestCase):
         )
 
         profiles = [
-            {"id": "p-px", "name": "rs-proxysql", "host": "127.0.0.1", "port": 34532, "remember_password": True},
-            {"id": "p-rs", "name": "rs-adapter", "host": "127.0.0.1", "port": 34507, "database": "shop", "remember_password": True},
-            {"id": "p-rs-admin", "name": "rs-admin", "host": "127.0.0.1", "port": 34536, "remember_password": True},
-            {"id": "p-pri", "name": "rs-primary", "host": "127.0.0.1", "port": 34505, "remember_password": True},
-            {"id": "p-rep-db", "name": "rs-replica", "host": "127.0.0.1", "port": 34506, "remember_password": True},
+            {"id": "p-px", "name": "rs-proxysql", "host": "127.0.0.1", "port": 34532, "remember_password": True, "group": "lab"},
+            {"id": "p-rs", "name": "rs-adapter", "host": "127.0.0.1", "port": 34507, "database": "shop", "remember_password": True, "group": "lab"},
+            {"id": "p-rs-admin", "name": "rs-admin", "host": "127.0.0.1", "port": 34536, "remember_password": True, "group": "lab"},
+            {"id": "p-pri", "name": "rs-primary", "host": "127.0.0.1", "port": 34505, "remember_password": True, "group": "lab"},
+            {"id": "p-rep-db", "name": "rs-replica", "host": "127.0.0.1", "port": 34506, "remember_password": True, "group": "lab"},
         ]
         rs_upstreams = [
             {"host": "mf-rs-primary", "port": "3306", "database": "shop", "user": "rs", "weight": "100",
@@ -460,6 +467,7 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual(px_topo["readyset_nodes"][0]["version"], "stable-261022")
         self.assertEqual({n["host"] for n in px_topo["database_nodes"]}, {"mf-rs-primary", "mf-rs-replica-unsaved"})
 
+        profiles[-1]["group"] = "another-topology"
         # 2. Replication / Cluster tier discovery collapses p-rs + p-rs-admin for the same deployment into p-rs
         # and does not probe rs-replica.
         topology_links._reset_cache_for_tests()
@@ -480,6 +488,7 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual([x["profile_id"] for x in tiers["proxysql"]], ["p-px"])
 
         # Replica whose Readyset connects only to its primary (peer_endpoints uses "host") still discovers p-rs!
+        profiles[-1]["group"] = "lab"
         rep_tiers = topology_links.discover_database_tiers(
             conns["p-rep-db"],
             {"profile_host": "127.0.0.1", "profile_port": 34506, "hostname": "mf-rs-replica-unsaved", "port": 3306, "server_uuid": "bbbb-2222"},
@@ -511,7 +520,7 @@ class TestMultiTierTopology(unittest.TestCase):
 
         # 4. An unrelated ProxySQL with a "readyset" comment on another stack's backend must not attach here.
         topology_links._reset_cache_for_tests()
-        unrelated_px = {"id": "p-px-other", "name": "Other ProxySQL", "host": "10.99.0.10", "port": 6032, "remember_password": True}
+        unrelated_px = {"id": "p-px-other", "name": "Other ProxySQL", "host": "10.99.0.10", "port": 6032, "remember_password": True, "group": "lab"}
         other_conns = dict(conns)
         other_conns["p-px-other"] = FakeProbeConn(
             "proxysql",

@@ -1830,6 +1830,13 @@ class TestProfilePasswordAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn(self.PASSWORD, body)
         profile_id = json.loads(body)['id']
+        status, body = post('/api/profiles/group', {'profile_ids': [profile_id, 'missing'], 'group': 'G'})
+        self.assertEqual(status, 400)
+        self.assertIn('missing', json.loads(body)['error'])
+        self.assertEqual(server.store.get('profile', profile_id)['group'], '')
+        status, body = post('/api/profiles/group', {'profile_ids': [profile_id], 'group': ' G '})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'updated': [profile_id], 'group': 'G'})
         status, body = post('/api/profiles/forget-password', {'id': profile_id})
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)['has_saved_password'])

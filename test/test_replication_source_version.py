@@ -40,10 +40,10 @@ from myflames.workspace_store import WorkspaceStore
 from test_replication import ReplicationCase, fixture
 
 TAG = rp.REPLICATION_TAG
-MYSQL_SOURCE = {'id': 'p-mysql', 'name': 'Source 9.7', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe',
-                'ssl_mode': 'PREFERRED', 'remember_password': True}
-MARIADB_SOURCE = {'id': 'p-maria', 'name': 'Source 11.8', 'host': '127.0.0.1', 'port': 33318, 'user': 'probe',
-                  'ssl_mode': 'PREFERRED', 'remember_password': True}
+MYSQL_SOURCE = {'id': 'p-mysql', 'name': 'Source 9.7', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe', 'group': 'source-tests',
+                'ssl_mode': 'PREFERRED', 'remember_password': True, 'group': 'source-tests'}
+MARIADB_SOURCE = {'id': 'p-maria', 'name': 'Source 11.8', 'host': '127.0.0.1', 'port': 33318, 'user': 'probe', 'group': 'source-tests',
+                  'ssl_mode': 'PREFERRED', 'remember_password': True, 'group': 'source-tests'}
 #: Synthetic @@hostname: the MySQL replica's default relay log name is <hostname>-relay-bin.
 HOST = '025357c3d20b'
 HOSTNAME_SQL = TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name = 'hostname'"
@@ -86,9 +86,20 @@ def replica_calls(name, hostname=HOST):
 
 def read(name, profiles=(), open_profile=None, replica_host='127.0.0.1', edit=None, hostname=HOST):
     conn = ReplayConn(replica_calls(name, hostname), edit=edit)
-    report = rp.read_status(conn, source_versions=True, profiles=profiles, open_profile=open_profile,
-                            replica_host=replica_host)
+    report = rp.read_status(conn, source_versions=True, profiles=list(profiles) + [CURRENT], open_profile=open_profile,
+                            replica_host=replica_host, current_profile_id=CURRENT['id'])
     return report, conn
+
+
+CURRENT = {'id': 'current', 'name': 'Opened replica', 'host': 'replica.example.com',
+           'port': 3306, 'user': 'root', 'group': 'source-tests'}
+
+
+def consented_opener(store):
+    """Explicit saved-group consent for the existing source-version tests."""
+    if not store.get('profile', CURRENT['id']):
+        store.save('profile', CURRENT, CURRENT['id'])
+    return rp.profile_opener(store, CURRENT['id'])
 
 
 def relay_calls(conn):
@@ -168,12 +179,14 @@ def channel(name='', host='db1.example.com', port=3306, server_id=7, uuid=None, 
 
 def attach(channels, profiles=(), open_profile=None, reader=None, engine='mysql', replica_host='127.0.0.1'):
     report = {'engine': engine, 'capabilities': {}, 'channels': channels}
-    rp.attach_source_versions(reader or FakeReader(DENIED), report, profiles, open_profile, replica_host)
+    current = getattr(open_profile, 'current_profile', None) or CURRENT
+    rp.attach_source_versions(reader or FakeReader(DENIED), report, list(profiles) + [current], open_profile,
+                              replica_host, current_profile_id=current['id'])
     return [c['source_version'] for c in channels]
 
 
 def profile(pid, host='db1.example.com', port=3306, **extra):
-    return dict({'id': pid, 'name': 'Saved %s' % pid, 'host': host, 'port': port, 'user': 'probe',
+    return dict({'id': pid, 'name': 'Saved %s' % pid, 'host': host, 'port': port, 'user': 'probe', 'group': 'source-tests',
                  'remember_password': True, 'updated_at': '2026-10-20T10:00:00'}, **extra)
 
 
@@ -399,10 +412,11 @@ class TestSavedConnection(Fresh, ReplicationCase):
         self.assertIsNone(found['version'])
         self.assertIsNone(found['hint'])
         self.assertEqual(len(found['attempts']), 2)
-        self.assertIn('The saved connection Local 9.7 could not be read: ERROR 2002', found['attempts'][1])
+        self.assertEqual(found['attempts'][1], 'Saved connection Local 9.7 in group source-tests could not be read: '
+                         'the connection could not be read.')
         # The reason says why the relay log gave none and how the saved connection went.
         self.assertTrue(found['reason'].startswith('Reading the relay log'))
-        self.assertIn('Local 9.7 could not be read', found['reason'])
+        self.assertIn('Local 9.7 in group source-tests could not be read', found['reason'])
 
     def test_password_is_redacted_from_profile_errors(self):
         class Refusing(object):
@@ -419,7 +433,8 @@ class TestSavedConnection(Fresh, ReplicationCase):
         report, _ = read('mysql-9.7-srcver-denied', [MYSQL_SOURCE], lambda p: Refusing())
         text = json.dumps(report)
         self.assertNotIn('hunter2-not-real', text)
-        self.assertIn('[redacted]', report['channels'][0]['source_version']['attempts'][1])
+        self.assertIn('access was denied.', report['channels'][0]['source_version']['attempts'][1])
+        self.assertNotIn('SHOW GLOBAL VARIABLES', report['channels'][0]['source_version']['attempts'][1])
 
     def test_each_profile_is_read_once_and_reads_are_capped(self):
         opener = Opener(ConnectorError('ERROR 2003 (HY000): Can\'t connect'))
@@ -588,7 +603,7 @@ class TestProcessCache(Fresh, ReplicationCase):
         for _ in range(3):
             found = attach([channel()], [saved], opener)[0]
         self.assertEqual(opener.opened, ['a'])
-        self.assertIn('ERROR 1045', found['attempts'][-1])
+        self.assertIn('access was denied.', found['attempts'][-1])
         self.assertIn('Not tried again until the saved connection changes.', found['attempts'][-1])
         # Saved again (a new password or settings): one more attempt, then none.
         edited = dict(saved, updated_at='2026-10-20T11:00:00')
@@ -619,9 +634,9 @@ class TestProcessCache(Fresh, ReplicationCase):
 
     def test_fingerprint_covers_settings_and_the_saved_password(self):
         store = WorkspaceStore()
-        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, None,
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}, None,
                            password='first-secret-1', remember=True)
-        prepare = rp.profile_opener(store).prepare
+        prepare = consented_opener(store).prepare
         listed = lambda: [p for p in store.list('profile') if p['id'] == saved['id']][0]  # noqa: E731
         from myflames import secret_store
         # The fingerprint comes from the workspace store, never the secret store.
@@ -641,7 +656,7 @@ class TestProcessCache(Fresh, ReplicationCase):
         with self.assertRaisesRegex(ValueError, 'changed its endpoint'):
             prepare(dict(same, port=3307))
         # Saving a new password writes a new reference.
-        store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, saved['id'],
+        store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}, saved['id'],
                    password='second-secret-2', remember=True)
         self.assertNotEqual(store._profile(saved['id'])['secret_ref'], stored['secret_ref'])
         self.assertNotEqual(prepare(listed())[0], first)
@@ -755,10 +770,10 @@ class TestProcessCache(Fresh, ReplicationCase):
 
     def test_prepare_uses_current_stored_timestamp_and_reference_not_the_caller(self):
         store = WorkspaceStore()
-        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, None,
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}, None,
                            password='first-secret-1', remember=True)
-        prepare = rp.profile_opener(store).prepare
-        before = store.list('profile')[0]
+        prepare = consented_opener(store).prepare
+        before = store.get('profile', saved['id'])
         stored = store._profile(saved['id'], include_updated=True)
         self.assertEqual(stored['updated_at'], before['updated_at'])
         first, _ = prepare(before)
@@ -772,7 +787,7 @@ class TestProcessCache(Fresh, ReplicationCase):
 
     def test_a_stale_caller_cannot_revive_an_earlier_attempt(self):
         store = WorkspaceStore()
-        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}
         saved = store.save('profile', value, None, password='first-secret-1', remember=True)
         stale = store.list('profile')[0]
         options = []
@@ -781,7 +796,7 @@ class TestProcessCache(Fresh, ReplicationCase):
             options.append(kwargs)
             raise ConnectorError('ERROR 1045: Access denied')
         with mock.patch('myflames.connector.MySQLConnection', refused):
-            opener = rp.profile_opener(store)
+            opener = consented_opener(store)
             attach([channel()], [stale], opener)
             store.save('profile', value, saved['id'], password='second-secret-2', remember=True)
             current = store.list('profile')[0]
@@ -793,12 +808,12 @@ class TestProcessCache(Fresh, ReplicationCase):
 
     def test_a_profile_deleted_after_listing_is_not_opened(self):
         store = WorkspaceStore()
-        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, None,
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}, None,
                            password='first-secret-1', remember=True)
         listed = store.list('profile')[0]
         store.delete('profile', saved['id'])
         with mock.patch('myflames.connector.MySQLConnection') as factory:
-            found = attach([channel()], [listed], rp.profile_opener(store))[0]
+            found = attach([channel()], [listed], consented_opener(store))[0]
         factory.assert_not_called()
         self.assertIsNone(found['version'])
         self.assertIn('The saved connection Src no longer exists, so it was not read.', found['reason'])
@@ -806,7 +821,7 @@ class TestProcessCache(Fresh, ReplicationCase):
 
     def test_a_profile_saved_during_password_lookup_sends_nothing(self):
         store = WorkspaceStore()
-        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}
         saved = store.save('profile', value, None, password='first-secret-1', remember=True)
         stale = store.list('profile')[0]
         lookup = store.connection_with_saved_password
@@ -817,18 +832,18 @@ class TestProcessCache(Fresh, ReplicationCase):
             return options
         with mock.patch.object(store, 'connection_with_saved_password', save_during_lookup), \
                 mock.patch('myflames.connector.MySQLConnection') as factory:
-            found = attach([channel()], [stale], rp.profile_opener(store))[0]
+            found = attach([channel()], [stale], consented_opener(store))[0]
         factory.assert_not_called()
         self.assertIn('changed while its password was being read', found['reason'])
         self.assertEqual(rp._source_attempts, set())
         self.assertEqual(rp._source_cache, {})
         with mock.patch('myflames.connector.MySQLConnection', return_value=Source(server_id='7', version='8.4.7')):
-            found = attach([channel()], [stale], rp.profile_opener(store))[0]
+            found = attach([channel()], [stale], consented_opener(store))[0]
         self.assertEqual(found['version'], '8.4.7')
 
     def test_cli_opens_the_source_once_per_run(self):
         store = WorkspaceStore()
-        store.save('profile', {'name': 'Source 9.7', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe'}, None,
+        store.save('profile', {'name': 'Source 9.7', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe', 'group': 'source-tests'}, None,
                    password='source-secret-1', remember=True)
         replica = ReplayConn(replica_calls('mysql-9.7-srcver-denied'))
         replica.host = '127.0.0.1'
@@ -838,7 +853,11 @@ class TestProcessCache(Fresh, ReplicationCase):
         def factory(**options):
             opened.append(options['port'])
             return source if options.get('port') == 33297 else replica
-        code, out, err, _f = run_cli('replication', [], replica,
+        current = store.save('profile', {'name': 'CLI replica', 'host': '127.0.0.1', 'port': 33298,
+            'user': 'root', 'group': 'source-tests'}, 'cli-replica')
+        for key in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port'):
+            setattr(replica, key, current.get(key))
+        code, out, err, _f = run_cli('replication', ['--profile', current['id']], replica,
                                      patches=[mock.patch('myflames.connector.MySQLConnection', factory)])
         self.assertEqual(code, 0, err)
         self.assertIn('  Source version: 9.7.2 (saved connection Source 9.7)\n', out)
@@ -850,11 +869,12 @@ class TestConcurrentProfileChanges(Fresh, ReplicationCase):
 
     def saved_read_race(self, complete_before_wait=False, change_endpoint=False):
         store = WorkspaceStore()
-        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'}
         saved = store.save('profile', value, None, password='first-secret-1', remember=True)
         stale = store.list('profile')[0]
         in_query, release, finished = threading.Event(), threading.Event(), threading.Event()
         waiting = {name: threading.Event() for name in ('new', 'stale')}
+        completed = {name: threading.Event() for name in ('old', 'new', 'stale')}
         opened, preparations, results, failures, started = [], [], {}, [], []
         case = self
 
@@ -882,6 +902,7 @@ class TestConcurrentProfileChanges(Fresh, ReplicationCase):
             except BaseException as exc:
                 failures.append(exc)
             finally:
+                completed[name].set()
                 if name == 'old':
                     finished.set()
 
@@ -903,7 +924,7 @@ class TestConcurrentProfileChanges(Fresh, ReplicationCase):
 
         with mock.patch('myflames.connector.MySQLConnection', factory), \
                 mock.patch.object(rp, '_monotonic', Clock()):
-            opener = rp.profile_opener(store)
+            opener = consented_opener(store)
             prepare = opener.prepare
 
             def observed_prepare(snapshot):
@@ -929,9 +950,14 @@ class TestConcurrentProfileChanges(Fresh, ReplicationCase):
                     start('new', current)
                     self.assertTrue(waiting['new'].wait(5), 'the new read joins the old profile owner')
                     start('stale', stale)
-                    self.assertTrue(waiting['stale'].wait(5), 'the stale read joins the same owner')
+                    if change_endpoint:
+                        self.assertTrue(completed['stale'].wait(5), 'a stale endpoint is refused before waiting')
+                        self.assertFalse(waiting['stale'].is_set())
+                    else:
+                        self.assertTrue(waiting['stale'].wait(5), 'the stale read joins the same owner')
                     self.assertEqual(len(opened), 1, 'neither waiter starts a simultaneous login')
-                    self.assertEqual(len(preparations), 1, 'waiters cannot prepare until the old owner is done')
+                    self.assertEqual(len(preparations), 2 if change_endpoint else 3,
+                                     'each waiter must pass consent before joining the old owner')
                     release.set()
                     for thread in started:
                         thread.join(5)
@@ -961,7 +987,7 @@ class TestConcurrentProfileChanges(Fresh, ReplicationCase):
     def test_a_waiter_reclaims_when_the_old_read_finishes_before_wait(self):
         self.saved_read_race(complete_before_wait=True)
 
-    def test_a_waiter_with_a_stale_endpoint_is_refused_after_the_owner_finishes(self):
+    def test_a_waiter_with_a_stale_endpoint_is_refused_before_the_owner_finishes(self):
         self.saved_read_race(change_endpoint=True)
 
 
@@ -1147,7 +1173,7 @@ class TestTimeBudget(Fresh, ReplicationCase):
         # The same through profile_opener's prepare(): a saved password
         # lookup that blocks (the Keychain) and returns after the budget.
         store = WorkspaceStore()
-        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'},
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe', 'group': 'source-tests'},
                            None, password='source-secret-1', remember=True)
         listed = [p for p in store.list('profile') if p['id'] == saved['id']]
         clock, made = Clock(), []
@@ -1163,7 +1189,7 @@ class TestTimeBudget(Fresh, ReplicationCase):
         with mock.patch.object(rp, '_monotonic', clock), \
                 mock.patch.object(store, 'connection_with_saved_password', slow_lookup), \
                 mock.patch('myflames.connector.MySQLConnection', factory):
-            found = attach([channel()], listed, rp.profile_opener(store))[0]
+            found = attach([channel()], listed, consented_opener(store))[0]
         self.assertEqual([(m.timeouts, m.closed) for m in made], [([], True)])
         self.assertIn('Not checked: looking up the saved password for Src', found['reason'])
         self.assertEqual(rp._source_cache, {})
@@ -1292,7 +1318,7 @@ class TestSurfaces(Fresh, ReplicationCase):
     def save(self, store, profiles):
         saved = {}
         for item in profiles:
-            value = {k: item[k] for k in ('name', 'host', 'port', 'user', 'ssl_mode')}
+            value = {k: item[k] for k in ('name', 'host', 'port', 'user', 'ssl_mode', 'group')}
             saved[item['port']] = store.save('profile', value, None, password='source-secret-1', remember=True)
         return saved
 
@@ -1303,7 +1329,11 @@ class TestSurfaces(Fresh, ReplicationCase):
         def factory(**options):
             opened.append(options)
             return source if options['port'] in saved else replica
-        payload = {'connection': {'host': '127.0.0.1', 'port': 33298, 'user': 'root', 'password': 'replica-secret-1'}}
+        current = store.get('profile', 'opened-replica') or store.save('profile', {
+            'name': 'Opened replica', 'host': '127.0.0.1', 'port': 33298, 'user': 'root',
+            'group': 'source-tests'}, 'opened-replica')
+        payload = {'connection': {'host': '127.0.0.1', 'port': 33298, 'user': 'root',
+                                  'profile_id': current['id'], 'password': 'replica-secret-1'}}
         with mock.patch('myflames.connector.MySQLConnection', factory):
             report = ui.api_response('/api/live/replication', payload, types.SimpleNamespace(store=store))
         return report, opened
@@ -1346,10 +1376,10 @@ class TestSurfaces(Fresh, ReplicationCase):
 
     def test_profile_opener_needs_a_saved_password(self):
         store = WorkspaceStore()
-        saved = store.save('profile', {'name': 'NoPass', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe'}, None)
+        saved = store.save('profile', {'name': 'NoPass', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe', 'group': 'source-tests'}, None)
         with self.assertRaisesRegex(ValueError, 'has no saved password'):
-            rp.profile_opener(store)(saved)
-        _fingerprint, connect = rp.profile_opener(store).prepare(saved)
+            consented_opener(store)(saved)
+        _fingerprint, connect = consented_opener(store).prepare(saved)
         with self.assertRaisesRegex(ValueError, 'has no saved password'):
             connect()
 

@@ -1,0 +1,932 @@
+"""Group consent is an authorization boundary, not a topology heuristic.
+
+No test here opens a network socket or reads real saved credentials. Engine
+reports use the existing captured/synthetic fixtures; new identity and client
+attribute cases are explicitly synthetic.
+"""
+import copy
+import inspect
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import types
+import unittest
+from unittest import mock
+
+import _cluster_fixtures as CF
+import test_replication_source_version as SV
+from _perf_replay import run_cli
+from test_topology_links import FakeProbeConn
+from test_readyset import FakeReadyset
+from test_proxysql import FakeAdmin
+from test_chart_data import validate
+from myflames import cluster, connection_groups as cg, connection_import, proxysql, readyset
+from myflames import connector, mcp_server, replication as rp, topology_links as tl, ui
+from myflames.connector import ConnectorError
+from myflames.workspace_store import ENDPOINT_FIELDS, WorkspaceStore
+
+ROOT = Path(__file__).resolve().parent.parent
+EMPTY = {'name': '', 'read': [], 'suggestions': [], 'join': [], 'suggested_name': ''}
+
+
+class LocalDatabase(FakeProbeConn):
+    """Synthetic standalone database answering the existing read-only probes."""
+    def __init__(self, **options):
+        super(LocalDatabase, self).__init__('database', hostname='current-db', uuid='uuid-current')
+        for key in ENDPOINT_FIELDS:
+            setattr(self, key, options.get(key))
+
+    def run(self, sql, extra_flags=None, timeout=None):
+        return super(LocalDatabase, self).run(sql.replace(rp.REPLICATION_TAG, ''), extra_flags, timeout)
+
+
+class GroupCase(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        env = dict(os.environ, HOME=self.temp.name, USERPROFILE=self.temp.name,
+                   MYFLAMES_SECRET_BACKEND='vault', PYTHONDONTWRITEBYTECODE='1')
+        env.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.store = WorkspaceStore()
+        tl._reset_cache_for_tests()
+        rp.reset_source_cache()
+
+    def save(self, pid, group='', **fields):
+        value = dict(name=pid, host=pid + '.example', port=3306, user='dba', group=group)
+        value.update(fields)
+        return self.store.save('profile', value, pid, password='test-password', remember=True)
+
+    def request(self, current):
+        return dict({k: current.get(k) for k in ENDPOINT_FIELDS}, profile_id=current['id'])
+
+
+class TestGroupStore(GroupCase):
+    def test_atomic_assignment_and_validation_through_api_dispatch(self):
+        first, second = self.save('one'), self.save('two')
+        before = self.store.list('profile')
+        workspace = types.SimpleNamespace(store=self.store)
+        for ids, group in ((['one', 'missing', 'two'], 'G'), (['one'], 'x' * 81),
+                           (['one'], 'G\n'), (['one'], 'G\x7f'), (['one'], 'G\u0085'),
+                           (['one'], 'G\u200b'), ([], 'G'), (['one'] * 101, 'G'),
+                           (['one', 2], 'G'), (['one'], None)):
+            with self.subTest(ids=ids, group=group):
+                with self.assertRaises(ValueError) as error:
+                    ui.api_response('/api/profiles/group', {'profile_ids': ids, 'group': group}, workspace)
+                if 'missing' in ids:
+                    self.assertIn('missing', str(error.exception))
+                self.assertEqual(self.store.list('profile'), before)
+        result = ui.api_response('/api/profiles/group', {'profile_ids': ['one', 'two'], 'group': '  G  '}, workspace)
+        self.assertEqual(result, {'updated': ['one', 'two'], 'group': 'G'})
+        self.assertEqual({p['group'] for p in self.store.list('profile')}, {'G'})
+        self.assertEqual(self.store.assign_profile_group(['one'], '')['group'], '')
+        # A new write uses the same authenticated POST allowlist and dispatcher.
+        self.assertIn('"/api/profiles/group"', inspect.getsource(ui))
+
+    def test_group_changes_preserve_password_binding_and_legacy_defaults(self):
+        saved = self.save('one')
+        raw = self.store._profile('one')
+        secret = raw['secret_ref']
+        self.store.assign_profile_group(['one'], 'G')
+        self.assertEqual(self.store._profile('one')['secret_ref'], secret)
+        self.assertEqual(self.store.connection_with_saved_password(self.request(saved))['password'], 'test-password')
+        value = {k: saved[k] for k in ('host', 'port', 'user', 'name')}
+        self.assertEqual(self.store.save('profile', value, 'one')['group'], 'G')
+        self.assertEqual(self.store.save('profile', dict(value, group=' H '), 'one')['group'], 'H')
+        with self.assertRaises(ValueError):
+            self.store.save('profile', dict(value, host='other.example'), 'one')
+        conn = self.store._connect()
+        try:
+            with conn:
+                raw.pop('group', None)
+                conn.execute('UPDATE records SET payload=? WHERE id=?', (json.dumps(raw), 'one'))
+        finally:
+            conn.close()
+        self.assertEqual(self.store.get('profile', 'one')['group'], '')
+
+    def test_import_cannot_supply_consent_or_identity(self):
+        data = {'connections': {'db': {'provider': 'mysql', 'driver': 'mysql8', 'name': 'Imported',
+            'group': 'production', 'topology_identity': {'server_uuid': 'forged'},
+            'configuration': {'host': 'db.example', 'port': '3306', 'user': 'dba', 'group': 'production'}}}}
+        path = Path(self.temp.name) / 'data-sources.json'
+        path.write_text(json.dumps(data))
+        with mock.patch.object(connection_import, 'default_path', return_value=path):
+            result = ui.api_response('/api/connections/import', {'tool': 'dbeaver'})
+        self.assertEqual(len(result['items']), 1)
+        self.assertNotIn('group', result['items'][0])
+        self.assertNotIn('topology_identity', result['items'][0])
+        saved = connection_import.save_imported(self.store, result['items'])[0]
+        self.assertEqual(saved['group'], '')
+        with self.assertRaises(ValueError):
+            ui.api_response('/api/connections/import', {'tool': 'dbeaver', 'group': 'production'})
+
+    def test_identity_touches_only_opened_profile_and_never_accepts_save_payload(self):
+        current, other = self.save('current', 'G'), self.save('other', 'G')
+        before_current, before_other = self.store._profile('current'), self.store._profile('other')
+        report = CF.report('ic-8.4-healthy')
+        profiles, selected = cg.request_profiles(self.store, self.request(current))
+        cg.finish_read(self.store, report, self.request(current), profiles, selected)
+        identity = self.store._profile('current')['topology_identity']
+        self.assertEqual(identity['cluster_id'], report['metadata']['cluster_id'])
+        self.assertEqual(identity['gr_group_name'], report['cluster']['uuid'])
+        self.assertEqual(identity['server_uuid'], report['server']['server_uuid'])
+        self.assertIn('recorded_at', identity)
+        after = self.store._profile('current')
+        after.pop('topology_identity')
+        self.assertEqual(after, before_current)
+        self.assertEqual(self.store._profile('other'), before_other)
+        self.assertNotIn('topology_identity', report)
+        forged = dict(other, topology_identity={'server_uuid': 'forged'})
+        self.store.save('profile', forged, 'other')
+        self.assertNotIn('topology_identity', self.store._profile('other'))
+        # An endpoint edit in flight invalidates the evidence, as well as consent.
+        self.store.save('profile', dict(current, host='replacement'), 'current', password='replacement', remember=True)
+        cg.finish_read(self.store, report, self.request(current), profiles, selected)
+        self.assertNotIn('topology_identity', self.store._profile('current'))
+
+    def test_endpoint_and_group_edits_revoke_prepared_login(self):
+        for field, value in (('host', 'new-host'), ('group', 'other-group')):
+            with self.subTest(field=field):
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G')
+                opener = rp.profile_opener(self.store, 'current', current)
+                fingerprint, connect = opener.prepare(peer)
+                self.assertTrue(fingerprint)
+                changed = dict(current)
+                changed[field] = value
+                self.store.save('profile', changed, 'current', password='changed', remember=True)
+                with mock.patch('myflames.connector.MySQLConnection') as factory, self.assertRaises(ValueError):
+                    connect()
+                factory.assert_not_called()
+        profiles, selected = cg.request_profiles(self.store, dict(self.request(current), host='edited'))
+        self.assertIsNone(selected)
+        self.assertEqual(cg.members(profiles, selected), [])
+
+
+class TestEvidence(GroupCase):
+    def test_all_evidence_types_ranked_with_join_without_logins(self):
+        current = self.save('current', 'mine')
+        report = {'kind': 'innodb_cluster', 'server': {'server_uuid': 'uuid-current'},
+                  'cluster': {'uuid': 'gr', 'name': 'mfcluster'}, 'metadata': {'cluster_id': 'ic'},
+                  'clusterset': {'id': 'cs', 'name': 'set'},
+                  'channels': [{'source': {'uuid': 'source'}}],
+                  'members': [{'host': 'address.example', 'port': 3306}]}
+        identities = [('same_group_replication_group', {'gr_group_name': 'gr'}),
+                      ('same_innodb_cluster', {'cluster_id': 'ic'}),
+                      ('same_clusterset', {'clusterset_id': 'cs'}),
+                      ('same_galera_cluster', {'wsrep_cluster_uuid': 'galera'}),
+                      ('replication_source', {'server_uuid': 'source'}),
+                      ('replica_of_this_server', {'source_uuids': ['uuid-current']}),
+                      ('same_server', {'server_uuid': 'uuid-current'}),
+                      ('address_named_by_this_server', {})]
+        profiles = []
+        for i, (evidence, identity) in enumerate(identities):
+            profiles.append(dict(id=str(i), name='peer-' + str(i), type='production',
+                                 host='address.example' if i == 7 else 'peer-' + str(i), port=3306,
+                                 group='existing' if i in (1, 2) else '', topology_identity=identity))
+        # Mixed identity is synthetic, solely to exercise the specified ranking.
+        with mock.patch.object(rp, 'profile_opener', side_effect=AssertionError('suggestion login')):
+            group = cg.describe(report, list(reversed(profiles)), current,
+                                identity={'wsrep_cluster_uuid': 'galera'})
+        self.assertEqual([p['evidence'] for p in group['suggestions']], [e for e, _ in identities])
+        self.assertEqual(group['join'], [{'group': 'existing', 'evidence': 'same_innodb_cluster',
+                                         'evidence_text': 'Same InnoDB Cluster (ic).'}])
+        self.assertEqual(group['suggested_name'], 'mfcluster')
+        self.assertEqual(group['read'], [])
+        # An already-consenting peer and the current profile are not suggestions.
+        self.assertEqual(cg.describe(report, [current, dict(profiles[0], group='mine')], current)['suggestions'], [])
+        self.assertEqual(cg.describe(report, profiles, dict(current, group=''))['join'][0]['group'], 'existing')
+
+    def test_names_by_kind_and_clusterset_id_stays_internal(self):
+        cases = [({'kind': 'innodb_cluster', 'cluster': {'name': 'cluster'}, 'clusterset': {'name': 'set'}}, 'cluster'),
+                 ({'clusterset': {'name': 'set'}}, 'set'),
+                 ({'kind': 'galera', 'cluster': {'name': 'galera'}}, 'galera'),
+                 ({'kind': 'pxc', 'cluster': {'name': 'pxc'}}, 'pxc'),
+                 ({'channels': [{'source': {'host': 'source-db'}}]}, 'source-db replication'),
+                 ({'is_proxysql': True}, 'Saved proxy'), ({'is_readyset': True}, 'Saved proxy'), ({}, '')]
+        for report, name in cases:
+            with self.subTest(report=report):
+                self.assertEqual(cg.suggested_name(report, {'name': 'Saved proxy'}), name)
+        identity = {}
+        report = cluster.read_status(CF.conn('ic-8.4-clusterset-primary'), _identity=identity)
+        self.assertTrue(identity['clusterset_id'])
+        self.assertNotIn('id', report['clusterset'])
+        self.assertNotIn('topology_identity', report)
+
+    def test_addresses_routers_sources_replicas_proxy_readyset_and_loopback(self):
+        fields = [({'members': [{'host': 'peer', 'port': 3306}]}),
+                  {'metadata': {'instances': [{'endpoint': 'peer:3306'}]}},
+                  {'routers': [{'hostname': 'peer', 'ports': {'rw': 3306}}]},
+                  {'channels': [{'source': {'host': 'peer', 'port': 3306}}]},
+                  {'replicas': [{'host': 'peer', 'port': 3306}]},
+                  {'servers': [{'hostname': 'peer', 'port': 3306}]},
+                  {'upstreams': [{'host': 'peer', 'port': 3306}]}]
+        profile = dict(id='peer', name='peer', host='peer', port=3306, group='')
+        for report in fields:
+            with self.subTest(report=report):
+                self.assertEqual(cg.describe(report, [profile])['suggestions'][0]['evidence'],
+                                 'address_named_by_this_server')
+        report = {'members': [{'host': '127.0.0.1', 'port': 3306}]}
+        local = dict(profile, host='localhost')
+        self.assertEqual(len(cg.describe(report, [local], observer_host='127.0.0.1')['suggestions']), 1)
+        self.assertEqual(cg.describe(report, [local], observer_host='remote')['suggestions'], [])
+        self.assertEqual(cg.describe(report, [dict(local, ssh_host='remote')], observer_host='127.0.0.1')['suggestions'], [])
+
+    def test_client_footprint_and_performance_schema_off(self):
+        conn = FakeProbeConn('database', connect_attrs=[['proxy-host:40123', 'program_name', 'ProxySQL'],
+                                                       ['rs-host:49999', 'program_name', 'READYSET']])
+        footprint = tl.read_live_client_footprint(conn)
+        self.assertEqual(footprint['clients'], [{'program': 'ProxySQL', 'host': 'proxy-host:40123'},
+                                                {'program': 'READYSET', 'host': 'rs-host:49999'}])
+        self.assertIn('t.PROCESSLIST_ID = a.PROCESSLIST_ID', tl._LIVE_ATTRS_SQL)
+        self.assertNotIn('a.THREAD_ID', tl._LIVE_ATTRS_SQL)
+        profiles = [dict(id='px', name='ProxySQL', host='proxy-host', port=6032),
+                    dict(id='rs', name='Readyset', host='rs-host', port=6036)]
+        group = cg.describe({'topology_tiers': {'live_footprint': footprint}}, profiles)
+        self.assertEqual([p['id'] for p in group['suggestions']], ['px', 'rs'])
+        with mock.patch.object(conn, 'run', wraps=conn.run) as run:
+            off = tl.read_live_client_footprint(conn, performance_schema=False)
+        self.assertFalse(off['known'])
+        self.assertEqual(len(off['notes']), 1)
+        self.assertFalse(any('session_connect_attrs' in call[0][0] for call in run.call_args_list))
+
+
+class TestReadConsent(GroupCase):
+    def profiles(self, group='G'):
+        current = dict(id='current', name='current', host='current-db', port=3306, group=group)
+        inside = dict(id='inside', name='Database on its default port', host='db1.example.com', port=3306,
+                      group='G', type='production', remember_password=True)
+        outside = dict(id='outside', name='proxy', host='production.example', port=6033,
+                       group='production', type='production', remember_password=True)
+        same_address_outside = dict(inside, id='source-outside', group='production')
+        return current, [outside, same_address_outside, inside, current]
+
+    def run_path(self, path, profiles, current, opener):
+        kwargs = dict(profiles=profiles, open_profile=opener, current_profile_id=current['id'] if current else None)
+        if path == 'cluster':
+            report = cluster.read_status(CF.conn('mysql-8.4-standalone'))
+            return cluster.attach_topology_tiers(LocalDatabase(), report, **kwargs)
+        if path == 'replication':
+            return rp.read_status(LocalDatabase(), topology_tiers=True, **kwargs)
+        if path == 'source_versions':
+            report = {'engine': 'mysql', 'channels': [SV.channel()], 'capabilities': {}}
+            return rp.attach_source_versions(SV.FakeReader(SV.DENIED), report, **kwargs)
+        if path == 'proxysql':
+            conn = FakeAdmin()
+            try:
+                return proxysql.read_status(conn, **kwargs)
+            finally:
+                conn.db.close()
+        return readyset.read_status(FakeReadyset(), **kwargs)
+
+    def test_all_readers_enforce_consent_even_for_production_proxy_port(self):
+        for path in ('cluster', 'replication', 'source_versions', 'proxysql', 'readyset'):
+            for mode in ('group', 'no_group', 'no_profile'):
+                with self.subTest(path=path, mode=mode):
+                    tl._reset_cache_for_tests()
+                    rp.reset_source_cache()
+                    current, profiles = self.profiles('' if mode == 'no_group' else 'G')
+                    opened = []
+                    def opener(profile):
+                        self.assertEqual(profile['id'], 'inside', 'OUTSIDE GROUP LOGIN')
+                        self.assertEqual(profile['group'], current['group'])
+                        opened.append(profile['id'])
+                        return SV.Source(server_id='7', version='8.4.6') if path == 'source_versions' else FakeProbeConn('database')
+                    report = self.run_path(path, profiles, None if mode == 'no_profile' else current, opener)
+                    self.assertEqual(opened, ['inside'] if mode == 'group' else [])
+                    self.assertEqual([r['id'] for r in report['connection_group']['read']], opened)
+                    self.assertEqual(report['connection_group']['name'], 'G' if mode == 'group' else '')
+                    if opened:
+                        self.assertEqual(report['connection_group']['read'][0]['outcome'], 'read')
+                    self.assertNotIn('topology_identity', report)
+
+    def test_budget_outcomes_and_notes_do_not_copy_sql_or_passwords(self):
+        current, profiles = self.profiles()
+        peers = [dict(profiles[2], id='peer-%d' % i, host='peer-%d' % i) for i in range(8)]
+        peers.append(dict(profiles[2], id='no-password', remember_password=False))
+        opened = []
+        def opener(profile):
+            opened.append(profile['id'])
+            if profile['id'] == 'peer-1':
+                raise ConnectorError('Query timed out after 2s: /*myflames:topology*/ SHOW GLOBAL VARIABLES secret')
+            return FakeProbeConn('database')
+        report = readyset.read_status(FakeReadyset(), profiles=[current] + peers, open_profile=opener,
+                                     current_profile_id=current['id'])
+        rows = {p['id']: p for p in report['connection_group']['read']}
+        self.assertEqual(len(opened), tl.PROFILE_READ_LIMIT)
+        self.assertEqual(rows['peer-0']['outcome'], 'read')
+        self.assertEqual(rows['peer-1']['outcome'], 'failed')
+        self.assertEqual(rows['peer-6']['outcome'], 'not_reached')
+        self.assertEqual(rows['no-password']['outcome'], 'not_reached')
+        self.assertEqual(rows['peer-1']['message'], 'Saved connection Database on its default port in group G could not be read: timed out after 2 s.')
+        notes = json.dumps(rows) + json.dumps(report['topology']['notes'])
+        for forbidden in ('SHOW GLOBAL VARIABLES', '/*myflames:', 'secret'):
+            self.assertNotIn(forbidden, notes)
+        tl._reset_cache_for_tests()
+        clock = [0.0]
+        opened[:] = []
+        def slow(profile):
+            opened.append(profile['id'])
+            clock[0] += tl.PROFILE_BUDGET_S
+            return FakeProbeConn('database')
+        with mock.patch.object(tl.time, 'monotonic', side_effect=lambda: clock[0]):
+            self.run_path('readyset', [current] + peers, current, slow)
+        self.assertEqual(len(opened), 1)
+
+    def test_source_version_budget_outcomes_and_client_error_sanitization(self):
+        current, profiles = self.profiles()
+        peers = [dict(profiles[2], id='peer-%d' % i) for i in range(rp.SOURCE_PROFILE_READS + 1)]
+        peers.append(dict(profiles[2], id='no-password', remember_password=False))
+        opened = []
+        def opener(profile):
+            opened.append(profile['id'])
+            raise ConnectorError('Query timed out after 2s: SHOW GLOBAL VARIABLES password=secret')
+        report = self.run_path('source_versions', [current] + peers, current, opener)
+        rows = {p['id']: p for p in report['connection_group']['read']}
+        self.assertEqual(len(opened), rp.SOURCE_PROFILE_READS)
+        self.assertEqual(rows['peer-0']['outcome'], 'failed')
+        self.assertEqual(rows['peer-%d' % rp.SOURCE_PROFILE_READS]['outcome'], 'not_reached')
+        self.assertEqual(rows['no-password']['outcome'], 'not_reached')
+        self.assertIn('timed out after 2 s.', rows['peer-0']['message'])
+        self.assertNotIn('SHOW GLOBAL VARIABLES', json.dumps(report))
+        self.assertNotIn('secret', json.dumps(report))
+
+    def test_missing_unreadable_and_mock_store_cannot_authorize_logins(self):
+        broken = mock.Mock()
+        broken.list.side_effect = OSError('locked')
+        for store in (None, broken, mock.Mock()):
+            with self.subTest(store=store):
+                self.assertEqual(cg.request_profiles(store, {'profile_id': 'current'}), ([], None))
+                for path in ('cluster', 'replication', 'proxysql', 'readyset'):
+                    conn = {'cluster': lambda: CF.conn('mysql-8.4-standalone'),
+                            'replication': LocalDatabase, 'proxysql': FakeAdmin, 'readyset': FakeReadyset}[path]()
+                    workspace = types.SimpleNamespace(store=store)
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(rp, 'profile_opener', side_effect=AssertionError('saved login')):
+                        report = ui.api_response('/api/live/' + path, {'connection': {'host': 'current-db'}}, workspace)
+                    self.assertEqual(report['connection_group'], EMPTY)
+                    if path == 'proxysql':
+                        conn.db.close()
+
+    def test_cli_replication_uses_only_selected_saved_group(self):
+        current = self.save('current', 'G', host='current-db')
+        inside = self.save('inside', 'G', host='inside.example')
+        self.save('outside', 'production', name='proxy', host='production.example', port=6033)
+        for mode in ('group', 'no_group', 'no_profile', 'edited'):
+            with self.subTest(mode=mode):
+                tl._reset_cache_for_tests()
+                self.store.assign_profile_group(['current'], '' if mode == 'no_group' else 'G')
+                opened = []
+                def factory(**options):
+                    if options['host'] in ('current-db', 'edited-db'):
+                        return LocalDatabase(**options)
+                    self.assertEqual(options['host'], 'inside.example', 'OUTSIDE GROUP CLI LOGIN')
+                    opened.append(options['host'])
+                    return FakeProbeConn('database')
+                args = ['--json', '--profile', current['id']] if mode != 'no_profile' else ['--json', '--host', 'current-db']
+                if mode == 'edited':
+                    args += ['--host', 'edited-db', '--password', 'explicit']
+                code, out, err, unused = run_cli('replication', args, LocalDatabase(), patches=[
+                    mock.patch('myflames.connector.MySQLConnection', factory)])
+                self.assertEqual(code, 0, err)
+                self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
+                report = json.loads(out)
+                self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
+                self.assertNotIn('topology_identity', report)
+
+    def test_place_requests_scope_openers_and_write_only_current_identity(self):
+        """Exercise request wiring as well as the lower-level scope guards."""
+        current = self.save('current', 'G', host='current-db')
+        self.save('inside', 'G', host='inside.example')
+        self.save('outside', 'production', name='proxy', host='production.example', port=6033)
+        workspace = types.SimpleNamespace(store=self.store)
+        original_opener = rp.profile_opener
+        for path in ('cluster', 'replication', 'proxysql', 'readyset'):
+            for mode in ('group', 'no_group', 'no_profile', 'edited'):
+                with self.subTest(path=path, mode=mode):
+                    tl._reset_cache_for_tests()
+                    self.store.assign_profile_group(['current'], '' if mode == 'no_group' else 'G')
+                    current = self.store.get('profile', 'current')
+                    connection = self.request(current)
+                    if mode == 'no_profile':
+                        connection.pop('profile_id')
+                    if mode == 'edited':
+                        connection.update(host='edited-db', password='explicit')
+                    opened = []
+                    local = {'cluster': lambda: CF.conn('mysql-8.4-standalone'),
+                             'replication': LocalDatabase, 'proxysql': FakeAdmin, 'readyset': FakeReadyset}[path]()
+                    def factory(**options):
+                        if options['host'] in ('current-db', 'edited-db'):
+                            return local
+                        self.assertEqual(options['host'], 'inside.example', 'OUTSIDE GROUP REQUEST LOGIN')
+                        opened.append(options['host'])
+                        return FakeProbeConn('database')
+                    def spy(store, pid, expected=None):
+                        actual = original_opener(store, pid, expected)
+                        def open_profile(profile):
+                            self.assertEqual(profile['id'], 'inside', 'OUTSIDE GROUP OPENER')
+                            return actual(profile)
+                        return open_profile
+                    try:
+                        with mock.patch('myflames.connector.MySQLConnection', factory), \
+                                mock.patch.object(rp, 'profile_opener', spy), \
+                                mock.patch.object(self.store, 'record_topology_identity', wraps=self.store.record_topology_identity) as record:
+                            report = ui.api_response('/api/live/' + path, {'connection': connection}, workspace)
+                        self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
+                        self.assertEqual([c[0][0] for c in record.call_args_list],
+                                         ['current'] if mode in ('group', 'no_group') else [])
+                        self.assertNotIn('topology_identity', report)
+                        self.assertNotIn('topology_identity', self.store._profile('inside'))
+                        self.assertNotIn('topology_identity', self.store._profile('outside'))
+                    finally:
+                        if path == 'proxysql':
+                            local.db.close()
+
+    def test_identity_write_failure_does_not_fail_place_read(self):
+        current = self.save('current')
+        with mock.patch('myflames.connector.MySQLConnection', return_value=LocalDatabase()), \
+                mock.patch.object(self.store, 'record_topology_identity', side_effect=OSError('disk full')):
+            report = ui.api_response('/api/live/replication', {'connection': self.request(current)},
+                                     types.SimpleNamespace(store=self.store))
+        self.assertTrue(report['available'])
+        self.assertEqual(report['connection_group'], EMPTY)
+
+    def test_store_becomes_unreadable_before_peer_login(self):
+        current, peer = self.save('current', 'G'), self.save('peer', 'G')
+        opener = rp.profile_opener(self.store, current['id'], current)
+        with mock.patch.object(self.store, 'get', side_effect=OSError('locked')), \
+                mock.patch('myflames.connector.MySQLConnection') as factory:
+            report = readyset.read_status(FakeReadyset(), profiles=[current, peer],
+                                         open_profile=opener, current_profile_id=current['id'])
+        factory.assert_not_called()
+        self.assertEqual(report['connection_group']['read'][0]['outcome'], 'not_reached')
+
+    def test_replica_status_survives_missing_policy_store_without_a_write_token(self):
+        from test_replication import fixture
+        from _perf_replay import ReplayConn
+        for workspace in (None, types.SimpleNamespace(store=None)):
+            conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
+            original = conn.run
+            def run(sql, extra_flags=None, timeout=None):
+                # The captured replica predates the optional reconnect read.
+                if sql == rp.REPLICATION_TAG + rp._RECEIVER_SQL:
+                    raise ConnectorError('ERROR 1142: SELECT command denied')
+                return original(sql, extra_flags, timeout)
+            conn.run = run
+            with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
+                report = ui._replication_response('/api/live/replication', {'connection': {}}, workspace)
+            self.assertTrue(report['replica'])
+            self.assertEqual(report['connection_group']['name'], '')
+            plans = [ch['skip_plan'] for ch in report['channels'] if ch.get('skip_plan')]
+            self.assertTrue(plans)
+            for plan in plans:
+                self.assertFalse(plan['available'])
+                self.assertNotIn('review_token', plan)
+
+    def test_replication_identity_sink_and_strict_report_schemas(self):
+        identity = {}
+        report = rp.read_status(LocalDatabase(), topology_tiers=True, _identity=identity)
+        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertNotIn('topology_identity', report)
+        for name, report in (('replication', report), ('cluster', CF.report('ic-8.4-healthy')),
+                             ('readyset', readyset.read_status(FakeReadyset()))):
+            schema = json.loads((ROOT / 'docs' / 'schemas' / (name + '-1.0.json')).read_text())
+            validate(report, schema)
+            for change in ({'extra': True}, {'read': [{'id': 'x', 'name': 'x', 'type': 'production',
+                                                     'message': '', 'outcome': 'unreviewed'}]}):
+                bad = copy.deepcopy(report)
+                bad['connection_group'].update(change)
+                with self.assertRaises(AssertionError):
+                    validate(bad, schema)
+
+
+class TestReviewRegressions(GroupCase):
+    """Regression and abuse cases for the 3.4.3 connection-group review."""
+
+    def finish(self, profile, report, identity=None):
+        profiles, current = cg.request_profiles(self.store, self.request(profile))
+        cg.finish_read(self.store, report, self.request(profile), profiles, current, identity)
+        return self.store._profile(profile['id']).get('topology_identity', {})
+
+    def test_cluster_read_clears_departed_cluster_evidence(self):
+        current = self.save('current')
+        clustered = CF.report('ic-8.4-clusterset-primary')
+        old = self.finish(current, clustered, {'clusterset_id': 'old-set'})
+        self.assertTrue(old['cluster_id'])
+        standalone = CF.report('mysql-8.4-standalone')
+        standalone['server']['server_uuid'] = old['server_uuid']
+        stored = self.finish(current, standalone)
+        for field in ('cluster_kind', 'cluster_name', 'cluster_id', 'gr_group_name',
+                      'wsrep_cluster_uuid', 'clusterset_id', 'clusterset_name'):
+            self.assertTrue(field not in stored, field)
+        suggestions = cg.describe(clustered, [self.store.get('profile', 'current')])['suggestions']
+        self.assertFalse(any(row['evidence'] in ('same_group_replication_group',
+                         'same_innodb_cluster', 'same_clusterset') for row in suggestions))
+
+    def test_each_identity_view_preserves_uninspected_fields(self):
+        current = self.save('current')
+        clustered = CF.report('ic-8.4-healthy')
+        initial = self.finish(current, clustered)
+        replication = {'schema_version': 'replication-1.0', 'channels': [{'source': {'uuid': 'source'}}]}
+        stored = self.finish(current, replication, {'server_uuid': initial['server_uuid']})
+        self.assertEqual(stored['cluster_id'], initial['cluster_id'])
+        self.assertEqual(stored['gr_group_name'], initial['gr_group_name'])
+        self.assertEqual(stored['source_uuids'], ['source'])
+        stored = self.finish(current, clustered)
+        self.assertEqual(stored['source_uuids'], ['source'])
+        stored = self.finish(current, dict(replication, channels=[]))
+        self.assertEqual(stored.get('source_uuids', []), [])
+        self.assertEqual(stored['cluster_id'], initial['cluster_id'])
+        self.assertEqual(stored['gr_group_name'], initial['gr_group_name'])
+
+    def test_changed_server_uuid_invalidates_uninspected_identity_fields(self):
+        # MySQL-only: InnoDB Cluster and Group Replication identify the old server.
+        current = self.save('current')
+        clustered = CF.report('ic-8.4-clusterset-primary')
+        initial = self.finish(current, clustered)
+        self.assertTrue(initial['cluster_id'])
+        self.assertTrue(initial['gr_group_name'])
+        replication = {'schema_version': 'replication-1.0', 'channels': [{'source': {'uuid': 'new-source'}}]}
+        stored = self.finish(current, replication, {'server_uuid': 'new-server-uuid'})
+        self.assertEqual({key: value for key, value in stored.items() if key != 'recorded_at'},
+                         {'server_uuid': 'new-server-uuid', 'source_uuids': ['new-source']})
+        self.assertEqual(cg.describe(clustered, [self.store.get('profile', 'current')])['suggestions'], [])
+
+    def test_read_replica_identity_uses_cluster_not_group_replication(self):
+        # MySQL-only: MariaDB does not expose InnoDB Cluster read replicas.
+        current = self.save('current')
+        report = CF.report('ic-8.4-read-replica-local')
+        self.assertEqual(report['metadata']['local_copy'], 'read_replica')
+        stored = self.finish(current, report)
+        self.assertNotIn('gr_group_name', stored)
+        self.assertEqual(stored['cluster_id'], report['metadata']['cluster_id'])
+        member = CF.report('ic-8.4-healthy')
+        # The read-replica fixture is synthetic; the healthy recording has a
+        # different metadata ID. Model a member of this replica's cluster.
+        member['metadata']['cluster_id'] = report['metadata']['cluster_id']
+        group = cg.describe(member, [self.store.get('profile', 'current')])
+        self.assertEqual(group['suggestions'][0]['evidence'], 'same_innodb_cluster')
+
+    def test_replication_does_not_record_configured_gr_group(self):
+        # Loaded/configured GR alone does not prove membership. Cluster owns it.
+        conn = LocalDatabase()
+        conn.cfg['gr_group'] = 'configured-but-never-joined'
+        identity = {}
+        rp.read_status(conn, topology_tiers=True, _identity=identity)
+        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertNotIn('gr_group_name', identity)
+
+    def test_proxy_reports_never_store_backend_identity(self):
+        hints = ({'is_proxysql': True}, {'is_readyset': True},
+                 {'server_product': 'ProxySQL Admin'}, {'server_product': 'Readyset'},
+                 {'flavor': 'readyset'}, {'readyset_hint': True})
+        for i, hint in enumerate(hints):
+            for schema in ('cluster-1.0', 'replication-1.0'):
+                with self.subTest(hint=hint, schema=schema):
+                    current = self.save('proxy-%s-%s' % (i, schema))
+                    report = dict(schema_version=schema, server={'server_uuid': 'backend-uuid'},
+                                  channels=[{'source': {'uuid': 'backend-source'}}],
+                                  kind='innodb_cluster', cluster={'uuid': 'backend-group'}, **hint)
+                    stored = self.finish(current, report, {'server_uuid': 'backend-uuid'})
+                    self.assertEqual(stored, {})
+
+    def test_oversized_identity_fields_and_source_list_are_refused(self):
+        current = self.save('current')
+        huge = 'x' * 200000
+        report = {'schema_version': 'cluster-1.0', 'kind': 'innodb_cluster',
+                  'server': {'server_uuid': huge}, 'cluster': {'name': huge, 'uuid': huge},
+                  'metadata': {'cluster_id': huge}, 'clusterset': {'id': huge, 'name': huge},
+                  'channels': [{'source': {'uuid': 'source-%d' % i}} for i in range(50)]}
+        stored = self.finish(current, report, {'wsrep_cluster_uuid': huge})
+        for field in ('server_uuid', 'cluster_name', 'cluster_id', 'gr_group_name',
+                      'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid', 'source_uuids'):
+            self.assertNotIn(field, stored, field)
+        self.assertLess(len(json.dumps(stored)), 512)
+
+    def test_identity_limits_do_not_truncate_or_keep_previous_invalid_values(self):
+        current = self.save('current')
+        accepted = {field: 'a' * 128 for field in cg.IDENTITY_FIELDS}
+        accepted['source_uuids'] = ['uuid-%d' % i for i in range(32)]
+        self.store.record_topology_identity(current['id'], accepted)
+        stored = self.store._profile(current['id'])['topology_identity']
+        for field, value in accepted.items():
+            self.assertEqual(stored[field], value)
+        for sources in (['x' * 129], ['uuid-%d' % i for i in range(33)], 'not-a-list', None):
+            invalid = {field: 'a' * 129 for field in cg.IDENTITY_FIELDS}
+            invalid['source_uuids'] = sources
+            self.store.record_topology_identity(current['id'], invalid)
+            stored = self.store._profile(current['id'])['topology_identity']
+            self.assertFalse(set(stored) & set(accepted), stored)
+
+    def test_each_probe_login_rechecks_consent_endpoint_and_password(self):
+        for change in ('peer_group', 'current_group', 'host', 'user', 'ssh_host', 'password', 'store_error'):
+            with self.subTest(change=change):
+                tl._reset_cache_for_tests()
+                current, peer = self.save('current', 'G'), self.save('peer', 'G')
+                scope = cg.GroupScope([current, peer], current)
+                opener = scope.opener(rp.profile_opener(self.store, current['id'], current))
+                calls, store_error = [], []
+                fake = FakeProbeConn('database')
+                def invoke(argv, **kwargs):
+                    sql = argv[argv.index('-e') + 1]
+                    calls.append(sql)
+                    answer = fake.run(sql)
+                    if len(calls) == 1:
+                        if change.endswith('_group'):
+                            self.store.assign_profile_group([change.split('_')[0]], 'revoked')
+                        elif change == 'store_error':
+                            patcher = mock.patch.object(self.store, '_profile', side_effect=OSError('unreadable'))
+                            patcher.start()
+                            store_error.append(patcher)
+                        else:
+                            changed = dict(peer)
+                            if change != 'password':
+                                changed[change] = 'changed'
+                            self.store.save('profile', changed, peer['id'], password='new-password', remember=True)
+                    return types.SimpleNamespace(returncode=0, stdout=answer.encode(), stderr=b'')
+                try:
+                    with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                            mock.patch.object(connector, '_run_bounded', side_effect=invoke):
+                        probed, notes = tl.probe_saved_profiles([peer], opener, skip_profile_id=current['id'], current=current)
+                finally:
+                    for patcher in store_error:
+                        patcher.stop()
+                self.assertEqual(len(calls), 1, 'a revoked probe started another client login')
+                self.assertEqual(probed, [])
+                self.assertEqual(scope.read[0]['outcome'], 'failed')
+                self.assertEqual(len(tl._probe_attempts), 1, 'a sent login must retain its attempt slot')
+                self.assertTrue(notes)
+                for forbidden in ('SELECT', 'SHOW', 'test-password', 'new-password'):
+                    self.assertNotIn(forbidden, json.dumps(notes))
+
+    def test_setup_revocation_refuses_probe_login(self):
+        current, peer = self.save('current', 'G'), self.save('peer', 'G')
+        scope = cg.GroupScope([current, peer], current)
+        opener = scope.opener(rp.profile_opener(self.store, current['id'], current))
+        create = connector.MySQLConnection._create_defaults_file
+        def revoke(conn, *args, **kwargs):
+            path = create(conn, *args, **kwargs)
+            self.store.assign_profile_group(['peer'], 'revoked')
+            return path
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector.MySQLConnection, '_create_defaults_file', revoke), \
+                mock.patch.object(connector, '_run_bounded') as invoke:
+            probed, notes = tl.probe_saved_profiles([peer], opener, skip_profile_id=current['id'], current=current)
+        invoke.assert_not_called()
+        self.assertEqual(probed, [])
+        self.assertEqual(scope.read[0]['outcome'], 'not_reached')
+        self.assertEqual(tl._probe_attempts, set())
+        self.assertTrue(notes)
+
+    def test_source_first_contact_revocation_is_failed_after_one_login(self):
+        for engine, version, comment in (('mysql', '8.4.11', 'MySQL Community Server - GPL'),
+                                         ('mariadb', '11.4.8-MariaDB', 'MariaDB Server')):
+            with self.subTest(engine=engine):
+                rp.reset_source_cache()
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G', host='db1.example.com')
+                scope = cg.GroupScope([current, peer], current)
+                opener = scope.opener(rp.profile_opener(self.store, current['id'], current))
+                # Client selection may log in before the source-variable read.
+                # Exercise both logins through the real connector consent checks.
+                def resolve(conn):
+                    conn._run_with_binary('SELECT @@version, @@version_comment', '/nonexistent/mysql')
+                    return '/nonexistent/mysql'
+                def invoke(argv, **kwargs):
+                    self.assertEqual(argv[argv.index('-e') + 1], 'SELECT @@version, @@version_comment')
+                    self.store.assign_profile_group(['peer'], 'revoked')
+                    return types.SimpleNamespace(returncode=0,
+                        stdout=('%s\t%s\n' % (version, comment)).encode(), stderr=b'')
+                with mock.patch.object(connector.MySQLConnection, '_resolve_binary', resolve), \
+                        mock.patch.object(connector, '_run_bounded', side_effect=invoke) as client:
+                    report = rp.attach_source_versions(SV.FakeReader(SV.DENIED),
+                        {'engine': engine, 'channels': [SV.channel()], 'capabilities': {}},
+                        profiles=[current, peer], open_profile=opener, current_profile_id=current['id'])
+                self.assertEqual(client.call_count, 1, 'a revoked source started another client login')
+                self.assertEqual(report['connection_group']['read'][0]['outcome'], 'failed')
+                self.assertIn(peer['id'], scope.attempted)
+                self.assertEqual(len(rp._source_attempts), 1, 'a sent login must retain its attempt slot')
+                self.assertIsNone(report['channels'][0]['source_version']['version'])
+                self.assertFalse(report['channels'][0]['source_version']['verified'])
+
+    def test_consented_mysql_and_mariadb_probes_complete(self):
+        for version, comment in (('8.4.11', 'MySQL Community Server - GPL'),
+                                 ('11.4.8-MariaDB', 'MariaDB Server')):
+            with self.subTest(version=version):
+                tl._reset_cache_for_tests()
+                current, peer = self.save('current', 'G'), self.save('peer', 'G')
+                scope = cg.GroupScope([current, peer], current)
+                opener = scope.opener(rp.profile_opener(self.store, current['id'], current))
+                fake = FakeProbeConn('database', version=version, version_comment=comment)
+                def invoke(argv, **kwargs):
+                    answer = fake.run(argv[argv.index('-e') + 1])
+                    return types.SimpleNamespace(returncode=0, stdout=answer.encode(), stderr=b'')
+                with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                        mock.patch.object(connector, '_run_bounded', side_effect=invoke) as client:
+                    probed, notes = tl.probe_saved_profiles([peer], opener, skip_profile_id=current['id'], current=current)
+                self.assertEqual(probed[0]['version'], version)
+                self.assertEqual(scope.read[0]['outcome'], 'read')
+                self.assertGreater(client.call_count, 1)
+                self.assertEqual(notes, [])
+
+    def test_client_script_and_write_paths_also_recheck_group_consent(self):
+        # No SQL runs: exercise all connector entry points at the login boundary.
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                current, peer = self.save('current', 'G'), self.save('peer', 'G')
+                conn = rp.profile_opener(self.store, current['id'], current)(peer)
+                self.store.assign_profile_group(['peer'], 'revoked')
+                with conn, mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                        mock.patch.object(connector, '_run_bounded', return_value=types.SimpleNamespace(
+                            returncode=0, stdout=b'', stderr=b'')) as invoke:
+                    with self.assertRaises(cg.ProfileReadError):
+                        getattr(conn, method)('SELECT 1')
+                invoke.assert_not_called()
+
+    def test_setup_revocation_refuses_source_login(self):
+        current = self.save('current', 'G')
+        peer = self.save('peer', 'G', host='db1.example.com')
+        opener = rp.profile_opener(self.store, current['id'], current)
+        create = connector.MySQLConnection._create_defaults_file
+        def revoke(conn, *args, **kwargs):
+            path = create(conn, *args, **kwargs)
+            self.store.assign_profile_group(['peer'], 'revoked')
+            return path
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector.MySQLConnection, '_create_defaults_file', revoke), \
+                mock.patch.object(connector, '_run_bounded') as invoke:
+            report = rp.attach_source_versions(SV.FakeReader(SV.DENIED),
+                {'engine': 'mysql', 'channels': [SV.channel()], 'capabilities': {}},
+                profiles=[current, peer], open_profile=opener, current_profile_id=current['id'])
+        invoke.assert_not_called()
+        self.assertEqual(report['connection_group']['read'][0]['outcome'], 'not_reached')
+        self.assertEqual(rp._source_attempts, set())
+
+    def test_pending_probe_checks_consent_before_waiting(self):
+        self.check_pending_consent('topology')
+
+    def test_pending_source_checks_consent_before_waiting(self):
+        self.check_pending_consent('source')
+
+    def check_pending_consent(self, path):
+        current = self.save('current', 'G')
+        peer = self.save('peer', 'G', host='db1.example.com')
+        entered, release, second_done = threading.Event(), threading.Event(), threading.Event()
+        results, errors = {}, []
+        base = SV.Source(server_id='7', version='8.4.6') if path == 'source' else FakeProbeConn('database')
+        original_run = base.run
+        def block(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('test did not release the first probe')
+            return original_run(*args, **kwargs)
+        base.run = block
+        def read(which):
+            try:
+                opener = rp.profile_opener(self.store, current['id'], current)
+                if path == 'source':
+                    report = {'engine': 'mysql', 'channels': [SV.channel()], 'capabilities': {}}
+                    results[which] = rp.attach_source_versions(SV.FakeReader(SV.DENIED), report,
+                        profiles=[current, peer], open_profile=opener, current_profile_id=current['id'])['connection_group']
+                else:
+                    scope = cg.GroupScope([current, peer], current)
+                    tl.probe_saved_profiles([peer], scope.opener(opener), skip_profile_id=current['id'], current=current)
+                    results[which] = {'read': scope.read}
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                if which == 'second':
+                    second_done.set()
+        first = threading.Thread(target=read, args=('first',))
+        second = threading.Thread(target=read, args=('second',))
+        with mock.patch.object(connector, 'MySQLConnection', return_value=base) as factory:
+            first.start()
+            try:
+                self.assertTrue(entered.wait(2), 'first probe never entered the client')
+                self.store.assign_profile_group(['peer'], 'revoked')
+                second.start()
+                self.assertTrue(second_done.wait(2), 'revoked reader waited for an unauthorized pending probe')
+                self.assertEqual(results['second']['read'][0]['outcome'], 'not_reached')
+            finally:
+                release.set()
+                first.join(5)
+                if second.ident is not None:
+                    second.join(5)
+            self.assertEqual(factory.call_count, 1)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_group_reassigned_during_password_lookup_never_constructs_client(self):
+        current, peer = self.save('current', 'G'), self.save('peer', 'G')
+        original = self.store.connection_with_saved_password
+        def revoke(value):
+            result = original(value)
+            self.store.assign_profile_group(['peer'], 'revoked')
+            return result
+        opener = rp.profile_opener(self.store, current['id'], current)
+        with mock.patch.object(self.store, 'connection_with_saved_password', side_effect=revoke), \
+                mock.patch.object(connector, 'MySQLConnection') as factory:
+            with self.assertRaises(cg.ProfileReadError):
+                opener(peer)
+        factory.assert_not_called()
+
+    def test_payload_cannot_forge_group_or_current_profile_consent(self):
+        current = self.save('current', '')
+        self.save('peer', 'G')
+        forged = dict(current, group='G')
+        workspace = types.SimpleNamespace(store=self.store)
+        for path in ('cluster', 'replication', 'proxysql', 'readyset'):
+            for key in ('group', 'connection_current', 'top_current', 'all'):
+                with self.subTest(path=path, key=key):
+                    connection = self.request(current)
+                    payload = {'connection': connection}
+                    if key in ('group', 'all'):
+                        connection['group'] = 'G'
+                    if key in ('connection_current', 'all'):
+                        connection['current_profile'] = forged
+                    if key in ('top_current', 'all'):
+                        payload['current_profile'] = forged
+                    conn = {'cluster': lambda: CF.conn('mysql-8.4-standalone'),
+                            'replication': LocalDatabase, 'proxysql': FakeAdmin, 'readyset': FakeReadyset}[path]()
+                    try:
+                        with mock.patch.object(connector, 'MySQLConnection', return_value=conn) as factory, \
+                                mock.patch.object(rp, 'profile_opener', side_effect=AssertionError('forged consent')):
+                            report = ui.api_response('/api/live/' + path, payload, workspace)
+                        self.assertEqual(factory.call_count, 1, 'forged consent opened a saved peer')
+                        self.assertEqual(report['connection_group']['read'], [])
+                        self.assertEqual(report['connection_group']['name'], '')
+                    finally:
+                        if path == 'proxysql':
+                            conn.db.close()
+
+    def test_user_or_ssh_host_mismatch_cannot_borrow_group(self):
+        current = self.save('current', 'G', ssh_host='jump.example')
+        self.save('peer', 'G')
+        for field in ('user', 'ssh_host'):
+            with self.subTest(field=field):
+                edited = self.request(current)
+                edited[field] = 'different'
+                profiles, selected = cg.request_profiles(self.store, edited)
+                self.assertIsNone(selected)
+                self.assertEqual(cg.members(profiles, selected), [])
+
+    def test_group_api_refuses_non_profile_id_atomically(self):
+        self.save('current', 'G')
+        from test_workspace_store import bundle
+        record = self.store.save('investigation', bundle(), 'not-a-profile')
+        profiles = self.store.list('profile')
+        with self.assertRaises(ValueError):
+            ui.api_response('/api/profiles/group', {'profile_ids': ['current', record['id']], 'group': 'changed'},
+                            types.SimpleNamespace(store=self.store))
+        self.assertEqual(self.store.list('profile'), profiles)
+        self.assertEqual(self.store.get('investigation', record['id']), record)
+
+    def test_mcp_topology_tools_open_only_selected_connection(self):
+        current = self.save('current', 'G')
+        self.save('peer', 'G')
+        for name, conn in (('cluster', CF.conn('mysql-8.4-standalone')),
+                           ('replication', LocalDatabase()), ('readyset', FakeReadyset())):
+            with self.subTest(name=name):
+                with mock.patch.object(connector, 'MySQLConnection', return_value=conn) as factory, \
+                        mock.patch.object(rp, 'profile_opener', side_effect=AssertionError('MCP peer login')):
+                    report = getattr(mcp_server, name + '_status_tool')(current['id'], detail='full')
+                self.assertEqual(factory.call_count, 1)
+                self.assertEqual(factory.call_args[1]['host'], current['host'])
+                self.assertEqual(report['connection_group']['read'], [])
+
+    def test_readyset_cli_reads_only_selected_group_members(self):
+        current = self.save('current', 'G', host='current-rs')
+        self.save('inside', 'G', host='inside.example')
+        self.save('outside', 'production', host='outside.example')
+        for mode in ('group', 'no_group', 'no_profile', 'edited'):
+            with self.subTest(mode=mode):
+                tl._reset_cache_for_tests()
+                self.store.assign_profile_group(['current'], '' if mode == 'no_group' else 'G')
+                opened = []
+                def factory(**options):
+                    if options['host'] in ('current-rs', 'edited-rs'):
+                        conn = FakeReadyset()
+                        for key in ENDPOINT_FIELDS:
+                            setattr(conn, key, options.get(key))
+                        return conn
+                    opened.append(options['host'])
+                    self.assertEqual(options['host'], 'inside.example', 'OUTSIDE GROUP CLI LOGIN')
+                    return FakeProbeConn('database')
+                args = ['--json', '--profile', current['id']] if mode != 'no_profile' else ['--json', '--host', 'current-rs']
+                if mode == 'edited':
+                    args += ['--host', 'edited-rs', '--password', 'explicit']
+                code, out, err, unused = run_cli('readyset', args, FakeReadyset(), patches=[
+                    mock.patch.object(connector, 'MySQLConnection', side_effect=factory)])
+                self.assertEqual(code, 0, err)
+                self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
+                report = json.loads(out)
+                self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
+
+
+if __name__ == '__main__':
+    unittest.main()

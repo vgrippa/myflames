@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "connection_group",
     "schema_version",
     "captured_at",
     "available",
@@ -30,6 +31,146 @@
     "fingerprints"
   ],
   "properties": {
+    "connection_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "read",
+        "suggestions",
+        "join",
+        "suggested_name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "read": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "type",
+              "outcome",
+              "message"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "production",
+                  "development"
+                ]
+              },
+              "outcome": {
+                "enum": [
+                  "read",
+                  "failed",
+                  "not_reached"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "type",
+              "address",
+              "group",
+              "evidence",
+              "evidence_text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "production",
+                  "development"
+                ]
+              },
+              "address": {
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "evidence": {
+                "enum": [
+                  "same_group_replication_group",
+                  "same_innodb_cluster",
+                  "same_clusterset",
+                  "same_galera_cluster",
+                  "replication_source",
+                  "replica_of_this_server",
+                  "same_server",
+                  "address_named_by_this_server"
+                ]
+              },
+              "evidence_text": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "join": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "group",
+              "evidence",
+              "evidence_text"
+            ],
+            "properties": {
+              "group": {
+                "type": "string"
+              },
+              "evidence": {
+                "enum": [
+                  "same_group_replication_group",
+                  "same_innodb_cluster",
+                  "same_clusterset",
+                  "same_galera_cluster",
+                  "replication_source",
+                  "replica_of_this_server",
+                  "same_server",
+                  "address_named_by_this_server"
+                ]
+              },
+              "evidence_text": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "suggested_name": {
+          "type": "string"
+        }
+      }
+    },
     "schema_version": {
       "const": "proxysql-1.0"
     },

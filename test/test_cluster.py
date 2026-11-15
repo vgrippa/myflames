@@ -86,6 +86,8 @@ class TestEveryScenario(unittest.TestCase):
                 conn, data = F.recorded(name)
                 report = m.read_status(conn)
                 expected = data['report']
+                expected['connection_group'] = {'name': '', 'read': [], 'suggestions': [], 'join': [],
+                    'suggested_name': expected['cluster']['name'] if expected['kind'] in ('innodb_cluster', 'galera', 'pxc') else ''}
                 for key in volatile:
                     report.pop(key)
                     expected.pop(key)
