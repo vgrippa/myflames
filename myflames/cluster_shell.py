@@ -71,7 +71,7 @@ def find_shell(refresh=False):
 def _connection(conn):
     """The connection options of *conn* for an option file (lifecycle._options)."""
     out = {"host": getattr(conn, "host", None) or "127.0.0.1", "port": getattr(conn, "port", None) or 3306}
-    for key in ("user", "password", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key", "ssl_cipher", "ssh_host",
+    for key in ("user", "password", "socket", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key", "ssl_cipher", "ssh_host",
                 "ssh_user", "ssh_port"):
         value = getattr(conn, key, None)
         if value is not None and value != "":

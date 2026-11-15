@@ -1927,26 +1927,6 @@ def format_text(report):
                        + (flow_percent(mt.get("flow_control_paused")),)
                        + tuple("?" if mt.get(k) is None else mt[k] for k in (
                            "cert_deps_distance", "local_cert_failures", "local_bf_aborts"))))
-    cs = report.get("clusterset")
-    if cs:
-        out.append("")
-        out.append("ClusterSet %s%s:" % (cs.get("name") or "(unnamed)",
-                                        "  (this cluster's metadata copy, possibly behind)"
-                                        if cs.get("from_local_copy") else ""))
-        for c in cs.get("clusters") or ():
-            out.append("  %s%s  %s%s" % (c.get("name") or "?", "  (this cluster)" if c.get("local") else "",
-                                         c.get("role") or "role not recorded",
-                                         "  INVALIDATED" if c.get("invalidated") else ""))
-            for inst in c.get("instances") or ():
-                out.append("    %s%s%s" % (inst.get("label") or inst.get("address") or "?",
-                                           "  read replica" if inst.get("instance_type") == "read-replica" else "",
-                                           "  (clusterset_replication source)" if inst.get("source") else ""))
-        channel = cs.get("channel")
-        if channel:
-            out.append("  %s%s: receiver %s, applier %s%s" % (
-                CLUSTERSET_CHANNEL, " from %s" % channel["source"] if channel.get("source") else "",
-                channel.get("receiver_state") or "?", channel.get("applier_state") or "?",
-                ", last error %s" % channel["last_error_number"] if channel.get("last_error_number") else ""))
     if report.get("routers"):
         out.append("")
         out.append("Routers:")
@@ -2138,15 +2118,20 @@ _ADDRESS = re.compile(r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+):\d{1,5}$")
 _CLUSTER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,62}$")
 #: The actions MySQL Shell runs; ids with a cluster name end in ":<name>".
 SHELL_ACTIONS = ("rejoin_instance", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
-#: An AdminAPI operation waits for recovery (a clone, a channel catching up).
+SHELL_MIN_VERSION = (8, 0, 0)
+SHELL_CLUSTERSET_MIN_VERSION = (8, 0, 27)
+#: WL#15056 added rejoinInstance's recoveryMethod option in MySQL Shell 8.1.0.
+SHELL_REJOIN_MIN_VERSION = (8, 1, 0)
+#: An AdminAPI operation waits for recovery or a channel catching up.
 SHELL_TIMEOUT = 600
 _SHELL_PRIVILEGE = ("The cluster administrator account: MySQL Shell connects to the members with this "
                     "connection's user and password")
 
 
-def _shell(checks):
+def _shell(checks, minimum=SHELL_MIN_VERSION):
     shell = (checks or {}).get("shell")
-    return shell if isinstance(shell, dict) and shell.get("path") else None
+    return shell if (isinstance(shell, dict) and shell.get("path")
+                     and tuple(shell.get("version_tuple") or ()) >= minimum) else None
 
 
 def _missing(report):
@@ -2208,12 +2193,13 @@ def available_actions(report, member_key=None, checks=None):
             # In the metadata, not in the group: MySQL Shell's rejoinInstance,
             # run through this ONLINE member (Cluster_impl::rejoin_instance:
             # quorum, a primary, and a ClusterSet in a usable state).
-            if (ic and shell and member.get("state") == "MISSING" and member.get("in_metadata")
+            if (ic and _shell(checks, SHELL_REJOIN_MIN_VERSION) and member.get("state") == "MISSING"
+                    and member.get("in_metadata")
                     and _ADDRESS.match(member.get("address") or "") and _group_ready(report) is None
                     and not (cs and cs.get("invalidated"))):
                 out.append(_action("rejoin_instance", "Rejoin to the cluster…", True,
-                                   "MySQL Shell rejoins %s to the cluster (Cluster.rejoinInstance). Recovery may "
-                                   "replace its data with a clone." % member.get("name")))
+                                   "MySQL Shell rejoins %s to the cluster with incremental recovery from a donor "
+                                   "(Cluster.rejoinInstance)." % member.get("name")))
             return out
         if member.get("state_source") != "replication_group_members":
             return []
@@ -2224,7 +2210,8 @@ def available_actions(report, member_key=None, checks=None):
         replica_cluster = bool(cs and cs.get("local_role") == "REPLICA")
         if (topology == "single_primary" and member.get("role") == "SECONDARY" and member.get("state") == "ONLINE"
                 and _UUID.match(member.get("uuid") or "") and _group_ready(report) is None
-                and (not replica_cluster or (shell and _ADDRESS.match(member.get("address") or "")))):
+                and (not replica_cluster or (_shell(checks, SHELL_CLUSTERSET_MIN_VERSION)
+                                             and _ADDRESS.match(member.get("address") or "")))):
             out.append(_action("switchover", "Make primary…", True,
                                "Makes %s the primary; the current primary becomes a read-only secondary once its "
                                "running transactions finish." % member.get("name")))
@@ -2254,7 +2241,8 @@ def available_actions(report, member_key=None, checks=None):
                     out.append(_action("switch_to_single_primary", "Switch the cluster to single-primary…", True,
                                        "MySQL Shell switches the cluster: one primary is elected, the others become "
                                        "read-only, and it resets auto_increment and the metadata mode."))
-            if ic and shell and cs and member.get("state") == "ONLINE" and _group_ready(report) is None:
+            if (ic and _shell(checks, SHELL_CLUSTERSET_MIN_VERSION) and cs and member.get("state") == "ONLINE"
+                    and _group_ready(report) is None):
                 out.extend(_clusterset_actions(cs))
     elif kind == "galera" and report.get("engine") == "mariadb" and member.get("local"):
         galera = report.get("galera") or {}
@@ -2324,6 +2312,7 @@ def action_checks(conn, report, action):
     if (report or {}).get("kind") == "innodb_cluster" and _via_shell(report, action):
         from .cluster_shell import find_shell
         out["shell"] = find_shell()
+        out["ssh"] = bool(getattr(conn, "ssh_host", None))
     if action == "start_member":
         reader = Reader(conn, CLUSTER_TAG)
         try:
@@ -2381,6 +2370,12 @@ def plan_action(report, action, member_key=None, checks=None):
         plan["facts"] += [["Runs with", "MySQL Shell %s (%s)" % (shell.get("version") or "", shell["path"])],
                           ["Privilege", _SHELL_PRIVILEGE]]
         _plan_shell(report, plan, action, member, local, expect)
+        if checks.get("ssh"):
+            plan["warnings"].append("This connection uses an SSH tunnel. MySQL Shell runs on this computer: it "
+                                    "reaches %s through the tunnel, but connects to the other %s at the addresses "
+                                    "in the cluster metadata directly, so they must be reachable from here." % (
+                                        (local or {}).get("name") or "this member",
+                                        "members and clusters" if report.get("clusterset") else "members"))
     elif kind in ("innodb_cluster", "group_replication"):
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
         plan["facts"].append(["Privilege", "Needs %s" % _GR_PRIVILEGE])
@@ -2413,8 +2408,7 @@ def _checks(action, member, local):
         "desync_node": "Refresh the Cluster place: %s's wsrep_desync and state." % here,
         "resync_node": "Refresh the Cluster place: %s's wsrep_desync and state." % here,
         "bootstrap_pc": "Refresh the Cluster place: whether %s's component is Primary." % here,
-        "rejoin_instance": "Refresh the Cluster place and look at %s's member state; a clone can take a while "
-                           "and restarts the instance." % name,
+        "rejoin_instance": "Refresh the Cluster place and look at %s's member state." % name,
         "set_primary_cluster": "Refresh the Cluster place on a member of the primary cluster, or run "
                                "dba.getClusterSet().status() in MySQL Shell.",
         "force_primary_cluster": "Run dba.getClusterSet().status() in MySQL Shell to see which cluster is primary "
@@ -2604,17 +2598,18 @@ def _plan_shell(report, plan, action, member, local, expect):
         address = member.get("address")
         plan.update(eyebrow="Cluster.rejoinInstance", title="Rejoin %s to %s?" % (name, cluster),
                     confirm_label="Rejoin %s" % name, target_text=name,
-                    description="MySQL Shell connects to %s, recreates its recovery account and starts Group "
-                                "Replication there. It catches up from a donor, or, when the transactions it "
-                                "misses are gone from the donors, recovery replaces its data with a clone and "
-                                "restarts it." % address)
-        plan["statements"] = ["dba.getCluster().rejoinInstance(%s);" % _js(address)]
+                    description="MySQL Shell rejoins %s with incremental recovery from a donor, restores its "
+                                "recovery account and updates the cluster metadata." % address)
+        plan["statements"] = ['dba.getCluster().rejoinInstance(%s, {recoveryMethod: "incremental"});' % _js(address)]
         plan["facts"] += [["Instance", "%s (%s)" % (name, address)],
                           ["Seen here as", member.get("state") or "Not reported"]]
         plan["warnings"].append("MySQL Shell reaches %s with this connection's user and password: the account "
                                 "must exist there too." % address)
         plan["warnings"].append("Find out why %s left the group (its error log) before you rejoin it: MySQL Shell "
                                 "refuses an instance with transactions the cluster does not have." % name)
+        plan["warnings"].append("When the transactions this instance misses are no longer in any member's binary "
+                                "logs, MySQL Shell refuses and nothing changes. Run cluster.rejoinInstance(%s, "
+                                '{recoveryMethod: "clone"}) in MySQL Shell then.' % _js(address))
         plan["typed_guard"] = name
         plan["undo"] = "dba.getCluster().removeInstance(%s); or STOP GROUP_REPLICATION on it." % _js(address)
     elif base == "set_primary_cluster":

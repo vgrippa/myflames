@@ -82,8 +82,9 @@ class TestClusterSetRead(unittest.TestCase):
         self.assertIsNone(cs['channel'], 'the primary cluster has no clusterset_replication channel')
         self.assertEqual(report['status'], 'ok')
         text = m.format_text(report)
-        self.assertIn('ClusterSet mfcs:', text)
-        self.assertIn('drcluster  REPLICA', text)
+        self.assertNotIn('\nClusterSet ', text)
+        self.assertNotIn('drcluster  REPLICA', text)
+        self.assertEqual(json.loads(json.dumps(report))['clusterset'], cs)
 
     def test_replica_cluster_reads_its_channel_on_its_primary(self):
         report = F.report('ic-8.4-clusterset-replica')
@@ -94,10 +95,10 @@ class TestClusterSetRead(unittest.TestCase):
                          ('ON', 'ON', 'mf-main-1:3306'))
         main = cs['clusters'][0]
         self.assertEqual([i['address'] for i in main['instances'] if i['source']], ['mf-main-1:3306'])
-        self.assertIn('mf-main-1:3306  (clusterset_replication source)', m.format_text(report))
+        self.assertNotIn('(clusterset_replication source)', m.format_text(report))
         self.assertEqual(report['status'], 'ok')
         self.assertTrue(any('replicated copy' in n for n in report['notes']))
-        self.assertIn('clusterset_replication from mf-main-1:3306: receiver ON, applier ON', m.format_text(report))
+        self.assertNotIn('clusterset_replication from mf-main-1:3306: receiver ON, applier ON', m.format_text(report))
 
     def test_channel_off_is_a_problem(self):
         report = F.report('ic-8.4-clusterset-replica-channel-off')
@@ -119,7 +120,8 @@ class TestClusterSetRead(unittest.TestCase):
         (finding,) = [f for f in seen['findings'] if f['id'] == 'clusterset_invalidated']
         self.assertEqual(finding['status'], 'watch')
         self.assertIn('drcluster', finding['text'])
-        self.assertIn('INVALIDATED', m.format_text(seen))
+        self.assertTrue(next(c for c in seen['clusterset']['clusters'] if c['name'] == 'drcluster')['invalidated'])
+        self.assertNotIn('\nClusterSet ', m.format_text(seen))
         mine = F.report('ic-8.4-clusterset-local-invalidated')
         (finding,) = [f for f in mine['findings'] if f['id'] == 'clusterset_invalidated']
         self.assertEqual((finding['status'], mine['clusterset']['invalidated']), ('problem', True))
@@ -144,6 +146,41 @@ class TestClusterSetRead(unittest.TestCase):
 
 
 class TestOffered(unittest.TestCase):
+    def test_shell_action_version_thresholds(self):
+        cases = (
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', (8, 0, 0), (7, 9, 99)),
+            ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 0), (7, 9, 99)),
+            ('ic-8.4-member-offline', 'rejoin_instance', 'missing', (8, 1, 0), (8, 0, 34)),
+            ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', (8, 0, 27), (8, 0, 26)),
+            ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', (8, 0, 27), (8, 0, 26)),
+            ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', (8, 0, 27), (8, 0, 26)),
+            ('ic-8.4-clusterset-replica', 'switchover', 'secondary', (8, 0, 27), (8, 0, 26)),
+        )
+        for scenario, action, who, threshold, below in cases:
+            report = F.report(scenario)
+            if who == 'multi':
+                report['cluster']['topology'] = 'multi_primary'
+            target = (missing(report) if who == 'missing' else
+                      next(x for x in report['members'] if x['role'] == 'SECONDARY') if who == 'secondary' else
+                      local(report))
+            for version, present in ((threshold, True), (below, False)):
+                with self.subTest(action=action, version=version):
+                    checks = {'shell': dict(SHELL, version_tuple=list(version))}
+                    self.assertEqual(action in offered(report, target['key'], checks), present)
+                    if present:
+                        self.assertEqual(m.plan_action(report, action, target['key'], checks)['via'], 'mysqlsh')
+                    else:
+                        with self.assertRaises(ValueError):
+                            m.plan_action(report, action, target['key'], checks)
+
+    def test_shell_without_a_version_offers_no_shell_actions(self):
+        for version in (None, []):
+            for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-replica'):
+                report = F.report(scenario)
+                checks = {'shell': dict(SHELL, version_tuple=version)}
+                for target in report['members']:
+                    self.assertFalse(any(m._via_shell(report, a) for a in offered(report, target['key'], checks)))
+
     def test_nothing_from_mysql_shell_without_mysql_shell(self):
         for name in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
                      'ic-8.4-clusterset-replica'):
@@ -253,10 +290,61 @@ class TestPlans(unittest.TestCase):
         report = F.report('ic-8.4-member-offline')
         target = missing(report)
         plan = m.plan_action(report, 'rejoin_instance', target['key'], CHECKS)
-        self.assertEqual(plan['statements'], [TAG + 'dba.getCluster().rejoinInstance("%s");' % target['address']])
+        self.assertEqual(plan['statements'],
+                         [TAG + 'dba.getCluster().rejoinInstance("%s", {recoveryMethod: "incremental"});'
+                          % target['address']])
         self.assertEqual(plan['typed_guard'], target['name'])
         self.assertEqual(plan['expect']['missing'], [target['key']])
-        self.assertIn('clone', plan['description'])
+        self.assertIn('incremental recovery from a donor', plan['description'])
+        self.assertNotIn('clone', plan['description'])
+        warnings = ' '.join(plan['warnings'])
+        self.assertIn("no longer in any member's binary logs", warnings)
+        self.assertIn('MySQL Shell refuses and nothing changes', warnings)
+        self.assertIn('Run cluster.rejoinInstance("%s", {recoveryMethod: "clone"}) in MySQL Shell' % target['address'],
+                      warnings)
+        self.assertNotIn('clone', ' '.join(plan['checks']))
+        self.assertNotIn('clone', m.available_actions(report, target['key'], CHECKS)[0]['description'])
+
+    def test_ssh_warning_uses_the_connected_member_and_does_not_change_statements(self):
+        cases = (('ic-8.4-healthy', 'switch_to_multi_primary', 'local'),
+                 ('ic-8.4-healthy', 'switch_to_single_primary', 'multi'),
+                 ('ic-8.4-member-offline', 'rejoin_instance', 'missing'),
+                 ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local'),
+                 ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local'),
+                 ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local'),
+                 ('ic-8.4-clusterset-replica', 'switchover', 'secondary'))
+        for scenario, action, who in cases:
+            with self.subTest(action=action):
+                report = F.report(scenario)
+                if who == 'multi':
+                    report['cluster']['topology'] = 'multi_primary'
+                target = (missing(report) if who == 'missing' else
+                          next(x for x in report['members'] if x['role'] == 'SECONDARY') if who == 'secondary' else
+                          local(report))
+                direct = m.plan_action(report, action, target['key'], CHECKS)
+                false_flag = m.plan_action(report, action, target['key'], dict(CHECKS, ssh=False))
+                tunneled = m.plan_action(report, action, target['key'], dict(CHECKS, ssh=True))
+                warning = ("This connection uses an SSH tunnel. MySQL Shell runs on this computer: it reaches %s "
+                           "through the tunnel, but connects to the other %s at the addresses in the cluster "
+                           "metadata directly, so they must be reachable from here." % (
+                               local(report)['name'], 'members and clusters' if report.get('clusterset') else 'members'))
+                self.assertEqual(direct, false_flag)
+                self.assertEqual(tunneled['warnings'], direct['warnings'] + [warning])
+                self.assertEqual(tunneled['statements'], direct['statements'])
+                self.assertEqual(tunneled['expect'], direct['expect'])
+
+    def test_action_checks_records_ssh_only_for_shell_actions(self):
+        report = F.report('ic-8.4-healthy')
+        with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
+            for host in (None, '', 'bastion.example'):
+                conn = type('Conn', (), {'ssh_host': host})()
+                self.assertEqual(m.action_checks(conn, report, 'switch_to_multi_primary'),
+                                 dict(CHECKS, ssh=bool(host)))
+                self.assertEqual(m.action_checks(conn, report, 'switchover'), {})
+            self.assertEqual(m.action_checks(object(), report, 'switch_to_multi_primary'), dict(CHECKS, ssh=False))
+            replica = F.report('ic-8.4-clusterset-replica')
+            conn = type('Conn', (), {'ssh_host': 'bastion.example'})()
+            self.assertEqual(m.action_checks(conn, replica, 'switchover'), dict(CHECKS, ssh=True))
 
     def test_clusterset_plans(self):
         primary = F.report('ic-8.4-clusterset-primary')
@@ -413,11 +501,32 @@ class Endpoints(Home):
         shell = FakeShell()
         result = self.send(conn, plan, typed=target['name'], shell=shell)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(shell.scripts, [(TAG + 'dba.getCluster().rejoinInstance("%s");' % target['address'],
+        self.assertEqual(shell.scripts, [(TAG + 'dba.getCluster().rejoinInstance("%s", {recoveryMethod: "incremental"});'
+                                          % target['address'],
                                           m.SHELL_TIMEOUT)])
         (record,) = dbops.audit_report(self.workspace.store)['records']
         self.assertEqual((record['operation'], record['status']), ('cluster_action', 'ok'))
         self.assertNotIn('pw-secret', json.dumps(record))
+
+    def test_changing_incremental_recovery_to_clone_sends_nothing(self):
+        report = F.report('ic-8.4-member-offline')
+        conn = Writes(F.conn('ic-8.4-member-offline'))
+        target = missing(report)
+        plan = self.plan(conn, 'rejoin_instance', target['key'])
+        plan['statements'] = [s.replace('"incremental"', '"clone"') for s in plan['statements']]
+        shell = FakeShell()
+        self.assertEqual(self.send(conn, plan, typed=target['name'], shell=shell)['status'], 'refused')
+        self.assertEqual(shell.scripts, [])
+
+    def test_shell_downgraded_after_review_sends_nothing(self):
+        report = F.report('ic-8.4-member-offline')
+        conn = Writes(F.conn('ic-8.4-member-offline'))
+        target = missing(report)
+        plan = self.plan(conn, 'rejoin_instance', target['key'])
+        shell = FakeShell()
+        with mock.patch.object(cluster_shell, 'find_shell', return_value=dict(SHELL, version_tuple=[8, 0, 34])):
+            self.assertEqual(self.send(conn, plan, typed=target['name'], shell=shell)['status'], 'refused')
+        self.assertEqual(shell.scripts, [])
 
     def test_without_the_typed_name_nothing_is_sent(self):
         report = F.report('ic-8.4-member-offline')
@@ -521,9 +630,11 @@ class TestShellWriter(unittest.TestCase):
             ''' % (sys.executable, self.out)))
         os.chmod(self.program, stat.S_IRWXU)
 
-    def writer(self, password='s3cr"et'):
-        conn = type('Conn', (), {'host': 'mf-ic-1', 'port': 3306, 'user': 'mf_admin', 'password': password,
-                                 'ssl_mode': None, 'ssh_host': None})()
+    def writer(self, password='s3cr"et', **options):
+        attrs = {'host': 'mf-ic-1', 'port': 3306, 'user': 'mf_admin', 'password': password,
+                 'ssl_mode': None, 'ssh_host': None}
+        attrs.update(options)
+        conn = type('Conn', (), attrs)()
         return cluster_shell.ShellWriter(conn, {'path': self.program, 'realpath': self.program})
 
     def seen(self):
@@ -540,11 +651,35 @@ class TestShellWriter(unittest.TestCase):
         self.assertNotIn('s3cr', ' '.join(seen['argv']))
         self.assertIn('password="s3cr\\"et"', seen['option_file'])
         self.assertIn('user="mf_admin"', seen['option_file'])
+        self.assertIn('host="mf-ic-1"', seen['option_file'])
+        self.assertIn('port="3306"', seen['option_file'])
+        self.assertNotIn('socket=', seen['option_file'])
         self.assertNotIn('protocol', seen['option_file'], 'MySQL Shell has no protocol option')
         self.assertEqual(seen['mode'], '0o600')
         self.assertEqual(seen['script'], TAG + 'dba.getCluster().switchToMultiPrimaryMode();')
         self.assertTrue(seen['home'])
         self.assertNotIn('MYSQL_PWD', seen['env'])
+
+    def test_socket_option_file_has_no_tcp_port(self):
+        if os.name != 'posix':
+            self.skipTest('POSIX program')
+        socket = os.path.join(self.tmp, 'mysql "local".sock')
+        script = TAG + 'dba.getCluster().switchToMultiPrimaryMode();'
+        self.writer(socket=socket, port=3307).run_write(script, timeout=30)
+        seen = self.seen()
+        self.assertIn('socket="%s"' % socket.replace('"', '\\"'), seen['option_file'])
+        self.assertIn('host="localhost"', seen['option_file'])
+        self.assertNotIn('port=', seen['option_file'])
+        self.assertNotIn('protocol=', seen['option_file'])
+        self.assertEqual(seen['mode'], '0o600')
+        self.assertEqual(seen['script'], script)
+        self.assertFalse(os.path.exists(seen['argv'][0].split('=', 1)[1]), 'credentials removed after sending')
+
+    def test_invalid_socket_sends_nothing(self):
+        for socket in ('/tmp/mysql.sock\nport=3307', '/tmp/mysql.sock\x00', 123):
+            with self.subTest(socket=socket), self.assertRaises(ConnectorError):
+                self.writer(socket=socket).run_write('NEVER SEND', timeout=30)
+            self.assertFalse(os.path.exists(self.out))
 
     def test_errors_in_the_reviewed_writes_shape(self):
         if os.name != 'posix':
