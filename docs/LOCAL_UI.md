@@ -860,10 +860,10 @@ sending, the result panel and the Audit log.
 The review shows the exact MySQL Shell call. Before sending, myflames checks
 it again against a fresh read; a mismatch sends nothing. The account passes
 through a private option file, and MySQL Shell runs with an empty temporary home. A
-socket connection uses that socket. Over SSH, the review warns that only the
-connected member is reached through the tunnel; MySQL Shell connects to the
-other members at their metadata addresses directly. An operation has a
-600-second time limit. After an error, myflames reads the cluster again and
+socket connection uses that socket. MySQL Shell changes are not offered over an
+SSH connection, because MySQL Shell connects to the other members directly with
+this connection's user and password; the place says so in its notes. An operation
+has a 600-second time limit. After an error, myflames reads the cluster again and
 reports a partial change if anything it can see changed.
 
 **ProxySQL** (a place of its own, right after Cluster) reads the ProxySQL

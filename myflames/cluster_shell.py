@@ -89,19 +89,22 @@ def error_text(stderr, stdout=""):
     where = next((int(m.group(1)) for m in map(_STDIN_LINE.search, lines) if m), None)
     shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
     mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
+    if where is None and shell_code is None and mysql_code is None:
+        return None
     # The numbered exception is more specific than preceding progress or ERROR lines.
     message = next((line for line in lines if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
     if message is None:
         message = next((line for line in lines if re.search(r"^ERROR:|Error|error|\(\w+Error\)", line)), None)
-    if message is None and where is None and shell_code is None and mysql_code is None:
-        return None
     message = message if message is not None else lines[0]
+    # A wrapped exception can carry several numbers; its final cause wins.
+    message_codes = [match for pattern in (_SHELL_CODE, _MYSQL_CODE) for match in pattern.finditer(message)]
+    code = (int(max(message_codes, key=lambda match: match.start()).group(1)) if message_codes else
+            shell_code if shell_code is not None else mysql_code if mysql_code is not None else 0)
     message = _STDIN_LINE.sub("", message).strip()
     message = re.sub(r"^ERROR:\s*", "", message)
-    if where is None and shell_code is None and mysql_code in CONNECT_ERRORS:
+    if where is None and shell_code is None and code in CONNECT_ERRORS:
         # The first session could not be opened: no statement was read.
-        return "ERROR %d: %s" % (mysql_code, message)
-    code = shell_code if shell_code is not None else (mysql_code if mysql_code is not None else 0)
+        return "ERROR %d: %s" % (code, message)
     return "ERROR %d at line %d: %s" % (code, where or 1, message)
 
 

@@ -156,7 +156,7 @@ def _discover_response(path, payload, workspace=None):
                 t_args = _topo_args()
                 if t_args:
                     attach_topology_tiers(conn, report, **t_args)
-                return with_actions(report)
+                return with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)))
             if path == "/api/live/proxysql":
                 from .proxysql import read_status as proxysql_status
                 t_args = _topo_args()

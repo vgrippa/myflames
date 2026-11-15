@@ -2114,8 +2114,8 @@ def _action(aid, label, danger, description):
 #: bracketed), a cluster name in the characters MySQL Shell allows (letters,
 #: digits, _ - ., not starting with a digit: Sh/modules/adminapi/common/
 #: common.cc validate_name). Anything else is not offered.
-_ADDRESS = re.compile(r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+):\d{1,5}$")
-_CLUSTER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,62}$")
+_ADDRESS = re.compile(r"(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+):[0-9]{1,5}")
+_CLUSTER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,62}")
 #: The actions MySQL Shell runs; ids with a cluster name end in ":<name>".
 SHELL_ACTIONS = ("rejoin_instance", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
 SHELL_MIN_VERSION = (8, 0, 0)
@@ -2129,6 +2129,9 @@ _SHELL_PRIVILEGE = ("The cluster administrator account: MySQL Shell connects to 
 
 
 def _shell(checks, minimum=SHELL_MIN_VERSION):
+    # AdminAPI opens its own member sessions outside this connection's tunnel.
+    if (checks or {}).get("ssh"):
+        return None
     shell = (checks or {}).get("shell")
     return shell if (isinstance(shell, dict) and shell.get("path")
                      and tuple(shell.get("version_tuple") or ()) >= minimum) else None
@@ -2150,7 +2153,7 @@ def _clusterset_actions(cs):
     (Cluster_set_impl::set_primary_cluster, force_primary_cluster and
     rejoin_cluster; MySQL Shell checks the set's state again before each)."""
     out = []
-    clusters = [c for c in cs.get("clusters") or () if _CLUSTER_NAME.match(c.get("name") or "")]
+    clusters = [c for c in cs.get("clusters") or () if _CLUSTER_NAME.fullmatch(c.get("name") or "")]
     if not cs.get("invalidated"):
         for c in clusters:
             if c.get("role") == "REPLICA" and not c.get("invalidated"):
@@ -2163,7 +2166,7 @@ def _clusterset_actions(cs):
                                "MySQL Shell rejoins the invalidated cluster %s as a replica cluster "
                                "(rejoinCluster)." % c["name"]))
     if cs.get("local_role") == "REPLICA" and not cs.get("invalidated") \
-            and _CLUSTER_NAME.match(cs.get("local_cluster") or ""):
+            and _CLUSTER_NAME.fullmatch(cs.get("local_cluster") or ""):
         out.append(_action("force_primary_cluster", "Fail over to this cluster…", True,
                            "MySQL Shell makes %s the primary cluster without the current primary cluster "
                            "(forcePrimaryCluster), which is invalidated. Only when the primary cluster is lost."
@@ -2195,7 +2198,7 @@ def available_actions(report, member_key=None, checks=None):
             # quorum, a primary, and a ClusterSet in a usable state).
             if (ic and _shell(checks, SHELL_REJOIN_MIN_VERSION) and member.get("state") == "MISSING"
                     and member.get("in_metadata")
-                    and _ADDRESS.match(member.get("address") or "") and _group_ready(report) is None
+                    and _ADDRESS.fullmatch(member.get("address") or "") and _group_ready(report) is None
                     and not (cs and cs.get("invalidated"))):
                 out.append(_action("rejoin_instance", "Rejoin to the cluster…", True,
                                    "MySQL Shell rejoins %s to the cluster with incremental recovery from a donor "
@@ -2211,7 +2214,7 @@ def available_actions(report, member_key=None, checks=None):
         if (topology == "single_primary" and member.get("role") == "SECONDARY" and member.get("state") == "ONLINE"
                 and _UUID.match(member.get("uuid") or "") and _group_ready(report) is None
                 and (not replica_cluster or (_shell(checks, SHELL_CLUSTERSET_MIN_VERSION)
-                                             and _ADDRESS.match(member.get("address") or "")))):
+                                             and _ADDRESS.fullmatch(member.get("address") or "")))):
             out.append(_action("switchover", "Make primary…", True,
                                "Makes %s the primary; the current primary becomes a read-only secondary once its "
                                "running transactions finish." % member.get("name")))
@@ -2266,15 +2269,23 @@ def available_actions(report, member_key=None, checks=None):
     return out
 
 
-def with_actions(report, shell=None):
+def with_actions(report, shell=None, ssh=False):
     """*report* with each member's ``actions`` (the workspace's Cluster place
     reads it this way; the CLI and MCP report has no actions). The changes
     MySQL Shell runs are offered when *shell* (cluster_shell.find_shell, looked
-    up here for an InnoDB Cluster when not given) is installed."""
+    up here for an InnoDB Cluster when not given) is installed and the
+    connection does not use SSH."""
     if shell is None and report.get("kind") == "innodb_cluster":
         from .cluster_shell import find_shell
         shell = find_shell()
-    checks = {"shell": shell} if shell else None
+    checks = {"shell": shell, "ssh": ssh}
+    if shell and report.get("kind") == "innodb_cluster" and ssh:
+        note = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
+                "members directly, outside the tunnel, with this connection's user and password. Run them in "
+                "MySQL Shell from a host that reaches the members.")
+        notes = report.setdefault("notes", [])
+        if note not in notes:
+            notes.append(note)
     for member in report.get("members") or ():
         member["actions"] = available_actions(report, member.get("key"), checks)
     return report
@@ -2371,12 +2382,6 @@ def plan_action(report, action, member_key=None, checks=None):
         plan["facts"] += [["Runs with", "MySQL Shell %s (%s)" % (shell.get("version") or "", shell["path"])],
                           ["Privilege", _SHELL_PRIVILEGE]]
         _plan_shell(report, plan, action, member, local, expect)
-        if checks.get("ssh"):
-            plan["warnings"].append("This connection uses an SSH tunnel. MySQL Shell runs on this computer: it "
-                                    "reaches %s through the tunnel, but connects to the other %s at the addresses "
-                                    "in the cluster metadata directly, so they must be reachable from here." % (
-                                        (local or {}).get("name") or "this member",
-                                        "members and clusters" if report.get("clusterset") else "members"))
     elif kind in ("innodb_cluster", "group_replication"):
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
         plan["facts"].append(["Privilege", "Needs %s" % _GR_PRIVILEGE])
@@ -2575,7 +2580,7 @@ def _plan_shell(report, plan, action, member, local, expect):
         plan["statements"] = ["dba.getCluster().setPrimaryInstance(%s);" % _js(address)]
         plan["facts"] += [["New primary", "%s (%s)" % (name, address)],
                           ["Current primary", primary.get("name") if primary else "None"]]
-        if primary and _ADDRESS.match(primary.get("address") or ""):
+        if primary and _ADDRESS.fullmatch(primary.get("address") or ""):
             plan["undo"] = ("dba.getCluster().setPrimaryInstance(%s); makes %s the primary again."
                             % (_js(primary.get("address")), primary.get("name")))
         else:
@@ -2602,7 +2607,7 @@ def _plan_shell(report, plan, action, member, local, expect):
         if multi:
             plan["warnings"].append("Clients that write must be able to reach every member: MySQL Router sends "
                                     "writes to all of them in multi-primary mode.")
-        plan["typed_guard"] = cluster if _CLUSTER_NAME.match(cluster) else (local.get("name") if local else None)
+        plan["typed_guard"] = cluster if _CLUSTER_NAME.fullmatch(cluster) else (local.get("name") if local else None)
         plan["undo"] = "dba.getCluster().%s();" % ("switchToSinglePrimaryMode" if multi else
                                                    "switchToMultiPrimaryMode")
     elif base == "rejoin_instance":

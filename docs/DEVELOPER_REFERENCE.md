@@ -4345,9 +4345,10 @@ as JavaScript string literals.
 0600 option file, never on the command line or in the environment. The Shell
 runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
 startup script or saved credential takes part. A socket connection passes
-through that socket. Over SSH, the plan warns that MySQL Shell reaches the
-connected member through the tunnel but connects to the other members at
-their metadata addresses directly. The time limit is 600 s.
+through that socket. MySQL Shell changes are not offered over an SSH connection,
+because MySQL Shell connects to the other members directly with this connection's
+user and password; the place says so in its notes. MySQL Shell's member sessions
+take the user, password and CA files but not the profile's ssl-mode. The time limit is 600 s.
 
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the

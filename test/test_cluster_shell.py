@@ -190,6 +190,83 @@ class TestOffered(unittest.TestCase):
                 for action in ids:
                     self.assertFalse(m._via_shell(report, action), (name, action))
 
+    def test_ssh_offers_and_plans_no_shell_action_on_any_member(self):
+        checks = dict(CHECKS, ssh=True)
+        for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
+                         'ic-8.4-clusterset-replica', 'ic-8.4-clusterset-invalidated'):
+            for topology in ('single_primary', 'multi_primary'):
+                report = F.report(scenario)
+                report['cluster']['topology'] = topology
+                direct_shell_actions = set()
+                for target in report['members']:
+                    direct_shell_actions.update(a for a in offered(report, target['key']) if m._via_shell(report, a))
+                self.assertTrue(direct_shell_actions, (scenario, topology))
+                for target in report['members']:
+                    with self.subTest(scenario=scenario, topology=topology, member=target['key']):
+                        self.assertFalse(any(m._via_shell(report, a)
+                                             for a in offered(report, target['key'], checks)))
+                        for action in direct_shell_actions:
+                            with self.assertRaises(ValueError):
+                                m.plan_action(report, action, target['key'], checks)
+
+    def test_ssh_keeps_sql_cluster_actions(self):
+        for scenario in ('ic-8.4-healthy', 'ic-8.4-clusterset-primary', 'gr-8.4-two-members'):
+            report = F.report(scenario)
+            secondary = next(x for x in report['members'] if x['role'] == 'SECONDARY')
+            for action, target in (('stop_member', local(report)), ('switchover', secondary)):
+                with self.subTest(scenario=scenario, action=action):
+                    checks = dict(CHECKS, ssh=True)
+                    self.assertIn(action, offered(report, target['key'], checks))
+                    self.assertNotIn('via', m.plan_action(report, action, target['key'], checks))
+
+    def test_ssh_report_note_appears_once_only_with_shell_on_innodb_cluster(self):
+        note = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
+                "members directly, outside the tunnel, with this connection's user and password. Run them in "
+                "MySQL Shell from a host that reaches the members.")
+        report = F.report('ic-8.4-healthy')
+        for _ in range(2):
+            m.with_actions(report, shell=SHELL, ssh=True)
+            self.assertEqual(report['notes'].count(note), 1)
+            self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions']))
+        for shell, ssh, scenario in ((SHELL, False, 'ic-8.4-healthy'),
+                                     (None, True, 'ic-8.4-healthy'),
+                                     (SHELL, True, 'gr-8.4-two-members')):
+            with self.subTest(shell=shell, ssh=ssh, scenario=scenario):
+                with mock.patch.object(cluster_shell, 'find_shell', return_value=None):
+                    report = m.with_actions(F.report(scenario), shell=shell, ssh=ssh)
+                self.assertNotIn(note, report['notes'])
+
+    def test_invalid_shell_addresses_are_not_offered_or_planned(self):
+        for address in ('mf-a:3306\n', 'mf-a:٣٣٠٦', 'mf-a:３３０６'):
+            for scenario, action in (('ic-8.4-member-offline', 'rejoin_instance'),
+                                     ('ic-8.4-clusterset-replica', 'switchover')):
+                with self.subTest(address=address, action=action):
+                    report = F.report(scenario)
+                    target = (missing(report) if action == 'rejoin_instance' else
+                              next(x for x in report['members'] if x['role'] == 'SECONDARY'))
+                    self.assertIn(action, offered(report, target['key']))
+                    target['address'] = address
+                    self.assertNotIn(action, offered(report, target['key']))
+                    with self.assertRaises(ValueError):
+                        m.plan_action(report, action, target['key'], CHECKS)
+
+    def test_newline_clusterset_names_are_not_offered_or_planned(self):
+        for scenario, action in (('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
+                                 ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster'),
+                                 ('ic-8.4-clusterset-replica', 'force_primary_cluster')):
+            with self.subTest(action=action):
+                report = F.report(scenario)
+                key = local(report)['key']
+                self.assertIn(action, offered(report, key))
+                if action == 'force_primary_cluster':
+                    report['clusterset']['local_cluster'] += '\n'
+                else:
+                    next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')['name'] += '\n'
+                    action += '\n'
+                self.assertNotIn(action, offered(report, key))
+                with self.assertRaises(ValueError):
+                    m.plan_action(report, action, key, CHECKS)
+
     def test_innodb_cluster_mode_switch(self):
         report = F.report('ic-8.4-healthy')
         self.assertIn('switch_to_multi_primary', offered(report, local(report)['key']))
@@ -321,34 +398,6 @@ class TestPlans(unittest.TestCase):
         self.assertNotIn('clone', ' '.join(plan['checks']))
         self.assertNotIn('clone', m.available_actions(report, target['key'], CHECKS)[0]['description'])
 
-    def test_ssh_warning_uses_the_connected_member_and_does_not_change_statements(self):
-        cases = (('ic-8.4-healthy', 'switch_to_multi_primary', 'local'),
-                 ('ic-8.4-healthy', 'switch_to_single_primary', 'multi'),
-                 ('ic-8.4-member-offline', 'rejoin_instance', 'missing'),
-                 ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local'),
-                 ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local'),
-                 ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local'),
-                 ('ic-8.4-clusterset-replica', 'switchover', 'secondary'))
-        for scenario, action, who in cases:
-            with self.subTest(action=action):
-                report = F.report(scenario)
-                if who == 'multi':
-                    report['cluster']['topology'] = 'multi_primary'
-                target = (missing(report) if who == 'missing' else
-                          next(x for x in report['members'] if x['role'] == 'SECONDARY') if who == 'secondary' else
-                          local(report))
-                direct = m.plan_action(report, action, target['key'], CHECKS)
-                false_flag = m.plan_action(report, action, target['key'], dict(CHECKS, ssh=False))
-                tunneled = m.plan_action(report, action, target['key'], dict(CHECKS, ssh=True))
-                warning = ("This connection uses an SSH tunnel. MySQL Shell runs on this computer: it reaches %s "
-                           "through the tunnel, but connects to the other %s at the addresses in the cluster "
-                           "metadata directly, so they must be reachable from here." % (
-                               local(report)['name'], 'members and clusters' if report.get('clusterset') else 'members'))
-                self.assertEqual(direct, false_flag)
-                self.assertEqual(tunneled['warnings'], direct['warnings'] + [warning])
-                self.assertEqual(tunneled['statements'], direct['statements'])
-                self.assertEqual(tunneled['expect'], direct['expect'])
-
     def test_action_checks_records_ssh_only_for_shell_actions(self):
         report = F.report('ic-8.4-healthy')
         with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
@@ -477,6 +526,8 @@ class TestErrorText(unittest.TestCase):
     def test_progress_without_exception_evidence_is_not_an_error(self):
         self.assertIsNone(cluster_shell.error_text('INFO: Connecting\n', 'Synchronizing transactions...\n'))
         self.assertIsNone(cluster_shell.error_text('', 'MYSQLSH is working\n'))
+        self.assertIsNone(cluster_shell.error_text('', "Switching cluster 'errorcluster' to multi-primary...\n"))
+        self.assertIsNone(cluster_shell.error_text('ERROR: no exception evidence\n'))
 
     def test_stdin_location_alone_is_exception_evidence(self):
         self.assertEqual(cluster_shell.error_text('Operation failed at STDIN:2'),
@@ -485,6 +536,22 @@ class TestErrorText(unittest.TestCase):
     def test_shell_code_alone_is_exception_evidence(self):
         self.assertEqual(cluster_shell.error_text('Operation failed (MYSQLSH 51615)'),
                          'ERROR 51615 at line 1: Operation failed (MYSQLSH 51615)')
+
+    def test_last_error_number_on_the_chosen_line_wins(self):
+        for detail, code in (
+                ('Duplicate entry (MySQL Error 1062) ... Lost connection (MySQL Error 2013)', 2013),
+                ('First (MYSQLSH 51153) ... Last (MYSQLSH 51615)', 51615),
+                ('First (MYSQLSH 51153) ... Last (MySQL Error 2013)', 2013),
+                ('First (MySQL Error 1062) ... Last (MYSQLSH 51615)', 51615)):
+            with self.subTest(detail=detail):
+                message = 'Cluster.operation: ' + detail
+                self.assertEqual(cluster_shell.error_text('ERROR: earlier error\n' + message + '\n at STDIN:2'),
+                                 'ERROR %d at line 2: %s' % (code, message))
+
+    def test_first_code_bearing_line_still_selects_the_message(self):
+        message = 'First failure (MySQL Error 1062)'
+        self.assertEqual(cluster_shell.error_text(message + '\nLater failure (MYSQLSH 51615)\n at STDIN:1'),
+                         'ERROR 1062 at line 1: ' + message)
 
     def test_statement_exception_with_a_shell_number(self):
         text = cluster_shell.error_text(
@@ -495,7 +562,7 @@ class TestErrorText(unittest.TestCase):
 
     def test_statement_exception_without_a_number(self):
         text = cluster_shell.error_text("WARNING: something\nClusterSet.setPrimaryCluster: Cluster 'x' is not "
-                                        "available (RuntimeError)\n")
+                                        "available (RuntimeError)\n at STDIN:1\n")
         self.assertTrue(text.startswith('ERROR 0 at line 1: ClusterSet.setPrimaryCluster'), text)
 
     def test_server_error_inside_a_statement(self):
@@ -582,6 +649,35 @@ class Endpoints(Home):
     def test_read_endpoint_offers_the_shell_actions(self):
         report = self.api('/api/live/cluster', {'connection': self.connection}, F.conn('ic-8.4-member-offline'))
         self.assertEqual([a['id'] for a in missing(report)['actions']], ['rejoin_instance'])
+
+    def test_ssh_read_endpoint_offers_no_shell_actions_and_explains_why(self):
+        conn = F.conn('ic-8.4-member-offline')
+        conn.ssh_host = 'bastion.example'
+        report = self.api('/api/live/cluster', {'connection': self.connection}, conn)
+        self.assertEqual(missing(report)['actions'], [])
+        self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions']))
+        self.assertEqual(sum('MySQL Shell changes are not offered over an SSH connection:' in n
+                             for n in report['notes']), 1)
+        self.assertIn('stop_member', [a['id'] for a in local(report)['actions']])
+
+    def test_direct_shell_plan_sent_over_ssh_is_refused_without_running_shell(self):
+        for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
+                         'ic-8.4-clusterset-replica', 'ic-8.4-clusterset-invalidated'):
+            report = F.report(scenario)
+            for target in report['members']:
+                for action in offered(report, target['key']):
+                    if not m._via_shell(report, action):
+                        continue
+                    with self.subTest(scenario=scenario, action=action, member=target['key']):
+                        conn = Writes(F.conn(scenario))
+                        plan = self.plan(conn, action, target['key'])
+                        conn.ssh_host = 'bastion.example'
+                        shell = FakeShell()
+                        result = self.send(conn, plan, typed=plan['typed_guard'], shell=shell)
+                        self.assertEqual(result['status'], 'refused', result)
+                        self.assertEqual(shell.scripts, [])
+                        with self.assertRaisesRegex(ValueError, 'not offered'):
+                            self.plan(conn, action, target['key'])
 
     def test_rejoin_is_sent_through_mysql_shell(self):
         report = F.report('ic-8.4-member-offline')
