@@ -48,8 +48,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # The runner image already ships the MySQL client with its MySQL server.
+      # Installing it from apt when the mirror has a newer version also
+      # upgrades that server, whose post-install restart then fails.
       - name: Install MySQL client (for mysqladmin in the runner)
-        run: sudo apt-get update && sudo apt-get install -y mysql-client
+        run: command -v mysqladmin > /dev/null || (sudo apt-get update && sudo apt-get install -y mysql-client)
 
       - name: Wait for DB to accept connections
         run: |
