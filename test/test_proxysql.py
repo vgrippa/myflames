@@ -1004,6 +1004,29 @@ class Endpoints(Home):
 
 
 class TestReviewedWrites(unittest.TestCase):
+    def test_refused_text_customizes_the_result_and_audit(self):
+        plan = {'action': 'x', 'statements': ['UPDATE t SET a = 1;'], 'expect': {}}
+        error = 'mysql client exited 1: ERROR 3910 at line 1: replica channel running'
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                conn = mock.Mock(password=None)
+                conn.run_write.side_effect = ConnectorError(error)
+                audit = mock.Mock(password=None)
+                callback = mock.Mock(return_value='No change is visible here; check the server.')
+                out = reviewed_writes.execute(conn, plan, lambda: plan, 'x-1.0', audit=audit,
+                                              verify_on_error=True, read_after=lambda: {},
+                                              effect=lambda fresh, after: None,
+                                              refused_text=callback if custom else None)
+                expected = (callback.return_value if custom else
+                            'The server refused UPDATE t SET a = 1;: replica channel running. Nothing changed.')
+                self.assertEqual((out['status'], out['message']), ('failed', expected))
+                self.assertEqual(audit.complete.call_args[1]['message'], out['message'])
+                self.assertEqual(audit.complete.call_args[1]['outcome'], 'refused_by_server')
+                if custom:
+                    callback.assert_called_once_with(plan['statements'][0], 'replica channel running')
+                else:
+                    callback.assert_not_called()
+
     def test_failed_line_and_server_message(self):
         text = 'mysql client exited 1: ERROR 1045 (28000) at line 2: ProxySQL Admin Error: near "LOAD": syntax error'
         self.assertEqual(reviewed_writes.failed_line(text), 2)

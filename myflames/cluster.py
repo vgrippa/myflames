@@ -2433,16 +2433,24 @@ def _effect(plan, before, after):
         item = (side or {}).get(key) or {}
         return " ".join(x for x in (item.get("state"), item.get("role")) if x) or None
 
+    def channel(side):
+        item = side.get("cs_channel") or {}
+        return " ".join(x for x in (item.get("source"), item.get("receiver_state")) if x) or None
+
     action = _action_name(plan["action"])[0]
-    if action == "switchover":
-        return [["Primary", word(name(before, "primary")), word(name(after, "primary"))]]
+    if action in ("switchover", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
+        if action == "switchover":
+            rows = [["Primary", word(name(before, "primary")), word(name(after, "primary"))]]
+        else:
+            rows = [["Primary cluster", word(before.get("cs_primary")), word(after.get("cs_primary"))],
+                    ["Invalidated", word(", ".join(before.get("cs_invalidated") or ()) or "none"),
+                     word(", ".join(after.get("cs_invalidated") or ()) or "none")]]
+        if before.get("cs_channel") is not None or after.get("cs_channel") is not None:
+            rows.append(["ClusterSet channel", word(channel(before)), word(channel(after))])
+        return rows
     if action == "rejoin_instance":
         return [[name(after, "member") or name(before, "member") or "The instance", word(state(before, "member")),
                  word(state(after, "member"))]]
-    if action in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
-        return [["Primary cluster", word(before.get("cs_primary")), word(after.get("cs_primary"))],
-                ["Invalidated", word(", ".join(before.get("cs_invalidated") or ()) or "none"),
-                 word(", ".join(after.get("cs_invalidated") or ()) or "none")]]
     if action in ("stop_member", "start_member"):
         return [[name(after, "local") or name(before, "local") or "This member", word(state(before, "local")),
                  word(state(after, "local"))]]
@@ -2732,6 +2740,8 @@ def _after(report, plan):
     if cs:
         out["cs_primary"] = cs.get("primary_cluster")
         out["cs_invalidated"] = sorted(c.get("name") or "?" for c in cs.get("clusters") or () if c.get("invalidated"))
+        if cs.get("channel") is not None:
+            out["cs_channel"] = {key: cs["channel"].get(key) for key in ("source", "receiver_state")}
     return out
 
 
@@ -2783,6 +2793,14 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     # from the plan made again here (a mismatch sends nothing).
     shell = reviewed.get("via") == "mysqlsh"
 
+    def refused_text(statement, error):
+        action = _action_name(reviewed["action"])[0]
+        status = ("dba.getClusterSet().status()" if action in
+                  ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster", "switchover") else
+                  "dba.getCluster().status()")
+        return ("MySQL Shell refused %s: %s. No change is visible here; check %s in MySQL Shell before you try "
+                "again." % (statement, error, status))
+
     def effect(plan, after):
         rows = _effect(plan, state.get("before") or {}, after)
         if plan.get("via") != "mysqlsh":
@@ -2795,7 +2813,8 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
                                    typed=typed, before_send=before_send,
                                    read_after=lambda: _after(read_status(conn), reviewed),
                                    timeout=SHELL_TIMEOUT if shell else ACTION_TIMEOUT, done_text=_done_text,
-                                   progress=progress, effect=effect, verify_on_error=shell)
+                                   progress=progress, effect=effect, verify_on_error=shell,
+                                   refused_text=refused_text if shell else None)
 
 
 class _Sender(object):

@@ -246,7 +246,8 @@ def refused(out, message, outcome, audit=None, target=None, progress=None):
 
 
 def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, before_send=None, read_after=None,
-            timeout=None, partial_text=None, done_text=None, progress=None, effect=None, verify_on_error=False):
+            timeout=None, partial_text=None, done_text=None, progress=None, effect=None, verify_on_error=False,
+            refused_text=None):
     """Send a reviewed plan after re-planning it from a fresh read.
 
     *plan_fresh* returns the plan for the same inputs from a read made now
@@ -255,7 +256,9 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     leaves ``after`` None). *partial_text(ran, failed, error)* words a partial
     failure; *done_text(plan, after)* the success message; *effect(plan,
     after)* the rows of what changed (what, before, now). *progress* (a
-    :class:`Progress`) follows each step. Returns the ``schema_version``
+    :class:`Progress`) follows each step. *refused_text(statement, error)*
+    words a statement refusal when no partial change was observed.
+    Returns the ``schema_version``
     envelope (see the module docstring).
     """
     from .dbops import may_have_run
@@ -364,7 +367,8 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
                         audit.complete("error", outcome="partial", error=text, message=out["message"], after=after)
                     return out
             out["status"] = "failed"
-            out["message"] = "The server refused %s: %s. Nothing changed." % (statements[0], out["error"])
+            out["message"] = (refused_text(statements[0], out["error"]) if refused_text else
+                              "The server refused %s: %s. Nothing changed." % (statements[0], out["error"]))
             outcome = "refused_by_server"
         out["states"] = (["done"] * (line - 1) + ["failed"] + ["not_run"] * (len(statements) - line))
         _set(progress, "finished", out["states"], out["status"])

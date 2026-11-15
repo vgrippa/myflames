@@ -411,7 +411,55 @@ class TestPlans(unittest.TestCase):
                              'confirm', name)
 
 
+class TestEffects(unittest.TestCase):
+    def test_clusterset_channel_is_copied_from_the_local_read(self):
+        report = F.report('ic-8.4-clusterset-replica')
+        after = m._after(report, {})
+        self.assertEqual(after['cs_channel'], {'source': 'mf-main-1:3306', 'receiver_state': 'ON'})
+        report['clusterset']['channel']['receiver_state'] = 'OFF'
+        self.assertEqual(after['cs_channel']['receiver_state'], 'ON', 'the before read stays unchanged')
+
+    def test_channel_row_appears_only_when_either_read_has_a_channel(self):
+        report = F.report('ic-8.4-clusterset-primary')
+        before = m._after(report, {})
+        report['clusterset']['channel'] = {'source': 'mf-a:3306', 'receiver_state': 'ON'}
+        after = m._after(report, {})
+        for action in ('set_primary_cluster:drcluster', 'force_primary_cluster', 'rejoin_cluster:drcluster',
+                       'switchover'):
+            with self.subTest(action=action):
+                plan = {'action': action}
+                expected = ([['Primary', 'mf-ic-1:3306', 'mf-ic-1:3306']] if action == 'switchover' else
+                            [['Primary cluster', 'mfcluster', 'mfcluster'], ['Invalidated', 'none', 'none']])
+                self.assertEqual(m._effect(plan, before, before), expected)
+                self.assertEqual(m._effect(plan, before, after),
+                                 expected + [['ClusterSet channel', 'Not readable', 'mf-a:3306 ON']])
+                self.assertEqual(m._effect(plan, after, before),
+                                 expected + [['ClusterSet channel', 'mf-a:3306 ON', 'Not readable']])
+
+    def test_channel_does_not_change_other_actions_effects(self):
+        report = F.report('ic-8.4-clusterset-replica')
+        with_channel = m._after(report, {})
+        report['clusterset']['channel'] = None
+        without_channel = m._after(report, {})
+        for action in ('rejoin_instance', 'switch_to_multi_primary', 'stop_member'):
+            with self.subTest(action=action):
+                self.assertEqual(m._effect({'action': action}, with_channel, with_channel),
+                                 m._effect({'action': action}, without_channel, without_channel))
+
+
 class TestErrorText(unittest.TestCase):
+    def test_progress_without_exception_evidence_is_not_an_error(self):
+        self.assertIsNone(cluster_shell.error_text('INFO: Connecting\n', 'Synchronizing transactions...\n'))
+        self.assertIsNone(cluster_shell.error_text('', 'MYSQLSH is working\n'))
+
+    def test_stdin_location_alone_is_exception_evidence(self):
+        self.assertEqual(cluster_shell.error_text('Operation failed at STDIN:2'),
+                         'ERROR 0 at line 2: Operation failed')
+
+    def test_shell_code_alone_is_exception_evidence(self):
+        self.assertEqual(cluster_shell.error_text('Operation failed (MYSQLSH 51615)'),
+                         'ERROR 51615 at line 1: Operation failed (MYSQLSH 51615)')
+
     def test_statement_exception_with_a_shell_number(self):
         text = cluster_shell.error_text(
             "\x1b[31mCluster.rejoinInstance: The instance 'mf-ic-3:3306' has errant transactions (MYSQLSH 51153)"
@@ -571,7 +619,81 @@ class Endpoints(Home):
                                          "instance has errant transactions (MYSQLSH 51153)"))
         result = self.send(conn, plan, typed=target['name'], shell=shell)
         self.assertEqual(result['status'], 'failed', result)
-        self.assertIn('errant transactions', result['message'])
+        self.assertEqual(result['message'],
+                         'MySQL Shell refused %s: %s. No change is visible here; check dba.getCluster().status() '
+                         'in MySQL Shell before you try again.' % (plan['statements'][0], result['error']))
+        (record,) = dbops.audit_report(self.workspace.store)['records']
+        self.assertEqual(record['message'], result['message'])
+
+    def test_shell_refusals_name_the_matching_status_call(self):
+        cases = (('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', 'ClusterSet'),
+                 ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', 'ClusterSet'),
+                 ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', 'ClusterSet'),
+                 ('ic-8.4-clusterset-replica', 'switchover', 'secondary', 'ClusterSet'),
+                 ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', 'Cluster'))
+        for scenario, action, who, status in cases:
+            with self.subTest(action=action):
+                report = F.report(scenario)
+                target = (local(report) if who == 'local' else
+                          next(x for x in report['members'] if x['role'] == 'SECONDARY'))
+                conn = Writes(F.conn(scenario))
+                plan = self.plan(conn, action, target['key'])
+                shell = FakeShell(ConnectorError('mysqlsh exited 1: ERROR 51615 at line 1: operation refused'))
+                result = self.send(conn, plan, typed=plan['typed_guard'], shell=shell)
+                self.assertEqual((result['status'], result['effect']), ('failed', None), result)
+                self.assertEqual(result['message'],
+                                 'MySQL Shell refused %s: operation refused. No change is visible here; check '
+                                 'dba.get%s().status() in MySQL Shell before you try again.'
+                                 % (plan['statements'][0], status))
+                record = next(r for r in dbops.audit_report(self.workspace.store)['records']
+                              if r['id'] == result['audit_id'])
+                self.assertEqual(record['message'], result['message'])
+
+    def test_shell_error_after_a_channel_only_change_is_partial(self):
+        for action in ('set_primary_cluster:mfcluster', 'force_primary_cluster', 'rejoin_cluster:mfcluster',
+                       'switchover'):
+            for change in ('receiver_state', 'source', 'removed'):
+                with self.subTest(action=action, change=change):
+                    report = F.report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
+                                      else 'ic-8.4-clusterset-replica')
+                    target = (next(x for x in report['members'] if x['role'] == 'SECONDARY')
+                              if action == 'switchover' else local(report))
+                    plan = m.plan_action(report, action, target['key'], CHECKS)
+                    after = json.loads(json.dumps(report))
+                    if change == 'removed':
+                        after['clusterset']['channel'] = None
+                    else:
+                        after['clusterset']['channel'][change] = ('OFF' if change == 'receiver_state' else
+                                                                 'mf-a:3306')
+                    before_channel = report['clusterset']['channel']
+                    conn = Writes(F.conn('ic-8.4-clusterset-replica'))
+                    shell = FakeShell(ConnectorError('mysqlsh exited 1: ERROR 51615 at line 1: operation refused'))
+                    audit = mock.Mock(password=None)
+                    with mock.patch.object(m, 'read_status', side_effect=[report, after]), \
+                            mock.patch.object(cluster_shell.ShellWriter, 'run_write', autospec=True,
+                                              side_effect=shell):
+                        result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
+                    self.assertEqual(result['status'], 'partial', result)
+                    now = ('Not readable' if change == 'removed' else
+                           '%s %s' % (after['clusterset']['channel']['source'],
+                                      after['clusterset']['channel']['receiver_state']))
+                    self.assertEqual(result['effect'], [['ClusterSet channel', '%s %s' % (
+                        before_channel['source'], before_channel['receiver_state']), now]])
+                    self.assertEqual(audit.complete.call_args[1]['message'], result['message'])
+
+    def test_sql_refusal_keeps_the_default_message(self):
+        report = F.report('ic-8.4-healthy')
+        target = next(x for x in report['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
+        conn = F.conn('ic-8.4-healthy')
+        plan = self.plan(conn, 'switchover', target['key'])
+        with mock.patch.object(conn, 'run_write', create=True,
+                               side_effect=ConnectorError('ERROR 3910 at line 1: replica channel running')):
+            result = self.send(conn, plan)
+        self.assertEqual((result['status'], result['message']),
+                         ('failed', 'The server refused %s: replica channel running. Nothing changed.'
+                          % plan['statements'][0]))
+        (record,) = dbops.audit_report(self.workspace.store)['records']
+        self.assertEqual(record['message'], result['message'])
 
     def test_shell_error_after_a_visible_change_is_partial(self):
         report = F.report('ic-8.4-member-offline')
@@ -629,13 +751,21 @@ class TestShellWriter(unittest.TestCase):
         with open(self.program, 'w') as handle:
             handle.write(textwrap.dedent('''\
                 #!%s
-                import json, os, sys
+                import json, os, signal, sys
                 defaults = [a for a in sys.argv if a.startswith('--defaults-file=')][0].split('=', 1)[1]
                 script = sys.stdin.read()
                 seen = {'argv': sys.argv[1:], 'script': script, 'option_file': open(defaults).read(),
                         'mode': oct(os.stat(defaults).st_mode & 0o777),
                         'env': sorted(os.environ), 'home': os.environ.get('MYSQLSH_USER_CONFIG_HOME')}
                 json.dump(seen, open(%r, 'w'))
+                if 'STOP' in script:
+                    print('Synchronizing transactions...', flush=True)
+                    if 'EVIDENCE' in script:
+                        print('Operation refused (MYSQLSH 51615) at STDIN:1', file=sys.stderr, flush=True)
+                    os.kill(os.getpid(), signal.SIGTERM)
+                if 'PROGRESS' in script:
+                    print('Synchronizing transactions...', flush=True)
+                    sys.exit(1)
                 if 'FAIL' in script:
                     sys.stderr.write("Cluster.rejoinInstance: errant transactions (MYSQLSH 51153)\\n at STDIN:1\\n")
                     sys.exit(1)
@@ -713,6 +843,32 @@ class TestShellWriter(unittest.TestCase):
     def test_no_mysql_shell_sends_nothing(self):
         with self.assertRaises(ConnectorError):
             cluster_shell.ShellWriter(object(), None)
+
+    def test_progress_only_exit_is_unknown(self):
+        self._assert_unknown_exit('PROGRESS',
+                                  'MySQL Shell exited 1 without an error message; the outcome is unknown.')
+
+    def test_signal_exit_is_unknown_even_with_exception_output(self):
+        import signal
+        for script in ('STOP', 'STOP EVIDENCE'):
+            with self.subTest(script=script):
+                self._assert_unknown_exit(script,
+                                          'MySQL Shell was stopped (signal %d); the outcome is unknown.'
+                                          % signal.SIGTERM)
+
+    def _assert_unknown_exit(self, script, expected):
+        if os.name != 'posix':
+            self.skipTest('POSIX program')
+        from myflames import reviewed_writes
+        with self.assertRaises(ConnectorError) as caught:
+            self.writer().run_write(script, timeout=30)
+        self.assertEqual(str(caught.exception), expected)
+        self.assertIsNone(reviewed_writes.error_number(str(caught.exception)))
+        plan = {'action': 'x', 'statements': [script], 'expect': {}}
+        audit = mock.Mock()
+        result = reviewed_writes.execute(self.writer(), plan, lambda: plan, 'x-1.0', audit=audit, timeout=30)
+        self.assertEqual((result['status'], result['states']), ('unknown', ['unknown']))
+        self.assertEqual(audit.complete.call_args[0], ('unknown',))
 
 
 if __name__ == '__main__':

@@ -90,7 +90,10 @@ def error_text(stderr, stdout=""):
     shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
     mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
     message = next((_STDIN_LINE.sub("", line).strip() for line in lines
-                    if re.search(r"Error|error|\(\w+Error\)|MYSQLSH", line)), lines[0])
+                    if re.search(r"Error|error|\(\w+Error\)", line)), None)
+    if message is None and where is None and shell_code is None and mysql_code is None:
+        return None
+    message = message if message is not None else lines[0]
     message = _STDIN_LINE.sub("", message).strip()
     if where is None and shell_code is None and mysql_code in CONNECT_ERRORS:
         # The first session could not be opened: no statement was read.
@@ -139,6 +142,8 @@ class ShellWriter(object):
                                  dbops.redact(str(exc), password)) from None
         stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
         stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+        if proc.returncode < 0:
+            raise ConnectorError("MySQL Shell was stopped (signal %d); the outcome is unknown." % -proc.returncode)
         if proc.returncode != 0:
             line = error_text(stderr, stdout)
             if line is None:
