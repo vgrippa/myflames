@@ -77,6 +77,11 @@ def fixture(view, name):
             block.append(call)
             calls.append(call)
     data['calls'] = calls
+    from myflames import topology_links as tl
+    # Synthetic denials for optional local topology reads added after capture.
+    data['calls'] += [[TAG + tl._DB_VARS_SQL, None, 'ERROR 1142: SELECT command denied'],
+                      [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
+                      [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, '']]
     _synthetic_relay_heads(data)
     # Recordings predate the cluster hint a server that is not a replica now
     # reads: an explicitly synthetic empty answer (no Galera provider, no

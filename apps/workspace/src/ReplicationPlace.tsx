@@ -7,8 +7,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
+import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { ReplicationView, type ReplicationSubTab } from "./Replication";
-import type { ReplicationReport, SkipLoop } from "./opsApi";
+import { readReplication, type ReplicationReport, type SkipLoop } from "./opsApi";
 import type { ClusterKind } from "./clusterApi";
 import { InspectorContext, useWindowStatus, type InspectorShared, type Selection } from "./kit";
 import { InstrumentsLinkContext } from "./Instruments";
@@ -117,11 +118,27 @@ export function ReplicationPlace({
     engineVersion: current && current.server_version ? engineName(current.engine, current.server_version) : undefined,
   });
 
+  const showBar =
+    !!current &&
+    current.available &&
+    (activeTab === "topology" || (!current.replica && !!current.connection_group));
+
   return (
     <InspectorContext.Provider value={inspector}>
       <InstrumentsLinkContext.Provider value={onOpenInstruments || (() => {})}>
         <div ref={placeRef} className="replication-place">
           <ReplicationView
+            topologyHeader={showBar ? (
+              <ConnectionGroupBar
+                group={current?.connection_group}
+                connection={connection}
+                disabled={disabled}
+                onReload={async () => {
+                  const fresh = await readReplication(connection);
+                  setReport({ key, label: connectionLabel(connection), report: fresh });
+                }}
+              />
+            ) : null}
             connection={connection}
             disabled={disabled}
             onBack={onBack}

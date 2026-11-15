@@ -28,6 +28,10 @@ Saved investigations and audit events live on your computer. Saved passwords use
 
 The app can fetch MySQL and MariaDB news headlines while Home is open. That optional setting can be turned off. SSH connections use your own SSH config, keys and agent.
 
+## Connection groups and topology reads
+
+When you open **Cluster**, **Replication**, **ProxySQL** or **Readyset**, myflames can read related servers (such as a replication source or a linked ProxySQL or Readyset instance) to show the full topology and source versions. A connection's **Group** is your consent for those reads: myflames logs in with saved passwords only to other saved connections in the same **Group** as the connection in use, and never to the connection in use itself. If the connection in use has no **Group**, or is not saved, myflames reads only the connection you opened, and imported connections start with no group. When other saved connections match the open server's topology (from identities remembered only from connections you have opened, or from addresses the open server reports), the place's group bar offers to add them to a group before reading them.
+
 ## Share with care
 
 **Hide literal values** replaces SQL and condition literal values with `?` in supported plan exports. It keeps object names, types, counts, measurements and versions. Review the complete artifact before sharing it.

@@ -1,7 +1,7 @@
 // The ProxySQL place's wire types (proxysql-1.0 and proxysql-action-1.0,
 // myflames/proxysql.py; proxysql-digests-1.0, myflames/proxysql_digests.py;
 // docs/schemas/proxysql-1.0.json and proxysql-digests-1.0.json) and its API calls.
-import { api, type Connection } from "./api";
+import { api, type Connection, type ConnectionGroup } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
 
@@ -233,6 +233,7 @@ export type ProxySqlReport = {
   routing?: ProxySqlRoutingContext | null;
   readyset_hint?: boolean;
   topology?: ProxySqlTopology | null;
+  connection_group?: ConnectionGroup | null;
 };
 export type DigestOrder = "slowest" | "time" | "frequent" | "rate" | "rows";
 export type DigestFilters = {

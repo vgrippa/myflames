@@ -7,6 +7,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNod
 import { download, type Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, useWritePolicy } from "./Connections";
+import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { ActionResult, useReviewedActions } from "./ActionReview";
 import { ClusterMark } from "./ClusterTopology";
 import {
@@ -1258,6 +1259,12 @@ function ReadysetView({
 
               {tab === "topology" && (
                 <div className="readyset-tab-body">
+                  <ConnectionGroupBar
+                    group={report.connection_group}
+                    connection={connection}
+                    disabled={disabled || stale}
+                    onReload={() => load(true)}
+                  />
                   <ReadysetTopologyDiagram
                     report={report}
                     current={!stale}

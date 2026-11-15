@@ -214,6 +214,7 @@ import datetime
 import json
 import re
 
+from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, Server, _number, denied, now, preflight, reason
 from .server_info import product_name
@@ -658,7 +659,8 @@ def _base(server):
     }
 
 
-def read_status(conn):
+@grouped_read
+def read_status(conn, _identity=None):
     """The ``cluster-1.0`` report for the server *conn* is connected to.
 
     Read-only. Connection failures raise ConnectorError; an answer myflames
@@ -1467,7 +1469,7 @@ def _read_clusterset(reader, report, metadata, local, others=None):
     clusters.sort(key=lambda c: (c["role"] != "PRIMARY", _natural(c["name"] or "")))
     me = next(c for c in clusters if c["local"])
     primary = next((c for c in clusters if c["role"] == "PRIMARY" and not c["invalidated"]), None)
-    cs = {"name": _text(mine[5]), "local_cluster": me["name"], "local_role": me["role"],
+    cs = {"id": _text(mine[0]), "name": _text(mine[5]), "local_cluster": me["name"], "local_role": me["role"],
           "invalidated": me["invalidated"], "primary_cluster": primary["name"] if primary else None,
           "clusters": clusters, "channel": None,
           "from_local_copy": me["role"] != "PRIMARY" or metadata.get("local_copy") == "left_group"}
@@ -2291,9 +2293,10 @@ def with_actions(report, shell=None, ssh=False):
     return report
 
 
+@grouped_read
 def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_host=None, current_profile_id=None):
     """Attach verified upstream Readyset and ProxySQL tiers from saved connections."""
-    if not report or not report.get("available") or not profiles or open_profile is None:
+    if not report or not report.get("available"):
         return report
     from .topology_links import discover_database_tiers
     srv = report.get("server") or {}
@@ -2313,7 +2316,8 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
     ]
     report["topology_tiers"] = discover_database_tiers(
         conn, local_ident, peer_endpoints=peers, profiles=profiles, open_profile=open_profile,
-        observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=False)
+        observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=True,
+        performance_schema=report.get("performance_schema"))
     return report
 
 

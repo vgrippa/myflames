@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
+import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import {
   DataTable, EmptyState, Fields, InfoPopover, InspectorContext, InspectorSection, MetricTile, Pill, PrerequisiteGate,
   SearchField, Segmented, StatusPill, SummaryLine, TileGrid, ToolbarButton, ToolbarSelect, ViewLayout, ViewStatus, useWindowStatus,
@@ -417,16 +418,24 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           {!report.config_readable && <PrerequisiteGate>This account cannot read ProxySQL's configuration tables (a stats-only account reads the stats schema only), so servers show what runs and no change is offered. Connect with an admin account to change anything.</PrerequisiteGate>}
           {configLine}
           {tab === "topology" ? (
-            <ProxySqlTopologyDiagram
-              report={report}
-              current={!stale}
-              selectedServerKey={selection.key || null}
-              onSelectServer={(k) => selection.select(selection.key === k ? "" : k, selection.key !== k)}
-              onSwitchConnection={!stale ? onSwitchConnection : undefined}
-              onOpenReadyset={onOpenReadyset}
-              onOpenCluster={onOpenCluster}
-              onOpenReplication={onOpenReplication}
-            />
+            <>
+              <ConnectionGroupBar
+                group={report.connection_group}
+                connection={connection}
+                disabled={disabled || stale}
+                onReload={() => load(true)}
+              />
+              <ProxySqlTopologyDiagram
+                report={report}
+                current={!stale}
+                selectedServerKey={selection.key || null}
+                onSelectServer={(k) => selection.select(selection.key === k ? "" : k, selection.key !== k)}
+                onSwitchConnection={!stale ? onSwitchConnection : undefined}
+                onOpenReadyset={onOpenReadyset}
+                onOpenCluster={onOpenCluster}
+                onOpenReplication={onOpenReplication}
+              />
+            </>
           ) : tab === "servers" ? (
             <DataTable key="proxysql.servers" id="proxysql.servers" label="ProxySQL servers" columns={serverColumns} rows={servers} rowKey={(s) => s.key} selection={selection}
               empty={<EmptyState icon="proxy" title="No backends">mysql_servers is empty and nothing runs in runtime.</EmptyState>} />

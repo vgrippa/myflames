@@ -10,7 +10,10 @@
 // the CLI. profiles/list reads the workspace store on this computer: no server
 // is read and nothing is sent.
 import { useEffect, useSyncExternalStore } from "react";
-import { api, type Profile, type SecretStore } from "./api";
+import { api, type ConnectionGroup, type Profile as ApiProfile, type SecretStore } from "./api";
+
+export type Profile = ApiProfile & { group?: string };
+export type { ConnectionGroup };
 
 export type SavedConnections = {
   /** The saved connections as the latest read returned them (no passwords). */

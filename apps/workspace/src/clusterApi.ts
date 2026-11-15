@@ -1,7 +1,7 @@
 // The Cluster place's wire types (cluster-1.0, docs/schemas/cluster-1.0.json,
 // myflames/cluster.py) and its one read. Small on purpose: the shell imports
 // it to name the place's state in the sidebar without loading the place.
-import { api, type Connection } from "./api";
+import { api, type Connection, type ConnectionGroup } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
 import type { DatabaseTopologyTiers } from "./readysetApi";
@@ -130,6 +130,7 @@ export type ClusterReport = {
   notes: string[];
   readyset_hint?: boolean;
   topology_tiers?: DatabaseTopologyTiers | null;
+  connection_group?: ConnectionGroup | null;
 };
 
 /** An instance of another cluster of the ClusterSet, from the shared

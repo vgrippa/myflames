@@ -15,6 +15,7 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
+import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { ActionResult, useReviewedActions } from "./ActionReview";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, MetricTile, PrerequisiteGate, Segmented,
@@ -374,36 +375,56 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         {!report.available ? (
           <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
         ) : report.kind === "none" ? (
-          isProxySql ? (
-            <EmptyState
-              icon="cluster"
-              title="Not part of a cluster"
-              action={!other && onOpenProxySql ? <ToolbarButton primary onClick={onOpenProxySql}>Open ProxySQL</ToolbarButton> : undefined}
-            >
-              This connection is a ProxySQL Admin interface.
-            </EmptyState>
-          ) : isReadyset ? (
-            <EmptyState
-              icon="cluster"
-              title="Not part of a cluster"
-              action={!other && onOpenReadyset ? <ToolbarButton primary onClick={onOpenReadyset}>Open Readyset</ToolbarButton> : undefined}
-            >
-              This connection is a Readyset cache instance.
-            </EmptyState>
-          ) : (
-            <EmptyState icon="cluster" title="Not part of a cluster">
-              {notClusterReason(report.message)} myflames reads MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster (and Group Replication without InnoDB Cluster).
-            </EmptyState>
-          )
+          <>
+            {report.connection_group && (
+              <ConnectionGroupBar
+                group={report.connection_group}
+                connection={connection}
+                profiles={profiles}
+                disabled={disabled || stale}
+                onReload={() => load(true)}
+              />
+            )}
+            {isProxySql ? (
+              <EmptyState
+                icon="cluster"
+                title="Not part of a cluster"
+                action={!other && onOpenProxySql ? <ToolbarButton primary onClick={onOpenProxySql}>Open ProxySQL</ToolbarButton> : undefined}
+              >
+                This connection is a ProxySQL Admin interface.
+              </EmptyState>
+            ) : isReadyset ? (
+              <EmptyState
+                icon="cluster"
+                title="Not part of a cluster"
+                action={!other && onOpenReadyset ? <ToolbarButton primary onClick={onOpenReadyset}>Open Readyset</ToolbarButton> : undefined}
+              >
+                This connection is a Readyset cache instance.
+              </EmptyState>
+            ) : (
+              <EmptyState icon="cluster" title="Not part of a cluster">
+                {notClusterReason(report.message)} myflames reads MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster (and Group Replication without InnoDB Cluster).
+              </EmptyState>
+            )}
+          </>
         ) : <>
           {/* Not OK: what is wrong comes first, above the tiles. */}
           {report.status !== "ok" && findings}
           {tiles}
           {report.status === "ok" && findings}
           {shownTab === "topology" ? (
-            <ClusterTopology report={report} selection={selection} marker={marker}
-              profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
-              onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined} />
+            <>
+              <ConnectionGroupBar
+                group={report.connection_group}
+                connection={connection}
+                profiles={profiles}
+                disabled={disabled || stale}
+                onReload={() => load(true)}
+              />
+              <ClusterTopology report={report} selection={selection} marker={marker}
+                profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
+                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined} />
+            </>
           ) : shownTab === "members" ? (
             <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
           ) : (

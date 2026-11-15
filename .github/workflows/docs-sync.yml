@@ -38,8 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # The merge commit and its first parent, the base branch.
-          fetch-depth: 2
+          # Full history: check_release_verification.py tests evidence commits
+          # against HEAD's ancestors and diffs them against HEAD.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -88,6 +89,7 @@ jobs:
           else
             echo "The desktop version changes from $before to $after."
             python3 scripts/check_release_sync.py "$after"
+            python3 scripts/check_release_verification.py "$after"
           fi
 
   release:

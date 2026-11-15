@@ -1,7 +1,7 @@
 // Wire types for replication.py and lifecycle.py. Keep opaque, engine-specific
 // facts as JSON; statements, bindings and identities are round-tripped intact.
 import { useEffect, useRef } from "react";
-import { api, type ClientToolsOrigin, type ClientToolsReason, type ClientToolsUsed, type Connection, type ConnectionType } from "./api";
+import { api, type ClientToolsOrigin, type ClientToolsReason, type ClientToolsUsed, type Connection, type ConnectionGroup, type ConnectionType } from "./api";
 import { connectionKey } from "./binding";
 import type { DatabaseTopologyTiers } from "./readysetApi";
 
@@ -76,6 +76,7 @@ export type ReplicationReport = Partial<ReceiverGuard> & {
   cluster_hint?: "galera" | "group_replication" | null;
   readyset_hint?: boolean;
   topology_tiers?: DatabaseTopologyTiers | null;
+  connection_group?: ConnectionGroup | null;
   capabilities: Facts; notes: string[];
   summary: { channels: number; judged: number; ok: number; watch: number; problem: number; unknown: number; failed: number; lag_max_s: number | null };
 };

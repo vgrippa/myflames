@@ -1461,7 +1461,7 @@ def cmd_replication(argv):
     """Replication status per channel; skip one failed transaction; skip until stopped."""
     if argv and argv[0] in ('skip', 'skip-loop'):
         return (_replication_skip if argv[0] == 'skip' else _replication_skip_loop)(argv[1:])
-    from .replication import format_text, profile_opener, reached_host, read_status, saved_profiles
+    from .replication import format_text, profile_opener, reached_host, read_status
     from .workspace_store import WorkspaceStore
     parser = _discover_parser(
         'replication', 'Show every replication channel (MySQL) or connection (MariaDB): receiver and applier '
@@ -1484,9 +1484,22 @@ def cmd_replication(argv):
 
     def work(conn):
         store = WorkspaceStore()
-        report = read_status(conn, source_versions=True, profiles=saved_profiles(store),
-                             open_profile=profile_opener(store), replica_host=reached_host(conn),
-                             topology_tiers=True)
+        from .connection_groups import finish_read, request_profiles, members
+        try:
+            selected = store.find_profile(args.profile) if args.profile else None
+        except Exception:
+            selected = None
+        connection = {key: getattr(conn, key, None) for key in
+                      ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port')}
+        connection['profile_id'] = selected['id'] if selected else None
+        profiles, current = request_profiles(store, connection)
+        pid = current['id'] if current else None
+        identity = {}
+        report = read_status(conn, source_versions=True, profiles=members(profiles, current),
+                             open_profile=profile_opener(store, pid, current) if current and current.get('group') else None,
+                             replica_host=reached_host(conn), current_profile_id=pid, current_profile=current,
+                             topology_tiers=True, _identity=identity)
+        finish_read(store, report, connection, profiles, current, identity=identity)
         if args.channel is not None:
             channel = _replication_channel(report, args.channel)
             report = dict(report, channels=[channel])
@@ -1541,7 +1554,7 @@ def cmd_cluster(argv):
 def cmd_readyset(argv):
     """Readyset status, caches, proxied queries, replication, topology, cache DDL export and dry-run explain."""
     from .readyset import at_or_worse, explain_cache, export_caches, format_text, read_status
-    from .replication import profile_opener, reached_host, saved_profiles
+    from .replication import profile_opener, reached_host
     parser = _discover_parser(
         'readyset',
         'Inspect a Readyset SQL (3307) or admin (6036) port: caches (deep and shallow), observed cached vs upstream '
@@ -1594,9 +1607,22 @@ def cmd_readyset(argv):
 
     def work(conn):
         from .workspace_store import WorkspaceStore
+        from .connection_groups import finish_read, request_profiles, members
         store = WorkspaceStore()
-        return read_status(conn, profiles=saved_profiles(store), open_profile=profile_opener(store),
-                           reached_host=reached_host(conn), schema=args.readyset_schema)
+        try:
+            selected = store.find_profile(args.profile) if args.profile else None
+        except Exception:
+            selected = None
+        connection = {key: getattr(conn, key, None) for key in
+                      ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port')}
+        connection['profile_id'] = selected['id'] if selected else None
+        profiles, current = request_profiles(store, connection)
+        pid = current['id'] if current else None
+        report = read_status(conn, profiles=members(profiles, current),
+                             open_profile=profile_opener(store, pid, current) if current and current.get('group') else None,
+                             reached_host=reached_host(conn), schema=args.readyset_schema,
+                             current_profile_id=pid, current_profile=current)
+        return finish_read(store, report, connection, profiles, current)
 
     report = _discover_run(args, work, query_timeout=30)
     if not report['available']:

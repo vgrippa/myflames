@@ -139,6 +139,7 @@ import time
 import uuid
 
 from . import dbops, privileges
+from .connection_groups import ProfileReadError, grouped_read, probe_note, record_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
 from .server_info import identity_from_version, product_identity, product_name
@@ -446,8 +447,9 @@ def _summary():
             "lag_max_s": None}
 
 
+@grouped_read
 def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
-                current_profile_id=None, topology_tiers=False):
+                current_profile_id=None, topology_tiers=False, _identity=None):
     """The ``replication-1.0`` report. Read-only.
 
     MySQL: ``SHOW REPLICA STATUS`` (``SHOW SLAVE STATUS`` before 8.0.22),
@@ -550,13 +552,25 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     obs_host = replica_host if replica_host is not None else reached_host(conn)
 
     def _attach_tiers():
-        if topology_tiers and profiles and open_profile is not None:
-            from .topology_links import discover_database_tiers
+        if topology_tiers:
+            from .topology_links import discover_database_tiers, _DB_VARS_SQL
             local_ident = {
                 "profile_host": obs_host,
                 "profile_port": getattr(conn, "port", None) or 3306,
                 "port": getattr(conn, "port", None) or 3306,
             }
+            # Reuse the existing optional identity query. SHOW ... IN omits
+            # variables absent on this engine, including MariaDB's server UUID.
+            try:
+                values = Reader(conn, REPLICATION_TAG).pairs(_DB_VARS_SQL)
+                local_ident.update({key: values[key] for key in ('hostname', 'port', 'server_uuid', 'report_host')
+                                    if values.get(key)})
+                # A configured GR group name is not evidence of membership.
+                # Only the Cluster read is authoritative for cluster identity.
+                if values.get('server_uuid'):
+                    _identity['server_uuid'] = values['server_uuid']
+            except (ConnectorError, ValueError):
+                pass
             peers = [
                 {"host": ch["source"].get("host"), "port": ch["source"].get("port"),
                  "server_uuid": ch["source"].get("uuid")}
@@ -565,7 +579,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             ]
             report["topology_tiers"] = discover_database_tiers(
                 conn, local_ident, peer_endpoints=peers, profiles=profiles, open_profile=open_profile,
-                observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=False)
+                observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=True,
+                performance_schema=server.ps_on)
 
     if not rows:
         report["message"] = ("This server is not a replica: %s returned no %s%s." % (
@@ -626,8 +641,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             "either server after that skews it, and one long transaction shows as a jump, so it is never "
             "the only lag signal." % lag_name)
     if source_versions:
-        attach_source_versions(reader, report, profiles, open_profile, obs_host)
-        _attach_tiers()
+        attach_source_versions(reader, report, profiles, open_profile, obs_host, current_profile_id)
+    _attach_tiers()
     return report
 
 
@@ -1219,6 +1234,7 @@ def _known_version(version, comment, provenance, label, **extra):
 def _settings_fingerprint(profile):
     """What a saved connection is, without its password: a save changes ``updated_at``."""
     fields = {k: profile.get(k) for k in ("host", "port", "user", "ssl_mode", "ssl_ca", "updated_at",
+                                          "ssh_host", "ssh_user", "ssh_port",
                                           "remember_password", "secret_backend")}
     return hashlib.sha256(json.dumps(fields, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -1253,30 +1269,31 @@ def _claim(profile, open_profile, reads, remaining):
     name = _profile_name(profile)
     profile_id = profile.get("id") or name
     with _source_cache_lock:
-        pending = _source_pending.get(profile_id)
-        if pending is not None and not pending["done"].is_set():
-            return pending, False, True
         prepare = getattr(open_profile, "prepare", None)
         if prepare is not None:
             fingerprint, connect = prepare(profile)
         else:
             fingerprint, connect = _settings_fingerprint(profile), (lambda: open_profile(profile))
+        # Even waiting on another request's login requires current consent.
+        pending = _source_pending.get(profile_id)
+        if pending is not None and not pending["done"].is_set():
+            return pending, False, True
         key = (profile_id, fingerprint)
         entry = _source_cache.get(key)
         if entry is not None:
             _source_cache.move_to_end(key)
             return entry, False, False
         if key in _source_attempts:
-            raise ValueError("Not checked: the saved connection %s was already tried while myflames runs and its "
+            raise ProfileReadError("Not checked: the saved connection %s was already tried while myflames runs and its "
                              "result is no longer kept, so it is not opened again until it changes." % name)
         if len(_source_attempts) >= SOURCE_ATTEMPT_LIMIT:
-            raise ValueError("Not checked: myflames has tried %d saved connections since it started, its limit, so "
+            raise ProfileReadError("Not checked: myflames has tried %d saved connections since it started, its limit, so "
                              "it opens no other until it restarts." % SOURCE_ATTEMPT_LIMIT)
         if reads[0] >= SOURCE_PROFILE_READS:
-            raise ValueError("More than %d saved connections matched sources; the rest were not read."
+            raise ProfileReadError("More than %d saved connections matched sources; the rest were not read."
                              % SOURCE_PROFILE_READS)
         if remaining() < SOURCE_QUERY_TIMEOUT_S:
-            raise ValueError("Not checked: this read already spent its %d s on other saved connections, so %s was "
+            raise ProfileReadError("Not checked: this read already spent its %d s on other saved connections, so %s was "
                              "not opened. Refresh to check it." % (SOURCE_READ_BUDGET_S, name))
         for old in [k for k in _source_cache if k[0] == key[0]]:
             del _source_cache[old]
@@ -1289,10 +1306,11 @@ def _claim(profile, open_profile, reads, remaining):
         return entry, True, False
 
 
-def _fill(entry, key, connect, name, remaining):
+def _fill(entry, key, connect, profile, remaining):
     """Open one saved connection and read its variables into *entry*. A
     failure before any login (the saved password lookup) is not kept, nor a
     connection closed unused because that lookup took the time left."""
+    name = _profile_name(profile)
     keep, password, sent = True, None, False
     try:
         try:
@@ -1300,7 +1318,8 @@ def _fill(entry, key, connect, name, remaining):
         except ConnectorError:
             raise
         except ValueError as exc:
-            keep, entry["problem"] = False, str(exc)
+            keep, entry["problem"] = False, str(exc) if isinstance(exc, ProfileReadError) else probe_note(profile, exc)
+            entry['refused'] = isinstance(exc, ProfileReadError)
             return
         except (sqlite3.Error, OSError) as exc:
             # The saved password lookup (workspace store, secret store).
@@ -1319,8 +1338,11 @@ def _fill(entry, key, connect, name, remaining):
             sent = True
             rows = Reader(conn, REPLICATION_TAG).rows(_SOURCE_VARIABLES_SQL, timeout=SOURCE_QUERY_TIMEOUT_S)
         entry["values"] = {row[0]: (row[1] if len(row) > 1 else "") for row in rows if row}
+    except ProfileReadError as exc:
+        keep, entry["problem"] = bool(getattr(conn, '_group_login_started', False)), probe_note(profile, exc)
+        entry['refused'] = True
     except (ConnectorError, ValueError) as exc:
-        entry["problem"] = "The saved connection %s could not be read: %s" % (name, dbops.redact(reason(exc), password))
+        entry["problem"] = probe_note(profile, exc)
     except BaseException:
         keep, entry["problem"] = sent, "The saved connection %s was not read." % name
         raise
@@ -1349,14 +1371,18 @@ def _profile_values(open_profile, profile, reads, remaining, filled):
         try:
             entry, owner, pending = _claim(profile, open_profile, reads, remaining)
         except ValueError as exc:
-            return None, str(exc), False
+            return None, str(exc) if isinstance(exc, ProfileReadError) else probe_note(profile, exc), False
         except (sqlite3.Error, OSError) as exc:
             return None, "The saved password for %s could not be read: %s" % (name, type(exc).__name__), False
         key = entry["key"]
         if owner:
             reads[0] += 1
             filled.add(key)
-            _fill(entry, key, entry["connect"], name, remaining)
+            _fill(entry, key, entry["connect"], profile, remaining)
+            if entry.get('refused') and not entry['kept']:
+                scope = getattr(open_profile, 'group_scope', None)
+                if scope is not None:
+                    scope.attempted.discard(profile.get('id'))
             return entry["values"], entry["problem"], False
         if not pending:
             break
@@ -1472,7 +1498,8 @@ def _relay_version(reader, engine, channel):
                           verified=True, caveat=RELAY_LOG_CAVEAT), None
 
 
-def attach_source_versions(reader, report, profiles=(), open_profile=None, replica_host=None):
+@grouped_read
+def attach_source_versions(reader, report, profiles=(), open_profile=None, replica_host=None, current_profile_id=None):
     """Set ``source_version`` on every replication channel of *report*
     (``None`` on Group Replication channels): the relay log first, then a
     matching saved connection. Never raises for a source it cannot read:
@@ -1522,7 +1549,11 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
                               % (host_name, local_name or "unknown"))
         values, problem, earlier = _profile_values(open_profile, profile, reads, remaining, filled)
         if problem:
+            scope = getattr(open_profile, 'group_scope', None)
+            attempted = earlier or scope is None or profile.get('id') in scope.attempted
+            record_read(open_profile, profile, 'failed' if attempted else 'not_reached', problem)
             return None, problem
+        record_read(open_profile, profile, 'read')
         try:
             found = profile_source_version(values, profile, channel, host_name)
         except ValueError as exc:
@@ -1555,6 +1586,7 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
                 if profile not in usable:
                     attempts.append("The saved connection %s has no saved password, so it was not read."
                                     % _profile_name(profile))
+                    record_read(open_profile, profile, 'not_reached', 'No saved password.')
             for profile in usable if open_profile is not None else ():
                 found, problem = from_profile(profile, channel)
                 if found:
@@ -1573,7 +1605,7 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
     return report
 
 
-def profile_opener(store):
+def profile_opener(store, current_profile_id=None, expected_current=None):
     """``open_profile(profile)`` for :func:`attach_source_versions`: a client
     for one saved connection with its own saved password (filled by
     ``store.connection_with_saved_password``, which checks the endpoint),
@@ -1585,21 +1617,54 @@ def profile_opener(store):
     the password up and opens it."""
     from .connector import MySQLConnection
     from .live import connection_options
+    from .workspace_store import _same_endpoint
+
+    try:
+        selected = expected_current or (store.get('profile', current_profile_id) if current_profile_id else None)
+    except Exception:
+        selected = None
+
+    def consent(profile):
+        try:
+            current = store.get('profile', current_profile_id) if current_profile_id else None
+            target = store.get('profile', profile.get('id'))
+        except Exception:
+            raise ProfileReadError('Saved connection group consent could not be read; no saved connection was opened.') from None
+        if not target:
+            raise ProfileReadError('The saved connection %s no longer exists, so it was not read.' % _profile_name(profile))
+        if not selected or not current or not _same_endpoint(selected, current) or \
+                current.get('group') != selected.get('group') or not current.get('group') or \
+                not target or target.get('id') == current_profile_id or \
+                target.get('group') != current.get('group') or profile.get('group') != current.get('group'):
+            raise ProfileReadError('This saved connection is outside the current connection group.')
 
     def prepare(profile):
+        consent(profile)
         # One current record, including its save time and password reference;
         # a stale request must never recreate an earlier fingerprint.
         stored = store._profile(profile.get("id"), include_updated=True)
         if stored is None:
-            raise ValueError("The saved connection %s no longer exists, so it was not read."
+            raise ProfileReadError("The saved connection %s no longer exists, so it was not read."
                              % _profile_name(profile))
         fields = ("host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port")
         if any(profile.get(k) != stored.get(k) for k in fields):
-            raise ValueError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
+            raise ProfileReadError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
                              "current settings." % _profile_name(profile))
         fingerprint = _stored_fingerprint(stored)
 
+        def login_consent():
+            consent(profile)
+            try:
+                current = store._profile(profile.get('id'), include_updated=True)
+                unchanged = (current is not None and _same_endpoint(stored, current) and
+                             _stored_fingerprint(current) == fingerprint)
+            except Exception:
+                raise ProfileReadError('Saved connection consent could not be read; no further login was sent.') from None
+            if not unchanged:
+                raise ProfileReadError('The saved connection changed; refresh to check its current settings.')
+
         def connect():
+            consent(profile)
             value = {k: stored.get(k) for k in fields if stored.get(k) not in (None, "")}
             value["profile_id"] = profile.get("id")
             options = connection_options(store.connection_with_saved_password(value))
@@ -1608,25 +1673,32 @@ def profile_opener(store):
             current = store._profile(profile.get("id"), include_updated=True)
             current_fingerprint = _stored_fingerprint(current) if current else None
             if current_fingerprint != fingerprint:
-                raise ValueError("Not checked: the saved connection %s changed while its password was being "
+                raise ProfileReadError("Not checked: the saved connection %s changed while its password was being "
                                  "read. Refresh to check its current settings." % _profile_name(profile))
+            consent(profile)
             if not options.get("password"):
-                raise ValueError("The saved connection %s has no saved password, so it was not read."
+                raise ProfileReadError("The saved connection %s has no saved password, so it was not read."
                                  % _profile_name(profile))
             options.update(connect_timeout=SOURCE_CONNECT_TIMEOUT_S, query_timeout=SOURCE_QUERY_TIMEOUT_S)
-            return MySQLConnection(**options)
+            conn = MySQLConnection(**options)
+            conn._login_guard = login_consent
+            conn._group_login_started = False
+            return conn
         return fingerprint, connect
 
     def open_profile(profile):
         return prepare(profile)[1]()
     open_profile.prepare = prepare
+    open_profile.current_profile = selected
     return open_profile
 
 
-def saved_profiles(store):
+def saved_profiles(store, current_profile_id=None):
     """The saved connections (no secrets), or none when the store cannot be read."""
     try:
-        return [p for p in store.list("profile") if isinstance(p, dict)]
+        from .connection_groups import current_profile, members
+        profiles = [p for p in store.list("profile") if isinstance(p, dict)]
+        return members(profiles, current_profile(profiles, current_profile_id))
     except Exception:  # an unreadable workspace store must not fail a status read
         return []
 

@@ -23,6 +23,7 @@ import threading
 import time
 
 from . import dbops
+from .connection_groups import ProfileReadError, current_profile, members, probe_note, record_read
 from .connector import ConnectorError
 from .perf_common import Reader, named_rows, reason
 from .server_info import is_readyset_comment, product_identity
@@ -60,7 +61,7 @@ _INNODB_CLUSTER_SQL = (
 _LIVE_ATTRS_SQL = (
     "SELECT DISTINCT t.PROCESSLIST_HOST, a.ATTR_NAME, a.ATTR_VALUE "
     "FROM performance_schema.session_connect_attrs a "
-    "JOIN performance_schema.threads t ON t.THREAD_ID = a.THREAD_ID "
+    "JOIN performance_schema.threads t ON t.PROCESSLIST_ID = a.PROCESSLIST_ID "
     "WHERE a.ATTR_NAME IN ('_program_name', 'program_name', '_client_name') "
     "AND (a.ATTR_VALUE LIKE 'READYSET%' OR LOWER(a.ATTR_VALUE) LIKE '%proxysql%') "
     "LIMIT 50"
@@ -205,14 +206,15 @@ def _claim_probe(profile, open_profile, reads, remaining):
     name = _profile_name(profile)
     profile_id = profile.get("id") or name
     with _cache_lock:
-        pending = _probe_pending.get(profile_id)
-        if pending is not None and not pending["done"].is_set():
-            return pending, False, True
         prepare = getattr(open_profile, "prepare", None)
         if prepare is not None:
             fingerprint, connect = prepare(profile)
         else:
             fingerprint, connect = _settings_fingerprint(profile), (lambda: open_profile(profile))
+        # A pending owner's consent cannot authorize another request.
+        pending = _probe_pending.get(profile_id)
+        if pending is not None and not pending["done"].is_set():
+            return pending, False, True
         key = (profile_id, fingerprint)
         entry = _probe_cache.get(key)
         if entry is not None:
@@ -513,7 +515,7 @@ def _fill_probe(entry, key, connect, profile, remaining):
         except ConnectorError:
             raise
         except ValueError as exc:
-            keep, entry["problem"] = False, str(exc)
+            keep, entry["problem"] = False, probe_note(profile, exc)
             return
         except (sqlite3.Error, OSError) as exc:
             keep, entry["problem"] = False, "Saved password for %s could not be read: %s" % (name, type(exc).__name__)
@@ -525,8 +527,13 @@ def _fill_probe(entry, key, connect, profile, remaining):
                 return
             sent = True
             entry["data"] = _probe_connection(conn, profile)
+    except ProfileReadError as exc:
+        # Revocation aborts the whole multi-statement probe, including any
+        # partial identity. A login already sent still consumes its attempt.
+        keep, entry["problem"] = bool(getattr(conn, '_group_login_started', False)), probe_note(profile, exc)
+        entry['refused'] = True
     except (ConnectorError, ValueError) as exc:
-        entry["problem"] = "Saved connection %s could not be read: %s" % (name, dbops.redact(reason(exc), password))
+        entry["problem"] = probe_note(profile, exc)
     except BaseException:
         keep, entry["problem"] = sent, "Saved connection %s was not read." % name
         raise
@@ -544,7 +551,7 @@ def _fill_probe(entry, key, connect, profile, remaining):
             _evict_locked()
 
 
-def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None):
+def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, current=None):
     """Probe usable saved connections within ``PROFILE_BUDGET_S`` and ``PROFILE_READ_LIMIT``.
 
     Returns ``(probed_list, notes_list)``; never raises when a saved connection
@@ -552,7 +559,12 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None):
     """
     if open_profile is None:
         return [], []
+    current = current_profile(profiles, skip_profile_id, current or getattr(open_profile, 'current_profile', None))
+    profiles = members(profiles, current)
     usable = _usable_profiles(profiles, skip_profile_id=skip_profile_id)
+    for profile in profiles:
+        if profile not in usable:
+            record_read(open_profile, profile, 'not_reached', 'No saved password.')
     if not usable:
         return [], []
     reads = [0]
@@ -569,11 +581,15 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None):
             try:
                 entry, owner, pending = _claim_probe(profile, open_profile, reads, remaining)
             except ValueError as exc:
-                notes.append(str(exc))
+                message = probe_note(profile, exc)
+                notes.append(message)
+                record_read(open_profile, profile, 'not_reached', message)
                 entry = None
                 break
             except (sqlite3.Error, OSError) as exc:
-                notes.append("Saved password for %s could not be read: %s" % (name, type(exc).__name__))
+                message = probe_note(profile, 'saved password unavailable')
+                notes.append(message)
+                record_read(open_profile, profile, 'not_reached', message)
                 entry = None
                 break
             if owner:
@@ -583,17 +599,23 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None):
             if not pending:
                 break
             if not entry["done"].wait(max(0.0, remaining())):
-                notes.append("Another read of saved connection %s did not finish in time." % name)
+                message = "Another read of saved connection %s did not finish in time." % name
+                notes.append(message)
+                record_read(open_profile, profile, 'not_reached', message)
                 entry = None
                 break
             if not entry["kept"]:
                 if entry.get("problem"):
                     notes.append(entry["problem"])
+                    record_read(open_profile, profile, 'not_reached', entry['problem'])
                 entry = None
                 break
         if entry and entry.get("data"):
+            record_read(open_profile, profile, "read")
             probed.append(entry["data"])
         elif entry and entry.get("problem"):
+            outcome = "failed" if entry['kept'] else "not_reached"
+            record_read(open_profile, profile, outcome, entry["problem"])
             notes.append(entry["problem"])
     return probed, notes
 
@@ -896,31 +918,39 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
     }
 
 
-def read_live_client_footprint(conn):
+def read_live_client_footprint(conn, performance_schema=None):
     """Check whether Readyset or ProxySQL is actively connected to this MySQL/MariaDB server."""
-    programs = []
+    programs, clients = [], []
+    known = performance_schema is not False
     proxysql_seen = False
     reader = Reader(conn, TOPOLOGY_TAG)
     try:
-        rows = reader.rows(_LIVE_ATTRS_SQL, timeout=QUERY_TIMEOUT_S)
+        rows = reader.rows(_LIVE_ATTRS_SQL, timeout=QUERY_TIMEOUT_S) if known else []
         for row in rows:
             if len(row) < 3:
                 continue
             val = _text(row[2]) or ""
+            if val.upper().startswith("READYSET") or "proxysql" in val.lower():
+                client = {"program": val, "host": _text(row[0])}
+                if client not in clients:
+                    clients.append(client)
             if val.upper().startswith("READYSET"):
                 if val not in programs:
                     programs.append(val)
             elif "proxysql" in val.lower():
                 proxysql_seen = True
-    except ConnectorError:
-        pass
+    except (ConnectorError, ValueError):
+        known = False
     heartbeat = False
     try:
         if reader.rows(_HEARTBEAT_TABLE_SQL, timeout=QUERY_TIMEOUT_S):
             heartbeat = True
-    except ConnectorError:
+    except (ConnectorError, ValueError):
         pass
     return {
+        "known": known,
+        "clients": clients,
+        "notes": [] if known else ["The live client footprint is unknown because Performance Schema is off or its connection attributes could not be read."],
         "readyset_connected": bool(programs),
         "readyset_programs": programs,
         "readyset_heartbeat_table": heartbeat,
@@ -938,14 +968,9 @@ def _cached_probe_kind(profile_id):
     return None
 
 
-def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None):
-    """Return only saved profiles that can plausibly represent an upstream Readyset or ProxySQL tier.
-
-    Excludes this server's own endpoint, known replication channel sources / cluster
-    members, profiles already known to be database servers, and plain database-named
-    or port-3306 profiles unless explicitly named for Readyset or ProxySQL, so viewing
-    Replication or Cluster never opens unrelated MySQL/MariaDB connections.
-    """
+def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None, current=None):
+    """Every consenting group member is a candidate except known local/peer endpoints."""
+    profiles = members(profiles, current_profile(profiles, skip_profile_id, current))
     known_eps = []
     for item in [local_identity] + list(peer_endpoints or ()):
         if not isinstance(item, dict):
@@ -973,41 +998,26 @@ def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_pr
                 break
         if is_known_db:
             continue
-        cached_kind = _cached_probe_kind(pid)
-        if cached_kind in ("readyset", "proxysql"):
-            candidates.append(p)
-            continue
-        if cached_kind == "database":
-            continue
-        label = ("%s %s" % (p.get("name") or "", p.get("host") or "")).lower()
-        is_tier_port = pp in (3307, 6036, 6032, 6033) or (pp % 10000) in (3307, 6036, 6032, 6033)
-        is_db_named = any(
-            tok in label
-            for tok in ("mysql", "mariadb", "percona", "primary", "replica", "source", "galera", "pxc", "cluster", "aurora", "rds")
-        )
-        is_tier_named = (
-            any(tok in label for tok in ("readyset", "proxysql", "cache", "proxy", "querypilot", "adapter"))
-            or (not is_db_named and bool(re.search(r"(?:^|[^a-z0-9])rs(?:$|[^a-z0-9])", label)))
-        )
-        if is_tier_port or is_tier_named or (pp != 3306 and not is_db_named):
-            candidates.append(p)
+        candidates.append(p)
     return candidates
 
 
 def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=(), open_profile=None,
-                            observer_host=None, current_profile_id=None, check_footprint=False):
+                            observer_host=None, current_profile_id=None, check_footprint=False, performance_schema=None):
     """Discover upstream Readyset and ProxySQL tiers sitting in front of a database server,
     cluster, or primary/replica pair."""
-    footprint = read_live_client_footprint(conn) if check_footprint else {
+    footprint = read_live_client_footprint(conn, performance_schema) if check_footprint else {
         "readyset_connected": False,
         "readyset_programs": [],
         "readyset_heartbeat_table": False,
         "proxysql_connected": False,
     }
+    current = current_profile(profiles, current_profile_id, getattr(open_profile, 'current_profile', None))
     candidates = _filter_tier_candidates(
-        profiles, local_identity, peer_endpoints=peer_endpoints, skip_profile_id=current_profile_id
+        profiles, local_identity, peer_endpoints=peer_endpoints, skip_profile_id=current_profile_id, current=current
     )
-    probed, probe_notes = probe_saved_profiles(candidates, open_profile, skip_profile_id=current_profile_id)
+    probed, probe_notes = probe_saved_profiles(candidates, open_profile, skip_profile_id=current_profile_id, current=current)
+    probe_notes = list(footprint.get("notes") or ()) + probe_notes
     if not probed and not footprint["readyset_connected"] and not footprint["readyset_heartbeat_table"] \
             and not footprint["proxysql_connected"]:
         return {
@@ -1029,7 +1039,7 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
                 "report_port": _int(vmap.get("report_port")),
                 "server_uuid": _text(vmap.get("server_uuid")) or local_copy.get("server_uuid"),
             })
-        except ConnectorError:
+        except (ConnectorError, ValueError):
             pass
     known_dbs = [local_copy]
     for peer in peer_endpoints or ():

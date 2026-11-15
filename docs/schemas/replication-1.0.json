@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/replication-1.0.json",
+  "title": "myflames replication report (replication-1.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "connection_group",
+    "schema_version",
+    "engine",
+    "available",
+    "replica",
+    "channels",
+    "capabilities",
+    "notes",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "replication-1.0"
+    },
+    "engine": {
+      "type": "string"
+    },
+    "captured_at": {
+      "type": "string"
+    },
+    "statement": {
+      "type": "string"
+    },
+    "flavor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_product": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cluster_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "replica": {
+      "type": "boolean"
+    },
+    "readyset_hint": {
+      "type": "boolean"
+    },
+    "uptime_s": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "global_skip_counter": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "gtid": {
+      "type": "object"
+    },
+    "settings": {
+      "type": "object"
+    },
+    "capabilities": {
+      "type": "object"
+    },
+    "summary": {
+      "type": "object"
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "group_replication_channels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "receiver_guard": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "receiver_guard_instrument": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "receiver_guard_note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "receiver_guard_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "topology_tiers": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "readyset": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "proxysql": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "live_footprint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readyset_connected",
+            "readyset_programs",
+            "readyset_heartbeat_table",
+            "proxysql_connected"
+          ],
+          "properties": {
+            "readyset_connected": {
+              "type": "boolean"
+            },
+            "readyset_programs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "readyset_heartbeat_table": {
+              "type": "boolean"
+            },
+            "proxysql_connected": {
+              "type": "boolean"
+            },
+            "known": {
+              "type": "boolean"
+            },
+            "clients": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "program",
+                  "host"
+                ],
+                "properties": {
+                  "program": {
+                    "type": "string"
+                  },
+                  "host": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "notes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "connection_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "read",
+        "suggestions",
+        "join",
+        "suggested_name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "read": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "type",
+              "outcome",
+              "message"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "production",
+                  "development"
+                ]
+              },
+              "outcome": {
+                "enum": [
+                  "read",
+                  "failed",
+                  "not_reached"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "type",
+              "address",
+              "group",
+              "evidence",
+              "evidence_text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "production",
+                  "development"
+                ]
+              },
+              "address": {
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "evidence": {
+                "enum": [
+                  "same_group_replication_group",
+                  "same_innodb_cluster",
+                  "same_clusterset",
+                  "same_galera_cluster",
+                  "replication_source",
+                  "replica_of_this_server",
+                  "same_server",
+                  "address_named_by_this_server"
+                ]
+              },
+              "evidence_text": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "join": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "group",
+              "evidence",
+              "evidence_text"
+            ],
+            "properties": {
+              "group": {
+                "type": "string"
+              },
+              "evidence": {
+                "enum": [
+                  "same_group_replication_group",
+                  "same_innodb_cluster",
+                  "same_clusterset",
+                  "same_galera_cluster",
+                  "replication_source",
+                  "replica_of_this_server",
+                  "same_server",
+                  "address_named_by_this_server"
+                ]
+              },
+              "evidence_text": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "suggested_name": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

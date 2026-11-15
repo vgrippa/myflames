@@ -339,6 +339,57 @@ class TestDefaultsFile(unittest.TestCase):
             self.assertIsNone(c._defaults_file_path)
 
 
+class TestLoginConsentSinks(unittest.TestCase):
+    """Direct credential helpers must enforce the saved-peer guard themselves."""
+
+    def test_refused_guard_never_creates_option_file(self):
+        from myflames.connection_groups import ProfileReadError
+        with MySQLConnection(host='db.example', user='dba', password='secret') as conn:
+            conn._login_guard = mock.Mock(side_effect=ProfileReadError('Consent revoked.'))
+            with mock.patch.object(connector.tempfile, 'mkstemp', return_value=(123, 'unused.cnf')) as create, \
+                    mock.patch.object(connector.os, 'fdopen') as open_file, \
+                    mock.patch.object(connector.os, 'fchmod', create=True) as chmod, \
+                    mock.patch.object(conn, '_build_defaults_file_content', return_value='[client]\n') as content:
+                with self.assertRaises(ProfileReadError):
+                    conn._create_defaults_file()
+            conn._login_guard.assert_called_once_with()
+            create.assert_not_called()
+            open_file.assert_not_called()
+            chmod.assert_not_called()
+            content.assert_not_called()
+
+    def test_refused_guard_never_acquires_tunnel(self):
+        from myflames.connection_groups import ProfileReadError
+        from myflames import ssh_tunnel
+        with MySQLConnection(host='db.example', password='secret', ssh_host='jump.example') as conn:
+            conn._login_guard = mock.Mock(side_effect=ProfileReadError('Consent revoked.'))
+            with mock.patch.object(ssh_tunnel, 'spec_of') as spec, \
+                    mock.patch.object(ssh_tunnel.TUNNELS, 'acquire') as acquire:
+                with self.assertRaises(ProfileReadError):
+                    conn._acquire_tunnel()
+            conn._login_guard.assert_called_once_with()
+            spec.assert_not_called()
+            acquire.assert_not_called()
+
+    def test_unguarded_connection_keeps_file_and_tunnel_helpers(self):
+        from myflames import ssh_tunnel
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(connector.tempfile, 'tempdir', directory), \
+                MySQLConnection(host='db.example', user='dba', password='secret', ssh_host='jump.example') as conn:
+            path = conn._create_defaults_file(('127.0.0.1', 13306))
+            try:
+                with open(path) as handle:
+                    content = handle.read()
+                self.assertIn('password="secret"\n', content)
+                self.assertIn('host="127.0.0.1"\n', content)
+                self.assertIn('port=13306\n', content)
+                with mock.patch.object(ssh_tunnel.TUNNELS, 'acquire', return_value=mock.sentinel.lease) as acquire:
+                    self.assertIs(conn._acquire_tunnel(), mock.sentinel.lease)
+                acquire.assert_called_once_with(ssh_tunnel.spec_of(conn))
+            finally:
+                os.unlink(path)
+
+
 class TestBinaryResolution(unittest.TestCase):
     """Binary lookup order: override → mysql → mariadb."""
 

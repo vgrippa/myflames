@@ -37,6 +37,15 @@ Parameters and Users and roles show **Changed through myflames** in the selected
 
 Dedicated places inspect replication channels, GTIDs, workers and lag; MariaDB Galera, Percona XtraDB Cluster, MySQL InnoDB Cluster and Group Replication; ProxySQL backend pools, query rules and digests; and Readyset shallow and deep caches, proxied queries, base-table snapshotting, dynamic parameters and performance telemetry across ProxySQL + Readyset + MySQL or MariaDB topologies.
 
+Above the topology in **Cluster**, **Replication**, **ProxySQL** and **Readyset**, a group bar shows how cross-server reads are scoped and offers group recommendations:
+
+- When the connection is in a group, the bar names the group and lists which group members were read, which were not reached, and which failed.
+- When the connection in use belongs to another group's topology, the bar asks "This connection is part of the topology of group G … Add it to G?" with **Add to G** and **Not now**.
+- When other saved connections belong to this topology, the bar shows "N saved connections are part of this topology" with **Review…** to add them (pre-ticked, with any existing group shown beside the connection), with a new group's name pre-filled from the InnoDB Cluster, ClusterSet or Galera name, "<source host> replication", or the ProxySQL or Readyset connection name.
+- When a saved connection has no group and no recommendations, the bar shows "No connection group: myflames reads only this connection." with **Create a group…**.
+
+Evidence for a recommendation is found without logging in to other servers: the same Group Replication group, InnoDB Cluster, InnoDB ClusterSet or Galera cluster, a replication source or replica relationship, the same server, or an address the open server reported. Identities are remembered only from connections you have opened. When `performance_schema` is on, **Cluster** and **Replication** also detect ProxySQL backend connections (program name `proxysql`) and the Readyset helper connections that identify themselves (names starting `READYSET`, such as the shallow refresher, ACL pooler and query sampler); ordinary Readyset upstream and replication connections send no program name, so seeing no Readyset client does not mean Readyset is not connected. When `performance_schema` is off (the MariaDB default), the report says the client footprint is unknown.
+
 **Cluster** shows an InnoDB ClusterSet's primary and replica clusters, invalidated clusters and, on a replica cluster's primary, its replication channel's state, last error and source. The topology links the clusters and offers **Use** for a saved connection to another cluster's instance. A replica cluster's view comes from its replicated metadata and may be behind.
 
 With MySQL Shell (`mysqlsh`) installed on this computer, the member inspector offers these reviewed changes for MySQL InnoDB Cluster:

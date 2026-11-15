@@ -139,31 +139,35 @@ def _discover_response(path, payload, workspace=None):
                 from .error_log import DEFAULT_LIMIT, error_log_report
                 return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
             def _topo_args():
-                if workspace is None or getattr(workspace, "store", None) is None:
-                    return {}
                 from . import replication as rp
-                conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
-                return {
-                    "profiles": rp.saved_profiles(workspace.store),
-                    "open_profile": rp.profile_opener(workspace.store),
-                    "reached_host": rp.reached_host(options),
-                    "current_profile_id": conn_in.get("profile_id"),
-                }
+                from .connection_groups import members, request_profiles
+                if workspace is None or getattr(workspace, "store", None) is None:
+                    return {}, [], None
+                profiles, current = request_profiles(workspace.store, payload.get("connection") or {})
+                pid = current['id'] if current else None
+                return {"profiles": members(profiles, current),
+                        "open_profile": rp.profile_opener(workspace.store, pid, current) if current and current.get('group') else None,
+                        "reached_host": rp.reached_host(options), "current_profile_id": pid,
+                        "current_profile": current}, profiles, current
 
-            if path == "/api/live/cluster":
-                from .cluster import attach_topology_tiers, read_status, with_actions
-                report = read_status(conn)
-                t_args = _topo_args()
-                if t_args:
+            if path in ("/api/live/cluster", "/api/live/proxysql", "/api/live/readyset"):
+                from .connection_groups import finish_read
+                t_args, profiles, current = _topo_args()
+                identity = {}
+                if path == "/api/live/cluster":
+                    from .cluster import attach_topology_tiers, read_status, with_actions
+                    report = read_status(conn, _identity=identity)
                     attach_topology_tiers(conn, report, **t_args)
-                return with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)))
-            if path == "/api/live/proxysql":
-                from .proxysql import read_status as proxysql_status
-                t_args = _topo_args()
-                return proxysql_status(conn, **t_args) if t_args else proxysql_status(conn)
-            if path == "/api/live/readyset":
-                from .readyset import read_status as readyset_status
-                return readyset_status(conn, schema=payload.get("schema") or "readyset", **_topo_args())
+                    report = with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)))
+                elif path == "/api/live/proxysql":
+                    from .proxysql import read_status
+                    report = read_status(conn, **t_args)
+                else:
+                    from .readyset import read_status
+                    report = read_status(conn, schema=payload.get("schema") or "readyset", **t_args)
+                if workspace is not None and getattr(workspace, "store", None) is not None:
+                    finish_read(workspace.store, report, payload.get("connection") or {}, profiles, current, identity=identity)
+                return report
             if path == "/api/live/readyset/explain-cache":
                 from .readyset import explain_cache
                 q = payload.get("query_or_id")
@@ -1149,11 +1153,17 @@ def _replication_response(path, payload, workspace):
                 # Source versions: the relay log, else a matching saved connection
                 # (opened at most once per process for the same settings and password).
                 conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
-                report = rp.read_status(conn, source_versions=True, profiles=rp.saved_profiles(workspace.store),
-                                        open_profile=rp.profile_opener(workspace.store),
+                from .connection_groups import finish_read, members, request_profiles
+                store = getattr(workspace, 'store', None)
+                profiles, current = request_profiles(store, conn_in)
+                pid = current['id'] if current else None
+                identity = {}
+                report = rp.read_status(conn, source_versions=True, profiles=members(profiles, current),
+                                        open_profile=rp.profile_opener(store, pid, current) if current and current.get('group') else None,
                                         replica_host=rp.reached_host(options),
-                                        current_profile_id=conn_in.get("profile_id"),
-                                        topology_tiers=True)
+                                        current_profile_id=pid, current_profile=current,
+                                        topology_tiers=True, _identity=identity)
+                finish_read(store, report, conn_in, profiles, current, identity=identity)
                 if report.get("available") and report.get("replica"):
                     guard = rp.receiver_guard_plan(conn, report)
                     report.update(guard)
@@ -1162,9 +1172,19 @@ def _replication_response(path, payload, workspace):
                             plan = channel["skip_plan"]
                             plan.update(guard)
                             if plan.get("available"):
-                                plan["review_token"] = _review_tokens(workspace).issue("replication_skip",
-                                    _review_identity(payload.get("connection"), workspace),
-                                    {"channel": plan["channel"], "expect": plan["identity"], "statements": plan["statements"]})
+                                try:
+                                    if store is None:
+                                        raise ValueError('Workspace store unavailable.')
+                                    review_identity = _review_identity(payload.get("connection"), workspace)
+                                except (AttributeError, ValueError, OSError, sqlite3.Error):
+                                    # The status remains readable when optional local
+                                    # storage fails. No write token bypass is allowed.
+                                    plan.update(available=False, message="The connection's write policy could not be read. "
+                                                "Refresh before reviewing a change.")
+                                else:
+                                    plan["review_token"] = _review_tokens(workspace).issue("replication_skip",
+                                        review_identity,
+                                        {"channel": plan["channel"], "expect": plan["identity"], "statements": plan["statements"]})
                 return report
         except (ValueError, ConnectorError) as exc:
             _reraise_redacted(exc, options.get("password"))
@@ -1838,6 +1858,8 @@ def _profile_response(operation, payload, store):
             return saved
         except ValueError as exc:
             _reraise_redacted(exc, password)
+    if operation == "group":
+        return store.assign_profile_group(payload.get("profile_ids"), payload.get("group"))
     if operation == "forget-password":
         return store.forget_password(payload.get("id"))
     if operation == "delete":
@@ -2709,7 +2731,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         if self.path not in ("/api/analyze", "/api/render", "/api/report", "/api/compare",
                              "/api/teach/catalog", "/api/teach/lesson",
                              "/api/investigations/list", "/api/investigations/get", "/api/investigations/save", "/api/investigations/delete",
-                             "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete",
+                             "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete", "/api/profiles/group",
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",

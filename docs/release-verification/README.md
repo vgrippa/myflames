@@ -1,0 +1,3 @@
+# Release verification records
+
+Each release X.Y.Z has a record `X.Y.Z.json` in this folder: the evidence that every entry of its release notes page (New features, Improvements, Bug fixes) was verified on the code that ships, through tests, live servers, layout checks and reviews, or with the owner's written acceptance of what stayed unverified. The schema and the rules are the contract in [DEVELOPER_REFERENCE "Release verification record"](../DEVELOPER_REFERENCE.md#release-verification-record); `python3 scripts/check_release_verification.py X.Y.Z` checks a record, and the Docs and release sync pull-request check runs it when the version changes.
