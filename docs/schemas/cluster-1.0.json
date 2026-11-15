@@ -521,6 +521,162 @@
         }
       }
     },
+    "clusterset": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "InnoDB ClusterSet the cluster belongs to (metadata 2.1.0+: v2_cs_members, v2_cs_clustersets); absent outside a ClusterSet. On a replica cluster this is its replicated copy of the metadata (from_local_copy).",
+      "required": [
+        "name",
+        "local_cluster",
+        "local_role",
+        "invalidated",
+        "primary_cluster",
+        "clusters",
+        "channel",
+        "from_local_copy"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The ClusterSet name (domain_name)."
+        },
+        "local_cluster": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "PRIMARY or REPLICA."
+        },
+        "invalidated": {
+          "type": "boolean",
+          "description": "This cluster is not in the ClusterSet's latest view."
+        },
+        "primary_cluster": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "role",
+              "invalidated",
+              "local",
+              "instances"
+            ],
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "role": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "invalidated": {
+                "type": "boolean"
+              },
+              "local": {
+                "type": "boolean"
+              },
+              "instances": {
+                "type": "array",
+                "description": "The other clusters' instances from the shared metadata (empty for this cluster: its members are in members). Their state is read on them, not here.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "label",
+                    "address",
+                    "server_uuid",
+                    "instance_type",
+                    "source"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "address": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "server_uuid": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "instance_type": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "group-member or read-replica."
+                    },
+                    "source": {
+                      "type": "boolean",
+                      "description": "The instance this replica cluster's clusterset_replication channel connects to."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "channel": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "description": "The clusterset_replication channel, read on a replica cluster's primary only.",
+          "properties": {
+            "receiver_state": {
+              "type": "string"
+            },
+            "applier_state": {
+              "type": "string"
+            },
+            "last_error_number": {
+              "type": "integer"
+            },
+            "last_error_message": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "description": "host:port the channel connects to (replication_connection_configuration)."
+            }
+          }
+        },
+        "from_local_copy": {
+          "type": "boolean"
+        }
+      }
+    },
     "routers": {
       "type": "array",
       "items": {
@@ -861,7 +1017,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "non_primary, state_transfer, wsrep_off, not_connected, not_ready, local_state, member_state, size_below_configured, no_tolerance, flow_control, cert_failures, pxc_maint_mode, no_quorum, local_not_in_group, read_replica, version_mismatch, primary_count."
+          "description": "non_primary, state_transfer, wsrep_off, not_connected, not_ready, local_state, member_state, size_below_configured, no_tolerance, flow_control, cert_failures, pxc_maint_mode, no_quorum, local_not_in_group, read_replica, version_mismatch, primary_count, clusterset_invalidated, clusterset_no_primary, clusterset_channel."
         },
         "status": {
           "type": "string",
@@ -893,16 +1049,9 @@
       ],
       "properties": {
         "id": {
-          "enum": [
-            "switchover",
-            "stop_member",
-            "start_member",
-            "switch_to_multi_primary",
-            "switch_to_single_primary",
-            "desync_node",
-            "resync_node",
-            "bootstrap_pc"
-          ]
+          "type": "string",
+          "description": "The action: one of the fixed ids, or set_primary_cluster:<cluster> / rejoin_cluster:<cluster> for a ClusterSet change on a named cluster (run by MySQL Shell).",
+          "pattern": "^(switchover|stop_member|start_member|switch_to_multi_primary|switch_to_single_primary|desync_node|resync_node|bootstrap_pc|rejoin_instance|force_primary_cluster|(set_primary_cluster|rejoin_cluster):[A-Za-z_][A-Za-z0-9_.-]{0,62})$"
         },
         "label": {
           "type": "string"

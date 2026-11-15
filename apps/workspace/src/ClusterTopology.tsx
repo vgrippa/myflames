@@ -10,14 +10,19 @@
 // card's edge, and the member's link to the group (solid while it takes part,
 // dashed and broken when it does not). Queues and flow control are plain text
 // on the card. Selecting a card selects the member (or router) in the
-// inspector; arrow keys move between cards.
+// inspector; arrow keys move between cards. An InnoDB ClusterSet is a band
+// above the group: the primary cluster, a clusterset_replication arrow to
+// each replica cluster (broken for an invalidated one), the other clusters'
+// instances as the shared metadata lists them (their state is read on them,
+// so none is drawn), and the channel's state when this member runs it.
 import { useState, type ReactNode } from "react";
 import type { Profile } from "./api";
 import { moveRowFocus, type Selection, type Tone } from "./kit";
 import { engineName } from "./OpsShared";
 import {
   flowPercent, isGalera, isReadReplica, kindLabel, memberDetached, memberNoun, stateWord,
-  type ClusterMember, type ClusterReport, type ClusterRouter,
+  type ClusterMember, type ClusterReport, type ClusterRouter, type ClusterSet, type ClusterSetCluster,
+  type ClusterSetInstance,
 } from "./clusterApi";
 import "./cluster.css";
 import "./readyset.css";
@@ -142,6 +147,114 @@ function groupLine(report: ClusterReport): { text: string; broken: boolean } {
   return { text: parts.join(" · "), broken: c.quorum === false };
 }
 
+/** A saved connection for an instance of another cluster (host:port). */
+export function instanceProfile(inst: ClusterSetInstance, profiles?: Profile[]): Profile | undefined {
+  if (!inst.address || !profiles?.length) return undefined;
+  const match = /^\[?([^\]]+?)\]?(?::(\d+))?$/.exec(inst.address.trim());
+  if (!match) return undefined;
+  const host = match[1].toLowerCase();
+  const port = match[2] ? Number(match[2]) : 3306;
+  return profiles.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
+}
+
+/** What the arrow to a replica cluster says: the channel when this member
+ * runs it, else the relation only. */
+export function clusterSetLinkText(cs: ClusterSet, c: ClusterSetCluster): { text: string; tone: Tone; broken: boolean } {
+  if (c.invalidated) return { text: "Invalidated · not replicating", tone: "problem", broken: true };
+  const ch = c.local ? cs.channel : null;
+  if (!ch) return { text: "clusterset_replication", tone: "unknown", broken: false };
+  const receiver = ch.receiver_state || "?";
+  const applier = ch.applier_state || "?";
+  const error = ch.last_error_number ? ` · error ${ch.last_error_number}` : "";
+  const off = receiver === "OFF" || applier === "OFF";
+  const tone: Tone = off || (ch.last_error_number && receiver !== "CONNECTING") ? "problem"
+    : receiver === "CONNECTING" ? "watch" : receiver === "ON" && applier === "ON" ? "ok" : "unknown";
+  return { text: `clusterset_replication · receiver ${receiver} · applier ${applier}${error}`, tone, broken: off };
+}
+
+function ClusterSetBox({ cs, c, profiles, onSwitchConnection }: {
+  cs: ClusterSet; c: ClusterSetCluster; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
+}) {
+  const role = c.role === "PRIMARY" ? "Primary cluster" : c.role === "REPLICA" ? "Replica cluster" : "Cluster";
+  const label = [c.name, role, c.invalidated ? "invalidated" : "", c.local ? "this cluster" : ""].filter(Boolean).join(", ");
+  return (
+    <div className={`clusterset-cluster${c.local ? " is-local" : ""}${c.invalidated ? " is-invalidated" : ""}`}
+      role="group" aria-label={label} data-cluster={c.name || ""}>
+      <span className="cluster-card-head">
+        <span className={`cluster-role is-${c.role === "PRIMARY" ? "primary" : "secondary"}`}>{role}</span>
+      </span>
+      <strong className="cluster-name" title={c.name || ""}>{c.name || "Name not recorded"}</strong>
+      {c.invalidated && <ClusterMark tone="problem" label="Invalidated" title="Not in the ClusterSet's latest view: it does not replicate from the primary cluster." />}
+      {c.local ? (
+        <span className="cluster-local">This cluster · its members are below</span>
+      ) : c.instances.length ? (
+        <ul className="clusterset-instances" aria-label={`${c.name} instances`}>
+          {c.instances.map((inst) => {
+            const match = onSwitchConnection ? instanceProfile(inst, profiles) : undefined;
+            return (
+              <li key={inst.server_uuid || inst.address || inst.label || ""}>
+                <ServerGlyph />
+                <span className="clusterset-instance-name" title={inst.address || ""}>{inst.label || inst.address || "?"}</span>
+                {inst.instance_type === "read-replica" && <span className="clusterset-tag">Read replica</span>}
+                {inst.source && <span className="clusterset-tag is-source" title={`This cluster's clusterset_replication channel connects to ${inst.address}: the primary cluster's primary, as far as this replica cluster knows.`}>Channel source</span>}
+                {match && onSwitchConnection && (
+                  <button type="button" className="text-button clusterset-use" onClick={() => onSwitchConnection(match.id)}>Use {match.name}</button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <span className="cluster-flow">No instances in the metadata read here</span>
+      )}
+      {!c.local && c.instances.length > 0 && <span className="cluster-flow">From the ClusterSet metadata · state is read on them</span>}
+      {!c.local && cs.from_local_copy && c.role === "PRIMARY" && <span className="cluster-flow">This cluster's copy of the metadata</span>}
+    </div>
+  );
+}
+
+/** The ClusterSet band: the primary cluster, then each replica cluster at
+ * the end of a clusterset_replication arrow. */
+export function ClusterSetBand({ cs, profiles, onSwitchConnection }: {
+  cs: ClusterSet; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
+}) {
+  const primaries = cs.clusters.filter((c) => c.role === "PRIMARY");
+  const replicas = cs.clusters.filter((c) => c.role !== "PRIMARY");
+  return (
+    <section className="clusterset-band" aria-label={`InnoDB ClusterSet ${cs.name || ""}`.trim()}>
+      <span className="cluster-row-label">
+        ClusterSet {cs.name || "(unnamed)"}
+        {cs.from_local_copy && <span className="clusterset-copy" title="A replica cluster's metadata is replicated from the primary cluster and can be behind. Connect to the primary cluster for the current view."> · this cluster's metadata copy, may be behind</span>}
+      </span>
+      <div className="clusterset-row">
+        <div className="clusterset-primaries">
+          {primaries.length ? primaries.map((c) => (
+            <ClusterSetBox key={c.name || "primary"} cs={cs} c={c} profiles={profiles} onSwitchConnection={onSwitchConnection} />
+          )) : <div className="clusterset-cluster is-invalidated" role="group" aria-label="No primary cluster">
+            <ClusterMark tone="problem" label="No primary cluster in the metadata" /></div>}
+        </div>
+        <ul className="clusterset-replicas" aria-label="Replica clusters">
+          {replicas.map((c) => {
+            const link = clusterSetLinkText(cs, c);
+            return (
+              <li key={c.name || "replica"} className="clusterset-replica">
+                <span className={`clusterset-link is-${link.tone}${link.broken ? " is-broken" : ""}`}>
+                  <span className="clusterset-arrow" aria-hidden="true" />
+                  <span className="clusterset-link-label">
+                    {link.tone !== "unknown" && <span className={`cluster-shape is-${link.tone}`} aria-hidden="true" />}
+                    {link.text}
+                  </span>
+                </span>
+                <ClusterSetBox cs={cs} c={c} profiles={profiles} onSwitchConnection={onSwitchConnection} />
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
 function Card({ selection, rowKey, className, label, children }: {
   selection?: Selection; rowKey: string; className: string; label: string; children: ReactNode;
 }) {
@@ -227,6 +340,9 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
         onOpenReadyset={current ? onOpenReadyset : undefined}
         onOpenProxySql={current ? onOpenProxySql : undefined}
       />
+      {report.clusterset && (
+        <ClusterSetBand cs={report.clusterset} profiles={profiles} onSwitchConnection={current ? onSwitchConnection : undefined} />
+      )}
       <div className="cluster-map" data-rows="">
         <div className="cluster-group">
           <ul className="cluster-members" aria-label={`${noun}s`}>

@@ -28,12 +28,19 @@ NAMES = ("galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three",
          "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone", "mariadb-11.8-standalone",
          "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
          "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local")
+#: InnoDB ClusterSet servers (synthetic), with the actions MySQL Shell runs as
+#: they are offered when it is installed (SHELL stands for it).
+CLUSTERSET = ("ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
+              "ic-8.4-clusterset-invalidated")
+SHELL = {"path": "/usr/bin/mysqlsh", "realpath": "/usr/bin/mysqlsh", "version": "8.4.6", "version_tuple": [8, 4, 6]}
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
 
 
 def main():
-    for name in NAMES:
-        report = with_actions(F.report(name))
+    for name in NAMES + CLUSTERSET:
+        # Whether MySQL Shell is installed where the fixtures are written must
+        # not change them: without it, none of the Shell actions is offered.
+        report = with_actions(F.report(name), shell=SHELL if name in CLUSTERSET else False)
         report["captured_at"] = "2026-10-20T14:40:00+00:00"
         path = os.path.join(OUT, "cluster-%s.json" % name)
         with open(path, "w", encoding="utf-8") as handle:
