@@ -1,3 +1,6 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+
 // Interact with the visible connection popover, never a hidden place's picker.
 export async function openConnectionPicker(page) {
   const trigger = '.window-toolbar .connection-pill';
@@ -14,7 +17,7 @@ export async function chooseConnection(page, id) {
 export async function connectionOption(page, name) {
   await openConnectionPicker(page);
   return page.$$eval('.window-toolbar select[aria-label="Connection"] option',
-    (options, text) => options.find((e) => e.textContent === text).value, name);
+    (options, text) => options.find((e) => e.textContent === text || e.textContent.startsWith(`${text} (`)).value, name);
 }
 // Account and privileges: an item in the connection picker that opens a sheet.
 export async function openAccountSheet(page) {
@@ -65,4 +68,69 @@ export async function openRefreshMenu(page) {
     }
   }
   await page.waitForSelector('.view-refresh-menu [data-action="refresh-all"]', { visible: true });
+}
+
+/**
+ * For widths 1440 and 720 and themes light and dark, sets the viewport and
+ * theme, asserts no horizontal page scroll and (when `frame` is given) that the
+ * element does not overflow sideways, and writes `<name>-<width>-<theme>.png`.
+ */
+export async function layoutMatrix(page, shotsDir, name, { frame } = {}) {
+  const height = page.viewport()?.height || 900;
+  const written = [];
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((t) => {
+        document.documentElement.dataset.theme = t;
+        try {
+          localStorage.setItem('myflames.theme', t);
+        } catch {}
+      }, theme);
+      const metrics = await page.evaluate((selector) => {
+        const doc = document.documentElement;
+        const pageScrollWidth = doc.scrollWidth;
+        const pageClientWidth = doc.clientWidth;
+        if (!selector) {
+          return { pageScrollWidth, pageClientWidth, frame: null };
+        }
+        const el = document.querySelector(selector);
+        if (!el) {
+          return { pageScrollWidth, pageClientWidth, frame: { missing: true } };
+        }
+        const rect = el.getBoundingClientRect();
+        return {
+          pageScrollWidth,
+          pageClientWidth,
+          frame: {
+            missing: false,
+            scrollWidth: el.scrollWidth,
+            clientWidth: el.clientWidth,
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+          },
+        };
+      }, frame || null);
+      assert.ok(
+        metrics.pageScrollWidth <= metrics.pageClientWidth,
+        `${name} at ${width}px (${theme}) has horizontal page scroll: ${metrics.pageScrollWidth} > ${metrics.pageClientWidth}`,
+      );
+      if (frame) {
+        assert.ok(
+          metrics.frame && !metrics.frame.missing,
+          `${name} at ${width}px (${theme}): frame ${frame} not found`,
+        );
+        assert.ok(
+          metrics.frame.scrollWidth <= metrics.frame.clientWidth + 1 &&
+            metrics.frame.left >= -1 &&
+            metrics.frame.right <= metrics.pageClientWidth + 1,
+          `${name} at ${width}px (${theme}): frame ${frame} overflows sideways (${JSON.stringify(metrics.frame)}, clientWidth=${metrics.pageClientWidth})`,
+        );
+      }
+      const file = path.join(shotsDir, `${name}-${width}-${theme}.png`);
+      await page.screenshot({ path: file });
+      written.push(file);
+    }
+  }
+  return written;
 }

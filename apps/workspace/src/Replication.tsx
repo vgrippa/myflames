@@ -2,7 +2,7 @@
 // connections (MariaDB) with an inspector. Recovery is always a separately
 // confirmed action; Python owns the statements, the final re-read, the
 // connection's write policy and the audit record.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { durationText } from "./duration";
 import { Duration } from "./PerfShared";
 import { useViewOnScreen } from "./viewOnScreen";
@@ -124,7 +124,7 @@ type Confirmation = {
 
 export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
 
-export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection }: {
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection, topologyHeader }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
   /** Memory only, owned by Server. Keep this view mounted while hidden. */
@@ -141,6 +141,8 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   onOpenReadyset?: () => void;
   onOpenProxySql?: () => void;
   onSwitchConnection?: (profileId: string) => void;
+  /** Group consent controls, directly above the topology or non-replica state. */
+  topologyHeader?: ReactNode;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -652,6 +654,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           // GTID mode is the tile above; the strip carries the rest of the server's GTID state.
           <FactStrip label="Server GTID state" facts={factRows(Object.fromEntries(Object.entries(report.gtid).filter(([k]) => k !== "mode" && k !== "gtid_mode")), GTID_LABELS)} />
         )}
+        {report.available && (!report.replica || activeTab === "topology") && topologyHeader}
         {!report.available ? (
           <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate>
         ) : !report.replica ? (

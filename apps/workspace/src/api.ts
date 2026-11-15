@@ -380,15 +380,48 @@ export type Connection = {
   ssh_user?: string;
   /** SSH port; 0 or absent: Port in ~/.ssh/config, else 22. */
   ssh_port?: number;
+  /** Topology discovery consent group ("" or absent means no group). */
+  group?: string;
 };
 /** Production asks before every write; Development only before risky ones. */
 export type ConnectionType = "production" | "development";
 export type Profile = Connection & {
   id: string;
+  group?: string;
   remember_password?: boolean;
   has_saved_password?: boolean;
   secret_backend?: string;
   secret_backend_label?: string;
+};
+
+export type ConnectionGroupReadOutcome = "read" | "failed" | "not_reached";
+export type ConnectionGroupReadItem = {
+  id: string;
+  name: string;
+  type?: ConnectionType | string;
+  outcome: ConnectionGroupReadOutcome;
+  message?: string | null;
+};
+export type ConnectionGroupSuggestion = {
+  id: string;
+  name: string;
+  type?: ConnectionType | string;
+  address: string;
+  group?: string;
+  evidence: string;
+  evidence_text: string;
+};
+export type ConnectionGroupJoin = {
+  group: string;
+  evidence: string;
+  evidence_text: string;
+};
+export type ConnectionGroup = {
+  name: string;
+  read: ConnectionGroupReadItem[];
+  suggestions: ConnectionGroupSuggestion[];
+  join: ConnectionGroupJoin[];
+  suggested_name?: string;
 };
 
 // ---- Audit trail of server writes (dbops.py, /api/audit/*) ------------------

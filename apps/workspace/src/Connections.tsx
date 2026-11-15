@@ -68,9 +68,10 @@ export function passwordStatus(p?: Profile) {
 /** The non-secret fields of a connection or saved connection, in session
  * order. Spaces pasted around the host or CA path, or after the database,
  * are dropped as the server drops them (live.connection_options). */
-export function connectionFields(c: Partial<Connection>): SessionConnection {
+export function connectionFields(c: Partial<Connection>): SessionConnection & { group: string } {
   return {
     name: c.name || "",
+    group: c.group || "",
     host: trimPasted(c.host || ""),
     port: c.port || 3306,
     user: c.user || "",
@@ -84,10 +85,11 @@ export function connectionFields(c: Partial<Connection>): SessionConnection {
 /** The form's settings as they are sent: the same trimming as connectionFields.
  * SSH user and port without an SSH host are sent too, so the server says what is missing. */
 function tidy(c: Connection): Connection {
-  const { ssh_host: _host, ssh_user: _user, ssh_port: _port, ...rest } = c;
+  const { ssh_host: _host, ssh_user: _user, ssh_port: _port, group: rawGroup, ...rest } = c;
   const user = trimPasted(c.ssh_user || ""), port = Number(c.ssh_port) || 0;
+  const group = typeof rawGroup === "string" ? rawGroup.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) : undefined;
   return { ...rest, host: trimPasted(c.host || ""), database: trimPastedEnd(c.database || ""), ssl_ca: trimPasted(c.ssl_ca || ""),
-    ...sshFields(c), ...(user ? { ssh_user: user } : {}), ...(port ? { ssh_port: port } : {}) };
+    ...(group !== undefined ? { group } : {}), ...sshFields(c), ...(user ? { ssh_user: user } : {}), ...(port ? { ssh_port: port } : {}) };
 }
 /**
  * What the user meant by the text in the Host field: a host name or address
@@ -202,6 +204,7 @@ export function SafetyTags({ type, readOnly }: { type: ConnectionType; readOnly:
     </span>
   );
 }
+const groupTag = (g?: string) => g ? <span className="connection-group-tag" title={`Group ${g}`}>{g}</span> : null;
 /**
  * The write policy of the connection in use, for write actions (Kill). While
  * it is not known (saved connections not loaded, or the list failed),
@@ -342,7 +345,7 @@ export function requestConnection(active: ActiveConnection, safety?: Safety): Co
   return active.id ? { ...c, profile_id: active.id } : c;
 }
 
-const blank = (): Connection => ({ ...defaultConnection, password: "", type: "production" });
+const blank = (): Connection => ({ ...defaultConnection, password: "", type: "production", group: "" });
 
 /** A row's Test result, for the connection identity it tested (binding.ts
  * connectionKey) and the request that produced it. */
@@ -520,7 +523,7 @@ export function Connections({
     setDevFor(p?.type === "development" ? developmentFor(p) : null);
     setDraft(
       source
-        ? { ...connectionFields(source), password: fields === active.fields ? active.password : "", type: p?.type === "development" ? "development" : "production" }
+        ? { ...connectionFields(source), password: fields === active.fields ? active.password : "", type: p?.type === "development" ? "development" : "production", group: p?.group || "" }
         : (() => { const b = blank(); return { ...b, name: defaultConnectionName(b.user || "", b.host || "", b.port || 3306) }; })(),
     );
     setSavePrompt(null);
@@ -576,8 +579,8 @@ export function Connections({
       }
       return next;
     });
-    // Type and Read-only do not change what a test connects to.
-    if (key === "type" || key === "read_only") return;
+    // Type, Read-only and Group do not change what a test connects to.
+    if (key === "type" || key === "read_only" || key === "group") return;
     if (key !== "name" && key !== "database") {
       setSchemas([]);
       setSchemasError("");
@@ -618,7 +621,7 @@ export function Connections({
     const resolvedName = (rest.name || "").trim() || defaultConnectionName(rest.user || "", rest.host || "", rest.port || 3306);
     // The type is always sent: the one on screen (a moved Development
     // connection shows and saves Production until Development is chosen again).
-    const settings = { ...rest, name: resolvedName, type: shownType, read_only: draft.read_only === true };
+    const settings = { ...rest, name: resolvedName, type: shownType, read_only: draft.read_only === true, group: rest.group || "" };
     try {
       const target = profiles.find((p) => p.id === targetId);
       const storeTyped = withPassword && !!password;
@@ -816,11 +819,13 @@ export function Connections({
       ? "Passwords stay in memory for this session."
       : `Save connection asks whether to keep the password; a saved password is ${storedIn(secretStore?.backend, secretStore?.label)}, never in the workspace database, captures, or exports.`;
 
+  const existingGroups = [...new Set(profiles.filter(p => !deletedIds.includes(p.id)).map(p => (p.group || "").trim()).filter(Boolean))].sort();
+
   const rows: ConnectionRow[] = [
     ...(!active.id && active.fields.host ? [{ key: "active", fields: active.fields }] : []),
     ...profiles.filter(p => !deletedIds.includes(p.id)).map(p => ({ key: p.id, fields: connectionFields(p), profile: p })),
   ];
-  const visibleRows = rows.filter(row => [row.fields.name, connectionTarget(row.fields), row.fields.database]
+  const visibleRows = rows.filter(row => [row.fields.name, connectionTarget(row.fields), row.fields.database, row.profile?.group || ""]
     .some(value => value.toLowerCase().includes(search.toLowerCase())));
   const selectedRows = rows.filter(row => selected.includes(row.key));
   function activate(row: ConnectionRow) {
@@ -844,6 +849,7 @@ export function Connections({
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
+        {groupTag(row.profile?.group)}
         <span className={`connection-type-short${row.fields.read_only ? " is-read-only" : ""}`} aria-hidden="true">
           {row.profile?.type === "development" ? "Dev" : "Prod"}
         </span>
@@ -1057,6 +1063,24 @@ export function Connections({
                   Could not read the database list ({schemasError}). Type a database name instead.
                 </span>
               )}
+            </label>
+            <label className="field">
+              Group
+              <input
+                list="connection-group-list"
+                maxLength={80}
+                value={draft.group || ""}
+                aria-describedby="connection-group-hint"
+                onChange={(e) => edit("group", e.target.value)}
+              />
+              <datalist id="connection-group-list">
+                {existingGroups.map((g) => (
+                  <option key={g} value={g} />
+                ))}
+              </datalist>
+              <span className="hint" id="connection-group-hint">
+                Connections in the same group may be read together to draw a cluster or replication topology. myflames never reads a saved connection outside the group of the connection in use.
+              </span>
             </label>
           </div>
           <div className="connection-safety" role="group" aria-labelledby="connection-type-label">
@@ -1406,6 +1430,7 @@ export function ConnectionPicker({
         trigger={<>
           {hasConnection && (safety.known ? <TypeDot type={safety.type} readOnly={safety.read_only} /> : <span className="status-dot is-unknown" aria-label="Policy unknown" role="img" />)}
           <span className="connection-pill-name">{name}</span>
+          {groupTag(profile?.group)}
           <span className="picker-target">{active.fields.name ? ` · ${connectionTarget(active.fields)}` : ""}</span>
           {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
           {/* Where the pills yield to width, a short type word stays beside the
@@ -1427,7 +1452,7 @@ export function ConnectionPicker({
                 password: id === active.id ? active.password : "" }).catch(() => {});
             }} options={[
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),
-              ...profiles.map((p): [string, string] => [p.id, p.name]),
+              ...profiles.map((p): [string, string] => [p.id, p.group ? `${p.name} (${p.group})` : p.name]),
             ]} />
           </label>
           {hasConnection && <>

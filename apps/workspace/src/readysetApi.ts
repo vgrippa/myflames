@@ -1,7 +1,7 @@
 // HTTP client and types for the Readyset place (myflames/readyset.py,
 // docs/schemas/readyset-1.0.json). Types only for main.tsx besides small
 // navigation helpers, so ReadysetPlace stays in its lazy chunk.
-import { api, type Connection } from "./api";
+import { api, type Connection, type ConnectionGroup } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
 
@@ -317,6 +317,7 @@ export type ReadysetReport = {
   connections: ReadysetClientConnection[];
   upstreams: ReadysetUpstream[];
   topology: ReadysetTopology | null;
+  connection_group?: ConnectionGroup | null;
   fingerprints: Record<string, string | null>;
   actions: ReadysetAction[];
   notes: string[];
