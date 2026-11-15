@@ -1690,9 +1690,10 @@ Local `audit purge` has its separate confirmation contract.
   (`_stored_fingerprint`) are unchanged; if the store becomes unreadable, the
   current or target profile is deleted, or its endpoint, `group` or saved
   password changes in flight, `ProfileReadError` stops the rest of that probe
-  before the client is run and the member is reported in `connection_group.read`
-  as `not_reached` (while an attempt that already started a login,
-  `conn._group_login_started`, keeps its attempt slot). In the
+  before the client is run. The member is reported in `connection_group.read`
+  as `not_reached` when the refusal comes before any login, and as `failed`
+  when an earlier statement of the probe already logged in
+  (`conn._group_login_started`; that attempt keeps its slot). In the
   CLI, `cmd_replication` and `cmd_readyset` resolve `--profile` through
   `store.find_profile`, build `connection` from the active `conn` endpoint plus
   `profile_id`, and pass `request_profiles(store, connection)`,

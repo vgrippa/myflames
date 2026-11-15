@@ -1,0 +1,84 @@
+{
+  "version": "3.4.3",
+  "items": [
+    {
+      "entry": "Adds connection groups",
+      "section": "New features",
+      "needs": ["tests", "live", "layout", "reviews"],
+      "tests": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "command": "./run-tests.sh", "result": "Ran 7235 tests in 545.456s, OK (skipped=17)"},
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "command": "node apps/workspace/test/{topology-groups,cluster,connections,replication,proxysql,readyset,settings-page,shell-layout,navigation}.mjs after npm run build", "result": "9 of 9 browser suites pass"}
+      ],
+      "live": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "driver": "throwaway HOME and store; myflames.ui.api_response for /api/live/cluster and /api/live/replication (local live343.py)", "servers": ["MySQL 8.4.13 InnoDB Cluster mfcluster, 3 members (scripts/cluster-matrix.sh)"], "tools": ["MySQL Router 8.4.10"],
+         "checks": [
+           {"action": "Cluster read on cluster-ic-3 with no group", "outcome": "connection_group.read empty, no saved connection contacted, suggested_name mfcluster"},
+           {"action": "Cluster read on cluster-ic-1 in group mf-ic", "outcome": "read cluster-ic-2 (read) and the in-group decoy (failed); cluster-ic-3 suggested with evidence same_group_replication_group, found without logging in"},
+           {"action": "Replication read on cluster-ic-1 in group mf-ic", "outcome": "group members only; no SQL text in notes; no topology_identity in any report"}
+         ]}
+      ],
+      "layout": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "view": "Cluster: connection group bar", "looked_at": true,
+         "shots": [
+           {"width": 1440, "theme": "light", "file": "local/release-3.4.3/shots/topology-group-bar-1440-light.png", "sha256": "553636b53f17ddc973e5d779b8d700c3139c1d06c18432b36055f67cdf949fa6"},
+           {"width": 1440, "theme": "dark", "file": "local/release-3.4.3/shots/topology-group-bar-1440-dark.png", "sha256": "e46832492ef37a94d7e4a76493195552dd783d017f324e6a0411cfe4b445b959"},
+           {"width": 720, "theme": "light", "file": "local/release-3.4.3/shots/topology-group-bar-720-light.png", "sha256": "a68959cf38149bd285513b7547b31b7c6c2ad1028b1a518cc40278085d2d2d0e"},
+           {"width": 720, "theme": "dark", "file": "local/release-3.4.3/shots/topology-group-bar-720-dark.png", "sha256": "cdf2f47bd238f365d586636c4a649dd913732196103ff458ab538386f23ffc76"}
+         ]},
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "view": "Cluster: review topology connections sheet", "looked_at": true,
+         "shots": [
+           {"width": 1440, "theme": "light", "file": "local/release-3.4.3/shots/topology-group-sheet-1440-light.png", "sha256": "e81dbf1f6f604041f171db331ff3ab506b3e8bc69b78a0f7cf910c1d4a146630"},
+           {"width": 1440, "theme": "dark", "file": "local/release-3.4.3/shots/topology-group-sheet-1440-dark.png", "sha256": "9ba9ef7896135a73bd6275cc6f4b264a6d282d15971a0c52c6020b531be33522"},
+           {"width": 720, "theme": "light", "file": "local/release-3.4.3/shots/topology-group-sheet-720-light.png", "sha256": "17884d2a015ab4607d9bf9a75fd01d6bc0fc3727186d9344f45f69167ca8190d"},
+           {"width": 720, "theme": "dark", "file": "local/release-3.4.3/shots/topology-group-sheet-720-dark.png", "sha256": "ea9ef0cf6ef33665ffaf71e5a25036875fb8bfd555451966321d1f850fbe1fde"}
+         ]}
+      ],
+      "reviews": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "security-reviewer (Claude Fable 5.1, effort max)", "verdict": "ship"},
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "Codex gpt-6.1-sol review gate (effort max)", "verdict": "ship"},
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "mysql-correctness-reviewer (Claude Fable 5.1, effort max)", "verdict": "0 wrong claims; residual: a Replication or Cluster read opened on a ProxySQL or Readyset MySQL port records the backend's identity for that saved connection (suggestions only), planned for the next release"}
+      ]
+    },
+    {
+      "entry": "Fixed an issue where Cluster, Replication, ProxySQL and Readyset logged in with saved passwords",
+      "section": "Bug fixes",
+      "needs": ["tests", "live", "reviews"],
+      "tests": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "command": "./run-tests.sh (test/test_connection_groups.py: consent, abuse cases, per-login re-check)", "result": "Ran 7235 tests in 545.456s, OK (skipped=17)"}
+      ],
+      "live": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "driver": "TCP decoy listeners stand in for saved connections: vox-proxy (production, no group) and decoy-in (in the group); local live343.py, live343_rs.py, cli343.py", "servers": ["MySQL 8.4.13 InnoDB Cluster, 3 members", "MySQL 8.4.13 primary and GTID replica (scripts/readyset-matrix.sh)"], "tools": ["MySQL Router 8.4.10", "ProxySQL 3.0.11", "Readyset stable-261022"],
+         "checks": [
+           {"action": "3.4.2 baseline, Cluster and Replication reads", "outcome": "3 login attempts on vox-proxy (the bug reproduced)"},
+           {"action": "Cluster and Replication reads, InnoDB Cluster lab, group mf-ic", "outcome": "0 attempts on vox-proxy; group members read"},
+           {"action": "Replication, ProxySQL, Readyset SQL and Admin reads, group rs-lab", "outcome": "0 attempts on vox-proxy; primary, replica, Readyset and ProxySQL group members read in 4 of 4 reads"},
+           {"action": "Same four reads with no groups", "outcome": "0 attempts on any saved connection; connection_group.read empty in 4 of 4"},
+           {"action": "Deprecated CLI replication --profile and readyset --profile inside a group", "outcome": "0 attempts on vox-proxy; group members only"}
+         ]}
+      ],
+      "reviews": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "security-reviewer (Claude Fable 5.1, effort max)", "verdict": "ship; consent re-checked before every client login, fails closed"},
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "Codex gpt-6.1-sol review gate (effort max)", "verdict": "ship"}
+      ]
+    },
+    {
+      "entry": "Fixed an issue where Cluster and Replication never detected ProxySQL or Readyset clients",
+      "section": "Bug fixes",
+      "needs": ["tests", "live", "reviews"],
+      "tests": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "command": "./run-tests.sh", "result": "Ran 7235 tests in 545.456s, OK (skipped=17)"}
+      ],
+      "live": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "driver": "local footprint.py: /api/live/cluster and /api/live/replication on the open connection only", "servers": ["MySQL 8.4.13 primary and replica (scripts/readyset-matrix.sh)"], "tools": ["ProxySQL 3.0.11", "Readyset stable-261022"],
+         "checks": [
+           {"action": "Cluster and Replication reads on the primary", "outcome": "known true; ProxySQL monitor clients and Readyset READYSET_QUERY_SAMPLER and READYSET_HEALTH_MONITOR connections detected"},
+           {"action": "Replication read on the replica", "outcome": "ProxySQL monitor clients only (Readyset connects to the primary)"},
+           {"action": "Same reads on 3.4.2", "outcome": "nothing detected: the old join on THREAD_ID always failed"}
+         ]}
+      ],
+      "reviews": [
+        {"commit": "86c961afd015868eb80d976caeb467ddf822cc94", "reviewer": "mysql-correctness-reviewer (Claude Fable 5.1, effort max)", "verdict": "session_connect_attrs has PROCESSLIST_ID and no THREAD_ID in MySQL 5.7 to 9.7 and MariaDB 10.11 and 11.4; ProxySQL and Readyset program names verified in their sources"}
+      ]
+    }
+  ]
+}

@@ -248,7 +248,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 ## Next
 
-- **Next release**: every Cluster action visible, disabled with the reason, the missing privilege and its GRANT, and MySQL Shell downloaded on demand.
+- **Next release**: every Cluster action visible, disabled with the reason, the missing privilege and its GRANT, and MySQL Shell downloaded on demand. Connection groups: a Replication or Cluster read opened directly on a ProxySQL or Readyset MySQL port records the backend's identity for that saved connection (both proxies forward the identity query), so its group suggestions describe the backend; record no identity for proxy endpoints.
 - **Workspace follow-ups**: richer optimizer-trace summaries, and a verified update channel for the signed desktop builds. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
   Broader SQL editing conveniences shipped: the Query editor is CodeMirror 6,
   with several cursors, immediate local and cached suggestions for the server's own keywords per release, background catalog refreshes,
