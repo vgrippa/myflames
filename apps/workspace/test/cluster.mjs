@@ -24,7 +24,8 @@ for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two
   "ic-8.4-member-offline", "ic-8.4-local-offline", "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone",
   "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
   "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover", "result-switchover",
-  "progress-sending"]) R[name] = await load(`cluster-${name}.json`);
+  "progress-sending", "ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
+  "ic-8.4-clusterset-invalidated"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
@@ -359,6 +360,45 @@ try {
   assert.match(quorumTile.text, /Quorum.*Not visible.*Failures tolerated unknown/);
   assert.match(quorumTile.title, /^A read replica is not a group member/);
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
+
+  // InnoDB ClusterSet: a band above the group, the primary cluster first,
+  // an arrow to each replica cluster, the other clusters' instances from the
+  // shared metadata (never drawn as members), and the state as words.
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  await page.waitForSelector(`${view} .clusterset-band`, { visible: true });
+  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /ClusterSet mfcs/);
+  const boxes = await page.$$eval(`${view} .clusterset-cluster`, (els) => els.map((e) => ({
+    name: e.dataset.cluster, local: e.classList.contains("is-local"), text: e.textContent.replace(/\s+/g, " ") })));
+  assert.deepEqual(boxes.map((b) => [b.name, b.local]), [["mfcluster", true], ["drcluster", false]]);
+  assert.match(boxes[0].text, /Primary cluster.*This cluster/);
+  assert.match(boxes[1].text, /Replica cluster.*mf-dr-1:3306.*mf-dr-2:3306.*mf-dr-3:3306/);
+  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3, "other clusters are not members");
+  assert.match(await h.text(`${view} .clusterset-link-label`), /^clusterset_replication$/);
+  // The ClusterSet actions are on the connected member (MySQL Shell installed).
+  assert.ok(R["ic-8.4-clusterset-primary"].members.find((m) => m.local).actions.some((a) => a.id === "set_primary_cluster:drcluster"));
+  await shot("cluster-clusterset-primary-1440.png");
+  // From a replica cluster: its copy of the metadata, the channel on the arrow, the source marked.
+  await refreshTo(R["ic-8.4-clusterset-replica"]);
+  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /metadata copy, may be behind/);
+  const link = await page.$eval(`${view} .clusterset-link`, (e) => ({ cls: e.className, text: e.textContent }));
+  assert.match(link.cls, /is-ok/);
+  assert.match(link.text, /receiver ON · applier ON/);
+  assert.match(await h.text(`${view} .clusterset-tag.is-source`), /Channel source/);
+  await refreshTo(R["ic-8.4-clusterset-replica-channel-off"]);
+  const off = await page.$eval(`${view} .clusterset-link`, (e) => ({ cls: e.className, text: e.textContent,
+    style: getComputedStyle(e.querySelector(".clusterset-arrow")).borderTopStyle }));
+  assert.match(off.cls, /is-problem/);
+  assert.match(off.text, /receiver OFF.*error 2003/);
+  assert.equal(off.style, "dashed", "a stopped channel is a broken arrow, not color alone");
+  // An invalidated replica cluster: the word, a dashed edge and a broken arrow.
+  await refreshTo(R["ic-8.4-clusterset-invalidated"]);
+  const dr = await page.$eval(`${view} .clusterset-cluster[data-cluster="drcluster"]`, (e) => ({
+    cls: e.className, text: e.textContent, border: getComputedStyle(e).borderTopStyle }));
+  assert.match(dr.cls, /is-invalidated/);
+  assert.match(dr.text, /Invalidated/);
+  assert.equal(dr.border, "dashed");
+  assert.match(await h.text(`${view} .clusterset-link-label`), /Invalidated · not replicating/);
+  await shot("cluster-clusterset-invalidated-1440.png");
 
   // Multi-primary Group Replication without metadata: every member PRIMARY, no Routers tab.
   await refreshTo(R["gr-8.4-multi-primary"]);

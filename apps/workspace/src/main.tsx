@@ -2138,7 +2138,7 @@ function App() {
     { id: "action-new-connection", label: "New connection", group: "Actions", icon: "plus", keywords: "add connection server host profile new", run: newConnection },
     // Settings is a page (the gear, ⌘,): the palette's one Settings action
     // opens it, at the Query editor section when that is what was asked for.
-    { id: "action-settings", label: "Settings", group: "Actions", icon: "settings", keywords: "settings preferences appearance theme dark light query editor startup restore updates news client tools about", run: () => openSettings(/editor/.test(paletteQuery.toLowerCase()) ? "editor" : "appearance") },
+    { id: "action-settings", label: "Settings", group: "Actions", icon: "settings", keywords: "settings preferences appearance theme dark light query editor startup restore updates news client tools about zoom", run: () => openSettings(/editor/.test(paletteQuery.toLowerCase()) ? "editor" : "appearance") },
     // Query editor actions on the current tab (QueryLabHandle).
     { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
     { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },

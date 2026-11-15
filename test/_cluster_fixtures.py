@@ -78,11 +78,29 @@ def _version(data):
     return ""
 
 
+#: The InnoDB ClusterSet read (cluster.py _read_clusterset) came after the
+#: recordings. None of the recorded clusters is in a ClusterSet, and the
+#: metadata view lists only clusters that are (v2_cs_members: WHERE
+#: c.clusterset_id IS NOT NULL, Sh/modules/adminapi/common/metadata/
+#: metadata-model-2.1.0.sql:606-631), so its answer there is no rows. Supplied
+#: here, never written into a recording.
+CLUSTERSET_SQL = ("/*myflames:cluster*/ SELECT m.clusterset_id, m.cluster_id, m.cluster_name, m.member_role, "
+                  "m.invalidated, s.domain_name FROM mysql_innodb_cluster_metadata.v2_cs_members m JOIN "
+                  "mysql_innodb_cluster_metadata.v2_cs_clustersets s ON s.clusterset_id = m.clusterset_id")
+
+
+def _with_clusterset_answer(calls):
+    if any(c[0] == CLUSTERSET_SQL for c in calls) or \
+            not any("mysql_innodb_cluster_metadata.v2_gr_clusters" in c[0] for c in calls):
+        return calls
+    return list(calls) + [[CLUSTERSET_SQL, ""]]
+
+
 def recorded(name, edit=None):
     """(ReplayConn, data) for a recorded fixture; *edit(sql, text, n)* may
     change an answer."""
     data = load(name)
-    return ReplayConn(data["calls"], edit=edit, version=_version(data)), data
+    return ReplayConn(_with_clusterset_answer(data["calls"]), edit=edit, version=_version(data)), data
 
 
 # ---- editing recorded answers --------------------------------------------------
@@ -373,6 +391,7 @@ def _ic(members, stats, instances=None, routers=None, variables=None, version=(2
             "mysql_innodb_cluster_metadata.v2_gr_clusters": [["cid-1", "mfcluster", "pm", GROUP_NAME]],
             "mysql_innodb_cluster_metadata.v2_instances": instances if instances is not None else _instances(),
             "mysql_innodb_cluster_metadata.v2_routers": routers if routers is not None else ROUTERS,
+            "mysql_innodb_cluster_metadata.v2_cs_members": [],
         },
     }
 
@@ -507,6 +526,58 @@ SCENARIOS = {
                                        "need (at least one of) the PROCESS privilege(s) for this operation"),
     },
 }
+
+
+# ---- InnoDB ClusterSet (synthetic) -----------------------------------------------------
+#
+# Rows of v2_cs_members joined to v2_cs_clustersets (cluster.py
+# _MD_CLUSTERSET_SQL): clusterset_id, cluster_id, cluster_name, member_role
+# (PRIMARY or REPLICA, Sh/modules/adminapi/common/metadata/
+# metadata-model-2.1.0.sql:606-631), invalidated (0 or 1: csm.view_id IS
+# NULL), domain_name. This member is mf-ic-1, the PRIMARY of its group.
+
+def _cs(*clusters):
+    return [["cs-1", cid, name, role, "1" if invalid else "0", "mfcs"] for cid, name, role, invalid in clusters]
+
+
+def _cs_instances(cid, prefix, start):
+    """Another cluster's three instances in the shared metadata (v2_instances)."""
+    return [[start + i, cid, "%s-%d:3306" % (prefix, i + 1), "%08d-2222-11f0-8a00-0242ac130002" % (start + i),
+             "%s-%d:3306" % (prefix, i + 1), "%s-%d:3306" % (prefix, i + 1), "group-member"] for i in range(3)]
+
+
+def _clusterset(rows, extra=None):
+    instances = _instances() + _cs_instances("cid-0", "mf-main", 20) + _cs_instances("cid-2", "mf-dr", 30)
+    scenario = _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)], version=(2, 2, 0),
+                   instances=instances)
+    scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = rows
+    if extra:
+        scenario["extra"] = extra
+    return scenario
+
+
+_CS_CHANNEL_ON = {"performance_schema.replication_connection_status": [["ON", "0", ""]],
+                  "performance_schema.replication_applier_status": [["ON"]],
+                  "performance_schema.replication_connection_configuration": [["mf-main-1", "3306"]]}
+
+SCENARIOS.update({
+    "ic-8.4-clusterset-primary": _clusterset(_cs(("cid-1", "mfcluster", "PRIMARY", False),
+                                                 ("cid-2", "drcluster", "REPLICA", False))),
+    "ic-8.4-clusterset-replica": _clusterset(_cs(("cid-0", "maincluster", "PRIMARY", False),
+                                                 ("cid-1", "mfcluster", "REPLICA", False)), _CS_CHANNEL_ON),
+    "ic-8.4-clusterset-replica-channel-off": _clusterset(
+        _cs(("cid-0", "maincluster", "PRIMARY", False), ("cid-1", "mfcluster", "REPLICA", False)),
+        {"performance_schema.replication_connection_status":
+         [["OFF", "2003", "error connecting to source 'mf-main-1:3306'"]],
+         "performance_schema.replication_applier_status": [["ON"]],
+         "performance_schema.replication_connection_configuration": [["mf-main-1", "3306"]]}),
+    # After a forcePrimaryCluster to drcluster, seen from the new primary.
+    "ic-8.4-clusterset-invalidated": _clusterset(_cs(("cid-1", "mfcluster", "PRIMARY", False),
+                                                     ("cid-2", "drcluster", "REPLICA", True))),
+    # This cluster itself invalidated, in its own copy of the metadata.
+    "ic-8.4-clusterset-local-invalidated": _clusterset(
+        _cs(("cid-0", "maincluster", "PRIMARY", False), ("cid-1", "mfcluster", "REPLICA", True)), _CS_CHANNEL_ON),
+})
 
 
 class ScenarioConn(object):

@@ -972,6 +972,19 @@ class TestEditorSettingsRoutes(unittest.TestCase):
 class TestUiPreferencesRoutes(unittest.TestCase):
     setUp = TestEditorSettingsRoutes.setUp
 
+    def test_diagram_zoom_speed_round_trip_and_validation(self):
+        from myflames.workspace_store import WorkspaceStore
+        self.assertEqual(api_response('/api/settings/ui', {}, self.workspace)['preferences']['diagram_zoom_speed'], 100)
+        for speed in (25, 50, 100, 150, 200):
+            result = api_response('/api/settings/ui', {'set': {'diagram_zoom_speed': speed}}, self.workspace)
+            self.assertEqual(result['preferences']['diagram_zoom_speed'], speed)
+            self.workspace.store = WorkspaceStore(self.workspace.store.path)
+            self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+        for value in (0, 300, '100', True, False, 100.0, None, [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                api_response('/api/settings/ui', {'set': {'diagram_zoom_speed': value}}, self.workspace)
+            self.assertEqual(api_response('/api/settings/ui', {}, self.workspace), result)
+
     def test_ui_read_and_round_trip(self):
         from myflames.workspace_store import UI_PREFERENCE_DEFAULTS, WorkspaceStore
         expected = {'schema_version': 'ui-preferences-1.0',
@@ -1018,9 +1031,10 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         from myflames.ui import WorkspaceHandler
         self.workspace.token = 'test-token'
         for payload in ({'set': None}, {'set': {'theme': 'evil'}}, {'set': {'sidebar_width': True}},
+                        *({'set': {'diagram_zoom_speed': value}} for value in (0, 300, '100', True)),
                         {'set': {'health_auto_production': 5}}, {'unknown': True},
                         *({'set': {key: value}} for key in ('theme', 'sidebar_width', 'server_nav_collapsed', 'health_auto_production', 'health_auto_development',
-                                                                    'inspector_width', 'explain_format', 'files_show_hidden', 'files_transfers_open')
+                                                                    'inspector_width', 'explain_format', 'files_show_hidden', 'files_transfers_open', 'diagram_zoom_speed')
                           for value in ({}, [], 10**400, 0.5)),
                         {'set': {'server_nav_collapsed': 1}}):
             handler = WorkspaceHandler.__new__(WorkspaceHandler)
@@ -1270,6 +1284,25 @@ class TestWorkspaceHTTP(unittest.TestCase):
         status, body, _ = self.request('POST', '/api/settings/ui', {})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)['schema_version'], 'ui-preferences-1.0')
+
+    def test_diagram_zoom_speed_http_validation_and_persistence(self):
+        try:
+            for speed in (25, 50, 100, 150, 200):
+                with self.subTest(speed=speed):
+                    status, body, _ = self.request('POST', '/api/settings/ui', {'set': {'diagram_zoom_speed': speed}})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)['preferences']['diagram_zoom_speed'], speed)
+                    status, body, _ = self.request('POST', '/api/settings/ui', {})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)['preferences']['diagram_zoom_speed'], speed)
+                    self.assertEqual(json.loads(body)['defaults']['diagram_zoom_speed'], 100)
+            for value in (0, 300, '100', True, False, 100.0, None, [], {}):
+                with self.subTest(value=value):
+                    status, _, _ = self.request('POST', '/api/settings/ui', {'set': {'diagram_zoom_speed': value}})
+                    self.assertEqual(status, 400)
+                    self.assertEqual(self.server.store.ui_preferences()['diagram_zoom_speed'], 200)
+        finally:
+            self.server.store.set_ui_preferences({'diagram_zoom_speed': 100})
 
     def test_index_injects_only_valid_stored_theme(self):
         from myflames.workspace_store import UI_THEME_IDS

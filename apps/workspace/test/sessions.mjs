@@ -16,6 +16,8 @@ const instruments = await load("instruments-mysql-8.4.json");
 const noProcess = await load("sessions-mysql-8.4-noproc.json");
 // Synthetic identities supplement the older live recordings without rewriting them.
 for (const report of [active, all, noProcess]) report.server_identity = { server_uuid: "sessions-server-uuid" };
+// These recordings predate the additive flag; the scenarios read INNODB_TRX.
+active.trx_checked = all.trx_checked = true;
 mariadb.server_identity = { server_id: "1", hostname: "sessions-mariadb", version: mariadb.server_version };
 const reportConnectionKey = (c) => JSON.stringify([
   c.profile_id || "", c.host || "", Number(c.port) || 0, c.user || "", c.ssl_mode || "", c.ssl_ca || "",
@@ -39,8 +41,19 @@ const plan = {
   },
 };
 const kill = { status: 200, body: { schema_version: "kill-1.0", status: "killed", connection_id: 93, mode: "connection",
-  statement: "KILL CONNECTION 93", verified: ["user", "host", "not this session", "transaction"], after: { present: false },
-  message: "Ended connection 93. Its open transaction was rolled back and its locks were released." } };
+  statement: "KILL CONNECTION 93", verified: ["user", "host", "not this session", "transaction"],
+  message: "Ended connection 93. Its open transaction was rolled back (1 row changed) and its locks were released.",
+  target: { connection_id: 93, user: "root", host: "172.17.0.1:60204", command: "Sleep", state: null, info: null, time_s: 1250,
+    trx: { trx_id: "21536", state: "RUNNING", started: "2026-10-14 18:00:53", age_s: 1250, rows_locked: 1, rows_modified: 1 },
+    trx_checked: true },
+  after: { present: false, trx_checked: true, trx_started: null, rows_locked: null, same_trx: null } } };
+// For the kill outcome: 93 blocks 94; the re-read after the kill finds 94 free.
+const killable = structuredClone(active);
+killable.sessions.find((s) => s.id === 93).blocks_ids = [94];
+killable.sessions.find((s) => s.id === 94).blocked_by = [93];
+const killFreed = structuredClone(killable);
+killFreed.sessions = killFreed.sessions.filter(s => s.id !== 93);
+Object.assign(killFreed.sessions.find((s) => s.id === 94), { blocked_by: [], lock_wait: null, is_locked: false, lock_status: null });
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/sessions", "sessions", {
@@ -50,7 +63,7 @@ const h = await open("/api/live/sessions", "sessions", {
   "/api/live/instruments": { status: 200, body: instruments },
   // A cancelled Kill is recorded in the audit trail as declined.
   "/api/audit/declined": { status: 200, body: { audit_id: "a1", status: "declined" } },
-}, { list: "docked" });
+}, { list: "docked", stampReport: "taken_at" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: active };
 const view = ".server-view[data-view=sessions]";
@@ -281,6 +294,10 @@ try {
   // Kill: the confirmation sheet starts on Cancel; Escape and Cancel send
   // nothing and are recorded as declined; confirm sends the fingerprint.
   const declined = () => state.other.filter((o) => o.path === "/api/audit/declined").map((o) => o.body);
+  // 93 blocks 94 in this read, so the Kill sheet and the outcome can name it.
+  state.fallback = { status: 200, body: killable };
+  await h.refresh();
+  await h.idle(view);
   await h.select(row(93));
   await page.click('.view-inspector [aria-label="Kill: connection 93"]');
   await page.waitForSelector("dialog.kill-dialog[open]");
@@ -291,6 +308,10 @@ try {
   assert.match(sheet, /User\s*root@172\.17\.0\.1:60204 · mf/);
   assert.match(sheet, /State\s*Idle in transaction for \d+ min \d+ s/);
   assert.match(sheet, /KILL QUERY would not help/);
+  // The Kill connection consequence box, with the session that keeps waiting.
+  assert.match(sheet, /Kill connection 93 rolls back its open transaction\./);
+  assert.match(sheet, /Connection 93 keeps its locks until it ends, so connection 94 keeps waiting until then\./);
+  assert.match(sheet, /The application loses its connection and gets an error\./);
   assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
@@ -316,6 +337,7 @@ try {
   const reads = state.seen.length;
   await page.click('.view-inspector [aria-label="Kill: connection 93"]');
   await page.waitForSelector("dialog.kill-dialog[open]");
+  state.queue.push({ status: 200, body: killFreed });
   await page.click(".sheet-actions .danger-solid");
   await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
   const sent = state.other.find((o) => o.path === "/api/live/kill").body;
@@ -325,16 +347,32 @@ try {
       connection_identity: reportConnectionKey(sent.connection), server_identity: all.server_identity } });
   assert.equal(state.seen.length, reads + 1, "the list refreshes after the kill");
   assert.equal(declined().length, 2, "a confirmed Kill is not recorded as declined");
-  assert.match(await text(`${view} .kill-result`), /^Done\. Ended connection 93/);
+  const killNoteText = await text(`${view} .kill-result`);
+  assert.match(killNoteText, /^Done\. Ended connection 93\. Its open transaction was rolled back \(1 row changed\) and its locks were released\./);
+  // The outcome comes from the fresh rows' blocked_by; the note carries the
+  // waiter is known, but Active cannot prove the missing target disconnected.
+  assert.match(killNoteText, /Connection 94 no longer waits\./);
+  assert.equal(await page.$(`${view} .kill-result .kill-state.ok`), null);
+  assert.ok(await page.$(`${view} .kill-result.killed.held`));
+  assert.equal(await text(`${view} .kill-result .kill-update`), "Checked again: this list cannot show whether its transaction is still open.");
+  assert.match(await text(`${view} .kill-result .kill-evidence`), /Transactionopen since 2026-10-14 18:00:53 → unknown/);
   await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
 
   // The row menu (⋯): Show plan when the statement can be explained, and
   // Kill, which opens the same sheet. With the keyboard: the sheet starts on
   // Cancel, Escape sends nothing (recorded as declined) and focus returns to ⋯.
+  // Connection 93 ended with that Kill; read the list that still has it (its
+  // selection reopens the details, so go back to the list afterwards).
+  state.fallback = { status: 200, body: killable };
+  await h.refresh();
+  await h.idle(view);
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   const more = (id) => `${row(id)} button[aria-label="Actions for connection ${id}"]`;
   const menuItems = () => page.$$eval('.popover[role=menu] [role=menuitem]', (els) => els.map((e) => e.textContent.trim()));
+  // The re-read list may restore its scroll: bring the row clear of the top bar.
+  await page.waitForSelector(more(100), { visible: true });
+  await page.$eval(more(100), (e) => e.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
   await page.click(more(100));
   await page.waitForSelector('.popover[role=menu]');
   assert.deepEqual(await menuItems(), ["Show plan", "Kill…"]);
@@ -427,6 +465,142 @@ try {
   assert.equal(sentKill.length, killsBefore + 1);
   assert.deepEqual([sentKill.at(-1).body.connection_id, sentKill.at(-1).body.mode, sentKill.at(-1).body.confirmed], [93, "connection", true]);
   await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+
+  // A minimum-duration filter hides the waiter without proving release.
+  state.fallback = { status: 200, body: killable };
+  await h.refresh();
+  await h.idle(view);
+  // The filter lives in the list toolbar, which the full-width details hide:
+  // set it first, then open connection 93.
+  await page.locator(`${view} input[aria-label="Running at least (seconds)"]`).fill("60");
+  await h.idle(view);
+  await h.select(row(93));
+  await page.click('.view-inspector [aria-label="Kill: connection 93"]');
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  const hiddenWaiter = structuredClone(killFreed);
+  hiddenWaiter.sessions = hiddenWaiter.sessions.filter(s => s.id !== 94);
+  hiddenWaiter.filters.min_seconds = 60;
+  delete hiddenWaiter.blocking_edges;
+  state.fallback = { status: 200, body: hiddenWaiter };
+  await page.click(".sheet-actions .danger-solid");
+  await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
+  assert.match(await text(`${view} .kill-result`), /Connection 94: this read cannot show whether it still waits\./);
+  assert.equal(await page.$(`${view} .kill-result .kill-state.ok`), null, "a hidden waiter never turns the note green");
+  assert.equal(await page.$(`${view} .kill-result li.free`), null, "an unknown waiter is not styled as released");
+  await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+  await page.locator(`${view} input[aria-label="Running at least (seconds)"]`).fill("0");
+
+  // KILL CONNECTION still rolling back: amber until a timed follow-up read
+  // finds the connection gone and its waiter free, then the green state line.
+  state.fallback = { status: 200, body: killable };
+  await h.refresh();
+  await h.idle(view);
+  await h.select(row(93));
+  await page.click('.view-inspector [aria-label="Kill: connection 93"]');
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  const completedKill = kill.body;
+  kill.body = { ...structuredClone(completedKill),
+    message: "Connection 93 is ending: it is rolling back its transaction (about 120 changes left to undo) and keeps its locks until the rollback finishes.",
+    after: { present: true, command: "Killed", state: "Killed", statement: null,
+      trx_state: "ROLLING BACK", rows_modified: 120, trx_checked: true,
+      trx_started: "2026-10-14 18:00:53", rows_locked: 1, same_trx: true, trx_survived: null } };
+  const rollingBack = structuredClone(killable);
+  const rollingSession = rollingBack.sessions.find((s) => s.id === 93);
+  Object.assign(rollingSession, { command: "Killed", state: "Rolling back" });
+  Object.assign(rollingSession.trx, { state: "ROLLING BACK", rows_modified: 120 });
+  state.fallback = { status: 200, body: rollingBack };
+  await page.click(".sheet-actions .danger-solid");
+  await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
+  assert.equal(await text(`${view} .kill-result .kill-state.warn`), "Rolling back: about 120 changes left to undo.");
+  assert.match(await text(`${view} .kill-result`), /Connection 94 still waits/);
+  rollingBack.filters.active_only = false;
+  // The scope switch is in the list toolbar: leave the details first.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+  await page.click(`${view} .segmented button[data-value=all]`);
+  await h.idle(view);
+  const readsAfterScopeChange = state.seen.length;
+  const goneAndFreed = structuredClone(killFreed);
+  goneAndFreed.sessions = goneAndFreed.sessions.filter((s) => s.id !== 93);
+  goneAndFreed.filters.active_only = false;
+  state.fallback = { status: 200, body: goneAndFreed };
+  // The kill was confirmed in the Active scope, which cannot settle it: no timed
+  // follow-ups ran, and the note keeps Refresh. Refresh in the All scope settles it.
+  const readsBeforeFollow = state.seen.length;
+  await page.locator(`${view} .kill-result button ::-p-text(Refresh)`).click();
+  await page.waitForFunction(
+    () => document.querySelector('.server-view[data-view=sessions] .kill-result .kill-state.ok')?.textContent === "Lock released: connection 94 no longer waits.",
+    { timeout: 9000 },
+  );
+  assert.ok(state.seen.length > readsBeforeFollow, "the note's Refresh read the list again");
+  assert.ok(state.seen.slice(readsAfterScopeChange).every(read => read.active_only === false),
+    "later reads retain the newly selected All scope");
+  assert.equal(await text(`${view} .kill-result .kill-update`), "Checked again: the connection has ended.");
+  assert.match(await text(`${view} .kill-result .kill-evidence`), /Transactionopen since 2026-10-14 18:00:53 → rolled back/);
+  await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+  state.fallback = { status: 200, body: killable };
+  await page.click(`${view} .segmented button[data-value=active]`);
+  await h.idle(view);
+  // Dismiss while the FIRST post-kill report is held, before followKill exists.
+  state.fallback = { status: 200, body: killable };
+  await h.refresh();
+  await h.idle(view);
+  await h.select(row(93));
+  await page.click('.view-inspector [aria-label="Kill: connection 93"]');
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  let releaseFirstReport;
+  const heldFirstReport = new Promise((resolve) => { releaseFirstReport = resolve; });
+  state.queue.push({ status: 200, body: rollingBack, wait: heldFirstReport });
+  state.fallback = { status: 200, body: rollingBack };
+  const firstReportStarted = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/live/sessions");
+  await page.click(".sheet-actions .danger-solid");
+  await firstReportStarted;
+  await page.waitForSelector(`${view} .kill-result[data-refreshing=true]`);
+  await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+  const readsAtDismiss = state.seen.length;
+  const firstReportAnswered = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/sessions");
+  releaseFirstReport();
+  await firstReportAnswered;
+  await pause(3000);
+  assert.equal(state.seen.length, readsAtDismiss, "Processlist dismiss during the first re-read prevents follow-up requests");
+  assert.equal(await page.$(`${view} .kill-result`), null, "the late answer cannot restore the dismissed note");
+  kill.body = completedKill;
+  state.fallback = { status: 200, body: killable };
+
+  // A vanished session may leave prepared XA locks; a Killed session with a
+  // checked, absent transaction must not get the rollback state line.
+  for (const prepared of [true, false]) {
+    state.fallback = { status: 200, body: killable };
+    await h.refresh();
+    await h.idle(view);
+    await h.select(row(93));
+    await page.click('.view-inspector [aria-label="Kill: connection 93"]');
+    await page.waitForSelector("dialog.kill-dialog[open]");
+    kill.body = { ...structuredClone(completedKill),
+      message: prepared
+        ? "Ended connection 93, but its transaction is still open as a prepared XA transaction (7 rows locked) and keeps its locks. Resolve it with XA RECOVER and then XA COMMIT or XA ROLLBACK."
+        : "Connection 93 is closing; it has no open transaction, so nothing is rolled back.",
+      after: { present: !prepared, command: prepared ? null : "Killed", statement: null,
+        trx_state: null, trx_checked: !prepared, trx_started: null, rows_modified: null,
+        rows_locked: prepared ? 7 : null, same_trx: null, trx_survived: prepared ? true : null } };
+    const next = structuredClone(prepared ? killable : goneAndFreed);
+    next.sessions = next.sessions.filter((s) => s.id !== 93);
+    state.fallback = { status: 200, body: next };
+    await page.click(".sheet-actions .danger-solid");
+    await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
+    if (prepared) {
+      assert.equal(await text(`${view} .kill-result .kill-state.warn`), "Prepared XA transaction and locks still open.");
+      assert.match(await text(`${view} .kill-result .kill-evidence`), /Transactionopen since 2026-10-14 18:00:53 → prepared XA still open/);
+      assert.match(await text(`${view} .kill-result .kill-evidence`), /Rows locked1 → 7/);
+    } else {
+      assert.match(await text(`${view} .kill-result`), /Connection 93 is closing; it has no open transaction, so nothing is rolled back\./);
+      assert.equal(await page.$(`${view} .kill-result .kill-state.warn`), null);
+      assert.equal(await text(`${view} .kill-result .kill-state.ok`), "Lock released: connection 94 no longer waits.");
+    }
+    await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+  }
+  kill.body = completedKill;
+  state.fallback = { status: 200, body: killable };
 
   // Show plan for a running statement opens it in Plans.
   await h.select(row(100));

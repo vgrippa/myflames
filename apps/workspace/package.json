@@ -25,7 +25,7 @@
     "test:session": "npm run build && node test/session.mjs",
     "test:charts": "node test/charts.mjs",
     "test:parity": "node test/parity.mjs",
-    "test:locks": "npm run build && node test/locks.mjs",
+    "test:locks": "node test/kill-reconcile-unit.mjs && npm run build && node test/locks.mjs",
     "test:health": "node test/health-watch-unit.mjs && npm run build && node test/health.mjs",
     "test:misestimates": "npm run build && node test/misestimates.mjs",
     "test:memory": "node test/memory-unit.mjs && npm run build && node test/memory.mjs",

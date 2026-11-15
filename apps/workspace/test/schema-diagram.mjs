@@ -14,6 +14,8 @@ const built=await build({root:workspace,configFile:false,publicDir:false,logLeve
   const code=`import React,{useState} from ${JSON.stringify(path.join(workspace,"node_modules/react/index.js"))};
     import {createRoot} from ${JSON.stringify(path.join(workspace,"node_modules/react-dom/client.js"))};
     import {SchemaDiagramView} from ${source("SchemaDiagram.tsx")};import * as helpers from ${source("schemaDiagramModel.ts")};
+    import {setUiPreference} from ${source("uiPreferences.ts")}; import {wheelZoomStep} from ${source("wheelZoom.ts")};
+    window.setDiagramZoomSpeed=value=>setUiPreference("diagram_zoom_speed",value); window.wheelZoomStep=wheelZoomStep;
     import {InspectorContext} from ${source("kit.tsx")};import ${source("style.css")};import ${source("kit.css")};import ${source("server.css")};
     window.diagramHelpers=helpers;
     function Fixture(){const [connection,setConnection]=useState({host:"",port:3306,user:"",database:"",ssl_mode:"DISABLED",type:"production"});
@@ -88,6 +90,76 @@ try{
  await click("Import diagram");await page.waitForFunction(()=>!document.querySelector("dialog[open]"));assert.equal(lastImport.format,"mermaid");
  assert.equal(requests("read").length,0);
 
+ // Native wheel events use distance, not a fixed multiplier. Several events
+ // in one frame share one update and use the last pointer as the anchor.
+ const close=(actual,expected,message,tolerance=2e-5)=>assert.ok(Math.abs(actual-expected)<tolerance,`${message}: ${actual} vs ${expected}`);
+ const setSpeed=speed=>page.evaluate(async speed=>{
+   await window.setDiagramZoomSpeed(speed);
+   await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+ },speed);
+ const wheel=async (events,mermaid=false)=>page.evaluate(async({events,mermaid})=>{
+   const canvas=document.querySelector(mermaid?".diagram-mermaid-preview":".diagram-canvas");
+   const world=canvas.querySelector(mermaid?".diagram-mermaid-world":".diagram-world");
+   const read=()=>{const m=new DOMMatrix(world.style.transform);return{zoom:m.a,x:m.e,y:m.f};};
+   const before=read(),rect=canvas.getBoundingClientRect(),canceled=[];
+   const raf=window.requestAnimationFrame; let frames=0;
+   window.requestAnimationFrame=callback=>{frames++;return raf.call(window,callback);};
+   let point;
+   try {
+     for (const data of events) {
+       point={x:data.x??173,y:data.y??119};
+       const event=new WheelEvent("wheel",{bubbles:true,cancelable:true,deltaY:0,...data,
+         clientX:rect.left+canvas.clientLeft+point.x,clientY:rect.top+canvas.clientTop+point.y});
+       canvas.dispatchEvent(event); canceled.push(event.defaultPrevented);
+     }
+   } finally {window.requestAnimationFrame=raf;}
+   await new Promise(raf);await new Promise(raf);
+   return{before,after:read(),point,canceled,frames,height:canvas.clientHeight};
+ },{events,mermaid});
+ const anchor=result=>{
+   const {before,after,point}=result;
+   close((point.x-before.x)/before.zoom,(point.x-after.x)/after.zoom,"pointer x is anchored",.003);
+   close((point.y-before.y)/before.zoom,(point.y-after.y)/after.zoom,"pointer y is anchored",.003);
+ };
+ await click("Fit");
+ let stepped=await wheel([{deltaY:40}]);
+ close(stepped.after.zoom/stepped.before.zoom,Math.exp(-.04),"pixel wheel");anchor(stepped);
+ assert.deepEqual(stepped.canceled,[true]);assert.equal(stepped.frames,1);
+ stepped=await wheel([{deltaY:-2,deltaMode:1}]);
+ close(stepped.after.zoom/stepped.before.zoom,Math.exp(.032),"16 pixels per line");anchor(stepped);
+ for (const deltaY of [-10000,10000]) {
+   stepped=await wheel([{deltaY}]);
+   close(stepped.after.zoom/stepped.before.zoom,Math.exp(-Math.sign(deltaY)*.1),"100 pixel cap");anchor(stepped);
+ }
+ stepped=await wheel([{deltaY:.05,deltaMode:2}]);
+ close(stepped.after.zoom/stepped.before.zoom,Math.exp(-Math.min(100,.05*stepped.height)*.001),"page uses visible height");
+ for (const data of [{deltaX:80},{deltaX:80,deltaY:20},{deltaY:0},{deltaY:.001}]) {
+   stepped=await wheel([data]);assert.deepEqual(stepped.after,stepped.before);assert.deepEqual(stepped.canceled,[false]);assert.equal(stepped.frames,0);
+ }
+ // Subscribed preferences change the existing listener's speed immediately.
+ const logs={};
+ for (const speed of [50,100,200]) {
+   await setSpeed(speed);
+   stepped=await wheel([{deltaY:30}]);
+   logs[speed]=Math.log(stepped.after.zoom/stepped.before.zoom);
+   close(logs[speed],-.03*speed/100,`stored speed ${speed}`);anchor(stepped);
+ }
+ close(logs[50],logs[100]/2,"Slow halves the logarithmic step");
+ close(logs[200],logs[100]*2,"Fastest doubles the logarithmic step");
+ await setSpeed(100);
+ stepped=await wheel([{deltaY:-10,x:50,y:70},{deltaY:-15,x:240,y:160,ctrlKey:true}]);
+ close(stepped.after.zoom/stepped.before.zoom,Math.exp(.025),"batched deltas including pinch");
+ assert.equal(stepped.frames,1,"one update for two events");anchor(stepped);
+ stepped=await wheel(Array.from({length:60},()=>({deltaY:-100})));
+ close(stepped.after.zoom,2,"maximum is 200%");anchor(stepped);
+ stepped=await wheel([{deltaY:-100}]);assert.deepEqual(stepped.after,stepped.before,"at the upper clamp the viewport stays put");
+ stepped=await wheel(Array.from({length:60},()=>({deltaY:100})));
+ close(stepped.after.zoom,.15,"minimum is 15%");anchor(stepped);
+ stepped=await wheel([{deltaY:100}]);assert.deepEqual(stepped.after,stepped.before,"at the lower clamp the viewport stays put");
+ // Non-finite deltas cannot poison the viewport (WheelEvent itself normalizes them).
+ assert.equal(await page.evaluate(()=>window.wheelZoomStep({deltaX:0,deltaY:NaN,deltaMode:0},100,600)),null);
+ await click("Fit");
+
  // Focused-table arrows move layout, shift changes step; exports preserve it.
  const header='[data-table-id="customers"]';await page.focus(header);const original=await page.evaluate(()=>window.diagramDocument.diagram.layout.positions.customers);
  await page.keyboard.press("ArrowRight");await page.keyboard.down("Shift");await page.keyboard.press("ArrowDown");await page.keyboard.up("Shift");
@@ -130,6 +202,18 @@ try{
  await page.click('.diagram-mermaid [aria-label="Zoom in"]');
  assert.ok(await page.$eval('[aria-label="Mermaid zoom"]',e=>parseInt(e.textContent))>zoom);
  await click("Fit");
+ // A trackpad gesture of forty half-pixel events is just 20 pixels total.
+ // The previous fixed 1.15 multiplier would shrink this to near the minimum.
+ const trackpad=await wheel(Array.from({length:40},()=>({deltaY:.5,ctrlKey:true})),true);
+ close(trackpad.after.zoom/trackpad.before.zoom,Math.exp(-.02),"Mermaid trackpad stays smooth");
+ assert.equal(trackpad.frames,1);assert.ok(trackpad.canceled.every(Boolean));anchor(trackpad);
+ const horizontalPreview=await wheel([{deltaX:50}],true);
+ assert.deepEqual(horizontalPreview.after,horizontalPreview.before);assert.deepEqual(horizontalPreview.canceled,[false]);
+ await setSpeed(200);
+ const fastPreview=await wheel([{deltaY:20}],true);
+ close(fastPreview.after.zoom/fastPreview.before.zoom,Math.exp(-.04),"Mermaid speed updates live");anchor(fastPreview);
+ await setSpeed(100);
+ await click("Fit");
  for(const theme of ["dark","light"]){
    const oldSvg=await page.$eval(".diagram-mermaid-preview svg",e=>e.id);
    await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);
@@ -157,6 +241,8 @@ try{
  mermaidText=null;
  await click("Diagram");await page.waitForSelector(".diagram-table");
  assert.deepEqual(await page.evaluate(()=>window.diagramDocument.diagram.layout.positions),beforeMermaid);
+ const remounted=await wheel([{deltaY:20}]);
+ close(remounted.after.zoom/remounted.before.zoom,Math.exp(-.02),"wheel reattaches after Mermaid");
  // JSON file reimport retains layout. File API limits are checked before parsing.
  const jsonFile=path.join(temp,"layout.json");await fs.writeFile(jsonFile,JSON.stringify(exported));
  await click("Import");const chooser=await page.waitForSelector('input[type="file"]');await chooser.uploadFile(jsonFile);await page.waitForFunction(()=>document.querySelector(".diagram-paste textarea").value.includes("schema-diagram-1.0"));
@@ -334,5 +420,5 @@ try{
  },model);
  assert.deepEqual(checks,{layoutSafe:true,rejected:true,unsafe:0,escaped:true,invalid:true,finite:true});assert.deepEqual(h.errors,[]);
  assert.ok(!state.other.some(r=>/\/(sql|editor|accounts)\//.test(r.path)||(r.path.startsWith("/api/live/")&&r.path!=="/api/live/schemas")),"imports and exports never invoke SQL execution or server writes");
- console.log("schema diagram: imports, exports, layout roundtrip, keyboard/pointer, fit, conceptual metadata, stale reads, hostile text, limits, dark/light and phone passed");
+ console.log("schema diagram: smooth wheel, anchors, caps, clamps, live speed, pinch, imports, exports, layout roundtrip, keyboard/pointer, fit, conceptual metadata, stale reads, hostile text, limits, dark/light and phone passed");
 }finally{if(h)await h.close();await fs.rm(temp,{recursive:true,force:true});}

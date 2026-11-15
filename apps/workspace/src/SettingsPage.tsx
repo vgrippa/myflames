@@ -11,7 +11,8 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent }
 import { AboutDialog } from "./About";
 import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
-import { Checkbox, SourceList } from "./kit";
+import { Checkbox, Select, SourceList } from "./kit";
+import { loadUiPreferences, setUiPreference, useUiPreferences } from "./uiPreferences";
 import { NewsSetting } from "./HomeNews";
 import { QueryEditorSettings } from "./QueryEditorSettings";
 import { AutoUpdateSetting, UpdateMenuItem } from "./UpdateBadge";
@@ -147,6 +148,24 @@ export function SettingsPage({
 }) {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [clientOpen, setClientOpen] = useState(false);
+  const preferences = useUiPreferences();
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [zoomError, setZoomError] = useState("");
+  const zoomRequest = useRef(0);
+  useEffect(() => {
+    let active = true;
+    void loadUiPreferences().then(() => { if (active) setPreferencesReady(true); }, () => {
+      if (active) setZoomError("Could not load diagram zoom speed. Reopen Settings to try again.");
+    });
+    return () => { active = false; zoomRequest.current++; };
+  }, []);
+  function saveZoomSpeed(value: string) {
+    const request = ++zoomRequest.current;
+    setZoomError("");
+    void setUiPreference("diagram_zoom_speed", Number(value)).catch(() => {
+      if (request === zoomRequest.current) setZoomError("Could not save diagram zoom speed. Try again.");
+    });
+  }
   const aboutButton = useRef<HTMLButtonElement>(null);
   const clientButton = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -233,6 +252,15 @@ export function SettingsPage({
                 ? "Off for this launch (--no-restore); the saved workspace is kept."
                 : "Off clears the saved workspace. Passwords are never saved in it."}
             </p>
+            <div className="settings-option-row settings-select-row">
+              <label htmlFor="diagram-zoom-speed">Diagram wheel zoom speed</label>
+              <Select id="diagram-zoom-speed" value={preferences.diagram_zoom_speed}
+                options={[[25, "Slowest"], [50, "Slow"], [100, "Normal"], [150, "Fast"], [200, "Fastest"]]}
+                disabled={!ready || !preferencesReady} onChange={saveZoomSpeed}
+                describedBy="diagram-zoom-speed-hint diagram-zoom-speed-error" />
+            </div>
+            <p className="hint" id="diagram-zoom-speed-hint">How far one mouse-wheel step zooms the Database diagram and the Mermaid preview.</p>
+            <p className={zoomError ? "hint error" : "visually-hidden"} id="diagram-zoom-speed-error" role="alert">{zoomError}</p>
             <div className="settings-option-row settings-action-row">
               <button type="button" className="button" disabled={!ready}
                 aria-haspopup="dialog" onClick={onStartFresh}>

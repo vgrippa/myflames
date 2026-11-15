@@ -121,6 +121,8 @@ export type ClusterReport = {
     /** "left_group": this member's frozen copy; "read_replica": a read replica's replicated copy. */
     local_copy?: "left_group" | "read_replica" | null;
   } | null;
+  /** InnoDB ClusterSet the cluster belongs to (absent outside one). */
+  clusterset?: ClusterSet | null;
   routers: ClusterRouter[];
   findings: ClusterFinding[];
   summary: { members: number; ok: number; watch: number; problem: number; unknown: number };
@@ -128,6 +130,40 @@ export type ClusterReport = {
   notes: string[];
   readyset_hint?: boolean;
   topology_tiers?: DatabaseTopologyTiers | null;
+};
+
+/** An instance of another cluster of the ClusterSet, from the shared
+ * metadata: who it is, not its state (read on it). */
+export type ClusterSetInstance = {
+  label: string | null;
+  address: string | null;
+  server_uuid: string | null;
+  instance_type: string | null;
+  /** The instance this replica cluster's clusterset_replication channel connects to. */
+  source: boolean;
+};
+
+export type ClusterSetCluster = {
+  name: string | null;
+  role: "PRIMARY" | "REPLICA" | string | null;
+  invalidated: boolean;
+  local: boolean;
+  /** Empty for this cluster: its members are the report's members. */
+  instances: ClusterSetInstance[];
+};
+
+export type ClusterSet = {
+  name: string | null;
+  local_cluster: string | null;
+  local_role: string | null;
+  invalidated: boolean;
+  primary_cluster: string | null;
+  clusters: ClusterSetCluster[];
+  /** The clusterset_replication channel, read on a replica cluster's primary only. */
+  channel: { receiver_state?: string; applier_state?: string; last_error_number?: number;
+    last_error_message?: string; source?: string } | null;
+  /** Read from a replica cluster's replicated copy of the metadata. */
+  from_local_copy: boolean;
 };
 
 /** A read of the connection *key* that failed, and the report on screen

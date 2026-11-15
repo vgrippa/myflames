@@ -432,7 +432,7 @@ authentication, validation, wire fields, removed routes and typed errors).
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
 
-**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), and `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
+**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh), and `diagram_zoom_speed` (integer 25, 50, 100, 150 or 200, default 100; Diagram wheel zoom speed in Settings > Workspace). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
 
 **Query editor settings and variable names.** `POST /api/settings/editor`
 (ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
@@ -1099,8 +1099,10 @@ messages, never in the notes.
   ranges), no chains of semicolons or stacked parentheses, no "not X, but Y"
   frames unless the contrast is the news, no lists padded to three, no filler
   such as seamless, robust, comprehensive, leverage, ensure or notably, no
-  emojis, no notes about who wrote or reviewed the change. Every fact comes
-  from the change itself.
+  emojis, no notes about who wrote or reviewed the change. A community
+  contribution is credited at the end of its entry: 'Contributed by <name>
+  ([@handle](https://github.com/handle)) in [#N](pull request URL).' Every fact
+  comes from the change itself.
 
 ### Shared view presentation
 
@@ -1386,7 +1388,7 @@ Account requests have an additional 256 KiB encoded-data budget.
 
 ### Client and local-storage boundaries
 
-The desktop renderer uses an in-memory session partition, so UI preferences belong in the workspace SQLite store, not localStorage. Theme, sidebar width, Server inspector width, Server view navigation collapse, Health auto-refresh, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices are persisted through `/api/settings/ui`. Browser development reads legacy localStorage once as a fallback and never promotes it over the backend answer. The renderer's session proof remains origin-scoped localStorage authentication data. Query editor split height remains part of the autosaved `editor_layout` session state.
+The desktop renderer uses an in-memory session partition, so UI preferences belong in the workspace SQLite store, not localStorage. Theme, sidebar width, Server inspector width, Server view navigation collapse, Health auto-refresh, Diagram wheel zoom speed, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices are persisted through `/api/settings/ui`. Browser development reads legacy localStorage once as a fallback and never promotes it over the backend answer. The renderer's session proof remains origin-scoped localStorage authentication data. Query editor split height remains part of the autosaved `editor_layout` session state.
 
 Read clients, capture jobs, writes, and editor sessions use the connector's
 clean environment, an empty temporary HOME, and an exclusive `--defaults-file`.
@@ -3377,7 +3379,210 @@ without an automatic retry; light and dark at 1440 and 720 px).
 
 ### Locks
 
-`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+Transaction evidence is additive in `locks-1.1`: report-level `trx_checked`
+is true only when `INNODB_TRX` was read successfully. An empty transaction list
+with `trx_checked: false` cannot establish that no transactions are open.
+Locks and Processlist also set `trx_checked: false` when their `INNODB_TRX`
+read reaches its row cap and omits transactions.
+Every blocking-tree node and `transactions[]` item has `trx_scope` (`multi`,
+`statement`, or null) and `trx_scope_source` (`performance_schema`, `earlier_changes`, `timing`,
+or null). Scope applies only to a running statement (command other than null,
+Sleep or Killed, with statement text) with an InnoDB transaction. `multi`
+means KILL QUERY leaves the transaction open with its locks; `statement`
+means a single autocommit statement, whose transaction ends with the statement.
+A single best-effort, batched read of
+`SELECT THREAD_ID, AUTOCOMMIT FROM performance_schema.events_transactions_current WHERE STATE = 'ACTIVE' AND THREAD_ID IN (...)`
+uses the existing connection and Locks tag: NO gives `multi`, YES gives
+`statement`. Missing tables, denied reads and other ConnectorError failures
+silently fall back to earlier changes, then timing. Instruments maps this optional evidence as the
+advisory `locks_scope` feature (transaction instrument and current consumer,
+without timing); it is never counted as an unready view. No setup tables are changed.
+In the coordinator's 2026-11-13 lab repro (`BEGIN; UPDATE review.lock_probe SET v=v+1 WHERE id=3; SELECT SLEEP(12); COMMIT;`), transaction age and statement time were both 3 s on MySQL 5.7.44, 8.0.46, 8.4.11, 9.7.2 and MariaDB 10.11.19, 11.4.13, 11.8.9: MySQL 8.0+ recorded ACTIVE / AUTOCOMMIT=NO with the transaction instrument and current consumer on, while both were off on MySQL 5.7 and MariaDB.
+After P_S and before timing, `rows_modified > 0` during a plain SELECT or WITH
+(also a parenthesized SELECT) indicates `multi` with source `earlier_changes`.
+A stored function called by SELECT can write inside that SELECT's own autocommit
+transaction, and the process list shows the outer SELECT between calls (MySQL
+`sql/sp_instr.cc:971-983,1062`; MariaDB `sql/sp_instr.cc:1143,1158,1214`).
+Therefore function calls are ambiguous except this small allowlist of common
+unqualified built-ins: SLEEP, NOW, CURRENT_TIMESTAMP, COUNT, SUM, MIN, MAX, AVG,
+CONCAT, COALESCE, IFNULL, LENGTH, LOWER, UPPER, SUBSTRING, DATE, CAST, CONVERT,
+ROUND and ABS. Schema-qualified calls, including qualified built-in names,
+and quoted function names are always ambiguous. SELECT SLEEP(60) still supports
+`earlier_changes`. This signal excludes locking clauses (FOR UPDATE, FOR SHARE,
+LOCK IN SHARE MODE), INTO and write keywords outside quoted text, and leaves
+unclosed quotes/comments, truncated text and ambiguous SQL unknown.
+Locks marks text from `performance_schema.threads` as `info_truncated` at
+1024 UTF-8 bytes, its server-side cap, so a hidden write after a WITH prefix
+cannot supply `earlier_changes` evidence.
+MariaDB's `performance_schema` itself is OFF by default (`sql/sys_vars.cc:90-92`),
+in addition to its transaction instrumentation and current consumer being off.
+Ordinary block comments are ignored; executable comments, line comments and
+backslash escapes are conservatively excluded from this signal.
+An allowlisted function name separated from `(` by whitespace or a comment is
+ambiguous because it can resolve to a stored function without `IGNORE_SPACE`;
+SQL grouping keywords such as IN and AS may retain that gap.
+Timing proves only `multi`, when
+`trx_age_s - time_s >= 2`; a gap under two whole seconds proves nothing.
+A client `SET timestamp` can fool this timing signal, which only preselects
+a mode and adds a caution; the user still confirms the exact KILL statement.
+Idle sessions, sessions without an InnoDB transaction and otherwise unknown
+scope have null scope and source.
+
+The single-session Kill sheet (`Locks.tsx` `KillDialog`, shared with
+Processlist) honors a row menu's explicit `initialMode`; query mode is offered
+only for a running statement. Without an explicit choice, `!target.running`
+or `trx_scope === "multi"` selects **Kill connection**; other running
+statements start on **Kill query only**. Scope evidence follows
+`transaction_scope`: P_S AUTOCOMMIT first, then a plain read with earlier row
+changes, then a transaction at least 2 s older than the statement. The latter
+two signals work without transaction instrumentation, including on MySQL 5.7
+and MariaDB.
+
+For **Kill connection**, a non-null `trx_started` or `trx_age_s` triggers the
+amber `kill-caution` box: uncommitted row changes are undone and lost, with
+the positive `rows_modified` count when known; rollback can take a long time;
+the connection keeps its locks until rollback ends, naming `target.waiting`
+when present; and the application loses its connection and gets an error.
+For large counts the warning explains that InnoDB counts undo records, so
+changing one row twice counts twice. With no transaction evidence and
+`trx_checked === true`, a neutral line says the session had no open transaction when the list was read
+and nothing would be rolled back. With no transaction evidence and `trx_checked !== true`,
+an amber caution says the transaction could not be read and explains the
+possible rollback and loss of changes. **Kill query only** with
+`trx_scope === "multi"` adds an amber line naming the waiting sessions and
+explaining why locks stay after the statement stops: `timing` gives the age
+gap, `earlier_changes` gives the earlier changed-row count, and P_S evidence
+uses the longer-transaction explanation without either detail.
+
+Single Kill's additive `kill-1.0` `after` fields are `trx_checked`,
+`trx_started`, `rows_locked`, `same_trx`, `trx_survived` and
+`trx_survival_checked`, alongside existing fields.
+`same_trx` requires matching pre-kill and post-kill `trx_started` and, when
+both reads provide `trx_id`, matching ids too: `trx_started` is DATETIME(0),
+so a replacement transaction can start in the same second. False means a
+different or now absent transaction when both transaction reads succeeded;
+null means either was unchecked, the target had no transaction, or an existing
+transaction's start timestamp is unavailable.
+A session absent from the process list has `present: false`, `trx_checked: false`
+and `same_trx: null`. When the target had a transaction id, single Kill makes one
+best-effort, Locks-tagged `SELECT trx_rows_locked FROM information_schema.INNODB_TRX
+WHERE trx_id = N AND trx_mysql_thread_id = 0 LIMIT 1`, using a validated decimal
+integer. `trx_survived` is
+true when that transaction is still present, false when the lookup succeeded
+without a match, and null when not checked or unavailable. A surviving
+transaction's observed locked-row count fills `after.rows_locked`.
+`trx_survival_checked` is true when that lookup succeeded or was skipped by
+its id rules, and false when an attempted lookup failed. On failure, either
+mode's connection-gone message says: "Ended connection N. Could not check
+whether its transaction survived as a prepared XA transaction; otherwise it
+was rolled back and its locks were released." The evidence stays unknown;
+absence from the process list alone does not prove transaction rollback.
+The lookup accepts at most 20 decimal digits, skips id 0 and ids at least `2**48`
+(leaving `trx_survived` null), and requires thread id 0 so read-only ids and
+other sessions cannot produce false XA survival evidence.
+Prepared read-write XA transactions outlive KILL CONNECTION and keep their
+InnoDB row locks, appearing with `trx_mysql_thread_id = 0` (MariaDB
+`sql/xa.cc:893-903`, `storage/innobase/trx/trx0i_s.cc:419-425`); MySQL can reach
+the same case when its pre-kill XA PREPARE check was unavailable. Both modes'
+connection-gone messages warn about this surviving prepared XA transaction and
+instruct XA RECOVER, then XA COMMIT or XA ROLLBACK, rather than claiming its locks
+were released. An unavailable session verification read leaves `after` null.
+
+Kill result messages use the verified after-state. KILL QUERY reports a
+statement still stopping before considering transaction state. Once it has
+stopped, a surviving same transaction is described with its observed start
+time and locked-row count, explains that it keeps its locks until commit or
+rollback, and recommends Kill connection to roll it back. A successful
+transaction read with no transaction reports the row locks released. A closed
+session reports its locks released unless `trx_survived` is true or
+`trx_survival_checked` is false; a different transaction reports that it
+has since started another transaction and gives its locked-row count. Without
+a transaction check, the conditional transaction warning remains. KILL
+CONNECTION with a closed session reports the original transaction rolled back
+(with its original changed-row count when positive), no transaction to roll
+back when that was checked, or any open transaction rolled back when unknown.
+A surviving Killed session with a successful transaction read and no transaction
+reports that the connection is closing, with nothing to roll back: MySQL marks
+every disconnecting session Killed (`sql/sql_class.cc:1331`). Otherwise a
+surviving Killed or ROLLING BACK session reports that rollback still holds
+its locks; its approximate changes left to undo come from the AFTER
+`trx_rows_modified` undo-record count, including zero, omitted only when unavailable.
+These are changes, not distinct rows: changing one row twice counts twice.
+Other surviving connections keep the refresh message. The deprecated CLI's
+`format_kill` shares these corrected messages and strips C0 controls except tab
+and newline from terminal output; no flags or commands are added.
+
+The retained UI note's evidence model reconciles accepted bound reports,
+including Server Refresh all and auto refresh, through shared `useKillReport`;
+adapters and presentation use explicit connection and transaction evidence
+(see [Action feedback](#action-feedback)). The note records the client receipt
+time of the Kill answer (`answeredAt`) and a snapshot of the reviewed
+`target.server_identity` (`reviewedServerIdentity`). Reconciliation ignores
+reports unless Locks `captured_at` or Processlist `taken_at` is strictly later
+than that answer and `server_identity` matches the reviewed server. Missing or
+invalid timestamps and missing identities are not verification. MySQL compares
+`server_uuid`; MariaDB compares all of `server_id`, `hostname` and `version`.
+A matching connection key alone cannot establish server identity.
+
+Processlist proves a missing connection gone only with a complete, unfiltered,
+uncapped All read with PROCESS visibility. A present row supplies command/state;
+transaction evidence needs `trx_checked === true`. Connection absence does not
+resolve a failed XA survival lookup: `after.trx_survival_checked === false`
+stays unknown across Processlist reads, with an unknown transaction cell and
+an amber note. The update says "Checked again: the connection has ended;
+whether its transaction survived as a prepared XA transaction is unknown."
+Only a successful transaction-id survival check from Locks resolves that
+uncertainty. Processlist Killed with a checked open transaction proves rollback
+unless detached XA uncertainty remains.
+
+Locks never proves a disconnect: a listed transaction is open (same when start
+and available ids match), or rolling back from its transaction state. An absent
+transaction is none only on a checked, untruncated full read, otherwise unknown.
+A detached transaction with the pre-kill id proves prepared XA survival.
+Earlier `trx_survived: true` survives Processlist and incomplete Locks reads
+(waits-only, `trx_checked !== true` or any truncation). A complete Locks
+transaction read that no longer lists the original transaction id clears that
+evidence to none and says "Checked again: its prepared XA transaction is no
+longer listed." This does not assert that the XA transaction rolled back.
+A reused connection or replacement transaction cannot disprove XA survival
+without that complete transaction-id check.
+
+A Locks waiter missing from both the blocking tree and waiting DDL is no longer
+waiting only when both wait sources were readable (`capabilities.lock_waits`
+and `capabilities.metadata_locks`), the scope includes waits, and no truncation
+or materialization budget hid evidence: `waits_truncated`,
+`row_locks_truncated`, `blocking_tree_budget.truncated`, metadata lock/metadata
+wait truncation (including per-wait truncation), and DDL blocker truncation.
+A listed `transactions[]` state of LOCK WAIT proves it is waiting even without
+a tree edge. Otherwise the outcome is unknown and says "Connection N: this
+read cannot show whether it still waits." Unknown or still-waiting outcomes
+keep the note amber and prevent "Lock released".
+
+The later update states observed facts without claiming statement completion
+or rollback completion from a mere state change. Query-ended wording additionally
+needs a changed or empty statement. Null verification and unknown held state
+remain amber, with unknown after-cells. Evidence says rolled back only for a
+proven disconnect or none after an observed rollback, excluding cleared XA
+survival. The view is read once right after the KILL answer (as before: its
+table or tree shows the change), with the current view settings. Timed
+follow-ups run only when that view can settle the open question: rollback, or
+unknown transaction evidence resolvable by a complete read. Locks requires
+`trx_checked === true`, full scope and no truncation; Processlist requires a
+complete, unfiltered, uncapped All read with checked transactions and no
+unresolved detached XA lookup. Timed follow-ups also require a fresh report
+from the reviewed server, and Locks schedules none while
+`capabilities.data_locks_global_latch` is set. When automatic verification
+cannot continue, the note says "Refresh to check again." and keeps Refresh.
+Only a final observed rollback produces the stale warning.
+
+The shared guard refuses KILL QUERY while INNODB_TRX reports ROLLING BACK,
+with guidance to choose Kill connection. KILL CONNECTION is allowed in that
+state: it also appears during statement rollback after KILL QUERY inside a
+longer transaction, which remains open with its locks afterwards (MySQL
+`trx0roll.cc:1153-1157`; MariaDB `trx0roll.cc:619`). A second KILL CONNECTION
+during full rollback is harmless. All other kill refusals remain in force.
+
 Bulk Kill (`/api/live/kill/bulk`, `kill-bulk-1.0`) validates every target before
 policy gating and records an audit row per target even for unconfirmed,
 read-only, expired-review, credential and connection failures. It reads server
@@ -3405,12 +3610,35 @@ Sessions uses the same helper for `thread_kind` and `kill_blocked_reason`.
 ### Sessions
 
 `python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`) so Kill session in the workspace is bound to connection and server identity. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py` (replays in `test/fixtures/perf/sessions-*.json`).
+Report-level `trx_checked` is true only when `INNODB_TRX` was read without truncation; false
+means absence of a transaction cannot be asserted. Each sessions row carries
+the same additive `trx_scope` and `trx_scope_source` fields and uses the shared
+pure Locks helper. Locks also projects these fields on every Waiting DDL
+blocker using `transaction_scope`; `targetFromBlocker` retains them for the
+same default mode and longer-transaction warning as the blocking tree. The processlist reader has connection ids but no P_S thread
+ids, so Sessions first uses `earlier_changes` to indicate `multi` for a plain
+read with changes, as described in Locks above. The stored-function exception
+and the common unqualified built-in allowlist apply here too; a schema-qualified
+call is always ambiguous. MariaDB ships `performance_schema` OFF by default
+(`sql/sys_vars.cc:90-92`). The measured MySQL 5.7 and MariaDB repro used
+transaction instrumentation off and equal transaction/statement ages.
+Otherwise, a running statement with an InnoDB
+transaction at least two seconds older than its processlist time has `multi`
+with source `timing`. It never infers `statement`; unknown, idle and no
+transaction cases have null scope and source. Locks can use the optional
+P_S transaction read described above, with the engine consumer defaults and
+silent earlier-changes and timing fallbacks specified there. Schema versions remain `locks-1.1`,
+`sessions-1.0` and `kill-1.0` under the additive-field rule.
+
 `myflames sessions --kill ID [--query] [--yes] [--json] [-o PATH] [-q]` is an
 alias of `locks --kill`: `cmd_sessions` calls the same `_kill_command(args,
 locks.kill_cli)`, returning the same `kill-1.0` result and exit codes (0 ended,
 1 a sent operation failed, 2 an unsent refusal, decline, or error). It keeps the same
 confirmation, connection/server identity binding, target re-read, write policy
-and audit. `--kill` and `--explain` are mutually exclusive; `--query` and `--yes`
+and audit. It shares Locks' transaction-id comparison, the vanished-session
+XA lookup and `after.trx_survived`, the closing-without-a-transaction message,
+and the ROLLING BACK guard that allows connection mode but refuses query mode.
+`--kill` and `--explain` are mutually exclusive; `--query` and `--yes`
 require `--kill ID`. Listing remains read-only.
 
 Processlist rows have a context menu (right click, Shift+F10, the context
@@ -4023,6 +4251,8 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 - `python3 -m myflames cluster [--fail-on {problem,watch}] [--json] [-o PATH] [-q]` (`cluster-1.0`, `read_status`), connection flags and `--profile` as the other live commands, query timeout 30 s. Tag `/*myflames:cluster*/`; every statement is a `SELECT` or `SHOW GLOBAL`. Exit 0 (also for a server that is not part of a cluster), 1 when a finding is at the `--fail-on` level or worse, 2 for bad input, an account that cannot read the cluster tables (`available: false`; `--json` still writes the report to stdout or `-o`) or a connection failure.
 - Detection: Galera when the global `wsrep_on` is ON (MariaDB), or, when SHOW GLOBAL VARIABLES has no `wsrep_on` (Percona XtraDB Cluster 8.4, verified live on 8.4.11, where it is session-only), when `wsrep_provider` names a provider. MariaDB with the global `wsrep_on` OFF and a provider loaded reads the wsrep status anyway: while `wsrep_connected` is ON or `wsrep_cluster_size` above 0 the node is still in the component (the server-level names stay listed, the provider's are hidden) and is reported as Galera with the problem finding `wsrep_off`; when the account cannot read that status, `available: false` (unreadable is not disconnected); otherwise not a cluster ("the Galera provider is not connected"). `kind` is `pxc` when `version_comment` names Percona XtraDB Cluster, else `galera` (labelled MariaDB Galera Cluster on MariaDB and Galera Cluster for MySQL on MySQL, `cluster.kind_label`, `kindLabel`). Otherwise, on MySQL 8.0+, Group Replication from `performance_schema.replication_group_members` (with `MEMBER_COMMUNICATION_STACK` from 8.0.27); a single OFFLINE row without a group name is the idle plugin. `innodb_cluster` when `mysql_innodb_cluster_metadata.v2_gr_clusters` lists the group name, else `group_replication`. Without a group, a server whose `@@server_uuid` is a `read-replica` instance in its replicated copy of `v2_instances` is an InnoDB Cluster read replica (`kind: innodb_cluster`, the local member with role `READ_REPLICA` judged by its `read_replica_replication` channel in `replication_connection_status` and `replication_applier_status`: both ON ok, the receiver CONNECTING watch (also with its last error kept while it retries, as MySQL Shell tells it apart), a stopped receiver or applier, or an error while not connecting, problem; a table that cannot be read leaves it unknown unless what was read shows a failure; the group instances from the metadata with state null, never MISSING). MariaDB without wsrep and MySQL without a group return `kind: "none"` with `message`.
 - Reads: preflight `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)` and `Uptime`; Galera `SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\_%'`, `mysql.wsrep_cluster_members` (membership of the last Primary view; on a non-Primary node the members come from `wsrep_incoming_addresses`), and on PXC `performance_schema.pxc_cluster_view`; Group Replication `replication_group_member_stats`, then `information_schema.SCHEMATA`, `schema_version`, `v2_gr_clusters`, `v2_instances` (`attributes->>'$.instance_type'`: read replicas from 2.2.0 are listed apart, never MISSING) and `v2_routers` (the five port keys only, by `attributes->>'$.KEY'`, so the router configuration and its metadata account never leave the server; from metadata 2.4.0 `COALESCE(router_stats.last_check_in, routers.last_check_in)`, as MySQL Shell reads it; also `UNIX_TIMESTAMP` of the check-in for its UTC time).
+- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): `v2_cs_members` and `v2_cs_clustersets` identify the set's clusters, primary cluster and invalidated clusters. The other clusters' instances come from the shared `v2_instances` metadata, without reading their live member states. On an ONLINE primary of a replica cluster, read the `clusterset_replication` channel from `performance_schema.replication_connection_status`, `replication_applier_status` and `replication_connection_configuration`: receiver and applier state, last error number and message, and source address. Findings flag this or another invalidated cluster, no recorded primary cluster, and a stopped, reconnecting or errored channel. A replica cluster's view comes from its replicated metadata copy and may be behind; the report notes this. `ClusterTopology` draws a ClusterSet band above the group with an arrow from the primary cluster to each replica cluster, broken when the channel stops or a cluster is invalidated, and Use for saved connections to the other clusters' instances.
+- The `cluster-1.0` JSON report has an optional `clusterset` object (`docs/schemas/cluster-1.0.json`), absent outside a ClusterSet: `name, local_cluster, local_role, invalidated, primary_cluster, clusters[] {name, role, invalidated, local, instances[] {label, address, server_uuid, instance_type, source}}, channel {receiver_state?, applier_state?, last_error_number?, last_error_message?, source?} | null, from_local_copy`. The deprecated command line's text output does not show the ClusterSet.
 - Envelope: `schema_version, engine, server_version, version_comment, captured_at, uptime_s, performance_schema, available, message, kind, server {hostname, port, report_host, server_uuid}, cluster {name, uuid, size, expected_size, expected_source, component, quorum, failures_tolerated, topology, provider}, status, status_why, local, members[] {key, name, address, host, port, uuid, state, state_source, role, version, local, status, status_why, metrics, label?, endpoint?, in_metadata?, instance_type?, communication_stack?, pxc_status?, segment?}, galera {..., wsrep_on, address_nodes, address_names_this_node, missing, incomplete}, group_replication, metadata {..., local_copy}, routers[] {id, name, product, address, version, last_check_in, last_check_in_age_s, last_check_in_utc, from_local_copy, ports}, findings[] {id, status, title, text, member?}, summary, statements, notes`. Members are sorted by name; `member.host` and `port` are separate (an IPv6 host is bracketed only in `address`).
 - Severity, one scale for every kind (CLI, JSON, MCP, the place, the sidebar, `--fail-on`): `ok` with quorum and every expected member present and healthy; `watch` while quorum holds but a member is missing (a Galera node not in the component, an InnoDB Cluster member MISSING or UNREACHABLE), in a transitional state (Donor/Desynced, Joiner, Joined, Joining, RECOVERING), or one more failure would lose the majority (`no_tolerance`, "Cannot survive another failure"); `problem` without quorum or outside a Primary component, for a member in ERROR, when the connected member is OFFLINE or in ERROR, or a Galera node that does not replicate (`wsrep_off`).
 - Members as this server sees them: on Galera only the connected node has a state (`wsrep_local_state_comment`); the others have `state: null`, status `unknown` and read In the component (state and queues are read on that node), never a guess. On PXC the other nodes' states come from `pxc_cluster_view`, shown in the node's own words (DONOR as Donor/Desynced, JOINER Joiner, JOINED Joined, PRIMARY Joining, NON-PRIMARY Non-Primary, SYNCED Synced; SYNCED is ok, the others watch, each with its own sentence) and the raw STATUS in `pxc_status`. Group Replication members carry MEMBER_STATE and MEMBER_ROLE; an UNREACHABLE member keeps the role of its status (`ps_information.cc` overrides only the state). A group instance in the metadata but not in the group is `MISSING` (as MySQL Shell calls it) unless the connected member is OFFLINE or in ERROR, which sees no group: then `cluster.size` is null (it lists only itself), the other instances read Not visible here with a reason that names the connected member, `metadata.local_copy` is `left_group` and each router's `from_local_copy` marks its check-in as this member's frozen copy. Galera port 0 in an incoming address (`wsrep_node_incoming_address` AUTO) is `port: null` and every surface shows the host alone, with one note (names in member order). When `mysql.wsrep_cluster_members` cannot be used, PXC's `pxc_cluster_view` rows are matched to the incoming addresses by `LOCAL_INDEX` (the same view order). This node keeps the key `node:<gcomm uuid>` and its UUID in Primary and non-Primary components.
@@ -4041,7 +4271,7 @@ tab or context menu; `cluster.available_actions(report, member_key, checks)`, `a
 
 | Action | Statement (tagged `/*myflames:cluster_op*/`) | Offered when | Typed name |
 | --- | --- | --- | --- |
-| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+, single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
+| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+, except a ClusterSet replica cluster (MySQL Shell route below); single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
 | `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member, ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member |
 | `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member, OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read at plan and send time; ON or unreadable refuses) | no |
 | `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication only (not InnoDB Cluster), on the connected member, group ready as for switchover | the connected member's name |
@@ -4049,7 +4279,88 @@ tab or context menu; `cluster.available_actions(report, member_key, checks)`, `a
 | `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node, `wsrep_desync` ON | no |
 | `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node, `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name |
 
-Never use "GCache" wording. Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), InnoDB Cluster mode switches (MySQL Shell's commands also set `auto_increment_*` and the metadata), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). The send waits up to 120 s (START and the UDFs wait for the group). The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
+MySQL Shell actions are offered only in the Cluster place for a MySQL InnoDB
+Cluster when `mysqlsh` is installed on this computer. `cluster_shell.find_shell`
+uses the client inventory and its ownership and version checks. Mode switches
+need MySQL Shell 8.0 or later, ClusterSet changes (including Make primary within
+a replica cluster) need 8.0.27 or later, and member rejoin needs 8.1 or later.
+The connected member must be ONLINE with quorum, with no group member
+RECOVERING or UNREACHABLE. Group-wide actions appear on the connected member;
+rejoin appears on the MISSING member and Make primary on the target secondary.
+
+The reviewed statements below are JavaScript AdminAPI calls, tagged
+`/*myflames:cluster_op*/`. `Cluster` and `ClusterSet` name the AdminAPI objects;
+the sent calls get them with `dba.getCluster()` and `dba.getClusterSet()`.
+
+| Action | Reviewed call | Additional offering conditions | Typed name |
+| --- | --- | --- | --- |
+| `switch_to_multi_primary` | `dba.getCluster().switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
+| `switch_to_single_primary` | `dba.getCluster().switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
+| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | target in metadata but MISSING from the group, valid metadata address, cluster not invalidated | member name |
+| `switchover` Make primary… | `dba.getCluster().setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
+| `set_primary_cluster:<name>` | `dba.getClusterSet().setPrimaryCluster("<name>");` | target a non-invalidated replica cluster in the set, local cluster not invalidated | target cluster name |
+| `force_primary_cluster` Fail over to this cluster… | `dba.getClusterSet().forcePrimaryCluster("<local_cluster>");` | connected to a non-invalidated replica cluster | local cluster name |
+| `rejoin_cluster:<name>` | `dba.getClusterSet().rejoinCluster("<name>");` | target an invalidated cluster in the set | target cluster name |
+
+Mode switches run `Cluster.switchToMultiPrimaryMode()` or
+`Cluster.switchToSinglePrimaryMode()`: MySQL Shell runs the Group Replication
+switch, sets `auto_increment_increment` and `auto_increment_offset` on every
+member, and updates the mode in the cluster metadata. Multi-primary uses
+increment 7, or the group size when larger, and offset
+`1 + server_id % increment`; single-primary uses increment 1 and offset 2.
+Member rejoin runs through the connected ONLINE member with quorum and allows
+incremental recovery only. If the missing transactions are gone from every
+member's binary logs, MySQL Shell refuses and nothing changes; the user then
+runs `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in MySQL Shell.
+MySQL Shell connects to the missing member with this connection's account,
+which must exist there too.
+
+`ClusterSet.setPrimaryCluster(name)` is a controlled switchover: MySQL Shell
+waits for the new primary cluster to catch up and moves the replication
+channels; the old primary becomes a replica cluster. MySQL Shell refuses
+an unreachable or unhealthy primary or target, or a target with transactions
+the primary does not have. `ClusterSet.forcePrimaryCluster(name)` is an
+emergency failover to this replica cluster and invalidates the old primary.
+It refuses while the primary cluster is reachable and healthy. Transactions
+the old primary committed that this cluster did not receive are lost; the
+review warns to fence the old primary or confirm it is down before proceeding.
+`ClusterSet.rejoinCluster(name)` rejoins an invalidated cluster as a replica
+cluster, refusing errant transactions. In a replica cluster, Make primary
+uses `Cluster.setPrimaryInstance()` because the server refuses the Group
+Replication switchover function while the replica channel runs on its primary.
+ClusterSet plans warn when their metadata view comes from a replica cluster.
+
+Every MySQL Shell change uses the same reviewed-change policy, review token
+and audit path as the other Cluster changes. The exact call is shown at
+review; before sending, the plan is made again from a fresh cluster read and
+the statements and `expect` are compared. A mismatch sends nothing.
+For MySQL Shell, `expect` also binds the group members' states and roles,
+the MISSING member keys, the Shell path and, when present, the ClusterSet's
+cluster names, roles and invalidation flags. Metadata instance addresses and
+cluster names are validated before being offered, and arguments are encoded
+as JavaScript string literals.
+
+`cluster_shell.ShellWriter` sends the reviewed script on standard input to
+`mysqlsh --js --no-wizard --quiet-start=2`. The account is passed in a private
+0600 option file, never on the command line or in the environment. The Shell
+runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
+startup script or saved credential takes part. A socket connection passes
+through that socket. MySQL Shell changes are not offered over an SSH connection,
+because MySQL Shell connects to the other members directly with this connection's
+user and password; the place says so in its notes. MySQL Shell's member sessions
+take the user, password and CA files but not the profile's ssl-mode. The time limit is 600 s.
+
+`cluster_shell.error_text` strips colour codes and maps a connection or login
+failure before any statement to `ERROR <n>: <message>` without a line, so the
+reviewed-write result is failed with nothing sent. A statement exception maps
+to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
+number, or 0 when neither is present. Since one AdminAPI call can fail after
+some steps ran, `verify_on_error` reads the cluster again and reports partial
+when the before/after comparison shows a visible change. A timeout or Shell
+exit without an error message leaves the outcome unknown and is never retried
+automatically. This read does not prove the state of members it cannot see.
+
+Never use "GCache" wording. Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), direct SQL mode switches on InnoDB Cluster (use the MySQL Shell calls above), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). Direct SQL sends wait up to 120 s (START and the UDFs wait for the group); MySQL Shell sends wait up to 600 s. The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
 
 ### ProxySQL
 
@@ -4270,6 +4581,22 @@ dark; zoom in, zoom out, fit; render errors shown inline) beside the code with
 The canvas supports search, selection, inspection, orthogonal links, drag/pan,
 zoom, Fit and auto layout. Table keyboard arrows move 16 pixels, Shift moves 64,
 and Enter opens details. Canvas arrows pan, plus/minus zoom, and zero fits.
+Both the canvas and Mermaid preview zoom about the pointer with the mouse wheel
+or trackpad (including Ctrl-wheel pinch). `wheelZoom.ts` normalizes line deltas
+to 16 pixels and page deltas to the visible canvas height, caps each event at
+100 pixels in either direction, and sums logarithmic steps for one update per
+animation frame. Horizontal-dominant, non-finite and near-zero vertical deltas
+are ignored without preventing scrolling. The step is
+`-pixels * 0.001 * diagram_zoom_speed / 100`, so small trackpad events accumulate
+by distance instead of multiplying zoom by 1.15 on every event. Zoom remains
+clamped to 15%–200%; buttons and plus/minus keys keep their 1.2 multiplier.
+**Settings > Workspace > Diagram wheel zoom speed** maps Slowest, Slow, Normal,
+Fast and Fastest to 25, 50, 100, 150 and 200. Normal is the default. The stored
+`diagram_zoom_speed` preference applies live to both views; the select is disabled
+until preferences load. Native non-passive listeners retain the latest speed and
+callback without re-registering on ordinary renders, follow conditional canvas
+mounts, and cancel pending frames when detached or unmounted. Visual Explain's
+separate chart bundle is unchanged.
 Position inputs and Reset table position provide alternatives to dragging.
 Conceptual links are dashed; supplied Mermaid cardinalities remain explicit.
 
@@ -6467,6 +6794,91 @@ Rules:
   no Refresh, which would read the connection in use. Without `currentKey` only
   a late note (its sheet was closed) is named. Locks' waiting line names the
   connection too once another one is in use.
+  For a single Kill, `KillNote.mode`, `target` (the pre-kill read) and
+  `after` (the latest verification) drive the shared evidence helpers in
+  `Locks.tsx`. Front-end `KillObservation` adds `connectionEvidence`
+  (`present`, `gone`, `unknown`) and `transactionEvidence` (`open`, `same`,
+  `other`, `none`, `rolling_back`, `survived`, `unknown`) without changing
+  the wire schema. Each view's pure `reconcileKillNote` adapts its report:
+  - **Processlist (`sessions-1.0`)**: a row for C proves command, state and
+    statement. Only `trx_checked === true` proves an open transaction or
+    none; otherwise transaction evidence is unknown. A missing row proves
+    `gone` only with All scope (neither active-only nor locked-only), no
+    user/host/database/minimum-duration filter, PROCESS visibility and no
+    truncation. Other absence means only "not in this list", with unknown
+    transaction evidence.
+  - **Locks (`locks-1.1`)**: there is no session list, so it never proves a
+    disconnect. A transaction listed for C proves open or rolling_back from
+    `transactions[].state === "ROLLING BACK"`. Absence proves `none` only
+    when `trx_checked === true`, scope is `all` (not waits-only or deadlock)
+    and the read is not truncated. Other absence is unknown. A detached
+    transaction (connection id 0 or null) matching the pre-kill transaction
+    id proves `survived`: its prepared XA transaction still holds locks.
+  Open transaction identity is `same` only when the start matches the target,
+  and ids match too when both are known; a mismatch is `other`. Missing
+  identity remains `open`. Processlist command Killed with a checked open
+  transaction also proves rolling_back; Killed alone does not. Positive XA
+  survival evidence is retained because a later session read cannot disprove
+  a detached transaction.
+
+  The original server `message` stays verbatim. `note.update` states only
+  the later read's evidence: "Checked again: still rolling back, about N
+  changes left to undo." (omit the count if unavailable), "Checked again:
+  the connection has ended.", "Checked again: its transaction is no longer
+  open.", "Checked again: its transaction is still open.", "Checked again:
+  it has started another transaction.", "Checked again: its transaction is
+  still open as a prepared XA transaction." or "Checked again: this list
+  cannot show whether its transaction is still open." An open transaction
+  with unavailable identity uses the still-open wording. No update claims
+  rollback or statement rollback finished merely because ROLLING BACK ended.
+
+  Evidence compares **Statement**, **Transaction** and **Rows locked**;
+  without `target` there is no evidence list. With `after: null` every
+  after-cell says unknown. Report reconciliation replaces after-cells with
+  the new evidence; statement absence in Locks says unknown. Transaction
+  evidence says "rolled back" only with Processlist gone (or the initial
+  kill verification's proven disconnect), or `none` after an observed
+  rollback (`rollbackObserved`). Prepared XA stays "prepared XA still open"
+  with its observed row-lock count. Unknown transaction evidence never
+  becomes a none or rolled-back cell.
+
+  State lines prioritize prepared XA, then rolling_back with the approximate
+  undo count (zero included). "Query ended; transaction and locks still
+  open." requires query mode, `same_trx === true`, and a statement that is
+  empty or different from `target.info`; the same running statement proves
+  no completion. The `kill-result killed` container uses the existing amber
+  `held` style whenever verification is null, a waiter outcome is unknown or
+  waiting, or transaction evidence is rolling_back, same, open, survived or
+  unknown. Only a verified none/other state with all waiters known and free
+  is green; a nonempty waiter list then supplies the green Lock released line.
+
+  Each view uses shared `useKillReport`, whose bound-report layout effect is
+  the single reconciliation path for accepted loads, the note's Refresh,
+  filter changes, automatic refresh and Server Refresh all's direct setters.
+  It checks note identity, its retained `on` identity and the report's
+  connection key. Reads used by polling await reconciliation's commit before
+  interpreting the model. A refused/denied note only clears its reading line.
+  Locks retains its existing waiter outcome logic. Processlist uses fresh
+  `blocked_by`, `lock_wait` and positive `blocking_edges` collected before
+  filters. A missing waiter is unknown on an incomplete read; positive edges
+  still prove a wait. Missing bounded edges cannot prove release. Unknown
+  outcomes say "Connection N is not in this list; show all sessions and
+  Refresh to check." and keep the container amber.
+
+  Unknown or rolling-back verification uses `followKill` with successive
+  delays of 2, 4, 8 and 16 s, single-flight, through `loadRef`, preserving
+  current scope, source, minimum duration and waits-only settings. A null
+  result from a superseded read is not completion: wait for the next delay;
+  the superseding bound report reconciles through the same effect. Stop when
+  transaction evidence is neither rolling_back nor unknown, regardless of
+  whether waiters still wait. Dismiss, replacement, unmount and switching
+  connection stop scheduled reads. Only a last step still observing
+  rolling_back sets `rollbackStale` and Refresh, showing "Still rolling back
+  after 30 s. Refresh to check again." An unchecked read after an observed
+  rollback keeps polling and never claims completion. The delays total 30 s
+  plus read time. Front-end tests: `apps/workspace/test/locks.mjs`,
+  `apps/workspace/test/sessions.mjs` and browser-free production-function
+  tests in `apps/workspace/test/kill-reconcile-unit.mjs` (also run by `test:locks`).
 - Try again repeats the failed action on what it acted on (Investigations
   keeps the investigation an Open all or Export failed for, even after another
   one is selected).
