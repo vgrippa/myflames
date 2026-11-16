@@ -27,10 +27,14 @@ const path = require('node:path');
   child.stdout.on('data', chunk => { output += chunk; });
   // Chromium diagnostics can be noisy. Keep them private unless startup fails.
   child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-4000); });
-  const timeout = setTimeout(() => child.kill('SIGTERM'), 45000);
+  let killedByTimer = false;
+  const timeout = setTimeout(() => { killedByTimer = true; child.kill('SIGTERM'); }, 45000);
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
-    if (code !== 0) throw new Error('Desktop smoke did not complete successfully. ' + diagnostics.replace(/http:\/\/\S+/g, '[private URL]'));
+    if (code !== 0) {
+      const scrub = text => text.replace(/http:\/\/\S+/g, '[private URL]');
+      throw new Error(`Desktop smoke did not complete successfully${killedByTimer ? ' (stopped after 45 s)' : ''}.\nApp stdout: ${scrub(output)}\nDiagnostics: ${scrub(diagnostics)}`);
+    }
     const report = JSON.parse(await fs.readFile(path.join(home, 'smoke.json'), 'utf8'));
     if (!report.ready || !report.shellNavigation || !report.completion || !report.undoRedo || !report.authenticated || !report.reloadAuthenticated || !report.preload || !report.sandbox || report.nodeIntegration) throw new Error('Desktop isolation checks failed.');
     const samePath = (a, b) => windows ? String(a).toLowerCase() === b.toLowerCase() : a === b;
