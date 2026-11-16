@@ -77,9 +77,13 @@ function harness() {
     newer() { env.openDialogs.push(note => newerNotes.push(note)); },
   };
 }
-const renderNote = note => run(`(${named(locks, 'KillResultNote')})`, {
-  React, killHeadline: run(`(${named(locks, 'killHeadline')})`, {
-    killStatusWord: run(`(${named(locks, 'killStatusWord')})`, {}),
+const apiSource = source('../src/api.ts');
+const renderNote = note => run([
+  'list', 'killTransactionEvidence', 'killRollingBack', 'killHeld', 'killStateLine',
+  'clipStatement', 'killEvidence', 'outcomeText', 'killStatusWord', 'killHeadline',
+].map(name => named(locks, name)).join('\n') + `\n(${named(locks, 'KillResultNote')})`, {
+  React, number: run(`${named(apiSource, 'formatNumber')}\n(${named(apiSource, 'number')})`, {
+    numberFormats: new Map(),
   }),
 })({ note, currentKey: 'another connection', noteRef: {}, onDismiss() {}, onRefresh() {} });
 

@@ -1,0 +1,1170 @@
+{
+  "version": 1,
+  "entries": {
+    "account-connection-races-unit.mjs": {
+      "kind": "suite",
+      "script": "test:account-connection-races",
+      "timeout": 180,
+      "reason": "Socket-free node --test regressions of the account/connection components; header: no sockets, responses released explicitly."
+    },
+    "accounts-all-grants.mjs": {
+      "kind": "suite",
+      "script": "test:accounts-all",
+      "timeout": 300,
+      "reason": "Browser tour of every recorded SHOW PRIVILEGES grant case through the real review UI with Apply forbidden; long because it walks the full grant catalog."
+    },
+    "accounts.mjs": {
+      "kind": "suite",
+      "script": "test:accounts",
+      "timeout": 180,
+      "reason": "Accounts UI on a fixture shell and the real server with a throwaway HOME; header states no source or packaged asset is rewritten."
+    },
+    "action-feedback-batch-b.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Exports batchBScenarios; imported only by action-feedback-lib.mjs, not run on its own."
+    },
+    "action-feedback-batch-c.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Exports batchC scenarios (Plans, Maintenance, Cluster/ProxySQL review); imported only by action-feedback-lib.mjs."
+    },
+    "action-feedback-lib.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Shared action-feedback harness (seeded temp store, held mocked replies, in-page probe); imported by action-feedback.mjs and action-feedback-regressions.mjs."
+    },
+    "action-feedback-operations.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Exports operationScenarios for server writes; imported only by action-feedback-lib.mjs."
+    },
+    "action-feedback-regressions.mjs": {
+      "kind": "suite",
+      "script": "test:action-feedback",
+      "timeout": 180,
+      "reason": "Executes the real feedback handlers and harness branches without a server or browser; run first by test:action-feedback."
+    },
+    "action-feedback-seed.py": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Seed script: writes the two saved connections and two investigations action-feedback.mjs needs into a temporary store; spawned by action-feedback-lib.mjs with PYTHON."
+    },
+    "action-feedback-unit.mjs": {
+      "kind": "suite",
+      "script": "test:action-feedback",
+      "timeout": 180,
+      "reason": "Action feedback primitives in a real browser without a workspace server (useAction always ends, Kill note naming)."
+    },
+    "action-feedback.mjs": {
+      "kind": "suite",
+      "script": "test:action-feedback",
+      "timeout": 600,
+      "quarantine": "12 of 248 runs fail with missing navigation buttons or no /api/connection/test and /api/profiles/save requests on master 44ff65de; fix tracked in the QA plan Phase 2 follow-ups.",
+      "reason": "Runs every converted action (batches B/C plus operations scenarios) against a seeded throwaway server with held replies; long tour with per-action waits, parallel only via ACTION_FEEDBACK_WORKERS."
+    },
+    "analysis-projection.mjs": {
+      "kind": "suite",
+      "script": "test:analysis-projection",
+      "timeout": 180,
+      "reason": "Real Python SQL-preparation endpoint with mocked capture, via perf-harness; proves Run analysis projects and Explain never prepares."
+    },
+    "argument-hints-unit.mjs": {
+      "kind": "suite",
+      "script": "test:argument-hints",
+      "timeout": 180,
+      "reason": "Real SQL syntax tree and EditorState in Node via esbuild; no server or browser."
+    },
+    "audit-seed.py": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Seed script: writes audit records (one per status, redaction case, 40-day-old record) through the real audit code for audit.mjs; store path explicit, nothing reads ~/.myflames."
+    },
+    "audit.mjs": {
+      "kind": "suite",
+      "script": "test:audit",
+      "timeout": 180,
+      "reason": "Audit log UI on the real server over a temporary store seeded by audit-seed.py; every filter goes to the server."
+    },
+    "auth.mjs": {
+      "kind": "suite",
+      "script": "test:auth",
+      "timeout": 180,
+      "reason": "Real browser authentication against an isolated workspace, no mocked API; launches its own throwaway server and HOME."
+    },
+    "baselines-unit.mjs": {
+      "kind": "suite",
+      "script": "test:baselines",
+      "timeout": 180,
+      "reason": "baselineCompare.ts rules in Node without a browser; numbers worked out by hand in comments."
+    },
+    "browser.mjs": {
+      "kind": "suite",
+      "script": "test:browser",
+      "timeout": 600,
+      "reason": "End-to-end suite against the packaged UI and Python server covering controller checks plus every UI check; the broadest single tour in the folder."
+    },
+    "bundle-split.mjs": {
+      "kind": "suite",
+      "script": "test:bundle-split",
+      "timeout": 180,
+      "quarantine": "Entry chunk index-XH028LfL.js is 500608 bytes, a bundle size regression seen on master 44ff65de; fix tracked in the QA plan Phase 2 follow-ups.",
+      "reason": "Code-splitting contracts read from sources and the committed build in myflames/ui_assets; no browser."
+    },
+    "charts.mjs": {
+      "kind": "suite",
+      "script": "test:charts",
+      "timeout": 300,
+      "reason": "Chart runtime suite: pure helpers in Node plus real-browser checks of the bundled charts and Python SVG comparison (spawns PYTHON locally); many chart fixtures."
+    },
+    "chrome-helpers.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Connection picker/account sheet helpers; imported by connections.mjs, editor.mjs, navigation.mjs, completion-browser.mjs, locks.mjs, table-data.mjs and other browser suites."
+    },
+    "client-tools.mjs": {
+      "kind": "suite",
+      "script": "test:client-tools",
+      "timeout": 180,
+      "reason": "Client tools dialog and resolver with mocked /api/client/tools* endpoints on the real server; no real client programs needed."
+    },
+    "cluster-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the cluster-1.0 replay fixtures in test/fixtures from test/_cluster_fixtures.py recordings (OUT = apps/workspace/test/fixtures, line 36); run by hand after backend changes."
+    },
+    "cluster.mjs": {
+      "kind": "suite",
+      "script": "test:cluster",
+      "timeout": 180,
+      "reason": "Cluster place on mocked /api/live/cluster with backend-computed reports and the real Python server for sessions; no cluster contacted."
+    },
+    "compare-text.mjs": {
+      "kind": "suite",
+      "script": "test:compare-text",
+      "timeout": 180,
+      "reason": "Compare wording checks bundled with esbuild in Node; no browser or server."
+    },
+    "completion-browser.mjs": {
+      "kind": "suite",
+      "script": "test:completion",
+      "timeout": 180,
+      "reason": "Editor completion in the packaged page with mocked catalog endpoints; honors MYFLAMES_NO_SANDBOX and MYFLAMES_BROWSER_ARGS."
+    },
+    "completion-source-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; real EditorState/CompletionContext with a fake API and clock bundled by esbuild, no DOM or server."
+    },
+    "config.mjs": {
+      "kind": "suite",
+      "script": "test:config",
+      "timeout": 180,
+      "reason": "Parameters view on recorded config-1.0 reports with mocked plan/apply endpoints and the object-changes fixture stub."
+    },
+    "connection-binding.mjs": {
+      "kind": "suite",
+      "script": "test:connection-binding",
+      "timeout": 180,
+      "reason": "Binding of reports, selections and Kill to the owning connection; two saved connections on an isolated server, database replies mocked."
+    },
+    "connection-helpers.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "connectionRow/connectionAction menu helpers; imported by connections.mjs, connections-readiness.mjs, connections-ssh.mjs, connection-binding.mjs, navigation.mjs, profiles.mjs, shell-layout.mjs."
+    },
+    "connections-readiness-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; connection-readiness contracts bundled with esbuild against stubbed React/api, in-memory localStorage, no sockets."
+    },
+    "connections-readiness.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; browser suite on a seeded throwaway store with mocked database endpoints; header states no real database is contacted."
+    },
+    "connections-ssh.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; SSH connection form against a temporary HOME with a written ~/.ssh/config; database requests mocked, only the local backend's /api/ssh/hosts is real."
+    },
+    "connections.mjs": {
+      "kind": "suite",
+      "script": "test:connections",
+      "timeout": 180,
+      "reason": "Connection form and list on the packaged UI with an isolated server; database traffic mocked; honors MYFLAMES_BROWSER_ARGS."
+    },
+    "datatable.mjs": {
+      "kind": "suite",
+      "script": "test:datatable",
+      "timeout": 180,
+      "reason": "DataTable behavior (resize, hide, reset, sort, persistence) through Indexes and Sessions views on mocked live endpoints."
+    },
+    "ddl-progress-poll.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; followDdlProgress with fake document/timers bundled by esbuild; header: no browser, server, timers or sockets."
+    },
+    "ddl-progress-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; renders DdlMeter/DdlDetails/DdlUnavailable to static markup over fixtures/ddl-progress.json; no browser or server."
+    },
+    "desktop-shell.mjs": {
+      "kind": "suite",
+      "script": "test:desktop-shell",
+      "timeout": 180,
+      "reason": "Workspace shell and detail navigation on source-captured table data via perf-harness; SHELL_BASELINE/PERF_SHOTS optional."
+    },
+    "digest-actions.mjs": {
+      "kind": "suite",
+      "script": "test:digest-actions",
+      "timeout": 180,
+      "reason": "Top statements row actions (Explain, Run analysis, parameters, Explain top N) on mocked live reads with the real plan endpoints."
+    },
+    "digest-times.mjs": {
+      "kind": "suite",
+      "script": "test:query-digest-slowlog",
+      "timeout": 180,
+      "reason": "Unit tests for digestTimes.ts time-range keys matching slowlog.normalize_bound; no browser."
+    },
+    "discover.mjs": {
+      "kind": "suite",
+      "script": "test:discover",
+      "timeout": 180,
+      "reason": "Top statements and Sessions Show plan with a mocked live API and the real Python server for plan analysis."
+    },
+    "duration-text.mjs": {
+      "kind": "suite",
+      "script": "test:duration-text",
+      "timeout": 180,
+      "reason": "Unit tests for duration.ts matching perf_common._duration_text; Node only."
+    },
+    "edit-menu.mjs": {
+      "kind": "suite",
+      "script": "test:edit-menu",
+      "timeout": 180,
+      "reason": "Edit-menu bridge in the built workspace with Puppeteer answering every request; header: no HTTP server, database or Electron process."
+    },
+    "editor-abuse.mjs": {
+      "kind": "suite",
+      "script": "test:editor-abuse",
+      "timeout": 180,
+      "reason": "Security C8: hostile server identifiers through completion/hover/lint never become markup; mocked catalog, isolated server."
+    },
+    "editor-commands-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; comment toggle and visual extensions with real EditorState via esbuild; header: run with node, no browser."
+    },
+    "editor-core-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; renderless mounts and real EditorState tests; header: no browser or server."
+    },
+    "editor-core.mjs": {
+      "kind": "suite",
+      "script": "test:editor-core",
+      "timeout": 180,
+      "reason": "Core CodeMirror checks in the real workspace page (undo isolation, navigation, 1 MB paste budget); isolated server, mocked data."
+    },
+    "editor-explain-live.mjs": {
+      "kind": "live",
+      "script": "test:editor-explain-live",
+      "timeout": 300,
+      "reason": "Real MySQL container named by MYFLAMES_MYSQL_LAB and MYFLAMES_MYSQL_LAB_PORT (scripts/ga-matrix.sh lab); skipped unless both are set; no mocks."
+    },
+    "editor-file-safety.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; real authenticated file endpoints and real temporary files with only the native chooser replaced in Python; no database or SQL execution."
+    },
+    "editor-files-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; real file handlers and Messages executed without a socket; W2A_BASELINE optionally points at a reference source tree."
+    },
+    "editor-files.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; SQL file open/save/close flows on the packaged page with every editor API mocked; W2A_SHOTS optionally captures screenshots."
+    },
+    "editor-find-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; find helpers, decorations and controller with real EditorState, no DOM; header: run with node."
+    },
+    "editor-find.mjs": {
+      "kind": "suite",
+      "script": "test:editor-find",
+      "timeout": 180,
+      "reason": "Find and replace bar behavior in the real workspace page; mocked data; honors MYFLAMES_NO_SANDBOX."
+    },
+    "editor-fixes.mjs": {
+      "kind": "suite",
+      "script": "test:editor-fixes",
+      "timeout": 180,
+      "reason": "Static and unit checks of editor/data-editing fixes via the TypeScript AST; header: no browser."
+    },
+    "editor-helpers.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "CodeMirror DOM helpers (EDITOR selector, setEditorText, MARK marks); imported by editor.mjs, editor-abuse.mjs, editor-files.mjs, editor-insights.mjs, editor-file-safety.mjs, completion-browser.mjs, session.mjs."
+    },
+    "editor-insights.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; editor insights on the real isolated server with every database/editor request intercepted; EDITOR_SHOTS defaults to the temp dir."
+    },
+    "editor-live.mjs": {
+      "kind": "live",
+      "script": "test:editor-live",
+      "timeout": 300,
+      "reason": "Real catalog, hover, warnings and settings against a running container opted in with MYFLAMES_EDITOR_LAB and MYFLAMES_EDITOR_LAB_PORT; MYFLAMES_LAB_CLIENT picks mysql or mariadb."
+    },
+    "editor-settings.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; editor settings store bundled by esbuild against an in-memory /api/settings/editor; header: no build or browser."
+    },
+    "editor-sheets-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; executes the actual editor transition handlers from the TypeScript AST without a browser or socket."
+    },
+    "editor-toolbar-layout.mjs": {
+      "kind": "suite",
+      "script": "test:editor-toolbar-layout",
+      "timeout": 180,
+      "reason": "Toolbar overlap regression at 1440 px on the packaged UI; mocked data; EDITOR_TOOLBAR_SHOTS optional."
+    },
+    "editor-tools.mjs": {
+      "kind": "suite",
+      "script": "test:editor-tools",
+      "timeout": 180,
+      "reason": "Tab menu, rename, Format SQL and delimiter handling in the real page; mocked endpoints; honors MYFLAMES_NO_SANDBOX."
+    },
+    "editor.mjs": {
+      "kind": "suite",
+      "script": "test:editor",
+      "timeout": 300,
+      "reason": "The main Query editor tour (run, results, stop, transactions, export, history, schema browser, restore) on the packaged page and real server with mocked database; the largest editor suite."
+    },
+    "engine-words.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; engineWords.ts version fallback and keyword facts bundled with esbuild; header: no browser or server needed."
+    },
+    "errorlog-static.mjs": {
+      "kind": "suite",
+      "script": "test:errorlog-static",
+      "timeout": 180,
+      "reason": "Socket-free fallback for the error log envelope and text-only render contract via esbuild."
+    },
+    "errorlog.mjs": {
+      "kind": "suite",
+      "script": "test:errorlog",
+      "timeout": 180,
+      "reason": "Error log view on hand-authored and backend-computed error-log-1.0 fixtures (server-fixtures.py); mocked live endpoint."
+    },
+    "exploration.mjs": {
+      "kind": "suite",
+      "script": "test:exploration",
+      "timeout": 180,
+      "reason": "Shared renderer bridge exercised inside the same opaque sandbox as the UI; local render only."
+    },
+    "feedback-audit-lib.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Feedback audit harness (startWorkspace, launch, measure); imported by feedback-audit.mjs, feedback-explore.mjs and the feedback-audit-scenarios*.mjs modules."
+    },
+    "feedback-audit-scenarios-b.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Scenario definitions part B (confirmation sheets, multi-step flows, exports); imported by feedback-audit.mjs."
+    },
+    "feedback-audit-scenarios-c.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Scenario definitions part C (reviewed SQL runner, Library delete, Compare, Processlist scope); imported by feedback-audit.mjs."
+    },
+    "feedback-audit-scenarios.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Scenario definitions for the feedback audit (how to reach each action and which endpoints answer late); imported by feedback-audit.mjs."
+    },
+    "feedback-audit-seed.py": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Seed script: two saved connections and one two-plan investigation for the feedback audit; spawned by feedback-audit-lib.mjs with PYTHON."
+    },
+    "feedback-audit.mjs": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Audit runner: writes per-scenario result JSON and screenshots to a required OUT_DIR argument and logs FAILED without exiting non-zero; a measurement tool, not a pass/fail check."
+    },
+    "feedback-explore.mjs": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Dumps an inventory of visible controls per place and view to the directory named by argv; a survey tool behind the feedback audit, not a check."
+    },
+    "files-browser.mjs": {
+      "kind": "suite",
+      "script": "test:files",
+      "timeout": 180,
+      "reason": "File transfer browser against an in-memory backend kept in the file; every request answered and recorded; launches with --no-sandbox."
+    },
+    "files-connections.mjs": {
+      "kind": "suite",
+      "script": "test:files",
+      "timeout": 180,
+      "reason": "Files place and SSH connection sheets with every request intercepted; no workspace server; launches with --no-sandbox."
+    },
+    "files-live.mjs": {
+      "kind": "live",
+      "script": "test:files-live",
+      "timeout": 300,
+      "reason": "End to end against a real OpenSSH lab from scripts/ssh-lab.sh, opted in with MYFLAMES_SSH_LAB (plus MYFLAMES_SSH_LAB_USER/_KEY/_CONTAINER); skipped unless set."
+    },
+    "files-notices.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; Notice and ViewStatus dismiss in a real browser without a workspace/database server (bundled kit demo)."
+    },
+    "fill-values.mjs": {
+      "kind": "suite",
+      "script": "test:fill-values",
+      "timeout": 180,
+      "reason": "Unit tests for fillValues.ts compiled with Vite's esbuild transform; no build or browser."
+    },
+    "fixtures": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Directory of recorded reports and synthetic replies (cluster-*, sessions-*, locks-*, config-*, digest-*, ddl-progress.json, parameter-versions-mock.mjs and more) replayed by locks.mjs, sessions.mjs, cluster.mjs, replication.mjs, proxysql.mjs, readyset.mjs, errorlog.mjs, innodb.mjs, config.mjs and the perf-harness suites."
+    },
+    "health-watch-unit.mjs": {
+      "kind": "suite",
+      "script": "test:health",
+      "timeout": 180,
+      "reason": "Capture when... judging of a watch-1.0 read without a browser; TZ is pinned by the suite."
+    },
+    "health.mjs": {
+      "kind": "suite",
+      "script": "test:health",
+      "timeout": 180,
+      "reason": "Health view on mocked /api/live/health with health-1.0 reports computed from live captures; real server only for session autosave and the Learn catalog."
+    },
+    "history-nav-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; executes the shipped navigation callback bodies from the AST in vm without sockets; follows review-read-hooks.mjs."
+    },
+    "history-nav.mjs": {
+      "kind": "suite",
+      "script": "test:history-nav",
+      "timeout": 180,
+      "reason": "Back/Forward history and command palette object search on the packaged UI; server search and catalog mocked."
+    },
+    "home-workspace.mjs": {
+      "kind": "suite",
+      "script": "test:home-workspace",
+      "timeout": 180,
+      "reason": "Home navigation and the Mermaid parser via perf-harness with all database traffic refused."
+    },
+    "hover-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; hover source and CatalogService with real EditorState and a fake api module; header: no browser, network or database."
+    },
+    "howto-recordings.mjs": {
+      "kind": "generator",
+      "script": "docs:howtos",
+      "reason": "Records the how-to guide GIFs into docs/screenshots (default out path docs/screenshots, line 30); produces documentation media, not a pass/fail check."
+    },
+    "import-csv-live.mjs": {
+      "kind": "live",
+      "script": null,
+      "timeout": 900,
+      "reason": "no npm script; needs Docker: starts throwaway MySQL 8.4 and MariaDB 11.4 containers (IMPORT_CSV_LIVE_ENGINES/_MYSQL_IMAGE/_MARIADB_IMAGE, report via IMPORT_CSV_LIVE_REPORT) and imports generated CSVs end to end."
+    },
+    "import-csv-unit.mjs": {
+      "kind": "suite",
+      "script": "test:import-csv-unit",
+      "timeout": 180,
+      "reason": "Unit tests for importCsvRules.ts (type grammar matching csv_import.parse_type, column matching); esbuild transform, no browser."
+    },
+    "import-csv.mjs": {
+      "kind": "suite",
+      "script": "test:import-csv",
+      "timeout": 180,
+      "reason": "Import CSV wizard on mocked csv-inspect/plan/result replies; IMPORT_CSV_SHOTS optional."
+    },
+    "index-suggestion-click.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; index suggestion review with synthetic reports and intercepted endpoints via perf-harness; clears MYFLAMES_VAULT_PASSPHRASE itself."
+    },
+    "indexes.mjs": {
+      "kind": "suite",
+      "script": "test:indexes",
+      "timeout": 180,
+      "reason": "Indexes view on replayed indexes-1.0 reports with mocked live endpoints."
+    },
+    "innodb.mjs": {
+      "kind": "suite",
+      "script": "test:innodb",
+      "timeout": 180,
+      "reason": "InnoDB view on innodb-1.0 reports computed by myflames/innodb_status.py from live recordings (server-fixtures.py); mocked endpoint."
+    },
+    "instruments.mjs": {
+      "kind": "suite",
+      "script": "test:instruments",
+      "timeout": 180,
+      "reason": "Performance Schema instrument selection and reviewed writes on fixtures with live engine defaults; --unit runs the pure SQL builder without a browser."
+    },
+    "investigation.mjs": {
+      "kind": "suite",
+      "script": "test:investigation",
+      "timeout": 180,
+      "reason": "Complete investigation workflow on fixtures and the packaged UI; a live section runs only when MYFLAMES_TEST_PORT names an explicitly supplied test server (line 521), otherwise fully local."
+    },
+    "io.mjs": {
+      "kind": "suite",
+      "script": "test:io",
+      "timeout": 180,
+      "reason": "I/O view on replayed io-1.0 reports with mocked live endpoints."
+    },
+    "kill-reconcile-unit.mjs": {
+      "kind": "suite",
+      "script": "test:locks",
+      "timeout": 180,
+      "reason": "Kill reconciliation pure functions executed from the AST; header: no browser or server."
+    },
+    "kit-primitives.mjs": {
+      "kind": "suite",
+      "script": "test:kit-primitives",
+      "timeout": 180,
+      "reason": "Shared kit primitives in a real browser without a workspace/database server (bundled demo page)."
+    },
+    "kit-static.mjs": {
+      "kind": "suite",
+      "script": "test:kit-static",
+      "timeout": 180,
+      "reason": "Socket-free render contracts for the shared kit via esbuild; run directly with Node."
+    },
+    "latency-histogram.mjs": {
+      "kind": "suite",
+      "script": "test:latency-histogram",
+      "timeout": 180,
+      "reason": "Unit tests for latencyHistogram.ts log-axis bins; no build or browser."
+    },
+    "learn-fullscreen.mjs": {
+      "kind": "suite",
+      "script": "test:learn-fullscreen",
+      "timeout": 180,
+      "reason": "Learn lesson fullscreen behavior (stage layout, overlay fallback) on the packaged UI; spawns the local backend with PYTHON."
+    },
+    "learn-guide.mjs": {
+      "kind": "suite",
+      "script": "test:learn-guide",
+      "timeout": 180,
+      "reason": "Guided lessons: step playback, code highlight, Check yourself and Explore over the three family flagships; local backend only."
+    },
+    "locks.mjs": {
+      "kind": "suite",
+      "script": "test:locks",
+      "timeout": 180,
+      "reason": "Locks view on captured locks-1.0/1.1 reports with the real Python server for plans; honors MYFLAMES_BROWSER_ARGS."
+    },
+    "maintenance-convenience.mjs": {
+      "kind": "suite",
+      "script": "test:maintenance-convenience",
+      "timeout": 180,
+      "reason": "Tools updates/downloads and native folder selection with all external calls mocked, via perf-harness."
+    },
+    "maintenance-folders-unit.mjs": {
+      "kind": "suite",
+      "script": "test:maintenance",
+      "timeout": 180,
+      "reason": "Folder helpers with real path functions and an in-memory API transport; header: no browser, filesystem listing or server writes."
+    },
+    "maintenance.mjs": {
+      "kind": "suite",
+      "script": "test:maintenance",
+      "timeout": 180,
+      "reason": "Maintenance view on backend-computed lifecycle reports (ops-fixtures.py); mocked lifecycle endpoints."
+    },
+    "measure-again.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; suggested index to reviewed write to confirmed measurement; all database endpoints mocked, real isolated Python server for SQL preparation."
+    },
+    "memory-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the memory-*.json browser fixtures from synthetic test_memory.collect data (writes into apps/workspace/test/fixtures, line 14); never live evidence."
+    },
+    "memory-unit.mjs": {
+      "kind": "suite",
+      "script": "test:memory",
+      "timeout": 180,
+      "reason": "Socket-free checks of real memory-view rendering, persisted settings and escaping."
+    },
+    "memory.mjs": {
+      "kind": "suite",
+      "script": "test:memory",
+      "timeout": 180,
+      "reason": "Memory view on source-grounded synthetic reports via perf-harness; header notes live SQL needs the lab and stays out of scope."
+    },
+    "mermaid-export.mjs": {
+      "kind": "suite",
+      "script": "test:mermaid-export",
+      "timeout": 180,
+      "reason": "Real-browser Mermaid parser regression over cases printed by mermaid_export_cases.py (spawned with PYTHON); launches with --no-sandbox."
+    },
+    "mermaid_export_cases.py": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Prints the Mermaid export cases the mermaid-export.mjs browser suite replays; run by the suite, not standalone."
+    },
+    "misestimates.mjs": {
+      "kind": "suite",
+      "script": "test:misestimates",
+      "timeout": 180,
+      "reason": "Misestimates chip and Row estimate section with plans imported from files on an isolated server (temporary HOME, vault backend)."
+    },
+    "navigation.mjs": {
+      "kind": "suite",
+      "script": "test:navigation",
+      "timeout": 180,
+      "reason": "Workspace navigation: places, open-plans list, status indicator, Settings and About; honors MYFLAMES_BROWSER_ARGS."
+    },
+    "news-setting.mjs": {
+      "kind": "suite",
+      "script": "test:news-setting",
+      "timeout": 180,
+      "reason": "Home news switch store in src/newsApi.ts bundled by esbuild against an in-memory API; no build or browser."
+    },
+    "news.mjs": {
+      "kind": "suite",
+      "script": "test:news",
+      "timeout": 180,
+      "reason": "News on Home with a mocked /api/news; the real server answers the rest; offline/empty/failed paths covered without network."
+    },
+    "object-changes-fixture.mjs": {
+      "kind": "fixture",
+      "script": null,
+      "reason": "Synthetic display-only audit records stub (objectAuditFixture); imported by accounts.mjs, config.mjs and indexes.mjs."
+    },
+    "object-changes-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; socket-free checks of production inverse selection, API and text rendering via a Vite in-memory build."
+    },
+    "ops-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the replication and maintenance replay fixtures (OUT = test/fixtures next to the script, line 41) from recordings and test_lifecycle fakes; run by hand after backend changes."
+    },
+    "parameter-versions.mjs": {
+      "kind": "suite",
+      "script": "test:parameter-versions",
+      "timeout": 180,
+      "reason": "Parameters > Versions with synthetic catalog replies (fixtures/parameter-versions-mock.mjs) and schema validation through PYTHON; Chromium on a pipe, no loopback server or database."
+    },
+    "parity.mjs": {
+      "kind": "suite",
+      "script": "test:parity",
+      "timeout": 300,
+      "reason": "Chart parity: every fixture rendered by the TypeScript bundle and the Python SVG renderer (spawns PYTHON locally), plus focus/collapse projections; long because it walks all fixtures twice."
+    },
+    "percona.mjs": {
+      "kind": "suite",
+      "script": "test:percona",
+      "timeout": 180,
+      "reason": "Percona Server identity in the Server views on reports made from GA-matrix recordings; mocked live reads."
+    },
+    "perf-budgets-regressions.mjs": {
+      "kind": "suite",
+      "script": "test:perf-regressions",
+      "timeout": 180,
+      "reason": "Exercises the real perf-budgets gate through --from with a fake Puppeteer surface; header: no Chrome/server; PERF_SOURCE_ROOT overrides the source tree."
+    },
+    "perf-budgets.mjs": {
+      "kind": "suite",
+      "script": "test:perf-budgets",
+      "timeout": 600,
+      "reason": "Runs a focused perf-measure.mjs pass (many scenarios at two window sizes) in a throwaway HOME and asserts responsiveness budgets; long because it measures, not just checks."
+    },
+    "perf-harness.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Shared isolated-workspace harness (open/load/pause, mocked endpoints, MYFLAMES_BROWSER_ARGS, MYFLAMES_TEST_ASSETS); imported by table-data.mjs, update-check.mjs, news.mjs, sessions-blocking.mjs, table-column-gutter.mjs and about twenty more suites."
+    },
+    "perf-measure.mjs": {
+      "kind": "generator",
+      "script": "test:perf-measure",
+      "reason": "Header: not a pass/fail suite, it writes numbers; produces results.json, summary.md, heap snapshots and CPU profiles under --out (default os.tmpdir()/myflames-perf, line 59)."
+    },
+    "performance-regressions.mjs": {
+      "kind": "suite",
+      "script": "test:perf-regressions",
+      "timeout": 180,
+      "reason": "Deterministic node --test regressions executing the real TS functions with controlled hooks; header: no DOM, server, sleeps or React; PERF_SOURCE_ROOT overrides the source tree."
+    },
+    "placeholders.mjs": {
+      "kind": "suite",
+      "script": "test:placeholders",
+      "timeout": 180,
+      "reason": "Unit tests for placeholders.ts (digest text to named parameters) over fixtures/digest-placeholders.json; esbuild transform, no browser."
+    },
+    "plan-editor-layout.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; measured plan editor layout and keyboard checks via perf-harness; header: no database is used; W4PLAN_SHOTS defaults to /tmp/myflames-w4plan."
+    },
+    "plan-editor-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; pure rendering checks for environments that cannot start Chromium or bind loopback (renderToStaticMarkup via esbuild)."
+    },
+    "plan-occurrences-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; renders the real PlanStats occurrence rows without a browser (esbuild + renderToStaticMarkup)."
+    },
+    "plan-occurrences.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; occurrence rows, keyboard selection and full-path names on the real analyze endpoint with an isolated workspace and no database connections; PLANSED_SHOTS/PLANSED_BASELINE optional."
+    },
+    "platform-shortcuts.mjs": {
+      "kind": "suite",
+      "script": "test:platform-shortcuts",
+      "timeout": 180,
+      "reason": "Unit tests for platform.ts shortcut labels per OS; Vite esbuild transform, no browser."
+    },
+    "problems-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; problems lint scheduler with real EditorState; header: no DOM, network or database."
+    },
+    "profiles.mjs": {
+      "kind": "suite",
+      "script": "test:profiles",
+      "timeout": 180,
+      "reason": "Remembered passwords, connection type and read-only safety on the packaged UI with an isolated server and vault backend."
+    },
+    "proxysql-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the proxysql-1.0 replay fixtures (OUT = apps/workspace/test/fixtures, line 26) over test/test_proxysql.FakeAdmin; run by hand after backend changes."
+    },
+    "proxysql.mjs": {
+      "kind": "suite",
+      "script": "test:proxysql",
+      "timeout": 180,
+      "reason": "ProxySQL place on mocked endpoints answering backend-computed reports/plans/results (proxysql-fixtures.py); no ProxySQL contacted."
+    },
+    "query-digest-baselines.mjs": {
+      "kind": "suite",
+      "script": "test:baselines",
+      "timeout": 180,
+      "reason": "Save baseline and Compare with baseline on recorded Performance Schema digests (fixtures/top-mysql-8.4-lab.json); mocked live reads."
+    },
+    "query-digest-slowlog.mjs": {
+      "kind": "suite",
+      "script": "test:query-digest-slowlog",
+      "timeout": 180,
+      "reason": "Query digest time range and slow log sources on replies recorded from lab servers; QDIGEST_SHOTS optional."
+    },
+    "query-selection.mjs": {
+      "kind": "suite",
+      "script": "test:query-selection",
+      "timeout": 180,
+      "reason": "Native Explain uses the editor session API and only Explore starts a capture; real page and server, fixture database responses; honors MYFLAMES_NO_SANDBOX."
+    },
+    "readme-screenshots.mjs": {
+      "kind": "generator",
+      "script": "docs:screenshots",
+      "reason": "Captures the README screenshots and manifest.json into docs/screenshots by default (out path resolved at line 24, --out overrides); produces documentation assets, not a pass/fail check."
+    },
+    "readyset-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the readyset-1.0 replay fixtures (OUT = apps/workspace/test/fixtures, line 26) over FakeReadyset/FakeProbeConn; run by hand after backend changes."
+    },
+    "readyset.mjs": {
+      "kind": "suite",
+      "script": "test:readyset",
+      "timeout": 180,
+      "reason": "Readyset place on mocked endpoints answering backend-computed reports and plans (readyset-fixtures.py); no Readyset contacted."
+    },
+    "release-rf3-regressions.mjs": {
+      "kind": "suite",
+      "script": "test:release-rf3",
+      "timeout": 180,
+      "reason": "Release rf-3 node --test regressions executing the actual handlers and JSX; header: no browser, listening sockets or database."
+    },
+    "replication-source-version.mjs": {
+      "kind": "suite",
+      "script": "test:replication-source-version",
+      "timeout": 180,
+      "reason": "Replication topology source engine/version display on mocked /api/live/replication with backend-computed reports."
+    },
+    "replication.mjs": {
+      "kind": "suite",
+      "script": "test:replication",
+      "timeout": 180,
+      "reason": "Replication view on replication-1.0 reports recorded live and written by ops-fixtures.py; skip and skip-loop endpoints answered from the same recordings."
+    },
+    "report-table-export.mjs": {
+      "kind": "suite",
+      "script": "test:report-table-exports",
+      "timeout": 180,
+      "reason": "Report table export checks bundled with esbuild in Node; no browser needed."
+    },
+    "report.mjs": {
+      "kind": "suite",
+      "script": "test:report",
+      "timeout": 180,
+      "reason": "Full analysis and Refresh all on a recorded report-1.0 fixture with the other live views mocked."
+    },
+    "result-filter.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; result filter unit checks plus browser verification in ResultsPane.tsx; honors MYFLAMES_NO_SANDBOX."
+    },
+    "result-totals.mjs": {
+      "kind": "suite",
+      "script": "test:result-totals",
+      "timeout": 180,
+      "reason": "Unit tests for resultTotals.ts (selected-cell totals, footer, row panel JSON); esbuild transform, no browser."
+    },
+    "review-auth.mjs": {
+      "kind": "suite",
+      "script": "test:review-auth",
+      "timeout": 180,
+      "reason": "Real browser HTTP/review gates with a replay connection behind KILL; throwaway HOME and vault backend."
+    },
+    "review-read-hooks.mjs": {
+      "kind": "suite",
+      "script": "test:review-read-hooks",
+      "timeout": 180,
+      "reason": "Executes the actual TypeScript hook/callback bodies from source without sockets."
+    },
+    "reviewed-actions-unit.mjs": {
+      "kind": "suite",
+      "script": "test:reviewed-actions-unit",
+      "timeout": 180,
+      "reason": "Reviewed-action hook executed without a DOM or a listening socket; children remain inspectable JSX."
+    },
+    "reviewed-sql-actions.mjs": {
+      "kind": "suite",
+      "script": "test:reviewed-sql-actions",
+      "timeout": 180,
+      "reason": "Server-generated SQL actions on an isolated editor session with mocked writes, via perf-harness."
+    },
+    "safe-updates-info.mjs": {
+      "kind": "suite",
+      "script": "test:safe-updates-info",
+      "timeout": 180,
+      "reason": "Safe updates info popover in the Query editor; mocked endpoints; SAFE_UPDATES_SHOTS optional."
+    },
+    "saved-connections.mjs": {
+      "kind": "suite",
+      "script": "test:saved-connections",
+      "timeout": 180,
+      "reason": "One live list of saved connections across Home, the picker and Compare on an isolated server."
+    },
+    "schema-diagram.mjs": {
+      "kind": "suite",
+      "script": "test:diagram",
+      "timeout": 180,
+      "reason": "Database diagram interaction and safe rendering on synthetic UI models; parsing correctness stays with the Python backend."
+    },
+    "schema-export.mjs": {
+      "kind": "suite",
+      "script": "test:schema-export",
+      "timeout": 180,
+      "reason": "Export as SQL and Table structure on mocked endpoints whose replies the Python package builds from recorded fixtures; SQLEXPORT_SHOTS optional."
+    },
+    "schema-versions.mjs": {
+      "kind": "suite",
+      "script": "test:schema-versions",
+      "timeout": 180,
+      "reason": "Schema versions place on mocked /api/schema-versions/* endpoints; CMPSTAT_REVIEW optionally names a review output directory."
+    },
+    "server-compare.mjs": {
+      "kind": "suite",
+      "script": "test:server-compare",
+      "timeout": 180,
+      "reason": "Compare servers with real components and production-generated replies; all HTTP intercepted, Chromium on a pipe; CMPSTAT_REVIEW/COMPARE_SHOTS optional."
+    },
+    "server-fixtures.py": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Regenerates the sessions-1.0, innodb-1.0 and error-log fixtures the browser suites replay (OUT = test/fixtures, line 24) from test/fixtures/perf recordings; run by hand after backend changes."
+    },
+    "server-nav.mjs": {
+      "kind": "suite",
+      "script": "test:server-nav",
+      "timeout": 180,
+      "reason": "Server place shell: floating view list, docking, grouped sub-navigation; mocked data on the packaged UI."
+    },
+    "server-refresh-focus-unit.mjs": {
+      "kind": "suite",
+      "script": "test:action-feedback",
+      "timeout": 180,
+      "reason": "Server refresh focus effect executed with controlled events and a clock; header: checks lifecycle and timing, not browser hit testing."
+    },
+    "session-rules.mjs": {
+      "kind": "suite",
+      "script": "test:session-rules",
+      "timeout": 180,
+      "reason": "Unit tests for session restore rules and connection identity in src/session.ts and src/binding.ts; no browser."
+    },
+    "session.mjs": {
+      "kind": "suite",
+      "script": "test:session",
+      "timeout": 180,
+      "reason": "Session restore across reload, server restart, Start fresh and two-tab conflicts; honors MYFLAMES_NO_SANDBOX."
+    },
+    "sessions-blocking.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; blocking chain and no-wait reports via perf-harness with every live read intercepted; header: no real database is used."
+    },
+    "sessions-ddl-unit.mjs": {
+      "kind": "suite",
+      "script": "test:sessions-ddl-unit",
+      "timeout": 180,
+      "reason": "Sessions navigation hint executed from the AST; header: no DOM, network or database."
+    },
+    "sessions.mjs": {
+      "kind": "suite",
+      "script": "test:sessions",
+      "timeout": 180,
+      "reason": "Sessions view on sessions-1.0 reports computed from live recordings (server-fixtures.py); mocked live endpoint."
+    },
+    "settings-page.mjs": {
+      "kind": "suite",
+      "script": "test:settings-page",
+      "timeout": 180,
+      "reason": "Settings page open paths, persistence across reload and 1440/720 px layouts; honors MYFLAMES_BROWSER_ARGS."
+    },
+    "shell-layout.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; shell-only integration with throwaway servers sharing one store across a restart; every database request and outbound read refused; honors MYFLAMES_NO_SANDBOX and MYFLAMES_BROWSER_ARGS."
+    },
+    "sql-completion.mjs": {
+      "kind": "suite",
+      "script": "test:completion",
+      "timeout": 180,
+      "reason": "Pure completion heuristics bundled with esbuild; header: these tests never connect to a database."
+    },
+    "sql-format-load.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "Compiles sqlFormatCheck.ts and sqlFormat.ts into a temp dir for the unit tests; imported only by sql-format.mjs."
+    },
+    "sql-format.mjs": {
+      "kind": "suite",
+      "script": "test:sql-format",
+      "timeout": 180,
+      "reason": "Format SQL unit tests over the modules loaded by sql-format-load.mjs; header: no build or browser."
+    },
+    "sql-ident.mjs": {
+      "kind": "suite",
+      "script": "test:sql-ident",
+      "timeout": 180,
+      "reason": "Shared SQL identifier builders executed without a browser, server or emitted assets."
+    },
+    "sql-select-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; sqlSelection.ts parsing and real export handlers compiled with Vite's esbuild transform; header: no browser or socket needed."
+    },
+    "sql-selection.mjs": {
+      "kind": "suite",
+      "script": "test:sql-selection",
+      "timeout": 180,
+      "reason": "Unit tests for sqlSelection.ts (which SQL Explain and Run analysis send); esbuild transform, no browser."
+    },
+    "sql-tree-parity.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; compares the CodeMirror syntax tree with the existing tokenizer byte for byte; header: no DOM."
+    },
+    "startup-reads.mjs": {
+      "kind": "suite",
+      "script": "test:startup-reads",
+      "timeout": 180,
+      "reason": "Nothing reads a server until its view is on screen; only the privileges read at startup; mocked views on the real server."
+    },
+    "statement-thread-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; statement inspector and Measure again contracts executed without a browser; optional argv picks one section."
+    },
+    "table-column-gutter.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; responsive review evidence over mocked reports with the real workspace shell via perf-harness; TABLE_GUTTER_SHOTS writes only when set."
+    },
+    "table-data-live.mjs": {
+      "kind": "live",
+      "script": null,
+      "timeout": 300,
+      "reason": "no npm script; opt-in live proof against owned disposable servers listed in the JSON file named by MYFLAMES_GRID_LIVE_CONFIG (throws at line 6 without it); credentials injected into mocked routes."
+    },
+    "table-data.mjs": {
+      "kind": "suite",
+      "script": "test:table-data",
+      "timeout": 180,
+      "reason": "Explicit table-grid editing on synthetic API replies via perf-harness; live proof stays in table-data-live.mjs; TABLE_DATA_SHOTS optional."
+    },
+    "table-index-pagination.mjs": {
+      "kind": "suite",
+      "script": "test:table-index-pagination",
+      "timeout": 180,
+      "reason": "Synthetic >200-row reports prove complete client browsing; writes exports to the fixed temp dir /tmp/myflames-table-export-proof (line 49)."
+    },
+    "tables-fragmentation-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; Rebuild component and ownership projection executed from Tables.tsx without a socket or browser."
+    },
+    "tables.mjs": {
+      "kind": "suite",
+      "script": "test:tables",
+      "timeout": 180,
+      "reason": "Tables view on schema-2.0 reports recomputed from live captures; mocked live endpoints."
+    },
+    "theme-browser-harness.mjs": {
+      "kind": "helper",
+      "script": null,
+      "reason": "withThemeWorkspace: throwaway WorkspaceServer plus Chromium launch honoring MYFLAMES_BROWSER_ARGS; imported by theme-contrast.mjs, theme-picker.mjs and themes.mjs."
+    },
+    "theme-contrast-unit.mjs": {
+      "kind": "suite",
+      "script": "test:theme-contrast",
+      "timeout": 180,
+      "reason": "Parses the production theme tokens and CSS consumers in Node; also imported by theme-contrast.mjs, theme-picker.mjs and themes.mjs, but run directly by test:theme-contrast."
+    },
+    "theme-contrast.mjs": {
+      "kind": "suite",
+      "script": "test:themes",
+      "timeout": 300,
+      "reason": "Computed-style contrast for every registry theme in a real browser via theme-browser-harness; long because it walks all themes."
+    },
+    "theme-frame-unit.mjs": {
+      "kind": "suite",
+      "script": "test:theme-contrast",
+      "timeout": 180,
+      "reason": "Runtime checks of the fixed frame script for environments where Chromium cannot launch; Node only."
+    },
+    "theme-picker.mjs": {
+      "kind": "suite",
+      "script": "test:theme-picker",
+      "timeout": 180,
+      "reason": "Settings > Appearance theme picker: card order, click-to-apply, radiogroup keyboard behavior; via theme-browser-harness."
+    },
+    "themes.mjs": {
+      "kind": "suite",
+      "script": "test:themes",
+      "timeout": 300,
+      "reason": "Every registry theme rendered in the real workspace across window widths via theme-browser-harness; long full-theme tour."
+    },
+    "topology-appearance.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; topology presentation regression over real-server recordings via perf-harness; header: no production connections are opened."
+    },
+    "topology-groups.mjs": {
+      "kind": "suite",
+      "script": "test:topology-groups",
+      "timeout": 180,
+      "reason": "Topology connection groups: Group field, datalist, save through /api/profiles/save and display in list and picker; isolated server."
+    },
+    "tuning-browser.mjs": {
+      "kind": "suite",
+      "script": "test:tuning-browser",
+      "timeout": 180,
+      "reason": "MySQL Tuning scorecard in the workspace on recorded Health/analysis/parameter evidence via perf-harness."
+    },
+    "tuning-rules.mjs": {
+      "kind": "suite",
+      "script": "test:tuning-rules",
+      "timeout": 180,
+      "reason": "Unit tests for tuningRules.ts over real recorded reports; spawns PYTHON locally for backend-computed inputs."
+    },
+    "ui-preferences-unit.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "reason": "no npm script; real UI preferences client queue with controlled transport timing in a vm sandbox; header: no server."
+    },
+    "update-check.mjs": {
+      "kind": "suite",
+      "script": "test:update-check",
+      "timeout": 180,
+      "reason": "Check for updates flow; the suite sets MYFLAMES_TEST_UPDATE itself so no network is used; PERF_SHOTS optional."
+    },
+    "update-install.mjs": {
+      "kind": "suite",
+      "script": "test:update-install",
+      "timeout": 180,
+      "reason": "In-place update flow with a fake desktop bridge; every check/stage mocked or answered by the real server through MYFLAMES_TEST_UPDATE; no network."
+    },
+    "waits.mjs": {
+      "kind": "suite",
+      "script": "test:waits",
+      "timeout": 180,
+      "reason": "Waits view on waits-1.0 reports replayed from live captures; mocked live endpoint."
+    },
+    "zoom.mjs": {
+      "kind": "suite",
+      "script": "test:zoom",
+      "timeout": 180,
+      "reason": "Real SVG geometry and animation frames for wheel zoom, momentum and cursor anchors; local render only."
+    }
+  }
+}

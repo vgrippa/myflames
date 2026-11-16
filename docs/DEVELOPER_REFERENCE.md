@@ -6239,6 +6239,108 @@ or a discovered test that never ran without a fixture skip fails the run as
 an INVENTORY MISMATCH; tests a package's `__init__` or `load_tests` hook
 supplies cannot be isolated per file and require `JOBS=1`.
 
+**Workspace browser suites.** `npm run test:suites` in `apps/workspace`
+calls `scripts/run_workspace_suites.mjs` (Node 22 built-ins only). Local
+runs and CI use this same runner. Existing per-suite npm scripts keep their
+commands; the runner invokes `node test/<file>` directly with
+`apps/workspace` as the working directory. It first compares every immediate
+entry of `apps/workspace/test`, including directories and hidden entries,
+with `scripts/workspace-suites.json`. Unlisted entries and manifest entries
+missing from disk are both reported, and either list causes exit 2 before
+any build or suite starts. Selection and sharding never bypass this check.
+
+The manifest has `version: 1` and an `entries` object keyed by file name.
+Each entry has `kind`, `script` (an existing npm script name or `null`) and
+a nonempty, one-line `reason`. `suite` and `live` entries also require a
+positive `timeout` in seconds and must name regular `.mjs` files. `suite`
+entries run by default. `live` entries run only with `--kind live`; their
+server prerequisites must already be available. `helper` entries support
+other suites, `generator` entries create artifacts, and `fixture` entries
+hold fixture files or directories. These three kinds are inventoried but
+never executed directly. A new test entry needs a manifest classification
+in the same change.
+
+Only `suite` entries may carry `quarantine`, a nonempty, one-line string
+stating the failure, the commit where it was seen and what tracks the fix.
+Use quarantine for known failures, never for write-safety suites. A
+quarantined suite still runs, and its failure or timeout still prints the
+last 60 log lines under a separate "Quarantined failures" heading, but
+does not fail the run. A quarantined suite that passes is listed as
+"passed while quarantined; remove the quarantine".
+
+Pass runner flags after npm's `--`, for example
+`npm run test:suites -- --jobs 2 --shard 1/3 --receipt artifacts/workspace.json`:
+
+- `--jobs N` bounds parallel suite workers; the default is half the CPUs
+  rounded down, at least 1 and capped at 4. The workspace builds once with
+  `npm run build` before workers start; `--no-build` uses an existing build.
+  A failed or timed-out build fails the run and starts no suites.
+- `--timeout SECONDS` overrides every selected entry's timeout and the build
+  timeout (otherwise 900 s for the build). A timeout fails the run unless
+  the suite is quarantined. On POSIX
+  each worker has its own process group, which is killed on timeout and
+  after worker exit. As in the Python runner, a parent-pid sweep using `ps`
+  also stops descendants that created their own session while the worker
+  still runs; group kill remains the fallback if `ps` is unavailable.
+  Windows uses `taskkill /F /T`. SIGINT/SIGTERM stop the owned processes and
+  prevent an interrupted or incomplete run from passing. The Python
+  runner's detached-child race and reparenting limits apply here too.
+- `--durations PATH` reads file-to-seconds JSON for longest-first scheduling
+  (default `scripts/workspace_suite_durations.json`). Missing recordings
+  weigh 60 s. `--shard I/N` uses a deterministic longest-first assignment
+  to the lightest shard, with file-name and shard-index tie breaks; every
+  selected file belongs to exactly one shard for the same inventory and
+  duration file. Equal-weight shards prefer fewer entries before their
+  index, including when recorded durations are zero. `--only a.mjs,b.mjs`
+  selects distinct `suite` entries before sharding, rejects other kinds or
+  unknown names, and cannot be combined with `--kind live`.
+- `--list` validates the inventory and prints selected file names in their
+  execution order, then exits 0 without building, running, or writing
+  artifacts. An execution with an empty selection, including an empty
+  shard, exits 2.
+- `--log-dir PATH` chooses the parent of a fresh run directory. Without it,
+  a temporary run directory is created. Its path prints at the start;
+  `build.log` and `<file>.log` retain complete stdout/stderr. The last 60
+  lines of each failed or timed-out worker print at the end. Logs remain
+  available after the run. A status line
+  (`[N/M done; Xs elapsed] running: a, b`) prints to stderr every 30 s,
+  including during the build.
+- `--durations-out PATH` atomically writes measured seconds for the suites
+  that ran, including failures and timeouts. Only this flag writes duration
+  data; ordinary runs never update the recorded scheduling input.
+- `--receipt PATH` atomically writes `commit` (full Git SHA), `clean_tree`
+  (boolean, captured before the build), `command`, ISO `started` and
+  `finished` timestamps, `node`, `counts` (`passed`, `failed`, `timed_out`,
+  `quarantined_failed`, `quarantined_passed`),
+  `suites` (`file`, `seconds`, `status`), and `exit_status`. Suite statuses
+  are `passed`, `failed`, `timed_out`, `quarantined-failed` or
+  `quarantined-passed`; quarantined timeouts count as `quarantined_failed`.
+  Build failures have zero completed suites. A root without verifiable
+  Git provenance records `commit: null`
+  and `clean_tree: false`, warns, and cannot produce a successful execution
+  receipt. A receipt write failure also makes the command fail.
+- `--root PATH` points inventory, build and workers at another repository
+  root. The runner tests use it for a disposable fake workspace.
+
+Each build and suite receives a fresh temporary HOME/USERPROFILE and a
+private TMPDIR (also TMP/TEMP), with `MYFLAMES_SECRET_BACKEND=vault`. These
+directories are removed afterwards. The worker environment passes only
+PATH, CI, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
+parent, plus Windows system executable variables where needed. It never
+inherits the user's HOME, client credentials or NODE_OPTIONS. Cached Chrome
+installations outside the private HOME can be named explicitly using
+PUPPETEER_EXECUTABLE_PATH or PUPPETEER_CACHE_DIR. This isolates configuration
+and temporary files; it is not an operating-system sandbox for test code.
+
+Execution exits 0 only if at least one selected suite ran and every selected
+non-quarantined suite passed. A completed run containing only quarantined
+suites may exit 0, even if all of them failed. Non-quarantined suite failures,
+build, interruption, cleanup and output-write failures exit 1;
+inventory, manifest, duration-data, argument and empty-selection
+errors exit 2. `--list` and `--help` are dry-run exceptions. The runner's own
+socket-free regression tests are
+`node --test scripts/run_workspace_suites.test.mjs`.
+
 **Live switches** (`test/_live_switches.py`, used by
 `test_connector_integration.py` and `test_schema_versions_live.py`).
 `MYFLAMES_LIVE_DOCKER=0` skips the live classes with the reason "live Docker
@@ -6294,6 +6396,15 @@ per tag and never cancels.
   themselves. The unit matrix in `test.yml` opts out of the live classes
   (`MYFLAMES_LIVE_DOCKER=0`); the `python37` job opts in with
   `MYFLAMES_REQUIRE_LIVE=1`.
+- `workspace.yml` (Workspace suites): push and pull requests to master, plus
+  manual runs, without path filters. Six duration-balanced shards on
+  ubuntu-24.04 use Node 22 and Python 3.14, with one suite at a time and one
+  build per shard. Puppeteer's browser cache is keyed by its locked version.
+  Setting `kernel.apparmor_restrict_unprivileged_userns=0` permits Chrome's
+  sandbox to launch on Ubuntu 24.04. Per-shard receipts always upload and
+  logs upload on failure; both artifacts are retained for 14 days. The
+  aggregate `suites` check runs even after failure or cancellation and
+  passes only when all six shards succeed.
 - `windows-desktop.yml` (Windows desktop): push and pull requests that touch
   `apps/desktop`, `myflames` or the workflow, plus manual runs;
   windows-latest with Python 3.14 and Node 22. It builds the PyInstaller
@@ -6346,6 +6457,17 @@ per tag and never cancels.
   them with twine; the publish job uploads through a Trusted Publisher
   (OpenID Connect, `id-token: write`, environment `pypi`), with no token
   stored anywhere.
+
+**Required checks**: master's branch protection requires `test (3.9)`,
+`test (3.11)`, `test (3.13)`, `test (3.14)`, `python37`, `windows`,
+`integration (mysql, TestLiveMySQL84, TestLiveSchemaVersionsMySQL84)`,
+`integration (mariadb, TestLiveMariaDB114, TestLiveSchemaVersionsMariaDB114)`
+and `changelog`, all pinned to GitHub Actions. Renaming one of these jobs or
+matrix entries leaves pull requests waiting for a check that never reports,
+so branch protection must change in the same change. Windows desktop and
+macOS desktop are not required because their workflows use path filters;
+macOS arm64 runners are also often unavailable. The workspace `suites`
+check is not required yet.
 
 **Consent canary** (`test/test_consent_canary.py`). Network-level proof that
 reading one connection group never logs in to a saved connection in another

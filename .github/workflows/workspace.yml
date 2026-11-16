@@ -1,0 +1,94 @@
+name: Workspace suites
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    name: suites (${{ matrix.shard }}/6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      PUPPETEER_CACHE_DIR: ${{ github.workspace }}/local/puppeteer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/workspace/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Set suite Python
+        run: python3 -c 'import sys; print("PYTHON=" + sys.executable)' >> "$GITHUB_ENV"
+      - name: Read Puppeteer version
+        id: puppeteer
+        run: node -e "console.log('version=' + require('./apps/workspace/package-lock.json').packages['node_modules/puppeteer'].version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.PUPPETEER_CACHE_DIR }}
+          key: puppeteer-${{ runner.os }}-${{ runner.arch }}-${{ steps.puppeteer.outputs.version }}
+      - name: Install workspace dependencies
+        working-directory: apps/workspace
+        run: npm ci
+      # Ubuntu 24.04's AppArmor restriction blocks the unprivileged user
+      # namespaces Chrome's sandbox needs. Allow them on this disposable
+      # runner so suites can launch Chrome with its sandbox enabled.
+      - name: Allow Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run workspace suites
+        working-directory: apps/workspace
+        # Fixed waits in several suites fail under parallel load on 4-vCPU runners (measured locally).
+        run: |
+          npm run test:suites -- --jobs 1 --shard ${{ matrix.shard }}/6 \
+            --receipt "${{ github.workspace }}/local/workspace-suites/shard-${{ matrix.shard }}.json" \
+            --log-dir "${{ github.workspace }}/local/workspace-suites/logs-${{ matrix.shard }}"
+      - uses: actions/upload-artifact@v7
+        name: Upload suite receipt
+        if: always()
+        with:
+          name: workspace-suites-receipt-${{ matrix.shard }}
+          path: local/workspace-suites/shard-${{ matrix.shard }}.json
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        name: Upload suite logs
+        if: failure()
+        with:
+          name: workspace-suites-logs-${{ matrix.shard }}
+          path: local/workspace-suites/logs-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: ignore
+
+  suites:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "Workspace shards finished with: $SHARD_RESULT"
+            exit 1
+          fi
