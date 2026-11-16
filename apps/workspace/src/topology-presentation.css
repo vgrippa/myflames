@@ -392,10 +392,7 @@
   border-radius: calc(var(--radius-sm) + 1px);
   background: linear-gradient(
     180deg,
-    light-dark(
-      var(--surface-raised),
-      color-mix(in srgb, var(--surface-raised) 86%, var(--ink) 14%)
-    ) 0%,
+    var(--surface-raised) 0%,
     light-dark(
       color-mix(in srgb, var(--surface) 58%, var(--surface-muted) 42%),
       var(--surface-raised)
@@ -486,11 +483,12 @@
   box-shadow: none;
 }
 
-/* ---- Stale / other-connection reports and reduced motion ----------------- */
+/* ---- Inactive reports and reduced motion -------------------------------- */
 
 /* This liveness gate must override even the all-healthy rail's :has() rule.
+   A failed refresh can disable motion without adding a stale ancestor.
    The narrow group frame stands in for that rail and must lose its halo too. */
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion]:is(.is-stale *, .is-other-connection *) :is(.cluster-stem, .cluster-bus-line, .cluster-group, .topology-line, .clusterset-arrow) {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion]:is([data-motion="off"], .is-stale *, .is-other-connection *) :is(.cluster-stem, .cluster-bus-line, .cluster-group, .topology-line, .clusterset-arrow) {
   box-shadow: none !important;
 }
 

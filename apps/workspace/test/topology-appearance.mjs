@@ -223,6 +223,17 @@ try {
       for (const scheme of ['light', 'dark']) {
         await setUiPreferences(page, { theme: scheme });
         await assertStaleHasNoGlow(root, '.topology-link.is-running .topology-line', `replication ${scheme}`);
+        // A failed refresh disables motion on the root without adding an
+        // .is-stale ancestor. Its running links must also lose their halos.
+        assert.equal(await page.$eval(root, e => e.dataset.motion), 'on', `replication ${scheme}: current report enables motion`);
+        await page.$eval(root, e => { e.dataset.motion = 'off'; });
+        try {
+          const shadows = await page.$$eval(`${root} .topology-link.is-running .topology-line`, elements => elements.map(e => getComputedStyle(e).boxShadow));
+          assert.ok(shadows.length > 0, `replication ${scheme}: motion-off report keeps its connectors`);
+          assert.deepEqual(shadows, shadows.map(() => 'none'), `replication ${scheme}: motion-off report has no connector glow`);
+        } finally {
+          await page.$eval(root, e => { e.dataset.motion = 'on'; });
+        }
       }
     }
     for (const scheme of ['light', 'dark']) {
