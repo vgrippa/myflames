@@ -9,3 +9,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Bug fixes
 
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
+
+### Security fixes
+
+- Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.
