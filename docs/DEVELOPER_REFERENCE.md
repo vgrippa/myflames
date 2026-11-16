@@ -2891,6 +2891,39 @@ planner, write gate and session engine from the CLI.
   compiled by `test/sql-format-load.mjs`); browser suite `test/editor-tools.mjs`
   (`npm run test:editor-tools`; `EDITOR_TOOLS_SHOTS=<dir>` writes screenshots at
   1440x900 and 720x520, light and dark).
+- Toolbar editing actions (`QueryLab.tsx`, `editor/keymap.ts`): the
+  `format-tools` group contains **Find** (`search`) and **Find and replace**
+  (`replace`) buttons before **Format SQL**, followed by **Editing actions**
+  (`more`). The Find buttons call `SqlEditorHandle.openFind(mode)` and show
+  platform shortcuts from `EDITOR_SHORTCUTS` in their titles and
+  `aria-keyshortcuts`. They stay available on empty SQL, during a run and
+  without a server session; the workspace always keeps at least one query tab.
+  **Editing actions** uses the kit's keyboard-navigable `ContextMenu`, with
+  wrapping labels and shortcuts within the viewport. Toolbar context menus
+  opt into `portal` to render in `document.body`, above the editor/results
+  splitter and editor panes, keeping menu focus and Escape's return to the
+  opener. Editing actions also opts into `closeOnBlur`: focus moving outside
+  its items dismisses it without taking focus back from the destination.
+  Palette dispatch through `runEditorCommand` or `formatSql` closes the menu
+  before running the editor command. Other context menus keep their existing
+  placement and dismissal. The browser
+  suite `test/editor-find.mjs` hit-tests the menu at the divider's height in
+  1440x900 and 720x520 windows, light and dark. `EDITOR_ACTIONS` comes
+  from the shortcut table in its order, excluding `escape`, `indent`,
+  `outdent` and alias rows. **Toggle Tab moving focus** is last, with
+  Shift+Alt+M on macOS and Ctrl+M elsewhere, dispatched through the same
+  `runCommand` path; `editorActionShortcuts` includes every
+  platform alias on the same item, including the conditional Ctrl+G binding
+  for Go to line off Mac. Setting-gated commands stay visible and disabled
+  with `Turn on <setting label> in Settings > Query editor`, using
+  `EDITOR_SETTING_LABELS` (Multiple cursors, Problem warnings).
+  `SqlEditorHandle.runCommand(id): boolean` takes editor focus before running
+  the command from `editorCommands(settings)`, the same enabled command map
+  used by `editorKeymap`; unknown IDs and disabled commands return false
+  without taking focus. Commands that open a field or panel keep its focus.
+  The palette lists **Find**, **Find and replace** and **Go to line** next to
+  **Format SQL**, opening the Query editor first through
+  `QueryLabHandle.runEditorCommand` and `whenShown`.
 - Toolbar layout (`editor.css`): the editor toolbar wraps onto another row
   whenever its items do not fit, at any pane width; no fixed breakpoint can
   promise one row, since the Database picker's longest name, the scope, the
@@ -2936,7 +2969,7 @@ planner, write gate and session engine from the CLI.
   (`TABLE_ROWS`, the server's estimate) and `bytes` (`DATA_LENGTH + INDEX_LENGTH`) to each table,
   None for views, and `stats` to the report; Maintenance > Dump reads it for the one chosen database
   (MariaDB opens each table of that schema to answer). In `SchemaBrowser.tsx`, expanding a schema lists **Routines**, **Triggers** and **Events** folders after its tables and views; opening a folder loads its group on demand, double-click or Enter/Space on an object inserts `<quoted_schema>.<quoted_name>` at the editor cursor, and its context menu offers **Insert name** and **Show CREATE PROCEDURE / FUNCTION / TRIGGER / EVENT** (appended and run via `onQuery`). Tests: `test/test_schema_browser.py`, `test/test_ui.py`.
-- Find and replace (`apps/workspace/src/editor/FindBar.tsx`, `editor/find.ts`, `editor/findMarks.ts`, `editor-find.css`): `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux; `Ctrl+Alt+F` also works there) opens Find and replace above the editor. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches (`Ctrl+G` opens Go to line when Find is closed on Windows and Linux); Escape closes the bar and returns to the editor. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks, including above `HIGHLIGHT_LIMIT` (60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They plan CodeMirror changes (`planReplace`) dispatched as one transaction with `isolateHistory`, so one undo restores the text; a single Replace remembers its undo anchor, and an immediate undo returns the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs` and `test/editor-find-unit.mjs`.
+- Find and replace (`apps/workspace/src/editor/FindBar.tsx`, `editor/find.ts`, `editor/findMarks.ts`, `editor-find.css`): the toolbar's **Find** and **Find and replace** buttons open their respective modes above the editor and focus the Find field; replace mode also shows Replace with. `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux; `Ctrl+Alt+F` also works there) opens Find and replace above the editor. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches (`Ctrl+G` opens Go to line when Find is closed on Windows and Linux); Escape closes the bar and returns to the editor. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks, including above `HIGHLIGHT_LIMIT` (60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They plan CodeMirror changes (`planReplace`) dispatched as one transaction with `isolateHistory`, so one undo restores the text; a single Replace remembers its undo anchor, and an immediate undo returns the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs` and `test/editor-find-unit.mjs`.
 - Open and save `.sql` files, Continue on error, and the tab's default database picker (`QueryLab.tsx`, `QueryTabMenu.tsx`, `ResultsPane.tsx`, `session.ts`, `myflames/editor_session.py`, `myflames/file_picker.py`):
   - **Open and save `.sql` files**: **Open SQL file…** in the query tab menu or `⌘O` / `Ctrl+O` inside the Query editor calls `POST /api/editor/file/open` (`{}`). The native file dialog (`file_picker.choose_sql_file`, `.sql` and `.txt`, serialized by `folder_picker._DIALOG_LOCK`, 120 s timeout) resolves and checks its chosen path. The reader then opens through the checked parent without following a file or folder swapped for a symbolic link; it refuses anything but a regular file and checks the 5 MiB limit (`SQL_MAX_BYTES`, 5,242,880 bytes) both on the open descriptor and by reading at most one byte beyond the limit, so a file that grows during the read is refused too. It strips a UTF-8 BOM, replaces invalid UTF-8 bytes with `U+FFFD` with a `warning`, and opens a new tab named after the file (without `.sql` / `.txt`, clipped to 64 characters).
     The process-local `_FILE_TOKENS` map keeps at most 200 opaque tokens bound to the resolved path and its parent directory's device/inode; the renderer never supplies a write path. `⌘S` / `Ctrl+S` saves via `POST /api/editor/file/save` (`{sql, token}`). `⇧⌘S` / `Ctrl+Shift+S`, or Save without a binding, uses `{sql, save_as: true, name}` and `choose_save_file`. An `unknown_token` after a backend restart opens Save as within the same Save operation; success, cancellation or failure is reported, and a cancelled or failed save or close keeps the tab's unsaved edits. Save as suggests the bound file's name, or `<tab.name>.sql` without a binding. `_clean_suggested_name` removes path components and controls, replaces colons with hyphens, appends `.sql` when needed and clips the suggested name to 255 characters. On macOS and Windows the sanitized name reaches the native dialog through `MYFLAMES_SAVE_NAME` unchanged, including quotes and Unicode, never as script source.

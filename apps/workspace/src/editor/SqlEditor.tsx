@@ -12,7 +12,7 @@ import { completionExtension, completionSources } from "./completion";
 import { FindBar, findHooks } from "./FindBar";
 import { findExtension } from "./findMarks";
 import { hoverExtension } from "./hover";
-import { editorKeymap } from "./keymap";
+import { editorCommands, editorKeymap } from "./keymap";
 import { FLASH_MS, matchingBrackets, setError, setFlash, setStatement, sqlMarks } from "./marks";
 import { problemsExtension } from "./problems";
 import { sqlHighlighting, sqlLanguage } from "./sqlLanguage";
@@ -322,6 +322,16 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     revealInPage() { host.current?.scrollIntoView({ block: "nearest", inline: "nearest" }); },
     openFind(mode) { if (viewRef.current) findHooks.openFind(viewRef.current, mode); },
     openGoToLine() { if (viewRef.current) findHooks.openGoToLine(viewRef.current); },
+    runCommand(id) {
+      const view = viewRef.current;
+      if (!view) return false;
+      const run = editorCommands(latest.current.settings).get(id);
+      if (!run) return false;
+      // Focus before running: Find, Go to line and Problems can then focus
+      // their own field or panel without the menu's cleanup stealing focus.
+      view.focus();
+      return run(view);
+    },
   }), []);
 
   return <div className="sql-editor-wrap sql-cm" style={props.height === undefined ? undefined : { height: props.height }}>

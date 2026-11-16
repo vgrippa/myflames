@@ -1596,7 +1596,7 @@ export type TableContextAction =
   | { divider: true };
 
 /** Row and cell actions share measured placement, dismissal and keyboard focus. */
-export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
+export function ContextMenu({ x, y, label, header, opener, actions, onClose, className = "", portal = false, closeOnBlur = false }: {
   x: number;
   y: number;
   label: string;
@@ -1604,6 +1604,11 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
   opener: HTMLElement | null;
   actions: TableContextAction[];
   onClose: () => void;
+  className?: string;
+  /** Escape a toolbar's stacking context without changing other menus. */
+  portal?: boolean;
+  /** Dismiss when another control or surface takes keyboard focus. */
+  closeOnBlur?: boolean;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ left: 8, top: 8, visibility: "hidden" });
@@ -1644,7 +1649,8 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
     };
   }, [open, x, y, actions]);
   if (!open) return null;
-  return <div ref={panel} className="context-menu" role="menu" aria-label={label} tabIndex={-1}
+  const menu = <div ref={panel} className={`context-menu ${className}`.trim()} role="menu" aria-label={label} tabIndex={-1}
+    onBlur={closeOnBlur ? event => { if (!event.currentTarget.contains(event.relatedTarget)) onClose(); } : undefined}
     style={{ ...style, minWidth: "min(220px, calc(100vw - 16px))", maxWidth: "min(380px, calc(100vw - 16px))" }}>
     {header && <div className="context-menu-header">{header}</div>}
     {items.map((action, index) => {
@@ -1660,6 +1666,7 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
       </button>;
     })}
   </div>;
+  return portal ? createPortal(menu, document.body) : menu;
 }
 
 /** Marks *marker* with data-more-left / data-more-right while *scroller* has

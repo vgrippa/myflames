@@ -601,6 +601,13 @@ side.
   inside strings, quoted names or comments, with several cursors or a
   selection, or when the opening `(` is more than 4,000 characters before
   the caret.
+- The editor toolbar's **Editing actions** menu lists editing commands
+  with their platform shortcuts in the shortcut table's order, with alternate
+  shortcuts on the same item. It includes line comments and movement,
+  selections and cursors, Find, Problems and suggestions. A command disabled
+  in Settings stays listed with the setting to turn on in
+  **Settings > Query editor**. Choosing a command returns focus to the editor
+  or opens its field or panel.
 - The editor's **Query editor shortcuts** popover (the ⓘ in the editor
   toolbar) lists the available keys from this table, using arrow glyphs,
   Esc and the platform's Return or Enter label. `Mod` below is **⌘**
@@ -652,8 +659,11 @@ side.
   The **Problems** panel says **No problem warnings** when empty; its
   **Close** button returns focus to the editor. Suggestions are announced
   as **SQL suggestions**.
-- **Find and replace** (**⌘F** / **Ctrl+F** for Find, **⌥⌘F** / **Ctrl+H**
-  for Replace) searches SQL in the active tab with **Match case** (`Aa`),
+- **Find** and **Find and replace** have their own toolbar buttons beside
+  **Format SQL**, as well as shortcuts (**⌘F** / **Ctrl+F** for Find,
+  **⌥⌘F** / **Ctrl+H** for Replace). Both focus the Find field; Replace also
+  shows **Replace with**. They are also in the command palette alongside
+  **Go to line**. Search SQL in the active tab with **Match case** (`Aa`),
   **Whole word** (`|ab|`) and **Regular expression** (`.*`). It counts up to
   100,000 nonempty matches and highlights up to 1,000, including in scripts
   above the 60,000-character syntax-color limit. Enter and Shift+Enter, or **⌘G** /

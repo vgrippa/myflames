@@ -43,10 +43,12 @@ Related: [Edit SQL, suggestions and checks](queries.md#edit-sql-suggestions-and-
 Use find and replace to locate repeated text and change it throughout a query tab.
 
 1. Open a **Query editor** tab containing repeated text, such as the `status` names in the [multiple-cursor example](#multiple-cursors).
-2. Press **⌘F** / **Ctrl+F** and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
-3. Press **⌥⌘F** / **Ctrl+H** to open Replace, then type `state` in **Replace with**.
+2. Click **Find** in the editor toolbar, or press **⌘F** / **Ctrl+F**, and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
+3. Click **Find and replace** in the editor toolbar, or press **⌥⌘F** / **Ctrl+H**, then type `state` in **Replace with**.
 4. Check the highlighted matches. Choose **Replace** to change one match or **Replace all** to change all matches in the tab.
 5. Click back in the editor and press **⌘Z** / **Ctrl+Z** to undo the replacement in one step.
+
+The toolbar's **Editing actions** menu lists editing commands with their shortcuts, including **Go to line**, line comments, cursor actions and **Toggle Tab moving focus** (**⇧⌥M** / **Ctrl+M**). **Find**, **Find and replace** and **Go to line** are also in the command palette (**⌘K** / **Ctrl+K**).
 
 ![In a Query editor tab with repeated status names, press Command+F on macOS or Ctrl+F on Windows and Linux and search for status. While Find is open, Command+G or Ctrl+G advances to the next match. Press Option+Command+F or Ctrl+H, enter state in Replace with and check the highlighted matches. Choose Replace for one match or Replace all for the whole tab. Click in the editor and press Command+Z or Ctrl+Z to undo the replacement in one step.](../screenshots/howto-find-replace.gif)
 
