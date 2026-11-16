@@ -26,16 +26,20 @@ const holderSource = `
     { detached: true, stdio: ['ignore', 'ignore', 'pipe'], env });
   process.stdout.write('pid ' + child.pid + '\\n');
   let text = '';
-  child.stderr.on('data', chunk => { text += chunk; if (/myflames UI: http/.test(text)) { process.stdout.write('ready\\n'); text = ''; } });
+  child.stderr.on('data', chunk => { process.stderr.write(chunk); text += chunk; if (/myflames UI: http/.test(text)) { process.stdout.write('ready\\n'); text = ''; } });
   setInterval(() => {}, 1000);`;
 
 async function run(mark, home) {
   const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, MYFLAMES_SECRET_BACKEND: 'vault', MARK: mark ? '1' : '0',
     PYTHONPATH: root, PYTHONDONTWRITEBYTECODE: '1', PY: process.env.MYFLAMES_DESKTOP_PYTHON || 'python3', ENTRY: entry };
-  const holder = spawn(process.execPath, ['-e', holderSource], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+  const holder = spawn(process.execPath, ['-e', holderSource], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const state = { holder, pid: 0 };
+  // The backend's stderr explains a start that never came (only its tail).
+  let err = '';
+  holder.stderr.on('data', chunk => { err = (err + chunk).slice(-2000); });
+  const why = () => (err.trim() ? '; backend stderr: ' + err.trim() : '; the backend wrote nothing to stderr');
   state.ready = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('backend did not start')), 20000);
+    const timer = setTimeout(() => reject(new Error('backend did not start' + why())), 20000);
     let out = '';
     holder.stdout.on('data', chunk => {
       out += chunk;
@@ -43,7 +47,7 @@ async function run(mark, home) {
       if (match) state.pid = Number(match[1]);
       if (out.includes('ready')) { clearTimeout(timer); resolve(); }
     });
-    holder.once('exit', () => { clearTimeout(timer); reject(new Error('stand-in parent exited early')); });
+    holder.once('exit', () => { clearTimeout(timer); reject(new Error('stand-in parent exited early' + why())); });
   });
   return state;
 }
