@@ -1,0 +1,108 @@
+name: macOS runner retry
+
+on:
+  workflow_run:
+    workflows: ["macOS desktop"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  retry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Retry only when no runner was assigned
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          def no_retry(reason):
+              print("No retry: " + reason + ".")
+              sys.exit(0)
+
+          def numeric_id(value):
+              if not re.fullmatch(r"[1-9][0-9]*", value):
+                  raise ValueError("Expected a positive numeric identifier")
+              return int(value)
+
+          def api_pages(endpoint):
+              result = subprocess.run(
+                  ["gh", "api", endpoint, "--paginate", "--slurp"],
+                  check=True, capture_output=True, text=True,
+              )
+              return json.loads(result.stdout)
+
+          def main():
+              # Never use a PR's branch, title, checkout or artifacts here.
+              run_id = numeric_id(os.environ["RUN_ID"])
+              attempt = numeric_id(os.environ["RUN_ATTEMPT"])
+              repo = os.environ["GH_REPO"]
+              if os.environ["RUN_CONCLUSION"] == "success":
+                  no_retry("the triggering run succeeded")
+              if attempt >= 4:
+                  no_retry("attempt 4 or later has reached the three-retry limit")
+
+              pages = api_pages(
+                  f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs"
+              )
+              jobs = [job for page in pages for job in page["jobs"]]
+              unsuccessful = [job for job in jobs if job["conclusion"] != "success"]
+              if not unsuccessful:
+                  no_retry("the attempt has no non-successful jobs")
+
+              for job in unsuccessful:
+                  job_id = numeric_id(str(job["id"]))
+                  steps = job["steps"]
+                  if not isinstance(steps, list):
+                      raise ValueError("Missing step data")
+                  # Job started_at can be set while queued. Step timestamps
+                  # and execution results tell us whether a machine ran work.
+                  if any(
+                      step.get("started_at") is not None
+                      or step.get("status") == "in_progress"
+                      or step.get("conclusion") not in (None, "skipped")
+                      for step in steps
+                  ):
+                      no_retry(f"job {job_id} had a step that started")
+
+                  annotations = api_pages(
+                      f"repos/{repo}/check-runs/{job_id}/annotations"
+                  )
+                  if not any(
+                      "not acquired" in (annotation.get(field) or "").lower()
+                      for page in annotations
+                      for annotation in page
+                      for field in ("message", "title", "raw_details")
+                  ):
+                      no_retry(f"job {job_id} has no 'not acquired' annotation")
+
+              subprocess.run(
+                  ["gh", "run", "rerun", str(run_id), "--repo", repo],
+                  check=True, capture_output=True, text=True,
+              )
+              print(
+                  f"Retry requested for run {run_id}: all non-successful jobs "
+                  "had no started steps and a 'not acquired' annotation "
+                  f"(next attempt {attempt + 1}/4)."
+              )
+
+          try:
+              main()
+          except (KeyError, TypeError, ValueError, AttributeError, OSError,
+                  subprocess.CalledProcessError):
+              print("No retry: GitHub API data could not be verified or the rerun request failed.")
+              sys.exit(1)
+          PY
