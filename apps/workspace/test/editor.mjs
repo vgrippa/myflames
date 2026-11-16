@@ -229,7 +229,10 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
+  browser = await puppeteer.launch({ headless: "shell", args: [
+    ...(process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : []),
+    ...(process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean),
+  ] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -971,7 +974,10 @@ try {
       shown: getComputedStyle(row.querySelector(".row-more")).visibility === "visible", selected: row.getAttribute("aria-selected") === "true" };
   }));
   assert.ok(columnRows.every((r) => r.height <= 30 && r.inline), `column rows stay on one line: ${JSON.stringify(columnRows)}`);
-  assert.ok(columnRows.filter((r) => !r.selected).every((r) => !r.shown), "unfocused rows hide their actions button");
+  // A device without hover (headless Chrome on Linux) always shows the button.
+  const hoverDevice = await page.evaluate(() => matchMedia("(hover: hover)").matches);
+  assert.ok(columnRows.filter((r) => !r.selected).every((r) => r.shown !== hoverDevice),
+    hoverDevice ? "unfocused rows hide their actions button" : "without hover every row shows its actions button");
   assert.equal(calls("/api/live/catalog").at(-1).table, "users");
   const schemaOpener = await treeRow("table", "orders");
   const schemaMore = await schemaOpener.$('button[aria-label="More actions for orders"]');

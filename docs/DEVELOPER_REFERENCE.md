@@ -6348,7 +6348,13 @@ Each build and suite receives a fresh temporary HOME/USERPROFILE and a
 private TMPDIR (also TMP/TEMP), with `MYFLAMES_SECRET_BACKEND=vault`. These
 directories are removed afterwards. The worker environment passes only
 PATH, CI, PYTHON, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
-parent, plus Windows system executable variables where needed. It never
+parent, plus Windows system executable variables where needed. Headless
+Chrome may report no hover-capable pointer (on the Linux runners), where the
+touch-screen CSS (`@media (hover: none)`) shows row actions that the desktop
+hides; suites that check hover-only controls read `matchMedia("(hover: hover)")`
+and assert the matching behavior, and workspace.yml prints what its browser
+reports. Neither `--blink-settings` hover types nor DevTools media emulation
+changes that answer. It never
 inherits the user's HOME, client credentials or NODE_OPTIONS. Cached Chrome
 installations outside the private HOME can be named explicitly using
 PUPPETEER_EXECUTABLE_PATH or PUPPETEER_CACHE_DIR. This isolates configuration

@@ -56,6 +56,15 @@ jobs:
       - name: Allow Chrome sandbox
         if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Suites that check hover-only controls assert the touch behavior when
+      # the browser has no hover-capable pointer; print what this runner has.
+      - name: Report the browser's pointer
+        working-directory: apps/workspace
+        run: >-
+          node --input-type=module -e "import p from 'puppeteer';
+          const b = await p.launch({ headless: 'shell' }); const page = await b.newPage();
+          console.log('hover:', await page.evaluate(() => matchMedia('(hover: hover)').matches),
+          'fine pointer:', await page.evaluate(() => matchMedia('(pointer: fine)').matches)); await b.close();"
       - name: Run workspace suites
         working-directory: apps/workspace
         # Fixed waits in several suites fail under parallel load on 4-vCPU runners (measured locally).
