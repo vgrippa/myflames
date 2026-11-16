@@ -1022,10 +1022,8 @@ are the contracts of the tools that check them.
   the format in [Release notes](#release-notes) (title, sections, order, no
   heading deeper than level two, at least one entry, closed code fences, no em
   dash and no `/api/` path outside code fences) with a message on stderr that
-  says what to fix, and exits 1. The script then ends the notes with the
-  inspiration credit line (`CREDIT`, the README's "Inspired by Brendan Gregg's
-  FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless the page already
-  holds it, so no release's notes lose it.
+  says what to fix, and exits 1. The script does not add the inspiration credit
+  line to the page body.
 - **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
   (`test/readme-screenshots.mjs`) builds nothing: it opens the built
   workspace in `myflames/ui_assets` through the perf harness (`open()` with
@@ -1193,7 +1191,8 @@ messages, never in the notes.
   empty: Release highlights, New features, Improvements, Bug fixes, Security
   fixes, Deprecations and removals, Known issues, Packaging notes, Additional
   resources (always present: the download links, the Quickstart and GitHub
-  Issues). No other headings. The page ends with the inspiration credit line.
+  Issues). No other headings. The page does not repeat the inspiration credit: it
+  lives in the About myflames window, the README, NOTICE and HTML report footers.
 - **Release highlights.** Only for a version with three or more notable
   changes: two to four bullets of one sentence each, naming what is worth
   upgrading for. The detail stays in the sections below.

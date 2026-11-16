@@ -52,10 +52,6 @@ STYLE = (
     ("/api/", "an internal /api/ path: say what the user can do instead"),
 )
 
-# Every release's notes end with the project's origin credit (README, NOTICE):
-# Brendan Gregg and Tanel Poder are where this work began. Never remove it.
-CREDIT = ("Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and "
-          "[Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).")
 
 
 class ReleaseNotesError(Exception):
@@ -186,8 +182,6 @@ def main(argv=None):
     except ReleaseNotesError as exc:
         print("release_notes: %s" % exc, file=sys.stderr)
         return 1
-    if CREDIT not in body:
-        body = body.rstrip("\n") + "\n\n" + CREDIT + "\n"
     # UTF-8 whatever the locale: the notes hold en dashes, arrows and µ.
     sys.stdout.flush()
     sys.stdout.buffer.write(body.encode("utf-8"))

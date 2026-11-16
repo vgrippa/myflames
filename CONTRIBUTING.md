@@ -106,7 +106,7 @@ scripts/
 - **Single parser.** Never parse JSON in output modules — always use `parser.parse_explain()`.
 - **SVG rules.** Always update both `height` AND `viewBox` together.
 - **Preserve input order.** Do not sort `inputs[]` in the JSON — order is semantically significant (outer vs inner table).
-- **Preserve credits.** Never remove the "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs" attribution.
+- **Preserve credits.** Never remove the "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs" attribution from the About myflames window, the README, NOTICE or HTML report footers. Release notes and pull requests do not repeat it.
 
 ## Adding a new teach lesson
 

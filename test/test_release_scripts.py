@@ -171,19 +171,16 @@ class ReleaseNotesTest(unittest.TestCase):
             self.assertEqual(bad.returncode, 1)
             self.assertIn("Not a release version", bad.stderr)
 
-    def test_cli_notes_end_with_the_inspiration_credit_once(self):
+    def test_cli_notes_do_not_add_the_inspiration_credit(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")
-        self.assertIn(notes.CREDIT, readme, "the credit matches the README's line")
+        credit = "Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/)."
+        self.assertIn(credit, readme)
         with tempfile.TemporaryDirectory() as tmp:
             page = Path(tmp) / "3.4.0.md"
             page.write_text(PAGE, encoding="utf-8")
             done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertTrue(done.stdout.endswith("\n\n" + notes.CREDIT + "\n"), done.stdout[-200:])
-            # A page that already carries the credit is not given a second one.
-            page.write_text(PAGE + "\n" + notes.CREDIT + "\n", encoding="utf-8")
-            again = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
-            self.assertEqual(again.stdout.count(notes.CREDIT), 1)
+            self.assertNotIn("Inspired by", done.stdout)
 
 
 class RealReleaseNotesTest(unittest.TestCase):
@@ -191,14 +188,14 @@ class RealReleaseNotesTest(unittest.TestCase):
 
     FOLDER = REPO / "docs/release-notes"
 
-    def test_every_page_is_in_the_format_and_ends_with_the_credit(self):
+    def test_every_page_is_in_the_format_without_the_credit(self):
         pages = sorted(p for p in self.FOLDER.glob("*.md") if p.name != "index.md")
         self.assertGreater(len(pages), 20)
         for path in pages:
             with self.subTest(path.name):
                 text = path.read_text(encoding="utf-8")
                 date, body = notes.page(text, path.stem)
-                self.assertTrue(text.rstrip("\n").endswith(notes.CREDIT), "%s ends with the credit" % path.name)
+                self.assertNotIn("Inspired by", text)
                 self.assertIn("## Additional resources", body)
 
     def test_index_lists_every_page_newest_first_with_its_date(self):
