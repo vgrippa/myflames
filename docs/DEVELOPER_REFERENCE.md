@@ -150,7 +150,13 @@ in the first `/api/lifecycle/tools` probe does not count against it, and the
 45 s kill in `scripts/smoke.cjs` stays the hard limit for the whole smoke.
 Each phase change writes a `Desktop smoke phase: <name> at <ms> ms` line to
 stdout, and a successful run prints a `Desktop smoke timings:` line with each
-phase's milliseconds. When the app exits non-zero, `scripts/smoke.cjs` puts
+phase's milliseconds. Both child streams go through `scripts/smoke-output.cjs`,
+which buffers by line, scrubs each complete line as it arrives (web addresses,
+any `http` or `https` scheme in any letter case, become `[private URL]`, and a
+`#launch=<token>` becomes `#launch=[private]`) and keeps a bounded window: the
+last 20000 characters of stdout and the last 4000 of diagnostics, with the
+trailing partial line scrubbed when the stream ends. A successful run prints
+the scrubbed stdout. When the app exits non-zero, `scripts/smoke.cjs` puts
 the app's scrubbed stdout before its diagnostics in the error, and says when
 the 45 s limit is what stopped it.
 Run `node apps/desktop/scripts/editor-settings-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
