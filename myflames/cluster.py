@@ -1472,11 +1472,15 @@ def _read_clusterset(reader, report, metadata, local, others=None):
     cs = {"id": _text(mine[0]), "name": _text(mine[5]), "local_cluster": me["name"], "local_role": me["role"],
           "invalidated": me["invalidated"], "primary_cluster": primary["name"] if primary else None,
           "clusters": clusters, "channel": None,
-          "from_local_copy": me["role"] != "PRIMARY" or metadata.get("local_copy") == "left_group"}
+          "from_local_copy": me["role"] != "PRIMARY" or metadata.get("local_copy") in ("left_group", "read_replica")}
     report["clusterset"] = cs
     if me["role"] != "PRIMARY":
         report["notes"].append("This cluster is not the ClusterSet's primary cluster, so the ClusterSet read here "
                                "is its replicated copy of the metadata and may be behind. Connect to the primary "
+                               "cluster for the current view.")
+    elif metadata.get("local_copy") == "read_replica":
+        report["notes"].append("This server is a read replica, so the ClusterSet read here is its replicated copy "
+                               "of the metadata and may be behind. Connect to a group member of the primary "
                                "cluster for the current view.")
     name = me["name"] or "This cluster"
     if me["invalidated"]:
@@ -1615,9 +1619,12 @@ def _read_read_replica(reader, report):
     report["metadata"] = metadata
     _use_cluster(report, metadata, row)
     report["cluster"]["uuid"] = _text(row[3])
+    others = {}
     group_instances = 0
     for inst in instances:
-        if inst.pop("cluster_id") != metadata["cluster_id"]:
+        cluster_id = inst.pop("cluster_id")
+        if cluster_id != metadata["cluster_id"]:
+            others.setdefault(cluster_id, []).append(inst)
             continue
         metadata["instances"].append(inst)
         if inst is me:
@@ -1642,6 +1649,7 @@ def _read_read_replica(reader, report):
     report["notes"].append("This server is a read replica of the InnoDB Cluster: it replicates asynchronously over "
                            "the %s channel and is not a group member, so the group's quorum and members are not "
                            "visible here. The metadata read here is its replicated copy." % READ_REPLICA_CHANNEL)
+    _read_clusterset(reader, report, metadata, local, others)
     _judge_read_replica(reader, report, local)
     _read_routers(reader, report, metadata)
     return True
