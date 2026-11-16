@@ -31,7 +31,9 @@ const holderSource = `
 
 async function run(mark, home) {
   const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, MYFLAMES_SECRET_BACKEND: 'vault', MARK: mark ? '1' : '0',
-    PYTHONPATH: root, PYTHONDONTWRITEBYTECODE: '1', PY: process.env.MYFLAMES_DESKTOP_PYTHON || 'python3', ENTRY: entry };
+    PYTHONPATH: root, PYTHONDONTWRITEBYTECODE: '1', PY: process.env.MYFLAMES_DESKTOP_PYTHON || 'python3', ENTRY: entry,
+    // On SIGABRT Python then prints every thread's stack, which shows where a stuck start waits.
+    PYTHONFAULTHANDLER: '1' };
   const holder = spawn(process.execPath, ['-e', holderSource], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const state = { holder, pid: 0 };
   // The backend's stderr explains a start that never came (only its tail).
@@ -39,7 +41,11 @@ async function run(mark, home) {
   holder.stderr.on('data', chunk => { err = (err + chunk).slice(-2000); });
   const why = () => (err.trim() ? '; backend stderr: ' + err.trim() : '; the backend wrote nothing to stderr');
   state.ready = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('backend did not start' + why())), 20000);
+    const timer = setTimeout(() => {
+      // Ask the stuck backend for its stacks, give it a second to print them, then fail.
+      if (state.pid) try { process.kill(state.pid, 'SIGABRT'); } catch {}
+      setTimeout(() => reject(new Error('backend did not start' + why())), 1000);
+    }, 20000);
     let out = '';
     holder.stdout.on('data', chunk => {
       out += chunk;
