@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
-import { SCENARIOS } from './action-feedback-lib.mjs';
+import { SCENARIOS, selectScenarios } from './action-feedback-lib.mjs';
 
 const source = name => ts.createSourceFile(name, fs.readFileSync(new URL(name, import.meta.url), 'utf8'),
   ts.ScriptTarget.Latest, true, name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.JS);
@@ -27,6 +27,18 @@ const editor = source('../src/QueryLab.tsx');
 const errorText = executable(named(kit, 'errorText'), {});
 const writeFailure = executable(named(kit, 'writeFailure'), { errorText });
 let checks = 0;
+
+for (const name of ['home-test-connection', 'home-save-connection']) {
+  assert.deepEqual(selectScenarios(SCENARIOS, name).map(s => s.name), [name]);
+  checks++;
+}
+assert.equal(selectScenarios(SCENARIOS, ''), SCENARIOS);
+assert.deepEqual(selectScenarios(SCENARIOS, ' home-test-connection, home-save-connection ').map(s => s.name),
+  ['home-test-connection', 'home-save-connection']);
+for (const value of ['misspelled', 'home-test-connection,misspelled', 'home-test-connection,', ' ', undefined]) {
+  assert.throws(() => selectScenarios(SCENARIOS, value), /Unknown action feedback scenarios|requires comma-separated/);
+  checks++;
+}
 
 // Stop/Commit/Roll back already share writeFailure. Exercise their actual
 // catch blocks with both HTTP classes and a rejected network request.
@@ -65,11 +77,19 @@ const harness = source('./action-feedback-lib.mjs');
 for (const errorStatus of [undefined, 503]) {
   const replies = [];
   const endpoint = '/api/editor/commit';
-  const handle = { boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }), evaluate: async () => 'button' };
+  let scrolled = false;
+  let armed = false;
+  const handle = {
+    scrollIntoView: async () => { assert.equal(armed, false, 'scrolling is setup, not action feedback'); scrolled = true; },
+    boundingBox: async () => { assert.ok(scrolled, 'scroll the current form action before measuring coordinates');
+      return { x: 0, y: 0, width: 10, height: 10 }; },
+    evaluate: async () => 'button',
+  };
   const ctx = { mocks: {}, hold: new Set(), held: [{ path: endpoint, request: {} }], log: [], errors: [] };
   ctx.page = {
-    evaluate: async () => ({ tClick: 1, tFirst: 2 }), waitForFunction: async () => true, close: async () => {},
-    mouse: { click: async () => { if (!ctx.log.length) ctx.log.push({ path: endpoint }); } },
+    evaluate: async () => { armed = true; return { tClick: 1, tFirst: 2 }; },
+    waitForFunction: async () => true, close: async () => {},
+    mouse: { click: async () => { assert.ok(scrolled); if (!ctx.log.length) ctx.log.push({ path: endpoint }); } },
   };
   const runOne = executable(named(harness, 'runOne'), {
     assert, startWorkspace: async () => ({ url: 'unused', close: async () => {} }), openPage: async () => ctx,

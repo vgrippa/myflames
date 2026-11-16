@@ -51,8 +51,10 @@ jobs:
         run: npm ci
       # Ubuntu 24.04's AppArmor restriction blocks the unprivileged user
       # namespaces Chrome's sandbox needs. Allow them on this disposable
-      # runner so suites can launch Chrome with its sandbox enabled.
+      # runner so suites can launch Chrome with its sandbox enabled. Never on a
+      # self-hosted runner, where the setting would outlive the job.
       - name: Allow Chrome sandbox
+        if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run workspace suites
         working-directory: apps/workspace
@@ -84,7 +86,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Test receipt accounting
+        run: node --test scripts/check_workspace_receipts.test.mjs
+      - uses: actions/download-artifact@v7
+        name: Download every shard receipt
+        with:
+          pattern: workspace-suites-receipt-*
+          path: local/workspace-suite-receipts
+      - name: Prove complete suite coverage
+        if: always()
+        run: node scripts/check_workspace_receipts.mjs local/workspace-suite-receipts
       - name: Require every shard to succeed
+        if: always()
         env:
           SHARD_RESULT: ${{ needs.shard.result }}
         run: |

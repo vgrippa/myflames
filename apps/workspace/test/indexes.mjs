@@ -130,7 +130,8 @@ try {
   // Row actions are a ⋯ menu in the trailing column (no bordered Actions button
   // per row): hidden at rest, shown on the hovered, focused or selected row.
   assert.equal(await page.$(`${view} th[data-col=actions]`), null);
-  await page.mouse.move(5, 890);
+  // Park over the header: a fixed screen point can land on taller rows.
+  await page.hover(`${view} thead th`);
   assert.deepEqual([...new Set(await page.$$eval(`${view} tbody td.col-menu .row-more`, (els) => els.map((e) => getComputedStyle(e).opacity)))], ["0"]);
   await page.hover(`${view} tbody tr:first-child td:nth-child(2)`);
   assert.equal(await page.$eval(`${view} tbody tr:first-child .row-more`, (e) => getComputedStyle(e).opacity), "1");

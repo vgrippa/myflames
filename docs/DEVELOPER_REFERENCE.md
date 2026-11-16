@@ -6244,7 +6244,7 @@ calls `scripts/run_workspace_suites.mjs` (Node 22 built-ins only). Local
 runs and CI use this same runner. Existing per-suite npm scripts keep their
 commands; the runner invokes `node test/<file>` directly with
 `apps/workspace` as the working directory. It first compares every immediate
-entry of `apps/workspace/test`, including directories and hidden entries,
+non-hidden, non-gitignored entry of `apps/workspace/test`, including directories,
 with `scripts/workspace-suites.json`. Unlisted entries and manifest entries
 missing from disk are both reported, and either list causes exit 2 before
 any build or suite starts. Selection and sharding never bypass this check.
@@ -6254,7 +6254,16 @@ Each entry has `kind`, `script` (an existing npm script name or `null`) and
 a nonempty, one-line `reason`. `suite` and `live` entries also require a
 positive `timeout` in seconds and must name regular `.mjs` files. `suite`
 entries run by default. `live` entries run only with `--kind live`; their
-server prerequisites must already be available. `helper` entries support
+server prerequisites must already be available. Each `live` entry requires
+a `needs` array of environment variable names. An empty array means the
+suite has no required environment settings (Import CSV starts its own lab).
+Its optional `env` array lists companion settings passed when present.
+Both arrays contain distinct names, never private-directory, credential-store,
+client-password or runtime overrides, and cannot overlap. Other kinds cannot
+declare either array. Before building or starting any selected live suite,
+the runner checks all selected `needs`; unset, empty or whitespace-only
+values cause exit 2 with the suite names and missing variable names.
+`--list` can inventory a lab before it is configured. `helper` entries support
 other suites, `generator` entries create artifacts, and `fixture` entries
 hold fixture files or directories. These three kinds are inventoried but
 never executed directly. A new test entry needs a manifest classification
@@ -6262,7 +6271,11 @@ in the same change.
 
 Only `suite` entries may carry `quarantine`, a nonempty, one-line string
 stating the failure, the commit where it was seen and what tracks the fix.
-Use quarantine for known failures, never for write-safety suites. A
+Use quarantine for known failures, never for any suite that asserts write
+safety, even when most of its assertions concern another feature.
+`action-feedback.mjs` includes assertions that cancelling a review sends
+no write, so its entire tour must stay gating. Fix its scenarios instead of
+quarantining it. A
 quarantined suite still runs, and its failure or timeout still prints the
 last 60 log lines under a separate "Quarantined failures" heading, but
 does not fail the run. A quarantined suite that passes is listed as
@@ -6277,14 +6290,23 @@ Pass runner flags after npm's `--`, for example
   A failed or timed-out build fails the run and starts no suites.
 - `--timeout SECONDS` overrides every selected entry's timeout and the build
   timeout (otherwise 900 s for the build). A timeout fails the run unless
-  the suite is quarantined. On POSIX
-  each worker has its own process group, which is killed on timeout and
-  after worker exit. As in the Python runner, a parent-pid sweep using `ps`
-  also stops descendants that created their own session while the worker
-  still runs; group kill remains the fallback if `ps` is unavailable.
-  Windows uses `taskkill /F /T`. SIGINT/SIGTERM stop the owned processes and
-  prevent an interrupted or incomplete run from passing. The Python
-  runner's detached-child race and reparenting limits apply here too.
+  the suite is quarantined. On macOS and Linux, after a worker exits
+  (success, failure, timeout or interruption), cleanup scans full command
+  lines with `ps -ww`. It stops every live process whose command or working
+  folder references that worker's unique private HOME/TMPDIR, including
+  detached children already reparented after their suite exited. Working
+  folders come from Linux procfs or macOS system `lsof` because macOS `ps`
+  does not expose cwd. Each candidate's command and, when needed, cwd are
+  read again immediately before signaling; a reused PID that no longer
+  references the path is left alone. Group cleanup is allowed only when
+  every current member still proves that ownership. There is no blind
+  process-group fallback when inspection fails: cleanup errors fail the
+  run. A warning naming the suite reports leftover processes as a suite
+  bug, even when cleanup succeeds. Windows retains `taskkill /F /T`, without
+  the private-path sweep. SIGINT/SIGTERM stop workers and prevent an
+  interrupted or incomplete run from passing. Processes that neither name
+  a private path nor work inside it cannot be discovered by this sweep;
+  a process can also fork or change identity between inspection and signaling.
 - `--durations PATH` reads file-to-seconds JSON for longest-first scheduling
   (default `scripts/workspace_suite_durations.json`). Missing recordings
   weigh 60 s. `--shard I/N` uses a deterministic longest-first assignment
@@ -6325,12 +6347,33 @@ Pass runner flags after npm's `--`, for example
 Each build and suite receives a fresh temporary HOME/USERPROFILE and a
 private TMPDIR (also TMP/TEMP), with `MYFLAMES_SECRET_BACKEND=vault`. These
 directories are removed afterwards. The worker environment passes only
-PATH, CI, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
+PATH, CI, PYTHON, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
 parent, plus Windows system executable variables where needed. It never
 inherits the user's HOME, client credentials or NODE_OPTIONS. Cached Chrome
 installations outside the private HOME can be named explicitly using
 PUPPETEER_EXECUTABLE_PATH or PUPPETEER_CACHE_DIR. This isolates configuration
 and temporary files; it is not an operating-system sandbox for test code.
+
+Live workers additionally receive exactly their own `needs` and `env`
+settings, never the other live suites' lab variables. The build receives no
+lab settings. The manifest lists:
+
+| Live suite | Required (`needs`) | Optional companions (`env`) |
+| --- | --- | --- |
+| `editor-explain-live.mjs` | `MYFLAMES_MYSQL_LAB`, `MYFLAMES_MYSQL_LAB_PORT` | `EXPLAIN_SHOTS` |
+| `editor-live.mjs` | `MYFLAMES_EDITOR_LAB`, `MYFLAMES_EDITOR_LAB_PORT` | `MYFLAMES_LAB_CLIENT`, `EDITOR_SHOTS` |
+| `files-live.mjs` | `MYFLAMES_SSH_LAB`, `MYFLAMES_SSH_LAB_USER`, `MYFLAMES_SSH_LAB_KEY` | `MYFLAMES_SSH_LAB_CONTAINER`, `FILES_SHOTS` |
+| `import-csv-live.mjs` | None; Docker and the client must be available | `IMPORT_CSV_LIVE_ENGINES`, `IMPORT_CSV_LIVE_MYSQL_IMAGE`, `IMPORT_CSV_LIVE_MARIADB_IMAGE`, `IMPORT_CSV_LIVE_BIG_ROWS`, `IMPORT_CSV_LIVE_SHOTS`, `IMPORT_CSV_LIVE_REPORT` |
+| `table-data-live.mjs` | `MYFLAMES_GRID_LIVE_CONFIG` | `TABLE_DATA_SHOTS` |
+
+Only the ordinary `action-feedback.mjs` worker also receives its documented
+`ACTION_FEEDBACK_ONLY`, `ACTION_FEEDBACK_WORKERS` and `ACTION_FEEDBACK_SHOTS`.
+For example, `ACTION_FEEDBACK_ONLY=home-test-connection npm run test:suites --
+--only action-feedback.mjs --no-build` runs that scenario in all three modes.
+`ACTION_FEEDBACK_ONLY` is comma-separated, unknown names fail, and the tour's
+own `--only` argument overrides it. The harness scrolls each action into
+the inspector's viewport before measuring and double-clicking it; a Group
+field and its consent hint may put Home's form actions below the scrollport.
 
 Execution exits 0 only if at least one selected suite ran and every selected
 non-quarantined suite passed. A completed run containing only quarantined
@@ -6339,7 +6382,8 @@ build, interruption, cleanup and output-write failures exit 1;
 inventory, manifest, duration-data, argument and empty-selection
 errors exit 2. `--list` and `--help` are dry-run exceptions. The runner's own
 socket-free regression tests are
-`node --test scripts/run_workspace_suites.test.mjs`.
+`node --test scripts/run_workspace_suites.test.mjs` and
+`node --test scripts/check_workspace_receipts.test.mjs`.
 
 **Live switches** (`test/_live_switches.py`, used by
 `test_connector_integration.py` and `test_schema_versions_live.py`).
@@ -6404,7 +6448,17 @@ per tag and never cancels.
   sandbox to launch on Ubuntu 24.04. Per-shard receipts always upload and
   logs upload on failure; both artifacts are retained for 14 days. The
   aggregate `suites` check runs even after failure or cancellation and
-  passes only when all six shards succeed.
+  downloads all `workspace-suites-receipt-*` artifacts with
+  `actions/download-artifact@v7`, retaining each artifact's directory. It
+  runs `scripts/check_workspace_receipts.mjs` against the checked-out
+  manifest and `GITHUB_SHA`: exactly six JSON receipts must have
+  `exit_status: 0` and the current commit, their `suites` must cover every
+  manifest `suite` entry exactly once (no extras, omissions or duplicates),
+  and every non-quarantined suite must report `passed`. Quarantine is
+  authorized only by the manifest, and each receipt's counts must agree
+  with its actual statuses. Missing or malformed artifacts fail this check.
+  The aggregate also requires `needs.shard.result` to be `success`; matrix
+  state alone cannot prove coverage.
 - `windows-desktop.yml` (Windows desktop): push and pull requests that touch
   `apps/desktop`, `myflames` or the workflow, plus manual runs;
   windows-latest with Python 3.14 and Node 22. It builds the PyInstaller

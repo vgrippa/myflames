@@ -963,6 +963,8 @@ try {
   assert.ok(names.every((n) => !n.clipped), "short column names take priority over types");
   // One line per column: the actions button shares the row and shows only on
   // the row being pointed at or focused.
+  // Expansion can put a column under the last click; park outside the tree.
+  await page.hover(".schema-browser .browser-head");
   const columnRows = await page.$$eval(".tree-row.kind-column", (els) => els.map((row) => {
     const box = row.getBoundingClientRect(), more = row.querySelector(".row-more")?.getBoundingClientRect();
     return { height: box.height, inline: !!more && more.top >= box.top && more.bottom <= box.bottom + 0.5,

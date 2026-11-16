@@ -23,6 +23,16 @@ export const FEEDBACK_MS = 150;
 /** How far the page clock moves on for a request that never answers. */
 export const SLOW_SHIFT_MS = 65_000;
 
+/** A filtered tour must never pass because a misspelling selected no work. */
+export function selectScenarios(scenarios, value) {
+  if (value === "") return scenarios;
+  if (typeof value !== "string") throw Error("--only / ACTION_FEEDBACK_ONLY requires comma-separated scenario names");
+  const names = value.split(",").map((name) => name.trim());
+  const unknown = names.filter((name) => !scenarios.some((scenario) => scenario.name === name));
+  if (unknown.length) throw Error(`Unknown action feedback scenarios: ${unknown.map((name) => name || "(empty)").join(", ")}`);
+  return scenarios.filter((scenario) => names.includes(scenario.name));
+}
+
 // ---- Mocked answers ---------------------------------------------------------------
 
 const F = {};
@@ -489,7 +499,10 @@ export const SCENARIOS = [
   // ---- Home --------------------------------------------------------------------------
   {
     name: "home-test-connection", label: "Test connection (form)", paths: ["/api/connection/test"],
-    setup: async ({ page }) => { await goPlace(page, "home"); await click(page, "Add connection"); await pause(300); },
+    setup: async ({ page }) => {
+      await goPlace(page, "home"); await click(page, "Add connection");
+      await visible(page, ".connection-panel");
+    },
     target: named("Test connection", ".connection-panel"),
     ok: async ({ page }) => waitText(page, ".connection-panel .connections-status", /Connected · 8\.4\.11/),
     error: async ({ page }) => waitText(page, ".connection-panel [role=alert]", /Simulated failure/),
@@ -502,7 +515,8 @@ export const SCENARIOS = [
   {
     name: "home-save-connection", label: "Save connection", paths: ["/api/profiles/save"],
     setup: async ({ page }) => {
-      await goPlace(page, "home"); await click(page, "Add connection"); await pause(300);
+      await goPlace(page, "home"); await click(page, "Add connection");
+      await visible(page, ".connection-panel");
       await typeInto(page, ".connection-panel .connection-fields input", "Feedback server");
     },
     target: named("Save connection", ".connection-panel"),
@@ -1037,6 +1051,11 @@ export async function runOne(browser, s, mode, shots) {
     await s.setup(ctx);
     await pause(250);
     const handle = typeof s.target === "string" ? await visible(page, s.target) : await s.target(page);
+    // Home's single-column inspector now includes Group and its consent hint.
+    // Its actions can be below the scrollport even at 1440 x 900. Unlike an
+    // ElementHandle.click(), the raw mouse clicks below do not scroll for us.
+    // Scroll before arming the probe, so scrolling is not counted as feedback.
+    await handle.scrollIntoView();
     for (const p of s.paths) ctx.hold.add(p);
     const before = ctx.log.length;
     await page.evaluate(() => { const P = window.__af; P.tClick = null; P.tFirst = null; P.first = ""; P.tBusy = null; P.armed = true; });

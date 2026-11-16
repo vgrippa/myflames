@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { referencesPrivatePath } from './run_workspace_suites.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNNER = path.join(ROOT, 'scripts', 'run_workspace_suites.mjs');
@@ -42,6 +43,8 @@ async function fixture(t, specifications = { 'pass.mjs': { source: pass } }) {
     entries[file] = { kind, script: null, reason: 'Runner regression fixture.' };
     if (kind === 'suite' || kind === 'live') entries[file].timeout = specification.timeout ?? 5;
     if (Object.hasOwn(specification, 'quarantine')) entries[file].quarantine = specification.quarantine;
+    if (kind === 'live') entries[file].needs = Object.hasOwn(specification, 'needs') ? specification.needs : [];
+    if (Object.hasOwn(specification, 'env')) entries[file].env = specification.env;
     if (specification.source === null) await fs.mkdir(path.join(testDir, file));
     else {
       const recordPid = kind === 'suite' || kind === 'live'
@@ -53,7 +56,9 @@ async function fixture(t, specifications = { 'pass.mjs': { source: pass } }) {
   await fs.writeFile(manifest, JSON.stringify({ version: 1, entries }));
   const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
     PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` };
-  return { root, workspace, testDir, scripts, temporary, bin, manifest, entries, env };
+  const fake = { root, workspace, testDir, scripts, temporary, bin, manifest, entries, env };
+  if (process.platform !== 'win32') await controlledPs(fake);
+  return fake;
 }
 
 async function executable(fake, name, source) {
@@ -64,6 +69,46 @@ async function executable(fake, name, source) {
   } else {
     await fs.writeFile(path.join(fake.bin, name), `#!/usr/bin/env node\n${source}`, { mode: 0o755 });
   }
+}
+
+async function controlledPs(fake, { changeOnRecheck = false } = {}) {
+  // ps is denied in the delegate sandbox. The inventory is limited to actual
+  // test-owned processes, with their real argv/cwd recorded by the fake suite.
+  // Heartbeats below verify the processes really stop, rather than just mock
+  // the cleanup's return value. Linux zombies are reported just like real ps.
+  const preamble = `
+import fs from 'node:fs';
+const registry = ${JSON.stringify(path.join(fake.root, 'process-table.json'))};
+let rows = [];
+try { rows = JSON.parse(fs.readFileSync(registry, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+rows = rows.filter(({ pid }) => { try { process.kill(pid, 0); return true; } catch (e) { if (e.code !== 'ESRCH') throw e; return false; } });
+`;
+  await executable(fake, 'ps', preamble + `
+const args = process.argv.slice(2);
+const selected = args.includes('-p') ? Number(args[args.indexOf('-p') + 1]) : null;
+const changed = ${JSON.stringify(path.join(fake.root, 'ps-rechecked'))};
+if (${changeOnRecheck} && selected) fs.writeFileSync(changed, 'changed');
+if (${changeOnRecheck} && fs.existsSync(changed)) rows = rows.map(row => ({ ...row, command: 'node unrelated-job', cwd: ${JSON.stringify(fake.workspace)} }));
+if (selected) rows = rows.filter(({ pid }) => pid === selected);
+for (const row of rows) {
+  let stat = 'S';
+  if (process.platform === 'linux') {
+    try { stat = fs.readFileSync('/proc/' + row.pid + '/stat', 'utf8').split(') ')[1].split(' ')[0]; }
+    catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') continue; throw e; }
+  }
+  console.log(row.pid + ' ' + row.group + ' ' + stat + ' ' + row.command);
+}
+if (selected && !rows.length) process.exitCode = 1;
+`);
+  await executable(fake, 'lsof', preamble + `
+const changed = ${JSON.stringify(path.join(fake.root, 'ps-rechecked'))};
+const args = process.argv.slice(2);
+const pids = args[args.indexOf('-p') + 1].split(',').map(Number);
+for (const row of rows.filter(({ pid }) => pids.includes(pid))) {
+  console.log('p' + row.pid);
+  console.log('n' + (${changeOnRecheck} && fs.existsSync(changed) ? ${JSON.stringify(fake.workspace)} : row.cwd));
+}
+`);
 }
 
 async function fakeGit(fake, { top = fake.root, dirty = false } = {}) {
@@ -294,6 +339,183 @@ fs.writeFileSync(path.resolve('../../' + name + '.json'), JSON.stringify(process
   }
 });
 
+test('live prerequisites fail before a build or suite starts, naming every missing setting', async (t) => {
+  const fake = await fixture(t, {
+    'a-live.mjs': { kind: 'live', needs: ['FIXTURE_LAB', 'FIXTURE_PORT'], source: 'throw Error("MUST_NOT_RUN");' },
+    'b-live.mjs': { kind: 'live', needs: ['FIXTURE_KEY'], source: 'throw Error("MUST_NOT_RUN");' },
+  });
+  delete fake.env.FIXTURE_LAB;
+  fake.env.FIXTURE_PORT = '   ';
+  delete fake.env.FIXTURE_KEY;
+  await executable(fake, 'npm', 'console.error("BUILD_MUST_NOT_RUN"); process.exitCode = 9;');
+  // Listing the lab inventory is useful before configuring it; it runs nothing.
+  assert.equal((await run(fake, ['--kind', 'live', '--list'])).code, 0);
+  const result = await run(fake, ['--kind', 'live'], { build: true });
+  assert.equal(result.code, 2, result.output);
+  assert.match(result.stderr, /a-live\.mjs: FIXTURE_LAB, FIXTURE_PORT/);
+  assert.match(result.stderr, /b-live\.mjs: FIXTURE_KEY/);
+  assert.doesNotMatch(result.output, /MUST_NOT_RUN|Workspace suite logs/);
+  await assert.rejects(fs.stat(path.join(fake.root, 'started-pids.jsonl')), { code: 'ENOENT' });
+  assert.ok((await fs.readdir(fake.temporary)).every((name) => !name.startsWith('myflames-workspace-home-')));
+});
+
+test('live workers receive exactly their needs and optional companions; ordinary suites and build do not', async (t) => {
+  const source = `import fs from 'node:fs'; import path from 'node:path';
+fs.writeFileSync('../../' + path.basename(new URL(import.meta.url).pathname) + '.json', JSON.stringify(process.env));`;
+  const fake = await fixture(t, {
+    'a-live.mjs': { kind: 'live', needs: ['FIXTURE_LAB'], env: ['FIXTURE_CLIENT', 'FIXTURE_UNSET'], source },
+    'b-live.mjs': { kind: 'live', needs: ['FIXTURE_PORT'], source },
+    'ordinary.mjs': { source }, 'action-feedback.mjs': { source },
+  });
+  Object.assign(fake.env, { FIXTURE_LAB: 'owned-lab', FIXTURE_PORT: '3308', FIXTURE_CLIENT: 'mariadb',
+    FIXTURE_OTHER: 'must-not-leak', MYSQL_PWD: 'must-not-leak', NODE_OPTIONS: '--no-warnings',
+    ACTION_FEEDBACK_ONLY: 'home-test-connection', ACTION_FEEDBACK_WORKERS: '1', ACTION_FEEDBACK_SHOTS: '/fixture/shots' });
+  delete fake.env.FIXTURE_UNSET;
+  await executable(fake, 'npm', `import fs from 'node:fs'; fs.writeFileSync('../../build-env.json', JSON.stringify(process.env));`);
+  const live = await run(fake, ['--kind', 'live'], { build: true });
+  assert.equal(live.code, 0, live.output);
+  const ordinary = await run(fake);
+  assert.equal(ordinary.code, 0, ordinary.output);
+  const read = async (name) => JSON.parse(await fs.readFile(path.join(fake.root, `${name}.json`), 'utf8'));
+  const a = await read('a-live.mjs');
+  const b = await read('b-live.mjs');
+  const base = await read('ordinary.mjs');
+  const feedback = await read('action-feedback.mjs');
+  const build = await read('build-env');
+  assert.equal(a.FIXTURE_LAB, 'owned-lab');
+  assert.equal(a.FIXTURE_CLIENT, 'mariadb');
+  assert.equal(a.FIXTURE_PORT, undefined);
+  assert.equal(a.FIXTURE_UNSET, undefined);
+  assert.equal(b.FIXTURE_PORT, '3308');
+  assert.equal(b.FIXTURE_LAB, undefined);
+  assert.equal(b.FIXTURE_CLIENT, undefined);
+  for (const env of [a, b, base, feedback, build]) {
+    for (const key of ['MYSQL_PWD', 'NODE_OPTIONS', 'FIXTURE_OTHER']) assert.equal(env[key], undefined);
+  }
+  for (const env of [base, feedback, build]) {
+    for (const key of ['FIXTURE_LAB', 'FIXTURE_PORT', 'FIXTURE_CLIENT']) assert.equal(env[key], undefined);
+  }
+  for (const env of [a, b, base, build]) assert.equal(env.ACTION_FEEDBACK_ONLY, undefined);
+  for (const key of ['ACTION_FEEDBACK_ONLY', 'ACTION_FEEDBACK_WORKERS', 'ACTION_FEEDBACK_SHOTS']) {
+    assert.equal(feedback[key], fake.env[key]);
+  }
+});
+
+test('live-only environment lists are mandatory, distinct names and cannot override isolation', async (t) => {
+  const fake = await fixture(t, { 'live.mjs': { kind: 'live' } });
+  for (const key of ['needs', 'env']) {
+    for (const value of [null, '', {}, ['X', 'X'], [''], ['bad-name'], ['HOME'], ['TMPDIR'],
+      ['NODE_OPTIONS'], ['MYSQL_PWD'], ['PYTHONPATH'], ['MYFLAMES_SECRET_BACKEND']]) {
+      fake.entries['live.mjs'] = { kind: 'live', script: null, reason: 'Fixture.', timeout: 5, needs: [], [key]: value };
+      await fs.writeFile(fake.manifest, JSON.stringify({ version: 1, entries: fake.entries }));
+      const result = await run(fake, ['--list']);
+      assert.equal(result.code, 2, result.output);
+      assert.match(result.stderr, /live-only list/);
+    }
+  }
+  for (const kind of ['suite', 'helper', 'generator', 'fixture', 'live']) {
+    fake.entries['live.mjs'] = { kind, script: null, reason: 'Fixture.' };
+    if (kind === 'suite' || kind === 'live') fake.entries['live.mjs'].timeout = 5;
+    // A missing needs list on live, or a list on any other kind, is invalid.
+    if (kind !== 'live') fake.entries['live.mjs'].needs = [];
+    await fs.writeFile(fake.manifest, JSON.stringify({ version: 1, entries: fake.entries }));
+    assert.equal((await run(fake, ['--list'])).code, 2);
+  }
+  fake.entries['live.mjs'] = { kind: 'live', script: null, reason: 'Fixture.', timeout: 5, needs: ['X'], env: ['X'] };
+  await fs.writeFile(fake.manifest, JSON.stringify({ version: 1, entries: fake.entries }));
+  assert.match((await run(fake, ['--list'])).stderr, /must not overlap/);
+});
+
+test('the tracked live entries declare every direct setting the suites read', async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(ROOT, 'scripts', 'workspace-suites.json'), 'utf8'));
+  const required = {
+    'editor-explain-live.mjs': ['MYFLAMES_MYSQL_LAB', 'MYFLAMES_MYSQL_LAB_PORT'],
+    'editor-live.mjs': ['MYFLAMES_EDITOR_LAB', 'MYFLAMES_EDITOR_LAB_PORT'],
+    'files-live.mjs': ['MYFLAMES_SSH_LAB', 'MYFLAMES_SSH_LAB_USER', 'MYFLAMES_SSH_LAB_KEY'],
+    'import-csv-live.mjs': [], 'table-data-live.mjs': ['MYFLAMES_GRID_LIVE_CONFIG'],
+  };
+  for (const [file, entry] of Object.entries(manifest.entries).filter(([, entry]) => entry.kind === 'live')) {
+    assert.deepEqual(entry.needs, required[file], `${file}: actual suite prerequisite checks`);
+    const source = await fs.readFile(path.join(ROOT, 'apps', 'workspace', 'test', file), 'utf8');
+    const settings = [...new Set([...source.matchAll(/process\.env\.([A-Z_][A-Z0-9_]*)/g)].map((match) => match[1]))]
+      .filter((name) => !['PYTHON', 'MYFLAMES_VAULT_PASSPHRASE'].includes(name));
+    assert.deepEqual([...entry.needs, ...entry.env].sort(), settings.sort(), `${file}: required and optional env are explicit`);
+  }
+  assert.equal(manifest.entries['action-feedback.mjs'].quarantine, undefined, 'write-safety tour stays gating');
+});
+
+test('the real feedback entrypoint accepts ACTION_FEEDBACK_ONLY and rejects typos before any browser launch', async (t) => {
+  const directory = path.join(ROOT, 'apps', 'workspace', 'test');
+  const source = await fs.readFile(path.join(directory, 'action-feedback.mjs'), 'utf8');
+  const realLib = pathToFileURL(path.join(directory, 'action-feedback-lib.mjs')).href;
+  const fake = await fixture(t, {
+    'action-feedback.mjs': { source },
+    'action-feedback-lib.mjs': { kind: 'helper', source: `
+export { SCENARIOS, selectScenarios } from ${JSON.stringify(realLib)};
+export async function runOne(browser, scenario, mode) { return { name: scenario.name, mode, firstMs: 1 }; }
+` },
+  });
+  const puppeteer = path.join(fake.workspace, 'node_modules', 'puppeteer');
+  await fs.mkdir(puppeteer, { recursive: true });
+  await fs.writeFile(path.join(puppeteer, 'package.json'), JSON.stringify({ type: 'module', main: 'index.mjs' }));
+  await fs.writeFile(path.join(puppeteer, 'index.mjs'), `export default {
+async launch() { console.log('BROWSER_BOUNDARY_STUB'); return { close: async () => {} }; }
+};`);
+  fake.env.ACTION_FEEDBACK_ONLY = 'home-test-connection';
+  delete fake.env.ACTION_FEEDBACK_SHOTS;
+  const single = await run(fake, ['--only', 'action-feedback.mjs']);
+  assert.equal(single.code, 0, single.output);
+  const log = await fs.readFile(path.join(logDirectory(single), 'action-feedback.mjs.log'), 'utf8');
+  assert.match(log, /3 runs \(1 actions/);
+  assert.doesNotMatch(log, /home-save-connection/);
+  for (const value of ['unknown', 'home-test-connection,unknown', 'home-test-connection,']) {
+    fake.env.ACTION_FEEDBACK_ONLY = value;
+    const invalid = await run(fake, ['--only', 'action-feedback.mjs']);
+    assert.equal(invalid.code, 1, invalid.output);
+    assert.match(invalid.stderr, /FAILED; exit 2/);
+    assert.match(invalid.stderr, /Unknown action feedback scenarios/);
+    assert.doesNotMatch(invalid.stderr, /BROWSER_BOUNDARY_STUB/);
+  }
+  const override = spawnSync(process.execPath, [path.join(fake.testDir, 'action-feedback.mjs'),
+    '--only', 'home-save-connection'], { cwd: fake.workspace, encoding: 'utf8', timeout: 5000,
+    env: { ...fake.env, HOME: fake.temporary, USERPROFILE: fake.temporary } });
+  assert.equal(override.status, 0, override.stderr);
+  assert.match(override.stdout, /3 runs \(1 actions/);
+  assert.match(override.stdout, /home-save-connection/);
+  assert.doesNotMatch(override.stdout, /home-test-connection/);
+});
+
+test('the real feedback harness scrolls an off-screen action before arming its probe or taking click coordinates', async () => {
+  const source = await fs.readFile(path.join(ROOT, 'apps', 'workspace', 'test', 'action-feedback-lib.mjs'), 'utf8');
+  // runOne is the final declaration. Execute its actual JavaScript with only
+  // the browser/server boundaries replaced; no DOM or network is simulated.
+  const declaration = source.slice(source.indexOf('export async function runOne(')).replace(/^export /, '');
+  let scrolled = false;
+  let armed = false;
+  let clicks = 0;
+  const handle = { scrollIntoView: async () => { assert.equal(armed, false); scrolled = true; },
+    boundingBox: async () => ({ x: 10, y: scrolled ? 100 : 1400, width: 120, height: 30 }),
+    evaluate: async () => 'button' };
+  const endpoint = '/api/connection/test';
+  const ctx = { mocks: {}, hold: new Set(), held: [{ path: endpoint, request: {} }], log: [], errors: [] };
+  ctx.page = {
+    evaluate: async () => { armed = true; return { tClick: 1, tFirst: 2 }; },
+    waitForFunction: async () => true, close: async () => {},
+    mouse: { click: async (_x, y) => {
+      assert.ok(y < 900, 'the click must reach the action inside the viewport');
+      clicks++;
+      if (!ctx.log.length) ctx.log.push({ path: endpoint });
+    } },
+  };
+  const env = { assert, startWorkspace: async () => ({ url: 'unused', close: async () => {} }),
+    openPage: async () => ctx, pause: async () => {}, visible: async () => handle, heldFor: async () => {},
+    FEEDBACK_MS: 150, failure: () => 'Simulated failure', respond: async () => {} };
+  const runOne = new Function(...Object.keys(env), `return (${declaration});`)(...Object.values(env));
+  await runOne(null, { name: 'home-test-connection', paths: [endpoint], target: 'button',
+    setup: async () => {}, error: async () => {} }, 'error');
+  assert.equal(clicks, 2, 'the double-click assertion remains exercised');
+});
+
 test('longest-first scheduling and stable duration-balanced shards cover each suite once', async (t) => {
   const fake = await fixture(t, {
     'a.mjs': {}, 'b.mjs': {}, 'c.mjs': {}, 'd.mjs': {}, 'e.mjs': {}, 'f.mjs': {},
@@ -451,107 +673,129 @@ fs.appendFileSync(file, JSON.stringify({ phase: 'end', at: Date.now(), pid: proc
   assert.match(timeout.stderr, /a\.mjs \(TIMED OUT;/);
 });
 
-test('timeout and interruption kill owned descendants, including detached sessions when ps is available',
-  { skip: process.platform === 'win32' }, async (t) => {
-    const canScan = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).status === 0;
-    t.diagnostic(canScan ? 'Real ps available: detached descendants exercised.'
-      : 'Real ps denied: exercised process-group fallback; detached sweep has a separate controlled-inventory test.');
-    const source = `
+// Every child here is really spawned by the suite. The controlled ps adapter
+// changes discovery only, not signaling or heartbeat observation.
+function leakingSuite({ detached = true, cwdOnly = false, wait = false, unrelated = false } = {}) {
+  return `
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-const children = [false${canScan ? ', true' : ''}].map((detached) => spawn(process.execPath,
-  ['-e', 'setInterval(() => {}, 1000)'], { detached, stdio: 'ignore' }));
-fs.writeFileSync('../../owned-pids.json', JSON.stringify([process.pid, ...children.map((child) => child.pid)]));
+import path from 'node:path';
+const root = path.resolve('../..');
+const children = [];
+for (let i = 0; i < ${unrelated ? 2 : 1}; i++) {
+  const heartbeat = path.join(root, 'heartbeat-' + i + '.txt');
+  const code = "const fs = require('node:fs'); setInterval(() => fs.appendFileSync(" + JSON.stringify(heartbeat) + ", 'x'), 10);";
+  const args = ['-e', code, ...(${!cwdOnly} && i === 0 ? [process.env.TMPDIR] : [])];
+  const cwd = ${cwdOnly} && i === 0 ? process.env.TMPDIR : process.cwd();
+  const child = spawn(process.execPath, args, { detached: ${detached}, cwd, stdio: 'ignore' });
+  child.unref();
+  children.push({ pid: child.pid, group: ${detached} ? child.pid : process.pid,
+    command: process.execPath + ' ' + args.join(' '), cwd });
+}
+fs.writeFileSync('../../owned-pids.json', JSON.stringify([process.pid, ...children.map(({ pid }) => pid)]));
+fs.writeFileSync('../../process-table.json', JSON.stringify(children));
+while (!children.every((_, i) => fs.existsSync(path.join(root, 'heartbeat-' + i + '.txt')))) {
+  await new Promise(resolve => setTimeout(resolve, 10));
+}
+fs.writeFileSync('../../tree-ready', 'ready');
 console.error('TREE_READY');
-setInterval(() => {}, 1000);
+${wait ? 'setInterval(() => {}, 1000);' : ''}
 `;
-    const fake = await fixture(t, { 'tree.mjs': { source, timeout: 0.5 } });
-    let pids = [];
-    // This fallback only signals processes whose pids our own fixture reported.
-    t.after(async () => {
-      try { pids = JSON.parse(await fs.readFile(path.join(fake.root, 'owned-pids.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      for (const pid of pids) {
-        try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      }
-    });
-    for (const interrupted of [false, true]) {
-      const result = await run(fake, interrupted ? ['--timeout', '10'] : [], interrupted ? { signalAfter: 400 } : {});
-      assert.equal(result.code, 1, result.output);
-      assert.match(result.stderr, /TREE_READY/);
-      pids = JSON.parse(await fs.readFile(path.join(fake.root, 'owned-pids.json'), 'utf8'));
-      // Reaped descendants may briefly remain zombies; those cannot run code.
-      for (const pid of pids) {
-        const check = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' });
-        if (canScan) assert.ok(check.status !== 0 || !check.stdout.trim() || check.stdout.trim().startsWith('Z'),
-          `owned pid ${pid} still alive: ${check.stdout}`);
-        else assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      }
+}
+
+async function stoppedHeartbeat(fake, index = 0) {
+  const file = path.join(fake.root, `heartbeat-${index}.txt`);
+  const stopped = await fs.readFile(file, 'utf8');
+  assert.ok(stopped.length > 0, 'child actually ran');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await fs.readFile(file, 'utf8'), stopped, 'child stopped writing after runner cleanup');
+}
+
+test('success and failure cannot leave a detached child holding its TMPDIR in argv',
+  { skip: process.platform === 'win32' }, async (t) => {
+    for (const exit of [0, 7]) {
+      const fake = await fixture(t, { 'leak.mjs': { source: leakingSuite() + `process.exitCode = ${exit};` } });
+      const result = await run(fake);
+      assert.equal(result.code, exit === 0 ? 0 : 1, result.output);
+      assert.match(result.stderr, /Warning: leak\.mjs left 1 running process\(es\) behind.*suite bug/);
+      await stoppedHeartbeat(fake);
+      assert.ok((await fs.readdir(fake.temporary)).every((name) => !name.startsWith('myflames-workspace-home-')));
     }
   });
 
-test('parent-pid sweep stops a real detached child using a controlled ps inventory',
+test('timeout and interruption also clean reparented detached children by private path',
   { skip: process.platform === 'win32' }, async (t) => {
-    const source = `
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-const child = spawn(process.execPath, ['-e',
-  "const fs = require('node:fs'); setInterval(() => fs.appendFileSync('../../heartbeat.txt', 'x'), 10);"],
-  { detached: true, stdio: 'ignore' });
-fs.writeFileSync('../../owned-tree.json', JSON.stringify([[process.pid, process.ppid], [child.pid, process.pid]]));
-console.error('DETACHED_READY');
-setInterval(() => {}, 1000);
-`;
-    const fake = await fixture(t, { 'tree.mjs': { source, timeout: 0.5 } });
-    t.after(async () => {
-      let tree = [];
-      try { tree = JSON.parse(await fs.readFile(path.join(fake.root, 'owned-tree.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      for (const [pid] of tree) {
-        try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      }
-    });
-    await executable(fake, 'ps', `
-import fs from 'node:fs';
-const tree = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(fake.root, 'owned-tree.json'))}, 'utf8'));
-for (const [pid, ppid] of tree) console.log(pid + ' ' + ppid);
-`);
-    const result = await run(fake);
-    assert.equal(result.code, 1, result.output);
-    assert.match(result.stderr, /DETACHED_READY/);
-    const heartbeat = path.join(fake.root, 'heartbeat.txt');
-    const stopped = await fs.readFile(heartbeat, 'utf8');
-    assert.ok(stopped.length > 0, 'detached child actually ran');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(await fs.readFile(heartbeat, 'utf8'), stopped, 'detached child stopped writing after timeout');
+    for (const interrupted of [false, true]) {
+      const fake = await fixture(t, { 'tree.mjs': { source: leakingSuite({ wait: true }), timeout: 0.7 } });
+      const result = await run(fake, interrupted ? ['--timeout', '10'] : [],
+        interrupted ? { signalFile: path.join(fake.root, 'tree-ready') } : {});
+      assert.equal(result.code, 1, result.output);
+      assert.match(result.stderr, /TREE_READY/);
+      assert.match(result.stderr, /Warning: tree\.mjs left 1 running process/);
+      if (!interrupted) assert.match(result.stderr, /TIMED OUT/);
+      await stoppedHeartbeat(fake);
+    }
   });
 
-test('a suite exiting successfully cannot leave children running in its process group',
+test('cleanup finds cwd-only children as well as members left in the original group',
   { skip: process.platform === 'win32' }, async (t) => {
-    const source = `
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-const child = spawn(process.execPath, ['-e',
-  "const fs = require('node:fs'); setInterval(() => fs.appendFileSync('../../success-heartbeat.txt', 'x'), 10);"],
-  { stdio: 'ignore' });
-child.unref();
-fs.writeFileSync('../../owned-child.json', JSON.stringify(child.pid));
-await new Promise((resolve) => setTimeout(resolve, 100));
-`;
-    const fake = await fixture(t, { 'parent.mjs': { source } });
-    t.after(async () => {
-      try {
-        const pid = JSON.parse(await fs.readFile(path.join(fake.root, 'owned-child.json'), 'utf8'));
-        try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    });
+    for (const options of [{ cwdOnly: true }, { detached: false }]) {
+      const fake = await fixture(t, { 'parent.mjs': { source: leakingSuite(options) } });
+      const result = await run(fake);
+      assert.equal(result.code, 0, result.output);
+      assert.match(result.stderr, /Warning: parent\.mjs left 1 running process/);
+      await stoppedHeartbeat(fake);
+    }
+  });
+
+test('a candidate whose command changed before signaling is left alone, including its old group',
+  { skip: process.platform === 'win32' }, async (t) => {
+    const fake = await fixture(t, { 'reused.mjs': { source: leakingSuite({ detached: false }) } });
+    await controlledPs(fake, { changeOnRecheck: true });
     const result = await run(fake);
     assert.equal(result.code, 0, result.output);
-    const heartbeat = path.join(fake.root, 'success-heartbeat.txt');
-    const stopped = await fs.readFile(heartbeat, 'utf8');
-    assert.ok(stopped.length > 0, 'inherited-group child actually ran');
+    await fs.access(path.join(fake.root, 'ps-rechecked'));
+    const file = path.join(fake.root, 'heartbeat-0.txt');
+    const before = await fs.readFile(file, 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(await fs.readFile(heartbeat, 'utf8'), stopped);
+    assert.ok((await fs.readFile(file, 'utf8')).length > before.length,
+      'a stale candidate must not kill the process now reported as another job');
+    // fixture's after-hook stops the still-owned test child before returning.
+  });
+
+test('a group with a nonmatching member is never signaled as a group',
+  { skip: process.platform === 'win32' }, async (t) => {
+    const fake = await fixture(t, { 'mixed.mjs': { source: leakingSuite({ detached: false, unrelated: true }) } });
+    const result = await run(fake);
+    assert.equal(result.code, 0, result.output);
+    await stoppedHeartbeat(fake, 0);
+    const file = path.join(fake.root, 'heartbeat-1.txt');
+    const before = await fs.readFile(file, 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok((await fs.readFile(file, 'utf8')).length > before.length, 'the nonmatching group member stays alive');
+  });
+
+test('private-path matching accepts descendants and quoted arguments, never a sibling prefix', () => {
+  const roots = ['/private/tmp/suite-unique-home'];
+  for (const text of [roots[0], `node --profile="${roots[0]}/tmp/chrome"`, `${roots[0]}/tmp`, `${roots[0]} (deleted)`]) {
+    assert.equal(referencesPrivatePath(text, roots), true, text);
+  }
+  for (const text of ['', 'node unrelated', `${roots[0]}-another-suite/tmp`, `${roots[0]}2`]) {
+    assert.equal(referencesPrivatePath(text, roots), false, text);
+  }
+});
+
+test('a denied ps cannot certify cleanup or trigger an unverified group kill',
+  { skip: process.platform === 'win32' }, async (t) => {
+    for (const quarantine of [undefined, 'Known failure; tracked in QA.']) {
+      const fake = await fixture(t, { 'pass.mjs': quarantine ? { quarantine } : {} });
+      await executable(fake, 'ps', 'process.exitCode = 3;');
+      const result = await run(fake);
+      assert.equal(result.code, 1, result.output);
+      assert.match(result.stderr, /pass\.mjs.*FAILED/);
+      assert.match(result.stderr, /Cannot inspect suite processes with ps/);
+      assert.doesNotMatch(result.stdout, /QUARANTINED/);
+    }
   });
 
 test('a long-running suite reports the real 30-second status heartbeat', { timeout: 40_000 }, async (t) => {

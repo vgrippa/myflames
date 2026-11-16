@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Run the tracked workspace suites without npm rebuilding between workers. */
 import { spawn, spawnSync } from 'node:child_process';
-import { createReadStream } from 'node:fs';
+import { createReadStream, readlinkSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,9 @@ const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const KINDS = new Set(['suite', 'live', 'helper', 'generator', 'fixture']);
 const DEFAULT_WEIGHT = 60;
 const STATUS_INTERVAL = 30_000;
+const SUITE_ENV = { 'action-feedback.mjs': ['ACTION_FEEDBACK_ONLY', 'ACTION_FEEDBACK_WORKERS', 'ACTION_FEEDBACK_SHOTS'] };
+const PRIVATE_ENV = new Set(['HOME', 'USERPROFILE', 'TMPDIR', 'TMP', 'TEMP', 'PATH', 'MYFLAMES_SECRET_BACKEND',
+  'MYFLAMES_VAULT_PASSPHRASE', 'MYSQL_PWD', 'MYSQL_HOME', 'MYSQL_TEST_LOGIN_FILE']);
 
 class UsageError extends Error {}
 
@@ -154,6 +157,19 @@ async function inventory(options) {
         throw new UsageError(`${file}: quarantine must be a nonempty, one-line string`);
       }
     }
+    for (const key of ['needs', 'env']) {
+      if ((key === 'needs' && entry.kind === 'live') || Object.hasOwn(entry, key)) {
+        if (entry.kind !== 'live' || !Array.isArray(entry[key])
+            || new Set(entry[key]).size !== entry[key].length
+            || entry[key].some((name) => typeof name !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(name)
+              || PRIVATE_ENV.has(name) || /^(NODE_|PYTHON|PUPPETEER_)/.test(name))) {
+          throw new UsageError(`${file}: ${key} must be a live-only list of distinct environment names, without runtime or private overrides`);
+        }
+      }
+    }
+    if (entry.needs?.some((name) => entry.env?.includes(name))) {
+      throw new UsageError(`${file}: needs and env must not overlap`);
+    }
   }
   return manifest.entries;
 }
@@ -177,6 +193,7 @@ async function selectSuites(options, entries) {
   const suites = Object.entries(entries)
     .filter(([file, entry]) => entry.kind === options.kind && (!options.only || options.only.includes(file)))
     .map(([file, entry]) => ({ file, timeout: options.timeout ?? entry.timeout, quarantine: entry.quarantine,
+      needs: entry.needs || [], env: entry.env || [],
       weight: Object.hasOwn(durations, file) ? durations[file] : DEFAULT_WEIGHT }))
     .sort((a, b) => b.weight - a.weight || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   if (!options.shard) return suites;
@@ -195,7 +212,7 @@ async function selectSuites(options, entries) {
   return bins[options.shard.index - 1]?.suites || [];
 }
 
-function isolatedEnvironment(home, temporary) {
+function isolatedEnvironment(home, temporary, forwarded = []) {
   // Do not inherit database credentials, client options, NODE_OPTIONS or a real HOME.
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -207,6 +224,9 @@ function isolatedEnvironment(home, temporary) {
       env[key] = value;
     }
   }
+  // Each live suite receives only its own declared prerequisites/companions.
+  // The build and ordinary suites never inherit another suite's lab settings.
+  for (const name of forwarded) if (process.env[name] !== undefined) env[name] = process.env[name];
   // Puppeteer finds its browser under the home folder by default; keep pointing
   // at the real download, since each suite gets a fresh HOME.
   const browsers = process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
@@ -214,48 +234,118 @@ function isolatedEnvironment(home, temporary) {
     TMP: temporary, TEMP: temporary, MYFLAMES_SECRET_BACKEND: 'vault' };
 }
 
-function killTree(child) {
+function stopWorker(child) {
   if (!child.pid) return;
   if (process.platform === 'win32') {
+    // Windows retains taskkill's existing tree behavior. The private-path ps
+    // sweep below is POSIX-only and cannot discover reparented Windows children.
     const result = spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', timeout: 5000 });
     if ((result.error || result.status !== 0) && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     return;
   }
-  // Match the Python runner's extra sweep for children that created a session.
-  // Restrict every pid to this worker's descendants; never signal other jobs.
-  const seen = new Set();
-  while (child.exitCode === null && child.signalCode === null) {
-    const scan = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 });
-    if (scan.error || scan.status !== 0) break;
-    const byParent = new Map();
-    for (const line of scan.stdout.trim().split('\n')) {
-      const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
-      if (!match) continue;
-      const pid = Number(match[1]);
-      const parent = Number(match[2]);
-      if (!byParent.has(parent)) byParent.set(parent, []);
-      byParent.get(parent).push(pid);
-    }
-    const frontier = [child.pid];
-    const found = new Set();
-    while (frontier.length) {
-      for (const pid of byParent.get(frontier.pop()) || []) {
-        if (!found.has(pid)) { found.add(pid); frontier.push(pid); }
-      }
-    }
-    const added = [...found].filter((pid) => !seen.has(pid));
-    if (!added.length) break;
-    for (const pid of added) {
-      try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      seen.add(pid);
-    }
-  }
-  // Still kill the group after its leader exits: inherited log descriptors must
-  // not let background children outlive a successful or failed suite.
-  try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  // The ChildProcess handle still owns this live worker. Never signal its old
+  // pid/group merely because it used to lead a suite that has already exited.
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
 }
 
-async function runProcess(command, args, name, timeout, options, state) {
+export function referencesPrivatePath(text, roots) {
+  return roots.some((root) => {
+    let offset = text.indexOf(root);
+    while (offset !== -1) {
+      const next = text[offset + root.length];
+      if (next === undefined || /[\\/\s"'\x00]/.test(next)) return true;
+      offset = text.indexOf(root, offset + root.length);
+    }
+    return false;
+  });
+}
+
+function processTable(pid) {
+  // -ww prevents long Chrome/Python command lines being cut before the path.
+  const result = spawnSync('ps', [...(pid === undefined ? ['-A'] : ['-p', String(pid)]),
+    '-ww', '-o', 'pid=,pgid=,stat=,command='], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 });
+  if (!result.error && result.status === 1 && !result.stdout.trim() && !result.stderr.trim()) return [];
+  if (result.error || result.status !== 0) throw new Error('Cannot inspect suite processes with ps');
+  return result.stdout.split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    return match && !match[3].startsWith('Z') && Number(match[1]) > 1 && Number(match[1]) !== process.pid
+      ? [{ pid: Number(match[1]), group: Number(match[2]), command: match[4] }] : [];
+  });
+}
+
+function workingDirectories(processes) {
+  const directories = new Map();
+  if (!processes.length) return directories;
+  if (process.platform === 'linux') {
+    for (const { pid } of processes) {
+      try { directories.set(pid, readlinkSync(`/proc/${pid}/cwd`)); }
+      catch (error) { if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error; }
+    }
+  } else if (process.platform === 'darwin') {
+    // Darwin ps exposes arguments but not cwd. Its system lsof supplies that
+    // field; Linux supplies it through procfs. No environment/secrets are read.
+    const result = spawnSync('lsof', ['-nP', '-a', '-p', processes.map(({ pid }) => pid).join(','),
+      '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 });
+    if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot inspect suite working folders with lsof');
+    let pid;
+    for (const line of result.stdout.split('\n')) {
+      if (/^p\d+$/.test(line)) pid = Number(line.slice(1));
+      else if (pid && line.startsWith('n')) directories.set(pid, line.slice(1));
+    }
+  }
+  return directories;
+}
+
+function ownedProcesses(processes, roots) {
+  const directories = workingDirectories(processes.filter(({ command }) => !referencesPrivatePath(command, roots)));
+  return processes.filter(({ pid, command }) => referencesPrivatePath(command, roots)
+    || referencesPrivatePath(directories.get(pid) || '', roots));
+}
+
+function signalProcess(pid) {
+  // macOS answers EPERM for a group that holds only an unreaped zombie; like
+  // ESRCH it means there is nothing left to stop (run_tests_parallel.py does the same).
+  try { process.kill(pid, 'SIGKILL'); } catch (error) { if (!['ESRCH', 'EPERM'].includes(error.code)) throw error; }
+}
+
+async function cleanupProcesses(child, home, name) {
+  if (process.platform === 'win32') return; // stopWorker already ran taskkill.
+  const roots = [...new Set([home, await fs.realpath(home)].flatMap((root) => {
+    // Darwin's /tmp and /var aliases may be canonicalized by a child, lsof,
+    // or the suite itself. Both spellings denote this same private directory.
+    const alias = process.platform === 'darwin' ? root.replace(/^\/private(?=\/(?:tmp|var)\/)/, '') : root;
+    return [root, alias, path.join(root, 'tmp'), path.join(alias, 'tmp')];
+  }))];
+  let warned = false;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const table = processTable();
+    const owned = ownedProcesses(table, roots);
+    if (!owned.length) return;
+    if (!warned) {
+      console.error(`Warning: ${name} left ${owned.length} running process(es) behind; cleaning up (suite bug).`);
+      warned = true;
+    }
+    const members = table.filter(({ group }) => group === child.pid);
+    // A reused group leader must not turn cleanup into a kill of another job.
+    // Keep group cleanup only when *every* current member still proves ownership.
+    if (members.length && members.every(({ pid }) => owned.some((entry) => entry.pid === pid))) {
+      const current = processTable().filter(({ group }) => group === child.pid);
+      if (current.length && current.every(({ pid }) => {
+        const fresh = processTable(pid).filter(({ group }) => group === child.pid);
+        return fresh.length === 1 && ownedProcesses(fresh, roots).length === 1;
+      })) signalProcess(-child.pid);
+    }
+    for (const { pid } of owned) {
+      // Re-read the full command immediately before each signal. A pid from
+      // the inventory may have exited and been reused by an unrelated process.
+      if (ownedProcesses(processTable(pid), roots).length) signalProcess(pid);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${name}: private-path processes remain after cleanup`);
+}
+
+async function runProcess(command, args, name, timeout, options, state, forwarded = []) {
   const started = performance.now();
   let home;
   let log;
@@ -272,7 +362,7 @@ async function runProcess(command, args, name, timeout, options, state) {
     await fs.mkdir(temporary);
     log = await fs.open(logPath, 'wx', 0o600);
     child = spawn(command, args, { cwd: options.workspace, detached: true,
-      env: isolatedEnvironment(home, temporary), stdio: ['ignore', log.fd, log.fd] });
+      env: isolatedEnvironment(home, temporary, forwarded), stdio: ['ignore', log.fd, log.fd] });
     state.active.set(child, name);
     const ended = new Promise((resolve) => {
       child.once('error', (error) => { failure = error; resolve(); });
@@ -282,16 +372,16 @@ async function runProcess(command, args, name, timeout, options, state) {
     timer = setInterval(() => {
       if (performance.now() - started < timeout * 1000 || timedOut) return;
       timedOut = true;
-      try { killTree(child); } catch (error) { failure = error; child.kill('SIGKILL'); }
+      try { stopWorker(child); } catch (error) { failure = error; }
     }, 50);
-    if (state.interrupted) killTree(child);
+    if (state.interrupted) stopWorker(child);
     await ended;
   } catch (error) {
     failure = error;
   } finally {
     clearInterval(timer);
     if (child) {
-      try { killTree(child); } catch (error) { failure ||= error; }
+      try { stopWorker(child); await cleanupProcesses(child, home, name); } catch (error) { failure ||= error; }
       state.active.delete(child);
     }
     if (log) {
@@ -373,6 +463,11 @@ async function execute(options, state) {
     return 0;
   }
   if (!suites.length) throw new UsageError('No suites selected; refusing an empty run');
+  const missing = suites.flatMap((suite) => {
+    const names = suite.needs.filter((name) => !process.env[name]?.trim());
+    return names.length ? [`${suite.file}: ${names.join(', ')}`] : [];
+  });
+  if (missing.length) throw new UsageError(`Missing live suite environment variables:\n  ${missing.join('\n  ')}`);
   // Capture source state before this run creates untracked logs in the checkout.
   if (options.receipt) state.provenance = sourceProvenance(options.root);
   if (options['log-dir']) await fs.mkdir(options['log-dir'], { recursive: true });
@@ -381,7 +476,7 @@ async function execute(options, state) {
   const interrupt = (signal) => {
     state.interrupted = signal;
     for (const child of state.active.keys()) {
-      try { killTree(child); } catch (error) { console.error(`Cleanup error: ${error.message}`); }
+      try { stopWorker(child); } catch (error) { console.error(`Cleanup error: ${error.message}`); }
     }
   };
   const onInt = () => interrupt('SIGINT');
@@ -402,8 +497,9 @@ async function execute(options, state) {
     const worker = async () => {
       while (index < suites.length && !state.interrupted) {
         const suite = suites[index++];
-        const result = await runProcess(process.execPath, [`test/${suite.file}`], suite.file, suite.timeout, options, state);
-        if (suite.quarantine) {
+        const result = await runProcess(process.execPath, [`test/${suite.file}`], suite.file, suite.timeout, options, state,
+          [...suite.needs, ...suite.env, ...(SUITE_ENV[suite.file] || [])]);
+        if (suite.quarantine && !result.error) {
           // Retain the process outcome so quarantined timeouts keep their diagnostic.
           result.outcome = result.status;
           result.quarantine = suite.quarantine;
@@ -482,4 +578,4 @@ async function main() {
   return exitStatus;
 }
 
-process.exitCode = await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main();

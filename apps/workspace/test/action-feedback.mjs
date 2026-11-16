@@ -17,24 +17,27 @@
 //     seconds waited and the way out (Stop, Stop waiting, Close).
 //
 // Usage: node test/action-feedback.mjs [--only name,name] [--modes ok,error,hang] [--workers N]
+// ACTION_FEEDBACK_ONLY=name,name selects scenarios without CLI arguments (also
+// through test:suites); --only overrides it. Unknown or empty names fail the run.
 // (npm run test:action-feedback builds first). Screenshots of failures go to
 // ACTION_FEEDBACK_SHOTS or a temporary directory.
 import fs from "node:fs/promises";
 import puppeteer from "puppeteer";
-import { SCENARIOS, runOne } from "./action-feedback-lib.mjs";
+import { SCENARIOS, runOne, selectScenarios } from "./action-feedback-lib.mjs";
 
 // ---- Runner ---------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
-const only = opt("only", "") ? opt("only", "").split(",") : null;
+let scenarios;
+try { scenarios = selectScenarios(SCENARIOS, opt("only", process.env.ACTION_FEEDBACK_ONLY || "")); }
+catch (error) { console.error(`action-feedback: ${error.message}`); process.exit(2); }
 const modes = opt("modes", "ok,error,hang").split(",");
 const workers = Math.max(1, Number(opt("workers", process.env.ACTION_FEEDBACK_WORKERS || "3")));
 const shots = process.env.ACTION_FEEDBACK_SHOTS || "";
 if (shots) await fs.mkdir(shots, { recursive: true });
 const jobs = [];
-for (const s of SCENARIOS) {
-  if (only && !only.includes(s.name)) continue;
+for (const s of scenarios) {
   for (const mode of modes) if (!s.modes || s.modes.includes(mode)) jobs.push({ s, mode });
 }
 console.log(`action-feedback: ${jobs.length} runs (${new Set(jobs.map((j) => j.s.name)).size} actions, modes ${modes.join(", ")}) on ${workers} workers`);

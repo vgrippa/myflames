@@ -60,7 +60,6 @@
       "kind": "suite",
       "script": "test:action-feedback",
       "timeout": 600,
-      "quarantine": "12 of 248 runs fail with missing navigation buttons or no /api/connection/test and /api/profiles/save requests on master 44ff65de; fix tracked in the QA plan Phase 2 follow-ups.",
       "reason": "Runs every converted action (batches B/C plus operations scenarios) against a seeded throwaway server with held replies; long tour with per-action waits, parallel only via ACTION_FEEDBACK_WORKERS."
     },
     "analysis-projection.mjs": {
@@ -280,6 +279,13 @@
       "kind": "live",
       "script": "test:editor-explain-live",
       "timeout": 300,
+      "needs": [
+        "MYFLAMES_MYSQL_LAB",
+        "MYFLAMES_MYSQL_LAB_PORT"
+      ],
+      "env": [
+        "EXPLAIN_SHOTS"
+      ],
       "reason": "Real MySQL container named by MYFLAMES_MYSQL_LAB and MYFLAMES_MYSQL_LAB_PORT (scripts/ga-matrix.sh lab); skipped unless both are set; no mocks."
     },
     "editor-file-safety.mjs": {
@@ -333,6 +339,14 @@
       "kind": "live",
       "script": "test:editor-live",
       "timeout": 300,
+      "needs": [
+        "MYFLAMES_EDITOR_LAB",
+        "MYFLAMES_EDITOR_LAB_PORT"
+      ],
+      "env": [
+        "MYFLAMES_LAB_CLIENT",
+        "EDITOR_SHOTS"
+      ],
       "reason": "Real catalog, hover, warnings and settings against a running container opted in with MYFLAMES_EDITOR_LAB and MYFLAMES_EDITOR_LAB_PORT; MYFLAMES_LAB_CLIENT picks mysql or mariadb."
     },
     "editor-settings.mjs": {
@@ -440,6 +454,15 @@
       "kind": "live",
       "script": "test:files-live",
       "timeout": 300,
+      "needs": [
+        "MYFLAMES_SSH_LAB",
+        "MYFLAMES_SSH_LAB_USER",
+        "MYFLAMES_SSH_LAB_KEY"
+      ],
+      "env": [
+        "MYFLAMES_SSH_LAB_CONTAINER",
+        "FILES_SHOTS"
+      ],
       "reason": "End to end against a real OpenSSH lab from scripts/ssh-lab.sh, opted in with MYFLAMES_SSH_LAB (plus MYFLAMES_SSH_LAB_USER/_KEY/_CONTAINER); skipped unless set."
     },
     "files-notices.mjs": {
@@ -504,6 +527,15 @@
       "kind": "live",
       "script": null,
       "timeout": 900,
+      "needs": [],
+      "env": [
+        "IMPORT_CSV_LIVE_ENGINES",
+        "IMPORT_CSV_LIVE_MYSQL_IMAGE",
+        "IMPORT_CSV_LIVE_MARIADB_IMAGE",
+        "IMPORT_CSV_LIVE_BIG_ROWS",
+        "IMPORT_CSV_LIVE_SHOTS",
+        "IMPORT_CSV_LIVE_REPORT"
+      ],
       "reason": "no npm script; needs Docker: starts throwaway MySQL 8.4 and MariaDB 11.4 containers (IMPORT_CSV_LIVE_ENGINES/_MYSQL_IMAGE/_MARIADB_IMAGE, report via IMPORT_CSV_LIVE_REPORT) and imports generated CSVs end to end."
     },
     "import-csv-unit.mjs": {
@@ -1051,6 +1083,12 @@
       "kind": "live",
       "script": null,
       "timeout": 300,
+      "needs": [
+        "MYFLAMES_GRID_LIVE_CONFIG"
+      ],
+      "env": [
+        "TABLE_DATA_SHOTS"
+      ],
       "reason": "no npm script; opt-in live proof against owned disposable servers listed in the JSON file named by MYFLAMES_GRID_LIVE_CONFIG (throws at line 6 without it); credentials injected into mocked routes."
     },
     "table-data.mjs": {
