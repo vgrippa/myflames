@@ -1109,6 +1109,11 @@ function ReadysetView({
             <code>ALTER READYSET</code> parameter change shows the exact statement first, checks your write policy, and
             records its outcome in the Audit log.
           </p>
+          <p>
+            Motion on the topology shows links that were running when last read; it does not measure traffic or
+            throughput. Stopped, failed and unknown links stay still, and your system’s reduced motion setting turns
+            motion off.
+          </p>
         </>
       }
       status={

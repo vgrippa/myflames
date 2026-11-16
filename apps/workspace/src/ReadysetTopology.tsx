@@ -1,8 +1,7 @@
 // Multi-tier topology diagram for the Readyset place:
 // [ProxySQL routing tier] -> Readyset (this connection) -> [Upstream MySQL/MariaDB + Cluster peers & Replicas].
-import { useState } from "react";
 import { Pill, type Tone } from "./kit";
-import { ServerGlyph, TopologyControls } from "./TopologyPresentation";
+import { ServerGlyph } from "./TopologyPresentation";
 import type {
   ReadysetReport,
   ReadysetTopologyPeerNode,
@@ -66,8 +65,6 @@ export function ReadysetTopologyDiagram({
   onOpenCluster?: () => void;
   onOpenReplication?: () => void;
 }) {
-  const [motion, setMotion] = useState(true);
-  const [depth, setDepth] = useState(true);
   const topo = report.topology;
   const proxysql = topo?.proxysql_nodes || [];
   const upstreams = topo?.upstreams || [];
@@ -90,18 +87,8 @@ export function ReadysetTopologyDiagram({
     <section
       className="readyset-topology"
       aria-label="Readyset multi-tier topology"
-      data-depth={depth ? "on" : "off"}
-      data-motion={motion && current ? "on" : "off"}
+      data-motion={current ? "on" : "off"}
     >
-      <div className="topology-presentation-bar">
-        <TopologyControls
-          motion={motion}
-          depth={depth}
-          onMotion={() => setMotion(!motion)}
-          onDepth={() => setDepth(!depth)}
-        />
-      </div>
-
       <div className="readyset-tier-stack">
         {proxysql.length > 0 && (
           <>

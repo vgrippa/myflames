@@ -86,7 +86,7 @@
     "test:completion": "node test/sql-completion.mjs && npm run build && node test/completion-browser.mjs",
     "test:editor-abuse": "npm run build && node test/editor-abuse.mjs",
     "test:desktop-shell": "npm run build && node test/desktop-shell.mjs",
-    "test:theme-contrast": "node test/theme-contrast-unit.mjs && node test/theme-frame-unit.mjs",
+    "test:theme-contrast": "node test/theme-contrast-unit.mjs && node test/theme-frame-unit.mjs && node test/topology-contrast-unit.mjs",
     "test:themes": "npm run build && node test/theme-contrast.mjs && node test/themes.mjs",
     "test:theme-picker": "npm run build && node test/theme-picker.mjs",
     "test:argument-hints": "node test/argument-hints-unit.mjs",

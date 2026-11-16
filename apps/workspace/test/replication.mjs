@@ -293,7 +293,7 @@ try {
   assert.ok(failing.visible && failing.cls.includes("is-error"));
   assert.equal(await infinite(), 0, "no endless animation while a channel has an error");
   assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-server-glyph").length, topology), 2, "source and replica have server glyphs");
-  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-motion-toggle").length, topology), 1, "motion has an accessible pause control");
+  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-presentation-controls").length, topology), 0, "motion has no presentation controls");
   // A stopped thread without an error: dashed line, the stopped thread named.
   const stopped = structuredClone(error);
   stopped.channels[0].sql.error = { ...stopped.channels[0].sql.error, errno: 0, message: null };

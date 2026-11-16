@@ -806,9 +806,7 @@ try {
   assert.match(proxyTopoText, /mf-ic-1/);
   assert.match(proxyTopoText, /mf-ic-2/);
   assert.match(proxyTopoText, /InnoDB Cluster \(mfcluster\)/);
-  await page.click(`${view} .proxysql-topology .topology-motion-toggle`);
-  assert.equal(await page.$eval(`${view} .proxysql-topology`, (e) => e.dataset.motion), "off");
-  await page.click(`${view} .proxysql-topology .topology-motion-toggle`);
+  assert.equal(await page.$(`${view} .proxysql-topology .topology-presentation-controls`), null, "no presentation controls");
   assert.equal(await page.$eval(`${view} .proxysql-topology`, (e) => e.dataset.motion), "on");
   await shot("proxysql-topology-multitier-1440.png");
 

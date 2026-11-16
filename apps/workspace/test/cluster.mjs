@@ -117,17 +117,18 @@ try {
   assert.equal(new Set(nameTops).size, 1, `name rows line up: ${nameTops}`);
   assert.match(await h.text(`${view} .cluster-bus-label`), /Single-primary group · quorum · tolerates 1 failure/);
   assert.equal(await page.$$eval(`${view} .cluster-routers .cluster-card`, (els) => els.length), 1, "the router hangs under the group");
-  // Motion conveys known healthy membership, with a pause and OS override.
+  // Motion conveys known healthy membership, with an OS override.
   const stemMotion = () => page.$eval(`${view} .cluster-stem.is-active`, (e) => getComputedStyle(e, "::after").animationName);
   assert.equal(await stemMotion(), "topology-membership");
-  await page.click(`${view} .topology-motion-toggle`);
-  assert.equal(await stemMotion(), "none", "pause stops illustrative flow");
-  await page.click(`${view} .topology-motion-toggle`);
+  assert.equal(await page.$(`${view} .topology-presentation-controls`), null, "no presentation controls");
+  const controlLabels = await page.$$eval(`${view} button`, (els) => els.map((e) => (e.textContent || "").trim()));
+  for (const label of ["Depth", "Pause motion", "Resume motion"]) assert.ok(!controlLabels.includes(label), `no ${label} button`);
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   assert.equal(await stemMotion(), "none", "system reduced motion overrides playback");
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
   assert.equal(await stemMotion(), "topology-membership");
   const info = await h.popover("About Cluster");
+  assert.match(info, /does not measure traffic or throughput/);
   assert.match(info, /Opening it reads; nothing changes/);
   assert.match(info, /asks first, and is recorded in the Audit log/);
   assert.match(info, /MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster/);
