@@ -1,0 +1,97 @@
+name: macOS desktop
+
+# Builds the unsigned Apple Silicon macOS app (dist/mac-arm64/myflames.app) from
+# the Electron launcher and a PyInstaller backend, then runs the packaged
+# startup, editor-settings and UI-preferences smokes on the runner. Releases
+# ship the signed, notarized DMG and update zip built by package:mac:release
+# instead (see apps/desktop/README.md).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "apps/desktop/**"
+      - "myflames/**"
+      - "apps/workspace/package-lock.json"
+      - "apps/workspace/test/editor-helpers.mjs"
+      - ".github/workflows/macos-desktop.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "apps/desktop/**"
+      - "myflames/**"
+      - "apps/workspace/package-lock.json"
+      - "apps/workspace/test/editor-helpers.mjs"
+      - ".github/workflows/macos-desktop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  smoke:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/workspace/package-lock.json
+      - name: Build the backend
+        run: |
+          python3 -m venv local/desktop-build-venv
+          local/desktop-build-venv/bin/python -m pip install -r apps/desktop/requirements-build.txt
+          local/desktop-build-venv/bin/python apps/desktop/scripts/build-backend.py
+          apps/desktop/build/backend/myflames-backend/myflames-backend --version
+      - name: Install launcher dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Launcher tests
+        working-directory: apps/desktop
+        run: npm test
+      # editor-settings-smoke.cjs and preferences-smoke.cjs drive the packaged
+      # app through puppeteer-core and editor-helpers.mjs from apps/workspace;
+      # they attach to Electron, so no browser download is needed.
+      - name: Install workspace test dependencies
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: npm ci
+      - name: MySQL client archive digest
+        id: mysql-client
+        run: echo "sha256=$(node -p "require('./apps/desktop/mysql-client.lock.json').archives['darwin-arm64'].sha256")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: apps/desktop/build/mysql-client-cache
+          key: mysql-client-darwin-arm64-${{ steps.mysql-client.outputs.sha256 }}
+      - name: Build the unsigned app
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:mac
+      - name: Packaged smoke
+        working-directory: apps/desktop
+        run: node scripts/smoke.cjs dist/mac-arm64/myflames.app
+      - name: Editor settings smoke
+        working-directory: apps/desktop
+        run: node scripts/editor-settings-smoke.cjs dist/mac-arm64/myflames.app
+      - name: Preferences smoke
+        working-directory: apps/desktop
+        run: node scripts/preferences-smoke.cjs dist/mac-arm64/myflames.app
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-smoke-screenshot
+          path: apps/desktop/smoke-results/desktop.png
+          if-no-files-found: ignore

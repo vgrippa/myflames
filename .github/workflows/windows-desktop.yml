@@ -1,10 +1,12 @@
 name: Windows desktop
 
 # Builds the unsigned Windows x64 installer (an NSIS .exe) from the Electron
-# launcher and a PyInstaller backend, runs the packaged smoke on the runner and
-# uploads the installer with its checksum as a workflow artifact. PyInstaller
-# cannot cross-compile, so the Windows backend is built here. This is a preview
-# build for testing, not a release asset (see apps/desktop/README.md).
+# launcher and a PyInstaller backend, runs the packaged smoke on the unpacked
+# app and on a silent install on the runner, verifies silent uninstall, and
+# uploads the installer, its checksum and the install evidence as a workflow
+# artifact. PyInstaller cannot cross-compile, so the Windows backend is built
+# here; releases attach this installer and its .sha256 as an unsigned preview
+# (see apps/desktop/README.md).
 
 on:
   workflow_dispatch:
@@ -23,6 +25,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   installer:
@@ -70,17 +76,123 @@ jobs:
         run: npm run package:win
       # The unpacked app is what the installer contains.
       - name: Packaged smoke
+        id: unpacked-smoke
         working-directory: apps/desktop
         run: npm run smoke -- dist/win-unpacked
+      - name: Install the built installer silently
+        id: install
+        working-directory: apps/desktop
+        run: |
+          shopt -s nullglob
+          installers=(dist/*-setup.exe)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "Expected one installer in apps/desktop/dist, found: ${installers[*]}" >&2
+            exit 1
+          fi
+          python - "${installers[0]}" <<'EOF'
+          import subprocess, sys
+          subprocess.run([sys.argv[1], "/S"], check=True)
+          EOF
+      - name: Assert installed executable and Start menu shortcut
+        id: verify-install
+        run: |
+          install_dir="$(cygpath -u "$LOCALAPPDATA")/Programs/myflames-desktop"
+          exe="$install_dir/myflames.exe"
+          uninstaller="$install_dir/Uninstall myflames.exe"
+          shortcut="$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/myflames.lnk"
+          if [ ! -f "$exe" ]; then
+            echo "Missing installed executable: $exe" >&2
+            ls -la "$LOCALAPPDATA/Programs" || true
+            exit 1
+          fi
+          if [ ! -f "$uninstaller" ]; then
+            echo "Missing uninstaller: $uninstaller" >&2
+            ls -la "$install_dir" || true
+            exit 1
+          fi
+          if [ ! -f "$shortcut" ]; then
+            echo "Missing Start menu shortcut: $shortcut" >&2
+            ls -la "$APPDATA/Microsoft/Windows/Start Menu/Programs" || true
+            exit 1
+          fi
+      - name: Installed smoke
+        id: installed-smoke
+        working-directory: apps/desktop
+        run: node scripts/smoke.cjs "$LOCALAPPDATA/Programs/myflames-desktop"
+      - name: Uninstall silently and assert removal
+        id: uninstall
+        run: |
+          install_dir="$(cygpath -u "$LOCALAPPDATA")/Programs/myflames-desktop"
+          uninstaller="$install_dir/Uninstall myflames.exe"
+          shortcut="$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/myflames.lnk"
+          python - "$(cygpath -w "$uninstaller")" <<'EOF'
+          import subprocess, sys
+          subprocess.run([sys.argv[1], "/currentuser", "/S"], check=True)
+          EOF
+          # The NSIS uninstaller stub copies itself to %TEMP%, spawns that copy
+          # to remove the install folder and shortcuts, and exits immediately.
+          for _ in $(seq 1 60); do
+            if [ ! -e "$install_dir" ] && [ ! -e "$shortcut" ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ -e "$install_dir" ]; then
+            echo "Install folder still exists after uninstall: $install_dir" >&2
+            ls -la "$install_dir" || true
+            exit 1
+          fi
+          if [ -e "$shortcut" ]; then
+            echo "Start menu shortcut still exists after uninstall: $shortcut" >&2
+            exit 1
+          fi
       - name: Checksum
         working-directory: apps/desktop/dist
         run: for file in *-setup.exe; do sha256sum "$file" > "$file.sha256"; cat "$file.sha256"; ls -l "$file"; done
+      - name: Write install evidence
+        working-directory: apps/desktop/dist
+        env:
+          STEP_UNPACKED_SMOKE: ${{ steps.unpacked-smoke.outcome }}
+          STEP_INSTALL: ${{ steps.install.outcome }}
+          STEP_VERIFY_INSTALL: ${{ steps.verify-install.outcome }}
+          STEP_INSTALLED_SMOKE: ${{ steps.installed-smoke.outcome }}
+          STEP_UNINSTALL: ${{ steps.uninstall.outcome }}
+        run: |
+          python - <<'EOF'
+          import glob, hashlib, json, os
+          installers = sorted(glob.glob("*-setup.exe"))
+          if len(installers) != 1:
+              raise SystemExit(f"Expected 1 installer in apps/desktop/dist, found {installers!r}")
+          installer = installers[0]
+          digest = hashlib.sha256(open(installer, "rb").read()).hexdigest()
+          def status(outcome):
+              return "pass" if outcome == "success" else "fail"
+          evidence = {
+              "commit": os.environ["GITHUB_SHA"],
+              "installer": installer,
+              "sha256": digest,
+              "steps": {
+                  "unpacked_smoke": status(os.environ.get("STEP_UNPACKED_SMOKE")),
+                  "install": status(os.environ.get("STEP_INSTALL")),
+                  "verify_install": status(os.environ.get("STEP_VERIFY_INSTALL")),
+                  "installed_smoke": status(os.environ.get("STEP_INSTALLED_SMOKE")),
+                  "uninstall": status(os.environ.get("STEP_UNINSTALL")),
+              },
+          }
+          with open("windows-install-evidence.json", "w", encoding="utf-8") as fh:
+              json.dump(evidence, fh, indent=2)
+              fh.write("\n")
+          print(open("windows-install-evidence.json", encoding="utf-8").read(), end="")
+          if any(v != "pass" for v in evidence["steps"].values()):
+              raise SystemExit(1)
+          EOF
       - uses: actions/upload-artifact@v7
         with:
           name: myflames-windows-x64
           path: |
             apps/desktop/dist/*-setup.exe
             apps/desktop/dist/*-setup.exe.sha256
+            apps/desktop/dist/windows-install-evidence.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()

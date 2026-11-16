@@ -14,7 +14,7 @@ const SIDEBAR = '.sidebar-resizer';
 const SPLITTER = '.query-lab .editor-splitter';
 const DEFAULTS = { theme: 'system', sidebar_width: 208, server_nav_collapsed: true,
   health_auto_production: -1, health_auto_development: -1, inspector_width: 340,
-  explain_format: 'table', files_show_hidden: false, files_transfers_open: true };
+  explain_format: 'table', files_show_hidden: false, files_transfers_open: true, diagram_zoom_speed: 100 };
 const DEFAULT_HEIGHT = 260;
 let stage = 'preflight', active = null, interrupted = null, check = 0;
 const pass = message => console.log(`PASS ${++check}: ${message}`);
