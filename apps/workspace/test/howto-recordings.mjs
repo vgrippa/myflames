@@ -55,23 +55,39 @@ const catalog = (body) => body.table
   ? { schema_version: "catalog-1.0", level: "table", schema: body.schema, table: body.table, columns: ORDERS_COLUMNS, indexes: [] }
   : { schema_version: "catalog-1.0", level: "tables", schema: body.schema, truncated: false, limit: 200, prefix: null, after: null,
     next_after: null, tables: [{ name: "customers", type: "table" }, { name: "order_items", type: "table" }, { name: "orders", type: "table" }, { name: "products", type: "table" }] };
-const session = () => ({
+// The mocked session reflects the transaction the recording opened: only the
+// transaction guide sets txOpen, and it rolls back before it ends.
+let txOpen = false;
+const session = (over = {}) => ({
   schema_version: "editor-session-1.0", tab_id: "1", state: "idle",
   connection: { profile_id: null, name: "Dev MySQL", host: "dev.example", port: 3306, user: "dba", type: "development", read_only: false },
-  engine: "mysql", server_version: "8.4.11", connection_id: 42, autocommit: true, in_transaction: false,
+  engine: "mysql", server_version: "8.4.11", connection_id: 42, autocommit: true, in_transaction: txOpen,
   transaction_source: "performance_schema", transaction_note: null, sql_mode: "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES",
   backslash_escapes: true, safe_updates: true, safe_updates_default: true, read_only_transactions: false,
   started_at: CLOCK, idle_seconds: 0, idle_timeout_seconds: 1800, ended: false, ended_reason: null, message: null, notes: [], run: null,
+  ...over,
 });
-const statement = (sql) => ({ index: 0, text: sql, start: 0, end: sql.length, verb: "select", kind: "read", category: "read", status: "ok", duration_ms: 12 });
+const READ_VERBS = new Set(["select", "show", "with", "explain", "describe", "rollback"]);
+const statement = (sql) => {
+  const verb = sql.trim().split(/\s+/)[0].toLowerCase().replace(/;$/, "");
+  const kind = READ_VERBS.has(verb) ? "read" : "write";
+  return { index: 0, text: sql, start: 0, end: sql.length, verb, kind, category: kind, status: "ok", duration_ms: 12 };
+};
 const runBase = (sql) => ({
   schema_version: "editor-run-1.0", id: "run-1", kind: "run", state: "complete", scope: "selection",
   started_at: CLOCK, finished_at: CLOCK, duration_ms: 12, limit: 1000, statements: [statement(sql)],
   error: null, stopped: null, message: null, audit_id: null, history_id: null,
 });
+// A write's reply (no rows): START TRANSACTION opens the session's
+// transaction, Roll back in the transaction pill closes it.
+const writeRun = (sql, affected = 0) => ({ ...runBase(sql),
+  results: [{ type: "ok", statement: 0, affected_rows: affected, info: null, warnings: 0, duration_ms: 3 }],
+  counts: { statements: 1, run: 1, rows: 0, affected_rows: affected, warnings: 0, errors: 0 } });
 const editorRun = (sql) => {
-  const columns = ["id", "customer_id", "status", "total", "created_at"].map((name) => ({ name, hex: false, type: null }));
-  const rows = Array.from({ length: 24 }, (_, i) => [String(i + 1), String(100 + i), i % 3 ? "paid" : "new",
+  // The transaction guide re-reads the row it just updated.
+  const one = /WHERE id = 7/i.test(sql);
+  const columns = (one ? ["id", "status"] : ["id", "customer_id", "status", "total", "created_at"]).map((name) => ({ name, hex: false, type: null }));
+  const rows = one ? [["7", "paid"]] : Array.from({ length: 24 }, (_, i) => [String(i + 1), String(100 + i), i % 3 ? "paid" : "new",
     (19.5 + i * 3.25).toFixed(2), `2026-10-${String(1 + (i % 28)).padStart(2, "0")} 10:00:00`]);
   return { ...runBase(sql),
     results: [{ type: "rows", statement: 0, columns, columns_known: true, rows, row_count: rows.length, truncated: false,
@@ -99,17 +115,248 @@ const CAPTURE = { schema_version: "capture-1.0", raw: PLAN_RAW, query: RUN_SQL, 
   server_version: "8.4.11", captured_at: CLOCK, conditions: "", warnings: [], runs: [], measurements: { count: 0 },
   schema: {}, table_stats: {}, variables: {}, trace: null };
 const ok = (body) => ({ status: 200, body });
+
+// Edit table data… (guide: edit-table-rows): an editable orders grid; after
+// Apply changes the reloaded page shows the saved value.
+let tableApplied = false;
+const cell = (value) => ({ kind: "text", value });
+const tablePage = () => ({
+  snapshot_id: "snapshot", schema: "shop", table: "orders",
+  columns: [{ name: "id", type: "int", kind: "text", nullable: false },
+    { name: "customer_id", type: "int", kind: "text", nullable: false },
+    { name: "status", type: "varchar(20)", kind: "text", nullable: false },
+    { name: "total", type: "decimal(10,2)", kind: "text", nullable: false }],
+  rows: [
+    { id: "r1", values: [cell("7"), cell("102"), cell(tableApplied ? "paid" : "new"), cell("42.50")] },
+    { id: "r2", values: [cell("8"), cell("104"), cell("paid"), cell("19.75")] },
+    { id: "r3", values: [cell("9"), cell("105"), cell("new"), cell("58.00")] },
+  ],
+  editable: true, reason: "", key: ["id"], offset: 0, limit: 50, has_more: false, expires_in: 300 });
+
+// Import CSV… (guide: import-csv): a small clean file into shop.orders, the
+// contracts of docs/schemas (csv-inspect-1.0, csv-import-plan-1.0 and
+// csv-import-result-1.0), simplified from import-csv.mjs.
+const CSV_FILE = { file_id: "file-1", name: "orders-2026-10.csv", size: 481, modified: "2026-10-14T09:12:00Z" };
+const CSV_HEAD = ["id", "customer_id", "status", "total"];
+const CSV_ROWS = [["101", "103", "new", "42.50"], ["102", "104", "paid", "19.75"], ["103", "105", "paid", "58.00"],
+  ["104", "103", "new", "12.00"], ["105", "106", "new", "77.30"], ["106", "104", "paid", "23.40"]];
+const CSV_FORMAT = { encoding: "utf-8", separator: ",", quote: '"', escape: "", header: true, line_ending: "\n", skip_lines: 0, empty: "null", null_markers: ["\\N"] };
+let csvApplying = false;
+const csvInspect = (body) => ({ schema_version: "csv-inspect-1.0", file: CSV_FILE, detected: CSV_FORMAT, format: body.format || CSV_FORMAT,
+  columns: CSV_HEAD.map((header, i) => ({ index: i, header, name: header,
+    inferred: { sql_type: ["INT UNSIGNED", "INT UNSIGNED", "VARCHAR(20)", "DECIMAL(10,2)"][i], nullable: false, max_length: 8 },
+    samples: CSV_ROWS.slice(0, 3).map((r) => r[i]) })),
+  preview: { rows: CSV_ROWS.map((r) => [...r]), lines: CSV_ROWS.map((_r, i) => i + 2), truncated: false },
+  rows: CSV_ROWS.length, rows_estimate: null, rows_counted: true, problems: [], problems_total: 0,
+  notes: ["Line endings: LF."] });
+const csvPlan = (body) => {
+  const list = body.target.mapping.filter((m) => m.csv_index !== null).map((m) => `\`${m.column}\``).join(", ");
+  return ok({ schema_version: "csv-import-plan-1.0", token: "tok-1", ready: true, blockers: [], expires_in: 600,
+    file: { ...CSV_FILE, sha256: "ab".repeat(32) }, format: body.format || CSV_FORMAT,
+    connection: { name: "Dev MySQL", host: "dev.example", port: 3306, user: "dba", type: "development", read_only: false, engine: "mysql", server_version: "8.4.11" },
+    target: { mode: body.target.mode, schema: "shop", table: "orders", exists: true, engine: "InnoDB", transactional: true,
+      columns: [], rows_estimate: 24, triggers: 0, foreign_keys: 0, check_constraints: 0, primary_key: ["id"] },
+    mapping: body.target.mapping.map((m) => ({ csv_index: m.csv_index, csv_header: m.csv_index === null ? "" : CSV_HEAD[m.csv_index],
+      column: m.column, type: "varchar(40)" })),
+    statements: { create: null,
+      data_sample: `INSERT INTO \`shop\`.\`orders\` (${list}) VALUES (101, 103, 'new', 42.50), (102, 104, 'paid', 19.75) …`,
+      data_summary: `INSERT INTO \`shop\`.\`orders\` (${list}) VALUES ... : 6 rows in 1 statement from orders-2026-10.csv`,
+      setup: ["SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',STRICT_ALL_TABLES')", "SET SESSION lock_wait_timeout = 5"] },
+    batches: 1, rows: { total: 6, valid: 6, invalid: 0, skipped: 0 }, problems: [], problems_total: 0,
+    method: { chosen: body.method, load_data_available: false, local_infile: false, client_limits_files: false,
+      why: "The server has local_infile OFF (MySQL's default), so it refuses LOAD DATA LOCAL. myflames never changes it; INSERT batches work either way." },
+    transaction: { ...body.transaction, commits: 1 }, on_error: body.on_error,
+    privileges: [{ action: "insert", state: "allowed", reason: "Allowed through INSERT on shop.*." }],
+    policy: { action: "confirm", tone: "danger", title: "Risky write",
+      text: "Connection Dev MySQL is a Development connection. myflames asks only before risky writes, and this statement is one.",
+      connection_type: "development", read_only: false },
+    warnings: [], notes: [], drop_hint: null });
+};
+const CSV_RESULT = { schema_version: "csv-import-result-1.0", outcome: "done", rows: { total: 6, sent: 6, committed: 6, skipped: 0 },
+  failed_at: null, next_line: null, last_committed_line: null, server_error: null, warnings: { count: 0, items: [] },
+  duration_ms: 840, table_created: false, table_rows_after: 30, drop_hint: null, audit: { id: "audit-1" },
+  problems: [], problems_total: 0, method: "insert", transaction: { mode: "all", every: 0 } };
+
+// Query digest baselines (guide: digest-baseline): the /api/baselines/*
+// contract of baselines.py answered from memory, as query-digest-baselines.mjs
+// does, over the recorded lab reading fixtures/top-mysql-8.4-lab.json.
+const digestRecorded = await load("top-mysql-8.4-lab.json");
+const DIGEST_SERVER_TIME = "2026-10-31 10:18:52.000000";
+const DIGEST_SERVER = { engine: "mysql", flavor: "mysql", product: "MySQL", version: digestRecorded.server_version,
+  server_uuid: "3e11fa47-71ca-11e1-9e33-c80aa9429562", hostname: "lab", port: 3306 };
+const DIGEST_KEY = `mysql/uuid/${DIGEST_SERVER.server_uuid}`;
+const digestTop = { ...digestRecorded, coverage: { ...digestRecorded.coverage, oldest_first_seen: "2026-10-31 09:48:00.000000" },
+  reading_server: { verified: true, server_key: DIGEST_KEY, server: DIGEST_SERVER, uptime_s: digestRecorded.coverage.uptime_s + 1, server_time: DIGEST_SERVER_TIME } };
+// A reading 600 s later on the same run: one digest new, two grown by over 50%.
+const digestLater = structuredClone(digestTop);
+digestLater.coverage.uptime_s = 2454;
+const byDigest = (r, prefix) => r.statements.find((s) => s.digest.startsWith(prefix));
+Object.assign(byDigest(digestLater, "2f09595d41"), { count: 753, total_ms: 6.789 + 600 * 0.05 });
+Object.assign(byDigest(digestLater, "2dd7bae4c1"), { count: 93, total_ms: 5.961 + 30 * 0.5 });
+digestLater.statements.push({ ...byDigest(digestTop, "2dd7bae4c1"), digest: "e".repeat(64),
+  digest_text: "SELECT * FROM `audit_log` WHERE `ts` > ?", count: 120, total_ms: 360, avg_ms: 3,
+  first_seen: "2026-10-31 10:25:00.000000", last_seen: "2026-10-31 10:28:00.000000", sample_text: null, new: false });
+let digestReport = digestTop;
+const digestBaselines = [];
+let digestClock = Date.UTC(2026, 9, 14, 16, 26);
+const keepDigests = (r) => ({
+  schema_version: r.schema_version, engine: r.engine, server_version: r.server_version, server_product: r.server_product ?? null,
+  order: r.order, limit: r.limit, read_at: r.read_at, server_time: DIGEST_SERVER_TIME,
+  coverage: { uptime_s: r.coverage.uptime_s, counting_since: r.coverage.counting_since ?? null, oldest_first_seen: r.coverage.oldest_first_seen ?? null, digest_lost: r.coverage.digest_lost },
+  totals: r.totals ?? null,
+  statements: r.statements.map(({ digest, schema, digest_text, count, total_ms, avg_ms, max_ms, first_seen, last_seen }) =>
+    ({ digest, schema, digest_text, count, total_ms, avg_ms, max_ms, first_seen, last_seen })),
+});
+
+// Database diagram (guide: diagram): four shop tables and their foreign keys,
+// the model schema-diagram.mjs builds.
+const diagramColumn = (name, data_type = "bigint", primary_key = false, nullable = false) => ({ name, data_type, primary_key, nullable });
+const DIAGRAM = { schema_version: "schema-diagram-1.0",
+  tables: [
+    { id: "customers", schema: "shop", name: "customers", columns: [diagramColumn("id", "bigint", true), diagramColumn("name", "varchar(100)"), diagramColumn("email", "varchar(255)"), diagramColumn("created_at", "datetime")] },
+    { id: "orders", schema: "shop", name: "orders", columns: [diagramColumn("id", "bigint", true), diagramColumn("customer_id"), diagramColumn("ordered_at", "datetime"), diagramColumn("status", "varchar(20)")] },
+    { id: "order_items", schema: "shop", name: "order_items", columns: [diagramColumn("order_id", "bigint", true), diagramColumn("product_id", "bigint", true), diagramColumn("quantity", "int"), diagramColumn("price", "decimal(10,2)")] },
+    { id: "products", schema: "shop", name: "products", columns: [diagramColumn("id", "bigint", true), diagramColumn("name", "varchar(100)"), diagramColumn("price", "decimal(10,2)"), diagramColumn("category_id")] },
+  ],
+  relationships: [
+    { id: "orders_customer", name: "orders_customer", from_table: "orders", from_columns: ["customer_id"], to_table: "customers", to_columns: ["id"] },
+    { id: "items_order", name: "items_order", from_table: "order_items", from_columns: ["order_id"], to_table: "orders", to_columns: ["id"] },
+    { id: "items_product", name: "items_product", from_table: "order_items", from_columns: ["product_id"], to_table: "products", to_columns: ["id"] },
+  ],
+  warnings: [] };
+
+// Schema versions (guide: schema-compare): the replay fixtures of
+// schema-versions.mjs, generated by the Python package, trimmed to one saved
+// version and its comparison with the database now.
+let schemaMade = null;
+const schemaFixtures = () => {
+  if (!schemaMade) {
+    schemaMade = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", `
+import json, sys
+sys.path.insert(0, 'test')
+import _schema_replay as r
+from myflames import schema_versions as sv
+before, after = r.snapshot('mysql-8.4', 'before'), r.snapshot('mysql-8.4', 'after')
+for s in (before, after):
+    s['server']['host'], s['server']['port'] = '127.0.0.1', 3306
+    note = next(o for o in s['objects'] if o['type'] == 'table' and o['name'] == 'notes')
+    note['ddl'] += ' ROW_FORMAT=' + ('COMPACT' if s is before else 'DYNAMIC')
+before, after = sv.validate_snapshot(before), sv.validate_snapshot(after)
+v1 = {'id': 'a' * 32, 'saved_at': '2026-10-14T08:00:00Z', 'source_key': sv.source_key(before), 'number': 1,
+      'name': 'before release 42', 'note': ''}
+v1.update(sv.version_summary(before))
+report = sv.compare(before, after, {'kind': 'version', 'id': v1['id'], 'number': 1, 'name': v1['name']}, {'kind': 'live'})
+report['comparison_id'] = 'howto-comparison'
+report['markdown'] = sv.format_markdown(report)
+print(json.dumps({'v1': v1, 'snapshot': before, 'report': report}))
+`], { cwd: root, maxBuffer: 64 * 1024 * 1024 }).toString());
+  }
+  return schemaMade;
+};
+// The catalog the schema-compare guide reads: the saved version's databases.
+const SV_CATALOG = { schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.11", user_tables: 14, all_limit: 2000, all_note: "", system: [],
+  schemas: [{ name: "sv_b", tables: 7, system: false }, { name: "sv_m", tables: 7, system: false }, { name: "mysql", tables: 38, system: true }] };
+let schemasReply = null;
+if (!only || only === "schema-compare") schemaFixtures();
+
 const extra = {
-  "/api/live/schemas": ok(schemas),
+  "/api/live/schemas": () => ok(schemasReply || schemas),
   "/api/live/catalog": (body) => ok(catalog(body)),
   "/api/editor/open": ok({ status: "idle", session: session() }),
   "/api/editor/status": ok({ status: "none", session: null, run: null }),
-  "/api/editor/run": (body) => ok({ status: "complete", session: session(),
-    run: body.explain_format ? explainRun(body.sql) : editorRun(body.sql) }),
+  "/api/editor/run": (body) => {
+    const sql = (body.sql || "").trim();
+    if (/^(start transaction|begin);?$/i.test(sql)) {
+      txOpen = true;
+      return ok({ status: "complete", session: session(), run: writeRun(body.sql) });
+    }
+    if (/^(update|insert|replace|delete)\b/i.test(sql))
+      return ok({ status: "complete", session: session(), run: writeRun(body.sql, 1) });
+    return ok({ status: "complete", session: session(),
+      run: body.explain_format ? explainRun(body.sql) : editorRun(body.sql) });
+  },
+  "/api/editor/rollback": () => {
+    txOpen = false;
+    return ok({ status: "complete", session: session(), run: { ...writeRun("ROLLBACK"), kind: "action" } });
+  },
+  "/api/editor/commit": () => {
+    txOpen = false;
+    return ok({ status: "complete", session: session(), run: { ...writeRun("COMMIT"), kind: "action" } });
+  },
+  "/api/editor/export": (body) => {
+    const rows = body.result?.rows || [];
+    const names = (body.result?.columns || []).map((c) => c.name);
+    const content = body.format === "json"
+      ? JSON.stringify(rows.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]]))), null, 2)
+      : [names.join(","), ...rows.map((r) => r.map((v) => v ?? "").join(","))].join("\r\n");
+    const mime = { csv: "text/csv", json: "application/json", markdown: "text/markdown" }[body.format] || "text/plain";
+    return ok({ format: body.format, content, mime, filename: `myflames-result.${body.format}` });
+  },
   "/api/editor/close": ok({ closed: true, session: null }),
   "/api/editor/history": ok({ items: [] }),
-  "/api/editor/preview": ok({ status: "ready", statements: [{ index: 0, kind: "read", action_keys: [], state: "unknown", missing: [], reason: "" }],
+  "/api/editor/preview": (body) => ok({ status: "ready",
+    statements: [{ index: 0, kind: statement(body.sql || "SELECT 1").kind, action_keys: [], state: "unknown", missing: [], reason: "" }],
     aggregate: { state: "unknown", missing: [], reason: "", warning: "" }, policy: { action: "run", text: "" } }),
+  "/api/table-data/open": () => ok(tablePage()),
+  "/api/table-data/close": ok({ status: "closed" }),
+  "/api/table-data/prepare": ok({ snapshot_id: "snapshot", review_token: "one-use",
+    statements: ["UPDATE `shop`.`orders` SET `status` = 'paid' WHERE `id` = 7 LIMIT 1"],
+    privileges: [], connection: { host: "dev.example", port: 3306, user: "dba" }, connection_type: "development", warnings: [] }),
+  "/api/table-data/decline": ok({ status: "ready" }),
+  "/api/table-data/apply": ok({ status: "running", snapshot_id: "snapshot" }),
+  "/api/table-data/status": (_body, request) => {
+    setTimeout(() => {
+      tableApplied = true;
+      void request.respond({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ snapshot_id: "snapshot", status: "complete", message: "Changes committed. Reload the table." }) }).catch(() => {});
+    }, 500);
+    return null;
+  },
+  "/api/import/csv/choose": ok(CSV_FILE),
+  "/api/import/csv/inspect": (body) => ok(csvInspect(body)),
+  "/api/import/csv/plan": (body, request) => {
+    const reply = csvPlan(body);
+    setTimeout(() => void request.respond({ status: reply.status, contentType: "application/json", body: JSON.stringify(reply.body) }).catch(() => {}), 250);
+    return null;
+  },
+  "/api/import/csv/progress": () => ok({ schema_version: "csv-import-progress-1.0", kind: csvApplying ? "apply" : "plan",
+    phase: csvApplying ? "sending" : "checking", rows_total: 6, rows_checked: 6, rows_sent: csvApplying ? 4 : 0, rows_committed: 0,
+    batches_done: 0, batches_total: 1, in_flight: csvApplying, started_at: CLOCK, elapsed_s: 1, stop_requested: false }),
+  "/api/import/csv/apply": (_body, request) => {
+    csvApplying = true;
+    setTimeout(() => {
+      csvApplying = false;
+      void request.respond({ status: 200, contentType: "application/json", body: JSON.stringify(CSV_RESULT) }).catch(() => {});
+    }, 1200);
+    return null;
+  },
+  "/api/import/csv/stop": ok({ stop_requested: true, message: "Stopping after the current batch." }),
+  "/api/live/top": () => ok(digestReport),
+  "/api/live/digest-tables": ok({ schema_version: "digest-tables-1.0", method: "statement text", tables: [], notes: [] }),
+  "/api/baselines/list": (body) => ok({ schema_version: "baseline-list-1.0", kind: body.kind, server: DIGEST_SERVER,
+    server_key: DIGEST_KEY, max: 20, items: digestBaselines.filter((b) => b.item.kind === body.kind).map((b) => b.item).reverse() }),
+  "/api/baselines/save": (body) => {
+    digestClock += 60_000;
+    const item = { id: (digestBaselines.length + 1).toString(16).padStart(32, "0"), kind: body.kind, name: body.name.trim(),
+      created_at: new Date(digestClock).toISOString(), server: DIGEST_SERVER, server_key: DIGEST_KEY, read_at: body.report.read_at,
+      server_time: DIGEST_SERVER_TIME, uptime_s: body.report.coverage.uptime_s, order: body.report.order, limit: body.report.limit,
+      statements: body.report.statements.length };
+    digestBaselines.push({ item, payload: keepDigests(body.report) });
+    return ok({ ...item, max: 20 });
+  },
+  "/api/baselines/get": (body) => {
+    const found = digestBaselines.find((b) => b.item.id === body.id);
+    return found ? ok({ ...found.item, payload: found.payload })
+      : { status: 400, body: { error: "Could not open the baseline: it is no longer saved on this computer." } };
+  },
+  "/api/schema-diagram/read": () => ok(structuredClone(DIAGRAM)),
+  "/api/schema-versions/list": () => ok({ schema_version: "schema-version-list-1.0", items: [schemaFixtures().v1] }),
+  "/api/schema-versions/get": (body) => {
+    const made = schemaFixtures();
+    return ok({ ...made.v1, id: body.id, snapshot: made.snapshot });
+  },
+  "/api/schema-versions/compare": () => ok(schemaFixtures().report),
+  "/api/schema-versions/sync": () => ok(schemaFixtures().report),
   // Explore from an Explain result captures the plan in the tab's session.
   "/api/live/start": ok({ id: "howto-capture" }),
   "/api/live/status": ok({ id: "howto-capture", state: "complete", progress: 1, repeat: 1, error: "", result: CAPTURE }),
@@ -290,6 +537,11 @@ async function boot() {
     launchArgs: ["--disable-partial-raster", "--force-color-profile=srgb"],
   });
   await h.page.waitForFunction(() => /Dev MySQL/.test(document.body.textContent) && /Prod MySQL/.test(document.body.textContent));
+  // Exports (a result CSV, a diagram, a sync script) download into a
+  // throwaway directory instead of the person's Downloads folder.
+  h.downloads = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-howto-dl-"));
+  const cdp = await h.page.createCDPSession();
+  await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: h.downloads });
   return h;
 }
 async function openEditor(h) {
@@ -297,12 +549,33 @@ async function openEditor(h) {
   await chooseConnection(h.page, h.seeded["Dev MySQL"]);
   await h.page.waitForSelector(EDITOR);
 }
+/** The editor with the Schemas panel open and the shop schema expanded. */
+async function openSchemaTree(h) {
+  const { page } = h;
+  await openEditor(h);
+  if (await page.$('button[aria-label="Show the schema browser"]')) await page.click('button[aria-label="Show the schema browser"]');
+  await page.waitForSelector(".schema-browser .tree-row.kind-schema");
+  await page.click(".schema-browser .tree-row.kind-schema");
+  await page.waitForSelector('.schema-browser .tree-row.kind-table[data-node$="orders"]');
+}
+/** Plans with the bundled sample plan open and its chart drawn. */
+async function openSamplePlan(h) {
+  const { page } = h;
+  await clickButton(page, "Plans", ".main-nav ");
+  await clickButton(page, "Explore sample plan");
+  await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
+}
 
 // ---- guides -----------------------------------------------------------------
 const MULTI_SQL = [
   "SELECT id FROM orders WHERE status = 'new';",
   "SELECT id FROM orders WHERE status = 'paid';",
   "SELECT id FROM orders WHERE status = 'refunded';",
+].join("\n");
+const TX_SQL = [
+  "START TRANSACTION;",
+  "UPDATE orders SET status = 'paid' WHERE id = 7;",
+  "SELECT id, status FROM orders WHERE id = 7;",
 ].join("\n");
 
 const GUIDES = [
@@ -552,6 +825,385 @@ const GUIDES = [
     await rec.caption("");
     await rec.hold(700);
   }],
+  ["edit-table-rows", async (h, rec) => {
+    const { page } = h;
+    tableApplied = false;
+    await openSchemaTree(h);
+    await rec.hold(400);
+    await rec.caption("right-click orders");
+    await page.click('.schema-browser .tree-row.kind-table[data-node$="orders"]', { button: "right" });
+    await page.waitForSelector(".schema-browser .context-menu[role=menu]");
+    await rec.caption("Edit table data…");
+    await page.locator(".schema-browser .context-menu [role=menuitem] ::-p-text(Edit table data)").click();
+    await page.waitForSelector(".table-data-panel input");
+    await rec.hold(700);
+    await rec.caption("change new to paid");
+    await page.click('input[aria-label="status for r1"]', { clickCount: 3 });
+    await page.keyboard.type("paid", { delay: 80 });
+    await rec.hold(500);
+    await rec.caption("Review 1 changes");
+    await clickButton(page, "Review 1 changes", ".table-data-panel ");
+    await page.waitForSelector(".confirm-sheet");
+    await rec.hold(1100);
+    await rec.caption("Apply changes");
+    await clickButton(page, "Apply changes", ".confirm-sheet ");
+    await page.waitForFunction(() => document.querySelector(".table-data-panel [role=status]")?.textContent.includes("Changes committed"));
+    await rec.hold(600);
+    await rec.caption("Reload rows");
+    await clickButton(page, "Reload rows", ".table-data-panel ");
+    await page.waitForFunction(() => document.querySelector('input[aria-label="status for r1"]')?.value === "paid");
+    await rec.caption("");
+    await rec.hold(700);
+  }],
+  ["transaction", async (h, rec) => {
+    const { page } = h;
+    txOpen = false;
+    await openEditor(h);
+    await setEditorText(page, TX_SQL);
+    let p = await posPoint(page, 1, 5);
+    await page.mouse.click(p.x, p.y);
+    await rec.caption("⌘Enter: START TRANSACTION");
+    await press(page, "Meta", "Enter");
+    await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction open");
+    await rec.hold(900);
+    p = await posPoint(page, 2, 5);
+    await page.mouse.click(p.x, p.y);
+    await rec.caption("⌘Enter: UPDATE");
+    await press(page, "Meta", "Enter");
+    await page.waitForFunction(() => /affected/i.test(document.querySelector(".results")?.textContent || ""));
+    await rec.hold(800);
+    p = await posPoint(page, 3, 5);
+    await page.mouse.click(p.x, p.y);
+    await rec.caption("⌘Enter: SELECT");
+    await press(page, "Meta", "Enter");
+    await page.waitForFunction(() => [...document.querySelectorAll(".result-table tbody tr td")]
+      .some((td) => td.textContent === "paid"));
+    await rec.hold(800);
+    await rec.caption("click Transaction open");
+    await page.click(".editor-transaction-trigger");
+    await page.waitForSelector("[data-action=rollback]", { visible: true });
+    await rec.hold(800);
+    await rec.caption("Roll back");
+    await page.click("[data-action=rollback]");
+    await page.waitForFunction(() => document.querySelector(".statusbar-note")?.textContent === "Rolled back.");
+    await rec.caption("");
+    await rec.hold(800);
+  }],
+  ["explain-plans", async (h, rec) => {
+    const { page } = h;
+    await openEditor(h);
+    await setEditorText(page, RUN_SQL);
+    const p = await posPoint(page, 1, 12);
+    await page.mouse.click(p.x, p.y);
+    await rec.hold(400);
+    await rec.caption("Explain format: JSON");
+    await page.select('select[aria-label="Explain format"]', "json");
+    await rec.hold(500);
+    await rec.caption("click Explain");
+    await page.click("[data-action=explain]");
+    await page.waitForFunction(() => [...document.querySelectorAll("button")]
+      .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
+    await rec.hold(900);
+    await rec.caption("click Explore");
+    const explore = await page.waitForFunction(() => [...document.querySelectorAll("button")]
+      .find((b) => b.textContent.trim() === "Explore" && b.getClientRects().length));
+    await explore.asElement().click();
+    await explore.dispose();
+    await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
+    await rec.hold(900);
+    await rec.caption("Execution tree");
+    await page.click('.segmented[aria-label="Chart view"] button[data-value="tree"]');
+    await page.waitForFunction(() => document.querySelector(".plan-chart")?.dataset.view === "tree"
+      || !!document.querySelector(".plan-screen .mfc-tree"));
+    await rec.caption("");
+    await rec.hold(900);
+  }],
+  ["results-export", async (h, rec) => {
+    const { page } = h;
+    await openEditor(h);
+    await setEditorText(page, RUN_SQL);
+    await rec.caption("⌘Enter");
+    await press(page, "Meta", "Enter");
+    await page.waitForFunction(() => /24 rows/.test(document.body.textContent));
+    await rec.hold(600);
+    await rec.caption("filter: new");
+    await page.click('input[aria-label="Filter loaded rows"]');
+    await page.keyboard.type("new", { delay: 90 });
+    await page.waitForFunction(() => /8 of 24 loaded rows/.test(document.body.textContent));
+    await rec.hold(700);
+    await rec.caption("click the total heading to sort");
+    await page.click('.result-table th[data-col="c3"] .sort-button');
+    await rec.hold(700);
+    await rec.caption("Export 8 filtered rows");
+    await page.click('button[aria-label="Export result 1"]');
+    await page.waitForSelector(".popover .popover-title");
+    await rec.hold(800);
+    await rec.caption("choose CSV");
+    await clickButton(page, "CSV", ".popover ");
+    await page.waitForFunction(() => /exported as myflames-result\.csv/.test(document.body.textContent));
+    await rec.caption("");
+    await rec.hold(700);
+  }],
+  ["named-parameters", async (h, rec) => {
+    const { page } = h;
+    await openEditor(h);
+    await setEditorText(page, "SELECT id FROM orders WHERE id = :id;");
+    const p = await posPoint(page, 1, 5);
+    await page.mouse.click(p.x, p.y);
+    await rec.hold(400);
+    await rec.caption("Run analysis options");
+    await page.click('button[aria-label="Run analysis options"]');
+    await page.waitForSelector(".editor-options-popover.popover");
+    await rec.hold(400);
+    await rec.caption("Parameters and execution conditions");
+    await page.click(".editor-parameters summary");
+    await page.waitForSelector('textarea[aria-label="Query parameters"]', { visible: true });
+    await rec.caption('type: {"id": 42}');
+    await page.click('textarea[aria-label="Query parameters"]');
+    await page.keyboard.type('{"id": 42}', { delay: 80 });
+    await rec.hold(500);
+    await page.keyboard.press("Escape");
+    await rec.caption("click Explain");
+    await page.click("[data-action=explain]");
+    await page.waitForFunction(() => [...document.querySelectorAll("button")]
+      .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
+    await rec.caption("");
+    await rec.hold(900);
+  }],
+  ["digest-baseline", async (h, rec) => {
+    const { page } = h;
+    digestReport = digestTop;
+    digestBaselines.length = 0;
+    const qd = '[data-view="query-digest"]';
+    await rec.caption("Query digest");
+    await page.click('.main-nav button[data-place="digest"]');
+    await page.waitForSelector(`${qd} tbody tr[data-row-key]`);
+    await rec.hold(700);
+    await rec.caption("click Refresh");
+    await h.refresh();
+    await page.waitForFunction((q) => /^30 statement/.test(document.querySelector(`${q} .summary-line .summary-text`)?.textContent || ""), {}, qd);
+    await rec.hold(500);
+    await rec.caption("Refresh options → Save baseline…");
+    await page.click(`${qd} button[aria-label="Refresh options"]`);
+    await page.waitForSelector(`${qd} [data-action=save-baseline]`, { visible: true });
+    await rec.hold(400);
+    await page.click(`${qd} [data-action=save-baseline]`);
+    await page.waitForSelector("dialog.baseline-sheet");
+    await rec.caption("name: Before deploy");
+    await page.$eval("dialog.baseline-sheet input", (e) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, "Before deploy");
+      e.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await rec.hold(500);
+    await rec.caption("click Save baseline");
+    await page.click("dialog.baseline-sheet .sheet-buttons .action-button");
+    await page.waitForFunction(() => /Saved the baseline/.test(document.body.textContent));
+    await rec.hold(800);
+    // The reading after the deployment: one digest new, two grown.
+    digestReport = digestLater;
+    await rec.caption("click Refresh");
+    await h.refresh();
+    await page.waitForFunction((q) => /^32 statement/.test(document.querySelector(`${q} .summary-line .summary-text`)?.textContent || ""), {}, qd);
+    await rec.hold(500);
+    await rec.caption("Refresh options → Compare with baseline…");
+    await page.click(`${qd} button[aria-label="Refresh options"]`);
+    await page.waitForSelector(`${qd} [data-action=compare-baseline]`, { visible: true });
+    await page.click(`${qd} [data-action=compare-baseline]`);
+    await page.waitForSelector("dialog.baseline-sheet .baseline-choices");
+    await rec.caption("choose the baseline");
+    await page.click("dialog.baseline-sheet .baseline-choice");
+    await rec.hold(500);
+    await rec.caption("click Compare");
+    await page.click("dialog.baseline-sheet .sheet-buttons .action-button");
+    await page.waitForSelector(`${qd} [data-baseline-changes]`);
+    await page.waitForFunction((q) => /new, 2 grew/.test(document.querySelector(`${q} [data-baseline-summary]`)?.textContent || ""), {}, qd);
+    await rec.caption("");
+    await rec.hold(1200);
+  }],
+  ["compare-plans", async (h, rec) => {
+    const { page } = h;
+    await clickButton(page, "Plans", ".main-nav ");
+    await rec.caption("Explore sample plan");
+    await clickButton(page, "Explore sample plan");
+    await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
+    await rec.hold(700);
+    await rec.caption("Import plan");
+    await clickButton(page, "Import plan", ".plans-bar ");
+    await page.waitForSelector("dialog[open] input[type=file]");
+    await (await page.$("dialog[open] input[type=file]")).uploadFile(path.join(root, "test/mariadb-explain-join.json"));
+    await page.waitForFunction(() => document.querySelectorAll(".plan-item").length === 2);
+    await rec.hold(500);
+    await rec.caption("click Compare");
+    await clickButton(page, "Compare", ".plans-bar ");
+    await page.waitForSelector(".compare-selectors select");
+    const ids = await page.$$eval(".compare-selectors select",
+      (sels) => sels.map((s) => [...s.options].filter((o) => o.value).map((o) => o.value)));
+    await rec.caption("Before and After");
+    await page.select(".compare-selectors label:first-of-type select", ids[0][0]);
+    await page.select(".compare-selectors label:last-of-type select", ids[1][1] || ids[1][0]);
+    await page.waitForSelector(".comparison-row");
+    await rec.hold(900);
+    await rec.caption("click a change");
+    const rows = await page.$$(".comparison-row");
+    await rows[Math.min(1, rows.length - 1)].click();
+    await page.waitForFunction(() => !!document.querySelector(".comparison-row.selected"));
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+  ["slowest-operator", async (h, rec) => {
+    const { page } = h;
+    await openSamplePlan(h);
+    await rec.hold(600);
+    await rec.caption("Go to");
+    await clickButton(page, "Go to");
+    await page.waitForFunction(() => [...document.querySelectorAll("button")]
+      .some((b) => b.textContent.trim() === "Largest self time" && b.getClientRects().length));
+    await rec.hold(300);
+    await rec.caption("Largest self time");
+    await clickButton(page, "Largest self time");
+    await page.waitForFunction(() => /Self time/.test(document.querySelector(".plan-fold")?.textContent || ""));
+    await rec.hold(1000);
+    await rec.caption("click Stats");
+    await page.click('.segmented[aria-label="Chart view"] button[data-value="stats"]');
+    await page.waitForFunction(() => /Time per table/.test(document.body.textContent) && /Time per operator type/.test(document.body.textContent));
+    await rec.caption("");
+    await rec.hold(1000);
+  }],
+  ["investigation", async (h, rec) => {
+    const { page } = h;
+    await openSamplePlan(h);
+    await rec.hold(500);
+    await rec.caption("Save investigation");
+    await clickButton(page, "Save investigation", ".topbar ");
+    await page.waitForSelector("dialog.notebook-sheet[open]");
+    await rec.caption("name: Orders index review");
+    await page.click(".notebook-grid .field:nth-child(1) input");
+    await page.keyboard.type("Orders index review", { delay: 40 });
+    await rec.caption("Baseline: the open plan");
+    const baseline = await page.$eval(".notebook-grid .field:nth-child(3) select option", (o) => o.value);
+    await page.select(".notebook-grid .field:nth-child(3) select", baseline);
+    await rec.hold(300);
+    await rec.caption("type the findings");
+    await page.click(".investigation-notes textarea");
+    await page.keyboard.type("Full scan on orders: add an index on status.", { delay: 25 });
+    await rec.hold(400);
+    await rec.caption("click Save");
+    await clickButton(page, "Save", "dialog.notebook-sheet .sheet-actions ");
+    await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
+    await rec.hold(600);
+    await rec.caption("open Investigations");
+    await clickButton(page, "Investigations", ".main-nav ");
+    await page.waitForSelector(".library-item");
+    await rec.hold(500);
+    await page.click(".library-item");
+    await page.waitForSelector(".library-detail h2");
+    await rec.hold(600);
+    await rec.caption("click Open all");
+    await clickButton(page, "Open all", ".library-actions ");
+    await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
+    await rec.caption("");
+    await rec.hold(800);
+  }],
+  ["import-csv", async (h, rec) => {
+    const { page } = h;
+    csvApplying = false;
+    const sheet = "dialog.import-csv-sheet";
+    const nextEnabled = (label) => page.waitForFunction((s, l) => {
+      const b = [...document.querySelectorAll(`${s} .sheet-actions button`)].find((e) => e.textContent.trim() === l);
+      return b && !b.disabled && b.getAttribute("aria-disabled") !== "true";
+    }, { timeout: 10000 }, sheet, label);
+    await openSchemaTree(h);
+    await rec.caption("right-click orders");
+    await page.click('.schema-browser .tree-row.kind-table[data-node$="orders"]', { button: "right" });
+    await page.waitForSelector(".schema-browser .context-menu[role=menu]");
+    await rec.caption("Import CSV…");
+    await page.locator(".schema-browser .context-menu [role=menuitem] ::-p-text(Import CSV…)").click();
+    await page.waitForSelector(`${sheet}[open]`);
+    await rec.hold(400);
+    await rec.caption("Choose file…");
+    await clickButton(page, "Choose file…", `${sheet} `);
+    await page.waitForSelector(`${sheet} [aria-label="Preview of the first rows"]`);
+    await rec.hold(1000);
+    await rec.caption("Next");
+    await clickButton(page, "Next", `${sheet} .sheet-actions `);
+    await page.waitForFunction((s) => /Target/.test(document.querySelector(`${s} [aria-current=step]`)?.textContent || ""), {}, sheet);
+    await nextEnabled("Next");
+    await rec.hold(1000);
+    await rec.caption("Next");
+    await clickButton(page, "Next", `${sheet} .sheet-actions `);
+    await page.waitForFunction((s) => /Check/.test(document.querySelector(`${s} [aria-current=step]`)?.textContent || ""), {}, sheet);
+    await nextEnabled("Review…");
+    await rec.hold(800);
+    await rec.caption("Review…");
+    await clickButton(page, "Review…", `${sheet} .sheet-actions `);
+    await page.waitForFunction((s) => /Review/.test(document.querySelector(`${s} [aria-current=step]`)?.textContent || ""), {}, sheet);
+    await rec.hold(1300);
+    await rec.caption("click Import");
+    await clickButton(page, "Import", `${sheet} .sheet-actions `);
+    await page.waitForFunction((s) => /committed/i.test(document.querySelector(s)?.textContent || ""), { timeout: 15000 }, sheet);
+    await rec.caption("");
+    await rec.hold(900);
+  }],
+  ["diagram", async (h, rec) => {
+    const { page } = h;
+    await page.click('.main-nav button[data-place="diagram"]');
+    await page.waitForSelector('.server-view[data-view="diagram"]', { visible: true });
+    await page.waitForSelector('select[aria-label="Database"] option[value="shop"]');
+    await rec.caption("Database: shop");
+    await page.select('select[aria-label="Database"]', "shop");
+    await rec.hold(500);
+    await rec.caption("click Load");
+    await page.click('[data-action="refresh"]');
+    await page.waitForSelector(".diagram-table");
+    await rec.hold(1000);
+    await rec.caption("find: orders");
+    await page.click('[aria-label="Find a table or column"]');
+    await page.keyboard.type("orders", { delay: 70 });
+    await rec.hold(600);
+    await rec.caption("click the orders heading");
+    await page.click('[data-table-id="orders"]');
+    await page.waitForFunction(() => /customer_id → id/.test(document.querySelector(".view-inspector")?.textContent || ""));
+    await rec.hold(1000);
+    await rec.caption("Export → Editable JSON");
+    await clickButton(page, "Export");
+    await page.waitForSelector(".diagram-export-menu");
+    await rec.hold(400);
+    await clickButton(page, "Editable JSON");
+    await page.waitForFunction(() => !document.querySelector(".diagram-export-menu"));
+    await rec.caption("");
+    await rec.hold(700);
+  }],
+  ["schema-compare", async (h, rec) => {
+    const { page } = h;
+    schemasReply = SV_CATALOG;
+    await page.click('.main-nav button[data-place="schema"]');
+    await page.waitForSelector(".schema-versions-view tbody tr");
+    await rec.hold(500);
+    await rec.caption("select the saved version");
+    await page.click('.schema-versions-view tbody tr td[data-col="database"]');
+    await page.waitForSelector(".view-inspector .schema-inspector-actions button.primary");
+    await rec.hold(500);
+    await rec.caption("Compare with the database now");
+    await page.click(".view-inspector .schema-inspector-actions button.primary");
+    await page.waitForSelector(".schema-compare-sides");
+    await page.waitForSelector('.schema-versions-view tbody tr[data-row-key]');
+    await rec.hold(1000);
+    await rec.caption("select a changed object");
+    await page.locator('.schema-versions-view tbody tr td[data-col="name"] ::-p-text(customers)').click();
+    await page.waitForSelector(".schema-changes-table");
+    await rec.hold(1300);
+    await clickButton(page, "Back to differences", ".schema-versions-view ");
+    await page.waitForSelector('.schema-versions-view tbody tr[data-row-key]');
+    await rec.caption("Sync script");
+    await page.click("#schema-compare-tab-sync");
+    await page.waitForSelector(".schema-migration");
+    await rec.hold(1500);
+    await rec.caption("Open in Query editor");
+    await page.click(".schema-migration-actions button.primary");
+    await page.waitForFunction(() => /-- myflames schema sync/.test(document.querySelector(".sql-editor")?.value || ""));
+    await rec.caption("");
+    await rec.hold(900);
+  }],
 ];
 
 // ---- driver -------------------------------------------------------------------
@@ -572,6 +1224,7 @@ for (const [id, steps] of chosen) {
   assert.deepEqual(h.errors, [], `${id}: page errors`);
   assert.deepEqual(h.state.blocked, [], `${id}: requests outside the local server (blocked)`);
   await h.close();
+  await fs.rm(h.downloads, { recursive: true, force: true });
   const file = path.join(out, `howto-${id}.gif`);
   const frames = (await fs.readdir(directory)).filter((f) => f.endsWith(".png")).sort()
     .map((f) => path.join(directory, f));
