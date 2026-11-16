@@ -399,11 +399,17 @@ export async function open(endpoint, name, extra = {}, {
       }
       assert.fail("the session never saved the expected Server state");
     },
-    /** No horizontal page scroll at 390 px: the open view is pushed on screen
-     * with a back button, the inspector is a sheet; restores the desktop size.
+    /** No horizontal page scroll at the desktop window's real minimum
+     * (720x520, apps/desktop/main.cjs) or at 390 px: the open view is pushed
+     * on screen with a back button, the inspector is a sheet; restores the
+     * desktop size.
      * *place* is the selector of a place that shows its one view without a
      * list (for example ".replication-place"). */
     async narrow(file, { place = "" } = {}) {
+      await page.setViewport({ width: 720, height: 520 });
+      await pause(250);
+      const desktopMin = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.ok(desktopMin <= 0, `horizontal scroll of ${desktopMin}px at 720 px (desktop window minimum)`);
       await page.setViewport({ width: 390, height: 844 });
       await pause(250);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
