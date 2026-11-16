@@ -63,6 +63,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [File transfer: SSH connections and SFTP](#file-transfer-ssh-connections-and-sftp)
   - [--quiet / -q](#--quiet---q)
   - [MCP server](#mcp-server)
+  - [Test runner and CI](#test-runner-and-ci)
   - [MySQL Fixtures](#mysql-fixtures)
   - [MariaDB Fixtures](#mariadb-fixtures)
 - [Visual Explain (merged Diagram / Workbench)](#visual-explain-merged-diagram--workbench)
@@ -82,8 +83,34 @@ The optional Electron development host is in `apps/desktop`. It starts its own
 Python server and loads the one-use launch URL into a sandboxed window. It uses
 separate app data and retains the same API authentication and write contracts.
 The Apple Silicon package bundles its Python backend and opens through Finder.
-Build with `package:mac` (unsigned, for local use) or `package:mac:release`
-(`scripts/package-mac-release.sh`: Developer ID signing under the hardened runtime
+Build with `package:mac` (unsigned, for local use). Releases come from the
+entry point `npm run release:mac -- <full-HEAD-SHA> [--resume]`
+(`scripts/release-mac.sh`, Apple Silicon only): it ships the committed UI
+assets and never rebuilds the workspace, requires the named full commit SHA
+to equal a clean HEAD and re-checks both after provisioning and building (so
+neither the workspace source nor its committed output may change mid-build),
+and preflights Node.js 22.12+, the build Python, DNS for the notary service
+and the client download host, and 5 GiB of free disk at the root, the venv
+and the client cache (`scripts/release_state.py preflight`), then the shared
+signing checks (`scripts/package-mac-release.sh --preflight`: the identity
+and the notary sign-in, without building anything). Every invocation then
+runs `npm ci` in `apps/desktop`, followed by
+`PUPPETEER_SKIP_DOWNLOAD=true npm ci` in `apps/workspace`, installing both
+dependency sets from their committed lockfiles before the backend build or
+resume decision. The workspace dependencies let the packaged settings smokes
+attach to Electron without downloading a browser. Unless `--resume` finds a
+valid backend build manifest, it provisions the build venv
+(`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`, stamped
+with the Python version and the build-requirements digest and never a
+symlink; the interpreter is `MYFLAMES_DESKTOP_BUILD_PYTHON`, default
+`python3.14`) and builds the backend with `build-backend.py`, keeping a
+status line every 30 s while a step runs. A successful build publishes
+`build/backend/build-manifest.json` (the commit, the `ui_assets` and
+build-requirements digests, the backend hash, the Python license hash, the
+Python version and the resolved `pip freeze`), and the packager's
+`manifest-check` refuses a backend whose manifest does not match HEAD, the
+tree and the build venv. It then runs `scripts/package-mac-release.sh`:
+Developer ID signing under the hardened runtime
 with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
 notarization and stapling of the app and the DMG, Gatekeeper checks, and the
 200 MiB update download limit (3.3.3 and older stop their Download at 150 MiB and open the release page instead); it also builds the update zip
@@ -93,9 +120,29 @@ inside (`codesign --verify --deep --strict`, Gatekeeper source Notarized
 Developer ID, stapler validate), applies the 200 MiB limit to the DMG and the
 zip, and writes `<name>.sha256` for both; the certificate comes from `MYFLAMES_MAC_IDENTITY`
 and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Connect
-API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
+API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`).
+The packager works as ordered stages (`app`, `verify-app`, `dmg-notarize`,
+`staple`, `verify`, `size`, `checksums`) recorded with artifact hashes and
+Apple's submission ID in `apps/desktop/build/release-state.json`
+(`scripts/release_state.py`); a stage completes only while its consumed
+artifacts still hash to what earlier stages recorded (signing and stapling
+legitimately rewrite the DMG), and `--resume` recomputes the hashes and
+restarts at the first incomplete stage (or the earliest stage whose recorded
+artifacts no longer match), never re-signing a changed input. The DMG notarization submits without `--wait`,
+persists the submission ID before waiting on that same ID, and retries only
+transport failures (three attempts, 10/30/90 s backoff); an unsigned
+developer agreement (403), refused credentials (401 and the like) and a
+rejected or invalid submission stop the build at once. While Apple handles
+the DMG, the editor-settings and preferences smokes run in parallel against
+the signed app with separate temporary profiles, and both must pass before
+the `verify` stage completes.
+Validate the delivered
 `.app` using the packaged smoke, which removes system Python from the startup path
-and checks owned cleanup.
+and checks owned cleanup. Its readiness wait (`smokeWindow` in `main.cjs`)
+ignores empty `.home [role=alert]` live regions and never goes ready while
+any alert carries text; the timeout error lists the readiness flags
+(home-start present, alert text present, still opening, secret still in the
+hash) and up to 200 characters of the alert text.
 Run `node apps/desktop/scripts/editor-settings-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
 (`smoke:editor-settings` in `apps/desktop`) against that same built bundle for
 the two-launch Query editor settings check. It changes wrapping and multiple
@@ -106,7 +153,9 @@ Beside it, `node apps/desktop/scripts/preferences-smoke.cjs apps/desktop/dist/ma
 System theme, 208 px sidebar and floating Server views; Dracula, a 280 px
 sidebar, a 160 px Query editor split and docked Server views after restart;
 then restored defaults, including the 260 px editor split, after another
-restart. All changes use real UI controls. Before any click on each launch,
+restart. Each launch also asserts the `/api/settings/ui` defaults in full,
+`diagram_zoom_speed: 100` among them (the smoke's `DEFAULTS`).
+All changes use real UI controls. Before any click on each launch,
 it reads the root theme at the earliest opportunity after CDP attaches and
 checks the stored theme in server-rendered HTML from a later GET /. Neither
 check captures the original navigation response or proves first paint. It also reads `/api/settings/ui` and the autosaved session,
@@ -117,8 +166,9 @@ backend and a minimal PATH, need no database connection or SQL execution,
 report numbered `PASS` lines, and remove their isolated data and owned
 processes on success or failure. They never restart an existing server.
 Releases ship `myflames-<version>-macos-arm64.dmg` and
-`myflames-<version>-macos-arm64.zip` from `package:mac:release`
-(`apps/desktop/scripts/package-mac-release.sh`), with a `.sha256` for each;
+`myflames-<version>-macos-arm64.zip` from `npm run release:mac`
+(`apps/desktop/scripts/release-mac.sh`, which prepares the backend and runs
+`package-mac-release.sh`), with a `.sha256` for each;
 attach the DMG, the zip and both `.sha256` files, uploading the DMG before the
 zip because 3.3.3 and older pick the first matching `.zip` or `.dmg` in the
 release's asset order for Download. The first release with in-place updates
@@ -214,7 +264,10 @@ folder; the runtime is found with
 `vswhere` in `VC\Redist\MSVC\<version>\x64\Microsoft.VC*.CRT`, or `--vc-runtime`),
 and writes `apps/desktop/build/mysql-client`. `package:mac`,
 `package-mac-release.sh` and the Windows workflow (archive cached by its SHA-256)
-run it before electron-builder; electron-builder copies the folder to
+run it before electron-builder; `release-mac.sh` points the cache at
+`MYFLAMES_MYSQL_CLIENT_CACHE` (default `~/.cache/myflames/mysql-client-cache`),
+so verified client archives are shared between worktrees while build outputs
+stay worktree-local. electron-builder copies the folder to
 `mysql-client` and its `LICENSE` to `licenses/MySQL-Client-LICENSE`. The release
 build re-signs the client and its libraries with the app's Developer ID under
 the hardened runtime and checks that `mysql --version` and `mysqldump --version`
@@ -1003,11 +1056,18 @@ are the contracts of the tools that check them.
   names only pages that exist, `CHANGELOG.md` `[Unreleased]` holds no entries
   (they moved into the page),
   `docs/screenshots/manifest.json` `version` is X.Y.Z with the four README
-  images present, and `docs/handbook/manifest.json` parses with every listed
-  chapter file present; otherwise it lists every problem and exits 1.
+  images present, README.md and `docs/DESKTOP.md` name only X.Y.Z's DMG,
+  Windows installer and update zip download files (in links, prose and
+  examples, including checksum names), and `docs/handbook/manifest.json`
+  parses with every listed chapter file present; otherwise it lists every
+  problem and exits 1.
 - **Release files.** A release carries `myflames-X.Y.Z-macos-arm64.dmg` (new
   installs), `myflames-X.Y.Z-macos-arm64.zip` (the in-app update file) and
-  `myflames-X.Y.Z-windows-x64-setup.exe`, each with its `.sha256`. The DMG is
+  `myflames-X.Y.Z-windows-x64-setup.exe`, each with its `.sha256`. When
+  `apps/desktop/mysql-client.lock.json` pins a bundled client, the release
+  also carries the unmodified source archive its `source.archive` names
+  (`mysql-<version>.tar.gz`) and that file's `.sha256`, as NOTICE promises.
+  The DMG is
   uploaded before the zip (a lower asset id): an installed myflames up to
   3.3.3 takes the first macOS asset GitHub lists
   (`app_update.match_asset_for_platform`), which must stay the DMG.
@@ -1017,7 +1077,8 @@ are the contracts of the tools that check them.
   `gh api repos/vgrippa/myflames/releases/tags/vX.Y.Z` answer, or for a draft,
   which has no tag yet, `gh release view vX.Y.Z --json assets`, whose node ids
   it reads the number from `apiUrl` for; `-` reads stdin) checks the names,
-  that every file finished uploading, the id order, and that the first macOS
+  including the pinned source archive, that every file finished uploading,
+  the id order, and that the first macOS
   file in GitHub's list, by the 3.3.3 rule (`legacy_macos_choice`), is the DMG.
 - **`.github/workflows/docs-sync.yml`** (`contents: read`; `contents: write`
   only in the release job). On a pull request to master (also when its labels
@@ -1067,9 +1128,10 @@ and the other sections have no items):
 
 - `entry` is the start of the bullet's text as plain words (Markdown emphasis,
   links and code marks removed, link text kept, whitespace collapsed), long
-  enough to name exactly that one bullet, and `section` is the bullet's
-  section. Every bullet matches exactly one item and every item matches a
-  bullet.
+  enough to name exactly that one bullet and holding at least one word
+  character, and `section` is the bullet's
+  section. Every bullet matches exactly one item and every item matches
+  exactly one bullet in its section.
 - `needs` is a non-empty subset of `tests`, `live`, `layout`, `reviews`,
   always with `tests`. A need is met by at least one evidence entry of that
   kind, or by an `unverified` entry (`what`, `need`, `accepted_by_owner`)
@@ -1078,17 +1140,28 @@ and the other sections have no items):
 - An evidence entry carries the `commit` it ran on: `tests` (with `command`
   and `result`), `live` (with `driver`, `servers`, `tools` and `checks` of
   `action`/`outcome`), `layout` (with `view`, `looked_at` true and `shots`)
-  and `reviews` (with `reviewer` and `verdict`). A layout entry has four
+  and `reviews` (with `reviewer` and `verdict`). `tests` and `live` entries
+  require `outcome: "pass"`; a `tests` entry also requires integer counts
+  `executed` above 0 and `skipped` at least 0, with non-empty `command` and
+  `result` text. A `live` entry also requires a non-empty `servers` list of
+  non-empty strings and a non-empty `checks` list of objects, each with
+  non-empty `action` and `outcome` strings. A `reviews` entry's `verdict` is
+  `ship`, or `ship-with-follow-ups` with a non-empty `follow_ups` list of
+  non-empty strings. A layout entry has four
   shots, 1440 and 720 px in light and dark, each with its `file` and a 64-hex
   `sha256`; when the file exists locally its hash must match (CI has no local
   shots: only the format is checked).
-- An evidence commit must exist and be an ancestor of the release commit, and
-  only release-only paths may differ between it and the release commit:
-  `pyproject.toml`, `myflames/__init__.py`, `apps/desktop/package.json`,
-  `apps/desktop/package-lock.json`, `CHANGELOG.md`, `ROADMAP.md`, `README.md`,
-  any `*.md` and anything under `docs/`. Anything else means the check ran on
+- An evidence commit must be the full commit SHA, must exist and be an
+  ancestor of the release commit, and only release-only paths may differ
+  between it and the release commit: version values (and nothing else, file
+  modes included) in the four version files `pyproject.toml`,
+  `myflames/__init__.py`, `apps/desktop/package.json` and
+  `apps/desktop/package-lock.json`, and the documentation exemptions:
+  repository-root `*.md`, `apps/*/README.md` and anything under `docs/`
+  except `docs/schemas/` and `docs/brand/`. Anything else means the check ran on
   code that is not shipping, and the evidence must be produced again on the
-  final code.
+  final code. A record is validated once, at its own release, against the
+  rules then in force; it is never re-validated at a later HEAD.
 
 `python3 scripts/check_release_verification.py X.Y.Z [--head REV]` (the head
 defaults to HEAD) reports every problem at once, one per line with a summary,
@@ -6122,6 +6195,172 @@ Core projections reuse `report.format_digest` and the compact text formatters in
 Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault python3 -m unittest discover -s test -p 'test_mcp_server.py' -v`. Replays and module-test fakes cover MySQL and MariaDB, both detail projections, attribution orders, registered tool identities, all submitted SQL, the no-SET adapter, argument validation and password redaction. The transport extra is not required for those tests.
 
 The workspace wraps non-Visual Explain SVGs in a focusable `.chart-scroll` region. Below 650 px, it preserves the 1200-unit canvas width and scrolls within the view instead of shrinking text. Desktop layout and renderer semantics are unchanged. `browser.mjs` verifies readable scale, scroll range and no page overflow at 390 and 320 pixels.
+
+### Test runner and CI
+
+**Test runner.** `./run-tests.sh` runs the Python suite through
+`scripts/run_tests_parallel.py` (stdlib only) under a throwaway
+HOME/USERPROFILE with `MYFLAMES_SECRET_BACKEND=vault`, passing
+`--skip-allowlist test/skip_allowlist.txt`; extra arguments go to the runner.
+Each test module runs in its own process with its own throwaway
+HOME/USERPROFILE and vault. The worker count is `--jobs`, else the `JOBS`
+environment variable, else the CPU count capped at 8; `JOBS=1` keeps the
+original single-process `python3 -m unittest discover` command, with no
+inventory comparison, for debugging test order. A module that exceeds
+`--timeout` (900 s by default) has its whole process tree stopped, including
+children the tests started in their own session (`start_new_session`): on
+POSIX the runner collects the worker's descendants by parent pid from
+`ps -A -o pid=,ppid=`, repeating until a scan adds nothing while the worker
+still runs, kills each of them and then kills the worker's process group
+(when `ps` is missing or fails, the group kill is the fallback); on Windows
+`taskkill /F /T` stops the tree. The same cleanup runs when a run is
+interrupted. Known limits: a process forked between the last scan and the
+kill, and a process a module leaves running after its worker has exited
+(already reparented), are not found; CI runners are discarded after each job.
+A status
+line (`[N/M done; Xs elapsed] running: ...`) prints to stderr every 30 s.
+The modules that start real Docker containers (`test_connector_integration`,
+`test_schema_versions_live`; the `SERIAL_MODULES` lane) never run at the same
+time. The run ends with the 15 slowest modules and a skip summary (reason
+-> count). It schedules the modules by the seconds recorded in
+`scripts/test_durations.json` (`--durations` names another file), heaviest
+first, falling back to file size, and `--durations-out` writes fresh
+measurements. The file stays out of `test/`: `test_misestimate_marks.py` and
+`parity.mjs` read every top-level `test/*.json` as a plan fixture. Skips whose reason full-matches
+no pattern in the allowlist are listed as unexpected;
+`MYFLAMES_SKIP_BUDGET=1` turns unexpected skips into a failure.
+Parallel runs add an inventory check: a probe in its own process asks
+unittest's own loader which modules it discovers and how many cases each
+holds, and each module's count is then compared with what its own worker
+discovered and ran, with class- and module-level fixture skips counted so
+they explain discovered-but-not-run tests. A module that ran zero or more
+than once, a worker missing from the inventory, a differing discovery count,
+or a discovered test that never ran without a fixture skip fails the run as
+an INVENTORY MISMATCH; tests a package's `__init__` or `load_tests` hook
+supplies cannot be isolated per file and require `JOBS=1`.
+
+**Live switches** (`test/_live_switches.py`, used by
+`test_connector_integration.py` and `test_schema_versions_live.py`).
+`MYFLAMES_LIVE_DOCKER=0` skips the live classes with the reason "live Docker
+tests run in the integration workflow", even when Docker is available; it
+wins over `MYFLAMES_REQUIRE_LIVE=1`. `MYFLAMES_REQUIRE_LIVE=1` forbids
+skipping: a missing Docker daemon or mysql client, an image pull failure, a
+container start failure or a readiness timeout fails the class from
+`setUpClass` instead, so a required run can never pass with zero live tests.
+With neither set, a missing Docker setup or a failed container start skips
+the class ("Docker or mysql client not available"). The classes pin their
+images: `mysql:8.4.11` and `mariadb:11.4.13`.
+
+**Fast pre-handback check.** `scripts/check_fast.sh [FILE...]` checks the
+named files (paths relative to the repository root), or without arguments the
+files changed against `git merge-base HEAD origin/master` plus staged,
+unstaged and untracked files; with neither it prints usage and exits 2. Each
+step reports `PASS`, `FAIL` or `SKIP` lines (per file for shell and workflow
+files; `workflow-yaml` is silent when no workflow changed): `python-3.7-syntax` checks changed Python
+files under `myflames/`, `scripts/`, `test/` and `apps/desktop/scripts/`
+against Python 3.7 syntax and refuses constructs only newer versions have
+(`str.removeprefix`/`removesuffix`, `functools.cache`, self-documenting
+f-strings, parenthesized `with (` item lists); it is a fast local
+approximation, and the CI `python37` job remains the authority for 3.7
+compatibility. `python-tests` runs `test/test_<m>.py` for each changed
+`myflames/<m>.py`, plus each changed test module itself, each in a throwaway
+HOME with the vault backend and `MYFLAMES_LIVE_DOCKER=0`, up to four at a
+time. `typescript` runs `tsc --noEmit -p .` in `apps/workspace` when its
+source or test files changed (skipped with a message when `node_modules` or
+`tsc` is missing). `shell` runs `sh -n` on each changed shell script.
+`workflow-yaml` parses each changed workflow file (skipped with a message
+when ruby is missing). Exit status is 0 when every step passes, 1 when any
+step fails.
+
+**Workflows** (`.github/workflows/`). Every workflow scopes its permissions
+(`contents: read`, except where noted); runs serialize per workflow and ref
+with in-progress pull-request runs cancelled, except publish, which groups
+per tag and never cancels.
+
+- `test.yml` (Test): push and pull requests to master. The matrix job runs
+  `./run-tests.sh` on ubuntu-24.04 with Python 3.9, 3.11, 3.13 and 3.14 (3.14
+  is the version the desktop app ships) under `MYFLAMES_LIVE_DOCKER=0` (live
+  classes stay out) and `MYFLAMES_SKIP_BUDGET=1`. The `python37` job runs the
+  same suite on ubuntu-22.04 with Python 3.7 under `MYFLAMES_REQUIRE_LIVE=1`
+  and `MYFLAMES_SKIP_BUDGET=1`, so the oldest supported Python keeps
+  end-to-end coverage against real servers. The `windows` job
+  (windows-latest, Python 3.12) runs `test_secret_store.py` against the real
+  Windows Credential Manager, `test_connector.py`, the platform-neutral
+  server-view modules and a CLI smoke.
+- `integration.yml` (Live connector integration): pull requests to master and
+  manual runs. Python 3.11 on ubuntu-24.04 with `MYFLAMES_REQUIRE_LIVE=1`; a
+  per-engine matrix runs the connector and schema-version live classes
+  against the MySQL 8.4 and MariaDB 11.4 containers the classes boot
+  themselves. The unit matrix in `test.yml` opts out of the live classes
+  (`MYFLAMES_LIVE_DOCKER=0`); the `python37` job opts in with
+  `MYFLAMES_REQUIRE_LIVE=1`.
+- `windows-desktop.yml` (Windows desktop): push and pull requests that touch
+  `apps/desktop`, `myflames` or the workflow, plus manual runs;
+  windows-latest with Python 3.14 and Node 22. It builds the PyInstaller
+  backend in a fresh venv, runs the launcher tests, fetches the pinned MySQL
+  client (the archive cached by its SHA-256), packages the NSIS installer and
+  runs the packaged smoke on `dist/win-unpacked`; then it installs the
+  installer silently (`/S`), asserts the installed executable, the
+  uninstaller and the Start menu shortcut, runs the packaged smoke against
+  the installed app, uninstalls silently (`/currentuser /S`) and asserts the
+  install folder and the shortcut are gone. `windows-install-evidence.json`
+  records the commit, the installer name and SHA-256 and each step's outcome,
+  failing the job when any step did not pass; the installer, its `.sha256`
+  and the evidence upload as the `myflames-windows-x64` artifact.
+- `macos-desktop.yml` (macOS desktop): push and pull requests that touch
+  `apps/desktop`, `myflames`, `apps/workspace/package-lock.json`,
+  `apps/workspace/test/editor-helpers.mjs` or the workflow, plus manual runs;
+  macos-15 with Python 3.14 and Node 22. It builds the backend and the
+  unsigned app (`package:mac`, signing discovery off) and runs the three
+  packaged smokes: `smoke.cjs`, `editor-settings-smoke.cjs` and
+  `preferences-smoke.cjs`.
+- `docs-sync.yml` (Docs and release sync): pull requests to master, release
+  publication, and manual runs with a required `tag` input; the release job
+  alone gets `contents: write`. The pull-request job fails user-facing
+  changes without a `CHANGELOG.md` `[Unreleased]` entry (unless the PR is
+  labelled `no-changelog`) and runs `check_release_sync.py` and
+  `check_release_verification.py` when the desktop version changes; the
+  release job checks out the tag, sets the GitHub release notes from the
+  release notes page and runs `check_release_assets.py`. The full contract is
+  in [Release sync](#release-sync).
+- `fixtures-drift.yml` (Fixtures drift): daily at 03:14 UTC and manual runs.
+  It regenerates `test/fixtures/` with `scripts/generate-fixtures.sh` and
+  `scripts/generate-mariadb-fixtures.sh` against the floating `mysql:8.4`,
+  `mariadb:11.4` and `mariadb:10.11` tags (floating on purpose, to notice
+  upstream image changes), then `scripts/check_fixture_drift.py` compares the
+  regenerated files with the committed ones after stripping wall-clock
+  timings and optimizer estimates, and compares the file sets as well. Both
+  generators first delete the numbered fixtures they own
+  (`explain-NNN-*.json` for MySQL, `mariadb-<version>-NNN-*.json` for
+  MariaDB; hand-captured files without a three-digit index stay), so a
+  fixture whose `run_explain` or `run_analyze` call was removed disappears
+  from the working tree: a committed generator-managed fixture the
+  generators no longer produce, or a produced fixture that was never
+  committed, is drift too.
+- `publish.yml` (Publish to PyPI): a published GitHub release, or a manual
+  run with the required `tag` input. The tag must match `vX.Y.Z` exactly and
+  equal the `pyproject.toml` version at that tag, which is checked out (never
+  a moving master). Concurrency groups runs per tag with cancellation
+  disabled, so a running publish never stops mid-upload and two runs for one
+  tag never overlap. The build job makes the sdist and the wheel and checks
+  them with twine; the publish job uploads through a Trusted Publisher
+  (OpenID Connect, `id-token: write`, environment `pypi`), with no token
+  stored anywhere.
+
+**Consent canary** (`test/test_consent_canary.py`). Network-level proof that
+reading one connection group never logs in to a saved connection in another
+group: a TCP listener on 127.0.0.1 plays the "production" saved connection,
+only the active connection is faked, and every other connection goes through
+the real connector, which spawns the real mysql/mariadb client against the
+listener, so a consent bug in any layer shows up as an accepted connection.
+The negative checks drive the workspace readers (`/api/live/cluster`,
+`/api/live/replication`, `/api/live/proxysql`, `/api/live/readyset`) with the
+peer in another group and require zero accepted connections; the positive
+controls repeat the identical setup with the peer in the active group
+(consent given) and require at least one accepted connection, so the canary
+can never pass vacuously. It skips only when the connector has no client
+binary to spawn ("mysql client needed for the consent canary"); with
+`MYFLAMES_REQUIRE_LIVE=1` a missing client fails instead.
 
 ### MySQL Fixtures
 

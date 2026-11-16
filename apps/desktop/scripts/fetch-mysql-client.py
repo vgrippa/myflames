@@ -27,19 +27,25 @@ Standard library only. Usage (from anywhere):
         [--cache DIR] [--out DIR] [--vc-runtime DIR] [--no-check]
 """
 import argparse
+import errno
 import glob
 import hashlib
+import http.client
 import json
 import os
 import posixpath
 import re
 import shutil
+import socket
+import ssl
 import stat
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -50,6 +56,8 @@ OUT = os.path.join(DESKTOP, 'build', 'mysql-client')
 PLATFORMS = ('darwin-arm64', 'win32-x64')
 DOWNLOAD_HOST = 'https://cdn.mysql.com/'
 CHUNK = 1 << 20
+DOWNLOAD_BACKOFF = (10, 30, 90)
+DOWNLOAD_ATTEMPTS = 3
 
 # Libraries every supported macOS has; anything else must come from the archive.
 MACOS_SYSTEM_PREFIXES = ('/usr/lib/', '/System/Library/')
@@ -158,7 +166,7 @@ class _HttpsOnly(urllib.request.HTTPRedirectHandler):
         return urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
 
 
-def download(url, size, target):
+def _download_once(url, size, target):
     """Stream *url* to a temporary file beside *target*; never more than *size* bytes."""
     opener = urllib.request.build_opener(_HttpsOnly)
     fd, partial = tempfile.mkstemp(prefix='.download-', dir=os.path.dirname(target))
@@ -177,6 +185,37 @@ def download(url, size, target):
     except BaseException:
         os.unlink(partial)
         raise
+
+
+def _transport_error(error):
+    """Retry network failures, never HTTP 4xx, TLS verification or local I/O."""
+    if isinstance(error, urllib.error.HTTPError):
+        return 500 <= error.code <= 599
+    if isinstance(error, urllib.error.URLError):
+        return _transport_error(error.reason)
+    if isinstance(error, ssl.SSLError):
+        return False
+    if isinstance(error, (socket.gaierror, socket.timeout, ConnectionError, http.client.IncompleteRead)):
+        return True
+    return isinstance(error, OSError) and error.errno in (
+        errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNREFUSED, errno.ECONNABORTED,
+        errno.ENETUNREACH, errno.EHOSTUNREACH)
+
+
+def download(url, size, target):
+    # Each attempt gets a fresh partial file; _download_once always removes a
+    # failed one. Size/hash mismatches are Refused, outside this retry path.
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            return _download_once(url, size, target)
+        except (OSError, http.client.HTTPException) as error:
+            if not _transport_error(error) or attempt + 1 == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = DOWNLOAD_BACKOFF[attempt]
+            sys.stderr.write('fetch-mysql-client: transport error; download attempt %d/%d in %d s\n'
+                             % (attempt + 2, DOWNLOAD_ATTEMPTS, delay))
+            time.sleep(delay)
+    raise AssertionError('unreachable')
 
 
 def cached_archive(entry, cache):
@@ -551,7 +590,7 @@ def main(argv=None):
         fetch(platform, args.lock, args.cache, args.out, args.vc_runtime, not args.no_check)
     except Refused as exc:
         die(str(exc))
-    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+    except (OSError, ValueError, http.client.HTTPException, zipfile.BadZipFile, tarfile.TarError) as exc:
         die('%s: %s' % (type(exc).__name__, exc))
     return 0
 

@@ -16,8 +16,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const skip = process.platform === 'win32' || !fs.existsSync(path.join(root, 'myflames/ui_assets/index.html'));
 
 // A stand-in for Electron: names itself as the owner, starts the backend as a
-// group leader, reports its pid at once and again when the launch line
-// appears, then waits to be killed.
+// group leader, reports its pid at once, again when the launch line appears
+// and when the backend exits, then waits to be killed.
 const holderSource = `
   const { spawn } = require('node:child_process');
   const env = { ...process.env };
@@ -26,24 +26,48 @@ const holderSource = `
     { detached: true, stdio: ['ignore', 'ignore', 'pipe'], env });
   process.stdout.write('pid ' + child.pid + '\\n');
   let text = '';
-  child.stderr.on('data', chunk => { text += chunk; if (/myflames UI: http/.test(text)) { process.stdout.write('ready\\n'); text = ''; } });
+  child.stderr.on('data', chunk => { process.stderr.write(chunk); text += chunk; if (/myflames UI: http/.test(text)) { process.stdout.write('ready\\n'); text = ''; } });
+  child.on('exit', (code, signal) => process.stdout.write('exit ' + code + ' ' + signal + '\\n'));
   setInterval(() => {}, 1000);`;
 
 async function run(mark, home) {
   const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, MYFLAMES_SECRET_BACKEND: 'vault', MARK: mark ? '1' : '0',
-    PYTHONPATH: root, PYTHONDONTWRITEBYTECODE: '1', PY: process.env.MYFLAMES_DESKTOP_PYTHON || 'python3', ENTRY: entry };
-  const holder = spawn(process.execPath, ['-e', holderSource], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+    PYTHONPATH: root, PYTHONDONTWRITEBYTECODE: '1', PY: process.env.MYFLAMES_DESKTOP_PYTHON || 'python3', ENTRY: entry,
+    // On SIGABRT Python then prints every thread's stack, which shows where a stuck start waits.
+    PYTHONFAULTHANDLER: '1' };
+  const holder = spawn(process.execPath, ['-e', holderSource], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const state = { holder, pid: 0 };
+  // The backend's stderr explains a start that never came (its tail, long
+  // enough for a stack dump's most recent frames, which come first).
+  let err = '';
+  holder.stderr.on('data', chunk => { err = (err + chunk).slice(-20000); });
+  const why = () => (err.trim() ? '; backend stderr: ' + err.trim() : '; the backend wrote nothing to stderr');
   state.ready = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('backend did not start')), 20000);
+    let aborted = false;
+    const timer = setTimeout(() => {
+      // Ask the stuck backend for its stacks, give it a second to print them,
+      // then fail. A launch line after this no longer counts as a start.
+      aborted = true;
+      if (state.pid) try { process.kill(state.pid, 'SIGABRT'); } catch {}
+      setTimeout(() => reject(new Error('backend did not start' + why())), 1000);
+    }, 20000);
     let out = '';
     holder.stdout.on('data', chunk => {
       out += chunk;
       const match = /pid (\d+)/.exec(out);
       if (match) state.pid = Number(match[1]);
-      if (out.includes('ready')) { clearTimeout(timer); resolve(); }
+      const ended = /exit (\S+) (\S+)/.exec(out);
+      if (ended && !aborted) {
+        // Never signal a pid that may already be reused; let the last stderr
+        // lines arrive before failing.
+        aborted = true;
+        clearTimeout(timer);
+        setTimeout(() => reject(new Error('backend exited before its launch line (code ' + ended[1] + ', signal ' +
+          ended[2] + ')' + why())), 300);
+      }
+      if (out.includes('ready') && !aborted) { clearTimeout(timer); resolve(); }
     });
-    holder.once('exit', () => { clearTimeout(timer); reject(new Error('stand-in parent exited early')); });
+    holder.once('exit', () => { clearTimeout(timer); reject(new Error('stand-in parent exited early' + why())); });
   });
   return state;
 }

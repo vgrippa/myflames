@@ -13,6 +13,11 @@ A release of VERSION must carry, each with its ".sha256" beside it:
 - myflames-VERSION-macos-arm64.zip          (the in-app update file)
 - myflames-VERSION-windows-x64-setup.exe    (the Windows preview installer)
 
+When apps/desktop/mysql-client.lock.json pins a bundled client, the release
+also needs its source.archive file and that file's .sha256, as promised in
+NOTICE. The source filename must match the pinned MySQL version. Asset names
+and upload states are checked here, not the downloaded archive's contents.
+
 The DMG must be uploaded before the zip (a lower asset id): an installed
 myflames up to 3.3.3 takes the first macOS asset GitHub lists, which must stay
 the DMG it knows how to open. Exit status 0 when the release is complete, 1
@@ -23,10 +28,15 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import release_notes  # noqa: E402  (a sibling script, not a package)
+
+ROOT = HERE.parent
+CLIENT_LOCK = "apps/desktop/mysql-client.lock.json"
+SOURCE_PROMISE = "NOTICE promises the unmodified MySQL source archive with each release that bundles the client."
 
 
 def required_assets(version):
@@ -34,6 +44,28 @@ def required_assets(version):
     return ["myflames-%s-macos-arm64.dmg" % version,
             "myflames-%s-macos-arm64.zip" % version,
             "myflames-%s-windows-x64-setup.exe" % version]
+
+
+def bundled_source_archive(root):
+    """The pinned source filename; no lock means no bundled-client requirement."""
+    try:
+        text = (root / CLIENT_LOCK).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    lock = json.loads(text)
+    version = lock.get("version") if isinstance(lock, dict) else None
+    if not isinstance(version, str) or not release_notes.VERSION_RE.fullmatch(version):
+        raise ValueError("version must pin the bundled MySQL client release")
+    source = lock.get("source")
+    archive = source.get("archive") if isinstance(source, dict) else None
+    if not isinstance(archive, str) or not archive:
+        raise ValueError("source.archive must name the unmodified source archive")
+    parsed = urlsplit(archive)
+    name = parsed.path.rsplit("/", 1)[-1]
+    expected = "mysql-%s.tar.gz" % version
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or name != expected:
+        raise ValueError("source.archive must name %s for the pinned client" % expected)
+    return name
 
 
 def asset_id(asset):
@@ -69,7 +101,7 @@ def legacy_macos_choice(assets):
     return None
 
 
-def check(release, version):
+def check(release, version, root=None):
     """A list of problems with *release* (the GitHub API release object)."""
     version = release_notes.normalize_version(version)
     assets = release.get("assets") if isinstance(release, dict) else None
@@ -80,13 +112,22 @@ def check(release, version):
         if isinstance(asset, dict) and isinstance(asset.get("name"), str):
             by_name[asset["name"]] = asset
     problems = []
-    for installer in required_assets(version):
+    required = required_assets(version)
+    source = None
+    try:
+        source = bundled_source_archive(ROOT if root is None else root)
+    except (OSError, ValueError) as exc:
+        problems.append("%s: cannot read the pinned source archive (%s). %s" % (CLIENT_LOCK, exc, SOURCE_PROMISE))
+    if source is not None:
+        required.append(source)
+    for installer in required:
+        reason = " " + SOURCE_PROMISE if installer == source else ""
         for name in (installer, installer + ".sha256"):
             asset = by_name.get(name)
             if asset is None:
-                problems.append("Missing release file %s." % name)
+                problems.append("Missing release file %s.%s" % (name, reason))
             elif asset.get("state", "uploaded") != "uploaded":
-                problems.append("%s is not fully uploaded (state %r)." % (name, asset.get("state")))
+                problems.append("%s is not fully uploaded (state %r).%s" % (name, asset.get("state"), reason))
     dmg, update = (by_name.get(name) for name in required_assets(version)[:2])
     if dmg is not None and update is not None:
         try:
@@ -107,10 +148,11 @@ def check(release, version):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Check that a GitHub release has every installer, checksum and the DMG before the zip.")
+    parser = argparse.ArgumentParser(description="Check release installers, pinned MySQL source, checksums and the DMG before the zip.")
     parser.add_argument("version", help="release version, for example 3.3.4 or v3.3.4")
     parser.add_argument("release_json", help="the release from `gh api repos/OWNER/REPO/releases/tags/TAG` or "
                                              "`gh release view TAG --json assets`, or - for stdin")
+    parser.add_argument("--root", type=Path, default=ROOT, help="repository root for the client lock (default: this checkout)")
     args = parser.parse_args(argv)
     try:
         version = release_notes.normalize_version(args.version)
@@ -122,13 +164,13 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         print("check_release_assets: cannot read the release JSON: %s" % exc, file=sys.stderr)
         return 1
-    problems = check(release, version)
+    problems = check(release, version, args.root.resolve())
     if problems:
         print("Release %s files are incomplete or out of order:" % version, file=sys.stderr)
         for problem in problems:
             print("- " + problem, file=sys.stderr)
         return 1
-    print("Release %s has the DMG, the update zip and the Windows installer, each with its .sha256; the DMG came first." % version)
+    print("Release %s has every required installer and bundled-client source archive with its .sha256; the DMG came first." % version)
     return 0
 
 

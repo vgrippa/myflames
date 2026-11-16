@@ -6,31 +6,51 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   test:
     # ubuntu-latest (26.04) has no Python 3.9 build for setup-python.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        # 3.14 is the version the desktop app ships.
+        python-version: ["3.9", "3.11", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Run Python tests
+        env:
+          # Live Docker classes belong to the integration workflow; the
+          # skip budget fails the run on any other unlisted skip.
+          MYFLAMES_LIVE_DOCKER: "0"
+          MYFLAMES_SKIP_BUDGET: "1"
         run: ./run-tests.sh
 
   # The package promises Python 3.7+; ubuntu-latest no longer ships 3.7.
+  # MYFLAMES_REQUIRE_LIVE keeps the live Docker tests running here: the
+  # oldest supported Python keeps end-to-end coverage against real servers.
   python37:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.7"
       - name: Run Python tests on 3.7
+        env:
+          MYFLAMES_REQUIRE_LIVE: "1"
+          MYFLAMES_SKIP_BUDGET: "1"
         run: ./run-tests.sh
 
   # Saved connection passwords use Windows Credential Manager through the
@@ -38,6 +58,7 @@ jobs:
   # on the runner, which the Ubuntu matrix can only mock.
   windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash

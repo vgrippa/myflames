@@ -286,9 +286,16 @@ async function start() {
 async function smokeWindow(origin) {
   // Explicit local test mode, never a renderer-controlled IPC channel.
   const deadline = Date.now() + 20000;
-  let reloaded = false, mysqlClient = null;
+  let reloaded = false, mysqlClient = null, last = null;
   while (Date.now() < deadline) {
-    const status = await window.webContents.executeJavaScript(`({ready: !!document.querySelector('.home-start') && !document.querySelector('.home [role=alert]') && !document.body.innerText.includes('Opening your workspace'), secretGone: !location.hash, node: typeof require, origin: location.origin, text: document.body.innerText})`);
+    const status = await window.webContents.executeJavaScript(`(() => {
+      const homeStart = !!document.querySelector('.home-start');
+      const alertText = Array.from(document.querySelectorAll('.home [role=alert]'), element => (element.innerText || element.textContent || '').trim()).filter(Boolean).join(' ').slice(0, 200);
+      const stillOpening = !!document.body && document.body.innerText.includes('Opening your workspace');
+      const secretGone = !location.hash;
+      return { ready: homeStart && !alertText && !stillOpening, homeStart, alertText, stillOpening, secretGone, node: typeof require, origin: location.origin };
+    })()`);
+    last = status;
     if (status.ready && status.secretGone) {
       if (status.node !== 'undefined' || status.origin !== origin) throw new Error('Desktop isolation smoke failed.');
       const cookies = await window.webContents.session.cookies.get({ url: origin + '/api/' });
@@ -344,7 +351,11 @@ async function smokeWindow(origin) {
     }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  throw new Error('The workspace did not finish authenticating.');
+  const detail = last
+    ? `home-start present=${last.homeStart}, alert text present=${!!last.alertText}, still opening=${last.stillOpening}, secret still in the hash=${!last.secretGone}` +
+      (last.alertText ? `; alert: ${last.alertText}` : '')
+    : 'no renderer status';
+  throw new Error(`The workspace did not finish authenticating (${detail}).`);
 }
 
 async function waitForSmoke(expression, label = expression) {

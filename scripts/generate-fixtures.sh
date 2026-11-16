@@ -254,6 +254,13 @@ log "Schema and data ready."
 # Generate EXPLAIN fixtures
 # ---------------------------------------------------------------------------
 
+# Remove only the fixtures this script generates (explain-NNN-*.json), so a
+# removed run_explain call leaves no stale file behind for the drift check to
+# miss. Hand-captured fixtures (no three-digit index) and the MariaDB
+# generator's files are kept. This runs only once the server is ready, so a
+# preflight or startup failure never deletes the existing corpus.
+rm -f "$OUTPUT_DIR"/explain-[0-9][0-9][0-9]-*.json
+
 log "Generating EXPLAIN ANALYZE fixtures..."
 
 # --- Simple table scans (no useful index path) ---

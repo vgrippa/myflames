@@ -11,6 +11,9 @@ drives the real ``myflames.connector`` against them.
 
 Run directly:
     python3 -m unittest test.test_connector_integration -v
+
+The live classes are steered by MYFLAMES_LIVE_DOCKER and
+MYFLAMES_REQUIRE_LIVE; see test/_live_switches.py.
 """
 import json
 import os
@@ -23,6 +26,9 @@ import uuid
 
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(TEST_DIR))
+sys.path.insert(0, TEST_DIR)
+
+import _live_switches
 
 from myflames.connector import MySQLConnection, ConnectorError
 from myflames.collectors import (
@@ -39,25 +45,44 @@ from myflames.parser import parse_explain, analyze_plan
 # Docker availability probe
 # ---------------------------------------------------------------------------
 
-def _docker_available():
-    """Return True if the Docker daemon is reachable AND we have a mysql
-    client binary on PATH (the connector needs one to talk to the container
-    even though the server runs inside Docker)."""
+def _docker_problem():
+    """Return None when Docker is usable, else a description of the problem.
+
+    "Usable" means the Docker daemon is reachable AND a mysql client
+    binary is on PATH (the connector needs one to talk to the container
+    even though the server runs inside Docker).
+    """
     if not shutil.which("docker"):
-        return False
+        return "no docker binary on PATH"
     if not (shutil.which("mysql") or shutil.which("mariadb")):
-        return False
-    try:
-        r = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
-        )
-    except Exception:
-        return False
-    return r.returncode == 0
+        return "no mysql or mariadb client binary on PATH"
+    # A CI runner's daemon can still be starting when the tests begin (docker
+    # info timed out after 5 s once): when live tests are required, keep trying
+    # for a minute (the last try may run up to 15 s past it); otherwise answer
+    # quickly so a machine without Docker skips.
+    required = _live_switches.live_required()
+    deadline = time.time() + (60 if required else 0)
+    while True:
+        try:
+            r = subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=15 if required else 5,
+            )
+        except Exception as exc:
+            problem = "docker info failed: {}".format(exc)
+        else:
+            if r.returncode == 0:
+                return None
+            problem = "docker daemon not reachable: {}".format(
+                r.stderr.decode("utf-8", errors="replace").strip())
+        if time.time() >= deadline:
+            return problem
+        time.sleep(2)
 
 
-_HAVE_DOCKER = _docker_available()
+_DOCKER_PROBLEM = _docker_problem()
+_HAVE_DOCKER = _DOCKER_PROBLEM is None
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +132,7 @@ def _free_port():
 # Base test case
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_HAVE_DOCKER, "Docker or mysql client not available")
+@_live_switches.maybe_skip(_HAVE_DOCKER)
 class BaseLiveServerTest(unittest.TestCase):
     """Base class that spins up ONE container per subclass.
 
@@ -125,6 +150,7 @@ class BaseLiveServerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _live_switches.require_live_docker(_DOCKER_PROBLEM)
         cls.container = "myflames-it-" + uuid.uuid4().hex[:8]
         cls.port = _free_port()
         env_var = "MARIADB_ROOT_PASSWORD" if cls.IS_MARIADB else "MYSQL_ROOT_PASSWORD"
@@ -138,10 +164,11 @@ class BaseLiveServerTest(unittest.TestCase):
             )
         except RuntimeError as exc:
             # The image isn't cached and couldn't be pulled (e.g. a Docker Hub
-            # registry outage or network timeout in CI). That's an environment
-            # problem, not a myflames defect — skip rather than fail the build,
-            # consistent with how this module skips when Docker is absent.
-            raise unittest.SkipTest(
+            # registry outage or network timeout in CI). With
+            # MYFLAMES_REQUIRE_LIVE=1 that fails the class; otherwise it
+            # skips, consistent with how this module skips when Docker is
+            # absent.
+            _live_switches.fail_or_skip(
                 "could not start {} (image pull/run failed): {}".format(cls.IMAGE, exc)
             )
         # Wait for the server to accept connections (use docker exec to bypass
@@ -155,7 +182,7 @@ class BaseLiveServerTest(unittest.TestCase):
         )
         if not _wait_ready(cls.container, ready_cmd, timeout=120):
             _docker("logs", cls.container, check=False)
-            raise unittest.SkipTest(
+            _live_switches.fail_or_skip(
                 "Server in container {} did not become ready".format(cls.container)
             )
         cls._setup_auth()
@@ -363,9 +390,10 @@ class BaseLiveServerTest(unittest.TestCase):
 # Concrete server classes
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_HAVE_DOCKER, "Docker not available")
+@_live_switches.maybe_skip(_HAVE_DOCKER)
 class TestLiveMySQL84(BaseLiveServerTest):
-    IMAGE = "mysql:8.4"
+    # Pinned to the same image tag as scripts/ga-matrix.sh.
+    IMAGE = "mysql:8.4.11"
     IS_MARIADB = False
     # mysql_native_password is NOT loaded by default on MySQL 8.4 — enable
     # it via mysqld startup args so we can test a native-password user.
@@ -385,9 +413,10 @@ class TestLiveMySQL84(BaseLiveServerTest):
             self._exec_root_sql("DROP USER 'fresh_sha2'@'%';")
 
 
-@unittest.skipUnless(_HAVE_DOCKER, "Docker not available")
+@_live_switches.maybe_skip(_HAVE_DOCKER)
 class TestLiveMariaDB114(BaseLiveServerTest):
-    IMAGE = "mariadb:11.4"
+    # Pinned to the same image tag as scripts/ga-matrix.sh.
+    IMAGE = "mariadb:11.4.13"
     IS_MARIADB = True
 
 
