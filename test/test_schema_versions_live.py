@@ -10,7 +10,8 @@ view's own database name when it is the default).
 
 Skipped without Docker and a mysql or mariadb client, like
 test_connector_integration.py (whose helpers it uses). About a minute per
-engine when Docker is available.
+engine when Docker is available. The MYFLAMES_LIVE_DOCKER and
+MYFLAMES_REQUIRE_LIVE switches in test/_live_switches.py apply here too.
 """
 import os
 import subprocess
@@ -20,7 +21,14 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_connector_integration import _HAVE_DOCKER, _docker, _free_port, _wait_ready  # noqa: E402
+import _live_switches  # noqa: E402
+from test_connector_integration import (  # noqa: E402
+    _DOCKER_PROBLEM,
+    _HAVE_DOCKER,
+    _docker,
+    _free_port,
+    _wait_ready,
+)
 from myflames import schema_versions  # noqa: E402
 from myflames.connector import MySQLConnection  # noqa: E402
 
@@ -115,7 +123,7 @@ ALTER TABLE items ADD COLUMN serial BIGINT DEFAULT NEXT VALUE FOR seq_new;
 """
 
 
-@unittest.skipUnless(_HAVE_DOCKER, "Docker or mysql client not available")
+@_live_switches.maybe_skip(_HAVE_DOCKER)
 class _LiveSchemaVersions(unittest.TestCase):
     IMAGE = None
     IS_MARIADB = False
@@ -123,6 +131,7 @@ class _LiveSchemaVersions(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _live_switches.require_live_docker(_DOCKER_PROBLEM)
         cls.container = "myflames-schemaver-" + uuid.uuid4().hex[:8]
         cls.port = _free_port()
         env = "MARIADB_ROOT_PASSWORD" if cls.IS_MARIADB else "MYSQL_ROOT_PASSWORD"
@@ -132,12 +141,12 @@ class _LiveSchemaVersions(unittest.TestCase):
             _docker("run", "-d", "--rm", "--name", cls.container, "-e", env + "=" + cls.ROOT_PASSWORD,
                     "-p", "127.0.0.1:{}:3306".format(cls.port), cls.IMAGE, "--innodb-use-native-aio=0")
         except RuntimeError as exc:
-            raise unittest.SkipTest("could not start {}: {}".format(cls.IMAGE, exc))
+            _live_switches.fail_or_skip("could not start {}: {}".format(cls.IMAGE, exc))
         client = "mariadb-admin" if cls.IS_MARIADB else "mysqladmin"
         if not _wait_ready(cls.container, [client, "--protocol=TCP", "-h127.0.0.1", "-uroot",
                                            "-p" + cls.ROOT_PASSWORD, "ping"], timeout=150):
             _docker("rm", "-f", "-v", cls.container, check=False)
-            raise unittest.SkipTest("{} did not become ready".format(cls.IMAGE))
+            _live_switches.fail_or_skip("{} did not become ready".format(cls.IMAGE))
         drop_check = "DROP CONSTRAINT" if cls.IS_MARIADB else "DROP CHECK"
         for db in ("sv_before", "sv_after", "sv_copy", "sv_after_copy"):
             cls.sql("CREATE DATABASE {db} DEFAULT CHARACTER SET utf8mb4;\nUSE {db};\n{body}".format(db=db, body=BEFORE))
@@ -220,7 +229,8 @@ class _LiveSchemaVersions(unittest.TestCase):
 
 
 class TestLiveSchemaVersionsMySQL84(_LiveSchemaVersions):
-    IMAGE = "mysql:8.4"
+    # Pinned to the same image tag as scripts/ga-matrix.sh.
+    IMAGE = "mysql:8.4.11"
 
     def test_read_only_target_is_opened_for_the_script(self):
         """MySQL 8.0.22+ refuses DDL in a READ ONLY database (ER_SCHEMA_READ_ONLY)."""
@@ -236,7 +246,8 @@ class TestLiveSchemaVersionsMySQL84(_LiveSchemaVersions):
 
 
 class TestLiveSchemaVersionsMariaDB114(_LiveSchemaVersions):
-    IMAGE = "mariadb:11.4"
+    # Pinned to the same image tag as scripts/ga-matrix.sh.
+    IMAGE = "mariadb:11.4.13"
     IS_MARIADB = True
 
 
