@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import socket
+import socketserver
 import sqlite3
 import sys
 import threading
@@ -2254,6 +2255,14 @@ def api_response(path, payload, workspace=None):
 class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
+
+    def server_bind(self):
+        # HTTPServer.server_bind names the server with socket.getfqdn(host), a
+        # reverse DNS lookup that can stall start-up for many seconds on some
+        # Macs. This server listens only on 127.0.0.1 and never uses the name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
     #: Seconds after shutdown begins by which SSH tunnels are closed, even
     #: while the editor or lifecycle cleanup that may still send KILL QUERY
     #: through them runs on (each can take several seconds). Tunnels live in

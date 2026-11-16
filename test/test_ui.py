@@ -1801,6 +1801,15 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no longer exists'):
             self.call('/api/connection/test', {'connection': self.connect(profile_id)})
 
+    def test_start_up_never_resolves_the_host_name(self):
+        # HTTPServer.server_bind calls socket.getfqdn, a reverse DNS lookup
+        # that can stall the backend start for many seconds on some Macs.
+        with mock.patch('socket.getfqdn', side_effect=AssertionError('socket.getfqdn was called')):
+            server = WorkspaceServer(store_path=str(self.db))
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.server_name, '127.0.0.1')
+        self.assertEqual(server.server_port, server.server_address[1])
+
     def test_http_round_trip_and_allowlist(self):
         import inspect
         from myflames.ui import WorkspaceHandler
