@@ -1443,7 +1443,9 @@ class ProcessTests(unittest.TestCase):
             session.run_plan("SELECT 'PLAN_DIE()'", "explain")
         self.assertTrue(session.ended)
         self.assertFalse(session.run_lock.locked())
-        self.assertIsNotNone(session.proc.poll())
+        # The session sees the client's output end before the OS has its exit
+        # status; under load the two are not simultaneous.
+        self.until(lambda: session.proc.poll() is not None, "the dead plan client to exit", timeout=5.0)
 
     def test_plan_invalid_json_also_restores_state(self):
         self.call("/api/editor/open")
