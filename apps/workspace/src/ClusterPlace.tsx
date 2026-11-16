@@ -353,6 +353,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         <p>Galera exposes only the connected node's own state, so the other nodes are listed in the component without a verdict: connect to a node to inspect it. Percona XtraDB Cluster names every node's state.</p>
         <p>OK: quorum, and every expected member present and healthy. Watch: quorum holds but a member is missing or in transition, or one more failure would stop the cluster. Problem: no quorum, a member in error, or the connected member cannot see the group.</p>
         <p>Opening it reads; nothing changes. A member's inspector offers the changes that do what they say on that server: make a secondary the primary, stop or start Group Replication on the connected member, and on MariaDB Galera desync, resync or bootstrap a Primary component on the connected node. Each one shows the exact statement, asks first, and is recorded in the Audit log.</p>
+        <p>Motion on the topology shows healthy group membership as last read; it does not measure traffic or throughput. Members that are not healthy stay still, and your system’s reduced motion setting turns motion off.</p>
       </>}
       status={<>
         <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error}
