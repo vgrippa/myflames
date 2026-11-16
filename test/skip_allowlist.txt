@@ -1,0 +1,24 @@
+# Windows Credential Manager coverage runs only on Windows (test_secret_store).
+^Windows Credential Manager exists only on Windows$
+# Windows job-object coverage runs only on Windows (test_ssh_tunnel).
+^job objects are Windows$
+# The opt-in SSH/SFTP lab must be started explicitly (test_files_live).
+^set MYFLAMES_SSH_LAB \(scripts/ssh-lab\.sh up\) to run the live SFTP tests$
+# The opt-in local sshd tests require MYFLAMES_SSH_LIVE=1 (test_ssh_tunnel).
+^set MYFLAMES_SSH_LIVE=1 to run$
+# Captured live corpus checks are opt-in (test_mysql_live_corpus).
+^Set MYFLAMES_MYSQL_FIXTURES to a fresh MySQL corpus$
+# Engine-source comparison is optional without maintainer checkouts (test_gen_sql_words).
+^Engine git checkouts are not present on this machine\.$
+# The token-count comparison uses an optional extra (test_digest).
+^tiktoken not installed$
+# MariaDB always has transaction tracking, so the unknown-state case is MySQL-only.
+^MariaDB always reports @@in_transaction$
+# Python 3.7 cannot parse with feature_version (test_gen_sysvar_history).
+^ast\.parse feature_version needs Python 3\.8$
+# Non-Windows Python 3.7 cannot import this Windows-only ctypes layout.
+^ctypes\.wintypes cannot be imported on this non-Windows Python 3\.7$
+# Container-backed tests are covered by the separate integration workflow.
+^live Docker tests run in the integration workflow$
+# until the workspace CI job installs them
+^Workspace npm dependencies are needed to bundle the actual TypeScript helper$

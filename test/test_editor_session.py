@@ -1867,7 +1867,7 @@ class ProcessTests(unittest.TestCase):
         self.run_sql("SELECT 1;\nSELECT 2 /*gate*/", wait=0)
         session = self.registry.get("tab1")
         self.until(lambda: self.logged("tab1", "SELECT 2"), "the second statement")
-        status = self.call("/api/editor/status")
+        status = self.call("/api/editor/status", wait=0.01)
         self.assertEqual(status["run"]["state"], "running")
         first = status["run"]["results"][0]
         self.assertEqual((first["rows"], first["row_count"]), ([], 1))
