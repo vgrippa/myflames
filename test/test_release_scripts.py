@@ -16,6 +16,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -234,6 +235,8 @@ def write_repo(root, version="3.4.0", **override):
             version = "9.9.9"
             """) % version,
         "CHANGELOG.md": CHANGELOG,
+        "README.md": "# myflames\n\nDownload myflames-%s-macos-arm64.dmg.\n" % version,
+        "docs/DESKTOP.md": "# Desktop\n\nDownload myflames-%s-windows-x64-setup.exe.\n" % version,
         "docs/release-notes/index.md": INDEX.replace("3.4.0", version),
         "docs/release-notes/%s.md" % version: PAGE.replace("3.4.0", version),
         "docs/release-notes/3.3.9.md": OLDER,
@@ -268,6 +271,54 @@ class CheckReleaseSyncTest(unittest.TestCase):
     def test_reads_only_the_project_table_version(self):
         write_repo(self.tmp)
         self.assertEqual(sync.pyproject_version(self.tmp), "3.4.0")
+
+    def test_stale_download_names_include_document_line_and_wrong_version(self):
+        for document in ("README.md", "docs/DESKTOP.md"):
+            for suffix in ("macos-arm64.dmg", "windows-x64-setup.exe", "macos-arm64.zip"):
+                with self.subTest(document=document, suffix=suffix):
+                    name = "myflames-3.3.9-" + suffix
+                    write_repo(self.tmp, **{document: "# Downloads\n\nDownload `%s`.\n" % name})
+                    problems = sync.check(self.tmp, "3.4.0")
+                    self.assertEqual(len(problems), 1, problems)
+                    self.assertIn(document + ":3:", problems[0])
+                    self.assertIn(name, problems[0])
+                    self.assertIn("'3.3.9', not '3.4.0'", problems[0])
+
+    def test_matching_download_names_and_templates_pass(self):
+        text = ("# Downloads\n\n[macOS](https://example.invalid/myflames-3.4.0-macos-arm64.dmg)\n"
+                "`myflames-3.4.0-windows-x64-setup.exe`\n"
+                "`myflames-3.4.0-macos-arm64.zip.sha256`\n"
+                "Template: `myflames-<version>-macos-arm64.dmg`\n")
+        write_repo(self.tmp, **{"README.md": text, "docs/DESKTOP.md": text})
+        self.assertEqual(sync.check(self.tmp, "v3.4.0"), [])
+
+    def test_prerelease_download_versions_are_compared_in_full(self):
+        write_repo(self.tmp, version="3.4.0-rc.1")
+        self.assertEqual(sync.check(self.tmp, "3.4.0-rc.1"), [])
+        (self.tmp / "README.md").write_text("myflames-3.4.0-rc.2-macos-arm64.dmg\n", encoding="utf-8")
+        problems = sync.check(self.tmp, "3.4.0-rc.1")
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("README.md:1:", problems[0])
+        self.assertIn("'3.4.0-rc.2', not '3.4.0-rc.1'", problems[0])
+
+    def test_all_stale_downloads_are_reported_and_cli_fails(self):
+        write_repo(self.tmp, **{
+            "README.md": "# Downloads\nmyflames-3.3.9-macos-arm64.dmg myflames-3.3.8-macos-arm64.zip\n",
+            "docs/DESKTOP.md": "# Desktop\n\nmyflames-3.3.7-windows-x64-setup.exe\n",
+        })
+        problems = sync.check(self.tmp, "3.4.0")
+        self.assertEqual(len(problems), 3, problems)
+        done = run("check_release_sync.py", "3.4.0", "--root", str(self.tmp))
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("README.md:2:", done.stderr)
+        self.assertIn("docs/DESKTOP.md:3:", done.stderr)
+        for version in ("3.3.9", "3.3.8", "3.3.7"):
+            self.assertIn("'%s', not '3.4.0'" % version, done.stderr)
+
+    def test_missing_download_document_cannot_skip_the_check(self):
+        write_repo(self.tmp, **{"docs/DESKTOP.md": None})
+        problems = sync.check(self.tmp, "3.4.0")
+        self.assertTrue(any("docs/DESKTOP.md: cannot read" in p for p in problems), problems)
 
     def test_every_mismatch_is_reported_at_once(self):
         write_repo(self.tmp, version="3.4.0", **{
@@ -328,22 +379,40 @@ def release(*names, state="uploaded"):
     return {"tag_name": "v3.4.0", "assets": [{"id": 100 + i, "name": name, "state": state} for i, name in enumerate(names)]}
 
 
-FULL = ("myflames-3.4.0-macos-arm64.dmg", "myflames-3.4.0-macos-arm64.dmg.sha256",
-        "myflames-3.4.0-windows-x64-setup.exe", "myflames-3.4.0-windows-x64-setup.exe.sha256",
-        "myflames-3.4.0-macos-arm64.zip", "myflames-3.4.0-macos-arm64.zip.sha256")
+INSTALLERS = ("myflames-3.4.0-macos-arm64.dmg", "myflames-3.4.0-macos-arm64.dmg.sha256",
+              "myflames-3.4.0-windows-x64-setup.exe", "myflames-3.4.0-windows-x64-setup.exe.sha256",
+              "myflames-3.4.0-macos-arm64.zip", "myflames-3.4.0-macos-arm64.zip.sha256")
+SOURCE = ("mysql-8.4.13.tar.gz", "mysql-8.4.13.tar.gz.sha256")
+FULL = INSTALLERS + SOURCE
 
 
 class CheckReleaseAssetsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(self.tmp))
+        self.lock = self.tmp / "apps/desktop/mysql-client.lock.json"
+        self.lock.parent.mkdir(parents=True)
+        self.write_lock()
+        patch = mock.patch.object(assets, "ROOT", self.tmp, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def write_lock(self, version="8.4.13"):
+        self.lock.write_text(json.dumps({
+            "version": version,
+            "source": {"archive": "https://example.invalid/source/mysql-%s.tar.gz" % version},
+        }), encoding="utf-8")
+
     def test_complete_release_with_dmg_first(self):
         self.assertEqual(assets.check(release(*FULL), "3.4.0"), [])
 
     def test_missing_files_are_listed(self):
-        problems = assets.check(release(*FULL[:4]), "v3.4.0")
+        problems = assets.check(release(*(INSTALLERS[:4] + SOURCE)), "v3.4.0")
         self.assertEqual(problems, ["Missing release file myflames-3.4.0-macos-arm64.zip.",
                                     "Missing release file myflames-3.4.0-macos-arm64.zip.sha256."])
 
     def test_zip_uploaded_before_dmg_fails(self):
-        order = FULL[4:] + FULL[:4]
+        order = INSTALLERS[4:] + INSTALLERS[:4] + SOURCE
         problems = assets.check(release(*order), "3.4.0")
         self.assertEqual(len(problems), 2)
         self.assertIn("myflames-3.4.0-macos-arm64.zip was uploaded before myflames-3.4.0-macos-arm64.dmg", problems[0])
@@ -371,7 +440,7 @@ class CheckReleaseAssetsTest(unittest.TestCase):
                                 "url": "https://github.com/vgrippa/myflames/releases/download/v3.4.0/" + name}
                                for i, name in enumerate(order)]}
         self.assertEqual(assets.check(gh(FULL), "3.4.0"), [])
-        problems = assets.check(gh(FULL[4:] + FULL[:4]), "3.4.0")
+        problems = assets.check(gh(INSTALLERS[4:] + INSTALLERS[:4] + SOURCE), "3.4.0")
         self.assertEqual(len(problems), 2)
         self.assertIn("(asset id 700 < 702)", problems[0])
         unknown = {"assets": [{"id": "RA_x", "name": n, "state": "uploaded"} for n in FULL]}
@@ -379,19 +448,69 @@ class CheckReleaseAssetsTest(unittest.TestCase):
 
     def test_unfinished_upload_fails(self):
         problems = assets.check(release(*FULL, state="open"), "3.4.0")
-        self.assertEqual(len(problems), 6)
+        self.assertEqual(len(problems), 8)
         self.assertIn("not fully uploaded", problems[0])
+
+    def test_bundled_client_source_archive_missing(self):
+        problems = assets.check(release(*INSTALLERS), "3.4.0")
+        self.assertEqual(len(problems), 2, problems)
+        for problem, name in zip(problems, SOURCE):
+            self.assertIn("Missing release file " + name, problem)
+            self.assertIn("NOTICE", problem)
+            self.assertIn("unmodified", problem)
+
+    def test_bundled_client_source_checksum_missing(self):
+        problems = assets.check(release(*(INSTALLERS + SOURCE[:1])), "3.4.0")
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("Missing release file mysql-8.4.13.tar.gz.sha256", problems[0])
+        self.assertIn("NOTICE", problems[0])
+
+    def test_bundled_client_source_upload_must_finish(self):
+        for name in SOURCE:
+            with self.subTest(name=name):
+                payload = release(*FULL)
+                next(a for a in payload["assets"] if a["name"] == name)["state"] = "starter"
+                problems = assets.check(payload, "3.4.0")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(name + " is not fully uploaded", problems[0])
+                self.assertIn("NOTICE", problems[0])
+
+    def test_source_archive_version_comes_from_the_lock(self):
+        self.write_lock("8.4.14")
+        problems = assets.check(release(*FULL), "3.4.0")
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("Missing release file mysql-8.4.14.tar.gz.", problems[0])
+        self.assertIn("Missing release file mysql-8.4.14.tar.gz.sha256.", problems[1])
+        names = INSTALLERS + ("mysql-8.4.14.tar.gz", "mysql-8.4.14.tar.gz.sha256")
+        self.assertEqual(assets.check(release(*names), "3.4.0"), [])
+
+    def test_no_bundled_client_lock_needs_only_installers(self):
+        self.lock.unlink()
+        self.assertEqual(assets.check(release(*INSTALLERS), "3.4.0"), [])
+
+    def test_invalid_client_lock_cannot_silently_skip_source_assets(self):
+        cases = ["not json", "[]", "{}", '{"version": 8.4}',
+                 '{"version": "8.4.13", "source": {}}',
+                 '{"version": "8.4.13", "source": {"archive": ""}}',
+                 '{"version": "8.4.13", "source": {"archive": "https://example.invalid/mysql-8.4.12.tar.gz"}}']
+        for text in cases:
+            with self.subTest(text=text):
+                self.lock.write_text(text, encoding="utf-8")
+                problems = assets.check(release(*FULL), "3.4.0")
+                self.assertTrue(any("apps/desktop/mysql-client.lock.json" in p and "NOTICE" in p for p in problems), problems)
 
     def test_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "release.json"
             path.write_text(json.dumps(release(*FULL)))
-            done = run("check_release_assets.py", "3.4.0", str(path))
+            done = run("check_release_assets.py", "3.4.0", str(path), "--root", str(self.tmp))
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("the DMG came first", done.stdout)
-            piped = run("check_release_assets.py", "3.4.0", "-", input=json.dumps(release(*FULL[:2])))
+            piped = run("check_release_assets.py", "3.4.0", "-", "--root", str(self.tmp), input=json.dumps(release(*FULL[:2])))
             self.assertEqual(piped.returncode, 1)
             self.assertIn("Missing release file myflames-3.4.0-windows-x64-setup.exe.", piped.stderr)
+            self.assertIn("Missing release file mysql-8.4.13.tar.gz.", piped.stderr)
+            self.assertIn("NOTICE", piped.stderr)
             broken = run("check_release_assets.py", "3.4.0", "-", input="not json")
             self.assertEqual(broken.returncode, 1)
             self.assertIn("cannot read the release JSON", broken.stderr)

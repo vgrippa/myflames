@@ -16,7 +16,9 @@ Checks, all reported at once:
   apps/workspace) says the README screenshots were captured from VERSION, and
   the four README images exist;
 - docs/handbook/manifest.json parses and every chapter file it lists exists
-  (the website renders it).
+  (the website renders it);
+- README.md and docs/DESKTOP.md name only VERSION's DMG, Windows installer
+  and update zip download files.
 
 Exit status 0 when in sync, 1 otherwise. Stdlib only, Python 3.7+.
 """
@@ -33,6 +35,9 @@ import release_notes  # noqa: E402  (a sibling script, not a package)
 
 ROOT = HERE.parent
 README_SCREENSHOTS = ("home.png", "plan-visual-explain.png", "query-editor.png", "server-health.png")
+DOWNLOAD_RE = re.compile(
+    r"\bmyflames-(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)-"
+    r"(?:macos-arm64\.(?:dmg|zip)|windows-x64-setup\.exe)(?![0-9A-Za-z_-])")
 
 
 def _read(path):
@@ -126,6 +131,24 @@ def release_notes_problems(root, version):
     return problems
 
 
+def download_problems(root, version):
+    """Check filenames in links, prose and examples, including checksum names."""
+    problems = []
+    for name in ("README.md", "docs/DESKTOP.md"):
+        try:
+            lines = _read(root / name).splitlines()
+        except (OSError, ValueError) as exc:
+            problems.append("%s: cannot read (%s)." % (name, exc))
+            continue
+        for number, line in enumerate(lines, 1):
+            for match in DOWNLOAD_RE.finditer(line):
+                found = match.group("version")
+                if found != version:
+                    problems.append("%s:%d: download file %s names version %r, not %r."
+                                    % (name, number, match.group(0), found, version))
+    return problems
+
+
 def check(root, version):
     """A list of problems (empty when everything agrees on *version*)."""
     problems = []
@@ -146,6 +169,7 @@ def check(root, version):
             problems.append("%s is %r, not %r." % (label, found, version))
 
     problems.extend(release_notes_problems(root, version))
+    problems.extend(download_problems(root, version))
 
     shots = root / "docs/screenshots"
     try:
@@ -178,7 +202,7 @@ def check(root, version):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Check that versions, release notes, README screenshots and handbook agree on a release.")
+    parser = argparse.ArgumentParser(description="Check that versions, release notes, download names, README screenshots and handbook agree on a release.")
     parser.add_argument("version", help="release version, for example 3.3.4 or v3.3.4")
     parser.add_argument("--root", type=Path, default=ROOT, help="repository root (default: this checkout)")
     args = parser.parse_args(argv)
@@ -188,7 +212,7 @@ def main(argv=None):
         for problem in problems:
             print("- " + problem, file=sys.stderr)
         return 1
-    print("Release %s is in sync: versions, release notes, README screenshots and handbook manifest."
+    print("Release %s is in sync: versions, release notes, download names, README screenshots and handbook manifest."
           % release_notes.normalize_version(args.version))
     return 0
 
