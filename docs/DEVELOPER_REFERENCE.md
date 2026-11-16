@@ -6214,7 +6214,10 @@ POSIX the runner collects the worker's descendants by parent pid from
 still runs, kills each of them and then kills the worker's process group
 (when `ps` is missing or fails, the group kill is the fallback); on Windows
 `taskkill /F /T` stops the tree. The same cleanup runs when a run is
-interrupted. A status
+interrupted. Known limits: a process forked between the last scan and the
+kill, and a process a module leaves running after its worker has exited
+(already reparented), are not found; CI runners are discarded after each job.
+A status
 line (`[N/M done; Xs elapsed] running: ...`) prints to stderr every 30 s.
 The modules that start real Docker containers (`test_connector_integration`,
 `test_schema_versions_live`; the `SERIAL_MODULES` lane) never run at the same

@@ -180,6 +180,13 @@ class TestGeneratorRemovesStaleFixtures(unittest.TestCase):
         first_write = self.script.index("run_explain \"")
         self.assertLess(removal, first_write)
 
+    def test_removal_waits_for_preflight_and_a_ready_server(self):
+        # A refused run (container already there, server never ready) must
+        # leave the existing corpus alone.
+        removal = self.script.index("rm -f ")
+        self.assertLess(self.script.index("docker ps -a"), removal)
+        self.assertLess(self.script.index('log "Schema and data ready."'), removal)
+
     def test_removal_matches_exactly_the_owned_numbered_fixtures(self):
         globs = self.removal_globs()
 
