@@ -618,7 +618,6 @@ side.
   | Close suggestions, extra cursors, Find or Problems | `Escape` | `Escape` |
   | Accept suggestion or indent | `Tab` | `Tab` |
   | Accept suggestion or unindent | `Shift-Tab` | `Shift-Tab` |
-  | Toggle Tab moving focus | `Shift-Alt-m` | `Ctrl-m` |
   | Show suggestions | `Ctrl-Space` | `Ctrl-Space` |
   | Show suggestions | `Shift-Ctrl-Space` | `Shift-Ctrl-Space` |
   | Toggle SQL comment | `Mod-/` | `Mod-/` |
@@ -640,6 +639,7 @@ side.
   | Show problems | `Shift-Mod-m` | `Shift-Mod-m` |
   | Next problem | `F8` | `F8` |
   | Previous problem | `Shift-F8` | `Shift-F8` |
+  | Toggle Tab moving focus | `Shift-Alt-m` | `Ctrl-m` |
 
   Escape first closes suggestions, then keeps only the main cursor, then
   closes Find, Replace or Go to line, then closes Problems. With these closed

@@ -271,6 +271,21 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(b => !document.querySelector(b), {}, BAR);
 
+  // A palette opened from the menu and cancelled returns focus to the Editing
+  // actions button: the menu closes on blur, so the palette's recorded opener
+  // (a menu item) is gone from the DOM when the palette closes.
+  await page.focus(EDITING_BUTTON);
+  await page.keyboard.press("Space");
+  await page.waitForSelector(EDITING_MENU);
+  await page.waitForFunction(m => document.querySelector(m)?.contains(document.activeElement), {}, EDITING_MENU);
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await until(() => active('input[aria-label="Search commands"]'), "the palette shortcut focuses command search");
+  await page.waitForFunction(m => !document.querySelector(m), {}, EDITING_MENU);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette[open]"));
+  await until(() => active(EDITING_BUTTON), "a cancelled palette returns focus to Editing actions");
+
   // The visible focus-mode action runs the editor command in both directions.
   // Real Tab behavior verifies the view's mode without adding a test-only API.
   await select(0, 0);
@@ -632,7 +647,7 @@ try {
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
 
   assert.deepEqual(errors, [], "no page errors (the invalid pattern never throws)");
-  console.log("Editor find and replace: toolbar buttons and focus, Editing actions order and shortcuts, comment dispatch, Tab focus mode, menu dismissal on focus departure and keyboard palette Find, disabled-setting reasons, palette Find/Find and replace/Go to line, keyboard Find, prefill, match navigation, case/word/regex search, large-script marks, literal replacement and undo, focus return, hit targets, and 1440/720 px toolbar and menu layouts above the divider in light and dark passed.");
+  console.log("Editor find and replace: toolbar buttons and focus, Editing actions order and shortcuts, comment dispatch, Tab focus mode, menu dismissal on focus departure, keyboard palette Find and cancelled-palette focus return, disabled-setting reasons, palette Find/Find and replace/Go to line, keyboard Find, prefill, match navigation, case/word/regex search, large-script marks, literal replacement and undo, focus return, hit targets, and 1440/720 px toolbar and menu layouts above the divider in light and dark passed.");
 } finally {
   await browser?.close();
   // An early bind/import failure may have exited before the URL wait rejected.
