@@ -63,6 +63,12 @@ run_explain() {
 
 mkdir -p "$OUTPUT_DIR"
 
+# Remove only the fixtures this script generates (explain-NNN-*.json), so a
+# removed run_explain call leaves no stale file behind for the drift check to
+# miss. Hand-captured fixtures (no three-digit index) and the MariaDB
+# generator's files are kept.
+rm -f "$OUTPUT_DIR"/explain-[0-9][0-9][0-9]-*.json
+
 if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
   log "ERROR: Container $CONTAINER_NAME already exists; choose another CONTAINER_NAME."
   exit 1

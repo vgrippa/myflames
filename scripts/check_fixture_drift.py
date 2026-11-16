@@ -4,7 +4,7 @@ non-deterministic fields.
 
 `EXPLAIN ANALYZE` mixes deterministic plan structure (operation names, access
 types, index choices, conditions) with values that vary every run even
-against the same pinned server image:
+against the same server image:
 
   - Wall-clock timing: `actual_last_row_ms`, `actual_first_row_ms`, and the
     MariaDB `r_*_time_ms` family — these are real measurements.
@@ -13,18 +13,25 @@ against the same pinned server image:
     which is randomized per `ANALYZE TABLE` run.
 
 The `Fixtures drift` workflow exists to catch *structural* drift between
-pinned MySQL 8.4 / MariaDB 11.4 output and the committed fixtures (e.g.
-MySQL changes an operation label, a new field appears, a hash join becomes
-a nested loop). It must not fail on inherently random values, so this
-script strips both families before diffing.
+freshly regenerated output (the workflow uses the floating mysql:8.4,
+mariadb:11.4 and mariadb:10.11 tags on purpose, to notice upstream image
+changes) and the committed fixtures. It must not fail on inherently random
+values, so this script strips both families before diffing.
+
+Besides content drift, the script compares the *set* of committed fixtures
+with the set the generators wrote: a committed generator-managed fixture
+missing from the working tree (the generators delete and rewrite their
+numbered files, so what remains is exactly what they produce), or a
+produced file that was never committed, is drift too.
 
 Exit 0 when only noise differs; exit 1 (with a diff dump) when any other
-field changes.
+field changes or the file sets disagree.
 """
 from __future__ import annotations
 
 import difflib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +66,20 @@ NOISY_KEYS = frozenset({
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPO_ROOT / "test" / "fixtures"
 
+# Fixture files the generator scripts own: they delete and rewrite their
+# numbered output on every run, so the working tree after a regen is
+# exactly the set the generators produce. Hand-captured fixtures (no
+# three-digit index) and fixtures in subdirectories are not managed.
+MANAGED_PATTERNS = (
+    re.compile(r"^test/fixtures/explain-\d{3}-.+\.json$"),
+    re.compile(r"^test/fixtures/mariadb-(?:10\.11|11\.4)-\d{3}-.+\.json$"),
+)
+
+
+def is_managed(rel_path: str) -> bool:
+    """True when the generators own this fixture (numbered, top level)."""
+    return any(p.match(rel_path) for p in MANAGED_PATTERNS)
+
 
 def strip_noise(node):
     if isinstance(node, dict):
@@ -79,14 +100,32 @@ def head_content(rel_path: str) -> Optional[str]:
         return None
 
 
+def head_fixture_files() -> List[str]:
+    """Relative paths of every fixture JSON committed in HEAD."""
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD", "--", "test/fixtures"],
+            cwd=str(REPO_ROOT),
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8")
+    except (subprocess.CalledProcessError, OSError):
+        return []
+    return [line for line in out.splitlines() if line.endswith(".json")]
+
+
 def main() -> int:
     drift_files: List[str] = []
+    disk_files: List[str] = []
     for path in sorted(FIXTURES_DIR.rglob("*.json")):
         rel = path.relative_to(REPO_ROOT).as_posix()
+        disk_files.append(rel)
         committed = head_content(rel)
         if committed is None:
-            print(f"::error file={rel}::new fixture not present in HEAD")
-            drift_files.append(rel)
+            # Managed fixtures are reported by the set comparison below,
+            # which has the clearer message for this case.
+            if not is_managed(rel):
+                print(f"::error file={rel}::new fixture not present in HEAD")
+                drift_files.append(rel)
             continue
         try:
             current = json.loads(path.read_text())
@@ -108,6 +147,19 @@ def main() -> int:
                 lineterm="",
             ):
                 print(line)
+
+    committed_files = head_fixture_files()
+    disk_managed = {rel for rel in disk_files if is_managed(rel)}
+    committed_managed = {rel for rel in committed_files if is_managed(rel)}
+    for rel in sorted(committed_managed - disk_managed):
+        print(
+            f"::error file={rel}::committed fixture is no longer produced by the "
+            "generator scripts (or was deleted from the working tree)"
+        )
+        drift_files.append(rel)
+    for rel in sorted(disk_managed - committed_managed):
+        print(f"::error file={rel}::generator produced this fixture but it is not committed")
+        drift_files.append(rel)
 
     if drift_files:
         print(f"\n{len(drift_files)} fixture(s) drifted structurally.")
