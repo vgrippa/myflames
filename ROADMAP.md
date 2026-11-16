@@ -266,6 +266,7 @@ Distribution multiplies whatever is inside, and the inside is now honest (decisi
 1. **Wider distribution**: the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach for the desktop app (awesome-lists and release announcements).
 2. **CLI consistency**: shared server-write confirmation and the unsent exit-2 contract are implemented. The CLI is deprecated: keep them intact while it gets fixes only. (owned by `cli-ux`)
 3. **Finish the semijoin cluster**: `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
+4. **QA and release automation**: the parallel test runner, live CI checks that fail instead of skipping (MySQL 8.4 and MariaDB 11.4), the fast pre-handback check, CI jobs for the Windows installer and the unsigned macOS package, a stricter release verification record and the staged macOS release shipped; what remains is the workspace build and its browser suites in CI, machine-captured layout evidence, the release controller, evidence receipts for the release verification record, a nightly live matrix across the GA versions, Windows lab automation for upgrades and Windows 11, and the editor-settings and preferences smokes on Windows.
 
 ## Ideas from open source database tools (October 2026)
 

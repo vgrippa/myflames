@@ -258,13 +258,38 @@ xcrun notarytool store-credentials myflames-notary --apple-id <Apple ID> --team-
 ```
 
 It asks for an app-specific password created at account.apple.com (Sign-In and
-Security), not the Apple Account password. Build the workspace and the backend
-as above, then from the repository root:
+Security), not the Apple Account password. Build the workspace as above (the
+release ships the committed UI assets and never rebuilds them), then from the
+repository root:
 
 ```sh
 MYFLAMES_MAC_IDENTITY=<certificate SHA-1 hash> APPLE_KEYCHAIN_PROFILE=myflames-notary \
-  npm --prefix apps/desktop run package:mac:release
+  npm --prefix apps/desktop run release:mac -- $(git rev-parse HEAD)
 ```
+
+`release:mac` (`scripts/release-mac.sh`, Apple Silicon only) is the release
+entry point: it requires the named full commit SHA to equal a clean HEAD,
+preflights the build tools, DNS and free disk
+(`scripts/release_state.py preflight`) and the signing identity and notary
+sign-in (`scripts/package-mac-release.sh --preflight`), then runs `npm ci` in
+`apps/desktop` followed by `PUPPETEER_SKIP_DOWNLOAD=true npm ci` in
+`apps/workspace` on every invocation, including `--resume`. Both dependency
+sets are installed from their committed lockfiles before any backend build
+or resume decision. The workspace dependencies let the settings smokes attach
+to Electron without downloading a browser. It provisions the build venv
+(`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`), builds
+the backend and its build manifest, re-checks the commit and the clean tree,
+and then runs the packager (`scripts/package-mac-release.sh`, also reached
+directly as `package:mac:release`). The packager works as ordered stages
+recorded with artifact hashes in `build/release-state.json`; a failed or
+interrupted run resumes with `--resume`, which rechecks the hashes and
+restarts at the first incomplete stage, or at the earliest stage whose
+recorded artifacts no longer match. While Apple
+notarizes the DMG, the editor-settings and preferences smokes run against the
+signed app, and both must pass before the final verification. Notarization
+retries only transport failures (three attempts); an unsigned developer
+agreement, refused credentials and a rejected submission stop the build at
+once.
 
 `MYFLAMES_MAC_IDENTITY` may also be the certificate's name without the
 `Developer ID Application: ` prefix; the script refuses unless exactly one
@@ -309,7 +334,7 @@ the key instead of `APPLE_KEYCHAIN_PROFILE`:
 ```sh
 MYFLAMES_MAC_IDENTITY=<certificate SHA-1 hash> APPLE_API_KEY=/absolute/path/AuthKey_<id>.p8 \
   APPLE_API_KEY_ID=<key ID> APPLE_API_ISSUER=<issuer ID> \
-  npm --prefix apps/desktop run package:mac:release
+  npm --prefix apps/desktop run release:mac -- $(git rev-parse HEAD)
 ```
 
 A signature made before the certificate
@@ -328,6 +353,13 @@ client (the archive cached by its SHA-256, the Visual C++ runtime DLLs from the
 runner's Visual Studio), packages the NSIS installer with `package:win`, runs the packaged smoke against `dist/win-unpacked` with a
 PATH of only the Windows system folders, and uploads the installer and its
 `.sha256` as the `myflames-windows-x64` artifact on the run's summary page.
+It also installs the built installer silently on the runner, checks the
+installed executable, the uninstaller and the Start menu shortcut, runs the
+packaged smoke against the installed app, then uninstalls silently and checks
+that the install folder and the shortcut are gone.
+`windows-install-evidence.json` (commit, installer name, SHA-256 and each
+step's outcome) uploads with the installer, and the run fails when any of
+those steps did not pass.
 
 To build on a Windows x64 machine instead (Python 3.14, Node.js 22.12 or newer),
 run from the repository root in Git Bash:
