@@ -10,16 +10,24 @@ import sys
 import sysconfig
 from pathlib import Path
 
+import release_state
+
 root = Path(__file__).resolve().parents[3]
 desktop = root / 'apps' / 'desktop'
+venv_override = os.environ.get('MYFLAMES_DESKTOP_BUILD_VENV')
+venv = Path(venv_override).expanduser().absolute() if venv_override else root / 'local' / 'desktop-build-venv'
+relative = 'Scripts/python.exe' if os.name == 'nt' else 'bin/python'
+venv_python = venv / relative
+if venv_python.is_file() and os.path.realpath(sys.prefix) != os.path.realpath(str(venv)):
+    # Always honor the selected build environment, even if the caller also has
+    # a system PyInstaller. Otherwise an old interpreter can silently ship.
+    raise SystemExit(subprocess.call([str(venv_python), str(Path(__file__).resolve())], cwd=str(root)))
+if venv_override and not venv_python.is_file():
+    sys.stderr.write('The configured MYFLAMES_DESKTOP_BUILD_VENV has no Python; run release-mac.sh first.\n')
+    raise SystemExit(2)
 if importlib.util.find_spec('PyInstaller') is None:
     # `npm run build:backend` starts the system python3. Use the documented
     # disposable build venv when it exists instead of failing on a bare import.
-    venv = root / 'local' / 'desktop-build-venv'
-    relative = 'Scripts/python.exe' if os.name == 'nt' else 'bin/python'
-    venv_python = venv / relative
-    if venv_python.is_file() and os.path.realpath(sys.prefix) != os.path.realpath(str(venv)):
-        raise SystemExit(subprocess.call([str(venv_python), str(Path(__file__).resolve())], cwd=str(root)))
     sys.stderr.write(
         'PyInstaller is not installed for {}.\n'
         'Create the build venv first:\n'
@@ -27,6 +35,13 @@ if importlib.util.find_spec('PyInstaller') is None:
         '  local/desktop-build-venv/{} -m pip install -r apps/desktop/requirements-build.txt\n'.format(
             sys.executable, 'python' if os.name == 'nt' else 'python3', relative))
     raise SystemExit(2)
+# A failed/interrupted build must not leave an older manifest claiming success.
+manifest_path = desktop / 'build' / 'backend' / 'build-manifest.json'
+if manifest_path.exists():
+    manifest_path.unlink()
+before = {'commit': release_state.git_head(root),
+          'ui_assets_sha256': release_state.ui_assets_digest(root),
+          'requirements_sha256': release_state.sha256_file(desktop / 'requirements-build.txt')}
 # Collect submodules and package data, not distribution metadata: a leftover
 # development myflames.egg-info in the checkout would otherwise ship with a
 # stale version. Modules are compiled into the archive.
@@ -49,4 +64,7 @@ if status == 0:
             ' and '.join(str(path) for path in candidates)))
         raise SystemExit(2)
     shutil.copyfile(str(found[0]), str(desktop / 'build' / 'backend' / 'Python-LICENSE.txt'))
+    # Record the resolved build dependencies: requirements-build.txt pins only
+    # the direct ones, so the manifest keeps this venv's full pip freeze.
+    release_state.build_manifest(root, before, release_state.venv_freeze(sys.executable))
 raise SystemExit(status)
