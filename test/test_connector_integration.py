@@ -57,8 +57,9 @@ def _docker_problem():
     if not (shutil.which("mysql") or shutil.which("mariadb")):
         return "no mysql or mariadb client binary on PATH"
     # A CI runner's daemon can still be starting when the tests begin (docker
-    # info timed out after 5 s once): when live tests are required, give it up
-    # to a minute; otherwise answer quickly so a machine without Docker skips.
+    # info timed out after 5 s once): when live tests are required, keep trying
+    # for a minute (the last try may run up to 15 s past it); otherwise answer
+    # quickly so a machine without Docker skips.
     required = _live_switches.live_required()
     deadline = time.time() + (60 if required else 0)
     while True:
