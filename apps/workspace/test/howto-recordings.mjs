@@ -1206,6 +1206,776 @@ const GUIDES = [
   }],
 ];
 
+// ============================================================================
+// BEGIN server / connections / topology how-to recordings (one appended
+// block: the guides of docs/handbook/howto-server.md, howto-connections.md
+// and howto-topology.md). Own fixtures, mocks, boot variant and GUIDES
+// entries below; nothing above this banner is touched, so parallel edits to
+// the editor guides merge cleanly.
+// ============================================================================
+const locksDdl = await load("locks-mysql-26.7-ddl.json");
+// The additive identity fields the Kill sheet trusts, as the suites set them.
+locksDdl.server_identity = { server_uuid: "locks-server-uuid" };
+const sessionsActive = await load("sessions-mysql-8.4-active.json");
+// The additive identity fields the view trusts, as sessions.mjs sets them.
+sessionsActive.server_identity = { server_uuid: "sessions-server-uuid" };
+sessionsActive.trx_checked = true;
+const instrumentsLive = await load("instruments-mysql-8.4.json");
+const topLab = await load("top-mysql-8.4-lab.json");
+const indexesReport = await load("indexes-mysql-8.4.json");
+const tablesFragmented = await load("tables-mysql-8.4.json");
+const parametersCatalog = await load("parameters-mysql.json");
+const variableGlobal = await load("variable-mysql-8.4-global.json");
+const compareFixtures = await load("server-compare.json");
+const instrumentsSelected = await load("instruments-selection.json");
+const replReceiverGuard = {
+  receiver_guard: "off",
+  receiver_guard_reason: "Receiver stage instrumentation is off.",
+  receiver_guard_instrument: "stage/sql/Checking source version",
+  receiver_guard_note: "Receiver reconnects are not detected: the loop's other guards remain active.",
+};
+const replicationError = await load("replication-mysql-8.4-gtid-error.json");
+Object.assign(replicationError, replReceiverGuard);
+// Like withReceiverGuard in replication.mjs: the additive guard fields and the
+// review token, leaving the recorded transaction identities and SQL untouched.
+for (const channel of replicationError.channels) if (channel.skip_plan) Object.assign(channel.skip_plan, replReceiverGuard, { review_token: "review-skip" });
+const replicationHealthy = await load("replication-mysql-8.4-healthy.json");
+const replicationSkipped = await load("replication-mysql-8.4-skip.json");
+const clusterHealthy = await load("cluster-ic-8.4-healthy.json");
+const clusterPlan = await load("cluster-plan-switchover.json");
+const clusterResult = await load("cluster-result-switchover.json");
+const clusterProgress = await load("cluster-progress-sending.json");
+const proxysqlLab = await load("proxysql-lab.json");
+const proxysqlPlanOffline = await load("proxysql-plan-offline-soft.json");
+const proxysqlPlanSave = await load("proxysql-plan-save.json");
+const proxysqlDone = await load("proxysql-result-done.json");
+const proxysqlProgress = await load("proxysql-progress-sending.json");
+const proxysqlDigests = await load("proxysql-digests-time.json");
+const readysetLab = await load("readyset-lab.json");
+const readysetExplain = await load("readyset-explain-both.json");
+const readysetPlan = await load("readyset-plan-create-cache.json");
+const readysetDone = await load("readyset-result-create-done.json");
+const readysetProgress = await load("readyset-progress-sending.json");
+
+// Accounts (Users and roles), shaped as accounts.mjs builds them.
+const accountDetail = {
+  schema_version: "account-1.0", name: "app", host: "%", engine: "mysql", version: "8.4.0", exists: true,
+  fingerprint: "fp-1", grants: ["GRANT SELECT ON *.* TO `app`@`%`"],
+  attributes: { locked: false, expired: false, plugin: "caching_sha2_password" },
+  model: { global: ["SELECT"], dynamic: [], global_grantable: ["SELECT"], static_grant_option: false, schemas: [], tables: [], columns: [], routines: [], proxies: [], restrictions: [], roles: [], unparsed: [] },
+  roles: [], default_roles: [], defaults_checked: true, warnings: [],
+  privilege_catalog: {
+    global: [{ name: "SELECT" }, { name: "INSERT", grantable_here: true }, { name: "UPDATE", grantable_here: true }],
+    database: [{ name: "SELECT", grantable_here: true }, { name: "CREATE ROUTINE", grantable_here: true, description: "Create stored routines." }],
+    table: [{ name: "SELECT", grantable_here: true }], column: [{ name: "SELECT", grantable_here: true }],
+    routine: [{ name: "EXECUTE", grantable_here: true }], proxy: [{ name: "PROXY", grantable_here: true }],
+  },
+  privilege_catalog_meta: { engine: "mysql", version: "8.4.0", source: "server" },
+  grant_scopes: [
+    { id: "server:global", label: "*.*", level: "global", cells: [{ privilege: "SELECT", direct: true, grantable: false }] },
+    ...["shop", "inventory", "mysql"].map((database) => ({ id: `server:${database}`, label: `${database}.*`, level: "database", database, pattern: false, system: database === "mysql", cells: [] })),
+  ],
+};
+const accountsReport = {
+  schema_version: "accounts-1.0", engine: "mysql", version: "8.4.0", complete: true, warnings: [],
+  accounts: [
+    { name: "app", host: "%", plugin: "caching_sha2_password", locked: false, expired: false, role: false },
+    { name: "reader", host: "%", role: true, locked: true },
+    { name: "mysql.sys", host: "localhost", locked: true }],
+  role_grants: [], default_roles: [],
+};
+let accountPlanCount = 0;
+let latestAccountPlan = null;
+const accountPlanMock = (body) => {
+  accountPlanCount += 1;
+  latestAccountPlan = {
+    schema_version: "account-plan-1.0", plan_id: `plan-${accountPlanCount}`, change_set_id: `set-${accountPlanCount}`,
+    name: body.user, host: body.host, role: body.role, operation: body.operation, account: body.user, engine: "mysql", version: "8.4.0",
+    request: Object.fromEntries(Object.entries(body).filter(([key]) => !["connection", "password"].includes(key))),
+    before: structuredClone(accountDetail), expect: "fp-1", status: "ready",
+    statements: [`GRANT ${(body.privileges || ["SELECT"]).join(", ")} ON \`${body.database}\`.* TO \`${body.user}\`@\`${body.host}\``],
+    warnings: [], guards: { blocked: [], typed_name: `${body.user}@${body.host}` },
+    privileges: { state: "allowed", allowed: true, missing: [], reason: "Required privileges are present." },
+    policy: { action: "confirm", text: "" },
+  };
+  return ok(latestAccountPlan);
+};
+const accountApplyMock = () => ok({
+  schema_version: "account-change-1.0", change_set_id: latestAccountPlan?.change_set_id,
+  status: "applied", message: "Statements accepted.", before: latestAccountPlan?.before,
+  after: { ...accountDetail, grants: ["GRANT SELECT ON *.* TO `app`@`%`", "GRANT CREATE ROUTINE ON `shop`.* TO `app`@`%`"] },
+  diff: { added: ["GRANT CREATE ROUTINE ON `shop`.* TO `app`@`%`"], removed: [] },
+  statements: (latestAccountPlan?.statements || []).map((sql, index) => ({ index, statement: sql, status: "ok" })),
+  warnings: [], audit_ids: ["audit-1"],
+});
+
+// Kill reviews and sends (Locks and Processlist), as locks.mjs/sessions.mjs mock them.
+const killPrepare = (body) => ok({ review_token: "review-kill",
+  statements: [`/*myflames:kill*/ KILL ${body.mode === "query" ? "QUERY" : "CONNECTION"} ${body.connection_id}`],
+  expect: body.expect, connection_id: body.connection_id, mode: body.mode });
+const killReply = { schema_version: "kill-1.0", status: "killed", connection_id: 53, mode: "connection",
+  statement: "KILL CONNECTION 53", verified: ["user", "host", "not this session", "server thread", "transaction"],
+  message: "Ended connection 53. Its open transaction was rolled back (1 row changed) and its locks were released.",
+  target: { connection_id: 53, user: "app", host: "172.17.0.1", command: "Sleep", state: null, info: null, time_s: 5,
+    trx: { trx_id: "2123", state: "RUNNING", started: "2026-10-14 16:57:12", age_s: 5, rows_locked: 1, rows_modified: 1 }, trx_checked: true },
+  after: { present: false, trx_checked: true, trx_started: null, rows_locked: null, same_trx: null } };
+const bulkPrepare = (body) => ok({ review_token: "review-bulk", targets: body.targets, mode: body.targets[0]?.mode || "query",
+  statements: body.targets.map((t) => `/*myflames:kill*/ KILL ${t.mode === "query" ? "QUERY" : "CONNECTION"} ${t.connection_id}`) });
+const bulkReply = (body) => ok({ schema_version: "kill-bulk-1.0", total: body.targets.length, killed: body.targets.length,
+  gone: 0, refused: 0, denied: 0, errors: 0, message: `Ended ${body.targets.length} ${body.targets.length === 1 ? "query" : "queries"}.`,
+  results: body.targets.map((t) => ({ connection_id: t.connection_id, status: "killed", message: "Ended." })) });
+
+// Explain top N captures (as digest-actions.mjs mocks the capture engine: a
+// queued job per start, complete with the plan on the first status poll).
+const topJobs = new Map();
+const topPlan = (query) => JSON.stringify({ query, operation: "Sort: orders.total DESC", access_type: "sort",
+  estimated_rows: 3000, estimated_total_cost: 302.75,
+  inputs: [{ operation: "Table scan on orders", access_type: "table", table_name: "orders", estimated_rows: 3000, estimated_total_cost: 302.75 }] });
+const topCapture = (request) => ({ schema_version: "capture-1.0", raw: topPlan(request.query), query: request.query, mode: request.mode || "explain",
+  engine: "mysql", server_version: "8.4.3", captured_at: CLOCK, conditions: "", warnings: [],
+  runs: [{ total_time_ms: null, statistics: null, session_status_delta: {}, plan: "" }],
+  measurements: { count: 0, median_ms: null, min_ms: null, max_ms: null, stdev_ms: null },
+  schema: {}, table_stats: {}, variables: {}, trace: null, ...(request.source ? { source: request.source } : {}) });
+const topMocks = {
+  "/api/live/top": ok(topLab),
+  "/api/live/start": (body) => { const id = `howto-top-${topJobs.size + 1}`; topJobs.set(id, body); return ok({ id, state: "queued" }); },
+  "/api/live/status": (body) => ok({ id: body.id, state: "complete", progress: 1, repeat: 1, error: "",
+    result: topJobs.has(body.id) ? topCapture(topJobs.get(body.id)) : null }),
+};
+
+// Parameters: one generic variable detail and plan per name (as config.mjs
+// builds them over the variable fixture), plus the server comparison.
+const parameterVariable = (name) => {
+  const p = parametersCatalog.parameters.items.find((item) => item.name === name) || {};
+  const v = structuredClone(variableGlobal.variable);
+  Object.assign(v, { name, type: p.type || "integer", values: p.values || null, min: p.min ?? 1, max: p.max ?? 100000,
+    global_value: p.value ?? "151", default: p.default ?? "151", scope: "both", session_value: p.value ?? "151", nullable: false,
+    dynamic: p.apply_type === "dynamic", description: p.description, read_at: "2026-10-14T16:26:00Z" });
+  for (const m of Object.values(v.modes)) { m.available = true; m.recommended = false; m.reason = null; }
+  if (v.modes.global) v.modes.global.recommended = true;
+  return v;
+};
+const parameterPlan = (body) => {
+  const v = parameterVariable(body.name);
+  const verb = { global: "SET GLOBAL", persist: "SET PERSIST", persist_only: "SET PERSIST_ONLY", session: "SET SESSION" }[body.mode] || "SET GLOBAL";
+  const sql = body.mode === "reset_persist" ? `RESET PERSIST ${body.name}` : `${verb} ${body.name} = ${body.value}`;
+  const plan = structuredClone(variableGlobal.plan);
+  Object.assign(plan, { engine: "mysql", name: body.name, variable: v, mode: body.mode, requested: body.value, value: body.value, display: body.value,
+    statement: sql, status: "ready", problems: [],
+    before: { global: v.global_value, session: v.session_value, persisted: null, persisted_state: { state: "absent", present: null, value: null } },
+    policy: { action: "confirm", tone: "primary", title: "Development", text: "" },
+    privileges: { need: "SYSTEM_VARIABLES_ADMIN", note: "", checked: true, allowed: true, via: null },
+    config_line: `${body.name} = ${body.value}`,
+    effect: { now: true, after_restart: body.mode !== "global", needs_restart: false, text: "Changes the running value." } });
+  plan.expect = { name: body.name, mode: body.mode, statement: sql, global_value: v.global_value, session_value: v.session_value, persisted_value: null };
+  return plan;
+};
+const parameterMocks = {
+  "/api/live/config": ok(parametersCatalog),
+  "/api/live/variable": (body) => ok(parameterVariable(body.name)),
+  "/api/live/variable/plan": (body) => ok(parameterPlan(body)),
+  "/api/live/variable/apply": (body) => body.declined
+    ? ok({ status: "declined" })
+    : ok({ ...structuredClone(variableGlobal.change), name: body.name, mode: body.mode, status: "changed", message: "The new value was read back." }),
+  "/api/config/compare": ok(compareFixtures.parameters),
+};
+
+// Table structure (Server > Tables), a small table-structure-1.0 body.
+const tableStructure = (body) => ok({ schema_version: "table-structure-1.0", schema: body.schema, table: body.table, type: "table",
+  engine: "InnoDB", collation: "utf8mb4_0900_ai_ci", comment: "",
+  columns: [
+    { name: "id", position: 1, type: "bigint unsigned", nullable: false, default: null, extra: "auto_increment", comment: "", character_set: null, collation: null, key: "PRI", generated: null },
+    { name: "note", position: 2, type: "varchar(190)", nullable: true, default: null, extra: "", comment: "", character_set: "utf8mb4", collation: "utf8mb4_0900_ai_ci", key: "", generated: null },
+    { name: "created_at", position: 3, type: "datetime", nullable: false, default: "CURRENT_TIMESTAMP", extra: "", comment: "", character_set: null, collation: null, key: "", generated: null }],
+  indexes: [{ name: "PRIMARY", primary: true, unique: true, type: "BTREE", comment: "", visible: true, columns: [{ name: "id", expression: null, sub_part: null, order: "asc" }] }],
+  foreign_keys: [],
+  create_table: `CREATE TABLE \`${body.table}\` (\n  \`id\` bigint unsigned NOT NULL AUTO_INCREMENT,\n  \`note\` varchar(190) DEFAULT NULL,\n  \`created_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  PRIMARY KEY (\`id\`\n) ENGINE=InnoDB`,
+  create_error: null, filename: `${body.schema}.${body.table}.sql` });
+
+// The replication read flips to healthy once the reviewed skip is sent.
+let replicationSkipSent = false;
+const replicationMocks = {
+  "/api/live/replication": () => ok(replicationSkipSent ? replicationHealthy : replicationError),
+  "/api/live/replication/skip": () => { replicationSkipSent = true; return ok(replicationSkipped); },
+  "/api/live/replication/skip-loop/status": ok({ schema_version: "replication-skip-loop-1.0", loops: [] }),
+  "/api/live/instruments": ok(instrumentsLive),
+};
+
+// The driver boots every guide through boot() above, which passes the shared
+// `extra` map: this block's endpoints are added to it here (new keys only),
+// and the two endpoints the editor guides already use delegate to the
+// original mock unless the request is clearly this block's (a write review, or
+// a capture started for a digest batch, which carries a source).
+// The write reviews of Indexes, Tables and Instruments run through the editor
+// API (ReviewedSqlAction): preview, then a needs_confirmation run, then the
+// confirmed run (as indexes.mjs and instruments.mjs mock them).
+const isWriteSql = (sql) => /^(ALTER|OPTIMIZE|ANALYZE|DROP|UPDATE\s+performance_schema)/i.test((sql || "").trim());
+const baseEditorRun = extra["/api/editor/run"];
+const baseLiveStart = extra["/api/live/start"];
+const baseLiveStatus = extra["/api/live/status"];
+Object.assign(extra, {
+  "/api/editor/run": (body) => {
+    if (body.decline) return ok({ status: "declined" });
+    if (body.confirmed) return ok({ status: "complete", session: session(), run: { ...runBase(body.sql),
+      statements: [{ ...statement(body.sql), verb: "write", kind: "write", category: "write" }],
+      results: [], counts: { statements: 1, run: 1, rows: 0, affected_rows: 0, warnings: 0, errors: 0 } } });
+    if (isWriteSql(body.sql)) return ok({ status: "needs_confirmation", confirmation: { token: "howto-review",
+      text: "Review the statement before it runs.", tone: "primary",
+      connection: { user: "dba", host: "dev.example", port: 3306 }, connection_type: "development",
+      warnings: [], statements: [body.sql], typed_target: null } });
+    return baseEditorRun(body);
+  },
+  "/api/live/start": (body) => body.source ? topMocks["/api/live/start"](body) : baseLiveStart,
+  "/api/live/status": (body) => topJobs.has(body.id) ? topMocks["/api/live/status"](body) : baseLiveStatus,
+  "/api/live/locks": () => ok({ ...locksDdl, captured_at: new Date(Date.now() + 1000).toISOString() }),
+  "/api/live/kill/prepare": killPrepare,
+  "/api/live/kill": ok(killReply),
+  "/api/live/kill/bulk/prepare": bulkPrepare,
+  "/api/live/kill/bulk": (body) => bulkReply(body),
+  "/api/live/sessions": () => ok({ ...sessionsActive, taken_at: new Date(Date.now() + 1000).toISOString() }),
+  "/api/live/top": topMocks["/api/live/top"],
+  "/api/live/indexes": ok(indexesReport),
+  "/api/live/tables": ok(tablesFragmented),
+  "/api/live/table-structure": tableStructure,
+  "/api/live/instruments": ok(instrumentsSelected),
+  "/api/accounts/list": ok(accountsReport),
+  "/api/accounts/read": (body) => ok({ ...accountDetail, name: body.user, host: body.host }),
+  "/api/accounts/scope-objects": (body) => ok({ database: body.database, tables: [{ name: "orders" }, { name: "customers" }], procedures: [], functions: [], truncated: false, warnings: [] }),
+  "/api/accounts/plan": accountPlanMock,
+  "/api/accounts/apply": accountApplyMock,
+  "/api/live/replication": replicationMocks["/api/live/replication"],
+  "/api/live/replication/skip": replicationMocks["/api/live/replication/skip"],
+  "/api/live/replication/skip-loop/status": replicationMocks["/api/live/replication/skip-loop/status"],
+  "/api/live/cluster": ok(clusterHealthy),
+  "/api/live/cluster/plan": ok(clusterPlan),
+  "/api/live/cluster/action": { ...ok(clusterResult), delay: 600 },
+  "/api/live/action/progress": ok(clusterProgress),
+  "/api/live/proxysql": ok(proxysqlLab),
+  "/api/live/proxysql/plan": (body) => ok(body.action === "servers_save" ? proxysqlPlanSave : proxysqlPlanOffline),
+  "/api/live/proxysql/action": { ...ok(proxysqlDone), delay: 500 },
+  "/api/live/proxysql/digests": ok(proxysqlDigests),
+  "/api/live/readyset": ok(readysetLab),
+  "/api/live/readyset/explain-cache": ok(readysetExplain),
+  "/api/live/readyset/plan": ok(readysetPlan),
+  "/api/live/readyset/action": { ...ok(readysetDone), delay: 500 },
+  "/api/connections/import": ok({ found: true, cancelled: false, items: [
+    { name: "Bench MySQL", host: "bench.example", port: 3306, user: "reader", database: "" },
+    { name: "Reports MariaDB", host: "reports.example", port: 3307, user: "etl", database: "reports",
+      ssh_host: "bastion.example", ssh_user: "deploy", ssh_port: 2222 }] }),
+  ...parameterMocks,
+});
+
+/** Choose the seeded Development connection from the toolbar picker. */
+async function useDev(h, rec) {
+  await rec.caption("choose Dev MySQL");
+  await chooseConnection(h.page, h.seeded["Dev MySQL"]);
+  await rec.caption("");
+  await rec.hold(300);
+}
+/** Click the first visible element whose text starts with *text*. */
+async function clickText(page, selector, text) {
+  const handle = await page.waitForFunction((sel, t) => [...document.querySelectorAll(sel)]
+    .find((b) => b.textContent.trim().startsWith(t) && b.getClientRects().length), {}, selector, text);
+  await handle.asElement().click();
+  await handle.dispose();
+}
+/** A place of its own in the sidebar (Replication, Cluster, ProxySQL, Readyset). */
+async function openPlace(h, place) {
+  await h.page.waitForSelector(`.main-nav button[data-place="${place}"]`, { visible: true });
+  await h.page.click(`.main-nav button[data-place="${place}"]`);
+  await h.page.waitForSelector(`.server-view[data-view="${place}"]`, { visible: true });
+}
+
+GUIDES.push(
+  // ---- docs/handbook/howto-server.md ----
+  ["kill-blocking", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Locks");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("locks");
+    const view = '.server-view[data-view="locks"]';
+    await page.waitForSelector(`${view} .lock-tree`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1300);
+    await rec.caption("select the blocker");
+    await h.select(`${view} .lock-tree tr[data-connection="53"]`);
+    await rec.hold(1100);
+    await rec.caption("click Kill…");
+    await page.click('.view-inspector [aria-label="Kill blocker: connection 53"]');
+    await page.waitForSelector("dialog.kill-dialog[open]");
+    // The reviewed statement (kill/prepare) enables the confirm button.
+    await page.waitForFunction(() => {
+      const b = document.querySelector("dialog.kill-dialog .sheet-actions .danger-solid");
+      return b && !b.disabled && b.getAttribute("aria-disabled") !== "true";
+    });
+    await rec.caption("");
+    await rec.hold(1600);
+    await rec.caption("Kill connection 53");
+    await page.click("dialog.kill-dialog .sheet-actions .danger-solid");
+    await page.waitForFunction(() => [...document.querySelectorAll(".kill-result")]
+      .some((e) => e.classList.contains("killed") && e.offsetParent !== null));
+    await rec.caption("");
+    await rec.hold(1400);
+  }],
+  ["top-statements", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Workload > Top statements");
+    await h.workload();
+    await useDev(h, rec);
+    await h.view("top");
+    const view = '.server-view[data-view="top"]';
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1300);
+    await rec.caption("select a statement");
+    await h.select(`${view} tbody tr[data-row-key]`);
+    await rec.hold(1100);
+    await rec.caption("click Explain top 5");
+    await clickText(page, `${view} button`, "Explain top 5");
+    await page.waitForFunction(() => /plans added to the open plans/.test(
+      [...document.querySelectorAll(".server-view[data-view=\"top\"]")].map((v) => v.textContent).join(" ")), { timeout: 20000 });
+    assert.ok(h.state.other.filter((o) => o.path === "/api/live/start").length > 0, "captures started");
+    await rec.caption("");
+    await rec.hold(1300);
+  }],
+  ["kill-sessions", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Workload > Processlist");
+    await h.workload();
+    await useDev(h, rec);
+    await h.view("sessions");
+    const view = '.server-view[data-view="sessions"]';
+    await page.waitForSelector(`${view} tbody tr[data-session]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1200);
+    await rec.caption("click Kill sessions…");
+    await page.click(`${view} .view-toolbar button[data-action=kill-sessions]`);
+    await page.waitForSelector("dialog.mass-kill-dialog[open]");
+    await rec.hold(600);
+    await rec.caption("Kill query");
+    await clickText(page, 'dialog.mass-kill-dialog .segmented[aria-label="Kill mode"] button', "Kill query");
+    await rec.hold(400);
+    await rec.caption("preset: Runaway queries");
+    await clickText(page, "dialog.mass-kill-dialog .mass-kill-presets button", "Runaway queries");
+    await page.waitForFunction(() => /[1-9]\d* matching sessions/.test(document.querySelector(".preview-title")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1100);
+    const footer = await page.waitForFunction(() => {
+      const b = document.querySelector(".mass-kill-footer-actions button.danger");
+      return b && !b.disabled && /Kill \d+ quer/.test(b.textContent) ? b : false;
+    });
+    await rec.caption("review the sessions");
+    await rec.hold(700);
+    await footer.asElement().click();
+    await footer.dispose();
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    await page.waitForFunction(() => /KILL QUERY \d+/.test(document.querySelector("dialog.confirm-sheet")?.textContent || ""));
+    await rec.caption("check the statements");
+    await rec.hold(1500);
+    await clickText(page, "dialog.confirm-sheet .sheet-actions button", "Send ");
+    await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"), { timeout: 10000 });
+    assert.ok(h.state.other.some((o) => o.path === "/api/live/kill/bulk"), "the reviewed KILLs were sent");
+    await rec.caption("");
+    await rec.hold(1300);
+  }],
+  ["hide-index", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Indexes");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("indexes");
+    const view = '.server-view[data-view="indexes"]';
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(700);
+    await rec.caption("filter: Unused");
+    await clickText(page, `${view} .segmented button`, "Unused");
+    const rows = `${view} [aria-label="Unused indexes"] tbody tr[data-row-key]`;
+    await page.waitForSelector(rows, { visible: true });
+    await rec.caption("");
+    await rec.hold(1000);
+    await rec.caption("select the index");
+    await h.select(rows);
+    await rec.hold(1200);
+    await rec.caption("Set invisible…");
+    await page.$eval(`${rows} .row-more`, (b) => { b.focus(); b.click(); });
+    await clickText(page, ".row-action-menu [role=menuitem]", "Set invisible…");
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    await page.waitForFunction(() => /ALTER TABLE/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1600);
+    await rec.caption("confirm");
+    await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
+    await page.waitForFunction(() => /completed/.test(document.querySelector("[data-reviewed-status]")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1200);
+  }],
+  ["optimize-table", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Tables");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("tables");
+    const view = '.server-view[data-view="tables"]';
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(700);
+    await rec.caption("filter: Fragmentation");
+    await clickText(page, `${view} .segmented[aria-label="List"] button`, "Fragmentation");
+    const row = `${view} [aria-label="Fragmentation by table"] tbody tr[data-row-key]`;
+    await page.waitForSelector(row, { visible: true });
+    await rec.caption("");
+    await rec.hold(900);
+    await rec.caption("select the table");
+    await h.select(row);
+    await rec.hold(900);
+    await rec.caption("Table structure");
+    await clickText(page, ".view-inspector button", "Table structure");
+    await page.waitForSelector("dialog.text-sheet[open] .table-structure-table", { visible: true });
+    await rec.caption("");
+    await rec.hold(1500);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.text-sheet"));
+    await rec.caption("Optimize table…");
+    await clickText(page, ".view-inspector button", "Optimize table…");
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    await page.waitForFunction(() => /OPTIMIZE TABLE/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1600);
+    await rec.caption("confirm");
+    await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+  ["parameters-compare", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Parameters");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("config");
+    const view = '.server-view[data-view="config"]';
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(700);
+    await rec.caption("Show: Recommendations");
+    await page.select(`${view} select[aria-label="Show"]`, "recommendations");
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(900);
+    await rec.caption("select a parameter");
+    const name = await page.$eval(`${view} tbody tr[data-row-key]`, (tr) => tr.dataset.rowKey);
+    await h.select(`${view} tbody tr[data-row-key="${name}"]`);
+    await rec.hold(1100);
+    await rec.caption("click Edit");
+    await page.click(`${view} [data-action="edit-parameters"]`);
+    const input = `${view} #parameter-value-${name}`;
+    await page.waitForSelector(input, { visible: true });
+    await rec.hold(400);
+    await rec.caption("enter the new value");
+    if (await page.$eval(input, (e) => e.getAttribute("role") === "switch" || e.tagName === "SELECT")) {
+      await page.click(input);
+    } else {
+      await page.click(input, { clickCount: 3 });
+      await page.keyboard.type("200", { delay: 90 });
+    }
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="config"] .toolbar-controls button')]
+      .some((b) => b.textContent === "Review and apply (1)"));
+    await rec.hold(700);
+    await rec.caption("Review and apply (1)");
+    await clickText(page, `${view} .toolbar-controls button`, "Review and apply (1)");
+    await page.waitForSelector("dialog.parameter-batch-sheet[open]");
+    await page.waitForFunction(() => /SET (PERSIST|GLOBAL)/.test(document.querySelector("dialog.parameter-batch-sheet")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1700);
+    await rec.caption("confirm");
+    await page.click("dialog.parameter-batch-sheet .sheet-actions button:last-of-type");
+    await page.waitForFunction(() => !document.querySelector("dialog.parameter-batch-sheet"), { timeout: 10000 });
+    await rec.hold(1000);
+    await rec.caption("Compare tab");
+    await page.click("#parameters-views-tab-compare");
+    await page.waitForSelector('[data-view="parameters-compare"] select[aria-label="Target"]', { visible: true });
+    await rec.hold(500);
+    await rec.caption("Target: Prod MySQL");
+    const target = await page.$eval('[data-view="parameters-compare"] select[aria-label="Target"]', (sel) =>
+      [...sel.options].find((o) => /Prod MySQL/.test(o.textContent))?.value);
+    assert.ok(target, "Prod MySQL is a compare target");
+    await page.select('[data-view="parameters-compare"] select[aria-label="Target"]', target);
+    await rec.hold(500);
+    await rec.caption("click Compare");
+    await page.click('[data-view="parameters-compare"] .server-compare-run button');
+    await page.waitForSelector('[data-view="parameters-compare"] .comparison-header', { visible: true });
+    await rec.caption("");
+    await rec.hold(1500);
+  }],
+  ["instruments-preset", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Instruments");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("instruments");
+    const view = '.server-view[data-view="instruments"]';
+    await page.waitForSelector("#instr-ps", { visible: true });
+    await rec.caption("");
+    await rec.hold(1100);
+    await rec.caption("Preset: Wait analysis");
+    await page.select(`${view} select[aria-label=Preset]`, "waits");
+    await page.waitForSelector(".view-inspector .inspector-title", { visible: true });
+    await rec.hold(900);
+    await rec.caption("Show statements");
+    await page.click(`${view} .instr-show-statements`);
+    await page.waitForSelector(".view-inspector .perf-sql pre", { visible: true });
+    await rec.caption("");
+    await rec.hold(1400);
+    await rec.caption("Apply Wait analysis…");
+    await page.click('.view-inspector [data-reviewed-sql="Apply Wait analysis"]');
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    await page.waitForFunction(() => /UPDATE performance_schema/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
+    await rec.hold(1500);
+    await rec.caption("confirm");
+    await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
+    await page.waitForFunction(() => /completed/.test(document.querySelector("[data-reviewed-status]")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+  ["users-grants", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Server > Users and roles");
+    await h.server();
+    await useDev(h, rec);
+    await h.view("accounts");
+    const view = '.server-view[data-view="accounts"]';
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1100);
+    await rec.caption("select app@%");
+    await h.select(`${view} tbody tr[data-row-key]`);
+    await page.waitForSelector(".account-matrix", { visible: true });
+    await rec.hold(900);
+    await rec.caption("Grant level: Databases");
+    await page.select('select[aria-label="Grant level"]', "database");
+    await rec.hold(400);
+    await rec.caption("Add scope");
+    await clickText(page, ".view-inspector button", "Add scope");
+    await page.waitForSelector('.account-scope-form select[aria-label="Database"]', { visible: true });
+    await page.select('.account-scope-form select[aria-label="Database"]', "shop");
+    await rec.hold(300);
+    await clickText(page, ".account-scope-form button", "Use scope");
+    await page.waitForSelector(".account-matrix", { visible: true });
+    await rec.hold(500);
+    await rec.caption("tick CREATE ROUTINE");
+    await page.$$eval(".account-matrix tbody tr", (rows) => {
+      const row = rows.find((r) => (r.querySelector(".account-privilege-name")?.textContent || r.querySelector("th")?.textContent) === "CREATE ROUTINE");
+      row?.querySelector("input")?.click();
+    });
+    await rec.hold(700);
+    await rec.caption("Review changes");
+    await clickText(page, ".view-inspector button", "Review changes");
+    await page.waitForSelector(".account-review[open]", { visible: true });
+    await page.waitForFunction(() => /GRANT CREATE ROUTINE ON `shop`\.\*/.test(document.querySelector(".account-review")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1300);
+    await rec.caption("type app@% to confirm");
+    await page.click(".account-review .account-typed input");
+    await page.keyboard.type("app@%", { delay: 90 });
+    await rec.hold(500);
+    await rec.caption("apply");
+    await page.click(".account-review .sheet-actions button:last-of-type");
+    await page.waitForFunction(() => !document.querySelector(".account-review[open]"), { timeout: 10000 });
+    await page.waitForSelector('[aria-label="Account change result"]', { visible: true });
+    await rec.caption("");
+    await rec.hold(1200);
+  }],
+  // ---- docs/handbook/howto-connections.md ----
+  // The group bar is the same in the four topology places; this one uses Cluster.
+  ["connection-group", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Cluster");
+    await openPlace(h, "cluster");
+    await useDev(h, rec);
+    await page.waitForSelector('.server-view[data-view="cluster"] .cluster-topology', { visible: true });
+    await page.waitForFunction(() => /No connection group/.test(
+      [...document.querySelectorAll(".connection-group-line")].map((e) => e.textContent).join(" ")));
+    await rec.caption("");
+    await rec.hold(1300);
+    await rec.caption("Create a group…");
+    await clickText(page, ".connection-group-actions button", "Create a group…");
+    await page.waitForSelector("dialog.connection-group-sheet[open]", { visible: true });
+    await rec.hold(500);
+    await rec.caption("name the group");
+    await page.click(".connection-group-field input");
+    await page.keyboard.type("shop-pipeline", { delay: 70 });
+    await rec.hold(400);
+    await rec.caption("tick Prod MySQL");
+    await page.$$eval(".connection-group-item", (items) => {
+      items.find((item) => /Prod MySQL/.test(item.textContent))?.querySelector("input[type=checkbox]")?.click();
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll("dialog.connection-group-sheet .sheet-actions button")]
+      .some((b) => /Add \d+ to shop-pipeline/.test(b.textContent) && !b.disabled));
+    await rec.hold(800);
+    await rec.caption("Add to shop-pipeline");
+    await clickText(page, "dialog.connection-group-sheet .sheet-actions button", "Add ");
+    await page.waitForFunction(() => !document.querySelector("dialog.connection-group-sheet[open]"), { timeout: 10000 });
+    await page.waitForFunction(() => /shop-pipeline/.test(
+      [...document.querySelectorAll(".connection-group-line, .connection-group-summary, [data-state]")].map((e) => e.textContent).join(" ")));
+    await rec.caption("");
+    await rec.hold(1400);
+  }],
+  ["import-connections", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Home: Connections menu");
+    await page.click('.connections-header-actions button[aria-label="Connections menu"]');
+    await rec.hold(300);
+    await rec.caption("Import from MySQL Workbench or DBeaver…");
+    await clickText(page, '[role="menu"] button', "Import from MySQL Workbench or DBeaver…");
+    await page.waitForSelector("dialog.connection-import-sheet[open]");
+    await page.waitForFunction(() => document.querySelector(".connection-import-preview")?.textContent.includes("Reports MariaDB"));
+    await rec.caption("");
+    await rec.hold(1500);
+    await rec.caption("Import 2 connections");
+    await clickText(page, "dialog.connection-import-sheet button", "Import 2 connections");
+    await page.waitForFunction(() => document.querySelector("dialog.connection-import-sheet")?.textContent.includes("Imported 2 connections."));
+    await rec.caption("");
+    await rec.hold(1000);
+    await clickText(page, "dialog.connection-import-sheet button", "Done");
+    await page.waitForFunction(() => /Reports MariaDB/.test(document.body.textContent) && !document.querySelector("dialog.connection-import-sheet"));
+    await rec.hold(1300);
+  }],
+  // ---- docs/handbook/howto-topology.md ----
+  ["replication-skip", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Replication");
+    await openPlace(h, "replication");
+    await useDev(h, rec);
+    const view = '.server-view[data-view="replication"]';
+    await page.waitForSelector(`${view} [data-row-key="channel:"]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1300);
+    await rec.caption("Recovery");
+    await clickText(page, '[aria-label="Replication sub-tabs"] button', "Recovery");
+    await rec.hold(700);
+    await rec.caption("select the stopped channel");
+    await h.select(`${view} [data-row-key="channel:"]`);
+    await page.waitForFunction(() => /1062/.test(document.querySelector(".view-inspector")?.textContent || ""));
+    await rec.hold(1200);
+    await rec.caption("Skip this transaction…");
+    await clickText(page, ".view-inspector button", "Skip this transaction");
+    await page.waitForSelector("dialog.ops-confirm[open]");
+    await page.waitForFunction(() => /GTID|sql_slave_skip/i.test(document.querySelector("dialog.ops-confirm")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1700);
+    await rec.caption("Skip transaction");
+    await page.click("dialog.ops-confirm .sheet-actions button:last-of-type");
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="replication"] .ops-result')]
+      .some((e) => e.dataset.status === "skipped" && e.offsetParent !== null), { timeout: 10000 });
+    await rec.caption("");
+    await rec.hold(1400);
+  }],
+  ["cluster-primary", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Cluster");
+    await openPlace(h, "cluster");
+    await useDev(h, rec);
+    const view = '.server-view[data-view="cluster"]';
+    await page.waitForSelector(`${view} .cluster-topology`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1400);
+    await rec.caption("Members");
+    await clickText(page, `${view} .segmented button`, "Members");
+    await page.waitForSelector(`${view} tbody tr[data-row-key^="member:"]`, { visible: true });
+    await rec.hold(700);
+    await rec.caption("select a secondary");
+    await h.select(`${view} tr[data-row-key="${clusterPlan.member_key}"]`);
+    await rec.hold(1000);
+    await rec.caption("Make primary…");
+    await clickText(page, ".view-inspector .review-actions button", "Make primary…");
+    await page.waitForSelector("dialog.action-review[open]", { visible: true });
+    await page.waitForFunction(() => /group_replication_set_as_primary/.test(document.querySelector("dialog.action-review")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1700);
+    await rec.caption("confirm");
+    await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+    await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
+    await rec.hold(1200);
+    await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
+    await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+  ["proxysql-offline", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("ProxySQL");
+    await openPlace(h, "proxysql");
+    await useDev(h, rec);
+    const view = '.server-view[data-view="proxysql"]';
+    await page.waitForSelector(`${view} .summary-line`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1200);
+    await rec.caption("Servers");
+    await clickText(page, `${view} .segmented button`, "Servers");
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(800);
+    await rec.caption("select the backend");
+    await h.select(`${view} tbody tr[data-row-key="rt|32|mf-ic-2|3306"]`);
+    await rec.hold(1000);
+    await rec.caption("Set OFFLINE_SOFT…");
+    await clickText(page, ".view-inspector .review-actions button", "Set OFFLINE_SOFT…");
+    await page.waitForSelector("dialog.action-review[open]", { visible: true });
+    await page.waitForFunction(() => /OFFLINE_SOFT/.test(document.querySelector("dialog.action-review .ops-pre")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1700);
+    await rec.caption("confirm");
+    await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+    await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
+    await rec.hold(1300);
+    await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
+    await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+  ["readyset-cache", async (h, rec) => {
+    const { page } = h;
+    await rec.caption("Readyset");
+    await openPlace(h, "readyset");
+    await useDev(h, rec);
+    const view = '.server-view[data-view="readyset"]';
+    await page.waitForSelector(`${view} .summary-line`, { visible: true });
+    await rec.caption("");
+    await rec.hold(1200);
+    await rec.caption("Proxied");
+    await clickText(page, `${view} .segmented button`, "Proxied");
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(800);
+    await rec.caption("select the query");
+    await h.select(`${view} tbody tr[data-row-key="pq:q_3333cccc"]`);
+    await rec.hold(900);
+    await rec.caption("Create cache…");
+    await clickText(page, ".view-inspector button", "Create cache…");
+    await page.waitForSelector("dialog.readyset-create-dialog[open]", { visible: true });
+    // The pre-filled query id runs the support check (EXPLAIN) on its own.
+    await page.waitForFunction(() => /Shallow: Supported/.test(document.querySelector("dialog.readyset-create-dialog")?.textContent || ""), { timeout: 10000 });
+    await rec.caption("Check support (EXPLAIN)");
+    await rec.hold(1500);
+    await rec.caption("Review CREATE CACHE…");
+    await page.click('dialog.readyset-create-dialog .sheet-actions button:last-child');
+    await page.waitForSelector("dialog.action-review[open]", { visible: true });
+    await page.waitForFunction(() => /CREATE SHALLOW CACHE/.test(document.querySelector("dialog.action-review .ops-pre")?.textContent || ""));
+    await rec.caption("");
+    await rec.hold(1700);
+    await rec.caption("Create shallow cache");
+    await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+    await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
+    await rec.hold(1200);
+    await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
+    await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+    await rec.caption("");
+    await rec.hold(1100);
+  }],
+);
+// ============================================================================
+// END server / connections / topology how-to recordings
+// ============================================================================
+
 // ---- driver -------------------------------------------------------------------
 const chosen = GUIDES.filter(([id]) => !only || id === only);
 if (!chosen.length) throw new Error(`Unknown guide "${only}". Known: ${GUIDES.map(([id]) => id).join(", ")}`);
