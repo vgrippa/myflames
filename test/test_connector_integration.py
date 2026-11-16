@@ -56,17 +56,28 @@ def _docker_problem():
         return "no docker binary on PATH"
     if not (shutil.which("mysql") or shutil.which("mariadb")):
         return "no mysql or mariadb client binary on PATH"
-    try:
-        r = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
-        )
-    except Exception as exc:
-        return "docker info failed: {}".format(exc)
-    if r.returncode != 0:
-        return "docker daemon not reachable: {}".format(
-            r.stderr.decode("utf-8", errors="replace").strip())
-    return None
+    # A CI runner's daemon can still be starting when the tests begin (docker
+    # info timed out after 5 s once): when live tests are required, give it up
+    # to a minute; otherwise answer quickly so a machine without Docker skips.
+    required = _live_switches.live_required()
+    deadline = time.time() + (60 if required else 0)
+    while True:
+        try:
+            r = subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=15 if required else 5,
+            )
+        except Exception as exc:
+            problem = "docker info failed: {}".format(exc)
+        else:
+            if r.returncode == 0:
+                return None
+            problem = "docker daemon not reachable: {}".format(
+                r.stderr.decode("utf-8", errors="replace").strip())
+        if time.time() >= deadline:
+            return problem
+        time.sleep(2)
 
 
 _DOCKER_PROBLEM = _docker_problem()
