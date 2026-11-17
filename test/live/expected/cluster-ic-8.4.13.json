@@ -1,0 +1,663 @@
+{
+  "actions": [
+    {
+      "cluster_name": null,
+      "danger": true,
+      "description": "The group elects one primary; the other members become read-only. MySQL Shell updates auto_increment and the cluster metadata.",
+      "enabled": false,
+      "fix": "Choose the other mode to change the topology.",
+      "grant_sql": null,
+      "id": "switch_to_single_primary",
+      "kind": "risky",
+      "label": "Switch to single-primary\u2026",
+      "member_key": null,
+      "member_name": null,
+      "member_uuid": "<volatile>",
+      "missing_privileges": [],
+      "privileges_unreadable": false,
+      "schema_version": "cluster-action-1.1",
+      "scope": "overview",
+      "target": {
+        "member_name": "mf-ic-1:<port>",
+        "self": true
+      },
+      "via": "mysqlsh",
+      "why_not": "The group is already in single-primary mode."
+    },
+    {
+      "cluster_name": null,
+      "danger": true,
+      "description": "Every member accepts writes, and the mode is persisted. MySQL Shell updates auto_increment and the cluster metadata.",
+      "enabled": true,
+      "fix": null,
+      "grant_sql": null,
+      "id": "switch_to_multi_primary",
+      "kind": "risky",
+      "label": "Switch to multi-primary\u2026",
+      "member_key": null,
+      "member_name": null,
+      "member_uuid": "<volatile>",
+      "missing_privileges": [],
+      "privileges_unreadable": false,
+      "schema_version": "cluster-action-1.1",
+      "scope": "overview",
+      "target": {
+        "member_name": "mf-ic-1:<port>",
+        "self": true
+      },
+      "via": "mysqlsh",
+      "why_not": null
+    },
+    {
+      "cluster_name": null,
+      "danger": true,
+      "description": "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+      "enabled": false,
+      "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+      "grant_sql": null,
+      "id": "set_primary_cluster",
+      "kind": "risky",
+      "label": "Make primary cluster\u2026",
+      "member_key": null,
+      "member_name": null,
+      "member_uuid": "<volatile>",
+      "missing_privileges": [],
+      "privileges_unreadable": false,
+      "schema_version": "cluster-action-1.1",
+      "scope": "overview",
+      "target": {
+        "member_name": "mf-ic-1:<port>",
+        "self": true
+      },
+      "via": "mysqlsh",
+      "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs."
+    },
+    {
+      "cluster_name": null,
+      "danger": true,
+      "description": "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster (forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+      "enabled": false,
+      "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+      "grant_sql": null,
+      "id": "force_primary_cluster",
+      "kind": "risky",
+      "label": "Fail over to this cluster\u2026",
+      "member_key": null,
+      "member_name": null,
+      "member_uuid": "<volatile>",
+      "missing_privileges": [],
+      "privileges_unreadable": false,
+      "schema_version": "cluster-action-1.1",
+      "scope": "overview",
+      "target": {
+        "member_name": "mf-ic-1:<port>",
+        "self": true
+      },
+      "via": "mysqlsh",
+      "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs."
+    },
+    {
+      "cluster_name": null,
+      "danger": true,
+      "description": "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+      "enabled": false,
+      "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+      "grant_sql": null,
+      "id": "rejoin_cluster",
+      "kind": "risky",
+      "label": "Rejoin cluster to the ClusterSet\u2026",
+      "member_key": null,
+      "member_name": null,
+      "member_uuid": "<volatile>",
+      "missing_privileges": [],
+      "privileges_unreadable": false,
+      "schema_version": "cluster-action-1.1",
+      "scope": "overview",
+      "target": {
+        "member_name": "mf-ic-1:<port>",
+        "self": true
+      },
+      "via": "mysqlsh",
+      "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs."
+    }
+  ],
+  "available": true,
+  "captured_at": "<timestamp>",
+  "cluster": {
+    "component": null,
+    "expected_size": 3,
+    "expected_source": "mysql_innodb_cluster_metadata",
+    "failures_tolerated": 1,
+    "name": "mfcluster",
+    "provider": null,
+    "quorum": true,
+    "size": 3,
+    "topology": "single_primary",
+    "uuid": "<volatile>"
+  },
+  "connection_group": {
+    "join": [],
+    "name": "",
+    "read": [],
+    "suggested_name": "mfcluster",
+    "suggestions": []
+  },
+  "engine": "mysql",
+  "findings": [],
+  "flavor": "mysql",
+  "galera": null,
+  "group_replication": {
+    "bootstrap_group": "OFF",
+    "group_name": "<uuid>",
+    "group_seeds": "mf-ic-2:<port>,mf-ic-3:<port>",
+    "local_address": "mf-ic-1:<port>",
+    "preemptive_garbage_collection": "OFF",
+    "single_primary_mode": "ON",
+    "view_id": "17938141833988247:<port>"
+  },
+  "kind": "innodb_cluster",
+  "local": "member:<uuid>",
+  "members": [
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+          "enabled": false,
+          "fix": "Choose an ONLINE secondary.",
+          "grant_sql": null,
+          "id": "switchover",
+          "kind": "risky",
+          "label": "Make primary\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-1:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "udf",
+          "why_not": "mf-ic-1:<port> is already the primary."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+          "enabled": true,
+          "fix": null,
+          "grant_sql": null,
+          "id": "stop_member",
+          "kind": "risky",
+          "label": "Stop Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-1:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "sql",
+          "why_not": null
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+          "enabled": false,
+          "fix": "Stop Group Replication on this member before starting it again.",
+          "grant_sql": null,
+          "id": "start_member",
+          "kind": "risky",
+          "label": "Start Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-1:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "sql",
+          "why_not": "This member is not OFFLINE."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+          "enabled": false,
+          "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
+          "grant_sql": null,
+          "id": "rejoin_instance",
+          "kind": "risky",
+          "label": "Rejoin to the cluster\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-1:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "mysqlsh",
+          "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs."
+        }
+      ],
+      "address": "mf-ic-1:<port>",
+      "communication_stack": "MySQL",
+      "endpoint": "mf-ic-1:<port>",
+      "host": "mf-ic-1",
+      "in_metadata": true,
+      "key": "member:<uuid>",
+      "label": "mf-ic-1:<port>",
+      "local": true,
+      "metrics": {
+        "applier_queue": "<volatile>",
+        "conflicts_detected": "<volatile>",
+        "local_proposed": "<volatile>",
+        "local_rollback": "<volatile>",
+        "remote_applied": "<volatile>",
+        "rows_validating": "<volatile>",
+        "transactions_checked": "<volatile>",
+        "transactions_in_queue": "<volatile>"
+      },
+      "name": "mf-ic-1:<port>",
+      "port": "<volatile>",
+      "role": "PRIMARY",
+      "state": "ONLINE",
+      "state_source": "replication_group_members",
+      "status": "ok",
+      "status_why": [
+        "A full member of the group."
+      ],
+      "uuid": "<volatile>",
+      "version": "8.4.13"
+    },
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+          "enabled": true,
+          "fix": null,
+          "grant_sql": null,
+          "id": "switchover",
+          "kind": "risky",
+          "label": "Make primary\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-2:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "udf",
+          "why_not": null
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+          "enabled": false,
+          "fix": "Connect to mf-ic-2:<port> to stop it.",
+          "grant_sql": null,
+          "id": "stop_member",
+          "kind": "risky",
+          "label": "Stop Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-2:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-2:<port>",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Stop Group Replication runs on the server it stops, mf-ic-2:<port>; this connection is to mf-ic-1:<port>."
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+          "enabled": false,
+          "fix": "Connect to mf-ic-2:<port> to start it.",
+          "grant_sql": null,
+          "id": "start_member",
+          "kind": "risky",
+          "label": "Start Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-2:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-2:<port>",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Start Group Replication runs on the server it starts, mf-ic-2:<port>; this connection is to mf-ic-1:<port>."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+          "enabled": false,
+          "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
+          "grant_sql": null,
+          "id": "rejoin_instance",
+          "kind": "risky",
+          "label": "Rejoin to the cluster\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-2:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "mysqlsh",
+          "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs."
+        }
+      ],
+      "address": "mf-ic-2:<port>",
+      "communication_stack": "MySQL",
+      "endpoint": "mf-ic-2:<port>",
+      "host": "mf-ic-2",
+      "in_metadata": true,
+      "key": "member:<uuid>",
+      "label": "mf-ic-2:<port>",
+      "local": false,
+      "metrics": {
+        "applier_queue": "<volatile>",
+        "conflicts_detected": "<volatile>",
+        "local_proposed": "<volatile>",
+        "local_rollback": "<volatile>",
+        "remote_applied": "<volatile>",
+        "rows_validating": "<volatile>",
+        "transactions_checked": "<volatile>",
+        "transactions_in_queue": "<volatile>"
+      },
+      "name": "mf-ic-2:<port>",
+      "port": "<volatile>",
+      "role": "SECONDARY",
+      "state": "ONLINE",
+      "state_source": "replication_group_members",
+      "status": "ok",
+      "status_why": [
+        "A full member of the group."
+      ],
+      "uuid": "<volatile>",
+      "version": "8.4.13"
+    },
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+          "enabled": true,
+          "fix": null,
+          "grant_sql": null,
+          "id": "switchover",
+          "kind": "risky",
+          "label": "Make primary\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-3:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "udf",
+          "why_not": null
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+          "enabled": false,
+          "fix": "Connect to mf-ic-3:<port> to stop it.",
+          "grant_sql": null,
+          "id": "stop_member",
+          "kind": "risky",
+          "label": "Stop Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-3:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-3:<port>",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Stop Group Replication runs on the server it stops, mf-ic-3:<port>; this connection is to mf-ic-1:<port>."
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+          "enabled": false,
+          "fix": "Connect to mf-ic-3:<port> to start it.",
+          "grant_sql": null,
+          "id": "start_member",
+          "kind": "risky",
+          "label": "Start Group Replication\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-3:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-3:<port>",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Start Group Replication runs on the server it starts, mf-ic-3:<port>; this connection is to mf-ic-1:<port>."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+          "enabled": false,
+          "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
+          "grant_sql": null,
+          "id": "rejoin_instance",
+          "kind": "risky",
+          "label": "Rejoin to the cluster\u2026",
+          "member_key": "member:<uuid>",
+          "member_name": "mf-ic-3:<port>",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "mf-ic-1:<port>",
+            "self": true
+          },
+          "via": "mysqlsh",
+          "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs."
+        }
+      ],
+      "address": "mf-ic-3:<port>",
+      "communication_stack": "MySQL",
+      "endpoint": "mf-ic-3:<port>",
+      "host": "mf-ic-3",
+      "in_metadata": true,
+      "key": "member:<uuid>",
+      "label": "mf-ic-3:<port>",
+      "local": false,
+      "metrics": {
+        "applier_queue": "<volatile>",
+        "conflicts_detected": "<volatile>",
+        "local_proposed": "<volatile>",
+        "local_rollback": "<volatile>",
+        "remote_applied": "<volatile>",
+        "rows_validating": "<volatile>",
+        "transactions_checked": "<volatile>",
+        "transactions_in_queue": "<volatile>"
+      },
+      "name": "mf-ic-3:<port>",
+      "port": "<volatile>",
+      "role": "SECONDARY",
+      "state": "ONLINE",
+      "state_source": "replication_group_members",
+      "status": "ok",
+      "status_why": [
+        "A full member of the group."
+      ],
+      "uuid": "<volatile>",
+      "version": "8.4.13"
+    }
+  ],
+  "message": null,
+  "metadata": {
+    "available": true,
+    "cluster_id": "<uuid>",
+    "cluster_name": "mfcluster",
+    "instances": [
+      {
+        "address": "mf-ic-1:<port>",
+        "endpoint": "mf-ic-1:<port>",
+        "instance_type": "group-member",
+        "label": "mf-ic-1:<port>",
+        "server_uuid": "<volatile>"
+      },
+      {
+        "address": "mf-ic-2:<port>",
+        "endpoint": "mf-ic-2:<port>",
+        "instance_type": "group-member",
+        "label": "mf-ic-2:<port>",
+        "server_uuid": "<volatile>"
+      },
+      {
+        "address": "mf-ic-3:<port>",
+        "endpoint": "mf-ic-3:<port>",
+        "instance_type": "group-member",
+        "label": "mf-ic-3:<port>",
+        "server_uuid": "<volatile>"
+      }
+    ],
+    "local_copy": null,
+    "primary_mode": "pm",
+    "reason": null,
+    "schema_version": "2.2.0"
+  },
+  "notes": [
+    "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+  ],
+  "performance_schema": true,
+  "routers": [
+    {
+      "address": "mf-ic-router",
+      "from_local_copy": false,
+      "id": 1,
+      "last_check_in": "<timestamp>",
+      "last_check_in_age_s": "<volatile>",
+      "last_check_in_utc": "<timestamp>",
+      "name": null,
+      "ports": {
+        "ROEndpoint": "6447",
+        "ROXEndpoint": "6449",
+        "RWEndpoint": "6446",
+        "RWSplitEndpoint": "6450",
+        "RWXEndpoint": "6448"
+      },
+      "product": "MySQL Router",
+      "version": "8.4.10"
+    }
+  ],
+  "schema_version": "cluster-1.0",
+  "server": {
+    "hostname": "mf-ic-1",
+    "port": "<volatile>",
+    "report_host": "mf-ic-1",
+    "server_uuid": "<volatile>"
+  },
+  "server_product": "MySQL",
+  "server_version": "8.4.13",
+  "statements": [
+    "SHOW GLOBAL VARIABLES",
+    "SELECT performance_schema.replication_group_members",
+    "SELECT performance_schema.replication_group_member_stats",
+    "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers"
+  ],
+  "status": "ok",
+  "status_why": [
+    "Every judged member is healthy and the cluster has quorum."
+  ],
+  "summary": {
+    "members": 3,
+    "ok": 3,
+    "problem": 0,
+    "unknown": 0,
+    "watch": 0
+  },
+  "topology_tiers": {
+    "live_footprint": {
+      "clients": [
+        {
+          "host": "192.168.48.6",
+          "program": "proxysql_monitor"
+        },
+        {
+          "host": "fda0:f59a:f4f:d::6",
+          "program": "proxysql_monitor"
+        },
+        {
+          "host": "192.168.48.6",
+          "program": "proxysql"
+        }
+      ],
+      "known": true,
+      "notes": [],
+      "proxysql_connected": true,
+      "readyset_connected": false,
+      "readyset_heartbeat_table": false,
+      "readyset_programs": []
+    },
+    "notes": [
+      "ProxySQL client sessions are connected to this server; save a ProxySQL Admin connection to link routing."
+    ],
+    "proxysql": [],
+    "readyset": []
+  },
+  "uptime_s": "<volatile>",
+  "version_comment": "MySQL Community Server - GPL"
+}

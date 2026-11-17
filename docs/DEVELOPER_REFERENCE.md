@@ -1724,18 +1724,25 @@ invocation. Revoked consent refuses before that login sends SQL, including
 when a typed password was supplied or the pending audit is already durable.
 A refusal at the write boundary finishes that pending record as unsent.
 
-Reviewed SQL writes bind the destination again inside the client that sends
-the write, before the first reviewed statement. A successful read in another
-login cannot establish that binding: a forwarded port, router or failover
-can change the destination before the next login. `reviewed_writes.execute`
-prepends the guard derived from the reviewed plan's server identity. Variables,
-accounts, replication skips (including each skip-loop send), and Kill from
-Locks or Sessions use the same guard. A deliberate guard mismatch reports
-`identity_mismatch`; another server error on its first line reports
-`identity_unavailable` with the server's reason. Both refuse without an
-after-read or retry. Account plans that need several client
-invocations guard each invocation; a refusal after an earlier accepted
-statement retains a partial outcome. Cluster SQL and UDF actions are covered
+Reviewed SQL writes bind the destination inside every query packet that
+carries a reviewed statement. A successful read in another login cannot
+establish that binding: a forwarded port, router or failover can change the
+destination before the next login, and a proxy can route separate statements
+within one login to different backends. `reviewed_writes.execute` uses
+`dbops.target_guarded_script` to put the guard derived from the reviewed
+server identity and its statement in one multi-statement `COM_QUERY`,
+repeating the guard in each packet. Variables, accounts, replication skips
+(including each skip-loop send), and Kill from Locks or Sessions use the same
+builder. The script starts with a client `DELIMITER` command; its delimiter
+must occur nowhere in any statement or guard, or the script is refused before
+sending anything. Packet start lines identify statement indices, including
+multi-line SQL. A deliberate guard error 1242 reports `identity_mismatch`:
+that statement and every later one are `not_sent`, while earlier ones are
+`done`. With no earlier statement the result is `refused`; otherwise it keeps
+a partial outcome. No after-read or retry follows a definite mismatch. Other
+packet errors use that statement's existing failure contract. Account plans
+that need several client invocations guard each invocation and retain earlier
+accepted statements after a later refusal. Cluster SQL and UDF actions are covered
 by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
 the first line reads `@@global.server_uuid` through the Shell's global
 `session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. It then
@@ -2449,13 +2456,48 @@ desktop launcher.
 server state (db-operations skill). Editor run reviews also bind the **On error** mode through `editor_session._review_digest`: a Stop review cannot authorize Continue, or the reverse; changing the mode requires a fresh review. Its parts:
 
 `dbops.target_session_guard(engine, identity)` returns a `session_guard`
-list for review and audit, like `READ_ONLY_SESSION_GUARD`. Its first and only
-line precedes the reviewed SQL in the same `run_write` client invocation
-(stdin, batch mode, `--skip-reconnect`, no `--force`):
+list for review and audit, like `READ_ONLY_SESSION_GUARD`.
+`dbops.target_guarded_script(guard, statements)` turns it into client input
+and a tuple of packet start lines. Every packet contains the guard followed
+by the reviewed SQL it protects (including any internal session-variable
+readback). A proxy may choose a different backend for the
+next packet, but cannot separate this check from the statement it protects.
+Using the same client invocation alone does not establish this property.
+
+The script begins with `DELIMITER <d>`. The builder tries `$$`, `//`,
+`__mf_end_1__`, then `__mf_end_2__`, choosing the first string absent from the
+entire guard and every statement, including quoted text and comments. If all
+candidates occur, it refuses with nothing sent. Statements retain their
+original text, including newlines and semicolons. Each delimiter is on a fresh
+line so a trailing `--` or `#` comment cannot swallow it. For example:
 
 ```sql
-SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>');
+DELIMITER $$
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SET GLOBAL max_connections = 200;
+$$
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SET GLOBAL max_connections = 201;
+$$
 ```
+
+Both clients enable `CLIENT_MULTI_STATEMENTS` and send the text between
+client delimiters with one query call: MySQL `client/mysql.cc:2841–2876`,
+`:3675`, `:5004–5008`; MariaDB `client/mysql.cc:2746–2785`, `:3668`, `:5204`.
+`DELIMITER` remains available in binary mode (MySQL `client/mysql.cc:2645–2647`;
+MariaDB `client/mysql.cc:2589–2599`). The server executes that packet in order
+and stops on an error: MySQL `sql/sql_parse.cc:2167–2168`; MariaDB
+`sql/sql_parse.cc:1900–1901`. The client remains in batch mode on stdin with
+`--skip-reconnect` and no `--force`, so an error also prevents later packets
+from being sent.
+
+Account password and package-mode wrappers first send their fixed session-mode
+setup in a guarded packet. The client must receive that reply before parsing
+the account change: its quote parser uses the last acknowledged
+`SERVER_STATUS_NO_BACKSLASH_ESCAPES` flag (MySQL `client/mysql.cc:2785–2787`;
+MariaDB `client/mysql.cc:2677–2679`). The account statement and restoration of
+the original mode share the next guarded packet. This preserves passwords
+containing backslashes and quotes. If either guard refuses, this invocation
+sent no account change; only disposable session setup could have run. Earlier
+accepted account statements still retain the existing partial outcome.
 
 MySQL, Percona Server and PXC use a UUID validated against the existing UUID
 grammar. MariaDB instead compares `@@global.server_id`, `@@global.hostname`
@@ -2488,24 +2530,37 @@ allows perpetual tables with instrumentation disabled. Its
 wsrep_gcomm_uuid row still fails the NULL-safe comparison; it never authorizes
 a write and is not evidence that Performance Schema is disabled.
 
-A match sets a session variable to NULL and changes no persistent state. A
-mismatch raises server error 1242 at script line 1, so batch processing stops
-before the reviewed SQL. That deliberate error returns `refused`, outcome
-`identity_mismatch`, and `sent: []`, with the message: "The server
-answering this connection is not the one you reviewed. Nothing was sent.
-Refresh and review again." In `reviewed_writes.execute`, other server errors
-on guard line 1, including 1142 and 1146, return
-`refused` / `identity_unavailable`, with
-`The identity check could not run: <server message>. Nothing was sent. Refresh and review again.`
-`dbops.target_guard_failed` returns these refusal details (truthy), or None
-when the error does not prove that the guard stopped the batch.
-MariaDB can echo the statement before its ERROR
-line, so the parser locates the ERROR line within the output. Later error
-line numbers subtract the guard line before identifying the user's statement.
-A client transport error still has an unknown outcome. The pending audit
-includes the guard before the reviewed statements and finishes `refused` with
-the corresponding `identity_mismatch` or `identity_unavailable` outcome;
-no after-read or retry follows a definite guard refusal.
+A match sets a session variable to NULL and changes no persistent state.
+A mismatch raises server error 1242 before the protected statement executes.
+Both clients report `ERROR <code> (<state>) at line <query_start_line>`:
+MySQL `client/mysql.cc:5463`; MariaDB `client/mysql.cc:5472`, `:5522`.
+That line names the start of the entire packet, not the substatement inside
+it. `dbops.target_guard_failed(exc, packet_lines)` maps a deliberate 1242
+at a known packet start to its zero-based `statement_index`. At packet 1 the
+result is `refused`, outcome `identity_mismatch`, and `sent: []`, with the
+message: "The server answering this connection is not the one you reviewed.
+Nothing was sent. Refresh and review again." At packet k, the earlier k−1
+statements completed; statement k and every later statement are `not_sent`.
+`reviewed_writes.execute` returns `partial`, keeps those earlier statements in
+`sent` with `done` states, and finishes the audit as `error` with outcome
+`identity_mismatch`. Replication retains its existing failed-send and residual
+GTID/counter contracts when earlier packets ran. No after-read or retry follows
+a definite identity mismatch.
+
+Other server errors in a packet use the existing failure contract of its
+reviewed statement, since the packet's start line alone cannot identify
+whether a guard read or the protected statement caused that error.
+`dbops.shift_guard_error(exc, packet_lines)` maps packet start lines to
+1-based statement indices before existing error handling, including for
+multi-line statements. An unrecognized line cannot identify a statement and
+keeps an unknown outcome in `reviewed_writes`. A client transport error also
+keeps its unknown outcome. MariaDB can echo SQL before its ERROR line;
+packet error mapping discards that echo before displaying the server reason.
+Missing or invalid identity evidence still refuses before sending with outcome
+`identity_unavailable`. Review tokens and audit statements retain their
+existing guard-plus-statements metadata; client delimiter commands and repeated
+copies of the guard do not change it. MySQL Shell actions retain their
+first-line JavaScript guard and original error mapping.
 The scalar-subquery behavior is documented in the
 [MySQL manual](https://dev.mysql.com/doc/refman/8.4/en/subquery-errors.html)
 and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/subqueries/subqueries-scalar-subqueries).
@@ -7358,6 +7413,55 @@ container start failure or a readiness timeout fails the class from
 With neither set, a missing Docker setup or a failed container start skips
 the class ("Docker or mysql client not available"). The classes pin their
 images: `mysql:8.4.11` and `mariadb:11.4.13`.
+
+**Live lab suites** (`test/live/`, run by `scripts/live-tests.sh`). The
+cluster lab checks are repeatable unittest suites in the spirit of mtr:
+`scripts/live-tests.sh [ic|galera|proxysql|shell|all] [--record]` brings up
+only the labs the chosen suites need (idempotent `cluster-matrix.sh up`, then
+`check`), leaves them running for the next run, runs different clusters in
+parallel lanes with the scenarios on one cluster in order, prints one line per
+test plus a summary with durations, and exits non-zero on any failure. Labs
+and credentials come from `CLUSTER_LAB` (default `local/cluster-matrix`);
+every suite uses a throwaway HOME with `MYFLAMES_SECRET_BACKEND=vault` (the
+profiles `cluster-matrix.sh profiles --home` saves there), never the real
+`~/.myflames`, and redacts the lab password from every message. The suites
+skip unless `MYFLAMES_LIVE_LABS=1` (the script sets it), and their module
+names do not match `test_*.py`, so `./run-tests.sh` and plain unittest
+discovery never pick them up. `test/live/_lab.py` holds the shared helpers in
+the spirit of mtr's include files: the lab health check, the throwaway home,
+an API helper over `myflames.ui.api_response`, `wait_for` on server state
+instead of sleeps, and password redaction. Suites: `live_ic_group_routing`
+(InnoDB Cluster group saved, per-member identities recorded, Stop and Start
+Group Replication on mf-ic-2 routed through its own saved connection, two
+saved connections claiming one member failing closed; Start after Stop also on
+failure), `live_galera` (Desync and Resync of galera-2 through the group,
+verified on the peer's own `wsrep_desync` and `wsrep_local_state_comment`
+because a peer's action flags are not state-gated; Resync after Desync also on
+failure), `live_shell` (MySQL Shell Rejoin of
+mf-ic-3 through the group, and a line-1 identity mismatch on a real mysqlsh
+stopping before line 2, classified `identity_mismatch`; both run in the
+lab-runner container, `scripts/lab-runner/Dockerfile`, on `mf-ic-net` with the
+worktree mounted read-only; the rejoin is restored also on failure) and
+`live_editor_proxysql` (Query editor runs through the ProxySQL frontend; Stop
+during a sleep refuses with "could not be confirmed" and the sleep completes,
+so no KILL is reported that did not stop the statement). A full `all` run
+takes a few minutes against warm labs (the labs stay up between runs; a cold
+`up` dominates a first run). `--record` saves the normalized JSON of the
+read-only Cluster, Replication and ProxySQL reports per server version under
+`test/live/expected/` with volatile fields (UUIDs, timestamps, ports,
+durations, connection ids, log positions and counters) masked; a normal run
+compares against them when they exist and a drift fails the `live_expected`
+suite with the masked live report written next to the expected file as
+`<name>.drift` (mtr's `.result` idea, for JSON). Every run writes
+`local/live-evidence/<commit>.json`, named by the full commit SHA with a
+`-dirty` suffix when the checkout is dirty (`worktree.json` when the folder
+is not a git checkout), recording commit, dirty flag, date, the run's total
+wall time, each lab's server and MySQL Shell versions, and each test with
+outcome and duration, for the release verification record. The evidence file
+is the only file a run writes under the repository: the lanes work against a
+throwaway shadow of `CLUSTER_LAB` (a symlink to the real credentials.env), so
+the profiles smoke output lands in the run's tmp dir, not in
+`local/cluster-matrix/state`.
 
 **Fast pre-handback check.** `scripts/check_fast.sh [FILE...]` checks the
 named files (paths relative to the repository root), or without arguments the
