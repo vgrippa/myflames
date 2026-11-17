@@ -2099,6 +2099,7 @@ function App() {
         onOpenPlan={openPlan}
         onRemovePlan={removePlan}
         onOpenSettings={() => openSettings()}
+        onOpenUpdates={() => openSettings("updates")}
         settingsOpen={ready && mode === "settings"}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
         placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {

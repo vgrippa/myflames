@@ -162,8 +162,8 @@ const clickButton = async (text, scope = "") => {
 };
 
 try {
-  // Home: saved connections, quick actions, Recent work, News, version footer.
-  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".window-statusbar-updates")?.textContent || ""));
+  // Home: saved connections, quick actions, Recent work, News, the brand version.
+  await page.waitForFunction(() => /\d+\.\d+\.\d+|development/.test(document.querySelector(".brand-version")?.textContent || ""));
   await page.waitForFunction(() => /Dev MySQL/.test(document.body.textContent) && /Prod MySQL/.test(document.body.textContent));
   await page.waitForFunction(() => /unavailable offline/.test(document.querySelector(".home-news")?.textContent || ""));
   await shoot("home.png");

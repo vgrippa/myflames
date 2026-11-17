@@ -709,14 +709,6 @@ details > p {
 .brand:hover {
   background: var(--surface-hover);
 }
-.brand small {
-  display: block;
-  white-space: nowrap;
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
-  font-weight: 400;
-  color: var(--ink-muted);
-}
 .sidebar-head .menu-toggle {
   display: none;
 }
@@ -2959,7 +2951,7 @@ main:has(> .library) { padding: 0; max-width: none; }
     width: 28px;
     height: 28px;
   }
-  .brand small {
+  .brand-version {
     display: none;
   }
   .sidebar-head .menu-toggle {
@@ -4060,6 +4052,9 @@ kbd {
     height: 32px;
     justify-content: center;
   }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .brand-version {
+    display: none;
+  }
   .sidebar:not(:has(> .sidebar-drawer.open)) .brand-name,
   .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-footer .session-status span {
     position: absolute;
@@ -4511,35 +4506,8 @@ kbd {
 }
 .window-statusbar-facts > .safety-status { flex-shrink: 0; }
 .window-statusbar-refresh { margin-left: auto; }
-.window-statusbar-updates {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: none;
-  min-width: 0;
-}
-.window-statusbar-updates > strong { font-weight: 500; color: var(--ink-secondary); }
-.window-statusbar-updates a { color: var(--accent-text); }
-.window-statusbar-updates .text-button { font-size: inherit; min-height: 24px; padding: 0; }
-.window-statusbar-updates .update-check { flex-wrap: nowrap; }
-.window-statusbar-updates > * + *::before,
-.window-statusbar-updates .update-check > * + *::before {
-  content: "·";
-  margin-right: var(--space-2);
-  color: var(--ink-muted);
-}
-/* Update state and actions fit beside the 48 px rail at the minimum window
-   width. Full timing and failure detail remain in About myflames. */
 @media (max-width: 1200px) {
   .window-statusbar { gap: var(--space-2); }
-  .window-statusbar-updates .update-check-time { display: none; }
-  .window-statusbar-updates .update-check-status {
-    max-width: 18ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: block;
-    white-space: nowrap;
-  }
 }
 @media (max-width: 900px) {
   .window-statusbar-facts { gap: var(--space-2); }
@@ -5130,6 +5098,24 @@ kbd {
 .brand-name {
   font-weight: 600;
 }
+/* The version beside the brand (Sidebar.tsx): its own quiet control, opening
+   Settings > Updates and news. Hidden on the icon rail, where the brand's
+   tooltip names the version. */
+.brand-version {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 0 var(--space-1);
+  min-height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.brand-version:hover { color: var(--ink-secondary); background: var(--surface-hover); }
+.brand-version:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.brand-version:focus:not(:focus-visible) { outline: none; }
 /* The update badge beside the brand (UpdateBadge.tsx): a newer version in
    accent, its download as a progress ring, ready to install in green. On the
    icon rail it becomes a dot on the logo's corner; Settings lists it too. */

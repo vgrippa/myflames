@@ -13,6 +13,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Improvements
 
 - The workspace loads Plans and Learn on demand, reducing the code needed to open the first screen (the entry chunk goes from 508,046 to 479,634 bytes).
+- The installed version moved from the window status bar to the top of the sidebar beside the myflames name; choosing it opens **Settings > Updates and news**, which now holds the update status, **Check for updates** and **View releases**. When an update is available, downloading or ready, the badge beside the logo alerts you and names the new version. On the compact icon rail the version text hides and the logo's tooltip names the version.
 
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.
 - The Query editor toolbar has **Find** and **Find and replace** buttons, and an **Editing actions** menu lists every editing command with its shortcut, including **Toggle Tab moving focus**.

@@ -310,7 +310,7 @@ export function updatePhaseLabel(s: UpdateState, phase: UpdatePhase): string {
     const percent = stagingPercent(s.staging);
     return percent === null ? `Downloading ${name}…` : `Downloading ${name}: ${percent}%`;
   }
-  return `${name} is available`;
+  return `Update available: ${name}`;
 }
 
 const sameDay = (a: Date, b: Date) =>

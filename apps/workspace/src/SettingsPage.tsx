@@ -9,6 +9,7 @@
 // settings UI and editorSettings.ts stay out of the entry chunk.
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AboutDialog } from "./About";
+import { appVersion } from "./api";
 import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
 import { Checkbox, Select, SourceList } from "./kit";
@@ -17,6 +18,7 @@ import { CODE_TEXT_SIZE_MAX, CODE_TEXT_SIZE_MIN, fontChoices, type FontKind } fr
 import { NewsSetting } from "./HomeNews";
 import { QueryEditorSettings } from "./QueryEditorSettings";
 import { AutoUpdateSetting, UpdateMenuItem } from "./UpdateBadge";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { applyTheme, appliedThemeId, type ThemeId } from "./themes";
 import { THEMES } from "./theme-picker";
 import "./settings.css";
@@ -346,6 +348,12 @@ export function SettingsPage({
         )}
         {section === "updates" && (
           <>
+            <div className="settings-update-status" aria-label="Application version">
+              <strong>myflames {appVersion() || "development"}</strong>
+              <UpdateCheckStatus />
+              <CheckForUpdatesButton />
+              <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+            </div>
             <AutoUpdateSetting />
             <NewsSetting />
             <UpdateMenuItem onChoose={() => {}} />

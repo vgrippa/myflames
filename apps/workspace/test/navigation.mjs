@@ -548,6 +548,20 @@ try {
   await page.waitForFunction(() => !document.querySelector(".settings-page"));
   await page.setViewport({ width: 1440, height: 1000 });
 
+  // 4d2. The version beside the brand opens Settings at Updates and news,
+  // which holds the installed version, the update status, Check for updates
+  // and View releases.
+  await page.click(".brand-version");
+  await page.waitForSelector(".settings-page");
+  assert.equal(await text(".settings-panel-title"), "Updates and news", "the brand version control opens Updates and news");
+  await page.waitForSelector(".settings-page .settings-update-status");
+  const updatesText = await text(".settings-page .settings-update-status");
+  assert.match(updatesText, /myflames \d+\.\d+\.\d+/, "the section names the installed version");
+  assert.match(updatesText, /Check for updates/);
+  assert.equal(await page.$eval(".settings-update-status a", (e) => e.textContent), "View releases");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
+
   // 4e. The connection in use (the unsaved default) is Production: the window
   // footer of every place that sends to it starts with that state (a dot and
   // words, named for screen readers); Home, Plans and Learn have none, and
@@ -586,7 +600,8 @@ try {
       : serverDrawn ? ["safety", "engine", "connection", "refreshed"] : ["safety", "connection"], `${label} status fields`);
     const facts = await page.$$eval(".window-statusbar [data-status]", els => els.map(e => e.textContent).join(" "));
     assert.doesNotMatch(facts, /unknown|not checked|not refreshed/i, "unknown view facts are hidden");
-    assert.match(await text(".window-statusbar-updates"), /myflames \d+\.\d+\.\d+/, "update area shows the app version");
+    assert.match(await text(".brand-version"), /\d+\.\d+\.\d+/, "the brand shows the app version");
+    assert.equal(await page.$(".window-statusbar-updates"), null, "the status bar keeps only the view's facts");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
   }
   for (const label of ["Plans", "Learn", "Investigations", "Home"]) {

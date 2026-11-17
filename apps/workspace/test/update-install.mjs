@@ -93,8 +93,9 @@ async function closeSettings() {
 const autoChecked = () => page.$eval(".update-auto-toggle input", (e) => e.checked);
 const badgePhase = (phase) => page.waitForFunction(
   (p) => document.querySelector(".sidebar .brand-group .update-badge")?.dataset.phase === p, { timeout: 10000 }, phase);
-const footerText = (pattern) => page.waitForFunction(
-  (p) => new RegExp(p).test(document.querySelector(".window-statusbar-updates .update-check")?.textContent || ""),
+// The update status line lives in Settings > Updates and news.
+const settingsText = (pattern) => page.waitForFunction(
+  (p) => new RegExp(p).test(document.querySelector(".settings-page .settings-update-status .update-check")?.textContent || ""),
   { timeout: 10000 }, pattern.source);
 const dialogButtons = () => page.$$eval("dialog.update-dialog .dialog-actions button", (els) => els.map((e) => e.textContent.trim()));
 async function shootBadge(name) {
@@ -152,7 +153,7 @@ try {
   checkMock = { status: 200, body: info(record("available"), updateFields) };
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector(".sidebar .brand-group button.update-badge[data-phase=available]");
-  assert.equal(await page.$eval(".update-badge", (e) => e.getAttribute("aria-label")), "myflames 3.2.0 is available");
+  assert.equal(await page.$eval(".update-badge", (e) => e.getAttribute("aria-label")), "Update available: myflames 3.2.0");
 
   // B2. At 1440 px the badge sits right of the name on the brand row; at
   // 720 px (the 48 px icon rail) it is a dot on the logo's top-right corner.
@@ -199,10 +200,13 @@ try {
   await page.locator("dialog.update-dialog button ::-p-text(Later)").click();
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
 
-  // B4. A result 25 hours old is a past result: no badge.
+  // B4. A result 25 hours old is a past result: no badge; Settings shows it
+  // as a past result.
   statusMock = statusBody(record("available", { checked_at: iso(25 * 60 * 60 * 1000) }));
   await page.reload({ waitUntil: "networkidle0" });
-  await footerText(/Last result: 3\.2\.0 available/);
+  await openSettings();
+  await settingsText(/Last result: 3\.2\.0 available/);
+  await closeSettings();
   assert.equal(await page.$(".sidebar .brand-group .update-badge"), null, "no badge for a stale result");
 
   // C. The desktop flow, through a fake bridge that records its calls. The
@@ -255,7 +259,6 @@ try {
   assert.match(await page.$eval("dialog.update-dialog", (e) => e.textContent),
     /myflames 3\.2\.0 is ready\. Restart now, or it installs when you quit myflames\./);
   assert.ok((await dialogButtons()).includes("Restart to update"), "the dialog offers Restart to update");
-  await footerText(/3\.2\.0 ready to install/);
 
   // C2. Restart while a dump runs: the warning first, then Restart anyway.
   activeOps = ["dump"];

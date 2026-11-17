@@ -230,14 +230,16 @@ try {
         await go(place);
         await page.waitForFunction(()=>document.querySelector('.session-status')?.dataset.state!=='loading');
         const metrics = await page.evaluate(()=>{
-          const bar=document.querySelector('.window-statusbar'), updates=bar.querySelector('.window-statusbar-updates');
+          const bar=document.querySelector('.window-statusbar'), brand=document.querySelector('.brand-version');
           return {overflow:document.documentElement.scrollWidth-innerWidth, bars:document.querySelectorAll('.window-statusbar').length,
-            text:updates.textContent, right:updates.getBoundingClientRect().right, left:updates.getBoundingClientRect().left,
+            version:brand?brand.textContent:'', versionShown:!!(brand&&brand.getClientRects().length),
+            updatesBlock:!!bar.querySelector('.window-statusbar-updates'),
             footerPadding:parseFloat(getComputedStyle(document.querySelector('.workspace')).paddingBottom), barHeight:bar.getBoundingClientRect().height};
         });
         assert.equal(metrics.bars,1); assert.ok(metrics.overflow<=0,`${theme} ${viewport} ${place}: ${JSON.stringify(metrics)}`);
-        assert.match(metrics.text,/myflames \d+\.\d+\.\d+/); assert.match(metrics.text,/Check for updates/); assert.match(metrics.text,/View releases/);
-        assert.ok(metrics.left>=0 && metrics.right<=viewport,`${place}: update actions fit`);
+        assert.equal(metrics.updatesBlock,false,`${place}: the status bar keeps only the view's facts`);
+        assert.match(metrics.version,/\d+\.\d+\.\d+|development/,`${place}: the brand names the installed version`);
+        assert.equal(metrics.versionShown,viewport>900,`${place}: the version hides on the icon rail`);
         assert.ok(metrics.footerPadding>=metrics.barHeight,`${place}: content reserves the footer`);
         if (place === 'home') {
           if (viewport > 1000) {
@@ -265,9 +267,18 @@ try {
       }
       await page.click('button[aria-label="Settings"]');
       await page.waitForSelector('.settings-page');
-      assert.match(await page.$eval('.window-statusbar-updates',e=>e.textContent),/myflames \d+\.\d+\.\d+/);
+      await page.locator('.settings-page .source-item ::-p-text(Updates and news)').click();
+      await page.waitForSelector('.settings-page .settings-update-status');
+      const updatesText = await page.$eval('.settings-page .settings-update-status',e=>e.textContent);
+      assert.match(updatesText,/myflames \d+\.\d+\.\d+/,'Settings names the installed version');
+      assert.match(updatesText,/Check for updates/,'Settings has Check for updates');
+      assert.equal(await page.$eval('.settings-page .settings-update-status a',e=>e.textContent),'View releases');
+      assert.equal(await page.$eval('.settings-page .settings-update-status a',e=>e.href),'https://github.com/vgrippa/myflames/releases');
+      assert.equal(await page.$('.window-statusbar-updates'),null,'no update block in the status bar');
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       await lastControlAboveFooter('.settings-panel', `${theme} ${viewport} Settings`, {requireControl:true});
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(()=>!document.querySelector('.settings-page'));
     }
   }
   assert.deepEqual(errors,[]);

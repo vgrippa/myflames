@@ -29,10 +29,19 @@ async function screenshots(name) {
   await page.setViewport({ width: 1440, height: 1000 });
 }
 try {
-  await page.waitForSelector(".window-statusbar-updates");
-  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".window-statusbar-updates")?.textContent || ""));
-  assert.match(await page.$eval(".window-statusbar-updates", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
-  assert.equal(await page.$eval(".window-statusbar-updates a", el => el.href), "https://github.com/vgrippa/myflames/releases");
+  await page.waitForSelector(".brand-version");
+  const version = await page.$eval(".brand-version", el => el.textContent);
+  assert.match(version, /\d+\.\d+\.\d+|development/, "the brand names the installed version");
+  // The version control opens Settings > Updates and news: status, Check for
+  // updates and View releases live there now, not in the status bar.
+  await page.click(".brand-version");
+  await page.waitForSelector(".settings-page .settings-update-status");
+  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".settings-update-status")?.textContent || ""));
+  assert.match(await page.$eval(".settings-update-status", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
+  assert.equal(await page.$eval(".settings-update-status a", el => el.href), "https://github.com/vgrippa/myflames/releases");
+  assert.equal(await page.$(".window-statusbar-updates"), null, "no update block in the status bar");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
   assert.equal(h.state.other.some(item => item.path === "/api/app/update/check"), false, "no update check without a click");
   assert.deepEqual(await page.$$eval(".nav-group-label", els => els.map(el => el.textContent)), ["SQL workspace", "Library"]);
   await screenshots("home");

@@ -114,6 +114,15 @@ try {
     [["25","Slowest"],["50","Slow"],["100","Normal"],["150","Fast"],["200","Fastest"]]);
   await openSection("Updates and news");
   assert.equal(await text("#update-auto-hint"), "Asks GitHub for the latest release when myflames opens and once a day.");
+  // The installed version, update status and actions moved here from the
+  // status bar.
+  const updatesRow = await text(".settings-update-status");
+  assert.match(updatesRow, /myflames \d+\.\d+\.\d+/, "the section names the installed version");
+  assert.match(updatesRow, /Check for updates/, "Check for updates is here");
+  assert.equal(await page.$eval(".settings-update-status a", (e) => e.textContent), "View releases");
+  assert.equal(await page.$eval(".settings-update-status a", (e) => e.href), "https://github.com/vgrippa/myflames/releases");
+  assert.equal(await page.$(".window-statusbar-updates"), null, "the status bar no longer carries updates");
+  assert.equal(await page.$eval(".settings-update-status .update-check", (e) => e.getAttribute("role")), "status");
   assert.equal(await text("#news-toggle-hint"), "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.");
   // Client tools opens the dialog it has always opened.
   await openSection("Client tools");

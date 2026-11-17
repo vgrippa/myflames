@@ -542,7 +542,7 @@ compact neutral navigation, open-query links, a command palette and full-width
 Server details.
 
 Update checks run only when the workspace asks: **Check for updates** in
-the window status bar on every screen and in About myflames (`UpdateCheck.tsx`, shared state in
+Settings > Updates and news and in About myflames (`UpdateCheck.tsx`, shared state in
 `updateStatus.ts`) posts `/api/app/update/check` with `force: true`. The
 `app-update-1.0` answer carries `checked_at` (UTC, when the release metadata was
 read; a cached answer keeps its time), and a failed check carries `error` plus a
@@ -557,12 +557,13 @@ workspace, the check also stores `last_check` (`checked_at`, `outcome`
 `reason`; never release notes or URLs) in the workspace store's `settings`
 table (`app_update_last_check`). `/api/app/update/status` returns
 `app-update-status-1.0` with that record and never reads the network; a record
-made by another myflames version is dropped. The footer shows "Checked today at
+made by another myflames version is dropped. The Updates and news section
+shows "Checked today at
 10:42", "Checked yesterday" or "Checked Oct 18" in local time with the full
 timestamp in the tooltip ("Tried …" for a failure), "Not checked yet" before
 the first check, "Last check unknown" when the stored record could not be read
-(retried when Home or About mounts again), and a result older than 24 hours, or
-one whose time cannot be read, as "Last result: …".
+(retried when the section or About mounts again), and a result older than 24
+hours, or one whose time cannot be read, as "Last result: …".
 **Check for updates automatically** in Settings (on by default, stored in the
 workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
 `POST /api/app/update/settings` with an optional `{"auto_check": bool}` returns
@@ -570,10 +571,16 @@ workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
 after it opens when there is no stored check, the last one is older than 24
 hours, or the last one failed more than an hour ago, re-testing that hourly; an
 automatic check uses the same `/api/app/update/check` as the button, and a
-failed automatic check shows no badge (the window status bar shows the reason as
-before). When a current check found a newer version, a round badge appears
+failed automatic check shows no badge (the Updates and news section shows the
+reason as
+before). The installed version sits beside the myflames name at the top of
+the sidebar as its own small control (`Sidebar.tsx` `.brand-version`), opening
+Settings > Updates and news; on the 48 px icon rail the text hides and the
+brand's tooltip names the version. When a current check found a newer
+version, a round badge appears
 beside the flame logo and the myflames name at the top of the sidebar
-(`UpdateBadge.tsx`): available (a download arrow), the download's progress (a
+(`UpdateBadge.tsx`): available (a download arrow, its accessible name "Update
+available: myflames <version>"), the download's progress (a
 ring with the percent in its tooltip), preparing (a spinner) and ready (a green
 restart arrow); on the 48 px icon rail (651–900 px windows) it is a dot on the
 logo's corner, and a result older than 24 hours shows no badge. While an update
@@ -891,7 +898,9 @@ the window-open handler always denies a new app window. Tests:
   Settings page (`SettingsPage.tsx`): a page in the main area, not a place in
   the sidebar's navigation, with a section list on the left (the Server
   place's `SourceList`): Appearance, Query editor, Workspace (Restore
-  workspace on startup and Start fresh), Updates and news (Check for updates
+  workspace on startup and Start fresh), Updates and news (the installed
+  version with the update status, Check for updates and View releases, Check
+  for updates
   automatically, Show MySQL and MariaDB news on Home, and the update item
   while one is pending) and Client tools, with Audit log and About myflames
   as actions at the bottom of the list. It opens from the gear, ⌘, (Ctrl+,
@@ -7244,7 +7253,7 @@ that `~/.ssh/known_hosts` is unchanged.
 
 ## Workspace navigation and configuration controls
 
-The sidebar's right-edge separator uses pointer capture to resize `--sidebar-w` on the document root; `--sidebar-width` aliases it for every fixed layer. Width is clamped to 208–320 px (at least 400 px remains from a 720 px window before compact navigation applies). Its focusable vertical separator exposes current/minimum/maximum ARIA values. Left/Right move 8 px, Shift moves 24 px, and Home, End or double-click restores 208 px. The existing rail/drawer breakpoint stays at 900 px and ignores the stored width. The window footer renders on every ready place, including Home, Settings, Learn and Investigations. Facts retain their existing scoped publishers on the left; the right end owns version, shared update state and update/release actions. At narrower widths the update timestamp hides and outcome text compacts; left facts truncate first. Home has no separate version footer. `.workspace` reserves `--statusbar-h` below every place, retaining the top-level wrappers and sticky headers.
+The sidebar's right-edge separator uses pointer capture to resize `--sidebar-w` on the document root; `--sidebar-width` aliases it for every fixed layer. Width is clamped to 208–320 px (at least 400 px remains from a 720 px window before compact navigation applies). Its focusable vertical separator exposes current/minimum/maximum ARIA values. Left/Right move 8 px, Shift moves 24 px, and Home, End or double-click restores 208 px. The existing rail/drawer breakpoint stays at 900 px and ignores the stored width. The window footer renders on every ready place, including Home, Settings, Learn and Investigations. Facts retain their existing scoped publishers on the left, and the bar shows only the current view's facts: the version, shared update state and update/release actions live in the sidebar brand and Settings > Updates and news. At narrower widths the left facts truncate first. Home has no separate version footer. `.workspace` reserves `--statusbar-h` below every place, retaining the top-level wrappers and sticky headers.
 
 Automatic first reads use `useOpenRead` and the report's connection key. Opening a view without a report for the connection in use reads once; a failed attempt waits for Refresh. Switching connections while the view stays on screen keeps its old report greyed until Refresh or a later reopening. Parameters, Instruments and Users and roles follow this rule too. Health, InnoDB, Locks, Processlist, Waits, I/O, Indexes, Tables and Replication retain their single-flight and stale-response guards. Every `useConnectionReads` request forwards its AbortSignal to `api()`. Tables and Indexes retain schema-size consent and pass visibility to `useSchemaCatalog(connection, enabled)`, including when compact navigation hides their detail. Explicit Refresh and Refresh all remain independent of these automatic-read gates.
 
@@ -7252,7 +7261,7 @@ Query Digest stores its report as `Bound<DigestReport>` through `useConnectionRe
 
 Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog.tsx`; `/api/live/kill/bulk/prepare` then `/api/live/kill/bulk`, `kill-bulk-1.0`, whose `message` reads "Kill sessions finished: N killed, …"). Its **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
 
-The window status bar reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
+The sidebar brand and the Settings Updates and news section read the installed version from the server-injected version meta tag. The View releases link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
 the SQL workspace navigation group.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools; refresh never starts jobs or upgrade checks,

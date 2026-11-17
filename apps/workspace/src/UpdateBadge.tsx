@@ -1,7 +1,8 @@
 // The update badge beside the logo: a newer version is available, its
 // download is running, or it is ready to install at restart. It starts the
-// automatic check and hosts the one Software update dialog, which Home's
-// footer, About myflames and Settings open too (updateStatus.ts).
+// automatic check and hosts the one Software update dialog, which the
+// Settings Updates and news section and About myflames open too
+// (updateStatus.ts).
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./components";
