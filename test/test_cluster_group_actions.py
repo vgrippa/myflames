@@ -288,6 +288,8 @@ class GroupActionTests(unittest.TestCase):
                               if a['id'] == 'stop_member')
                 self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
                 self.assertEqual(action['why_not'], "prod-db-2 and prod-db-3 both use this member's address.")
+                self.assertEqual(action['fix'],
+                                 'Keep one saved connection for this member in the group, or correct their addresses.')
                 self.assertIsNone(cluster._member_profile(report, next(m for m in report['members']
                                                     if m['key'] == self.member_key), checks))
                 with self.assertRaisesRegex(ValueError, "both use this member's address"):
@@ -312,14 +314,17 @@ class GroupActionTests(unittest.TestCase):
                           if a['id'] == 'stop_member')
             self.assertFalse(action['enabled'])
             self.assertIsNone(action['target']['profile_id'])
-            self.assertIn('prod-db-2 has no saved password', action['why_not'])
+            self.assertEqual(action['why_not'], 'The saved connection prod-db-2 has no saved password.')
+            self.assertEqual(action['fix'], 'Save its password before reviewing a cluster action.')
             confirmed['remember_password'] = True
 
-    def test_no_identity_or_address_match_requests_a_saved_connection_without_refresh_advice(self):
+    def test_no_identity_or_address_match_names_unconfirmed_connections_without_refresh_advice(self):
         report = cluster.read_status(self.clients['db-1'])
         member = next(m for m in report['members'] if m['key'] == self.member_key)
-        profiles = [dict(p, host='unrelated-' + p['host'], topology_identity={}) for p in self.profiles]
-        checks = dict(group_profiles=profiles, current_profile=self.active, group_name='G')
+        member.update(name='mf-ic-2', host='mf-ic-2', address='mf-ic-2:3306')
+        profiles = [dict(p, name='cluster-ic-%d' % (index + 1), host='127.0.0.1', port=34301 + index,
+                         topology_identity={}) for index, p in enumerate(self.profiles)]
+        checks = dict(group_profiles=list(reversed(profiles)), current_profile=profiles[0], group_name='G')
         # Tier probes do not log in to cluster endpoints. Their failure or
         # absence cannot imply that Refresh would confirm this member.
         for reads in ([], [dict(id=self.target['id'], outcome='failed', message='Access denied: SELECT secret')],
@@ -329,6 +334,62 @@ class GroupActionTests(unittest.TestCase):
                 action = next(a for a in cluster.available_actions(report, member['key'], checks)
                               if a['id'] == 'stop_member')
                 self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+                self.assertEqual(action['why_not'], 'No saved connection in this group is confirmed as mf-ic-2 yet.')
+                self.assertEqual(action['fix'], 'Open the one that reaches mf-ic-2 (cluster-ic-2 or cluster-ic-3) '
+                                 'on its own and view Cluster once to confirm it.')
+                with self.assertRaises(cluster.ActionUnavailable) as caught:
+                    cluster.plan_action(report, 'stop_member', member['key'], checks)
+                self.assertEqual(str(caught.exception), action['why_not'] + ' ' + action['fix'])
+        self.assertEqual(self.opened, [])
+        self.assert_no_writes()
+
+    def test_unconfirmed_choices_include_unknown_and_unrelated_identities_only_in_this_group(self):
+        report = cluster.read_status(self.clients['db-1'])
+        unrelated_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        for identity in ({}, {'server_uuid': None}, {'server_uuid': unrelated_uuid},
+                         {'wsrep_node_uuid': F.SERVER_UUIDS[1]}):
+            with self.subTest(identity=identity):
+                profile = dict(self.target, name='', host='127.0.0.1', port=34302,
+                               topology_identity=identity, remember_password=False)
+                outside = dict(profile, id='outside', name='outside-group', group='H')
+                checks = dict(group_profiles=[None, {}, outside, self.profiles[2], profile, profile, self.active],
+                              current_profile=self.active, group_name='G')
+                action = next(a for a in cluster.available_actions(report, self.member_key, checks)
+                              if a['id'] == 'stop_member')
+                self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+                self.assertEqual(action['why_not'], 'No saved connection in this group is confirmed as db-2 yet.')
+                self.assertEqual(action['fix'], 'Open the one that reaches db-2 (prof-db-2) on its own '
+                                 'and view Cluster once to confirm it.')
+
+    def test_unconfirmed_choices_show_at_most_three_saved_names_in_sorted_order(self):
+        report = cluster.read_status(self.clients['db-1'])
+        profiles = [dict(self.target, id='choice-%d' % index, name='saved-%d' % index,
+                         host='127.0.0.1', port=34302 + index, topology_identity={}) for index in range(5)]
+        for count, choices in ((1, 'saved-0'), (2, 'saved-0 or saved-1'),
+                               (3, 'saved-0 or saved-1 or saved-2'),
+                               (4, 'saved-0 or saved-1 or saved-2 and 1 more'),
+                               (5, 'saved-0 or saved-1 or saved-2 and 2 more')):
+            with self.subTest(count=count):
+                checks = dict(group_profiles=list(reversed(profiles[:count])) + [self.active],
+                              current_profile=self.active, group_name='G')
+                action = next(a for a in cluster.available_actions(report, self.member_key, checks)
+                              if a['id'] == 'stop_member')
+                self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+                self.assertEqual(action['fix'], 'Open the one that reaches db-2 (%s) on its own '
+                                 'and view Cluster once to confirm it.' % choices)
+
+    def test_no_unconfirmed_or_matching_connections_still_requests_a_saved_connection(self):
+        report = cluster.read_status(self.clients['db-1'])
+        active = dict(self.active, topology_identity={})
+        other_member = dict(self.target, host='127.0.0.1', port=34302,
+                            topology_identity={'server_uuid': F.SERVER_UUIDS[2]})
+        outside = dict(self.target, group='H', topology_identity={})
+        for profiles in ([], [active], [active, self.profiles[2], other_member, outside]):
+            with self.subTest(profiles=[p['id'] for p in profiles]):
+                checks = dict(group_profiles=profiles, current_profile=active, group_name='G')
+                action = next(a for a in cluster.available_actions(report, self.member_key, checks)
+                              if a['id'] == 'stop_member')
+                self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
                 self.assertEqual(action['why_not'], 'Add a saved connection for db-2 to this group.')
                 self.assertEqual(action['fix'], action['why_not'])
 
@@ -336,8 +397,9 @@ class GroupActionTests(unittest.TestCase):
         self.store.record_topology_identity('prof-db-3', {'server_uuid': F.SERVER_UUIDS[1]})
         duplicate = self.store.get('profile', 'prof-db-3')
         profiles = [duplicate, self.target, self.active]
-        reason = "prod-db-2 and prod-db-3 both report this member's identity."
-        fix = 'Open each saved connection to check its identity, or remove the stale one.'
+        reason = 'prod-db-2 and prod-db-3 both reach this member.'
+        fix = ('A MySQL Router or ProxySQL connection reaches whichever server is primary. '
+               'Connect to prod-db-2 to act on this member, or keep only one of them in the group.')
         report = cluster.read_status(self.clients['db-1'])
         checks = dict(group_profiles=profiles, current_profile=self.active, group_name='G')
         member = next(m for m in report['members'] if m['key'] == self.member_key)
@@ -356,6 +418,33 @@ class GroupActionTests(unittest.TestCase):
         self.assert_no_writes()
         self.assertEqual(len(ui._review_tokens(self.workspace).entries), 0)
 
+    def test_direct_and_router_identity_claims_fail_closed_and_name_both_without_blame(self):
+        report = cluster.read_status(self.clients['db-1'])
+        direct = dict(self.target, name='cluster-ic-1')
+        router = dict(self.profiles[2], name='cluster-ic-router-rw', host='127.0.0.1', port=6446,
+                      topology_identity=self.target['topology_identity'])
+        extra = dict(router, id='extra', name='cluster-ic-router-other')
+        for profiles, names, quantifier in (
+                ([router, direct, self.active], 'cluster-ic-1 and cluster-ic-router-rw', 'both'),
+                ([self.active, direct, router], 'cluster-ic-1 and cluster-ic-router-rw', 'both'),
+                ([dict(router, remember_password=False), direct], 'cluster-ic-1 and cluster-ic-router-rw', 'both'),
+                ([router, dict(direct, remember_password=False)], 'cluster-ic-1 and cluster-ic-router-rw', 'both'),
+                ([router, extra, direct], 'cluster-ic-1 and cluster-ic-router-other and cluster-ic-router-rw', 'all')):
+            with self.subTest(names=names, profiles=[p['id'] for p in profiles]):
+                checks = dict(group_profiles=profiles, current_profile=self.active, group_name='G')
+                action = next(a for a in cluster.available_actions(report, self.member_key, checks)
+                              if a['id'] == 'stop_member')
+                self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+                self.assertEqual(action['why_not'], '%s %s reach this member.' % (names, quantifier))
+                self.assertEqual(action['fix'], 'A MySQL Router or ProxySQL connection reaches whichever server '
+                                 'is primary. Connect to cluster-ic-1 to act on this member, or keep only one '
+                                 'of them in the group.')
+                with self.assertRaises(cluster.ActionUnavailable) as caught:
+                    cluster.plan_action(report, 'stop_member', self.member_key, checks)
+                self.assertEqual(str(caught.exception), action['why_not'] + ' ' + action['fix'])
+        self.assertEqual(self.opened, [])
+        self.assert_no_writes()
+
     def test_duplicate_uuid_added_after_review_refuses_before_secret_lookup(self):
         plan = self.plan()
         self.store.record_topology_identity('prof-db-3', {'server_uuid': F.SERVER_UUIDS[1]})
@@ -363,7 +452,9 @@ class GroupActionTests(unittest.TestCase):
         with mock.patch.object(secret_store, 'get_secret') as lookup:
             result = self.apply(plan)
         self.assertEqual((result['status'], result['sent']), ('refused', []))
-        self.assertIn("both report this member's identity", result['message'])
+        self.assertIn('prod-db-2 and prod-db-3 both reach this member.', result['message'])
+        self.assertIn('Connect to prod-db-2 to act on this member, or keep only one of them in the group.',
+                      result['message'])
         lookup.assert_not_called()
         self.assertEqual(self.opened, [])
         self.assert_no_writes()

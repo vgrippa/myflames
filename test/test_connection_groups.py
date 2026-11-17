@@ -598,7 +598,10 @@ class TestPeerIdentityRecording(GroupCase):
             self.assertFalse(action['enabled'])
             self.assertIsNone(action['target']['profile_id'])
             if index == 2:
-                self.assertEqual(action['why_not'], "db-2 and db-3 both report this member's identity.")
+                self.assertEqual(action['why_not'], 'db-2 and db-3 both reach this member.')
+                self.assertEqual(action['fix'],
+                                 'A MySQL Router or ProxySQL connection reaches whichever server is primary. '
+                                 'Connect to db-2 to act on this member, or keep only one of them in the group.')
             else:
                 self.assertEqual(action['why_not'], 'Add a saved connection for db-2 to this group.')
         self.assertEqual(len(self.opened), 3)

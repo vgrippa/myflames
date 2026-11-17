@@ -2467,9 +2467,10 @@ def _member_route_issue(report, member, checks):
     candidates = _member_profiles(report, member, checks)
     if len(candidates) > 1:
         names = sorted(p.get("name") or p["id"] for p in candidates)
-        return ("%s %s report this member's identity." %
+        return ("%s %s reach this member." %
                 (" and ".join(names), "both" if len(names) == 2 else "all"),
-                "Open each saved connection to check its identity, or remove the stale one.")
+                "A MySQL Router or ProxySQL connection reaches whichever server is primary. "
+                "Connect to %s to act on this member, or keep only one of them in the group." % names[0])
     if not candidates:
         candidates = _member_address_profiles(report, member, checks)
         if len(candidates) > 1:
@@ -2481,6 +2482,20 @@ def _member_route_issue(report, member, checks):
         return ("The saved connection %s has no saved password." % (candidates[0].get("name") or candidates[0]["id"]),
                 "Save its password before reviewing a cluster action.")
     name = member.get("name") or "this member"
+    # Reuse stored and live identity evidence, including the active member,
+    # rather than asking the user to confirm connections already accounted for.
+    confirmed = {p["id"] for known_member in _members(report)
+                 for p in _member_profiles(report, known_member, checks)}
+    unconfirmed = {p["id"]: p for p in checks.get("group_profiles") or ()
+                   if isinstance(p, dict) and p.get("id") and p.get("group") == checks.get("group_name")
+                   and p["id"] not in confirmed}
+    if unconfirmed:
+        names = sorted(p.get("name") or p["id"] for p in unconfirmed.values())
+        choices = " or ".join(names[:3])
+        if len(names) > 3:
+            choices += " and %d more" % (len(names) - 3)
+        return ("No saved connection in this group is confirmed as %s yet." % name,
+                "Open the one that reaches %s (%s) on its own and view Cluster once to confirm it." % (name, choices))
     fix = "Add a saved connection for %s to this group." % name
     return fix, fix
 

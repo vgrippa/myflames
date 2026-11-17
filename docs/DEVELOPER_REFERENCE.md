@@ -4784,8 +4784,10 @@ Stored identity evidence takes precedence over addresses. More than one
 current group profile claiming the same member UUID disables the action with
 no route, even if one profile has no saved password or is the active member.
 The reason names all conflicting saved connections, for example
-`prod-db-2 and prod-db-3 both report this member's identity.`, with the fix
-`Open each saved connection to check its identity, or remove the stale one.`
+`cluster-ic-1 and cluster-ic-router-rw both reach this member.`, with the fix
+`A MySQL Router or ProxySQL connection reaches whichever server is primary. Connect to cluster-ic-1 to act on this member, or keep only one of them in the group.`
+Names are sorted, and the fix names the first connection without assuming
+which endpoint is direct or treating either identity record as stale.
 Planning and every apply login reject the same ambiguity without picking by
 store order. A confirmed profile without a saved password cannot be replaced
 by an address suggestion.
@@ -4802,8 +4804,16 @@ reasons and connects it with `aria-describedby`. The address only chooses the
 saved connection the user's Review click tries; it never proves identity or
 authorizes a write. A catalog-only suggestion cannot produce a write plan.
 Several address matches disable the action and name all matching profiles,
-including matches with no saved password. No identity or address match keeps
-`Add a saved connection for <member> to this group.` as the reason and fix.
+including matches with no saved password. With no identity or address match,
+saved connections in this group whose identity is unknown or matches no
+current member produce the reason
+`No saved connection in this group is confirmed as mf-ic-2 yet.` and the fix
+`Open the one that reaches mf-ic-2 (cluster-ic-2 or cluster-ic-3) on its own and view Cluster once to confirm it.`
+The choices use the saved names (ids when unnamed), sorted by name, with at
+most three shown followed by `and N more`. Connections already confirmed as
+another member, including the active connection confirmed by its live
+identity, are excluded. With no such unconfirmed connections, the reason
+and fix remain `Add a saved connection for <member> to this group.`
 
 Catalog evaluation makes no new logins. Tier discovery deliberately skips
 known cluster-member endpoints, so Refresh cannot be offered as a way to
