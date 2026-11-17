@@ -485,7 +485,7 @@ authentication, validation, wire fields, removed routes and typed errors).
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
 
-**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh), and `diagram_zoom_speed` (integer 25, 50, 100, 150 or 200, default 100; Diagram wheel zoom speed in Settings > Workspace). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
+**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh), `diagram_zoom_speed` (integer 25, 50, 100, 150 or 200, default 100; Diagram wheel zoom speed in Settings > Workspace), `ui_font` (`system`, or one of the literal `UI_FONT_IDS` allowlist matching `interface` entries in `src/fonts.ts`, default `system`), `ui_text_size` (integer 12–16, `UI_TEXT_SIZE_MIN`–`UI_TEXT_SIZE_MAX`, default 13), `code_font` (`system`, or one of the literal `UI_CODE_FONT_IDS` allowlist matching `code` entries in `src/fonts.ts`, default `system`), and `code_text_size` (integer 11–20, `UI_CODE_TEXT_SIZE_MIN`–`UI_CODE_TEXT_SIZE_MAX`, default 13; see [Shared view presentation](#shared-view-presentation) for Settings > Appearance > Text). Interface and code font allowlists are separate and never accept free text, so CSS cannot reach the page through a preference. Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, fonts, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/test_fonts_lock.py`, `test/ui-preferences-unit.mjs`, `test/settings-page.mjs`, `test/text-size-stress.mjs` and `test/shell-layout.mjs`.
 
 **Query editor settings and variable names.** `POST /api/settings/editor`
 (ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
@@ -1300,6 +1300,78 @@ then build and run `theme-contrast.mjs` for computed styles and `themes.mjs`
 for registry completeness, palette actions, restore, base resolution and frame
 isolation. Recheck 1440 and 720 px layouts and light/dark OS preferences.
 
+Settings > Appearance also renders a **Text** group (`TextSettings` in
+`SettingsPage.tsx`, styled in `settings.css`) below the theme cards:
+**Interface font** (`#ui-font`), **Interface text size** (`#ui-text-size`:
+**Smaller** `12`, **Default** `13`, **Large** `14`, **Larger** `15`,
+**Largest** `16`), **Code font** (`#code-font`), **Code text size**
+(`#code-text-size`: **11 px** to **20 px**, default **13 px**), one-line live
+previews (`The quick brown fox` and `SELECT id, name FROM orders WHERE id = 42;`),
+**Restore default text settings** (writes `{ui_font: "system", ui_text_size: 13,
+code_font: "system", code_text_size: 13}` through `setUiPreference`), and an
+alert paragraph (`#text-settings-error`, visually hidden while empty) with a
+request sequence counter that ignores superseded saves. Controls stay disabled
+until `loadUiPreferences()` resolves so an unhydrated select cannot overwrite a
+stored choice. Shipped fonts append ` (included)` (**Inter (included)** and
+**JetBrains Mono (included)**).
+
+`apps/workspace/src/fonts.ts` (imported by `main.tsx`, with no editor or lazy
+view imports) holds `FONT_CHOICES`, keeping its `interface` ids equal to
+`workspace_store.UI_FONT_IDS` (`system`, `inter`, `sf-pro`, `helvetica-neue`,
+`segoe-ui`, `arial`, `roboto`, `open-sans`, `source-sans-3`, `ibm-plex-sans`,
+`noto-sans`, `verdana`) and its `code` ids equal to `UI_CODE_FONT_IDS`
+(`system`, `jetbrains-mono`, `sf-mono`, `menlo`, `monaco`, `consolas`,
+`cascadia-mono`, `cascadia-code`, `fira-code`, `source-code-pro`,
+`ibm-plex-mono`, `roboto-mono`, `ubuntu-mono`, `hack`, `courier-new`). Because
+`document.fonts.check` is unreliable for local fonts, `detectInstalled(family)`
+measures a probe string (`"mmmmmmmmmmlliWwQq@123"`) on a 2D `<canvas>` at
+`72px` against `monospace`, `sans-serif` and `serif`, treating a width
+difference above `0.5` px for `72px "<family>", <generic>` as installed
+(`window.__myflamesDetectFont` overrides detection in tests). `fontChoices(kind)`
+caches the result once per launch and offers **System default**, shipped fonts
+and detected installed families. `applyFonts(preferences)` runs at startup with
+`currentUiPreferences()` and subscribes to `subscribeUiPreferences`, writing
+inline custom properties on `document.documentElement`: `"system"` (or an
+unknown id via `fontById`) removes `--font-sans` or `--font-mono` so
+`style.css` and theme rules apply, while named choices set `--font-sans` or
+`--font-mono` to `"<family>"` ahead of the system stack; `ui_text_size` (clamped
+to 12–16, default 13) computes `scale = size / 13` (1 at 13 px, preserving
+stylesheet values), setting `--text-xs` (11), `--text-sm` (12), `--text-md`
+(13), `--text-base` (13), `--text-lg` (15), `--text-xl` (20), `--text-2xl` (28)
+and `--text-title` (15) to `Math.max(11, Math.round(base * scale))px` (keeping
+the 11 px floor) and `--leading-xs` (16), `--leading-sm` (18), `--leading-md`
+(20), `--leading-lg` (22), `--leading-xl` (28), `--leading-2xl` (34) and
+`--leading-title` (20) to `Math.round(base * scale)px`; `code_text_size`
+(clamped to 11–20, default 13) sets `--text-code` to `${codeSize}px` (consumed
+by `.sql-editor-wrap.sql-cm .cm-editor` in `editor-cm.css` and
+`.settings-code-preview` in `settings.css`); other code surfaces use
+`--text-code-sm` (12 px base) or `--text-code-xs` (11 px base), each scaled by
+`codeSize / 13`, including generic `pre, code`, reviewed SQL, expanded plan
+SQL, digest SQL, Explain JSON and Locks/Sessions statements. The default
+13/13 setting preserves every surface's previous base size. Fixed code line
+heights scale in the same ratio (`--leading-code-sm` has an 18 px base).
+`applyFonts` also sets `--editor-line-h` to `${Math.round(codeSize * 20 / 13)}px` (`.cm-scroller` and
+`.cm-gutters` in `editor-cm.css`).
+
+The workspace vendors two SIL Open Font License 1.1 families in
+`apps/workspace/src/fonts/`, wired into `apps/workspace/src/style.css` via
+`@font-face` (`font-display: swap`), built into `myflames/ui_assets`, and
+attributed under `Bundled fonts` in `NOTICE`: Inter 4.1 (`InterVariable.woff2`,
+weight `100 900`, `Inter-LICENSE.txt`) and JetBrains Mono 2.304
+(`JetBrainsMono-Regular.woff2`, `JetBrainsMono-Italic.woff2`,
+`JetBrainsMono-Bold.woff2`, `JetBrainsMono-OFL.txt`).
+`apps/workspace/src/fonts/fonts.lock.json` (`fonts-lock-1.0`) pins each font's
+`name`, `version`, HTTPS `source` archive URL, `zip_sha256`, `license` and
+per-file `path` and `sha256`. `test/test_fonts_lock.py` validates
+`fonts-lock-1.0`, verifies every listed file's SHA-256 and that
+`apps/workspace/src/fonts/` contains only `fonts.lock.json` and the listed
+files, and checks that every `.woff2` entry in the lock file is referenced in
+`apps/workspace/src/style.css`. Additional coverage:
+`test/test_workspace_store.py`
+(`test_ui_font_and_text_size_preferences_are_persisted_and_strict`),
+`apps/workspace/test/settings-page.mjs` and
+`apps/workspace/test/text-size-stress.mjs`.
+
 Measured durations and ages use `durationText` (`duration.ts`). Duration table
 cells and the Processlist inspector, Locks summary facts and Replication lag
 facts use `Duration` (`PerfShared.tsx`) for exact seconds, including decimal
@@ -1326,7 +1398,12 @@ and Unknown.
 `FactStrip` uses the same breakpoint to collapse into Details. `Fields`
 uses a label column sized to its longest label up to 40% of the available
 width, with a flexible value column; at 900 px and below each value follows
-its label on a separate line. `WindowStatusBar` keeps safety words visible while other facts truncate before the version and update actions. Server,
+its label on a separate line. `WindowStatusBar` keeps safety words visible
+while other facts truncate before the version and update actions. At large
+text sizes in windows up to 900 px, safety detail yields to its tooltip and
+the releases link remains in About; engine version, transaction, last run,
+duration and rows stay visible with ellipses and full tooltips because a view
+may not show them elsewhere. Server,
 Workload, Tuning and Database diagram share the latest version read for the
 connection in use; other connection places publish their own read version.
 Unknown fields stay hidden. Visible Esc hints use a keycap.

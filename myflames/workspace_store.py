@@ -72,10 +72,24 @@ UI_SIDEBAR_MIN = 208
 UI_SIDEBAR_MAX = 320
 UI_INSPECTOR_MIN = 280
 UI_INSPECTOR_MAX = 560
+# Keep these two literal lists equal to the TypeScript FONT_CHOICES registry
+# (apps/workspace/src/fonts.ts). A font id is never free text: no CSS can
+# reach the page through a preference.
+UI_FONT_IDS = ['system', 'inter', 'sf-pro', 'helvetica-neue', 'segoe-ui', 'arial', 'roboto',
+               'open-sans', 'source-sans-3', 'ibm-plex-sans', 'noto-sans', 'verdana']
+UI_CODE_FONT_IDS = ['system', 'jetbrains-mono', 'sf-mono', 'menlo', 'monaco', 'consolas',
+                    'cascadia-mono', 'cascadia-code', 'fira-code', 'source-code-pro',
+                    'ibm-plex-mono', 'roboto-mono', 'ubuntu-mono', 'hack', 'courier-new']
+UI_TEXT_SIZE_MIN = 12
+UI_TEXT_SIZE_MAX = 16
+UI_CODE_TEXT_SIZE_MIN = 11
+UI_CODE_TEXT_SIZE_MAX = 20
 UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'inspector_width': 340, 'explain_format': 'table',
                           'files_show_hidden': False, 'files_transfers_open': True, 'sidebar_width': 208,
                           'server_nav_collapsed': True, 'health_auto_production': -1,
-                          'health_auto_development': -1, 'diagram_zoom_speed': 100}
+                          'health_auto_development': -1, 'diagram_zoom_speed': 100,
+                          'ui_font': 'system', 'ui_text_size': 13,
+                          'code_font': 'system', 'code_text_size': 13}
 
 
 def _valid_ui_preference(key, value):
@@ -93,6 +107,14 @@ def _valid_ui_preference(key, value):
         return type(value) is int and value in (-1, 0, 10, 30, 60)
     if key == 'diagram_zoom_speed':
         return type(value) is int and value in (25, 50, 100, 150, 200)
+    if key == 'ui_font':
+        return isinstance(value, str) and value in UI_FONT_IDS
+    if key == 'code_font':
+        return isinstance(value, str) and value in UI_CODE_FONT_IDS
+    if key == 'ui_text_size':
+        return type(value) is int and UI_TEXT_SIZE_MIN <= value <= UI_TEXT_SIZE_MAX
+    if key == 'code_text_size':
+        return type(value) is int and UI_CODE_TEXT_SIZE_MIN <= value <= UI_CODE_TEXT_SIZE_MAX
     return False
 
 

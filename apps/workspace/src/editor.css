@@ -577,7 +577,7 @@
   width: 100%;
   min-height: 72px;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 
 /* The splitter between the editor and the results. */
@@ -853,7 +853,7 @@
   display: block;
   margin-top: 2px;
   color: var(--ink-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1111,7 +1111,7 @@
 }
 .history-sql {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1208,7 +1208,7 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

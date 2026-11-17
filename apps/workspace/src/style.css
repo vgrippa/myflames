@@ -1,5 +1,37 @@
 /* Design tokens (see .claude/skills/web-design). Rules use tokens only; when
    a rule with a raw value is touched, it moves to the nearest token. */
+
+/* The bundled fonts (src/fonts, versions and hashes in fonts.lock.json):
+   Inter for the interface, JetBrains Mono for code, both SIL Open Font
+   License 1.1. Settings > Appearance offers them as "(included)". */
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
   /* Apple standard design school light mode tokens */
   --ink-secondary: #515154;
@@ -122,6 +154,12 @@
   --leading-xl: 28px;
   --text-2xl: 28px;
   --leading-2xl: 34px;
+  /* Code size is independent of the interface scale. Each surface keeps
+     its original base size at the default 13 px setting. */
+  --text-code: 13px;
+  --text-code-sm: calc(var(--text-code) * 12 / 13);
+  --text-code-xs: calc(var(--text-code) * 11 / 13);
+  --leading-code-sm: calc(var(--text-code) * 18 / 13);
   /* View titles (the header of each view) and section headers. */
   --text-title: 15px;
   --leading-title: 20px;
@@ -632,7 +670,7 @@ small,
 pre,
 code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 pre {
   white-space: pre-wrap;
@@ -1401,6 +1439,7 @@ details[open] > summary > .strip-text {
   transform: rotate(90deg);
 }
 .sql-row .strip-text {
+  font-size: var(--text-code-sm);
   font-family: var(--font-mono);
   color: var(--ink-muted);
 }
@@ -1606,6 +1645,8 @@ details[open] > summary > .strip-text {
   padding: var(--space-3) var(--space-4);
 }
 .plan-header-tools .sql-card pre.plan-header-panel {
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   margin: 0;
   padding: var(--space-3) var(--space-4);
   max-height: min(360px, 60vh);
@@ -1647,7 +1688,7 @@ details[open] > summary > .strip-text {
   color: var(--ink);
   max-height: 160px;
   overflow: auto;
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .exploration-layout {
   --plan-inspector-width: 320px;
@@ -1954,7 +1995,7 @@ details[open] > summary > .strip-text {
 .plan-inspector .inspector-empty { margin: 0; padding: var(--space-2) 0; color: var(--ink-muted); }
 .plan-inspector .inspector-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-bottom: var(--space-3); }
 .plan-inspector .inspector-actions .button { font-size: var(--text-sm); }
-.plan-inspector .raw-fields pre { max-height: 320px; overflow: auto; font-size: var(--text-sm); }
+.plan-inspector .raw-fields pre { max-height: 320px; overflow: auto; font-size: var(--text-code-sm); }
 /* Occurrences use two-line rows inside the 280–340 px inspector. */
 .occurrence-list { display: flex; flex-direction: column; min-width: 0; margin-top: var(--space-3); }
 .occurrence-row {
@@ -2141,7 +2182,7 @@ details[open] > summary > .strip-text {
   max-width: 55%;
 }
 .trace-value code {
-  font-size: var(--text-xs);
+  font-size: var(--text-code-xs);
   color: var(--info-text);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -2483,7 +2524,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 .library-evidence-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); }
 .library-evidence-actions { display: inline-flex; align-items: center; gap: var(--space-2); }
 .library-evidence-view > p { padding: var(--space-2) var(--space-3) 0; margin: 0; font-size: var(--text-sm); }
-.library-evidence-text { margin: 0; padding: var(--space-3); border: 0; border-radius: 0; max-height: 50dvh; overflow: auto; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-sm); white-space: pre; tab-size: 4; }
+.library-evidence-text { margin: 0; padding: var(--space-3); border: 0; border-radius: 0; max-height: 50dvh; overflow: auto; font-family: var(--font-mono); font-size: var(--text-code-sm); line-height: var(--leading-code-sm); white-space: pre; tab-size: 4; }
 .library-comparison { border-top: 1px solid var(--line); }
 .library-comparison-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); }
 .library-comparison-head h3 { font-size: var(--text-md); overflow-wrap: anywhere; flex: 1; }
@@ -2573,8 +2614,8 @@ main:has(> .library) { padding: 0; max-width: none; }
 .import-dialog textarea {
   width: 100%;
   min-height: 210px;
-  font-family: monospace;
-  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-code-sm);
   background: var(--surface-subtle);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -4502,6 +4543,16 @@ kbd {
 }
 @media (max-width: 900px) {
   .window-statusbar-facts { gap: var(--space-2); }
+  /* The shrink order when the text is scaled up (Settings > Appearance >
+     Text): the safety detail ("· changes ask first") yields first; the word
+     and the dot stay, the full sentence remains the tooltip. */
+  :root[data-text-scale="large"] .safety-status-detail { display: none; }
+  /* Facts may be the only place a view shows its engine or completion
+     time. Keep them reachable, shrinking with an ellipsis and a tooltip.
+     Smaller gaps leave room for the safety words and update actions. */
+  :root[data-text-scale="large"] .window-statusbar-facts { gap: var(--space-1); }
+  /* The releases list stays one click away in About myflames. */
+  :root[data-text-scale="large"] .window-statusbar-updates > a { display: none; }
 }
 .safety-status {
   display: inline-flex;

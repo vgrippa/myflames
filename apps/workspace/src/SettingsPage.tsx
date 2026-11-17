@@ -12,7 +12,8 @@ import { AboutDialog } from "./About";
 import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
 import { Checkbox, Select, SourceList } from "./kit";
-import { loadUiPreferences, setUiPreference, useUiPreferences } from "./uiPreferences";
+import { loadUiPreferences, setUiPreference, useUiPreferences, type UiPreferences } from "./uiPreferences";
+import { CODE_TEXT_SIZE_MAX, CODE_TEXT_SIZE_MIN, fontChoices, type FontKind } from "./fonts";
 import { NewsSetting } from "./HomeNews";
 import { QueryEditorSettings } from "./QueryEditorSettings";
 import { AutoUpdateSetting, UpdateMenuItem } from "./UpdateBadge";
@@ -74,6 +75,79 @@ function ThemeCard({ id, checked, onSelect }: { id: ThemeId; checked: boolean; o
   );
 }
 
+/** Appearance's Text group: the interface and code fonts and text sizes
+ * (fonts.ts applies them to the whole workspace at once). Shipped fonts are
+ * labelled "(included)"; installed families are listed only when detected.
+ * A change is visible the moment it applies; a failed save says so. */
+const TEXT_SIZE_OPTIONS: [number, string][] = [[12, "Smaller"], [13, "Default"], [14, "Large"], [15, "Larger"], [16, "Largest"]];
+const CODE_SIZE_OPTIONS: [number, string][] = Array.from(
+  { length: CODE_TEXT_SIZE_MAX - CODE_TEXT_SIZE_MIN + 1 },
+  (_, index) => { const size = CODE_TEXT_SIZE_MIN + index; return [size, `${size} px`]; },
+);
+const TEXT_FONT_DEFAULTS = { ui_font: "system", ui_text_size: 13, code_font: "system", code_text_size: 13 } as const;
+
+function TextSettings() {
+  const preferences = useUiPreferences();
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState("");
+  const requests = useRef(0);
+  useEffect(() => {
+    let active = true;
+    void loadUiPreferences().then(() => { if (active) setReady(true); }, () => {
+      if (active) setError("Could not load text settings. Reopen Settings to try again.");
+    });
+    return () => { active = false; requests.current++; };
+  }, []);
+  function save(write: Promise<unknown>) {
+    const request = ++requests.current;
+    setError("");
+    void write.catch(() => {
+      if (request === requests.current) setError("Could not save text settings. Try again.");
+    });
+  }
+  const fontOptions = (kind: FontKind): [string, string][] =>
+    fontChoices(kind).map(choice => [choice.id, choice.shipped ? `${choice.label} (included)` : choice.label]);
+  return (
+    <div className="settings-text-group">
+      <span className="section-label">Text</span>
+      <div className="settings-option-row settings-select-row">
+        <label htmlFor="ui-font">Interface font</label>
+        <Select id="ui-font" value={preferences.ui_font} options={fontOptions("interface")}
+          disabled={!ready} onChange={(value) => save(setUiPreference("ui_font", value))}
+          describedBy="text-settings-error" />
+      </div>
+      <div className="settings-option-row settings-select-row">
+        <label htmlFor="ui-text-size">Interface text size</label>
+        <Select id="ui-text-size" value={preferences.ui_text_size} options={TEXT_SIZE_OPTIONS}
+          disabled={!ready} onChange={(value) => save(setUiPreference("ui_text_size", Number(value)))}
+          describedBy="text-settings-error" />
+      </div>
+      <p className="settings-text-preview" data-preview="interface">The quick brown fox</p>
+      <div className="settings-option-row settings-select-row">
+        <label htmlFor="code-font">Code font</label>
+        <Select id="code-font" value={preferences.code_font} options={fontOptions("code")}
+          disabled={!ready} onChange={(value) => save(setUiPreference("code_font", value))}
+          describedBy="text-settings-error" />
+      </div>
+      <div className="settings-option-row settings-select-row">
+        <label htmlFor="code-text-size">Code text size</label>
+        <Select id="code-text-size" value={preferences.code_text_size} options={CODE_SIZE_OPTIONS}
+          disabled={!ready} onChange={(value) => save(setUiPreference("code_text_size", Number(value)))}
+          describedBy="text-settings-error" />
+      </div>
+      <pre className="settings-text-preview settings-code-preview" data-preview="code"><code>SELECT id, name FROM orders WHERE id = 42;</code></pre>
+      <div className="settings-option-row settings-action-row">
+        <button type="button" className="button" disabled={!ready}
+          onClick={() => save(Promise.all((Object.keys(TEXT_FONT_DEFAULTS) as (keyof typeof TEXT_FONT_DEFAULTS)[])
+            .map(key => setUiPreference(key, TEXT_FONT_DEFAULTS[key] as UiPreferences[typeof key]))))}>
+          Restore default text settings
+        </button>
+      </div>
+      <p className={error ? "hint error" : "visually-hidden"} id="text-settings-error" role="alert">{error}</p>
+    </div>
+  );
+}
+
 function AppearanceSettings() {
   const [theme, setTheme] = useState<ThemeId>(appliedThemeId);
   const group = useRef<HTMLDivElement>(null);
@@ -117,6 +191,7 @@ function AppearanceSettings() {
           </div>
         ))}
       </div>
+      <TextSettings />
     </div>
   );
 }

@@ -2647,7 +2647,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         name = path[len("/assets/"):] if path.startswith("/assets/") else ""
         if name and "/" not in name and "\\" not in name and name not in (".", ".."):
             asset = ASSET_DIR / "assets" / name
-            types = {".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml"}
+            types = {".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2"}
             if asset.is_file() and asset.suffix in types:
                 self._send(200, asset.read_bytes(), types[asset.suffix] + "; charset=utf-8")
                 return

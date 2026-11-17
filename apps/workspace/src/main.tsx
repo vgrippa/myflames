@@ -28,6 +28,7 @@ import {
 import { Icon, ImportDialog, type IconName } from "./components";
 import { currentUiPreferences, loadUiPreferencesWithin, setUiPreference, useUiPreferences } from "./uiPreferences";
 import { THEME_CHOICES, applyTheme } from "./themes";
+import "./fonts";
 import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
 import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";

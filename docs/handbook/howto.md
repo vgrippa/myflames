@@ -56,12 +56,14 @@ Related: [Work with SQL and results](queries.md#work-with-sql-and-results).
 
 ## Settings and themes
 
-Use Settings to choose a theme and change how the Query editor behaves.
+Use Settings to choose a theme, fonts and text sizes, and change how the Query editor behaves.
 
 1. Click the gear at the bottom of the sidebar, or press **⌘,** / **Ctrl+,**, to open **Settings**.
 2. Choose **Appearance**. Select **Dark** to try it across the app, then **System** to follow your operating system's appearance again. There are 17 choices.
-3. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
-4. Press **Esc** or choose **Back** to return to your previous view. Your theme and editor settings are kept on this computer across app restarts.
+3. Scroll to **Text** in **Appearance**. Open **Interface font** and choose **Inter (included)**, **System default** or an installed font from your computer, then choose **Smaller**, **Default**, **Large**, **Larger** or **Largest** in **Interface text size** (12 to 16 px) to scale workspace text.
+4. Open **Code font** and choose **JetBrains Mono (included)**, **System default** or an installed monospace font, then pick **11 px** to **20 px** in **Code text size** for the Query editor and SQL or code blocks. The preview lines and the workspace update right away; choose **Restore default text settings** to return to **System default**, **Default** and **13 px**.
+5. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
+6. Press **Esc** or choose **Back** to return to your previous view. Your theme, text and editor settings are kept on this computer across app restarts.
 
 ![Click the sidebar gear or press Command+comma on macOS or Ctrl+comma on Windows and Linux to open Settings. Choose Appearance and select Dark to try it, then System to follow the operating system again; there are 17 choices. Choose Query editor and switch Multiple cursors off and back on. Press Esc or choose Back to return to your previous view. Theme and editor settings are saved on this computer across restarts.](../screenshots/howto-settings-theme.gif)
 
