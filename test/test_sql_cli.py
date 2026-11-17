@@ -13,7 +13,7 @@ from unittest import mock
 
 from _client_tools_fixture import private_client_dir
 
-from myflames import cli, editor_session as editor, sql_cli
+from myflames import cli, dbops, editor_session as editor, sql_cli
 from myflames.workspace_store import WorkspaceStore
 
 # These tests check each command's own stderr; the CLI deprecation notice has
@@ -39,7 +39,8 @@ class SQLTests(unittest.TestCase):
         fake = Path(__file__).with_name('_fake_mysql_client.py').read_text(encoding='utf-8')
         # The editor refuses a session whose server identity it cannot read.
         fake = fake.replace('"connection_id": str(self.conn_id),',
-                            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+                            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+                            '"server_uuid": "11111111-2222-3333-4444-555555555555" if ENGINE == "mysql" else None,')
         script = bindir / 'mysql'
         script.write_text('#!%s\n%s' % (sys.executable, fake), encoding='utf-8')
         script.chmod(0o755)
@@ -413,10 +414,26 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(len(body['results'][0]['rows']), 2)
         self.assertTrue(body['results'][0]['truncated'])
         self.assertIn('2 rows', err)
+        argv_log = self.state / 'argv.log'
+        previous = len(argv_log.read_text(encoding='utf-8').splitlines())
         code, out, err = self.invoke(['-e', 'SELECT 1 /*gate*/', '--timeout', '0.1', '--json'])
         self.assertEqual(code, 1, err)
         self.assertEqual(json.loads(out)['status'], 'stopped')
         self.assertTrue((self.state / 'kills.log').exists())
+        invocations = [ast.literal_eval(line) for line in argv_log.read_text(encoding='utf-8').splitlines()[previous:]
+                       if line.startswith('[')]
+        controls = [args for args in invocations if '-e' in args and
+                    'KILL QUERY ' in args[args.index('-e') + 1]]
+        self.assertEqual(len(controls), 1)
+        args = controls[0]
+        guard, kill = args[args.index('-e') + 1].splitlines()
+        self.assertEqual(guard, dbops.target_session_guard('mysql', {
+            'server_uuid': '11111111-2222-3333-4444-555555555555'})[0])
+        self.assertTrue(kill.startswith(editor.TAG + 'KILL QUERY '))
+        target_log = self.state / ('session-%d.log' % int(kill.split()[-1]))
+        self.assertIn('SELECT 1 /*gate*/', target_log.read_text(encoding='utf-8'))
+        self.assertIn('--skip-reconnect', args)
+        self.assertNotIn('--force', args)
 
     def test_timeout_unresponsive_statement_ends_session_with_unknown_outcome(self):
         # A successful KILL request does not prove the statement ended. The

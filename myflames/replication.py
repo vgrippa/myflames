@@ -2532,12 +2532,16 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
-        if dbops.target_guard_failed(exc):
-            result.update(status="refused", outcome="identity_mismatch", sent=[], stop_reason="identity_mismatch",
-                          message=dbops.TARGET_IDENTITY_MISMATCH)
+        guard_failure = dbops.target_guard_failed(exc)
+        if guard_failure:
+            password = getattr(conn, "password", None) or getattr(audit, "password", None)
+            result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
+                          stop_reason=guard_failure["outcome"],
+                          message=dbops.redact(guard_failure["message"], password))
             send_state["sent"] = False
             if audit is not None:
-                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=result["message"])
+                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                               message=result["message"])
             return result
         exc = dbops.shift_guard_error(exc)
         if _fatal(exc):

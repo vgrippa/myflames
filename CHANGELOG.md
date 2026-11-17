@@ -25,11 +25,13 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- In a Group connection, **Users and roles** changes re-check group membership and the group's strictest write policy at every login and right before sending, so a member removed from the group or made Read-only after the review receives nothing; a typed password no longer skips the membership check. Opening a Group connection installs the same per-login check on its member probes. A group deleted and recreated with the same name and members no longer matches an earlier Cluster review. A stored server identity can no longer be overwritten by an older in-flight or cached probe. A query editor tab whose member left the group can still roll back, stop and close its existing session, so an open transaction does not keep its locks; new statements stay refused.
+- In a Group connection, **Users and roles**, Kill, Variables and replication skips re-check group membership and the group's strictest write policy at every login. A removed member or a changed policy refuses the earlier review, including when a password was typed. Every review expires if the group is deleted and recreated, even with the same name and members.
+- Opening a Group connection re-checks both the active member and each probed member before every login. Removing either member, changing its saved address or recreating the group prevents later logins under the old consent. A stored server identity can no longer be overwritten by an older in-flight or cached probe.
+- Query editor Stop and Close confirm the server on the connection sending `KILL QUERY` before interrupting a statement. If the server cannot be confirmed, no KILL is sent. A tab whose member left its group can still roll back, stop and close its existing session to release locks, while new statements stay refused.
 
 ### Bug fixes
 
-- A Cluster action whose identity check cannot run now reports the server's reason and records that the identity was unavailable. A different server still reports an identity mismatch.
+- Cluster, **Users and roles**, Kill, Variables and replication skip actions whose identity check cannot run now report the server's reason and record that the identity was unavailable. A different server still reports an identity mismatch.
 
 - MySQL Shell errors without a statement location keep an unknown outcome. Progress text cannot turn them into an identity refusal, and a read after the error reports any visible partial change.
 

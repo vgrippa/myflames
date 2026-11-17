@@ -286,6 +286,8 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     after)* the rows of what changed (what, before, now). *progress* (a
     :class:`Progress`) follows each step. *refused_text(statement, error)*
     words a statement refusal when no partial change was observed.
+    *verify_on_error* permits a state read after a first-statement server
+    error; only MySQL Shell plans also read after a reply-less error.
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
@@ -368,7 +370,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             # An AdminAPI exception can omit its call site after changing
             # the cluster. A read can show a partial change, but an unchanged
             # visible snapshot cannot prove that no operation ran elsewhere.
-            if verify_on_error and read_after is not None:
+            if fresh.get("via") == "mysqlsh" and verify_on_error and read_after is not None:
                 _set(progress, "reading")
                 try:
                     out["after"] = read_after()

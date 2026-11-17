@@ -1697,10 +1697,15 @@ request supplies no password.
 Kill preparation, single replication skips, and lifecycle plans
 carry a server-issued review token. Its registry holds at most 256 entries for
 300 seconds. Tokens bind the operation, connection identity and policy, and
-reviewed details. For a group connection the identity carries the group's
-effective safety (`connection_safety` with the store; see "Write safety and
-audit"), so a Production member joining the group (or leaving it) voids tokens
-and editor session ownership issued before the change. Checks happen before
+reviewed details. Every review on a Group connection, including Accounts and
+the Query editor's own registries, binds the store-derived `group_name` and
+`group_generation` in `dbops.connection_identity`. `dbops.identity_group`
+extracts that consent binding independently of the endpoint and write policy.
+A group deleted and recreated with the same name and members has a new
+generation, so none of its earlier reviews authorize a send. The identity also
+carries the group's effective safety (`connection_safety` with the store;
+see "Write safety and audit"), so a change to that safety voids earlier tokens
+and editor session ownership. Checks happen before
 saved-password lookup; consumption is
 atomic at the send boundary after fresh state and policy checks. Missing,
 expired, altered, or replayed tokens require a fresh review. Tokens are never
@@ -1711,13 +1716,24 @@ are bound too, with read-only permitted for the donor read.
 Accounts and the Query editor retain their own bounded review
 registries and confirmation contracts.
 
+Kill, Variables and replication skip connections are opened through
+`ui._group_guarded_connection`. Its `conn._login_guard` re-reads the active
+member's saved endpoint, current membership, group generation and, for a
+reviewed send, effective write policy before transport setup and every client
+invocation. Revoked consent refuses before that login sends SQL, including
+when a typed password was supplied or the pending audit is already durable.
+A refusal at the write boundary finishes that pending record as unsent.
+
 Reviewed SQL writes bind the destination again inside the client that sends
 the write, before the first reviewed statement. A successful read in another
 login cannot establish that binding: a forwarded port, router or failover
 can change the destination before the next login. `reviewed_writes.execute`
 prepends the guard derived from the reviewed plan's server identity. Variables,
 accounts, replication skips (including each skip-loop send), and Kill from
-Locks or Sessions use the same guard. Account plans that need several client
+Locks or Sessions use the same guard. A deliberate guard mismatch reports
+`identity_mismatch`; another server error on its first line reports
+`identity_unavailable` with the server's reason. Both refuse without an
+after-read or retry. Account plans that need several client
 invocations guard each invocation; a refusal after an earlier accepted
 statement retains a partial outcome. Cluster SQL and UDF actions are covered
 by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
@@ -1987,6 +2003,13 @@ Local `audit purge` has its separate confirmation contract.
   profile saves keep or adopt it, `forget_password` keeps it, and leaving or
   deleting the group clears it (`_present` drops it when `group` is empty). Both return `groups` (`connection_groups.list_groups(profiles)`) and
   `profiles` (`store.list("profile")`, never a password or `secret_ref`).
+  `connection_safety` obtains `group_name` and `group_generation` from this
+  current stored membership. `connection_identity` appends them as a consent
+  object to every Group connection review, and `identity_group` reads that
+  object without the policy or endpoint fields. A request-supplied generation
+  is never trusted. Recreating a group with the same name and members cannot
+  reuse its earlier reviews, while endpoint-bound status and cleanup remain
+  available through `identity_endpoint`.
   The workspace opens a group as one **Group connection** from the connection
   picker (`main.tsx` `openGroup`, `api.openConnectionGroup` with
   `probe_members: true` on an explicit open or Refresh, never on automatic
@@ -2082,9 +2105,11 @@ Local `audit purge` has its separate confirmation contract.
   members (`_CONNECT_PROBE_BUDGET`, 16). Every member login fills that
   member's own saved password through `connection_with_saved_password` (which
   re-checks group membership), and every member connection carries a
-  `conn._login_guard` that re-reads membership from the store before each
-  client invocation, so a member removed while discovery runs gets no later
-  login; the reply never contains a secret; a
+  `conn._login_guard` that rechecks the requesting active member's endpoint,
+  membership and group generation as well as the probed member's stored
+  endpoint, membership and generation before each client invocation. Removing
+  either member, changing its endpoint or recreating the group while discovery
+  runs prevents later logins under the old consent. The reply never contains a secret; a
   member that cannot be read is `reachable: false`. Member names and
   endpoints never come from topology evidence: a stored topology label cannot
   rename a member (F10).
@@ -2806,6 +2831,13 @@ planner, write gate and session engine from the CLI.
   reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
+- Identity: startup reads connection id, version, hostname, port and server id
+  through the tab's persistent session. After detecting MySQL, it reads
+  `SELECT CONNECTION_ID() AS connection_id, @@global.server_uuid AS server_uuid`
+  in that same session and requires the connection id to match and the UUID
+  to be valid. MariaDB has no server UUID and uses server id, hostname and
+  port instead. An identity that cannot build a guard refuses startup before
+  any user statement. Later identity probes include the MySQL UUID.
 - Framing: a random client delimiter is set once (`DELIMITER __mf<hex>_`);
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
@@ -2857,6 +2889,13 @@ planner, write gate and session engine from the CLI.
   (`size_limit`, `size_limit_read`). While a run is running, status responses
   carry no rows. Load more re-runs with a larger limit. Stop
   (`EditorSession.stop`) sends the same KILL for the running user statement;
+  Stop, row-limit cancellation and Close use `_send_kill`, which puts the
+  guard derived from the tab's recorded server identity on the first line,
+  followed by `KILL QUERY` on the helper connection. This batch has
+  `--skip-reconnect` and no `--force`, so a failed identity check cannot reach
+  the KILL. A mismatch or an unavailable check reports
+  `The server could not be confirmed. No KILL QUERY was sent.` to Stop;
+  Close still terminates and reaps the tab's local client.
   `stopped` is true only when the KILL was sent. A statement it interrupts
   (1317 or 3169) is `stopped` and undone; one that ended normally is `ok` and
   took effect, and later statements do not run. A statement still running
@@ -2925,7 +2964,9 @@ planner, write gate and session engine from the CLI.
   even if the old decision allowed Development DML. This implements db-operations
   section 1 step 6 and section 5's backend enforcement rule.
   Sessions are keyed by tab id plus `dbops.connection_identity` (saved
-  connection id, host, port, user, TLS mode and CA, type and read-only).
+  connection id, host, port, user, TLS mode and CA, SSH target when present,
+  type and read-only, and the store-derived group name and generation on a
+  Group connection).
   Concurrent runs on one tab answer 409 `code: "busy"`; at most 8 live
   sessions (`too_many_sessions`). `EditorSessions.open` never returns a live
   session of another identity, so requests racing on one tab cannot share it.

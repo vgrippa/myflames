@@ -15,7 +15,7 @@ from unittest import mock
 
 from _client_tools_fixture import private_client_dir
 
-from myflames import editor_session as ed
+from myflames import dbops, editor_session as ed
 from myflames.workspace_store import WorkspaceStore
 
 
@@ -38,7 +38,8 @@ class EditorProcessTests(unittest.TestCase):
         # Match the identity-bearing fake installed by test_editor_session.py.
         client = FAKE.read_text(encoding="utf-8").replace(
             '"connection_id": str(self.conn_id),',
-            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+            '"server_uuid": "11111111-2222-3333-4444-555555555555" if ENGINE == "mysql" else None,')
         script = bindir / "mysql"
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(0o755)
@@ -151,14 +152,28 @@ class EditorProcessTests(unittest.TestCase):
 
     def assert_control_kill(self, session, since):
         expected = ed.TAG + "KILL QUERY %d" % session.connection_id
+        guard = dbops.target_session_guard(session.engine, session.server_identity)
+        expected_batch = "\n".join(guard + [expected])
         kills = (self.state / "kills.log").read_text(encoding="utf-8").splitlines()
         self.assertIn(expected, kills)
         controls = [p for p in self.children[since:] if "-e" in p.args]
         self.assertTrue(controls, "KILL QUERY did not use a second client process")
         for control in controls:
             self.assertNotEqual(control.pid, session.proc.pid)
-            self.assertEqual(control.args[control.args.index("-e") + 1], expected)
+            self.assertEqual(control.args[control.args.index("-e") + 1], expected_batch)
+            self.assertIn("--skip-reconnect", control.args)
+            self.assertNotIn("--force", control.args)
             self.assert_reaped(control)
+
+    def test_start_reads_the_engine_identity_in_the_tabs_session(self):
+        session = self.open_session()
+        log = (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8")
+        if self.engine == "mysql":
+            self.assertIn("SELECT CONNECTION_ID() AS connection_id, @@global.server_uuid AS server_uuid", log)
+            self.assertEqual(session.server_identity["server_uuid"], "11111111-2222-3333-4444-555555555555")
+        else:
+            self.assertNotIn("server_uuid", log)
+            self.assertNotIn("server_uuid", session.server_identity)
 
     def close_api(self, tab="tab", **payload):
         return ed.api_response("/api/editor/close", dict({"connection": self.connection}, **dict(payload, tab_id=tab)),

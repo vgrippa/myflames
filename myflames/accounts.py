@@ -1557,11 +1557,13 @@ def _run_stdin(conn, sql, passwords=()):
     except ConnectorError as exc:
         # Inspect the original client error before safe-error redaction drops
         # the line number (or MariaDB echoes SQL containing a credential).
-        if dbops.target_guard_failed(exc):
-            mismatch = ConnectorError(dbops.TARGET_IDENTITY_MISMATCH)
-            mismatch.identity_mismatch = True
-            mismatch.server_error_code = dbops.error_code(str(exc))
-            raise mismatch from None
+        guard_failure = dbops.target_guard_failed(exc)
+        if guard_failure:
+            refusal = ConnectorError(privileges.redact(guard_failure['message'],
+                                                       tuple(passwords) + (getattr(conn, 'password', None),)))
+            refusal.identity_outcome = guard_failure['outcome']
+            refusal.server_error_code = dbops.error_code(str(exc))
+            raise refusal from None
         exc = dbops.shift_guard_error(exc)
         code, message = _safe_error(exc, passwords)
         if dbops.may_have_run(exc):
@@ -1684,14 +1686,14 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                            message + ' Earlier statements ran; the remaining statements were not sent.')
                 break
             except (ConnectorError, KeyboardInterrupt) as exc:
-                if getattr(exc, 'identity_mismatch', False):
-                    audit.complete('refused', outcome='identity_mismatch', error=exc.server_error_code,
-                                   message=dbops.TARGET_IDENTITY_MISMATCH)
+                if getattr(exc, 'identity_outcome', None):
+                    message = str(exc)
+                    audit.complete('refused', outcome=exc.identity_outcome, error=exc.server_error_code,
+                                   message=message)
                     out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
-                    out.update(status='refused' if i == 0 else 'partial', outcome='identity_mismatch',
-                               message=dbops.TARGET_IDENTITY_MISMATCH if i == 0 else
-                               'The server changed before the next statement. Earlier statements ran; '
-                               'the remaining statements were not sent. Refresh and review again.')
+                    out.update(status='refused' if i == 0 else 'partial', outcome=exc.identity_outcome,
+                               message=message if i == 0 else message.replace(' Nothing was sent.', '') +
+                               ' Earlier statements ran; the remaining statements were not sent.')
                     break
                 code = dbops.error_code(str(exc))
                 if isinstance(exc, KeyboardInterrupt) or dbops.may_have_run(exc):
@@ -1736,7 +1738,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     if out['status'] == 'partial' and plan['operation'] == 'create' and engine == 'mariadb':
         out['warnings'].append('The account was created but stays locked: set a password that the server accepts, '
                                'then unlock it, or drop it.')
-    if out.get('outcome') == 'identity_mismatch':
+    if out.get('outcome') in ('identity_mismatch', 'identity_unavailable'):
         return out
     try:
         renamed = plan['operation'] == 'rename' and out['status'] == 'applied'

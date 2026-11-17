@@ -3105,11 +3105,14 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             audit.fail(exc)
         raise
     except ConnectorError as exc:
-        if dbops.target_guard_failed(exc):
-            result.update(status="refused", outcome="identity_mismatch", sent=[],
-                          message=dbops.TARGET_IDENTITY_MISMATCH)
+        guard_failure = dbops.target_guard_failed(exc)
+        if guard_failure:
+            password = getattr(conn, "password", None) or getattr(audit, "password", None)
+            result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
+                          message=dbops.redact(guard_failure["message"], password))
             if audit is not None:
-                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=result["message"])
+                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                               message=result["message"])
             return result
         exc = dbops.shift_guard_error(exc)
         try:
