@@ -17,7 +17,10 @@ re-implement them: it runs MySQL Shell.
 :class:`ShellWriter` takes the place of a connection's ``run_write`` for one
 send. The reviewed statements are AdminAPI calls in JavaScript, one per line,
 sent on standard input to ``mysqlsh --js`` (batch mode stops at the first
-exception). The account comes from a 0600 option file on argv, as for every
+exception). The first JavaScript statement is the reviewed server UUID
+check through ``session.runSql``, before any AdminAPI call. A mismatch
+throws MYFLAMES_IDENTITY_MISMATCH and is a refusal with no action sent.
+The account comes from a 0600 option file on argv, as for every
 other tool myflames runs (lifecycle._credentials): never a URI, an
 environment variable or the command line. The Shell runs with an empty
 temporary HOME and MYSQLSH_USER_CONFIG_HOME, so no user startup script or
@@ -36,6 +39,7 @@ Errors are reported in the shape reviewed_writes reads (``ERROR <n> at line
 * a time limit or a Shell that ended without an exception: no number, so the
   outcome is unknown.
 """
+import json
 import os
 import re
 import subprocess
@@ -49,6 +53,23 @@ _STDIN_LINE = re.compile(r"\bat STDIN:(\d+)\b")
 _SHELL_CODE = re.compile(r"\(MYSQLSH (\d+)\)")
 _MYSQL_CODE = re.compile(r"MySQL Error (\d+)")
 _ANSI = re.compile(r"(?:\x1b|\\u001[bB]|\\x1[bB])\[[0-9;?]*[ -/]*[@-~]")
+IDENTITY_MISMATCH_MARKER = "MYFLAMES_IDENTITY_MISMATCH"
+
+
+def target_session_guard(identity):
+    """One JavaScript statement, run before any AdminAPI call in this session.
+
+    ClassicSession.runSql and ClassicResult.fetchOne are exposed in Shell's
+    modules/mod_mysql_session.cc:89 and mod_mysql_resultset.cc:67. Never
+    substitute dba.getCluster() here: that would already inspect a cluster.
+    """
+    from .dbops import _TARGET_UUID
+    identity = identity if isinstance(identity, dict) else {}
+    uuid = identity.get("server_uuid")
+    if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
+        raise ValueError("The reviewed server UUID is missing or invalid. Nothing was sent. Refresh and review again.")
+    return ['if (session.runSql("SELECT @@global.server_uuid").fetchOne()[0] !== %s) { throw new Error(%s); }'
+            % (json.dumps(uuid), json.dumps(IDENTITY_MISMATCH_MARKER))]
 
 
 def find_shell(refresh=False):
@@ -86,7 +107,13 @@ def error_text(stderr, stdout=""):
     lines = [line for line in lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
     if not lines:
         return None
-    where = next((int(m.group(1)) for m in map(_STDIN_LINE.search, lines) if m), None)
+    # Shell appends the actual call site after the exception text. Prefer its
+    # last stderr location over a server message that embeds "at STDIN:1",
+    # and do not let ordinary stdout progress override stderr evidence.
+    locations = list(_STDIN_LINE.finditer(_ANSI.sub("", stderr or "")))
+    if not locations:
+        locations = list(_STDIN_LINE.finditer(_ANSI.sub("", stdout or "")))
+    where = int(locations[-1].group(1)) if locations else None
     shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
     mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
     if where is None and shell_code is None and mysql_code is None:
@@ -168,6 +195,10 @@ class ShellWriter(object):
             raise ConnectorError("MySQL Shell was stopped (signal %d); the outcome is unknown." % -proc.returncode)
         if proc.returncode != 0:
             line = error_text(stderr, stdout)
+            if line and line.startswith("ERROR 0 at line 1:") and IDENTITY_MISMATCH_MARKER in line:
+                # Only the guard's first-line exception proves AdminAPI was
+                # never called. A later exception must retain its outcome.
+                raise Refusal(dbops.TARGET_IDENTITY_MISMATCH, "identity_mismatch")
             if line is None:
                 raise ConnectorError("MySQL Shell exited %d without an error message; the outcome is unknown."
                                      % proc.returncode)

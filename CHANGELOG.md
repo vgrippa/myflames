@@ -8,7 +8,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### New features
 
-- Adds **Group connections** in the connection picker, opening a connection group under the strictest safety of its members with a **Server:** picker in single-server places and the Query editor that starts on the primary or source and names the server in every view header and query tab. **Edit group…** in the picker, the status bar and Home's **Connections** place renames the group, adds or removes saved connections, or deletes the group while keeping its saved connections; removing a member moves open views to the primary. In **Cluster**, member actions in a Group connection run through that member's saved connection and name that saved server in the review, or, when no saved connection in the group is confirmed as that member, say why with **Edit group…** beside the reason.
+- Adds **Group connections** in the connection picker, opening a connection group under the strictest safety of its members with a **Server:** picker in single-server places and the Query editor that starts on the primary or source and names the server in every view header and query tab. **Edit group…** in the picker, the status bar and Home's **Connections** place renames the group, adds or removes saved connections, or deletes the group while keeping its saved connections; removing a member moves open views to the primary. In **Cluster**, member actions in a Group connection run through that member's saved connection and name that saved server in the review, or, when no saved connection in the group is confirmed as that member, say why with **Edit group…** beside the reason. **Rejoin to the cluster…** runs through the active ONLINE member with quorum and names the missing instance.
 
 ### Improvements
 
@@ -20,6 +20,14 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Rejoining a missing InnoDB Cluster member in a Group connection now uses the active ONLINE member with quorum. Desync and Resync for another Galera node both stay available for review, which checks that node's own state.
+
 - Cluster actions in a Group connection can review a member through a unique matching saved address. Review confirms that connection's server identity before allowing the change, without extra background logins. Group topology reads also remember identities confirmed by existing probes. Query editor tabs refuse runs after their member leaves the group, and refused Cluster actions keep the group's safety type in the audit.
 
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
+
+### Security fixes
+
+- Cluster changes through MySQL Shell now verify the server UUID inside the sending session before any cluster operation. Galera identity guards also compare the node UUID, so matching server names, ids and ports cannot authorize a different node.
+
+- Suggested Cluster GRANTs read the account, grants and schema wildcard setting in one login and refuse changed identity snapshots. Schema names containing underscores or percent signs are escaped according to that setting, preventing a suggestion from granting access to other matching schemas.

@@ -73,12 +73,30 @@ class GuardTests(unittest.TestCase):
 
     def test_mysql_family_and_mariadb_prefixes_are_exact(self):
         for engine, identity, expected in [('mysql', MYSQL, MYSQL_GUARD), ('percona', MYSQL, MYSQL_GUARD),
-                                            ('pxc', MYSQL, MYSQL_GUARD), ('mariadb', MARIA, MARIA_GUARD)]:
+                                            ('mariadb', MARIA, MARIA_GUARD)]:
             with self.subTest(engine=engine):
                 self.assertEqual(dbops.target_session_guard(engine, identity), [expected])
         node = dict(MARIA, wsrep_node_name='db-1.example')
         self.assertEqual(dbops.target_session_guard('mariadb', node),
                          [MARIA_GUARD[:-2] + " OR @@global.wsrep_node_name <> 'db-1.example');"])
+
+    def test_galera_and_pxc_guard_the_node_with_the_engine_status_table(self):
+        for engine, identity, table in [
+                ('mariadb', dict(MARIA, wsrep_gcomm_uuid=UUID), 'information_schema.GLOBAL_STATUS'),
+                ('pxc', dict(MYSQL, wsrep_gcomm_uuid=UUID), 'performance_schema.global_status'),
+                ('mysql', dict(MYSQL, wsrep_gcomm_uuid=UUID), 'performance_schema.global_status')]:
+            with self.subTest(engine=engine):
+                guard = dbops.target_session_guard(engine, identity)[0]
+                self.assertIn("OR NOT ((SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') "
+                              "<=> '%s')" % (table, UUID), guard)
+                for value in (None, '', 'not-a-uuid', "x'); SET GLOBAL wsrep_desync=ON; --"):
+                    with self.assertRaises(ValueError):
+                        dbops.target_session_guard(engine, dict(identity, wsrep_gcomm_uuid=value))
+        for engine in ('mysql', 'mariadb'):
+            plan = self.plan(engine, MYSQL if engine == 'mysql' else MARIA)
+            plan['expect']['kind'] = 'galera'
+            with self.assertRaisesRegex(ValueError, 'Galera node UUID'):
+                reviewed_writes.review_details(plan)
 
     def test_missing_or_unsafe_identity_never_builds_a_script(self):
         for engine, base, key in [('mysql', MYSQL, 'server_uuid'), ('mariadb', MARIA, 'hostname'),
@@ -185,14 +203,34 @@ class GuardTests(unittest.TestCase):
         self.assertIn('ERROR 1064 (42000) at line 3:', str(dbops.shift_guard_error(ConnectorError(echo))))
 
     def test_other_protocols_keep_their_own_send_contract(self):
-        for expect, via in [({'proxysql_version': '3.0'}, None), ({'readyset_version': '1'}, None),
-                            ({'engine': 'mysql', 'server': MYSQL}, 'mysqlsh')]:
+        for expect, via in [({'proxysql_version': '3.0'}, None), ({'readyset_version': '1'}, None)]:
             plan = self.plan()
             plan['expect'], plan['via'] = expect, via
             writer = Writer()
             out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test')
             self.assertEqual(out['status'], 'done')
             self.assertEqual(writer.writes, ['\n'.join(plan['statements'])])
+
+    def test_shell_guard_is_javascript_derived_from_the_reviewed_uuid(self):
+        plan = self.plan()
+        plan.update(via='mysqlsh', statements=['dba.getCluster().switchToMultiPrimaryMode();'],
+                    session_guard=['dba.getCluster().dissolve();'])
+        writer = Writer()
+        details = reviewed_writes.review_details(plan)
+        guard = details['session_guard']
+        self.assertEqual(guard, ['if (session.runSql("SELECT @@global.server_uuid").fetchOne()[0] !== "%s") '
+                                '{ throw new Error("MYFLAMES_IDENTITY_MISMATCH"); }' % UUID])
+        out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
+        self.assertEqual(out['status'], 'done')
+        self.assertEqual(writer.writes, ['\n'.join(guard + plan['statements'])])
+        self.assertEqual(self.records()[0]['statements'], guard + plan['statements'])
+        bad = dict(plan, expect={'engine': 'mysql', 'server': {'server_uuid': "bad'uuid"}})
+        with self.assertRaises(ValueError):
+            reviewed_writes.review_details(bad)
+        for identity in ('not-a-dict', [UUID], None):
+            bad = dict(plan, expect={'engine': 'mysql', 'server': identity})
+            with self.assertRaises(ValueError):
+                reviewed_writes.review_details(bad)
 
     def test_request_cannot_select_shell_to_suppress_a_sql_guard(self):
         fresh = self.plan()

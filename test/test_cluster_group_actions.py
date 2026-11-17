@@ -737,7 +737,7 @@ class GroupActionTests(unittest.TestCase):
         self.assertEqual((result['status'], result['sent']), ('refused', []))
         self.assert_no_writes()
 
-    def test_group_catalog_uses_remote_ssh_instead_of_active_ssh_for_shell_actions(self):
+    def test_rejoin_routes_from_the_online_active_member_and_uses_its_transport(self):
         report = F.report('ic-8.4-healthy')
         member = next(m for m in report['members'] if not m['local'] and m['role'] == 'SECONDARY')
         member['state'] = 'MISSING'
@@ -745,10 +745,86 @@ class GroupActionTests(unittest.TestCase):
         member['in_metadata'] = True
         profile = dict(self.target, topology_identity={'server_uuid': member['uuid']}, ssh_host='bastion')
         shell = {'path': '/fixture/mysqlsh', 'version': '8.4.11', 'version_tuple': (8, 4, 11)}
-        checks = dict(group_name='G', group_profiles=[profile], current_profile=self.active, shell=shell, ssh=False)
+        active = dict(self.active, topology_identity={'server_uuid': report['server']['server_uuid']})
+        checks = dict(group_name='G', group_profiles=[active, profile], current_profile=active, shell=shell, ssh=False)
         action = next(a for a in cluster.available_actions(report, member['key'], checks) if a['id'] == 'rejoin_instance')
-        self.assertFalse(action['enabled'])
+        self.assertTrue(action['enabled'], action)
+        self.assertEqual(action['target']['profile_id'], active['id'])
+        self.assertTrue(action['target']['self'])
+        checks['ssh'] = True
+        action = next(a for a in cluster.available_actions(report, member['key'], checks) if a['id'] == 'rejoin_instance')
+        self.assertFalse(action['enabled'], action)
         self.assertIn('SSH', action['why_not'])
+
+    def test_group_rejoins_a_missing_member_through_the_online_member_not_the_missing_login(self):
+        from myflames import cluster_shell
+        shell = {'path': '/fixture/mysqlsh', 'version': '8.4.11', 'version_tuple': (8, 4, 11)}
+        client = MemberClient(F.conn('ic-8.4-member-offline'))
+        report = cluster.read_status(client)
+        missing = next(m for m in report['members'] if m['state'] == 'MISSING')
+        self.clients['db-1'] = client
+        self.store.record_topology_identity(self.active['id'], cluster.target_server_identity(report))
+        active = self.store.get('profile', self.active['id'])
+        checks = dict(group_name='G', group_profiles=[active], current_profile=active, shell=shell)
+        offered = next(a for a in cluster.available_actions(report, missing['key'], checks)
+                       if a['id'] == 'rejoin_instance')
+        self.assertTrue(offered['enabled'], offered)
+        self.assertEqual(offered['target']['profile_id'], active['id'])
+        with mock.patch.object(cluster_shell, 'find_shell', return_value=shell), \
+                mock.patch.object(cluster_shell.ShellWriter, 'run_write', return_value='') as send:
+            plan = self.plan(action='rejoin_instance', member_key=missing['key'], target_profile_id=active['id'])
+            result = self.apply(plan, action='rejoin_instance', member_key=missing['key'], target_profile_id=active['id'])
+        self.assertEqual(result['status'], 'done', result)
+        self.assertEqual([options['host'] for options in self.opened], ['db-1', 'db-1'])
+        self.assertEqual(plan['expect']['member']['key'], missing['key'])
+        self.assertEqual(plan['expect']['target']['profile_id'], active['id'])
+        self.assertEqual(plan['expect']['target']['server_identity'], cluster.target_server_identity(report))
+        self.assertIn('rejoinInstance("%s", {recoveryMethod: "incremental"})' % missing['address'],
+                      plan['statements'][0])
+        self.assertEqual(plan['typed_guard'], missing['name'])
+        self.assertEqual(plan['target_text'], missing['name'])
+        self.assertEqual(dict(plan['facts'])['Listed in the cluster as'],
+                         next(m['name'] for m in report['members'] if m['local']))
+        self.assertEqual(dict(plan['facts'])['Instance'], '%s (%s)' % (missing['name'], missing['address']))
+        send.assert_called_once_with('\n'.join(plan['session_guard'] + plan['statements']), timeout=cluster.SHELL_TIMEOUT)
+        self.assertIn(report['server']['server_uuid'], plan['session_guard'][0])
+        self.assertNotIn(missing['uuid'], plan['session_guard'][0])
+
+    def test_remote_galera_desync_and_resync_review_the_peers_own_state_in_both_directions(self):
+        for active_desync, peer_desync, applicable, refused in [
+                ('OFF', 'ON', 'resync_node', 'desync_node'),
+                ('ON', 'OFF', 'desync_node', 'resync_node')]:
+            with self.subTest(active=active_desync, peer=peer_desync):
+                report = F.report('galera-11.8-healthy')
+                report['galera']['desync'] = active_desync
+                report['galera']['metrics']['local_state_comment'] = ('Synced' if active_desync == 'OFF'
+                                                                      else 'Donor/Desynced')
+                peer = next(m for m in report['members'] if not m['local'])
+                self.store.record_topology_identity(self.target['id'], {'wsrep_node_uuid': peer['uuid']})
+                checks = dict(group_name='G', group_profiles=self.store.list('profile'), current_profile=self.active)
+                actions = {a['id']: a for a in cluster.available_actions(report, peer['key'], checks)}
+                for aid in ('desync_node', 'resync_node'):
+                    self.assertTrue(actions[aid]['enabled'], actions[aid])
+                    self.assertIn('Review checks wsrep_desync', actions[aid]['why_not'])
+                    self.assertEqual(actions[aid]['target']['profile_id'], self.target['id'])
+                    with self.assertRaisesRegex(ValueError, 'node.s saved connection'):
+                        cluster.plan_action(report, aid, peer['key'], checks)
+
+                def peer_read(sql, text, count):
+                    if sql.startswith(cluster.CLUSTER_TAG + 'SHOW GLOBAL VARIABLES WHERE'):
+                        return F.set_pairs(text, {'wsrep_node_name': peer['name'], 'wsrep_desync': peer_desync})
+                    if sql.startswith(cluster.CLUSTER_TAG + 'SHOW GLOBAL STATUS WHERE Variable_name LIKE'):
+                        return F.set_pairs(text, {'wsrep_gcomm_uuid': peer['uuid'], 'wsrep_local_index': '1',
+                            'wsrep_local_state_comment': 'Synced' if peer_desync == 'OFF' else 'Donor/Desynced'})
+                    return text
+
+                self.clients['db-2'] = MemberClient(F.recorded('galera-11.8-healthy', edit=peer_read)[0])
+                plan = self.plan(action=applicable, member_key=peer['key'])
+                self.assertEqual(plan['expect']['desync'], peer_desync)
+                self.assertEqual(plan['expect']['server']['wsrep_gcomm_uuid'], peer['uuid'])
+                self.assertEqual(plan['expect']['target']['profile_id'], self.target['id'])
+                with self.assertRaises(cluster.ActionUnavailable):
+                    self.plan(action=refused, member_key=peer['key'])
 
     def test_f10_topology_label_cannot_name_the_saved_target_in_review(self):
         for label in ('prod-db-2</b>', 'prod-db-1', 'e', 'Stop Group Replication'):

@@ -9,7 +9,10 @@ for the command line and the option file, by a stand-in ``mysqlsh`` program.
 """
 import json
 import os
+import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -481,8 +484,8 @@ class TestPlans(unittest.TestCase):
         checks = m.action_checks(sender, report, 'switch_to_multi_primary')
         self.assertEqual(m.plan_action(report, 'switch_to_multi_primary', checks=checks)['statements'],
                          [TAG + 'SELECT group_replication_switch_to_multi_primary_mode();'])
-        self.assertEqual(source.reads.count(m.CLUSTER_TAG + 'SHOW GRANTS'), 1)
-        self.assertEqual(sender.reads.count(m.CLUSTER_TAG + 'SHOW GRANTS'), 2)
+        self.assertEqual(sum('SHOW GRANTS' in sql for sql in source.reads), 1)
+        self.assertEqual(sum('SHOW GRANTS' in sql for sql in sender.reads), 2)
 
     def test_runtime_only_shell_actions_do_not_read_grants(self):
         cases = (('ic-8.4-member-offline', 'rejoin_instance'),
@@ -721,7 +724,9 @@ class FakeShell(object):
     def __call__(self, writer, script, extra_flags=None, timeout=None):
         self.scripts.append((script, timeout))
         if self.fail is not None:
-            raise self.fail
+            # These are AdminAPI failures; the guard is now input line 1.
+            text = re.sub(r'at line (\d+)', lambda match: 'at line %d' % (int(match.group(1)) + 1), str(self.fail))
+            raise ConnectorError(text)
         return ''
 
 
@@ -818,9 +823,9 @@ class Endpoints(Home):
         shell = FakeShell()
         result = self.send(conn, plan, typed=target['name'], shell=shell)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(shell.scripts, [(TAG + 'dba.getCluster().rejoinInstance("%s", {recoveryMethod: "incremental"});'
-                                          % target['address'],
-                                          m.SHELL_TIMEOUT)])
+        self.assertEqual(shell.scripts, [('\n'.join(plan['session_guard'] + plan['statements']), m.SHELL_TIMEOUT)])
+        self.assertEqual(plan['statements'], [TAG + 'dba.getCluster().rejoinInstance("%s", '
+                                            '{recoveryMethod: "incremental"});' % target['address']])
         (record,) = dbops.audit_report(self.workspace.store)['records']
         self.assertEqual((record['operation'], record['status']), ('cluster_action', 'ok'))
         self.assertNotIn('pw-secret', json.dumps(record))
@@ -1161,6 +1166,66 @@ class TestShellWriter(unittest.TestCase):
             self.writer().run_write('NOCONNECT', timeout=30)
         self.assertEqual((reviewed_writes.error_number(str(caught.exception)),
                           reviewed_writes.failed_line(str(caught.exception))), (2003, None))
+
+    def test_actual_javascript_guard_blocks_a_different_shell_session_before_adminapi(self):
+        from myflames import reviewed_writes
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('node is needed to execute the JavaScript guard without a database')
+        uuid = '11111111-2222-3333-4444-555555555555'
+        statement = 'dba.getCluster().switchToMultiPrimaryMode();'
+        plan = {'action': 'switch_to_multi_primary', 'via': 'mysqlsh', 'statements': [statement],
+                'expect': {'engine': 'mysql', 'server': {'server_uuid': uuid}}}
+        for actual, expected in [(uuid, 'done'), ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'refused')]:
+            with self.subTest(actual=actual):
+                observed = []
+                # Execute the generated JavaScript. Only Shell's database I/O
+                # is synthetic; an exception really stops the AdminAPI calls.
+                harness = '''
+                    const fs = require('fs'), vm = require('vm');
+                    const calls = [], queries = [];
+                    const session = {runSql(sql) {
+                        queries.push(sql);
+                        if (sql !== 'SELECT @@global.server_uuid') throw new Error('wrong identity SQL');
+                        return {fetchOne() {return [ACTUAL];}};
+                    }};
+                    const dba = {getCluster() {
+                        calls.push('getCluster');
+                        return {switchToMultiPrimaryMode() {calls.push('switchToMultiPrimaryMode');}};
+                    }};
+                    try {vm.runInNewContext(fs.readFileSync(0, 'utf8'), {session, dba}, {filename: 'STDIN'});}
+                    catch (error) {console.error(String(error) + '\\n at STDIN:1'); process.exitCode = 1;}
+                    console.log(JSON.stringify({calls, queries}));
+                '''.replace('ACTUAL', json.dumps(actual))
+
+                def run_javascript(argv, timeout, **options):
+                    result = subprocess.run([node, '-e', harness], input=options['input'],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+                    observed.append(json.loads(result.stdout.decode('utf-8')))
+                    return result
+
+                with mock.patch('myflames.connector._run_bounded', side_effect=run_javascript):
+                    result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test')
+                self.assertEqual(result['status'], expected, result)
+                self.assertEqual(observed[0]['queries'], ['SELECT @@global.server_uuid'])
+                if expected == 'refused':
+                    self.assertEqual(result['outcome'], 'identity_mismatch')
+                    self.assertEqual((result['sent'], result['not_sent']), ([], [statement]))
+                    self.assertEqual(observed[0]['calls'], [])
+                    self.assertEqual(result['message'], dbops.TARGET_IDENTITY_MISMATCH)
+                else:
+                    self.assertEqual(observed[0]['calls'], ['getCluster', 'switchToMultiPrimaryMode'])
+
+    def test_identity_marker_from_an_adminapi_error_does_not_claim_nothing_was_sent(self):
+        # A later statement can contain arbitrary server text. Only the
+        # first-line guard exception is a definite identity refusal.
+        for text in (b'Error: MYFLAMES_IDENTITY_MISMATCH\n at STDIN:2\n',
+                     b'Error: MYFLAMES_IDENTITY_MISMATCH at STDIN:1\n at STDIN:2\n'):
+            proc = subprocess.CompletedProcess([], 1, stdout=b'progress at STDIN:1\n', stderr=text)
+            with mock.patch('myflames.connector._run_bounded', return_value=proc):
+                with self.assertRaises(ConnectorError) as caught:
+                    self.writer().run_write('guard;\ndba.getCluster();')
+            self.assertIn('ERROR 0 at line 2:', str(caught.exception))
 
     def test_no_mysql_shell_sends_nothing(self):
         with self.assertRaises(ConnectorError):

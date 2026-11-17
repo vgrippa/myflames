@@ -1057,7 +1057,7 @@ READ_ONLY_SESSION_GUARD = ("SET SESSION TRANSACTION READ ONLY",)
 # The same UUID grammar used for reviewed Cluster and replication actions.
 _TARGET_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _TARGET_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,255}")
-_TARGET_ERROR = re.compile(r"^(?:mysql client exited \d+:\s*)?ERROR\s+(\d+)"
+_TARGET_ERROR = re.compile(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?ERROR\s+(\d+)"
                            r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):", re.M)
 TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one you reviewed. Nothing was sent. "
                             "Refresh and review again.")
@@ -1099,6 +1099,18 @@ def target_session_guard(engine, identity):
                                 for key in ["server_id", "hostname", "port"] + names[1:])
     else:
         raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
+    if engine == "pxc" or "wsrep_gcomm_uuid" in identity:
+        uuid = identity.get("wsrep_gcomm_uuid")
+        if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
+            raise ValueError("The reviewed Galera node UUID is missing or invalid. Nothing was sent. "
+                             "Refresh and review again.")
+        # MariaDB 10.11/11.4/11.8 sql/sql_show.cc: GLOBAL_STATUS uses
+        # variables_fields_info (VARIABLE_NAME, VARIABLE_VALUE). MySQL/PXC
+        # exposes the same columns in performance_schema.global_status
+        # (mysql-server/storage/perfschema/table_global_status.cc:65-66).
+        table = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
+        different += (" OR NOT ((SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') <=> %s)"
+                      % (table, _sql_string(uuid)))
     return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
 
 
@@ -1669,26 +1681,70 @@ def privilege_hint(operation, engine, version, grants, variable=None, schema=Non
     return result
 
 
-def read_grants(conn, tag="/*myflames:dbops*/ "):
-    """``{"checked", "user", "account", "grants", "error"}`` from USER(),
-    CURRENT_USER() and plain SHOW GRANTS (which includes the roles active at
-    login). Errors are returned, not raised. The lines carry no credential:
-    MariaDB prints the account's password hash or plugin string in its
-    global line, and :func:`strip_credentials` removes it here."""
-    from .connector import ConnectorError
-    from .perf_common import _reason, text_rows
+def _grants_read_sql(tag):
+    """Frame one fresh login's account, grants and wildcard setting.
 
-    def rows(sql):
-        return text_rows(conn, sql, tag)
+    SHOW rather than @@ reads optional variables without failing on MariaDB
+    or MySQL 5.7. Both identity snapshots also include the connection id:
+    a reconnect must not combine two logins, even to the same server.
+    """
+    who = "USER(), CURRENT_USER(), VERSION(), CONNECTION_ID(), @@global.server_id, @@global.hostname, @@global.port"
+    variables = "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'partial_revokes')"
+    node = "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"
+    return "; ".join(tag + sql for sql in (
+        "SELECT 'myflames_grants_begin', " + who, variables, node,
+        "SELECT 'myflames_grants_rows'", "SHOW GRANTS",
+        "SELECT 'myflames_grants_end', " + who, variables, node,
+        "SELECT 'myflames_grants_done'"))
+
+
+def read_grants(conn, tag="/*myflames:dbops*/ "):
+    """Account, SHOW GRANTS and partial_revokes from one client invocation.
+
+    Identity/account snapshots bracket the grants in that same login. A
+    changed or incomplete read returns checked=False and no account/grants,
+    so it can never produce an advisory GRANT for another backend's user.
+    MariaDB's password hash/plugin clauses are removed before returning.
+    """
+    from .connector import ConnectorError, unescape_mysql
+    from .perf_common import _reason
+
+    def failed(error):
+        return {"checked": False, "user": None, "account": None, "grants": [],
+                "partial_revokes": None, "error": redact(error)}
+
     try:
-        who = rows("SELECT USER(), CURRENT_USER() LIMIT 1")
-        grants = [strip_credentials(row[0]) for row in rows("SHOW GRANTS") if row and row[0]]
+        text = conn.run(_grants_read_sql(tag), extra_flags=["--comments", "--skip-reconnect"])
     except ConnectorError as exc:
-        return {"checked": False, "user": None, "account": None, "grants": [], "error": redact(_reason(exc))}
-    login = (who[0][0] or "") if who and who[0] else ""
+        return failed(_reason(exc))
+    rows = [[unescape_mysql(cell) for cell in line.split("\t")] for line in text.split("\n") if line]
+    starts = [i for i, row in enumerate(rows) if len(row) == 8 and row[0] == "myflames_grants_begin"]
+    middle = [i for i, row in enumerate(rows) if row == ["myflames_grants_rows"]]
+    ends = [i for i, row in enumerate(rows) if len(row) == 8 and row[0] == "myflames_grants_end"]
+    done = [i for i, row in enumerate(rows) if row == ["myflames_grants_done"]]
+    if not all(len(indices) == 1 for indices in (starts, middle, ends, done)):
+        return failed("The account and grants could not be read in one verified server session.")
+    start, middle, end, done = starts[0], middle[0], ends[0], done[0]
+    if not (start == 0 < middle < end < done == len(rows) - 1):
+        return failed("The account and grants could not be read in one verified server session.")
+    who = rows[start]
+    before = {row[0].lower(): row[1] for row in rows[start + 1:middle] if len(row) == 2}
+    after = {row[0].lower(): row[1] for row in rows[end + 1:done] if len(row) == 2}
+    if who[1:] != rows[end][1:] or before != after:
+        return failed("The server identity or account changed while reading grants. Refresh and try again.")
+    if not all(who[1:]) or ("mariadb" not in who[3].lower() and
+                           not _TARGET_UUID.fullmatch(before.get("server_uuid") or "")):
+        return failed("The account and grants could not be read in one verified server session.")
+    grant_rows = rows[middle + 1:end]
+    if any(len(row) != 1 or not row[0] for row in grant_rows):
+        return failed("The account and grants could not be read in one verified server session.")
+    grants = [strip_credentials(row[0]) for row in grant_rows]
+    partial = before.get("partial_revokes", "").upper()
+    partial = True if partial in ("ON", "1") else False if partial in ("OFF", "0") else None
+    login = who[1] or ""
     user = login.rsplit("@", 1)[0] if "@" in login else (login or None)
-    account = who[0][1] if who and len(who[0]) > 1 else None
-    return {"checked": True, "user": user, "account": account, "grants": grants, "error": None}
+    return {"checked": True, "user": user, "account": who[2], "grants": grants,
+            "partial_revokes": partial, "error": None}
 
 
 # ---- redaction -------------------------------------------------------------------------

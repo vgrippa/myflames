@@ -126,12 +126,21 @@ def recorded(name, edit=None):
         # without altering their public report or the archived recording.
         calls = [[c[0], set_pairs(c[1], {"server_id": "1"})] + c[2:]
                  if c[0] == preflight_sql else c for c in calls]
+    from _grants_fixtures import grants_batch
+    from myflames import dbops
     calls = _with_clusterset_answer(calls) + [
         [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
         [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, ''],
         ["/*myflames:cluster*/ SELECT USER(), CURRENT_USER() LIMIT 1", batch([["mf_admin@client", "mf_admin@localhost"]])],
-        ["/*myflames:cluster*/ SHOW GRANTS", batch([[line] for line in ADMIN_GRANTS])]]
-    return ReplayConn(calls, edit=edit, version=_version(data)), data
+        ["/*myflames:cluster*/ SHOW GRANTS", batch([[line] for line in ADMIN_GRANTS])],
+        [dbops._grants_read_sql("/*myflames:cluster*/ "), grants_batch(ADMIN_GRANTS, version=_version(data))]]
+    def replay_edit(sql, text, n):
+        # Topology edits target recorded two-column variables/status rows.
+        # The framed catalog reply is synthetic and must retain its markers.
+        if edit is None or "myflames_grants_begin" in sql:
+            return text
+        return edit(sql, text, n)
+    return ReplayConn(calls, edit=replay_edit, version=_version(data)), data
 
 
 # ---- editing recorded answers --------------------------------------------------
@@ -644,6 +653,9 @@ class ScenarioConn(object):
 
     def _answer(self, body):
         sc = self.scenario
+        if body.startswith("SELECT 'myflames_grants_begin'"):
+            from _grants_fixtures import grants_batch
+            return grants_batch(ADMIN_GRANTS, version=self.version)
         if body == "SELECT USER(), CURRENT_USER() LIMIT 1":
             return batch([["mf_admin@client", "mf_admin@localhost"]])
         if body == "SHOW GRANTS":

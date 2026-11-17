@@ -2089,7 +2089,6 @@ class _ActionReport(dict):
         super().__init__(report)
         self._action_conn = conn
         self._action_grants = None
-        self._partial_revokes = _on(variables.get("partial_revokes")) is True
         self._galera_identity = ({"server_id": _number(variables.get("server_id")),
                                   "wsrep_node_name": _text(variables.get("wsrep_node_name"))}
                                  if report.get("engine") == "mariadb" else {})
@@ -2097,8 +2096,7 @@ class _ActionReport(dict):
     def action_grants(self):
         from . import dbops
         if self._action_grants is None:
-            self._action_grants = _grant_model(self, dbops.read_grants(self._action_conn, CLUSTER_TAG),
-                                              self._partial_revokes)
+            self._action_grants = _grant_model(self, dbops.read_grants(self._action_conn, CLUSTER_TAG))
         return self._action_grants
 
 
@@ -2220,9 +2218,11 @@ MARIADB_ACTION_PRIVILEGES = {"desync_node": "wsrep_desync", "resync_node": "wsre
 _PRIVILEGES_UNREADABLE = ("Privileges could not be read; the server refuses the change if one is missing.")
 _SHELL_RUNTIME_PRIVILEGES = "MySQL Shell checks the privileges it needs when it runs."
 _GRANT_FIX = "Run the statement below as an administrator, then Refresh."
+_GRANT_MODE_UNKNOWN = ("The GRANT could not be built because partial_revokes could not be read "
+                       "in this account's session. Refresh and try again.")
 
 
-def _grant_model(report, grants, partial_revokes=False):
+def _grant_model(report, grants):
     """Normalize dbops.read_grants or an existing privileges model once.
 
     An absent, failed, empty or unparsed read is unknown, never a denial.
@@ -2233,10 +2233,15 @@ def _grant_model(report, grants, partial_revokes=False):
         return None
     if "global" in grants and "dynamic" in grants:
         model = dict(grants)
+        partial = model.get("grant_partial_revokes", model.get("partial_revokes"))
     else:
+        partial = grants.get("partial_revokes")
         model = privileges.parse_grants(grants.get("grants"), report.get("engine"), report.get("server_version"),
-                                         partial_revokes=partial_revokes)
+                                         partial_revokes=partial is True)
         model["account"] = grants.get("account")
+    # The parser's default is not evidence that the variable was read. Keep
+    # unknown separate so advisory schema GRANTs never guess their meaning.
+    model["grant_partial_revokes"] = partial if isinstance(partial, bool) else None
     if not model.get("grants") or model.get("unparsed") or not model.get("fresh_session", True):
         return None
     account = model.get("account")
@@ -2252,7 +2257,7 @@ def _grant_model(report, grants, partial_revokes=False):
 
 def _catalog_grants(report, checks):
     if "grants" in checks:
-        return _grant_model(report, checks["grants"], getattr(report, "_partial_revokes", False))
+        return _grant_model(report, checks["grants"])
     return report.action_grants() if isinstance(report, _ActionReport) else None
 
 
@@ -2294,12 +2299,19 @@ def _privilege_label(privilege, database, grantable):
             (" WITH GRANT OPTION" if grantable else ""))
 
 
-def _grant_sql(missing, account):
+def _grant_sql(missing, account, partial_revokes=None):
     """Advisory text only. No statement built here enters the write plan."""
     from .privileges import quote_account, quote_identifier
     account = quote_account(*account.rsplit("@", 1))
     grouped = {}
     for alternatives, database, grantable in missing:
+        if database and any(c in database for c in "\\_%"):
+            if not isinstance(partial_revokes, bool):
+                return None
+            if partial_revokes is False:
+                # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
+                # wildcard comparison with partial_revokes OFF, literal ON.
+                database = database.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
         names = grouped.setdefault((database, grantable), [])
         if alternatives[0] not in names:
             names.append(alternatives[0])
@@ -2561,6 +2573,10 @@ def _member_issue(report, action, member, checks):
         if action["via"] == "mysqlsh" and not _ADDRESS.fullmatch(member.get("address") or ""):
             return "This member has no valid MySQL Shell address.", "Correct its address in the cluster metadata, then Refresh."
         return _group_issue(report)
+    if checks.get("group_name") and not member.get("local") and base in ("desync_node", "resync_node"):
+        # Peer-local wsrep_desync/state is not part of this node's report.
+        # Catalog availability invites Review on the peer's own saved login.
+        return None
     galera = report.get("galera") or {}
     metrics = galera.get("metrics") or {}
     if (galera.get("wsrep_on") or "").upper() != "ON":
@@ -2664,11 +2680,13 @@ def _action_privileges(report, action, checks):
         action["missing_privileges"] = [[_privilege_label(p, database, grantable) for p in alternatives]
                                          for alternatives, database, grantable in missing]
         if missing:
-            action["grant_sql"] = _grant_sql(missing, model["account"])
+            action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
             if action["enabled"]:
                 action.update(enabled=False,
                               why_not="Needs " + "; and ".join(" or ".join(a) for a in action["missing_privileges"]) + ".",
-                              fix=_GRANT_FIX)
+                              fix=_GRANT_FIX if action["grant_sql"] else _GRANT_MODE_UNKNOWN)
+            elif not action["grant_sql"]:
+                note = " ".join(n for n in (note, _GRANT_MODE_UNKNOWN) if n)
     if note:
         action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
     return action
@@ -2679,12 +2697,14 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     """One eligibility result shared by the catalog and fresh-read planning.
 
     First failure wins: target, tool/version, readable report, then state.
-    In a Group connection every member action uses that member's saved
-    connection. The plan proves the route against a fresh target report.
+    A Rejoin names a member but runs from the active member with quorum.
+    Other Group member actions use that member's saved connection. The plan
+    proves the route against a fresh target report.
     """
     local = _local_member(report)
     grouped = bool(checks.get("group_name"))
-    target = member if scope == "member" and grouped or aid in _LOCAL_ACTIONS else local
+    member_route = scope == "member" and aid != "rejoin_instance"
+    target = member if member_route and grouped or aid in _LOCAL_ACTIONS else local
     profile = _member_profile(report, target, checks) if grouped and target else None
     via = _action_via(report, aid)
     # All these SQL/AdminAPI changes have dbops' risky classification. danger
@@ -2700,14 +2720,14 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     issue = target_issue
     if grouped:
         action["target"]["profile_id"] = profile.get("id") if profile else None
-        if profile and scope == "member" and not _member_profiles(report, target, checks):
+        if profile and member_route and not _member_profiles(report, target, checks):
             from .topology_links import format_endpoint
             action["target"].update(confirm=True, note="Review checks that %s (%s) is this member." %
                                     (profile.get("name") or profile["id"],
                                      format_endpoint(profile.get("host") or "127.0.0.1", profile.get("port") or 3306)))
         if target and profile is None:
             issue = _member_route_issue(report, target, checks)
-        if scope == "member" and not member.get("local"):
+        if member_route and not member.get("local"):
             # The active member's grants and SSH transport say nothing about
             # another saved login. Read its grants only when planning there.
             checks = dict(checks, grants=None, ssh=bool((profile or {}).get("ssh_host")))
@@ -2726,6 +2746,8 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
                  _overview_issue(report, action))
     if issue:
         action.update(enabled=False, why_not=issue[0], fix=issue[1])
+    elif grouped and member is not None and not member.get("local") and aid in ("desync_node", "resync_node"):
+        action["why_not"] = "Review checks wsrep_desync and the state on this node's own connection."
     _action_privileges(report, action, checks)
     if grouped and target and profile is None:
         action["why_not"] = issue[0]
@@ -2878,8 +2900,7 @@ def action_checks(conn, report, action, check_grants=True):
     # lazy grants read during send or when Shell validates the privileges.
     out = {"grants": None}
     if check_grants and requirements:
-        out["grants"] = _grant_model(report, dbops.read_grants(conn, CLUSTER_TAG),
-                                     getattr(report, "_partial_revokes", False))
+        out["grants"] = _grant_model(report, dbops.read_grants(conn, CLUSTER_TAG))
     if (report or {}).get("kind") == "innodb_cluster" and _via_shell(report, action):
         from .cluster_shell import find_shell
         out["shell"] = find_shell()
@@ -2897,6 +2918,8 @@ def action_checks(conn, report, action, check_grants=True):
 def _server_identity(report):
     server = dict(report.get("server") or {})
     server.update(getattr(report, "_galera_identity", {}))
+    if report.get("kind") in ("galera", "pxc"):
+        server["wsrep_gcomm_uuid"] = (report.get("galera") or {}).get("gcomm_uuid")
     return {"engine": report.get("engine"), "server_version": report.get("server_version"),
             "server": server, "kind": report.get("kind")}
 
@@ -2946,7 +2969,9 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
     if selected is None:
         raise ValueError("That change is not offered for this member now. Refresh and try again.")
     if target is not None and selected["scope"] == "member":
-        _check_member_target(report, next((m for m in _members(report) if m.get("key") == member_key), None), target)
+        routed_member = (local if action == "rejoin_instance" else
+                         next((m for m in _members(report) if m.get("key") == member_key), None))
+        _check_member_target(report, routed_member, target)
     if not selected["enabled"]:
         raise ActionUnavailable(" ".join(text for text in
                                         (selected["why_not"], selected["fix"], selected["grant_sql"]) if text))
@@ -2955,6 +2980,8 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
         # saved target and supply its binding; that fresh local identity then
         # replaces the suggestion before any write plan can be produced.
         raise ValueError("Review this action through the member's saved connection to confirm its identity.")
+    if action in ("desync_node", "resync_node") and member_key != (local or {}).get("key"):
+        raise ValueError("Review this action through the node's saved connection to check its own wsrep_desync state.")
     if selected["scope"] == "overview":
         member_key = local["key"]
     checks = checks or {}
@@ -2965,7 +2992,7 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
         from .topology_links import format_endpoint
         endpoint = target["endpoint"]
         server_name = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
-    member_name = server_name if selected["scope"] == "member" else None
+    member_name = server_name if selected["scope"] == "member" and action != "rejoin_instance" else None
     expect = dict(_server_identity(report), member=_identity(member), local=_identity(local),
                   component=cluster.get("component"), quorum=cluster.get("quorum"), topology=cluster.get("topology"))
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
@@ -3006,10 +3033,11 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
         plan["server_name"] = server_name
         plan["facts"][0] = ["Runs on", server_name]
         identity = target_server_identity(report)
+        listed = local if action == "rejoin_instance" else member
         plan["facts"] += [["Server UUID" if "server_uuid" in identity else "Galera node UUID",
                            next(iter(identity.values()))],
-                          ["Listed in the cluster as", member.get("name")]]
-        if selected["scope"] == "member":
+                          ["Listed in the cluster as", (listed or {}).get("name")]]
+        if selected["scope"] == "member" and action != "rejoin_instance":
             # Topology labels are untrusted display data. Keep them on their
             # own fact line, never in place of the saved server's name.
             plan["target_text"] = server_name

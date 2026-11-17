@@ -910,12 +910,13 @@ class TestPrivileges(unittest.TestCase):
                 self.assertEqual(dbops.strip_credentials(text), expected)
 
     def test_read_grants_returns_no_credentials(self):
+        from _grants_fixtures import grants_batch
         class Conn(object):
             def run(self, sql, extra_flags=None):
-                if 'USER()' in sql:
-                    return 'app@localhost\tapp@%\n'
-                return ("GRANT USAGE ON *.* TO `app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'\n"
-                        "GRANT SELECT ON `shop`.* TO `app`@`%`\n")
+                return grants_batch([
+                    "GRANT USAGE ON *.* TO `app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'",
+                    "GRANT SELECT ON `shop`.* TO `app`@`%`"], account='app@%', login='app@localhost',
+                    version='11.4.13-MariaDB')
         result = dbops.read_grants(Conn())
         self.assertEqual(result['grants'], ['GRANT USAGE ON *.* TO `app`@`%`', 'GRANT SELECT ON `shop`.* TO `app`@`%`'])
         self.assertNotIn('13C17A9', json.dumps(result))
@@ -982,18 +983,73 @@ class TestPrivileges(unittest.TestCase):
         self.assertEqual(dbops.privilege_hint('kill', 'mysql', (8, 4, 6), lines)['via'], 'CONNECTION_ADMIN')
 
     def test_read_grants(self):
+        from _grants_fixtures import grants_batch
         class Conn(object):
             calls = []
 
             def run(self, sql, extra_flags=None):
                 self.calls.append((sql, extra_flags))
-                return 'app@localhost\tapp@%\n' if 'USER()' in sql else 'GRANT USAGE ON *.* TO `app`@`%`\n'
+                return grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'], account='app@%', login='app@localhost')
         conn = Conn()
         result = dbops.read_grants(conn)
         self.assertEqual((result['user'], result['account'], result['grants']),
                          ('app', 'app@%', ['GRANT USAGE ON *.* TO `app`@`%`']))
-        self.assertTrue(all(sql.startswith('/*myflames:dbops*/ ') and flags == ['--comments']
-                            for sql, flags in conn.calls))
+        self.assertEqual(len(conn.calls), 1)
+        sql, flags = conn.calls[0]
+        self.assertTrue(sql.startswith('/*myflames:dbops*/ '))
+        self.assertEqual(flags, ['--comments', '--skip-reconnect'])
+        self.assertEqual(sql.count('SHOW GRANTS'), 1)
+        self.assertEqual(sql.count('CURRENT_USER()'), 2)
+        self.assertEqual(sql.count("'partial_revokes'"), 2)
+        self.assertEqual(result['partial_revokes'], False)
+
+    def test_grants_refuse_a_server_account_or_session_change(self):
+        from _grants_fixtures import grants_batch
+        changes = [dict(after_variables={'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}),
+                   dict(after_variables={'wsrep_gcomm_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}),
+                   dict(after_variables={'partial_revokes': 'ON'})]
+        changes += [dict(after_identity={i: value}) for i, value in enumerate(
+            ['other@client', 'other@%', '9.7.0', '74', '2', 'other-host', '3307'])]
+        for change in changes:
+            with self.subTest(change=change):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], **change)
+                result = dbops.read_grants(conn)
+                self.assertFalse(result['checked'])
+                self.assertIsNone(result['account'])
+                self.assertEqual(result['grants'], [])
+                self.assertIn('changed while reading grants', result['error'])
+                conn.run.assert_called_once()
+
+    def test_grants_partial_revokes_and_missing_identity_are_explicit(self):
+        from _grants_fixtures import grants_batch
+        for value, expected in [('ON', True), ('1', True), ('OFF', False), ('0', False),
+                                (None, None), ('unknown', None)]:
+            with self.subTest(value=value):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'],
+                                                     variables={'partial_revokes': value})
+                result = dbops.read_grants(conn)
+                self.assertTrue(result['checked'])
+                self.assertIs(result['partial_revokes'], expected)
+        for version in ('5.7.44', '8.4.11'):
+            conn = mock.Mock()
+            conn.run.return_value = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'], version=version,
+                                                 variables={'server_uuid': None})
+            self.assertFalse(dbops.read_grants(conn)['checked'])
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version='11.4.13-MariaDB',
+                                             variables={'server_uuid': None, 'partial_revokes': None})
+        self.assertTrue(dbops.read_grants(conn)['checked'])
+
+    def test_incomplete_grants_batch_never_exposes_an_account(self):
+        from _grants_fixtures import grants_batch
+        complete = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'])
+        for text in ('', complete.rsplit('myflames_grants_done', 1)[0], complete + 'unexpected\n',
+                     complete + 'myflames_grants_done\n'):
+            conn = mock.Mock()
+            conn.run.return_value = text
+            result = dbops.read_grants(conn)
+            self.assertEqual((result['checked'], result['account'], result['grants']), (False, None, []))
 
 
 # ---- redaction -----------------------------------------------------------------------------

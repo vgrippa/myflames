@@ -14,6 +14,8 @@ The policy appears in a strip along the window and in write-review sheets. Devel
 
 For protected actions, the SQL shown in the review is the SQL authorized for execution. The app binds the review to the statements and target, checks the target again before acting, and records the result in the local Audit log.
 
+Cluster changes check the server identity inside the session that sends the change, including changes through MySQL Shell. Galera checks the node's UUID as well as its server details. If a router or forwarded address reaches a different server, the change is refused before its first action.
+
 Privilege checks can report an action as unknown when they cannot prove that it is allowed. Read the reason rather than assuming unknown means permitted.
 
 ## Keep the cost of reads in mind

@@ -1569,9 +1569,14 @@ accounts, replication skips (including each skip-loop send), and Kill from
 Locks or Sessions use the same guard. Account plans that need several client
 invocations guard each invocation; a refusal after an earlier accepted
 statement retains a partial outcome. Cluster SQL and UDF actions are covered
-by `reviewed_writes`; MySQL Shell actions use a separate send contract and
-are outside this SQL guard's scope. ProxySQL Admin and Readyset actions do
-not expose these identity variables and retain their own protocol contracts.
+by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
+the first statement reads `@@global.server_uuid` through the Shell's own
+`session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. A different
+UUID throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
+exception to a refusal with `sent: []`. Its guard is reviewed, token-bound and
+audited like the SQL prefix, and later error line numbers exclude it.
+ProxySQL Admin and Readyset actions do not expose these identity variables
+and retain their own protocol contracts.
 
 Group Cluster reviews also bind `expect.target`: the target's saved
 `profile_id`, `profile_name`, every stored endpoint field (host, port, user,
@@ -1591,14 +1596,14 @@ flag govern the write. The token still belongs to the active connection,
 and its details bind the target, so it cannot move between servers.
 The Audit log's `connection` names the saved target, and its `target`
 contains the reviewed expectations, including the same `target` binding.
-SQL sends carry the target's UUID guard. The separate MySQL Shell guard
-remains outside this SQL send contract.
+SQL sends carry the target's SQL UUID guard; MySQL Shell sends carry the
+equivalent JavaScript guard through their own session.
 Apply-time target refusals (including group removal and a forgotten remote
 password) produce an audited `refused` result before password lookup. A login
 consent refusal after `audit.attempt` completes that pending record as `refused`
 with no statements sent, rather than an error or an unknown outcome. MySQL
 Shell checks the same consent before reading credentials and immediately before
-spawn. These checks do not add a same-session identity guard to MySQL Shell.
+spawn, then its first JavaScript statement checks the reviewed server UUID.
 
 Every editor owner path checks the connection, including ended sessions,
 status, export, stop, close, commit, and rollback. Ended sessions compare
@@ -2231,6 +2236,18 @@ port; replication copies `settings.server_identity` into the skip plan's
 `identity.server_identity`. Cluster SQL plans must include the required values
 in `expect.server`; older MariaDB plans without `server_id` refuse safely.
 
+Galera and PXC Cluster plans also bind `expect.server.wsrep_gcomm_uuid`.
+The same guard statement compares this node UUID with the `VARIABLE_VALUE`
+for `VARIABLE_NAME = 'wsrep_gcomm_uuid'` in `information_schema.GLOBAL_STATUS`
+(MariaDB) or `performance_schema.global_status` (MySQL/PXC). The comparison
+uses `NOT (... <=> '<reviewed node UUID>')`, so an absent status row also
+refuses instead of letting SQL NULL pass the guard. Sharing server_id,
+hostname, port or wsrep_node_name cannot replace node identity. MariaDB
+10.11.16, 11.4.13 and 11.8.9 `sql/sql_show.cc` register GLOBAL_STATUS with
+`Show::variables_fields_info` (VARIABLE_NAME, VARIABLE_VALUE), and their
+`mysql-test/suite/wsrep/r/variables.result:58` records wsrep_gcomm_uuid.
+MySQL's columns are defined in `storage/perfschema/table_global_status.cc:65–66`.
+
 A match sets a session variable to NULL and changes no persistent state. A
 mismatch raises server error 1242 at script line 1, so batch processing stops
 before the reviewed SQL. A server error on that guard returns `refused`,
@@ -2364,7 +2381,9 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `write_when_read_only` and object privileges, per the db-operations table
   (MariaDB SUPER counts before 11.0, READ_ONLY ADMIN before 10.11;
   `ALLOWED_BY_SUPER_BEFORE_110000`). `read_grants(conn)` reads USER(),
-  CURRENT_USER() and SHOW GRANTS, tagged, with `--comments`.
+  CURRENT_USER(), SHOW GRANTS and partial_revokes together with bracketing
+  identity snapshots in one tagged invocation, with `--comments` and
+  `--skip-reconnect`. An incomplete or changed snapshot returns no grants.
 - Audit: table `audit` in `~/.myflames/workspace.sqlite3` (owner-only, columns
   `workspace_store.AUDIT_COLUMNS`: id, attempted_at, finished_at (ISO-8601 UTC),
   status `pending|ok|error|declined|refused|unknown`, outcome (operation status such as
@@ -4774,7 +4793,12 @@ check disabled the action; that earlier reason and fix keep precedence.
 `target` has `self: boolean, member_name: string | null`, and, in a Group
 connection, `profile_id: string | null`, with optional `confirm: boolean` and
 `note: string`. Group member actions route through that member's saved
-connection. A recorded `server_uuid` on MySQL or `wsrep_node_uuid` (the observed
+connection, except `rejoin_instance`: it keeps the missing member's key,
+name and address as the instance to rejoin, but routes through the active
+ONLINE member with quorum. It does not need a saved login for the missing
+member. Shell's `modules/adminapi/cluster/cluster_impl.cc:1143–1176` checks
+Normal quorum and a primary before opening the separate target instance.
+A recorded `server_uuid` on MySQL or `wsrep_node_uuid` (the observed
 `wsrep_gcomm_uuid`) on Galera confirms the route. The profile must currently
 belong to the group and have a saved password for another member. The active
 member can use its request password (typed or saved); its live identity is
@@ -4830,6 +4854,13 @@ Outside a Group connection, local-node SQL still requires the connected
 member; UDFs and MySQL Shell retain their connected-member route. Overview
 actions default to the active member.
 
+For a Group connection's remote Galera node, both `desync_node` and
+`resync_node` remain eligible when their route is available, with the note
+"Review checks wsrep_desync and the state on this node's own connection."
+The active node's desync or donor state cannot judge a peer. Review must
+open that node's saved connection and evaluate its own `wsrep_desync` and
+local state; planning from a remote row in the active node's report refuses.
+
 `POST /api/live/cluster/plan` and `/api/live/cluster/action` accept the optional
 top-level `target_profile_id`.
 If present, the id must be non-empty text of at most 200 characters and
@@ -4851,7 +4882,7 @@ fields and its own saved password, as for `replication.profile_opener`, except
 that the request's active member can use its own typed password. The request's
 password is never copied to another member's route.
 
-For a Group member plan the freshly read target session's own server UUID
+Except for `rejoin_instance`, a Group member plan's freshly read target session's own server UUID
 (Galera: gcomm/node UUID) must equal the clicked member's UUID, and that
 member must be `local` in the report from that session. A matching address
 or topology label cannot satisfy this check. A mismatch returns 400 with
@@ -4861,8 +4892,11 @@ The review's `server_name`, `target_text` and Runs on fact use the stored
 profile name and endpoint, such as `prod-db-2 (db-2:3306)`. The live UUID
 and `Listed in the cluster as` topology label have their own fact lines.
 The plan builders format member titles and confirmation labels directly from
-that saved server name; no topology-label substring replacement occurs. An
-identity-recording failure refuses planning with a plain sentence and no token,
+that saved server name; no topology-label substring replacement occurs.
+For `rejoin_instance` this route proof and the Runs on / UUID / Listed in
+the cluster as facts refer to the active ONLINE member. Its Instance fact,
+title, `target_text` and typed confirmation still name the missing member.
+An identity-recording failure refuses planning with a plain sentence and no token,
 without exposing a store exception.
 
 `POST /api/live/cluster/plan` reads the server again and evaluates the same
@@ -4899,35 +4933,35 @@ recorded with the tables, separate from fixture or live-test evidence.
 
 | Action and route | Engine / version | Required privileges | Source file:line |
 | --- | --- | --- | --- |
-| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2189` |
-| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2191` |
-| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2190` |
-| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2192` |
-| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
-| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
-| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2187` |
-| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
-| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2188` |
-| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.27+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
-| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
-| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
-| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2196` |
-| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2197` |
-| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2218`; `myflames/dbops.py:1508` |
-| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2218`; `myflames/dbops.py:1508` |
-| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2219`; `myflames/dbops.py:1508` |
-| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:2672` (MySQL kinds); `myflames/cluster.py:2681` (MariaDB-only Galera branch) |
+| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2187` |
+| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2189` |
+| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2188` |
+| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2190` |
+| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2181` |
+| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
+| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
+| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
+| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
+| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.27+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2182` |
+| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2192` |
+| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2193` |
+| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
+| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
+| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
+| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
+| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2217`; `myflames/dbops.py:1549` |
+| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:2806` (MySQL kinds); `myflames/cluster.py:2815` (MariaDB-only Galera branch) |
 
 For the three Shell topology actions, the global list is cumulative by
 **server** version, with `WITH GRANT OPTION` for every required privilege:
 
 | Server version | Global privileges added | Source file:line |
 | --- | --- | --- |
-| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:2200`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:2202`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:2204`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:2205`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:2206`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:2198`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:2200`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:2202`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:2203`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:2204`; Shell `modules/adminapi/common/accounts.cc:122–175` |
 
 The schema requirements below also need grant option. A global grant can
 satisfy a schema requirement when `privileges.has` proves its scope and grant
@@ -4936,8 +4970,8 @@ a separate static `GRANT OPTION` does not supply it.
 
 | Schema | Privileges | Source file:line |
 | --- | --- | --- |
-| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:2209`; Shell `modules/adminapi/common/accounts.cc:244–324` |
-| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:2210`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:2207`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:2208`; Shell `modules/adminapi/common/accounts.cc:244–324` |
 
 ##### Grant reads, suggestions and refusals
 
@@ -4945,16 +4979,21 @@ Status reads keep a request-local `_ActionReport`: `read_status` itself does
 not read grants, and CLI/MCP reports expose neither grants nor the connection.
 Building the workspace catalog lazily reads `dbops.read_grants` for actions
 with a local requirement list and shares the parsed model across the request.
-At plan and send time, `action_checks` reads fresh privileges on the
-connection that will send the change, even if the report has cached catalog
-grants. It never borrows another member's or saved connection's grants.
+At plan time, `action_checks` reads fresh privileges on the connection that
+will send the change, even if the report has cached catalog grants. Sending
+skips that advisory grant read and relies on the same-session identity guard
+and the server's privilege checks. It never borrows another member's or saved connection's grants.
 Runtime-only Shell actions skip this read, including while `plan_action`
 evaluates sibling catalog entries. Their informational `why_not` is
 "MySQL Shell checks the privileges it needs when it runs." Shell remains
 responsible for its member logins and the privileges needed by each step.
 
-`dbops.read_grants` reads tagged `SELECT USER(), CURRENT_USER() LIMIT 1` and
-plain `SHOW GRANTS`. The shared `privileges.parse_grants` / `privileges.has`
+`dbops.read_grants` reads tagged USER(), CURRENT_USER(), VERSION(),
+CONNECTION_ID(), server_id, hostname and port, plain SHOW GRANTS, and the
+optional server_uuid, partial_revokes and wsrep_gcomm_uuid values in one
+client invocation with `--skip-reconnect`. Framed identity/account snapshots
+before and after the grants must match, including the optional variables;
+an incomplete or changed snapshot returns no account or grants. The shared `privileges.parse_grants` / `privileges.has`
 model handles effective login-time roles and partial revokes; Cluster adds no
 grant parser. For an action with a local requirement list, a failed, empty,
 unparsed or non-fresh grant model, or an absent or invalid `CURRENT_USER()`
@@ -4964,11 +5003,22 @@ eligible action. It appends exactly "Privileges could not be read; the server
 refuses the change if one is missing." to `why_not`, and an enabled plan keeps
 that sentence in `warnings`. Earlier topology or target refusals remain.
 
+Schema GRANT suggestions use the partial_revokes value from this same login,
+never the earlier status preflight. With it OFF, `_`, `%` and backslash in a
+schema name are escaped as database-pattern literals before identifier
+quoting. With it ON, names remain literal, including underscores and percent
+signs. When the setting is unknown and a schema needs such escaping,
+`grant_sql` is null and the catalog explains that the GRANT could not be
+built. A globally scoped suggestion needs no schema escaping. This follows
+MySQL `sql/auth/sql_auth_cache.cc:1426–1430`: wild_compare with
+partial_revokes OFF and strcmp with it ON.
+
 When a readable model cannot satisfy a requirement, `missing_privileges`
 names each missing alternative with its required scope and grant option.
 An otherwise eligible entry becomes disabled with `why_not` equal to
 `"Needs " + "; and ".join(" or ".join(row) for row in missing_privileges) + "."`
-and `fix` exactly "Run the statement below as an administrator, then Refresh."
+and, when a safe suggestion can be built, `fix` exactly
+"Run the statement below as an administrator, then Refresh."
 An earlier refusal keeps its own reason and fix, while still carrying the
 missing privileges and GRANT text.
 
@@ -5097,6 +5147,18 @@ because MySQL Shell connects to the other members directly with this connection'
 user and password; the place says so in its notes. MySQL Shell's member sessions
 take the user, password and CA files but not the profile's ssl-mode. The time limit is 600 s.
 
+Before these calls, the first script statement uses the Shell session's
+`runSql("SELECT @@global.server_uuid").fetchOne()[0]` to compare the reviewed
+UUID, throwing `MYFLAMES_IDENTITY_MISMATCH` if different. No AdminAPI method
+is evaluated before this check. Shell's
+`mysqlshdk/shellcore/shell_core.cc:140–177` evaluates stdin JavaScript as one
+script, so that exception prevents subsequent calls. `session_guard` exposes
+the derived JavaScript line to review, token binding and audit. `ShellWriter`
+maps the first-line marker to `refused` / `identity_mismatch` with every
+reviewed call `not_sent`; no after-read follows. Later exception locations
+subtract this prefix line, and a marker in a later AdminAPI error cannot
+claim an identity refusal.
+
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
 reviewed-write result is failed with nothing sent. A statement exception maps
@@ -5120,7 +5182,8 @@ drift refuses the reviewed operation before sending. MariaDB Galera also
 binds the freshly read `server_id`, `hostname`, `port` and `wsrep_node_name`:
 the preflight retains the extra identity on `_ActionReport`, outside the
 public `cluster-1.0` server object. Before a Galera write, a same-session
-`session_guard` compares all four global values; a mismatch refuses before
+`session_guard` compares all four global values and the node's wsrep_gcomm_uuid
+from GLOBAL_STATUS; a mismatch or missing node UUID refuses before
 the reviewed action statement runs. Endpoints:
 `POST /api/live/cluster/plan` (`action`, `member_key` for member actions;
 `_CONNECTION_PATHS`, saved password like the views; returns an enabled plan

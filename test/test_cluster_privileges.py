@@ -11,6 +11,7 @@ from unittest import mock
 
 import _cluster_fixtures as F
 from _perf_replay import batch
+from _grants_fixtures import grants_batch
 from myflames import cluster as m, dbops, privileges, reviewed_writes
 from myflames.connector import ConnectorError
 
@@ -43,12 +44,14 @@ def shell_globals(version):
     return sorted(result)
 
 
-def statement(names, database=None, grantable=False, account=QUOTED):
+def statement(names, database=None, grantable=False, account=QUOTED, partial_revokes=False):
+    if database and not partial_revokes:
+        database = database.replace('\\', '\\\\').replace('_', '\\_').replace('%', '\\%')
     return 'GRANT %s ON %s TO %s%s;' % (', '.join(names), '`%s`.*' % database if database else '*.*', account,
                                        ' WITH GRANT OPTION' if grantable else '')
 
 
-def shell_grants(version, omit=None, grantable=True):
+def shell_grants(version, omit=None, grantable=True, partial_revokes=False):
     names = shell_globals(version)
     # A global grant also satisfies a schema requirement. Remove it too when
     # isolating a scoped denial; the expected result then names both needs.
@@ -57,7 +60,7 @@ def shell_grants(version, omit=None, grantable=True):
     lines = [statement(names, grantable=grantable)]
     for database, names in SCHEMA_PRIVILEGES:
         names = [p for p in names if omit != (database, p)]
-        lines.append(statement(names, database, grantable))
+        lines.append(statement(names, database, grantable, partial_revokes=partial_revokes))
     return lines
 
 
@@ -76,6 +79,11 @@ class GrantsClient(object):
 
     def run(self, sql, extra_flags=None, timeout=None):
         self.reads.append(sql)
+        if 'myflames_grants_begin' in sql:
+            if self.denied:
+                raise ConnectorError('ERROR 1142 (42000): SHOW GRANTS denied')
+            return grants_batch(self.grants, account=self.account, login='login@client',
+                                version=self.conn.server_version(), variables=self.variables)
         if sql == m.CLUSTER_TAG + 'SELECT USER(), CURRENT_USER() LIMIT 1':
             return batch([['login@client', self.account]])
         if sql == m.CLUSTER_TAG + 'SHOW GRANTS':
@@ -110,7 +118,7 @@ class _ClusterPrivilegeCase(unittest.TestCase):
 
     def checks(self, grants, account=ACCOUNT):
         return {'shell': SHELL, 'bootstrap_group': 'OFF',
-                'grants': {'checked': True, 'account': account, 'grants': grants}}
+                'grants': {'checked': True, 'account': account, 'grants': grants, 'partial_revokes': False}}
 
     def report(self, version, scenario='gr-8.4-two-members'):
         report = F.report(scenario)
@@ -291,13 +299,60 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
     def test_partial_revoke_blocks_shell_schema_requirement(self):
         version = (8, 4, 11)
         report = self.report(version, 'ic-8.4-healthy')
-        lines = shell_grants(version, omit=(METADATA[0], 'INSERT')) + [statement(['INSERT'], grantable=True)]
+        lines = shell_grants(version, omit=(METADATA[0], 'INSERT'), partial_revokes=True) + [
+            statement(['INSERT'], grantable=True)]
         lines.append('REVOKE INSERT ON `mysql_innodb_cluster_metadata`.* FROM `monitor`@`%`')
         model = privileges.parse_grants(lines, 'mysql', '8.4.11', partial_revokes=True)
         model['account'] = ACCOUNT
         action = self.action(report, 'switch_to_multi_primary', {'shell': SHELL, 'grants': model})
         self.assert_missing(action, [['INSERT ON `mysql_innodb_cluster_metadata`.* WITH GRANT OPTION']],
-                            statement(['INSERT'], METADATA[0], True))
+                            statement(['INSERT'], METADATA[0], True, partial_revokes=True))
+
+    def test_schema_grant_uses_the_partial_revokes_read_with_its_account(self):
+        version = (8, 4, 11)
+        for enabled in (False, True):
+            with self.subTest(partial_revokes=enabled):
+                conn = GrantsClient('ic-8.4-healthy',
+                                    grants=shell_grants(version, omit=(METADATA[0], 'INSERT'),
+                                                        partial_revokes=enabled),
+                                    variables={'partial_revokes': 'OFF' if enabled else 'ON'})
+                report = m.read_status(conn)
+                # Deliberately disagree with the earlier monitoring login.
+                conn.variables['partial_revokes'] = 'ON' if enabled else 'OFF'
+                checks = m.action_checks(conn, report, 'switch_to_multi_primary')
+                action = self.action(report, 'switch_to_multi_primary', checks)
+                expected = statement(['INSERT'], METADATA[0], True, partial_revokes=enabled)
+                self.assert_missing(action, [['INSERT ON `mysql_innodb_cluster_metadata`.* WITH GRANT OPTION']],
+                                    expected)
+                # A copy of the suggestion grants only the named schema.
+                model = privileges.parse_grants([expected], 'mysql', '8.4.11', partial_revokes=enabled)
+                self.assertIs(privileges.has(model, 'INSERT', 'database', database=METADATA[0], grantable=True), True)
+                self.assertIsNot(privileges.has(model, 'INSERT', 'database',
+                                               database='mysqlXinnodbYclusterZmetadata', grantable=True), True)
+                self.assertEqual(sum('SHOW GRANTS' in sql for sql in conn.reads), 1)
+
+    def test_schema_grant_escapes_percent_and_underscore_only_when_needed(self):
+        missing = [(('INSERT',), 'data_%', False)]
+        self.assertEqual(m._grant_sql(missing, ACCOUNT, False),
+                         'GRANT INSERT ON `data\\_\\%`.* TO `monitor`@`%`;')
+        self.assertEqual(m._grant_sql(missing, ACCOUNT, True),
+                         'GRANT INSERT ON `data_%`.* TO `monitor`@`%`;')
+        self.assertIsNone(m._grant_sql(missing, ACCOUNT, None))
+
+    def test_unknown_partial_revokes_never_produces_an_ambiguous_grant(self):
+        conn = GrantsClient('ic-8.4-healthy', grants=[statement(['SUPER'])], variables={'partial_revokes': None})
+        report = m.read_status(conn)
+        checks = m.action_checks(conn, report, 'switch_to_multi_primary')
+        action = self.action(report, 'switch_to_multi_primary', checks)
+        self.assertFalse(action['enabled'])
+        self.assertTrue(action['missing_privileges'])
+        self.assertIsNone(action['grant_sql'])
+        self.assertIn('GRANT could not be built because partial_revokes could not be read', action['fix'])
+        report['cluster']['quorum'] = False
+        action = self.action(report, 'switch_to_multi_primary', checks)
+        self.assertIsNone(action['grant_sql'])
+        self.assertIn('GRANT could not be built because partial_revokes could not be read', action['why_not'])
+        self.assertIn('quorum', action['fix'])
 
     def test_current_user_quoting_never_changes_the_account(self):
         cases = [("o'reilly@%", "`o'reilly`@`%`"), ('back\\slash@host%', '`back\\slash`@`host%`'),
@@ -332,7 +387,7 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
         catalog = m.with_actions(report)
         action = next(a for a in catalog['actions'] if a['id'] == 'switch_to_multi_primary')
         self.assert_missing(action, [['GROUP_REPLICATION_ADMIN', 'SUPER']], statement(['GROUP_REPLICATION_ADMIN']))
-        self.assertEqual(conn.reads.count(m.CLUSTER_TAG + 'SHOW GRANTS'), 1)
+        self.assertEqual(sum('SHOW GRANTS' in sql for sql in conn.reads), 1)
         public = json.loads(json.dumps(catalog))
         self.assertNotIn('_action_conn', public)
         self.assertNotIn('login@client', json.dumps(public))
@@ -376,7 +431,9 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
         reviewed_writes.review_details(plan)
         guard = ("SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE "
                  "@@global.server_id <> 231 OR @@global.hostname <> 'reviewed-host' OR @@global.port <> 4306 "
-                 "OR @@global.wsrep_node_name <> 'reviewed-node');")
+                 "OR @@global.wsrep_node_name <> 'reviewed-node' OR NOT ((SELECT VARIABLE_VALUE FROM "
+                 "information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') <=> '%s'));"
+                 % plan['expect']['server']['wsrep_gcomm_uuid'])
         self.assertEqual(plan['session_guard'], [guard])
         result = m.execute_action(conn, plan)
         self.assertEqual(result['status'], 'done', result)
@@ -393,6 +450,29 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
         self.assertEqual(result['message'], dbops.TARGET_IDENTITY_MISMATCH)
         self.assertEqual(conn.writes, [])
         self.assertEqual(len(conn.batches), 1)
+
+    def test_two_nodes_with_identical_server_fields_are_distinguished_by_gcomm_uuid(self):
+        import re
+        conn = self.client()
+        plan = self.plan(conn)
+        own_uuid = plan['expect']['server']['wsrep_gcomm_uuid']
+        other_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        self.assertNotEqual(own_uuid, other_uuid)
+
+        def swapped_write(sql, **kwargs):
+            conn.batches.append(sql)
+            match = re.search(r"VARIABLE_NAME = 'wsrep_gcomm_uuid'\) <=> '([^']+)'", sql.splitlines()[0])
+            self.assertIsNotNone(match)
+            if match.group(1) != other_uuid:
+                raise ConnectorError('ERROR 1242 (21000) at line 1: Subquery returns more than 1 row')
+            conn.writes.extend(sql.splitlines()[1:])
+            return ''
+
+        conn.run_write = swapped_write
+        result = m.execute_action(conn, plan)
+        self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', 'identity_mismatch', []))
+        self.assertEqual(conn.writes, [])
+        self.assertIn(own_uuid, conn.batches[0].splitlines()[0])
 
     def test_changed_identity_in_fresh_read_sends_no_batch(self):
         for key, value in (('server_id', '232'), ('hostname', 'another-host'), ('port', '4307'),

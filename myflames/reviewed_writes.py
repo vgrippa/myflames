@@ -219,17 +219,23 @@ def review_details(plan):
 
 
 def session_guard(plan):
-    """SQL targets use a same-client guard; Admin/Shell protocols do not.
+    """Derive a same-session guard in the sender's own language.
 
-    Shell guards are a separate contract: SQL must never become JavaScript.
     ProxySQL Admin and Readyset do not expose these server identity variables.
     """
     from .dbops import target_session_guard
     expect = plan.get("expect") or {}
-    if plan.get("via") == "mysqlsh" or expect.get("engine") not in (
+    identity = expect.get("server_identity") or expect.get("server")
+    if plan.get("via") == "mysqlsh":
+        from .cluster_shell import target_session_guard as shell_guard
+        return shell_guard(identity)
+    if expect.get("engine") not in (
             "mysql", "percona", "percona_server", "pxc", "mariadb"):
         return []
-    return target_session_guard(expect["engine"], expect.get("server_identity") or expect.get("server"))
+    if expect.get("kind") in ("galera", "pxc"):
+        identity = dict(identity or {})
+        identity.setdefault("wsrep_gcomm_uuid", None)
+    return target_session_guard(expect["engine"], identity)
 
 
 def check_reviewed(plan):
