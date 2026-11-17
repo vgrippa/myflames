@@ -62,7 +62,7 @@ Use this when a frequent proxied query should be served from Readyset instead of
 
 1. Open **Readyset** in the sidebar and select **Proxied** to see the uncached queries observed passing through Readyset.
 2. Select a query and click **Create cache…** in the inspector.
-3. In the **Configure Readyset cache** sheet, click **Check support (EXPLAIN)** and read the **Shallow** and **Deep** verdicts with their reasons.
+3. In the **Configure Readyset cache** sheet the support check runs as soon as the sheet opens with the query pre-filled; the **Check support (EXPLAIN)** button re-runs it after you edit the query. Read the **Shallow** and **Deep** verdicts with their reasons.
 4. Choose the **Cache type**: **Shallow cache (TTL & refresh)** or **Deep cache (streaming dataflow)**. For a shallow cache, set **TTL (seconds)** and optional refresh and coalesce values.
 5. Click **Review CREATE CACHE…**, check the exact statement and confirm.
 

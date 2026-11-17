@@ -12,7 +12,7 @@ Use this when Replication, Cluster, ProxySQL or Readyset should draw the whole e
 
 1. Open **Replication**, **Cluster**, **ProxySQL** or **Readyset**. The group bar sits above **Topology** and says how cross-server reads are scoped.
 2. When the bar says "No connection group: myflames reads only this connection.", click **Create a group…**. When it says saved connections are part of this topology, click **Review…** to see them, pre-ticked, with the evidence for each.
-3. In the sheet, name the **Group** and tick the saved connections that belong to this environment.
+3. In the **Create a connection group** sheet, name the **Group**: the connection in use joins it (marked "This connection"). To add other saved connections, open **Review…** from the bar instead and tick the ones that belong to this environment.
 4. Click **Add N to <group>**.
 
 What you see: the place re-reads and draws the full topology, and the group bar lists which group members were read, which were not reached and which failed. When the connection you opened belongs to another group's topology, the bar instead offers **Add to <group>** and **Not now**.
