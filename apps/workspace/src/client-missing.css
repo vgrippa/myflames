@@ -191,14 +191,19 @@
 }
 .managed-shell-progress {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
 .managed-shell-progress progress {
   flex: 1 1 120px;
+  min-width: 0;
   max-width: 220px;
 }
 .managed-shell-progress span {
+  flex: 1 1 240px;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 .managed-shell .form-error {

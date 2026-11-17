@@ -195,6 +195,8 @@ export type ShellJobState = "downloading" | "verifying" | "installing" | "done" 
 export type ManagedShellJob = {
   id: string; state: ShellJobState; version: string;
   received: number; total: number; elapsed_s: number; error: string | null;
+  /** A failed/cancelled worker is still removing files; install rejoins it. */
+  cleaning: boolean;
 };
 export type ManagedShellStatus = {
   schema_version: "managed-shell-status-1.0";

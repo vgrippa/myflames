@@ -14,8 +14,9 @@
 // Mocked /api/client/tools, /api/client/tools/choose, /api/connection/test,
 // /api/lifecycle/tools, /api/editor/* and /api/accounts/*; the real Python
 // server for the rest. The MySQL Shell section mocks /api/client/shell/*:
-// idle, downloading with progress, Stop, failed, done, too old and
-// unsupported. Screenshots at 1440 and 720 px, light and dark.
+// idle, downloading with progress, Stop, failed, done, too old, unsupported,
+// stalled retries, out-of-order replies, cleanup, focus and closing mid-job.
+// Screenshots at 1440 and 720 px, light and dark.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -163,27 +164,41 @@ const lifecycleTools = {
 };
 
 // The managed MySQL Shell endpoints (managed-shell-status-1.0): a mutable
-// state the scenarios below steer. `shellNext` is the job install returns.
+// state the scenarios below steer. Install rejoins active/cleaning jobs, and
+// cancel requests cancellation without pretending the worker already ended.
+// Each response is a snapshot, including when a scenario holds its delivery.
 const SHELL_PINNED = { version: "9.7.0", size: 157547585, license: "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
   license_url: "https://www.mysql.com/about/legal/licensing/oem/", downloads_url: "https://dev.mysql.com/downloads/shell/9.7.html" };
 let shellState = { supported: true, unsupported_reason: null, platform: "darwin-arm64", pinned: SHELL_PINNED, installed: null, job: null };
 let shellNext = null;
-const shellJob = (state, extra = {}) => ({ id: "c".repeat(32), state, version: "9.7.0", received: 0, total: SHELL_PINNED.size, elapsed_s: 0.2, error: null, ...extra });
-const shellStatusAnswer = () => ({ status: 200, body: { schema_version: "managed-shell-status-1.0", ...shellState } });
+let shellSerial = 0;
+const shellJob = (state, extra = {}) => ({ id: (++shellSerial).toString(16).padStart(32, "0"), state, version: "9.7.0",
+  received: 0, total: SHELL_PINNED.size, elapsed_s: 0.2, error: null, cleaning: false, ...extra });
+const shellActive = (job) => job && ["downloading", "verifying", "installing"].includes(job.state);
+const shellStatusAnswer = () => ({ status: 200, body: JSON.parse(JSON.stringify({ schema_version: "managed-shell-status-1.0", ...shellState })) });
+const shellReplies = { status: [], install: [], cancel: [] };
+const shellReply = (kind, request, answer) => {
+  const override = shellReplies[kind].shift();
+  return override ? override(answer, request) : answer;
+};
 const SHELL_33 = 51990703; // 33% of 157547585: "52 MB of 158 MB"
 
 const h = await open("/api/live/health", "client-tools", {
   "/api/client/tools": (body) => toolsAnswer(!!body.connection),
-  "/api/client/shell/status": () => shellStatusAnswer(),
-  "/api/client/shell/install": () => {
-    shellState.job = shellNext || shellJob("downloading");
-    shellNext = null;
-    return shellStatusAnswer();
+  "/api/client/shell/status": (_body, request) => shellReply("status", request, shellStatusAnswer()),
+  "/api/client/shell/install": (_body, request) => {
+    if (!shellActive(shellState.job) && !shellState.job?.cleaning) {
+      shellState.job = shellNext || shellJob("downloading");
+      shellNext = null;
+    }
+    return shellReply("install", request, shellStatusAnswer());
   },
-  "/api/client/shell/cancel": (body) => {
-    if (shellState.job && body.id === shellState.job.id) shellState.job = { ...shellState.job, state: "cancelled", error: null };
-    return shellStatusAnswer();
-  },  "/api/client/tools/choose": (body) => {
+  "/api/client/shell/cancel": (body, request) => {
+    if (!shellState.job) return { status: 400, body: { error: "No MySQL Shell download is running." } };
+    if (body.id !== shellState.job.id) return { status: 400, body: { error: "That MySQL Shell download is no longer active." } };
+    return shellReply("cancel", request, shellStatusAnswer());
+  },
+  "/api/client/tools/choose": (body) => {
     if (body.path === REFUSED) return { status: 400, body: { error: "That path is not a MySQL or MariaDB client." } };
     stored[body.engine] = resolveChoice(body.engine, body.path);
     return toolsAnswer(!!body.connection);
@@ -440,7 +455,7 @@ try {
     await page.locator(".settings-page .source-item ::-p-text(Client tools)").click();
     await h.button("Client tools…", ".settings-panel ");
     await page.waitForSelector(`${dialog}[open]`);
-    await page.waitForSelector(`${shellSection} .managed-shell-actions > *`);
+    await page.waitForSelector(`${shellSection} :is(.managed-shell-actions, .managed-shell-status) > *, ${shellSection} > .hint`);
   };
   const closeDialog = async () => {
     await page.keyboard.press("Escape");
@@ -449,6 +464,27 @@ try {
     await page.waitForFunction(() => !document.querySelector(".settings-page"));
   };
   const shellCalls = (path) => state.other.filter((r) => r.path === path).map((r) => r.body);
+  const waitForShellCalls = async (path, count) => {
+    for (let i = 0; i < 100 && shellCalls(path).length < count; i++) await pause(25);
+    assert.ok(shellCalls(path).length >= count, `${path} reached ${count} requests`);
+  };
+  const holdShellReply = (kind) => {
+    let held = null;
+    shellReplies[kind].push((answer, request) => {
+      held = { answer, request };
+      return null;
+    });
+    return {
+      async wait() {
+        for (let i = 0; i < 100 && !held; i++) await pause(25);
+        assert.ok(held, `a ${kind} reply was held`);
+      },
+      async release() {
+        assert.ok(held, `a ${kind} reply is available`);
+        await held.request.respond({ status: held.answer.status, contentType: "application/json", body: JSON.stringify(held.answer.body) });
+      },
+    };
+  };
   // The dialog scrolls its own body: bring the section into view after each
   // viewport change, then assert it sits inside the window like shoot() does.
   const shootShell = async (name) => {
@@ -461,6 +497,9 @@ try {
       });
       await pause(100);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${name} fits ${width}`);
+      const overflow = await page.$$eval(`${dialog}, ${shellSection}, ${shellSection} .managed-shell-progress`, (els) =>
+        els.filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => ({ class: e.className, scroll: e.scrollWidth, width: e.clientWidth })));
+      assert.deepEqual(overflow, [], `${name} has no internal horizontal overflow in ${theme} at ${width}`);
       const box = await page.$eval(shellSection, (e) => {
         const r = e.getBoundingClientRect();
         return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
@@ -504,12 +543,21 @@ try {
   assert.equal(await page.$eval(stopAt, (b) => b.disabled), false, "Stop is armed after 600 ms");
   await shootShell("shell-downloading");
 
-  // 19. Stop cancels the running job; the cancelled line shows and focus
-  // returns to Get MySQL Shell. Polling stops once the job is no longer active.
+  // 19. A successful cancel can still report an active worker. Keep Stopping…
+  // disabled across polls until its final state, then restore focus and stop.
+  const stoppedId = shellState.job.id;
   await h.button("Stop", `${shellSection} `);
+  await page.waitForFunction(() => document.querySelector('[data-shell-section] .managed-shell-actions button.small')?.textContent === "Stopping…");
+  const stoppingPolls = shellCalls("/api/client/shell/status").length;
+  await waitForShellCalls("/api/client/shell/status", stoppingPolls + 2);
+  assert.equal(await page.$eval(stopAt, (b) => b.disabled), true, "Stop stays unavailable after the cancel reply and later active polls");
+  assert.equal(await h.text(stopAt), "Stopping…");
+  assert.equal(shellCalls("/api/client/shell/cancel").length, 1, "polling does not send another cancel");
+  await shootShell("shell-stopping");
+  shellState.job = { ...shellState.job, state: "cancelled" };
   await page.waitForFunction(() => /Download stopped; nothing was installed\./.test(document.querySelector("[data-shell-section]")?.textContent || ""));
   assert.equal(shellCalls("/api/client/shell/cancel").length, 1);
-  assert.deepEqual(shellCalls("/api/client/shell/cancel")[0], { id: "c".repeat(32) });
+  assert.deepEqual(shellCalls("/api/client/shell/cancel")[0], { id: stoppedId });
   await page.waitForFunction(() => document.activeElement?.textContent?.includes("Get MySQL Shell"), {}, );
   const pollsAfterStop = shellCalls("/api/client/shell/status").length;
   await pause(1200);
@@ -551,7 +599,7 @@ try {
   await closeDialog();
 
   // 23. Unsupported platform: no Get button, only Open Oracle downloads.
-  shellState = { supported: false, unsupported_reason: "MySQL Shell downloads are available for macOS arm64, macOS x64 and Windows x64.", platform: null, installed: null, job: null };
+  shellState = { supported: false, unsupported_reason: "MySQL Shell downloads are available for macOS arm64, macOS x64 and Windows x64.", platform: null, pinned: null, installed: null, job: null };
   await openDialog();
   await page.waitForSelector(`${shellSection} a`);
   assert.match(await h.text(shellSection), /MySQL Shell downloads are available for macOS arm64, macOS x64 and Windows x64\./);
@@ -560,6 +608,208 @@ try {
   assert.equal(await page.$eval(`${shellSection} a`, (a) => a.href), "https://dev.mysql.com/downloads/shell/");
   await shootShell("shell-unsupported");
   await closeDialog();
+
+  // 24. A zero-byte failure followed by a zero-byte retry gets a fresh stall
+  // clock. Move Date.now only, leaving the real 500 ms polling timers intact.
+  variant = "empty";
+  shellState = { supported: true, unsupported_reason: null, platform: "darwin-arm64", pinned: SHELL_PINNED, installed: null, job: null };
+  await openDialog();
+  await h.button("Get MySQL Shell", `${shellSection} `);
+  await page.waitForSelector(`${shellSection} progress`);
+  const zeroByteId = shellState.job.id;
+  await page.evaluate(() => {
+    window.__shellRealNow = Date.now;
+    Date.now = () => window.__shellRealNow() + 11_000;
+  });
+  try {
+    await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Still waiting for cdn.mysql.com."));
+    await shootShell("shell-stalled");
+    shellState.job = { ...shellState.job, state: "failed", error: "The download ended early." };
+    await page.waitForSelector(`${shellSection} [role=alert]`);
+    await h.button("Try again", `${shellSection} `);
+    await page.waitForSelector(`${shellSection} progress`);
+    assert.notEqual(shellState.job.id, zeroByteId, "retry starts a distinct job");
+    assert.equal(shellState.job.received, 0, "both attempts received zero bytes");
+    assert.doesNotMatch(await h.text(shellSection), /Still waiting for cdn.mysql.com\./, "retry does not inherit the old stall");
+    const retryPolls = shellCalls("/api/client/shell/status").length;
+    await waitForShellCalls("/api/client/shell/status", retryPolls + 2);
+    assert.doesNotMatch(await h.text(shellSection), /Still waiting for cdn.mysql.com\./, "later zero-byte polls keep the retry's fresh clock");
+  } finally {
+    await page.evaluate(() => { Date.now = window.__shellRealNow; delete window.__shellRealNow; });
+  }
+  shellState.job = { ...shellState.job, state: "cancelled" };
+  await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Download stopped; nothing was installed."));
+  await closeDialog();
+
+  // 25. Hold a failed poll from A. A newer cancel read sees A's failure, then
+  // Try again starts B. Deliver the poll last, and also return A from a newer
+  // status request: neither may replace B or stop its polling.
+  await openDialog();
+  await h.button("Get MySQL Shell", `${shellSection} `);
+  await page.waitForFunction(() => document.querySelector('[data-shell-section] .managed-shell-actions button.small')?.disabled === false);
+  shellState.job = { ...shellState.job, state: "failed", error: "Failure from the previous attempt." };
+  const oldFailure = { ...shellState.job };
+  const latePoll = holdShellReply("status");
+  await latePoll.wait();
+  await h.button("Stop", `${shellSection} `);
+  await page.waitForSelector(`${shellSection} [role=alert]`);
+  await h.button("Try again", `${shellSection} `);
+  await page.waitForSelector(`${shellSection} progress`);
+  const currentId = shellState.job.id;
+  assert.notEqual(currentId, oldFailure.id);
+  await latePoll.release();
+  await pause(100);
+  assert.equal(await page.$(`${shellSection} [role=alert]`), null, "late A cannot restore its failure");
+  assert.ok(await page.$(`${shellSection} progress`), "B keeps its progress bar");
+  shellReplies.status.push((answer) => ({ ...answer, body: { ...answer.body, job: oldFailure } }));
+  const afterLatePoll = shellCalls("/api/client/shell/status").length;
+  await waitForShellCalls("/api/client/shell/status", afterLatePoll + 2);
+  assert.equal(await page.$(`${shellSection} [role=alert]`), null, "a retired job id is ignored even on a newer request");
+  shellState.job = { ...shellState.job, received: SHELL_33 };
+  await page.waitForFunction(() => /from Oracle: 33%/.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  assert.equal(shellState.job.id, currentId, "B remains the current job");
+
+  // A late same-job poll cannot move progress backwards after a newer action
+  // reply either. The action is deliberately held to exercise reply latency.
+  const oldProgress = holdShellReply("status");
+  await oldProgress.wait();
+  shellState.job = { ...shellState.job, received: SHELL_33 * 2 };
+  const lateCancel = holdShellReply("cancel");
+  await h.button("Stop", `${shellSection} `);
+  await lateCancel.wait();
+  const duringCancel = shellCalls("/api/client/shell/status").length;
+  await pause(1100);
+  assert.equal(shellCalls("/api/client/shell/status").length, duringCancel, "polls do not supersede a pending action reply");
+  await lateCancel.release();
+  await page.waitForFunction(() => /from Oracle: 66%/.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  await oldProgress.release();
+  await pause(100);
+  assert.match(await h.text(shellSection), /from Oracle: 66%/, "an older reply cannot roll back the newer action's progress");
+  assert.equal(await h.text(stopAt), "Stopping…");
+  shellState.job = { ...shellState.job, state: "cancelled" };
+  await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Download stopped; nothing was installed."));
+  await closeDialog();
+
+  // 26. A cancel refusal survives active polls. Clear it only when a retry
+  // succeeds or when the job ends, and allow Stop to be retried after failure.
+  const cancelMessage = "Could not stop the MySQL Shell download. Try Stop again.";
+  for (const resolution of ["retry", "end"]) {
+    await openDialog();
+    await h.button("Get MySQL Shell", `${shellSection} `);
+    await page.waitForFunction(() => document.querySelector('[data-shell-section] .managed-shell-actions button.small')?.disabled === false);
+    shellReplies.cancel.push(() => ({ status: 400, body: { error: cancelMessage } }));
+    await h.button("Stop", `${shellSection} `);
+    await page.waitForSelector(`${shellSection} [role=alert]`);
+    const failedCancelPolls = shellCalls("/api/client/shell/status").length;
+    await waitForShellCalls("/api/client/shell/status", failedCancelPolls + 3);
+    assert.equal(await h.text(`${shellSection} [role=alert]`), cancelMessage, "polls preserve the cancel failure");
+    assert.equal(await page.$eval(stopAt, (b) => b.disabled), false, "a failed cancel permits another Stop");
+    if (resolution === "retry") {
+      await shootShell("shell-cancel-error");
+      const cancelCount = shellCalls("/api/client/shell/cancel").length;
+      await h.button("Stop", `${shellSection} `);
+      await page.waitForFunction(() => document.querySelector('[data-shell-section] .managed-shell-actions button.small')?.textContent === "Stopping…");
+      await page.waitForFunction(() => !document.querySelector("[data-shell-section] [role=alert]"));
+      assert.equal(shellCalls("/api/client/shell/cancel").length, cancelCount + 1);
+      assert.equal(await page.$eval(stopAt, (b) => b.disabled), true, "successful retry waits for the worker's final state");
+    }
+    shellState.job = { ...shellState.job, state: "cancelled" };
+    await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Download stopped; nothing was installed."));
+    assert.equal(await page.$(`${shellSection} [role=alert]`), null, "job completion clears a cancel failure");
+    await closeDialog();
+  }
+
+  // 27. Cleanup can start between the last status and Get/Try again. Install
+  // returns the SAME terminal job, then a single click waits and starts B as
+  // soon as cleaning becomes false. Do not show stale failure/progress text.
+  for (const trigger of ["Get MySQL Shell", "Try again"]) {
+    const previous = shellJob(trigger === "Try again" ? "failed" : "cancelled", { error: trigger === "Try again" ? "Previous attempt failed." : null });
+    shellState.job = trigger === "Try again" ? previous : null;
+    await openDialog();
+    shellState.job = { ...previous, cleaning: true };
+    shellNext = shellJob("downloading");
+    const nextId = shellNext.id;
+    const installBeforeCleanup = shellCalls("/api/client/shell/install").length;
+    await h.button(trigger, `${shellSection} `);
+    await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Finishing the last attempt…"));
+    assert.equal(shellState.job.id, previous.id, "install rejoins the cleaning job without replacing it");
+    assert.equal(shellNext.id, nextId, "cleanup does not consume the next job");
+    assert.equal(await page.$(`${shellSection} progress`), null, "cleanup has no progress bar");
+    assert.equal(await page.$(`${shellSection} [role=alert]`), null, "cleanup hides the previous failure");
+    assert.doesNotMatch(await h.text(shellSection), /Download stopped|Could not install MySQL Shell/);
+    const cleanupPolls = shellCalls("/api/client/shell/status").length;
+    await waitForShellCalls("/api/client/shell/status", cleanupPolls + 2);
+    assert.equal(shellCalls("/api/client/shell/install").length, installBeforeCleanup + 1, "cleanup polls status without repeatedly starting installs");
+    await shootShell(trigger === "Try again" ? "shell-retry-cleanup" : "shell-get-cleanup");
+    shellState.job = { ...shellState.job, cleaning: false };
+    await page.waitForSelector(`${shellSection} progress`);
+    assert.equal(shellState.job.id, nextId, "cleanup completion automatically starts the requested install");
+    assert.equal(shellCalls("/api/client/shell/install").length, installBeforeCleanup + 2, "exactly one automatic start follows cleanup");
+    assert.doesNotMatch(await h.text(shellSection), /Finishing the last attempt|Previous attempt failed/);
+    shellState.job = { ...shellState.job, state: "cancelled" };
+    await page.waitForFunction(() => document.querySelector("[data-shell-section]")?.textContent.includes("Download stopped; nothing was installed."));
+    await closeDialog();
+  }
+
+  // 28. An idle dialog reads once when it regains focus or becomes visible,
+  // adopts another window's job, and then polls it. Closing mid-download
+  // removes both the interval and the idle refresh listeners.
+  const refreshShell = async (event) => page.evaluate((type) => {
+    if (type === "focus") window.dispatchEvent(new Event(type));
+    else document.dispatchEvent(new Event(type));
+  }, event);
+  for (const event of ["focus", "visibilitychange"]) {
+    shellState.job = null;
+    await openDialog();
+    const idleStatus = shellCalls("/api/client/shell/status").length;
+    await pause(1100);
+    assert.equal(shellCalls("/api/client/shell/status").length, idleStatus, "an idle dialog does not poll");
+    await refreshShell(event);
+    await waitForShellCalls("/api/client/shell/status", idleStatus + 1);
+    await pause(1100);
+    assert.equal(shellCalls("/api/client/shell/status").length, idleStatus + 1, `${event} reads idle status once`);
+    if (event === "visibilitychange") {
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await pause(600);
+      assert.equal(shellCalls("/api/client/shell/status").length, idleStatus + 1, "becoming hidden does not refresh");
+      await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }); });
+    }
+    shellState.job = shellJob("downloading", { received: SHELL_33 });
+    await refreshShell(event);
+    await page.waitForFunction(() => /from Oracle: 33%/.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+    await page.waitForFunction(() => document.querySelector('[data-shell-section] .managed-shell-actions button.small')?.disabled === false);
+    const adoptedPolls = shellCalls("/api/client/shell/status").length;
+    await waitForShellCalls("/api/client/shell/status", adoptedPolls + 2);
+    await closeDialog();
+    const afterClose = shellCalls("/api/client/shell/status").length;
+    await refreshShell("focus");
+    await refreshShell("visibilitychange");
+    await pause(1500);
+    assert.equal(shellCalls("/api/client/shell/status").length, afterClose, "closing a downloading dialog stops polling and focus/visibility reads");
+    if (event === "visibilitychange") await page.evaluate(() => { delete document.visibilityState; });
+  }
+
+  // 29. A delayed action reply from a closed dialog has no authority over a
+  // reopened one. The backend may have finished A and started B in between.
+  shellState.job = null;
+  await openDialog();
+  const closedInstall = holdShellReply("install");
+  await h.button("Get MySQL Shell", `${shellSection} `);
+  await closedInstall.wait();
+  await closeDialog();
+  shellState.job = shellJob("downloading", { received: SHELL_33 });
+  await openDialog();
+  await page.waitForFunction(() => /from Oracle: 33%/.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  await closedInstall.release();
+  await pause(100);
+  assert.match(await h.text(shellSection), /from Oracle: 33%/, "a closed dialog's action reply cannot replace the reopened job");
+  await closeDialog();
+  const finalStatus = shellCalls("/api/client/shell/status").length;
+  await pause(1100);
+  assert.equal(shellCalls("/api/client/shell/status").length, finalStatus, "the final dialog leaves no polling running");
 
   assert.deepEqual(h.errors, []);
   console.log(`Client tools suite passed. Screenshots: ${shots}`);

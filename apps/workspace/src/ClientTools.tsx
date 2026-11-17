@@ -146,87 +146,171 @@ export function ManagedShell({
 }) {
   const [status, setStatus] = useState<ManagedShellStatus | null>(null);
   const [readError, setReadError] = useState("");
+  const [cancelError, setCancelError] = useState("");
   const [pending, setPending] = useState<"" | "install" | "cancel">("");
+  const [stoppingId, setStoppingId] = useState("");
+  const [retryAfterCleanup, setRetryAfterCleanup] = useState(false);
   const [armed, setArmed] = useState(false);
   const [stalled, setStalled] = useState(false);
   const getButton = useRef<HTMLSpanElement>(null);
-  const progress = useRef({ received: -1, at: 0 });
+  const progress = useRef({ id: "", received: -1, at: 0 });
+  const live = useRef(false);
+  const latestRequest = useRef(0);
+  const reading = useRef<number | null>(null);
+  const action = useRef<"" | "install" | "cancel">("");
+  const currentStatus = useRef<ManagedShellStatus | null>(null);
+  const retiredJobs = useRef(new Set<string>());
+  const stoppingJob = useRef("");
+  const ready = useRef(onReady);
+  ready.current = onReady;
 
   const job = status?.job ?? null;
   const running = shellRunning(job);
+  const finishing = !!job?.cleaning || retryAfterCleanup;
+  const polling = running || finishing;
 
-  function accept(reply: ManagedShellStatus) {
+  const isCurrent = (request: number) => live.current && request === latestRequest.current;
+
+  function accept(reply: ManagedShellStatus, request: number): boolean {
+    if (!isCurrent(request)) return false;
+    const previous = currentStatus.current;
+    const next = reply.job;
+    // Requests are ordered at dispatch, not arrival. Also retire known job
+    // ids so even a newer read cannot resurrect an earlier attempt.
+    if (next && retiredJobs.current.has(next.id)) return false;
+    if (previous?.job && next && previous.job.id !== next.id) {
+      retiredJobs.current.add(previous.job.id);
+    }
+    currentStatus.current = reply;
     setReadError("");
-    setStatus((previous) => {
-      // A job this section never saw (another window started it) is adopted.
-      const next = reply.job;
-      if (next?.state === "downloading") {
-        if (next.received !== progress.current.received) {
-          progress.current = { received: next.received, at: Date.now() };
-        }
-        setStalled(Date.now() - progress.current.at >= SHELL_STALL_MS);
-      } else {
-        setStalled(false);
+    if (next?.state === "downloading") {
+      if (next.id !== progress.current.id || next.received !== progress.current.received) {
+        progress.current = { id: next.id, received: next.received, at: Date.now() };
       }
-      if (previous && shellRunning(previous.job) && !shellRunning(next)) {
-        if (next?.state === "done") onReady?.();
-        else if (next) window.setTimeout(() => getButton.current?.querySelector("button")?.focus(), 0);
-      }
-      return reply;
+      setStalled(Date.now() - progress.current.at >= SHELL_STALL_MS);
+    } else {
+      setStalled(false);
+    }
+    if (!shellRunning(next) || previous?.job?.id !== next?.id) {
+      stoppingJob.current = "";
+      setStoppingId("");
+      setCancelError("");
+    }
+    setStatus(reply);
+    if (previous && next?.state === "done" &&
+        (previous.job?.id !== next.id || previous.job.state !== "done")) {
+      ready.current?.();
+    } else if (previous && shellRunning(previous.job) && !shellRunning(next) && next && !next.cleaning) {
+      window.setTimeout(() => getButton.current?.querySelector("button")?.focus(), 0);
+    }
+    return true;
+  }
+
+  function readStatus(showError = false) {
+    // Do not let a poll supersede an action or accumulate slow status reads.
+    // An action invalidates a prior read, allowing its own polling to proceed.
+    if (!live.current || action.current || reading.current === latestRequest.current) return;
+    const request = ++latestRequest.current;
+    reading.current = request;
+    shellStatus().then(
+      (reply) => accept(reply, request),
+      (e) => { if (showError && isCurrent(request)) setReadError(errorText(e)); },
+    ).finally(() => {
+      if (reading.current === request) reading.current = null;
     });
   }
 
   useEffect(() => {
-    let live = true;
-    shellStatus().then(
-      (reply) => { if (live) accept(reply); },
-      (e) => { if (live) setReadError(errorText(e)); },
-    );
-    return () => { live = false; };
+    live.current = true;
+    readStatus(true);
+    return () => {
+      live.current = false;
+      ++latestRequest.current;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll only while a job runs.
+  // Poll active work and cleanup only. Closing the dialog unmounts the section.
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => {
-      shellStatus().then(
-        (reply) => accept(reply),
-        () => { /* a dropped poll is answered by the next one */ },
-      );
-    }, SHELL_POLL_MS);
+    if (!polling) return;
+    const timer = window.setInterval(() => readStatus(), SHELL_POLL_MS);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running]);
+  }, [polling]);
+
+  // An idle open dialog can miss a job started in another window. Refresh once
+  // on focus/visibility, without introducing an idle polling loop.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible" && !action.current &&
+          !shellRunning(currentStatus.current?.job ?? null) && !currentStatus.current?.job?.cleaning) {
+        readStatus(true);
+      }
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Arm Stop 600 ms into the run; disarm when it ends.
   useEffect(() => {
-    if (!running) { setArmed(false); return; }
+    setArmed(false);
+    if (!running) return;
     const timer = window.setTimeout(() => setArmed(true), SHELL_STOP_ARM_MS);
     return () => window.clearTimeout(timer);
-  }, [running]);
+  }, [running, job?.id]);
 
   async function start() {
-    if (pending) return;
+    if (!live.current || action.current) return;
+    action.current = "install";
+    const request = ++latestRequest.current;
     setPending("install");
     try {
-      accept(await shellInstall());
+      const reply = await shellInstall();
+      if (accept(reply, request)) setRetryAfterCleanup(!!reply.job?.cleaning);
     } catch (e) {
-      setReadError(errorText(e));
+      if (isCurrent(request)) {
+        setRetryAfterCleanup(false);
+        setReadError(errorText(e));
+      }
     } finally {
-      setPending("");
+      if (isCurrent(request)) {
+        action.current = "";
+        setPending("");
+      }
     }
   }
 
+  // Keep the user's single click until the old worker releases its files.
+  useEffect(() => {
+    if (retryAfterCleanup && job && !job.cleaning) void start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryAfterCleanup, job?.cleaning]);
+
   async function stop() {
-    if (pending || !job || !armed) return;
+    if (action.current || !job || !armed || stoppingJob.current === job.id) return;
+    action.current = "cancel";
+    stoppingJob.current = job.id;
+    setStoppingId(job.id);
+    const request = ++latestRequest.current;
     setPending("cancel");
     try {
-      accept(await shellCancel(job.id));
+      if (accept(await shellCancel(job.id), request)) setCancelError("");
     } catch (e) {
-      setReadError(errorText(e));
+      if (isCurrent(request)) {
+        stoppingJob.current = "";
+        setStoppingId("");
+        setCancelError(errorText(e));
+      }
     } finally {
-      setPending("");
+      if (isCurrent(request)) {
+        action.current = "";
+        setPending("");
+      }
     }
   }
 
@@ -246,7 +330,7 @@ export function ManagedShell({
           {!status?.supported && status && (
             <a href={downloadsUrl} target="_blank" rel="noopener noreferrer">Open Oracle downloads</a>
           )}
-          {status?.supported && pinned && !running && (!usable || job?.state === "cancelled" || job?.state === "failed") && (
+          {status?.supported && pinned && !running && !finishing && (!usable || job?.state === "cancelled" || job?.state === "failed") && (
             <span ref={getButton} className="managed-shell-get">
               <ActionButton
                 primary
@@ -258,16 +342,16 @@ export function ManagedShell({
               </ActionButton>
             </span>
           )}
-          {running && (
+          {running && !finishing && (
             <>
               <ActionButton primary busy busyLabel={busyLabel}>{busyLabel}</ActionButton>
               <button
                 type="button"
                 className="button small"
-                disabled={!armed || pending === "cancel"}
+                disabled={!armed || stoppingId === job?.id}
                 onClick={() => void stop()}
               >
-                {pending === "cancel" ? "Stopping…" : "Stop"}
+                {stoppingId === job?.id ? "Stopping…" : "Stop"}
               </button>
             </>
           )}
@@ -275,7 +359,8 @@ export function ManagedShell({
       </div>
 
       <div className="managed-shell-status" role="status" aria-live="polite">
-        {running && job && (
+        {finishing && <span>Finishing the last attempt…</span>}
+        {running && !finishing && job && (
           <span className="managed-shell-progress">
             {job.state === "downloading" ? (
               <>
@@ -304,12 +389,12 @@ export function ManagedShell({
             )}
           </span>
         )}
-        {!running && job?.state === "done" && <span>{`MySQL Shell ${job.version} is ready.`}</span>}
-        {!running && job?.state === "cancelled" && <span>Download stopped; nothing was installed.</span>}
+        {!running && !finishing && job?.state === "done" && <span>{`MySQL Shell ${job.version} is ready.`}</span>}
+        {!running && !finishing && job?.state === "cancelled" && <span>Download stopped; nothing was installed.</span>}
         {!running && !job && usable && status?.installed && <span>{`MySQL Shell ${status.installed.version} is ready.`}</span>}
       </div>
 
-      {job?.state === "failed" && (
+      {!finishing && job?.state === "failed" && (
         <p className="form-error" role="alert">
           Could not install MySQL Shell: {job.error} Nothing was installed.{" "}
           <button type="button" className="button small" disabled={!!pending} onClick={() => void start()}>
@@ -318,11 +403,12 @@ export function ManagedShell({
         </p>
       )}
       {readError && <p className="form-error" role="alert">{readError}</p>}
+      {cancelError && <p className="form-error" role="alert">{cancelError}</p>}
 
       {status && !status.supported && (
         <p className="hint">{status.unsupported_reason}</p>
       )}
-      {status?.supported && pinned && !usable && !running && job?.state !== "done" && (
+      {status?.supported && pinned && !usable && !running && !finishing && job?.state !== "done" && (
         <>
           {tooOld && (
             <p className="hint">
