@@ -9,7 +9,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### New features
 
 - Settings > Appearance now has a Text group: choose the interface font and text size (12 to 16 px) and the code font and text size (11 to 20 px) for the Query editor and all SQL and code text, with a live preview and a Restore default text settings button. The Inter and JetBrains Mono fonts are included with the app, and fonts already installed on the computer are offered too.
-- **Settings > Client tools…** can now get MySQL Shell for you: when no usable MySQL Shell is found on this computer, **Get MySQL Shell** downloads Oracle's pinned MySQL Shell 9.7.0 build from Oracle into myflames's data folder (nothing is redistributed by myflames), with a progress bar, a Stop button and checksum verification before anything runs.
+- **Settings > Client tools…** can now get MySQL Shell for you: when no usable MySQL Shell is found on this computer, **Get MySQL Shell** downloads Oracle's pinned MySQL Shell 9.7.0 build from Oracle into myflames's data folder (nothing is redistributed by myflames), with a progress bar, a Stop button and checksum verification before anything runs. The downloaded copy is detected immediately and used in preference to other MySQL Shell installations.
 
 ### Improvements
 

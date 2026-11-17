@@ -311,7 +311,11 @@ failure; child processes run outside the cache lock. `refresh=True` bypasses
 cached results. Workspace startup warms discovery on a daemon thread without
 blocking the window. `mysqlpump` is presence-only, with null version and
 version tuple; it is deprecated, never probed, selected or marked used. Shell
-copies are listed separately, newest first.
+copies are listed separately: the verified managed copy first, then other
+copies newest first. Every discovery reads `managed_shell.installed_bin_dir()`
+afresh, so installing after an earlier inventory read needs no cache expiry.
+Only that validated published bin folder is added, and only for `mysqlsh`;
+discovery never searches the tools folder for staging or retired copies.
 
 `select` is pure. For each supported role it considers the server's own engine,
 using that program's version even in a mixed-version folder. Automatic ranks
@@ -330,8 +334,10 @@ Roles are `client` (queries), `dump`, `load` (SQL restores and CLONE), `backup`
 `mariadb-dump`, accepting its own `mysql` and `mysqldump` compatibility names.
 Load uses the client in the selected dump installation; if it has no client,
 load is missing. Without a selected dump, an own-engine query client can supply
-load. MySQL Shell uses the newest discovered Shell independently of the Settings
-choice and is selected only for a known MySQL server. Auxiliary programs such
+load. MySQL Shell prefers the verified managed copy over PATH copies of any
+version, otherwise the newest discovered Shell, independently of the Settings
+choice; it is selected only for a known MySQL server. The managed origin is
+`managed`, labeled `Downloaded by myflames`. Auxiliary programs such
 as `mariadb-upgrade` use the same series ranking through `select_program`.
 An unknown or unrecognized server gets only a query client: installed before
 bundled, then mysql before mariadb, then discovery order. If a known server has
@@ -445,7 +451,8 @@ leaving the active choice intact. Both return `client-tools-1.0`:
   `origin`, `origin_label`, `bundled`, `has_auth_plugins`, `programs` keyed by
   name with `{path, realpath, version}` (no mysqlpump), and `chosen_for[]`.
   Order is engine, descending version, then discovery order/key.
-- `shells[]`: `{path, realpath, version, origin, origin_label}`, newest first;
+- `shells[]`: `{path, realpath, version, origin, origin_label}`, managed first,
+  then other copies newest first;
   `skipped[]`: `{path, reason}`; `choice`: mysql and mariadb objects with
   `{path, installation, error}` (null where absent).
 - With a connection only: `server` `{engine, version, product}` or null,
@@ -4614,7 +4621,7 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 #### MySQL Shell on demand (backend)
 
 `managed_shell.py` exposes local-only `status(workspace_directory=None)`,
-`start_install(workspace_directory=None)`, `cancel(job_id)` and
+`start_install(workspace_directory=None)`, `cancel(job_id)`, `shutdown(timeout)` and
 `installed_bin_dir(workspace_directory=None)`, wired to the workspace through
 three authenticated POST endpoints in `ui.py` (`_MANAGED_SHELL_PATHS`,
 `_shell_response`): `POST /api/client/shell/status` and
@@ -4627,15 +4634,24 @@ first; a `Refused` is a 400 with its plain sentence). The workspace directory
 argument is the workspace store's folder (`MYFLAMES_TOOLS_DIR` wins when the
 desktop sets it). No connection, saved password or SQL is involved, and the
 reply contains nothing outside the tools folder. `WorkspaceServer.server_close`
-cancels a running job and joins its thread with a bounded wait. Tests:
+first runs `LifecycleJobs.shutdown()` to stop tool process groups, then calls
+`managed_shell.shutdown(timeout=1.0)` before the remaining session cleanup.
+The public helper sets the active job's cancel event and waits at most the
+given timeout for its worker, outside the job lock; `ui.py` reads no installer
+private state. An interrupted cleanup may leave staging or retire trees; the
+next install's existing lock-protected `_clean_stale` removes them. Tests:
 `test/test_ui_http.py` (`TestManagedShellHTTP`), including a stale cancel id
 that must not stop the running job.
 One process-wide `InstallJob` reports `downloading | verifying | installing |
-done | failed | cancelled`, received/total bytes, elapsed seconds and a plain
-error. Repeated starts reuse the active flight. Cancellation closes download
-sockets and stops/reaps the probe; shutdown callers cancel and join its thread.
-Cancel requires the current job's exact id; a missing or stale id cannot cancel
-a newer download.
+done | failed | cancelled`, received/total bytes, elapsed seconds, a plain
+error and a boolean `cleaning` on every snapshot. `cleaning` is true exactly
+while a cancelled or failed job's worker thread remains alive removing files.
+Repeated starts reuse the active flight; while `cleaning` is true,
+`start_install` returns that same snapshot unchanged, with no new job or error.
+Once cleanup ends a new start can create a new job. Cancellation closes download
+sockets and stops/reaps the probe. Cancel with no job refuses with
+`No MySQL Shell download is running.` (HTTP 400); otherwise it requires the
+current job's exact id, and a stale id cannot cancel a newer download.
 An exclusive OS lock on `mysqlsh/.install.lock` covers validation, stale cleanup,
 download, probe, publish and failure/cancel cleanup. A second backend refuses
 before cleaning or contacting the network. The private regular lock file holds
@@ -4668,7 +4684,12 @@ is skipped so a different clean user-profile root can still authorize the path.
 The pointer is data: its folder must exactly match the pinned version/platform,
 resolve inside the private `mysqlsh/` directory, and carry a matching
 `myflames-shell.json` version and SHA-256. The executable and startup tree pass
-`checked_shell_program` without a bundled exemption. An invalid pointer reports
+`checked_shell_program` without a bundled exemption. Discovery uses only
+`installed_bin_dir()` to add this managed copy, labels its origin `managed` /
+`Downloaded by myflames`, and prefers it to other Shell copies of any version.
+It reads the pointer on every inventory request; cached discovery/probe results
+cannot hide a newly installed copy. Every launch still rechecks through
+`connector.checked_shell_program`. An invalid pointer reports
 not installed and is never probed or preferred. An install returns `done`
 without downloading only after this same validation.
 

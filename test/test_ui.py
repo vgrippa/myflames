@@ -141,6 +141,18 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
         server._worker_slots = threading.BoundedSemaphore(server.MAX_REQUEST_WORKERS)
         return server
 
+    def test_server_close_stops_lifecycle_before_bounded_shell_shutdown(self):
+        from myflames import managed_shell, ui
+        server = self.server()
+        server.lifecycle, server.jobs, server.editor = mock.Mock(), mock.Mock(), mock.Mock()
+        calls = mock.Mock()
+        calls.attach_mock(server.lifecycle.shutdown, 'lifecycle')
+        with mock.patch.object(managed_shell, 'shutdown') as shutdown, \
+                mock.patch.object(ui.ThreadingHTTPServer, 'server_close'):
+            calls.attach_mock(shutdown, 'shell')
+            server.server_close()
+        self.assertEqual(calls.mock_calls, [mock.call.lifecycle(), mock.call.shell(timeout=1.0)])
+
     def test_handler_socket_has_timeout(self):
         self.assertEqual(WorkspaceHandler.timeout, 30)
         request = mock.Mock()

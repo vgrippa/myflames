@@ -14,7 +14,7 @@ import sys
 import tempfile
 import threading
 
-from . import connector, server_info
+from . import connector, managed_shell, server_info
 
 PROGRAMS = ('mysql', 'mariadb', 'mysqldump', 'mariadb-dump', 'mariadb-backup',
             'mariadb-upgrade', 'mysqlpump', 'mysqlsh')
@@ -129,6 +129,11 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
     from . import lifecycle
     bundle = connector.bundled_client_dir() if bundled is None else bundled
     folders = []
+    # Only the validated published pointer can introduce a managed Shell.
+    # Staging and retired trees also live under tools and must never be scanned.
+    managed = managed_shell.installed_bin_dir()
+    if managed:
+        folders.append((managed, 'managed'))
     for folder in (os.environ.get('PATH', '') if path is None else path).split(os.pathsep):
         if folder and not (bundle and connector._same_dir(folder, bundle)):
             folders.append((folder, 'path'))
@@ -141,7 +146,7 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
     copies, refused = {}, []
     order = 0
     for folder, source in folders:
-        for name in PROGRAMS:
+        for name in (('mysqlsh',) if source == 'managed' else PROGRAMS):
             binary = os.path.abspath(os.path.join(folder, name + ('.exe' if os.name == 'nt' else '')))
             if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
                 continue
@@ -218,6 +223,12 @@ def _has_auth_plugins(folder):
     return False
 
 
+def _shell_order(shell):
+    """Prefer the verified managed copy, then the newest other Shell."""
+    return (shell.get('origin') != 'managed', tuple(-v for v in shell['version_tuple']),
+            shell['order'], shell['realpath'], shell['path'])
+
+
 def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False):
     """Return {installations: [...], shells: [...], skipped: [...]}.
 
@@ -234,7 +245,8 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']
         folder = os.path.dirname(candidate['realpath'])
-        origin, label = _origin(folder, candidate['bundled'])
+        origin, label = (('managed', 'Downloaded by myflames') if candidate['source'] == 'managed'
+                         else _origin(folder, candidate['bundled']))
         entry = dict(name=name, path=binary, realpath=candidate['realpath'],
                      installation=None, origin=origin, origin_label=label, reason=None,
                      warning=None, available=False, deprecated=name == 'mysqlpump')
@@ -273,7 +285,6 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
         version_tuple = tuple(fields['version_tuple'] or ())
         version = '.'.join(str(n) for n in version_tuple) if any(version_tuple) else None
         folder = os.path.dirname(candidate['realpath'])
-        origin, label = _origin(folder, candidate['bundled'])
         if name == 'mysqlsh':
             shells.append(dict(path=binary, realpath=candidate['realpath'], version=version,
                                version_tuple=version_tuple, origin=origin, origin_label=label,
@@ -298,8 +309,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
         group['version_tuple'] = server_info.parse_version_tuple(group['version'])
         group['series'] = '%s.%s' % group['version_tuple'][:2]
     return dict(installations=sorted(groups.values(), key=lambda g: (g['order'], g['key'])),
-                shells=sorted(shells, key=lambda s: (tuple(-v for v in s['version_tuple']),
-                                                    s['order'], s['realpath'], s['path'])), skipped=skipped, copies=copies)
+                shells=sorted(shells, key=_shell_order), skipped=skipped, copies=copies)
 
 
 def _server(server):
@@ -438,8 +448,7 @@ def select(discovered, server=None, choice=None):
                 load['program'], load['version'], 'MySQL' if engine == 'mysql' else 'MariaDB',
                 series[0], series[1])
     if engine == 'mysql' and discovered.get('shells'):
-        shell = min(discovered['shells'], key=lambda s: (tuple(-n for n in s['version_tuple']),
-                                                       s['order'], s['realpath'], s['path']))
+        shell = min(discovered['shells'], key=_shell_order)
         result['shell'] = dict(shell, role='shell', program='mysqlsh', engine='mysql',
                                installation='mysql:' + os.path.dirname(shell['realpath']),
                                bundled=shell['origin'] == 'bundled', reason='newest', warning=None)

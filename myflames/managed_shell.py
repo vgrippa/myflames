@@ -367,7 +367,9 @@ class InstallJob:
             return {'id': self.id, 'state': self.state, 'version': self.entry['version'],
                     'received': self.received, 'total': self.total,
                     'elapsed_s': round((self.finished or time.monotonic()) - self.started, 3),
-                    'error': self.error}
+                    'error': self.error,
+                    'cleaning': bool(self.state in ('cancelled', 'failed') and
+                                     self.thread and self.thread.is_alive())}
 
     def check_cancel(self):
         if self.cancel_event.is_set():
@@ -996,7 +998,7 @@ def status(workspace_directory=None):
 
 
 def start_install(workspace_directory=None):
-    """Start one background job or return the existing flight idempotently."""
+    """Start one flight, reusing it until its worker has finished cleanup."""
     global _JOB
     with _LOCK:
         if _JOB and (_JOB.state in _ACTIVE or (_JOB.thread and _JOB.thread.is_alive())):
@@ -1035,10 +1037,31 @@ def cancel(job_id):
     """Request cleanup and close download sockets immediately. Done stays done."""
     with _LOCK:
         job = _JOB
-        if not isinstance(job_id, str) or not job_id or (job and job.id != job_id):
+        if job is None:
+            raise Refused('No MySQL Shell download is running.')
+        if not isinstance(job_id, str) or not job_id or job.id != job_id:
             raise Refused('That MySQL Shell download is no longer active.')
-        if job and job.state in _ACTIVE:
+        if job.state in _ACTIVE:
             job.cancel_event.set()
             if job.watchdog:
                 job.watchdog._expire()
-        return job.snapshot() if job else None
+        return job.snapshot()
+
+
+def shutdown(timeout):
+    """Request cancellation and give the worker at most timeout seconds to end.
+
+    A blocked network read or filesystem cleanup may outlive this wait. The
+    next installer holding the OS lock removes any stale staging/retire trees.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _LOCK:
+        job = _JOB
+        if job is None:
+            return
+        if job.state in _ACTIVE:
+            job.cancel_event.set()
+        thread = job.thread
+    # Cleanup needs _LOCK too. Never hold it while waiting for the worker.
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(max(0.0, deadline - time.monotonic()))

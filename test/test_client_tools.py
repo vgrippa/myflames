@@ -383,6 +383,46 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['installations'], [])
         self.assertEqual([s['version'] for s in report['shells']], ['9.6.0', '8.4.13'])
 
+    def test_managed_shell_appears_after_first_read_and_wins_over_newer_path_copy(self):
+        from myflames import cluster_shell, lifecycle, managed_shell
+        managed = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        newer = self.make(self.root / 'path/bin', 'mysqlsh', version='10.0.0')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=None) as installed:
+            self.assertEqual([s['path'] for s in self.discover(newer.parent)['shells']], [str(newer)])
+            installed.return_value = str(managed.parent)
+            # A PATH alias of the managed binary must not duplicate or relabel it.
+            report = self.discover(newer.parent, managed.parent)
+            self.assertEqual([s['path'] for s in report['shells']], [str(managed), str(newer)])
+            self.assertEqual(report['shells'][0]['origin'], 'managed')
+            self.assertEqual(report['shells'][0]['origin_label'], 'Downloaded by myflames')
+            self.assertEqual(report['copies'][0]['origin'], 'managed')
+            self.assertEqual(ct.select(report, {'engine': 'mysql', 'version': '8.4.13'})['shell']['path'],
+                             str(managed))
+            with mock.patch.dict(os.environ, {'PATH': str(newer.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                    mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                    mock.patch.object(ct.connector, 'client_choices', return_value={}):
+                self.assertEqual(cluster_shell.find_shell()['path'], str(managed))
+                for server in (None, {'engine': 'mysql', 'version': '8.4.13'}):
+                    with self.subTest(server=server):
+                        tools = lifecycle.detect_tools(server=server)
+                        self.assertEqual(tools['tools']['mysqlsh']['path'], str(managed))
+                        self.assertEqual(tools['tools']['mysqlsh']['origin_label'], 'Downloaded by myflames')
+            self.assertGreaterEqual(installed.call_count, 5)
+
+    def test_managed_bin_only_adds_shell_and_rechecks_launch_trust(self):
+        from myflames import managed_shell
+        binary = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        self.make(binary.parent, 'mysql')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=str(binary.parent)), \
+                mock.patch.object(ct.connector, 'checked_shell_program',
+                                  wraps=ct.connector.checked_shell_program) as checked:
+            report = self.discover()
+            self.assertEqual(report['installations'], [])
+            self.assertEqual([s['path'] for s in report['shells']], [str(binary)])
+            # Snapshot, discovery and the actual --version launch each check.
+            self.assertGreaterEqual(checked.call_count, 3)
+            self.assertEqual(checked.call_args, mock.call(str(binary)))
+
     def test_shell_startup_tree_abuse_is_skipped_without_any_version_probe(self):
         from myflames import cluster_shell, lifecycle
         system = self.root / 'etc-mysql'
@@ -770,6 +810,15 @@ class SelectionTests(unittest.TestCase):
             random.Random(i).shuffle(shuffled['shells'])
             self.assertEqual(ct.select(shuffled, {'engine': 'mysql', 'version': '8.4.3'}), expected)
         self.assertEqual(self.discovered, original)
+
+    def test_managed_shell_selection_wins_independently_of_list_order(self):
+        managed = dict(self.shell, path='/managed/mysqlsh', realpath='/managed/mysqlsh',
+                       version='8.4.13', version_tuple=(8, 4, 13), origin='managed',
+                       origin_label='Downloaded by myflames', order=99)
+        for shells in ([self.shell, managed], [managed, self.shell]):
+            with self.subTest(shells=shells):
+                self.discovered['shells'] = shells
+                self.assertEqual(self.choose()['shell']['path'], managed['path'])
 
     def test_empty_inventory(self):
         result = ct.select(dict(installations=[], shells=[]))

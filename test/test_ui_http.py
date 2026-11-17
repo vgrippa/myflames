@@ -466,7 +466,7 @@ class _FakeShellJob:
 
     def snapshot(self):
         return {'id': self.id, 'state': self.state, 'version': '9.7.0',
-                'received': 0, 'total': 158574987, 'elapsed_s': 0.0, 'error': None}
+                'received': 0, 'total': 158574987, 'elapsed_s': 0.0, 'error': None, 'cleaning': False}
 
 
 class TestManagedShellHTTP(unittest.TestCase):
@@ -558,12 +558,25 @@ class TestManagedShellHTTP(unittest.TestCase):
             start.assert_not_called()
 
     def test_cancel_requires_one_well_formed_id(self):
-        for payload in ({}, {'id': None}, {'id': 42}, {'id': ''}, {'id': 'a' * 65},
-                        {'id': 'a' * 32, 'extra': True}):
-            with self.subTest(payload=payload):
-                status, result = self.post('/api/client/shell/cancel', payload)
-                self.assertEqual(status, 400)
-                self.assertIn('error', result)
+        with mock.patch.object(managed_shell, 'cancel', side_effect=AssertionError('Invalid id reached cancel')) as cancel:
+            for payload, sentence in (
+                    ({}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': None}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 42}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': ''}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 'a' * 65}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 'a' * 32, 'extra': True}, 'Unexpected MySQL Shell field.')):
+                with self.subTest(payload=payload):
+                    status, result = self.post('/api/client/shell/cancel', payload)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(result['error'], 'Could not complete the request: ' + sentence)
+            cancel.assert_not_called()
+
+    def test_cancel_without_a_job_is_a_plain_400(self):
+        with mock.patch.object(managed_shell, '_JOB', None):
+            status, result = self.post('/api/client/shell/cancel', {'id': 'a' * 32})
+        self.assertEqual(status, 400)
+        self.assertEqual(result['error'], 'No MySQL Shell download is running.')
 
     def test_stale_cancel_id_never_stops_the_running_job(self):
         job = _FakeShellJob()

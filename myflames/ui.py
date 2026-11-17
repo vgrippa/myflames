@@ -2393,19 +2393,6 @@ class WorkspaceServer(ThreadingHTTPServer):
         deadline.daemon = True
         deadline.start()
         try:
-            # A running MySQL Shell download stops with the workspace: cancel
-            # closes its sockets, then a bounded join lets cleanup finish.
-            from . import managed_shell
-            with managed_shell._LOCK:
-                shell_job = managed_shell._JOB
-            if shell_job is not None:
-                try:
-                    managed_shell.cancel(shell_job.id)
-                except ValueError:
-                    pass
-                shell_thread = shell_job.thread
-                if shell_job.state in managed_shell._ACTIVE and shell_thread is not None:
-                    shell_thread.join(managed_shell.REQUEST_TIMEOUT + 5)
             # Lifecycle tools (dump, restore, clone) run in their own process
             # groups, beyond a supervisor's signal to this process group. Stop
             # them first and boundedly, before cleanup that can block on the
@@ -2413,6 +2400,10 @@ class WorkspaceServer(ThreadingHTTPServer):
             lifecycle = getattr(self, "lifecycle", None)
             if lifecycle is not None:
                 lifecycle.shutdown()
+            # Stop tool process groups before giving the optional downloader
+            # a bounded cleanup window within the desktop supervisor's grace.
+            from . import managed_shell
+            managed_shell.shutdown(timeout=1.0)
             registry = getattr(self, "replication_loops", None)
             if registry is not None:
                 registry.stop_all(wait=True)

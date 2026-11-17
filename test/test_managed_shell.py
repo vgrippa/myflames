@@ -757,6 +757,155 @@ class ManagedShellTests(unittest.TestCase):
         shell.cancel(newer.id)
         self.assertTrue(newer.cancel_event.is_set())
 
+    def test_cancel_without_a_job_refuses_plainly(self):
+        with self.assertRaisesRegex(shell.Refused, '^No MySQL Shell download is running\\.$'):
+            shell.cancel('a' * 32)
+
+    def test_snapshot_cleaning_only_while_failed_or_cancelled_worker_is_alive(self):
+        entry = dict(self.configure(), version=self.lock['version'])
+        job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+        release = threading.Event()
+        job.thread = threading.Thread(target=release.wait, args=(5,))
+        job.thread.start()
+        try:
+            for state in shell._ACTIVE + ('done', 'failed', 'cancelled'):
+                with self.subTest(state=state):
+                    job.update(state=state)
+                    self.assertIs(job.snapshot()['cleaning'], state in ('failed', 'cancelled'))
+        finally:
+            release.set()
+            job.thread.join(2)
+        self.assertFalse(job.thread.is_alive())
+        for state in ('failed', 'cancelled'):
+            job.update(state=state)
+            self.assertIs(job.snapshot()['cleaning'], False)
+        job.thread = None
+        self.assertIs(job.snapshot()['cleaning'], False)
+
+    def test_start_reuses_cleaning_snapshot_then_starts_a_new_job(self):
+        for state in ('failed', 'cancelled'):
+            with self.subTest(state=state):
+                entry = dict(self.configure(), version=self.lock['version'])
+                job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+                job.update(state=state, finished=time.monotonic())
+                release = threading.Event()
+                job.thread = threading.Thread(target=release.wait, args=(5,))
+                shell._JOB = job
+                job.thread.start()
+                try:
+                    before = job.snapshot()
+                    self.assertTrue(before['cleaning'])
+                    with patch.object(shell, '_acquire_install_lock', side_effect=AssertionError('New install')):
+                        self.assertEqual(shell.start_install(), before)
+                    self.assertIs(shell._JOB, job)
+                finally:
+                    release.set()
+                    job.thread.join(2)
+                self.assertFalse(job.snapshot()['cleaning'])
+                self.assertNotEqual(shell.start_install()['id'], job.id)
+                self.join()
+                self.assertEqual(shell._JOB.state, 'done')
+
+    def test_shutdown_cancels_worker_without_holding_the_job_lock(self):
+        entry = dict(self.configure(), version=self.lock['version'])
+        job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+        shell._JOB = job
+
+        def worker():
+            job.cancel_event.wait(3)
+            job.update(state='cancelled', finished=time.monotonic())
+
+        job.thread = threading.Thread(target=worker)
+        job.thread.start()
+        try:
+            shell.shutdown(timeout=1)
+            self.assertTrue(job.cancel_event.is_set())
+            self.assertFalse(job.thread.is_alive())
+            self.assertEqual(job.state, 'cancelled')
+            self.assertFalse(job.snapshot()['cleaning'])
+        finally:
+            job.cancel_event.set()
+            self.join()
+        self.network.assert_not_called()
+
+    def test_shutdown_wait_is_bounded_even_if_worker_cannot_finish(self):
+        entry = dict(self.configure(), version=self.lock['version'])
+        job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+        release = threading.Event()
+        job.thread = threading.Thread(target=release.wait, args=(5,))
+        shell._JOB = job
+        job.thread.start()
+        try:
+            started = time.monotonic()
+            shell.shutdown(timeout=0.03)
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertTrue(job.cancel_event.is_set())
+            self.assertTrue(job.thread.is_alive())
+        finally:
+            release.set()
+            self.join()
+
+    def test_shutdown_without_a_job_is_harmless(self):
+        shell.shutdown(timeout=0)
+        self.assertIsNone(shell._JOB)
+
+    def test_next_install_cleans_stage_and_retire_left_after_shutdown(self):
+        entry = dict(self.configure(), version=self.lock['version'])
+        self.directory.mkdir(mode=0o700)
+        stale = [self.directory / '.mysqlsh-stage-interrupted',
+                 self.directory / ('.retire-' + 'd' * 32)]
+        for path in stale:
+            path.mkdir(mode=0o700)
+            (path / 'partial').write_bytes(b'interrupted installation')
+        job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+
+        def worker():
+            job.cancel_event.wait(3)
+            job.update(state='cancelled', finished=time.monotonic())
+
+        job.thread = threading.Thread(target=worker)
+        shell._JOB = job
+        job.thread.start()
+        try:
+            shell.shutdown(timeout=1)
+            self.assertFalse(job.thread.is_alive())
+            self.assertTrue(all(path.exists() for path in stale))
+        finally:
+            job.cancel_event.set()
+            self.join()
+        self.assertEqual(self.finish()['state'], 'done')
+        self.assertTrue(all(not path.exists() for path in stale))
+
+    @unittest.skipIf(os.name == 'nt', 'Synthetic macOS installation uses mysqlsh without .exe')
+    def test_discovery_never_lists_stage_retire_or_tampered_pointer(self):
+        from myflames import client_tools
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        target = Path(shell.installed_bin_dir()).parent
+        for name in ('.mysqlsh-stage-unpublished', '.retire-' + 'c' * 32):
+            # Even a complete tree with its own matching manifest is unpublished.
+            shell.shutil.copytree(str(target), str(self.directory / name), symlinks=True)
+        pointer = self.directory / 'installed.json'
+        original = pointer.read_bytes()
+        with patch.object(client_tools, 'probe', return_value={
+                'available': True, 'version': 'mysqlsh 9.7.0', 'version_tuple': [9, 7, 0],
+                'engine': 'mysql'}) as probe:
+            found = client_tools.discover(path='', common_dirs=(), bundled=False)
+            self.assertEqual([s['path'] for s in found['shells']], [str(target / 'bin/mysqlsh')])
+            self.assertEqual(found['shells'][0]['origin_label'], 'Downloaded by myflames')
+            for value in (None, dict(json.loads(original), sha256='0' * 64),
+                          dict(json.loads(original), folder='.mysqlsh-stage-unpublished'),
+                          dict(json.loads(original), folder='.retire-' + 'c' * 32)):
+                with self.subTest(pointer=value):
+                    if value is None:
+                        pointer.unlink()
+                    else:
+                        pointer.write_text(json.dumps(value))
+                    probe.reset_mock()
+                    found = client_tools.discover(path='', common_dirs=(), bundled=False)
+                    self.assertEqual(found['shells'], [])
+                    probe.assert_not_called()
+
     def test_deadline_closes_transport_and_cleans(self):
         self.configure()
         with patch.object(shell, 'DOWNLOAD_DEADLINE', -1):
