@@ -421,7 +421,12 @@ def _connect(factory, connection):
     # the original connector's constructor contract.
     if factory is not LifecycleConnection:
         options.pop('socket', None)
-    return factory(**options)
+    conn = factory(**options)
+    guard = connection.get('_login_guard')
+    if guard is not None:
+        conn._login_guard = guard
+        conn._group_login_started = False
+    return conn
 
 
 @contextlib.contextmanager
@@ -431,6 +436,9 @@ def _credentials(connection, tool):
     Reuses the connector's option-file escaping pattern, quoting every value
     rather than only the password. Never put a credential in a URI or env.
     """
+    guard = connection.get('_login_guard')
+    if guard is not None:
+        guard()  # Before acquiring SSH transport or releasing credentials.
     options = _options(connection)
     if options.get('socket'):
         options['host'] = 'localhost'
@@ -584,8 +592,7 @@ class LifecycleConnection(MySQLConnection):
             argv += ['--protocol=SOCKET', '--socket=' + self.socket]
         with tempfile.TemporaryDirectory(prefix='myflames-control-') as home:
             try:
-                from .connector import _run_bounded
-                proc = _run_bounded(argv, input=sql.encode('utf-8'),
+                proc = self._run_client(argv, input=sql.encode('utf-8'),
                                     timeout=timeout or self.query_timeout, env=_clean_env(home))
             except subprocess.TimeoutExpired:
                 raise ConnectorError('Lifecycle control query timed out.')
@@ -990,7 +997,10 @@ class LifecycleJob(object):
         except (Exception, KeyboardInterrupt) as exc:
             code = getattr(exc, 'server_error_code', None) or dbops.error_code(str(exc))
             self.error = _safe(str(exc), self.passwords)
-            self.state = 'cancelled' if self.cancelled.is_set() else ('refused' if isinstance(exc, Refused) else 'failed')
+            from .connection_groups import ProfileReadError
+            refused = isinstance(exc, (Refused, ProfileReadError))
+            self.state = 'cancelled' if self.cancelled.is_set() else (
+                'refused' if refused else 'failed')
             status = ('denied' if code in (1227, 1095, 3630, 1290, 1792) else
                       'interrupted' if code in (1317, 1205, 1213) else
                       'unknown' if dbops.may_have_run(exc) else self.state)
@@ -998,7 +1008,7 @@ class LifecycleJob(object):
                 _verification('operation', 'not_checked', self.error)],
                            'partial_state': self.partial_state, 'cancel_error': self.cancel_error}
             self.result['failure_category'] = (
-                'operation' if self.cancelled.is_set() or isinstance(exc, Refused) else
+                'operation' if self.cancelled.is_set() or refused else
                 'connection' if code in (1045, 2002, 2003, 2005, 2006, 2013, 2026) else
                 'input' if isinstance(exc, (ValueError, TypeError, OSError)) else 'operation')
         finally:
@@ -1101,7 +1111,8 @@ class LifecycleJob(object):
                 self.thread.join()
         return self.snapshot()
 
-    def process_tool(self, argv, env, input_data=None, input_file=None, output_file=None, timeout=None):
+    def process_tool(self, argv, env, input_data=None, input_file=None, output_file=None, timeout=None,
+                     login_guard=None):
         """Stream both pipes without deadlock; bound captured text to 16 MiB.
 
         SQL dump stdout goes directly to its binary file, never a log. SQL and
@@ -1119,6 +1130,10 @@ class LifecycleJob(object):
                     os.path.dirname(os.path.realpath(argv[0])), bundle)))
                 child_env = env
             command = [binary] + list(argv[1:])
+            _check_profile_policy(self)
+            guard = login_guard or self.connection.get('_login_guard')
+            if guard is not None:
+                guard()  # Last check before a tool may open its own sessions.
             return subprocess.Popen(command, stdin=input_file if input_file else subprocess.PIPE,
                                     stdout=output_file if output_file else subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=child_env, start_new_session=os.name == 'posix')
@@ -1261,6 +1276,8 @@ def _invoke(job, tool, connection, args, script=None, **kwargs):
         else:
             argv[0] = checked_program(tool['path'], tool.get('realpath'), bundled=bool(
                 bundle and _same_dir(os.path.dirname(os.path.realpath(tool['path'])), bundle)))
+        if connection.get('_login_guard') is not None:
+            kwargs['login_guard'] = connection['_login_guard']
         return job.process_tool(argv + args, env, input_data=script, **kwargs)
 
 

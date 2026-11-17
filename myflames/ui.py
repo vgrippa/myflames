@@ -355,6 +355,40 @@ def _group_login_refusal(audit, statements, exc, target=None):
     return audit.outcome(statements, "refused", outcome="changed", message=str(exc), target=target)
 
 
+def _group_guarded_options(options, connection, store, identity=None, audit=None, statements=(), target=None):
+    """Carry trusted consent to clients owned by jobs and persistent sessions.
+
+    The private hook is added after validating request fields, never accepted
+    from JSON or written to a client option file. Audit a rejected login at
+    the boundary so callers cannot mislabel it as a server or transport error.
+    """
+    from .accounts_api import _group_login_guard
+    from .connection_groups import ProfileReadError
+    guard = _group_login_guard(store, connection, identity)
+    if guard is None:
+        return options
+
+    def checked():
+        try:
+            guard()
+        except ProfileReadError as exc:
+            if audit is not None:
+                refusal = audit
+                if audit.finished:
+                    # A persistent session may open a cancellation helper
+                    # after its original write completed. Keep that completed
+                    # record and audit this newly refused login separately.
+                    from . import dbops
+                    refusal = dbops.AuditTrail(audit.store, audit.operation, audit.surface,
+                                               connection=audit.connection, safety=audit.safety,
+                                               password=audit.password, policy=audit.policy)
+                    refusal.server(audit.engine, audit.server_version)
+                _group_login_refusal(refusal, statements, exc, target)
+            raise
+
+    return dict(options, _login_guard=checked)
+
+
 def _kill_review_details(payload):
     from .locks import _check_kill_args
     connection_id, mode, expect = payload.get("connection_id"), payload.get("mode", "connection"), payload.get("expect")
@@ -690,7 +724,7 @@ def _lifecycle_connection(value, safety=None):
     return options
 
 
-def _lifecycle_donor(payload, workspace, passwords, plan=None):
+def _lifecycle_donor(payload, workspace, passwords, plan=None, audit=None):
     """Read donor policy and bind a confirmed pair before retrieving its secret.
 
     A read-only donor may supply data. Its type and read-only flag are still
@@ -700,10 +734,14 @@ def _lifecycle_donor(payload, workspace, passwords, plan=None):
     donor = payload.get("donor")
     if not isinstance(donor, dict):
         raise ValueError("Choose the donor connection.")
+    donor = dict(donor)
+    active = payload.get("connection") or {}
+    if active.get("group_name") is not None:
+        donor["group_name"] = active["group_name"]
     profile = _request_profile(donor, workspace.store)
     if donor.get("profile_id") and profile is None:
         raise ValueError("The donor profile no longer exists. Choose it again.")
-    safety = dbops.connection_safety(profile, donor)
+    safety = dbops.connection_safety(profile, donor, store=workspace.store)
     options = _lifecycle_connection(donor, safety)
     # CLONE is server to server: never through SSH, refused before any read.
     lc.refuse_clone_through_ssh(options, _lifecycle_connection(payload.get("connection")))
@@ -714,7 +752,7 @@ def _lifecycle_donor(payload, workspace, passwords, plan=None):
         raise ValueError("The donor requires TLS; clone must use REQUIRE SSL.")
     if plan is not None:
         connection = payload.get("connection")
-        recipient_safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        recipient_safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection, store=workspace.store)
         recipient = _lifecycle_connection(connection, recipient_safety)
         expect = lc._clone_expect(options, recipient, require_ssl, request.get("donor_address"))
         try:
@@ -745,6 +783,20 @@ def _lifecycle_donor(payload, workspace, passwords, plan=None):
     options = _lifecycle_connection(donor, safety)
     if saved:
         options["_saved_password"] = True
+    identity = dbops.connection_identity(donor, safety)
+    options = _group_guarded_options(options, donor, workspace.store, identity, audit,
+                                      (plan or {}).get("commands", []))
+    # A donor login is also part of the active member's request consent.
+    active_options = _group_guarded_options({}, active, workspace.store,
+                                            _review_identity(active, workspace), audit,
+                                            (plan or {}).get("commands", []))
+    if active_options.get("_login_guard") is not None:
+        donor_guard = options.get("_login_guard")
+        def consent():
+            active_options["_login_guard"]()
+            if donor_guard is not None:
+                donor_guard()
+        options["_login_guard"] = consent
     return options
 
 
@@ -761,7 +813,7 @@ def _lifecycle_list(value, label):
     return value
 
 
-def _lifecycle_prepare(payload, options, workspace, passwords):
+def _lifecycle_prepare(payload, options, workspace, passwords, audit=None):
     """A lifecycle-plan-1.0 for dump, restore or clone (reads only; MySQL Shell runs its dryRun)."""
     from . import lifecycle as lc
     operation = payload.get("operation")
@@ -783,7 +835,7 @@ def _lifecycle_prepare(payload, options, workspace, passwords):
                                       resume=payload.get("resume") is True,
                                       staging_directory=payload.get("staging_directory") or None, job=runner)
         if operation == "clone":
-            donor = _lifecycle_donor(payload, workspace, passwords)
+            donor = _lifecycle_donor(payload, workspace, passwords, audit=audit)
             with lc._connect(lc.LifecycleConnection, donor) as donor_conn:
                 return lc.prepare_clone(donor_conn, conn, donor, options,
                                         data_directory=payload.get("data_directory") or None,
@@ -812,7 +864,7 @@ def _lifecycle_start(payload, workspace):
             any(not isinstance(text, str) or len(text) > 200000 for text in statements):
         raise ValueError("The plan has no valid commands.")
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection, store=workspace.store)
     decision = dbops.decide("risky", safety["type"], safety["read_only"], safety["profile_name"])
     plain = connection if isinstance(connection, dict) else {}
     audit = dbops.AuditTrail(workspace.store, operation, "ui",
@@ -835,11 +887,13 @@ def _lifecycle_start(payload, workspace):
                     dbops.connection_identity(plain, safety), _lifecycle_review_details(plan))
         if operation == "restore":
             lc.validate_restore_target(plan, payload.get("typed_target"))
-        donor = _lifecycle_donor(payload, workspace, passwords, plan) if operation == "clone" else None
+        donor = _lifecycle_donor(payload, workspace, passwords, plan, audit) if operation == "clone" else None
         filled = _with_saved_password(payload, workspace)
         # Track the secret before validation, which can itself fail.
         passwords.append((filled.get("connection") or {}).get("password"))
         options = _lifecycle_connection(filled.get("connection"), safety)
+        options = _group_guarded_options(options, connection, workspace.store,
+                                          dbops.connection_identity(plain, safety), audit, statements)
         audit.password = options.get("password")
         audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
         kwargs = dict(confirmed=confirmed, typed_target=payload.get("typed_target"), audit=audit, safety=safety,
@@ -851,11 +905,21 @@ def _lifecycle_start(payload, workspace):
         else:
             job = lc.clone_job(donor, options, plan, **kwargs)
         lookup = lambda key: workspace.store.get('profile', key)
-        lc.bind_profile_policy(job, options, safety, lookup)
-        if donor is not None:
+        if options.get('_login_guard') is None:
+            lc.bind_profile_policy(job, options, safety, lookup)
+        else:
+            job.policy_check = options['_login_guard']
+        if donor is not None and donor.get('_login_guard') is None:
             donor_safety = dbops.connection_safety(_request_profile(payload['donor'], workspace.store), donor)
             donor_safety.update(type=donor['type'], read_only=donor['read_only'])
             lc.bind_profile_policy(job, donor, donor_safety, lookup, write=False)
+        if donor is not None and donor.get('_login_guard') is not None:
+            previous = getattr(job, 'policy_check', None)
+            def consent():
+                if previous is not None:
+                    previous()
+                donor['_login_guard']()
+            job.policy_check = consent
         job.review_consumer = consume
         return _lifecycle_add(workspace, job, str(plan.get("target")), connection)
     except Exception as exc:
@@ -975,10 +1039,16 @@ def _lifecycle_response(path, payload, workspace):
     if isinstance(payload.get("donor"), dict):
         passwords.append(payload["donor"].get("password"))
     try:
-        safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection, store=workspace.store)
         payload = _with_saved_password(payload, workspace)
         passwords.append((payload.get("connection") or {}).get("password"))
         options = _lifecycle_connection(payload.get("connection"), safety)
+        consent_audit = None
+        if isinstance(connection, dict) and connection.get('group_name') is not None:
+            consent_audit = dbops.AuditTrail(workspace.store, 'lifecycle_preflight', 'ui',
+                                           connection=connection, safety=safety, password=options.get('password'))
+        options = _group_guarded_options(options, connection, workspace.store,
+                                          dbops.connection_identity(connection, safety), consent_audit, [path])
         if path == "/api/lifecycle/tools":
             try:
                 with lc._connect(lc.LifecycleConnection, options) as conn:
@@ -1006,7 +1076,7 @@ def _lifecycle_response(path, payload, workspace):
             report["server"] = {k: report["server"][k] for k in ("engine", "version", "identity")}
             return report
         if path == "/api/lifecycle/prepare":
-            plan = lc._report_safe(_lifecycle_prepare(payload, options, workspace, passwords), passwords)
+            plan = lc._report_safe(_lifecycle_prepare(payload, options, workspace, passwords, consent_audit), passwords)
             plan["review_token"] = _review_tokens(workspace).issue("lifecycle",
                 dbops.connection_identity(connection, safety), _lifecycle_review_details(plan))
             return plan

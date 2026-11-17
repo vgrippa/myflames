@@ -1812,6 +1812,8 @@ Local `audit purge` has its separate confirmation contract.
 
 ### Profiles
 
+Group member write requests recheck saved membership, the active profile and the group's strictest policy at transport setup and immediately before every client login, including background jobs and helper connections; a local refusal is audited through `_group_login_refusal`.
+
 `python3 -m myflames profiles list [--json]`, `profiles set NAME [--type production|development] [--read-only | --read-write]`, `profiles forget NAME`,
   `profiles delete NAME` manage workspace connection profiles and their saved
   passwords. `--profile NAME_OR_ID` on `capture`, `top`, `sessions`, and the other server commands loads a
@@ -2815,6 +2817,8 @@ not predicted) before `myflames: ALTER preflight: {json}`, whose JSON carries
 the same `prediction` as the workspace review; no flag or help text changed.
 
 ### Query editor sessions
+
+For Group member DDL and table-data requests, consent is checked before transport setup and again immediately before the persistent client or any helper client spawns; an already open session keeps its existing per-write policy checks.
 
 `myflames/editor_session.py` runs any SQL from a Query editor tab in that
 tab's own server session (query-editor skill). `myflames sql` uses the same
@@ -4967,6 +4971,8 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 
 ### Server lifecycle: upgrade-check, dump, restore, clone
 
+Group consent is rechecked at transport setup and immediately before every control, cancellation, monitoring, MySQL Shell, dump or restore client spawn (including both clone endpoints); tools that open internal sessions, such as a single mysqldump or parallel MySQL Shell process, can only be checked immediately before their process spawns, not between logins inside that process.
+
 #### MySQL Shell on demand (backend)
 
 `managed_shell.py` exposes local-only `status(workspace_directory=None)`,
@@ -5917,6 +5923,8 @@ and preserves positions. Before the first build it can use the selected database
 imported diagrams are excluded.
 
 ### Schema versions
+
+Applying a Group member's sync script uses Query editor's consent checks at transport setup and immediately before each client spawn; Schema versions itself only generates the script and opens no apply client.
 
 Save one database's schema on this computer and compare any two schemas: a
 saved version, a `schema-snapshot-1.0` file, or a database read now through a
@@ -7644,6 +7652,8 @@ its owned session. See [the query guide](QUERY_WORKSPACE.md#sql-completion-and-t
 for supported table types, privilege requirements and limits.
 
 ## Import CSV
+
+Group member imports recheck consent at transport setup and immediately before the private import session and each privilege or cancellation helper client spawns, using the reviewed membership and strictest policy.
 
 Import CSV loads a .csv, .tsv or .txt file into an existing table or a new
 one. Entry points: the Query editor's Schemas panel (a table's menu:

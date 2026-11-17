@@ -12,7 +12,10 @@ import test_connection_groups as groups
 import test_locks as lock_tests
 import test_replication as replication_tests
 import test_variables as variable_tests
-from myflames import connector, dbops, replication, ui
+from myflames import connector, dbops, editor_session as editor, lifecycle, replication, table_data, ui
+from myflames.connection_groups import ProfileReadError
+from myflames.live import connection_options
+import test_lifecycle_cli as lifecycle_tests
 
 
 class GroupConsentTests(groups.GroupCase):
@@ -182,3 +185,246 @@ class GroupConsentTests(groups.GroupCase):
         self.assertEqual((result['status'], result['sent']), ('refused', []))
         self.assertEqual(case.opened, [])
         case.assert_no_writes()
+
+
+class RemainingWriteConsentTests(groups.GroupCase):
+    """Real policy, review tokens and login guards; no server is contacted."""
+
+    def setUp(self):
+        super(RemainingWriteConsentTests, self).setUp()
+        self.profile = self.save('member', 'G', host='127.0.0.1', user='root', type='development')
+        self.connection = dict(self.request(self.profile), group_name='G')
+        self.workspace = types.SimpleNamespace(store=self.store, editor=editor.EditorSessions(reap_every=0),
+                                               table_data=object(), lifecycle=types.SimpleNamespace(
+            runner=lambda operation, options: contextlib.nullcontext(
+                lifecycle.LifecycleJob(operation, lambda job: None, options))))
+        self.addCleanup(self.workspace.editor.close)
+
+    def revoke(self, mode):
+        if mode == 'removed':
+            self.store.assign_profile_group([self.profile['id']], '')
+        elif mode == 'read_only':
+            self.store.set_profile_safety(self.profile['id'], read_only=True)
+        else:
+            self.save('strict-peer', 'G', type='production')
+
+    def assert_refused(self):
+        record = self.store.audit_records()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'), record)
+
+    @contextlib.contextmanager
+    def editor_login_race(self, mode):
+        """Revoke after option-file preparation and feature discovery."""
+        def features(*args, **kwargs):
+            self.revoke(mode)
+            return {}
+
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(editor, '_client_features', side_effect=features), \
+                mock.patch.object(editor.subprocess, 'Popen') as spawn:
+            yield spawn
+            spawn.assert_not_called()
+
+    def editor_apply_race(self, sql, mode):
+        payload = dict(connection=self.connection, tab_id='consent', sql=sql)
+        review = ui.api_response('/api/editor/run', payload, self.workspace)
+        self.assertEqual(review['status'], 'needs_confirmation', review)
+        payload.update(confirmed=True, confirm_token=review['confirmation']['token'])
+        with self.editor_login_race(mode):
+            with self.assertRaises(ProfileReadError):
+                ui.api_response('/api/editor/run', payload, self.workspace)
+        self.assertIsNone(self.workspace.editor.get('consent'))
+        self.assert_refused()
+
+    def test_editor_ddl_removed_at_final_login_sends_nothing(self):
+        self.editor_apply_race('CREATE TABLE consent_t (id INT)', 'removed')
+
+    def test_editor_ddl_read_only_at_final_login_sends_nothing(self):
+        self.editor_apply_race('CREATE TABLE consent_t (id INT)', 'read_only')
+
+    def test_editor_ddl_stricter_peer_at_final_login_sends_nothing(self):
+        self.editor_apply_race('CREATE TABLE consent_t (id INT)', 'stricter')
+
+    def test_editor_safe_updates_removed_at_final_login_sends_nothing(self):
+        payload = dict(connection=self.connection, tab_id='safe', safe_updates=False)
+        with self.editor_login_race('removed'):
+            with self.assertRaises(ProfileReadError):
+                ui.api_response('/api/editor/open', payload, self.workspace)
+        self.assert_refused()
+
+    def test_editor_open_refusal_does_not_audit_an_unrequested_setting(self):
+        payload = dict(connection=self.connection, tab_id='open')
+        with self.editor_login_race('removed'):
+            with self.assertRaises(ProfileReadError):
+                ui.api_response('/api/editor/open', payload, self.workspace)
+        self.assert_refused()
+        self.assertEqual(self.store.audit_records()[0]['statements'], [])
+
+    def test_table_data_open_removed_at_final_login_sends_nothing(self):
+        payload = dict(connection=self.connection, schema='app', table='t')
+        facts = editor._connection_facts(payload, self.store)
+        with self.editor_login_race('removed'):
+            with self.assertRaises(ProfileReadError):
+                table_data._open(payload, self.workspace, lambda value: value, *facts)
+        self.assert_refused()
+
+    def test_table_data_privilege_login_revocation_cannot_become_unknown_permission(self):
+        payload = dict(connection=self.connection)
+        options, identity, safety, _label = editor._connection_facts(payload, self.store)
+        guarded = editor._group_options(options, payload, self.store, identity, safety,
+                                         statements=['UPDATE app.t SET id=2'], operation='table_data')
+        session = types.SimpleNamespace(_conn=connector.MySQLConnection(**options))
+        session._conn._login_guard = guarded['_login_guard']
+        self.addCleanup(session._conn.close)
+        self.revoke('read_only')
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded') as spawn:
+            with self.assertRaises(ProfileReadError):
+                table_data._actor(session)
+        spawn.assert_not_called()
+        self.assert_refused()
+
+    def test_editor_helper_rechecks_consent_at_its_own_login(self):
+        payload = dict(connection=self.connection)
+        options, identity, safety, label = editor._connection_facts(payload, self.store)
+        audit = dbops.AuditTrail(self.store, 'editor_run', 'ui', connection=self.connection, safety=safety)
+        full = editor._group_options(options, payload, self.store, identity, safety, audit,
+                                     statements=['KILL QUERY 41'])
+        session = editor.EditorSession('helper', identity, options)
+        session.engine = 'mysql'
+        session.server_identity = {'server_uuid': '11111111-2222-3333-4444-555555555555'}
+        session._conn = connector.MySQLConnection(**options)
+        session._conn._login_guard = full['_login_guard']
+        self.addCleanup(session._conn.close)
+        completed_id = audit.outcome(['SELECT 1'], 'ok', outcome='completed')
+        self.revoke('read_only')
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded') as spawn:
+            with self.assertRaises(ProfileReadError):
+                session._send_kill(options, 41)
+        spawn.assert_not_called()
+        self.assert_refused()
+        self.assertNotEqual(self.store.audit_records()[0]['id'], completed_id)
+        completed = next(record for record in self.store.audit_records() if record['id'] == completed_id)
+        self.assertEqual(completed['status'], 'ok')
+
+    def test_lifecycle_start_guards_each_control_login(self):
+        for operation in ('dump', 'restore', 'clone'):
+            with self.subTest(operation=operation):
+                self.store.assign_profile_group([self.profile['id']], 'G')
+                plan = lifecycle_tests.fake_plan(operation)
+                payload = dict(connection=self.connection, operation=operation, plan=plan,
+                               confirmed=True, typed_target=plan['target'])
+                if operation == 'clone':
+                    donor = self.save('donor', 'G', host='donor.example', type='development')
+                    payload['donor'] = dict(self.request(donor), password='test-password')
+                    donor_options = ui._lifecycle_donor(payload, self.workspace, [])
+                    safety = dbops.connection_safety(self.profile, self.connection, store=self.store)
+                    recipient_options = ui._lifecycle_connection(self.connection, safety)
+                    plan['expect'] = lifecycle._clone_expect(donor_options, recipient_options)
+                    plan['request'] = dict(require_ssl=True, donor_key=plan['expect']['donor']['connection_key'])
+                    plan['donor'] = dict(identity={'server_uuid': 'donor-fixture'})
+                    plan['connection_key'] = plan['expect']['recipient']['connection_key']
+                    plan['binding'] = lifecycle._plan_binding(plan, {
+                        'donor_identity': plan['donor']['identity'], 'expect': plan['expect']})
+                plan['review_token'] = ui._review_tokens(self.workspace).issue(
+                    'lifecycle', ui._review_identity(self.connection, self.workspace), ui._lifecycle_review_details(plan))
+                def run(job, target):
+                    self.revoke('removed')
+                    return job.run()
+                self.workspace.lifecycle = types.SimpleNamespace(add=run)
+                with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                        mock.patch.object(connector, '_run_bounded') as spawn:
+                    result = ui.api_response('/api/lifecycle/start', payload, self.workspace)
+                self.assertEqual(result['state'], 'refused', result)
+                spawn.assert_not_called()
+                self.assert_refused()
+
+    def test_lifecycle_control_rechecks_after_credential_setup(self):
+        safety = dbops.connection_safety(self.profile, self.connection, store=self.store)
+        audit = dbops.AuditTrail(self.store, 'dump', 'ui', connection=self.connection, safety=safety)
+        options = ui._group_guarded_options(connection_options(self.connection), self.connection, self.store,
+                                             dbops.connection_identity(self.connection, safety), audit, ['SELECT 1'])
+        original = connector.MySQLConnection._create_defaults_file
+        def credentials(conn, *args, **kwargs):
+            result = original(conn, *args, **kwargs)
+            self.revoke('read_only')
+            return result
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector.MySQLConnection, '_create_defaults_file', credentials), \
+                mock.patch.object(connector, '_run_bounded') as spawn, \
+                lifecycle._connect(lifecycle.LifecycleConnection, options) as conn:
+            with self.assertRaises(ProfileReadError):
+                conn.run('SELECT 1')
+        spawn.assert_not_called()
+        self.assert_refused()
+
+    def test_lifecycle_tools_recheck_at_final_spawn(self):
+        for name in ('mysqlsh', 'mysqldump', 'mysql', 'mariadb-dump', 'mariadb'):
+            with self.subTest(tool=name):
+                self.store.assign_profile_group([self.profile['id']], 'G')
+                self.store.set_profile_safety(self.profile['id'], read_only=False)
+                safety = dbops.connection_safety(self.profile, self.connection, store=self.store)
+                audit = dbops.AuditTrail(self.store, 'restore', 'ui', connection=self.connection, safety=safety)
+                options = ui._group_guarded_options(connection_options(self.connection), self.connection, self.store,
+                    dbops.connection_identity(self.connection, safety), audit, [name])
+                job = lifecycle.LifecycleJob('restore', lambda job: None, options)
+                tool = dict(name=name, path='/nonexistent/' + name, engine='mysql')
+                checks = []
+                def checked(path, *args, **kwargs):
+                    # First trust check precedes process_tool; the second is
+                    # directly inside its spawn closure, after credentials.
+                    checks.append(path)
+                    if len(checks) == 2:
+                        self.revoke('read_only')
+                    return path
+                with mock.patch.object(connector, 'checked_program', side_effect=checked), \
+                        mock.patch.object(connector, 'checked_shell_program', side_effect=checked), \
+                        mock.patch.object(lifecycle.subprocess, 'Popen') as spawn:
+                    with self.assertRaises(ProfileReadError):
+                        lifecycle._invoke(job, tool, options, [])
+                spawn.assert_not_called()
+                self.assertEqual(len(checks), 2)
+                self.assert_refused()
+
+    def test_clone_donor_login_requires_active_member_consent(self):
+        donor = self.save('donor', 'G', host='donor.example', type='development', ssl_mode='REQUIRED')
+        donor_route = self.request(donor)
+        payload = dict(connection=dict(self.connection, ssl_mode='REQUIRED'), donor=donor_route)
+        # The recipient TLS mode must match its saved endpoint for consent.
+        self.profile = self.save('member', 'G', host='127.0.0.1', user='root', type='development', ssl_mode='REQUIRED')
+        payload['connection'] = self.connection = dict(self.request(self.profile), group_name='G')
+        audit = dbops.AuditTrail(self.store, 'clone', 'ui', connection=self.connection)
+        options = ui._lifecycle_donor(payload, self.workspace, [], audit=audit)
+        self.revoke('removed')
+        with mock.patch.object(connector, '_run_bounded') as spawn, \
+                lifecycle._connect(lifecycle.LifecycleConnection, options) as conn:
+            with self.assertRaises(ProfileReadError):
+                conn.run('SELECT 1')
+        spawn.assert_not_called()
+        self.assert_refused()
+
+    def test_clone_donor_read_only_change_refuses_its_later_login(self):
+        donor = self.save('donor', 'G', host='donor.example', type='development')
+        payload = dict(connection=self.connection, donor=dict(self.request(donor), password='test-password'))
+        audit = dbops.AuditTrail(self.store, 'clone', 'ui', connection=self.connection)
+        options = ui._lifecycle_donor(payload, self.workspace, [], audit=audit)
+        self.store.set_profile_safety('donor', read_only=True)
+        with mock.patch.object(connector, '_run_bounded') as spawn, \
+                lifecycle._connect(lifecycle.LifecycleConnection, options) as conn:
+            with self.assertRaises(ProfileReadError):
+                conn.run('SELECT 1')
+        spawn.assert_not_called()
+        self.assert_refused()
+
+    def test_upgrade_check_guard_is_installed_before_read(self):
+        def read(conn, options):
+            self.revoke('removed')
+            return conn.run('SELECT 1')
+        with mock.patch.object(lifecycle, 'read_server', side_effect=read), \
+                mock.patch.object(connector, '_run_bounded') as spawn:
+            with self.assertRaises(ProfileReadError):
+                ui.api_response('/api/lifecycle/upgrade-check', dict(
+                    connection=self.connection, target_version='9.7.0'), self.workspace)
+        spawn.assert_not_called()
+        self.assert_refused()

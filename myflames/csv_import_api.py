@@ -68,6 +68,7 @@ import time
 from . import csv_import as ci
 from . import dbops, editor_session as ed, privileges
 from .connector import ClientMissingError, ConnectorError
+from .connection_groups import ProfileReadError
 from .live import connection_options
 from .perf_common import literal
 from .review_tokens import ReviewTokens
@@ -525,7 +526,8 @@ def client_binary(full):
     from .connector import MySQLConnection
     # Pin symlinks too: an installer may replace the selected link between
     # checking the client's file policy and starting the import session.
-    return os.path.realpath(MySQLConnection(**full)._resolve_binary())
+    options = {key: value for key, value in full.items() if key != '_login_guard'}
+    return os.path.realpath(MySQLConnection(**options)._resolve_binary())
 
 
 def limits_local_files(binary):
@@ -604,6 +606,8 @@ def _open_session(full, identity, safety, label, load_dir=None, client_flags=Non
 def _actor(session):
     try:
         return privileges.read_privileges(session._conn)
+    except ProfileReadError:
+        raise  # Lost consent must stop apply, never become unknown privileges.
     except (ConnectorError, ValueError):
         return {"checked": False, "grants": [], "roles": [], "engine": session.engine, "version": session.server_version}
 
@@ -972,6 +976,7 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
     filled = fill_password(payload)
     full = dict(connection_options(filled.get("connection")))
     full.pop("database", None)
+    full = ed._group_options(full, payload, workspace.store, identity, safety, operation=OPERATION)
     password = full.get("password")
     session = None
     try:
@@ -1563,6 +1568,8 @@ class _Import(object):
         self.full.pop("database", None)
         self.password = self.full.get("password")
         self.audit.password = self.password
+        self.full = ed._group_options(self.full, self.payload, self.workspace.store, self.identity,
+                                       self.safety, self.audit, plan['audit_statements'], operation=OPERATION)
         try:
             binary = client_binary(self.full)
             self.full["binary"] = binary

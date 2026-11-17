@@ -597,7 +597,12 @@ class EditorSession(EditorInsights):
     def start(self, options, defer_safe_updates=False):
         """Start the client and read the session's identity. Raises
         ConnectorError (password redacted by the caller) when it cannot."""
+        options = dict(options)
+        login_guard = options.pop('_login_guard', None)
         conn = MySQLConnection(**options)
+        if login_guard is not None:
+            conn._login_guard = login_guard
+            conn._group_login_started = False
         self._conn = conn
         credentials = contextlib.ExitStack()
         try:
@@ -620,6 +625,7 @@ class EditorSession(EditorInsights):
             if options.get("database"):
                 argv += ["-D", options["database"]]
             self.delimiter = "__mf%s_" % secrets.token_hex(5)
+            conn._check_login_consent()
             try:
                 self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, env=env)
@@ -1259,7 +1265,13 @@ class EditorSession(EditorInsights):
         except ValueError:
             raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
         try:
-            with MySQLConnection(**options) as control:
+            options = dict(options)
+            login_guard = options.pop('_login_guard', None) or getattr(self._conn, '_login_guard', None)
+            control = MySQLConnection(**options)
+            if login_guard is not None:
+                control._login_guard = login_guard
+                control._group_login_started = False
+            with control:
                 control.run("\n".join(guard + [TAG + "KILL QUERY %d" % connection_id]),
                             extra_flags=list(_write_flags()) + ["--skip-reconnect"], timeout=KILL_TIMEOUT)
         except ConnectorError as exc:
@@ -2461,6 +2473,19 @@ def _connection_facts(payload, store, allow_group_revoked=False):
 _MISMATCH = "This tab's session belongs to another connection. Close it from that connection before switching."
 
 
+def _group_options(options, payload, store, identity, safety, audit=None, statements=(), operation='editor_run'):
+    """Bind a member's session and any later helper logins to current consent."""
+    connection = payload.get('connection') or {}
+    if connection.get('group_name') is None:
+        return options
+    from . import dbops
+    from .ui import _group_guarded_options
+    if audit is None:
+        audit = dbops.AuditTrail(store, operation, 'ui', connection=connection, safety=safety,
+                                 password=options.get('password'))
+    return _group_guarded_options(options, connection, store, identity, audit, statements)
+
+
 def _session_for(registry, tab_id, identity):
     session = registry.get(tab_id)
     if session is not None and session.identity != identity:
@@ -3268,9 +3293,9 @@ def _open_session(registry, tab_id, options, identity, safety, name, payload, de
         return session
     try:
         session.start(options, defer_safe_updates=defer_safe_updates)
-    except (ConnectorError, OSError) as exc:
+    except (ConnectorError, OSError, ValueError):
         registry.remove(tab_id, session)
-        raise ConnectorError(str(exc))
+        raise
     return session
 
 
@@ -3463,6 +3488,8 @@ def _run_api(payload, workspace, fill_password):
         filled = fill_password(payload)
         from .live import connection_options
         full_options = connection_options(filled.get("connection"))
+        full_options = _group_options(full_options, payload, store, identity, safety, audit,
+                                      [u['send'] for u in plan['units']])
         password = password or full_options.get("password")
         audit.password = password
         changed = _policy_changed(payload, store, identity, safety, audit, [u["send"] for u in plan["units"]])
@@ -3490,6 +3517,9 @@ def _run_api(payload, workspace, fill_password):
     filled = filled if filled is not None else fill_password(payload)
     from .live import connection_options
     full_options = connection_options(filled.get("connection"))
+    full_options = _group_options(full_options, payload, store, identity, safety, audit, statements)
+    if session is not None and session._conn is not None and full_options.get('_login_guard') is not None:
+        session._conn._login_guard = full_options['_login_guard']
     password = password or full_options.get("password")
     audit.password = password
     changed = _policy_changed(payload, store, identity, safety, audit, statements)
@@ -3655,6 +3685,11 @@ def _open_api(payload, workspace, fill_password):
     full = connection_options(filled.get("connection"))
     if audit is not None:
         audit.password = full.get("password") or audit.password
+    guarded_statements = [SAFE_UPDATES_OFF if lower else SAFE_UPDATES_ON] if wanted is not None else []
+    full = _group_options(full, payload, store, identity, safety, audit,
+                          guarded_statements, operation='editor_open')
+    if session is not None and session._conn is not None and full.get('_login_guard') is not None:
+        session._conn._login_guard = full['_login_guard']
     if lower:
         # Same re-read as a run: a policy changed during the password lookup
         # must not send the statement that lowers a protection.
