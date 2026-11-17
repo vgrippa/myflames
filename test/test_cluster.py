@@ -275,11 +275,12 @@ class TestActionCatalog(unittest.TestCase):
     def test_shell_missing_old_unknown_and_ssh_are_distinct(self):
         report = F.report('ic-8.4-healthy')
         cases = (
-            ({}, 'MySQL Shell was not found on this computer.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
-            ({'shell': dict(self.SHELL, version_tuple=[8, 0, 13])},
-             'This action needs MySQL Shell 8.0.14 or later.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
+            ({}, 'MySQL Shell was not found on this computer.', 'Install MySQL Shell 8.0.32 or later, then Refresh.'),
+            ({'shell': dict(self.SHELL, version='8.0.31', version_tuple=[8, 0, 31])},
+             'This action needs MySQL Shell 8.0.32 or later; found 8.0.31.',
+             'Install MySQL Shell 8.0.32 or later, then Refresh. Get MySQL Shell.'),
             ({'shell': dict(self.SHELL, version_tuple=[])},
-             'The installed MySQL Shell version could not be read.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
+             'The installed MySQL Shell version could not be read.', 'Install MySQL Shell 8.0.32 or later, then Refresh.'),
             ({'shell': self.SHELL, 'ssh': True}, m._SHELL_SSH_NOTE,
              'Connect directly to a group member from a host that reaches the members.'),
         )
@@ -289,7 +290,7 @@ class TestActionCatalog(unittest.TestCase):
             self.assertEqual(set(actions), self.MODES | self.CLUSTERSET)
             self.assertEqual((action['enabled'], action['why_not'], action['fix']), (False, reason, fix))
             self.assert_refused(report, action, checks=checks)
-        self.assertTrue(self.actions(report, checks={'shell': dict(self.SHELL, version_tuple=[8, 0, 14])})
+        self.assertTrue(self.actions(report, checks={'shell': dict(self.SHELL, version_tuple=[8, 0, 32])})
                         ['switch_to_multi_primary']['enabled'])
 
     def test_topology_server_floor_checks_members_but_not_missing_metadata(self):

@@ -1720,30 +1720,34 @@ def privilege_hint(operation, engine, version, grants, variable=None, schema=Non
     return result
 
 
-def _grants_read_sql(tag):
+def _grants_read_sql(tag, galera_identity=False):
     """Frame one fresh login's account, grants and wildcard setting.
 
     SHOW rather than @@ reads optional variables without failing on MariaDB
     or MySQL 5.7. Both identity snapshots also include the connection id:
     a reconnect must not combine two logins, even to the same server.
+    Galera node status is opt-in: MySQL materializes the global status cache
+    for this read (storage/perfschema/pfs_variable.cc:1166-1210).
     """
     who = "USER(), CURRENT_USER(), VERSION(), CONNECTION_ID(), @@global.server_id, @@global.hostname, @@global.port"
     variables = "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'partial_revokes')"
     node = "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"
+    snapshot = [variables] + ([node] if galera_identity else [])
     return "; ".join(tag + sql for sql in (
-        "SELECT 'myflames_grants_begin', " + who, variables, node,
-        "SELECT 'myflames_grants_rows'", "SHOW GRANTS",
-        "SELECT 'myflames_grants_end', " + who, variables, node,
-        "SELECT 'myflames_grants_done'"))
+        ["SELECT 'myflames_grants_begin', " + who] + snapshot +
+        ["SELECT 'myflames_grants_rows'", "SHOW GRANTS", "SELECT 'myflames_grants_end', " + who] + snapshot +
+        ["SELECT 'myflames_grants_done'"]))
 
 
-def read_grants(conn, tag="/*myflames:dbops*/ "):
+def read_grants(conn, tag="/*myflames:dbops*/ ", galera_identity=False):
     """Account, SHOW GRANTS and partial_revokes from one client invocation.
 
     Identity/account snapshots bracket the grants in that same login. A
     changed or incomplete read returns checked=False and no account/grants,
     so it can never produce an advisory GRANT for another backend's user.
     MariaDB's password hash/plugin clauses are removed before returning.
+    Request galera_identity only when the caller needs the node UUID; other
+    reads, including lifecycle preflights, never materialize global status.
     """
     from .connector import ConnectorError, unescape_mysql
     from .perf_common import _reason
@@ -1753,7 +1757,7 @@ def read_grants(conn, tag="/*myflames:dbops*/ "):
                 "partial_revokes": None, "error": redact(error)}
 
     try:
-        text = conn.run(_grants_read_sql(tag), extra_flags=["--comments", "--skip-reconnect"])
+        text = conn.run(_grants_read_sql(tag, galera_identity), extra_flags=["--comments", "--skip-reconnect"])
     except ConnectorError as exc:
         return failed(_reason(exc))
     rows = [[unescape_mysql(cell) for cell in line.split("\t")] for line in text.split("\n") if line]
@@ -1771,8 +1775,11 @@ def read_grants(conn, tag="/*myflames:dbops*/ "):
     after = {row[0].lower(): row[1] for row in rows[end + 1:done] if len(row) == 2}
     if who[1:] != rows[end][1:] or before != after:
         return failed("The server identity or account changed while reading grants. Refresh and try again.")
-    if not all(who[1:]) or ("mariadb" not in who[3].lower() and
-                           not _TARGET_UUID.fullmatch(before.get("server_uuid") or "")):
+    # VERSION() can be overridden in MariaDB. The registered variables are
+    # the engine evidence: MySQL has server_uuid, MariaDB does not.
+    if (not all(who[1:]) or ("server_uuid" in before and
+                            not _TARGET_UUID.fullmatch(before.get("server_uuid") or "")) or
+            (galera_identity and not _TARGET_UUID.fullmatch(before.get("wsrep_gcomm_uuid") or ""))):
         return failed("The account and grants could not be read in one verified server session.")
     grant_rows = rows[middle + 1:end]
     if any(len(row) != 1 or not row[0] for row in grant_rows):

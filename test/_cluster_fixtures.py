@@ -591,6 +591,12 @@ def _clusterset(rows, extra=None):
     scenario = _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)], version=(2, 2, 0),
                    instances=instances)
     scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = rows
+    # ClusterSet metadata contains every cluster's group identity, even
+    # though this connection can observe live GR state only in its group.
+    cluster_rows = scenario["tables"]["mysql_innodb_cluster_metadata.v2_gr_clusters"]
+    for index, row in enumerate(rows):
+        if not any(cluster[0] == row[1] for cluster in cluster_rows):
+            cluster_rows.append([row[1], row[2], "pm", "22222222-3333-4444-5555-%012d" % index])
     if extra:
         scenario["extra"] = extra
     return scenario

@@ -107,6 +107,17 @@ class TestClusterSetRead(unittest.TestCase):
         self.assertNotIn('drcluster  REPLICA', text)
         self.assertEqual(json.loads(json.dumps(report))['clusterset'], cs)
 
+    def test_clusterset_group_identity_is_from_metadata_and_not_public_json(self):
+        conn = F.conn('ic-8.4-clusterset-primary')
+        report = m.read_status(conn)
+        rows = conn.scenario['tables']['mysql_innodb_cluster_metadata.v2_gr_clusters']
+        self.assertEqual(report._clusterset_groups, {row[1]: row[3] for row in rows})
+        self.assertEqual(set(report._clusterset_groups), {'mfcluster', 'drcluster'})
+        self.assertNotIn('_clusterset_groups', json.dumps(report))
+        plan = m.plan_action(report, 'set_primary_cluster:drcluster', local(report)['key'], CHECKS)
+        self.assertEqual(plan['expect']['server_identity']['adminapi'],
+                         {'kind': 'clusterset', 'name': 'mfcs', 'groups': report._clusterset_groups})
+
     def test_replica_cluster_reads_its_channel_on_its_primary(self):
         report = F.report('ic-8.4-clusterset-replica')
         cs = report['clusterset']
@@ -206,15 +217,27 @@ class TestClusterSetRead(unittest.TestCase):
 
 
 class TestOffered(unittest.TestCase):
+    def test_discovery_keeps_an_old_shell_for_the_versioned_refusal(self):
+        old = dict(SHELL, version='8.0.31', version_tuple=[8, 0, 31])
+        with mock.patch('myflames.client_tools.discover', return_value={'shells': [old]}):
+            found = cluster_shell.find_shell()
+        self.assertEqual(found, old)
+        report = F.report('ic-8.4-healthy')
+        action = next(a for a in m.overview_actions(report, {'shell': found})
+                      if a['id'] == 'switch_to_multi_primary')
+        self.assertFalse(action['enabled'])
+        self.assertIn('found 8.0.31', action['why_not'])
+        self.assertIn('Get MySQL Shell', action['fix'])
+
     def test_shell_action_version_thresholds(self):
         cases = (
-            ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', (8, 0, 14), (8, 0, 13)),
-            ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 14), (8, 0, 13)),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', (8, 0, 32), (8, 0, 31)),
+            ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 32), (8, 0, 31)),
             ('ic-8.4-member-offline', 'rejoin_instance', 'missing', (8, 1, 0), (8, 0, 34)),
-            ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', (8, 0, 27), (8, 0, 26)),
-            ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', (8, 0, 27), (8, 0, 26)),
-            ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', (8, 0, 27), (8, 0, 26)),
-            ('ic-8.4-clusterset-replica', 'switchover', 'secondary', (8, 0, 27), (8, 0, 26)),
+            ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', (8, 0, 32), (8, 0, 31)),
+            ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', (8, 0, 32), (8, 0, 31)),
+            ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', (8, 0, 32), (8, 0, 31)),
+            ('ic-8.4-clusterset-replica', 'switchover', 'secondary', (8, 0, 32), (8, 0, 31)),
         )
         for scenario, action, who, threshold, below in cases:
             report = F.report(scenario)
@@ -375,6 +398,31 @@ class TestOffered(unittest.TestCase):
             if x is not target:
                 self.assertNotIn('rejoin_instance', offered(report, x['key']))
 
+    def test_rejoin_needs_metadata_2_and_exact_clusterset_ok(self):
+        for version in (None, '0.0.0', '1.0.1', '2.0.0', '2.2.0'):
+            with self.subTest(metadata=version):
+                report = F.report('ic-8.4-member-offline')
+                report['metadata']['schema_version'] = version
+                action = next(a for a in m.available_actions(report, missing(report)['key'], CHECKS)
+                              if a['id'] == 'rejoin_instance')
+                self.assertEqual(action['enabled'], version in ('2.0.0', '2.2.0'))
+                if not action['enabled']:
+                    self.assertIn('metadata 2.0.0', action['why_not'])
+                    with self.assertRaisesRegex(m.ActionUnavailable, 'metadata 2.0.0'):
+                        m.plan_action(report, 'rejoin_instance', missing(report)['key'], CHECKS)
+        for status in ('OK', 'OK_NOT_REPLICATING', 'OK_NOT_CONSISTENT', 'OK_MISCONFIGURED', 'NOT_OK',
+                       'UNKNOWN', 'INVALIDATED', None):
+            with self.subTest(status=status):
+                report = F.report('ic-8.4-member-offline')
+                report['clusterset'] = {'global_status': status, 'invalidated': False}
+                action = next(a for a in m.available_actions(report, missing(report)['key'], CHECKS)
+                              if a['id'] == 'rejoin_instance')
+                self.assertEqual(action['enabled'], status == 'OK')
+                if status != 'OK':
+                    self.assertIn(status or 'could not be verified', action['why_not'])
+                    with self.assertRaisesRegex(m.ActionUnavailable, 'ClusterSet status'):
+                        m.plan_action(report, 'rejoin_instance', missing(report)['key'], CHECKS)
+
     def test_no_rejoin_from_a_member_that_is_not_online_or_has_no_address(self):
         report = F.report('ic-8.4-member-offline')
         local(report)['state'] = 'RECOVERING'
@@ -429,7 +477,7 @@ class TestPlans(unittest.TestCase):
     def test_mode_switch_runs_mysql_shell(self):
         report = F.report('ic-8.4-healthy')
         plan = m.plan_action(report, 'switch_to_multi_primary', local(report)['key'], CHECKS)
-        self.assertEqual(plan['statements'], [TAG + 'dba.getCluster().switchToMultiPrimaryMode();'])
+        self.assertEqual(plan['statements'], [TAG + 'myflamesCluster.switchToMultiPrimaryMode();'])
         self.assertEqual((plan['via'], plan['typed_guard'], plan['timeout_s']), ('mysqlsh', 'mfcluster',
                                                                                  m.SHELL_TIMEOUT))
         self.assertEqual(plan['expect']['shell'], SHELL['path'])
@@ -444,7 +492,7 @@ class TestPlans(unittest.TestCase):
         target = missing(report)
         plan = m.plan_action(report, 'rejoin_instance', target['key'], CHECKS)
         self.assertEqual(plan['statements'],
-                         [TAG + 'dba.getCluster().rejoinInstance("%s", {recoveryMethod: "incremental"});'
+                         [TAG + 'myflamesCluster.rejoinInstance("%s", {recoveryMethod: "incremental"});'
                           % target['address']])
         self.assertEqual(plan['typed_guard'], target['name'])
         self.assertEqual(plan['expect']['missing'], [target['key']])
@@ -525,19 +573,19 @@ class TestPlans(unittest.TestCase):
         primary = F.report('ic-8.4-clusterset-primary')
         key = local(primary)['key']
         plan = m.plan_action(primary, 'set_primary_cluster:drcluster', key, CHECKS)
-        self.assertEqual(plan['statements'], [TAG + 'dba.getClusterSet().setPrimaryCluster("drcluster");'])
+        self.assertEqual(plan['statements'], [TAG + 'myflamesClusterSet.setPrimaryCluster("drcluster");'])
         self.assertEqual(plan['typed_guard'], 'drcluster')
         self.assertEqual(plan['undo'], 'dba.getClusterSet().setPrimaryCluster("mfcluster");')
         self.assertEqual(plan['expect']['clusterset'], [['mfcluster', 'PRIMARY', False],
                                                         ['drcluster', 'REPLICA', False]])
         replica = F.report('ic-8.4-clusterset-replica')
         force = m.plan_action(replica, 'force_primary_cluster', local(replica)['key'], CHECKS)
-        self.assertEqual(force['statements'], [TAG + 'dba.getClusterSet().forcePrimaryCluster("mfcluster");'])
+        self.assertEqual(force['statements'], [TAG + 'myflamesClusterSet.forcePrimaryCluster("mfcluster");'])
         self.assertIn('Cannot be undone', force['undo'])
         self.assertTrue(any('replicated copy' in w for w in force['warnings']))
         invalidated = F.report('ic-8.4-clusterset-invalidated')
         rejoin = m.plan_action(invalidated, 'rejoin_cluster:drcluster', local(invalidated)['key'], CHECKS)
-        self.assertEqual(rejoin['statements'], [TAG + 'dba.getClusterSet().rejoinCluster("drcluster");'])
+        self.assertEqual(rejoin['statements'], [TAG + 'myflamesClusterSet.rejoinCluster("drcluster");'])
         with self.assertRaises(ValueError):
             m.plan_action(primary, 'set_primary_cluster:mfcluster', key, CHECKS)
         with self.assertRaises(ValueError):
@@ -548,7 +596,7 @@ class TestPlans(unittest.TestCase):
         secondary = next(x for x in report['members'] if x['role'] == 'SECONDARY')
         plan = m.plan_action(report, 'switchover', secondary['key'], CHECKS)
         self.assertEqual(plan['statements'],
-                         [TAG + 'dba.getCluster().setPrimaryInstance("%s");' % secondary['address']])
+                         [TAG + 'myflamesCluster.setPrimaryInstance("%s");' % secondary['address']])
         self.assertEqual(plan['via'], 'mysqlsh')
         plain = F.report('ic-8.4-healthy')
         target = next(x for x in plain['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
@@ -756,10 +804,30 @@ class TestErrorText(unittest.TestCase):
                 self.assertTrue(cluster_shell.error_text('Forged (MYSQLSH 1045)\n' + gap + ' at STDIN:2')
                                 .startswith('ERROR 0 at line 2:'))
 
-    def test_first_stdin_location_wins_over_later_exceptions(self):
+    def test_inline_unnumbered_exception_does_not_take_the_previous_lines_code(self):
+        self.assertEqual(cluster_shell.error_text('Echoed label (MYSQLSH 1045)\n'
+                                                  'Real failure (RuntimeError) at STDIN:2'),
+                         'ERROR 0 at line 2: Real failure (RuntimeError)')
+
+    def test_unicode_label_separators_do_not_change_exception_adjacency(self):
+        for separator in ('\u2028', '\u2029', '\v', '\r'):
+            with self.subTest(separator=repr(separator)):
+                self.assertEqual(cluster_shell.error_text('Echoed' + separator + 'label (MYSQLSH 1045)\n'
+                                                          'Real failure (RuntimeError)\n at STDIN:2'),
+                                 'ERROR 0 at line 2: Real failure (RuntimeError)')
+
+    def test_progress_location_does_not_override_the_exception_location(self):
+        self.assertEqual(cluster_shell.error_text('Real failure (RuntimeError)\n at STDIN:2\n'
+                                                  'INFO: echoed label (MYSQLSH 1045) at STDIN:1'),
+                         'ERROR 0 at line 2: Real failure (RuntimeError)')
+
+    def test_last_stdin_location_wins_over_earlier_embedded_text(self):
+        # Shell appends its own location after the exception's message
+        # (scripting/types.cc:717; polyglot_error.cc:438). The message may
+        # already contain an echoed instance name with a forged location.
         self.assertEqual(cluster_shell.error_text('First failure (RuntimeError) at STDIN:2\n'
                                                   'Later (MYSQLSH 1045) at STDIN:3'),
-                         'ERROR 0 at line 2: First failure (RuntimeError)')
+                         'ERROR 1045 at line 3: Later (MYSQLSH 1045)')
 
     def test_statement_exception_with_a_shell_number(self):
         text = cluster_shell.error_text(
@@ -899,7 +967,7 @@ class Endpoints(Home):
         result = self.send(conn, plan, typed=target['name'], shell=shell)
         self.assertEqual(result['status'], 'done', result)
         self.assertEqual(shell.scripts, [('\n'.join(plan['session_guard'] + plan['statements']), m.SHELL_TIMEOUT)])
-        self.assertEqual(plan['statements'], [TAG + 'dba.getCluster().rejoinInstance("%s", '
+        self.assertEqual(plan['statements'], [TAG + 'myflamesCluster.rejoinInstance("%s", '
                                             '{recoveryMethod: "incremental"});' % target['address']])
         (record,) = dbops.audit_report(self.workspace.store)['records']
         self.assertEqual((record['operation'], record['status']), ('cluster_action', 'ok'))
@@ -1095,6 +1163,18 @@ class Endpoints(Home):
         with mock.patch.object(m, 'read_status', return_value=changed):
             result = self.send(conn, plan, typed='drcluster', shell=shell)
         self.assertEqual(result['status'], 'refused')
+        self.assertEqual(shell.scripts, [])
+
+
+    def test_a_changed_clusterset_group_uuid_invalidates_the_review(self):
+        report = F.report('ic-8.4-clusterset-primary')
+        conn = Writes(F.conn('ic-8.4-clusterset-primary'))
+        plan = self.plan(conn, 'set_primary_cluster:drcluster', local(report)['key'])
+        report._clusterset_groups['drcluster'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        shell = FakeShell()
+        with mock.patch.object(m, 'read_status', return_value=report):
+            result = self.send(conn, plan, typed='drcluster', shell=shell)
+        self.assertEqual(result['status'], 'refused', result)
         self.assertEqual(shell.scripts, [])
 
 
@@ -1372,6 +1452,89 @@ class TestShellWriter(unittest.TestCase):
                     self.assertEqual(result['message'], dbops.TARGET_IDENTITY_MISMATCH)
                 else:
                     self.assertEqual(observed[0]['calls'], ['getCluster', 'switchToMultiPrimaryMode'])
+
+    def test_actual_javascript_checks_and_reuses_the_adminapi_object(self):
+        from myflames import reviewed_writes
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('node is needed to execute the JavaScript guard without a database')
+        other_group = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        for scenario, action in (('ic-8.4-healthy', 'switch_to_multi_primary'),
+                                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
+                                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:__proto__')):
+            report = F.report(scenario)
+            if action.endswith(':__proto__'):
+                next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')['name'] = '__proto__'
+                report._clusterset_groups['__proto__'] = report._clusterset_groups.pop('drcluster')
+            plan = m.plan_action(report, action, local(report)['key'], CHECKS)
+            identity = plan['expect']['server_identity']
+            target = identity['adminapi']
+            is_set = target['kind'] == 'clusterset'
+            target_name = action.split(':', 1)[1] if is_set else None
+            good_status = ({'domainName': target['name'],
+                            'clusters': {name: {'groupName': uuid} for name, uuid in target['groups'].items()}}
+                           if is_set else {'defaultReplicaSet': {'groupName': target['group_name']}})
+            variants = [('match', good_status)]
+            if is_set:
+                wrong_name = dict(good_status, domainName='another-set')
+                changed = json.loads(json.dumps(good_status))
+                changed['clusters'][target_name]['groupName'] = other_group
+                missing_group = json.loads(json.dumps(good_status))
+                del missing_group['clusters'][target_name]['groupName']
+                missing_cluster = json.loads(json.dumps(good_status))
+                del missing_cluster['clusters'][target_name]
+                extra_cluster = json.loads(json.dumps(good_status))
+                extra_cluster['clusters']['other'] = {'groupName': other_group}
+                variants += [('name', wrong_name), ('group', changed), ('missing_group', missing_group),
+                             ('missing_cluster', missing_cluster), ('extra_cluster', extra_cluster),
+                             ('unreadable', {'domainName': target['name']})]
+            else:
+                variants += [('group', {'defaultReplicaSet': {'groupName': other_group}}),
+                             ('missing_group', {'defaultReplicaSet': {}}), ('unreadable', {})]
+            for variant, status in variants:
+                with self.subTest(action=action, identity=variant):
+                    harness = '''
+                        const fs = require('fs'), vm = require('vm');
+                        const calls = [], queries = [];
+                        const session = {runSql(sql) {
+                            queries.push(sql); return {fetchOne() {return [UUID];}};
+                        }};
+                        const object = {
+                            status(options) {calls.push(['status', options.extended]); return JSON.parse(STATUS);},
+                            switchToMultiPrimaryMode() {calls.push(['action']);},
+                            setPrimaryCluster(name) {calls.push(['action', name]);}
+                        };
+                        const dba = {
+                            getCluster() {calls.push(['getCluster']); return object;},
+                            getClusterSet() {calls.push(['getClusterSet']); return object;}
+                        };
+                        try {vm.runInNewContext(fs.readFileSync(0, 'utf8'), {session, dba}, {filename: 'STDIN'});}
+                        catch (error) {console.error(String(error) + '\\n at STDIN:1'); process.exitCode = 1;}
+                        console.log(JSON.stringify({calls, queries}));
+                    '''.replace('UUID', json.dumps(identity['server_uuid'])).replace('STATUS', json.dumps(json.dumps(status)))
+                    observed = []
+
+                    def run_javascript(argv, timeout, **options):
+                        result = subprocess.run([node, '-e', harness], input=options['input'],
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+                        observed.append(json.loads(result.stdout.decode('utf-8')))
+                        return result
+
+                    after = mock.Mock()
+                    with mock.patch('myflames.connector._run_bounded', side_effect=run_javascript):
+                        result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test',
+                                                          typed=plan['typed_guard'], read_after=after)
+                    expected_calls = [['getClusterSet' if is_set else 'getCluster'], ['status', 2 if is_set else 1]]
+                    if variant == 'match':
+                        expected_calls.append(['action', target_name] if is_set else ['action'])
+                        self.assertEqual(result['status'], 'done', result)
+                    else:
+                        self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_mismatch'), result)
+                        self.assertEqual(result['not_sent'], plan['statements'])
+                        self.assertEqual(result['sent'], [])
+                        after.assert_not_called()
+                    self.assertEqual(observed[0]['queries'], ['SELECT @@global.server_uuid'])
+                    self.assertEqual(observed[0]['calls'], expected_calls)
 
     def test_identity_marker_from_an_adminapi_error_does_not_claim_nothing_was_sent(self):
         # A later statement can contain arbitrary server text. Only the

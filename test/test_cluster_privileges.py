@@ -339,6 +339,21 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                          'GRANT INSERT ON `data_%`.* TO `monitor`@`%`;')
         self.assertIsNone(m._grant_sql(missing, ACCOUNT, None))
 
+    def test_schema_grant_escapes_backslash_before_both_wildcards(self):
+        database = r'data\_%'
+        need = [(('INSERT',), database, False)]
+        for engine, version, partial in (('mysql', '8.4.11', False), ('mysql', '5.7.44', False),
+                                         ('mysql', '8.0.15', False), ('mariadb', '11.4.13', False),
+                                         ('mysql', '8.4.11', True)):
+            with self.subTest(engine=engine, version=version, partial=partial):
+                suggestion = m._grant_sql(need, ACCOUNT, partial)
+                pattern = database if partial else r'data\\\_\%'
+                self.assertEqual(suggestion, 'GRANT INSERT ON `%s`.* TO `monitor`@`%%`;' % pattern)
+                parsed = privileges.parse_grants([suggestion], engine, version, partial_revokes=partial)
+                self.assertIs(privileges.has(parsed, 'INSERT', 'database', database=database), True)
+                for other in ('dataXX', 'data_%', r'data\XX'):
+                    self.assertIsNot(privileges.has(parsed, 'INSERT', 'database', database=other), True)
+
     def test_unknown_partial_revokes_never_produces_an_ambiguous_grant(self):
         conn = GrantsClient('ic-8.4-healthy', grants=[statement(['SUPER'])], variables={'partial_revokes': None})
         report = m.read_status(conn)

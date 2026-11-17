@@ -1436,7 +1436,7 @@ def _read_metadata(reader, report, group_name, local):
     if group_instances:
         report["cluster"]["expected_size"] = group_instances
         report["cluster"]["expected_source"] = "mysql_innodb_cluster_metadata"
-    _read_clusterset(reader, report, metadata, local, others)
+    _read_clusterset(reader, report, metadata, local, others, clusters)
     _read_routers(reader, report, metadata)
 
 
@@ -1446,7 +1446,7 @@ def _cs_instance(inst):
             "source": False}
 
 
-def _read_clusterset(reader, report, metadata, local, others=None):
+def _read_clusterset(reader, report, metadata, local, others=None, cluster_rows=None):
     """The InnoDB ClusterSet this cluster belongs to, from the metadata
     (``report["clusterset"]``; absent outside a ClusterSet). A replica
     cluster's metadata is a copy replicated from the primary cluster over the
@@ -1463,6 +1463,7 @@ def _read_clusterset(reader, report, metadata, local, others=None):
     if mine is None:
         return
     report["statements"].append("SELECT mysql_innodb_cluster_metadata.v2_cs_members, v2_cs_clustersets")
+    groups = {_text(row[0]): _text(row[3]) for row in cluster_rows or () if len(row) > 3}
     clusters = []
     for r in rows:
         if _text(r[0]) != _text(mine[0]):
@@ -1473,6 +1474,10 @@ def _read_clusterset(reader, report, metadata, local, others=None):
         instances.sort(key=lambda i: _natural(i["label"] or i["address"] or ""))
         clusters.append({"name": _text(r[2]), "role": _text(r[3]), "invalidated": _on(r[4]) is True,
                          "local": r is mine, "instances": instances})
+    # Review-only identity evidence from this server's own metadata read.
+    # Keep it off the public cluster-1.0 report, like cached catalog grants.
+    report._clusterset_groups = {_text(r[2]): groups.get(_text(r[1])) for r in rows
+                                if _text(r[0]) == _text(mine[0])}
     clusters.sort(key=lambda c: (c["role"] != "PRIMARY", _natural(c["name"] or "")))
     me = next(c for c in clusters if c["local"])
     primary = next((c for c in clusters if c["role"] == "PRIMARY" and not c["invalidated"]), None)
@@ -1656,7 +1661,7 @@ def _read_read_replica(reader, report):
     report["notes"].append("This server is a read replica of the InnoDB Cluster: it replicates asynchronously over "
                            "the %s channel and is not a group member, so the group's quorum and members are not "
                            "visible here. The metadata read here is its replicated copy." % READ_REPLICA_CHANNEL)
-    _read_clusterset(reader, report, metadata, local, others)
+    _read_clusterset(reader, report, metadata, local, others, clusters)
     _judge_read_replica(reader, report, local)
     _read_routers(reader, report, metadata)
     return True
@@ -2089,6 +2094,7 @@ class _ActionReport(dict):
         super().__init__(report)
         self._action_conn = conn
         self._action_grants = None
+        self._clusterset_groups = {}
         self._galera_identity = ({"server_id": _number(variables.get("server_id")),
                                   "wsrep_node_name": _text(variables.get("wsrep_node_name"))}
                                  if report.get("engine") == "mariadb" else {})
@@ -2160,8 +2166,10 @@ SHELL_ACTIONS = ("rejoin_instance", "set_primary_cluster", "force_primary_cluste
 #: modules/adminapi/cluster/topology_configuration_command.cc:49-54, 231-245;
 #: mysql-server tag mysql-8.0.13, plugin/group_replication/src/udf/
 #: udf_multi_primary.cc:87-94 registers the UDF (absent in mysql-8.0.12).
-SHELL_MIN_VERSION = (8, 0, 14)
-SHELL_CLUSTERSET_MIN_VERSION = (8, 0, 27)
+# Option-file loading first appears in Shell 8.0.32 (shell_options.cc:
+# 205-214,887-891 at that tag). Earlier methods cannot use our credentials.
+SHELL_MIN_VERSION = (8, 0, 32)
+SHELL_CLUSTERSET_MIN_VERSION = SHELL_MIN_VERSION
 #: WL#15056 added rejoinInstance's recoveryMethod option in MySQL Shell 8.1.0.
 SHELL_REJOIN_MIN_VERSION = (8, 1, 0)
 #: An AdminAPI operation waits for recovery or a channel catching up.
@@ -2378,7 +2386,8 @@ def _tool_issue(report, action, checks):
         if not shell.get("version_tuple"):
             return "The installed MySQL Shell version could not be read.", fix
         if tuple(shell["version_tuple"]) < minimum:
-            return "This action needs MySQL Shell %s or later." % version, fix
+            found = shell.get("version") or ".".join(str(n) for n in shell["version_tuple"])
+            return "This action needs MySQL Shell %s or later; found %s." % (version, found), fix + " Get MySQL Shell."
     if report.get("kind") in ("group_replication", "innodb_cluster"):
         base, _ = _action_name(action["id"])
         usable, why = _gr_usable(report)
@@ -2531,6 +2540,9 @@ def _member_issue(report, action, member, checks):
             return ("%s is a read replica, not a Group Replication member." % name,
                     "Choose a Group Replication member.")
         if base == "rejoin_instance":
+            if _version((report.get("metadata") or {}).get("schema_version")) < (2, 0, 0):
+                return ("Rejoin needs InnoDB Cluster metadata 2.0.0 or later.",
+                        "Upgrade the cluster metadata in MySQL Shell, then Refresh.")
             if not member.get("in_metadata"):
                 return "This member is not recorded in the cluster metadata.", "Add it to the cluster in MySQL Shell first."
             if state not in ("MISSING", "OFFLINE", "ERROR"):
@@ -2546,6 +2558,13 @@ def _member_issue(report, action, member, checks):
             if (report.get("clusterset") or {}).get("invalidated"):
                 return ("This cluster is invalidated in its ClusterSet.",
                         "Rejoin this cluster to the ClusterSet before rejoining a member.")
+            cs = report.get("clusterset") or {}
+            if cs and cs.get("global_status") != "OK":
+                status = cs.get("global_status")
+                return (("This cluster's ClusterSet status is %s; Rejoin needs exactly OK." % status if status else
+                         "This cluster's ClusterSet status could not be verified as OK."),
+                        "Check the cluster's globalStatus with dba.getClusterSet().status() in MySQL Shell; "
+                        "restore an OK status before rejoining the member in MySQL Shell.")
             return None
         if member.get("state_source") != "replication_group_members":
             return "This member is not in the group view.", "Connect to this member and Refresh to read its state."
@@ -3254,6 +3273,13 @@ def _plan_shell(report, plan, action, member, local, expect, server_name=None):
     base, target = _action_name(action)
     name = server_name or member.get("name")
     cs = report.get("clusterset") or {}
+    # Bind the object AdminAPI resolves, as well as Shell's global session.
+    # Its connections may follow a router or primary to a different cluster.
+    is_set = base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
+    adminapi = ({"kind": "clusterset", "name": cs.get("name"),
+                 "groups": dict(getattr(report, "_clusterset_groups", {}))}
+                if is_set else {"kind": "cluster", "group_name": (report.get("group_replication") or {}).get("group_name")})
+    expect["server_identity"] = dict(expect["server"], adminapi=adminapi)
     cluster = (report.get("cluster") or {}).get("name") or "the cluster"
     primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
     if base == "switchover":
@@ -3368,6 +3394,10 @@ def _plan_shell(report, plan, action, member, local, expect, server_name=None):
     if cs.get("from_local_copy") and base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
         plan["warnings"].append("The ClusterSet state here is this cluster's replicated copy of the metadata; "
                                 "MySQL Shell reads the primary cluster's before it changes anything.")
+    # Reuse the checked object; another dba.get* call would open unchecked
+    # sessions. The derived guard is shown and bound by reviewed_writes.
+    plan["statements"] = [statement.replace("dba.getClusterSet()", "myflamesClusterSet").replace(
+        "dba.getCluster()", "myflamesCluster") for statement in plan["statements"]]
 
 
 def _plan_galera(report, plan, action, member, expect, server_name=None):

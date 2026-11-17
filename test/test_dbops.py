@@ -1001,7 +1001,38 @@ class TestPrivileges(unittest.TestCase):
         self.assertEqual(sql.count('SHOW GRANTS'), 1)
         self.assertEqual(sql.count('CURRENT_USER()'), 2)
         self.assertEqual(sql.count("'partial_revokes'"), 2)
+        self.assertNotIn('wsrep_gcomm_uuid', sql)
         self.assertEqual(result['partial_revokes'], False)
+
+    def test_grants_galera_status_is_an_explicit_opt_in(self):
+        from _grants_fixtures import grants_batch, UUID
+        conn = mock.Mock()
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'],
+                                             version='11.4.13-MariaDB', variables={'wsrep_gcomm_uuid': UUID})
+        result = dbops.read_grants(conn, galera_identity=True)
+        self.assertTrue(result['checked'], result)
+        self.assertEqual(conn.run.call_args[0][0].count(
+            "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"), 2)
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'],
+                                             version='11.4.13-MariaDB', variables={'wsrep_gcomm_uuid': UUID},
+                                             after_variables={'wsrep_gcomm_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'})
+        self.assertFalse(dbops.read_grants(conn, galera_identity=True)['checked'])
+
+    def test_grants_use_registered_uuid_instead_of_the_version_brand(self):
+        from _grants_fixtures import grants_batch
+        # MariaDB's --version override can remove its name or impersonate
+        # an arbitrary MySQL version. An absent optional variable is valid.
+        for version in ('11.8.9-custom', '8.4.11', 'custom-server'):
+            with self.subTest(version=version):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version=version,
+                                                     variables={'server_uuid': None, 'partial_revokes': None})
+                self.assertTrue(dbops.read_grants(conn)['checked'])
+        # Conversely, a MariaDB-looking VERSION() must not mask a malformed
+        # registered UUID on a MySQL server.
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version='11.8.9-MariaDB',
+                                             variables={'server_uuid': 'invalid'})
+        self.assertFalse(dbops.read_grants(conn)['checked'])
 
     def test_grants_refuse_a_server_account_or_session_change(self):
         from _grants_fixtures import grants_batch
@@ -1052,7 +1083,7 @@ class TestPrivileges(unittest.TestCase):
                 self.assertEqual(sql.count("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
                                            "('server_uuid', 'partial_revokes')"), 2)
 
-    def test_grants_partial_revokes_and_missing_identity_are_explicit(self):
+    def test_grants_partial_revokes_and_invalid_identity_are_explicit(self):
         from _grants_fixtures import grants_batch
         for value, expected in [('ON', True), ('1', True), ('OFF', False), ('0', False),
                                 (None, None), ('unknown', None)]:
@@ -1066,7 +1097,7 @@ class TestPrivileges(unittest.TestCase):
         for version in ('5.7.44', '8.4.11'):
             conn = mock.Mock()
             conn.run.return_value = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'], version=version,
-                                                 variables={'server_uuid': None})
+                                                 variables={'server_uuid': 'invalid'})
             self.assertFalse(dbops.read_grants(conn)['checked'])
         conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version='11.4.13-MariaDB',
                                              variables={'server_uuid': None, 'partial_revokes': None})

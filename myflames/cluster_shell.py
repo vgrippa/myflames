@@ -17,8 +17,9 @@ re-implement them: it runs MySQL Shell.
 :class:`ShellWriter` takes the place of a connection's ``run_write`` for one
 send. The reviewed statements are AdminAPI calls in JavaScript, one per line,
 sent on standard input to ``mysqlsh --js`` (batch mode stops at the first
-exception). The first JavaScript statement is the reviewed server UUID
-check through ``session.runSql``, before any AdminAPI call. A mismatch
+exception). The first JavaScript line checks the reviewed server UUID
+through ``session.runSql``, then the identity of the returned AdminAPI
+object through its extended status. The action reuses that object. A mismatch
 throws MYFLAMES_IDENTITY_MISMATCH and is a refusal with no action sent.
 The account comes from a 0600 option file on argv, as for every
 other tool myflames runs (lifecycle._credentials): never a URI, an
@@ -57,26 +58,67 @@ IDENTITY_MISMATCH_MARKER = "MYFLAMES_IDENTITY_MISMATCH"
 
 
 def target_session_guard(identity):
-    """One JavaScript statement, run before any AdminAPI call in this session.
+    """One JavaScript line, checking identity before any action call.
 
     ClassicSession.runSql and ClassicResult.fetchOne are exposed in Shell's
     modules/mod_mysql_session.cc:89 and mod_mysql_resultset.cc:67. Never
-    substitute dba.getCluster() here: that would already inspect a cluster.
+    inspect AdminAPI until the global session's UUID has matched. AdminAPI
+    opens separate sessions (modules/adminapi/mod_dba.cc:849-862).
     """
     from .dbops import _TARGET_UUID
     identity = identity if isinstance(identity, dict) else {}
     uuid = identity.get("server_uuid")
     if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
         raise ValueError("The reviewed server UUID is missing or invalid. Nothing was sent. Refresh and review again.")
-    return ['if (session.runSql("SELECT @@global.server_uuid").fetchOne()[0] !== %s) { throw new Error(%s); }'
-            % (json.dumps(uuid), json.dumps(IDENTITY_MISMATCH_MARKER))]
+    guard = ['if (session.runSql("SELECT @@global.server_uuid").fetchOne()[0] !== %s) { throw new Error(%s); }'
+             % (json.dumps(uuid), json.dumps(IDENTITY_MISMATCH_MARKER))]
+    adminapi = identity.get("adminapi")
+    if adminapi is None:
+        return guard
+    if not isinstance(adminapi, dict):
+        raise ValueError("The reviewed AdminAPI identity is invalid. Nothing was sent.")
+    # Keep every read and check on line 1: only this prefix can prove that no
+    # reviewed action ran. Use the very object checked here for the action,
+    # never another getCluster/getClusterSet connection after the check.
+    mismatch = 'throw new Error(%s);' % json.dumps(IDENTITY_MISMATCH_MARKER)
+    if adminapi.get("kind") == "cluster":
+        group = adminapi.get("group_name")
+        if not isinstance(group, str) or not _TARGET_UUID.fullmatch(group):
+            raise ValueError("The reviewed Group Replication group name is missing or invalid. Nothing was sent.")
+        guard += ['var myflamesCluster = dba.getCluster();',
+                  'var myflamesStatus = myflamesCluster.status({extended: 1});',
+                  'if (!myflamesStatus.defaultReplicaSet || myflamesStatus.defaultReplicaSet.groupName !== %s) { %s }'
+                  % (json.dumps(group), mismatch)]
+    elif adminapi.get("kind") == "clusterset":
+        name, groups = adminapi.get("name"), adminapi.get("groups")
+        if (not isinstance(name, str) or not name or not isinstance(groups, dict) or not groups or
+                any(not isinstance(key, str) or not key or not isinstance(value, str) or
+                    not _TARGET_UUID.fullmatch(value) for key, value in groups.items())):
+            raise ValueError("The reviewed ClusterSet identity is missing or invalid. Nothing was sent.")
+        # Shell 8.0.32: cluster_set/status.cc:132-164 and cluster/status.cc:
+        # 1555-1556,1798. extended:2 retains each cluster's groupName.
+        guard += ['var myflamesClusterSet = dba.getClusterSet();',
+                  'var myflamesStatus = myflamesClusterSet.status({extended: 2});',
+                  # JSON.parse preserves a literal cluster named __proto__;
+                  # a JavaScript object initializer would change its meaning.
+                  'var myflamesGroups = JSON.parse(%s);' % json.dumps(json.dumps(groups, sort_keys=True)),
+                  'if (myflamesStatus.domainName !== %s || !myflamesStatus.clusters || '
+                  'JSON.stringify(Object.keys(myflamesStatus.clusters).sort()) !== '
+                  'JSON.stringify(Object.keys(myflamesGroups).sort()) || '
+                  'Object.keys(myflamesGroups).some(function(name) { return '
+                  '!myflamesStatus.clusters[name] || myflamesStatus.clusters[name].groupName !== '
+                  'myflamesGroups[name]; })) { %s }' % (json.dumps(name), mismatch)]
+    else:
+        raise ValueError("The reviewed AdminAPI object kind is invalid. Nothing was sent.")
+    return [" ".join(guard)]
 
 
 def find_shell(refresh=False):
-    """The newest usable ``mysqlsh`` found on this machine as a dict (path,
+    """The newest installed ``mysqlsh`` found on this machine as a dict (path,
     realpath, version, version_tuple), or None. Uses the client inventory
     (client_tools.discover): the same ownership checks and cached version
-    probes as every other client myflames runs."""
+    probes as every other client myflames runs. Keep older versions for the
+    catalog's version-specific refusal; actions require at least 8.0.32."""
     from . import client_tools
     try:
         shells = client_tools.discover(refresh=refresh, cache_shell_trust=not refresh).get("shells") or []
@@ -107,29 +149,43 @@ def error_text(stderr, stdout=""):
     Neither a statement location nor an exception number can come from it.
     """
     text = _ANSI.sub("", stderr or "")
-    lines = [" ".join(raw.split()) for raw in text.splitlines()]
-    lines = [line for line in lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
+    # Split physical output lines only. Unicode separators in an echoed
+    # server label must not change which exception is next to a call site.
+    raw_lines = [" ".join(raw.split()) for raw in text.split("\n")]
+    lines = [line for line in raw_lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
     if not lines:
         return None
     # mysql-shell/mysqlshdk/scripting/types.cc:717 appends the location;
     # scripting/polyglot/utils/polyglot_error.cc:438 appends backtrace sites.
     # Keep the last stderr site, never one from stdout progress.
-    locations = list(_STDIN_LINE.finditer(text))
-    where = int(locations[-1].group(1)) if locations else None
-    shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
-    mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
-    exception = any(re.search(r"\(\w+Error\)|^\w*Error:", line) for line in lines)
+    locations = [(index, match) for index, line in enumerate(raw_lines)
+                 if not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)
+                 for match in _STDIN_LINE.finditer(line)]
+    where = int(locations[-1][1].group(1)) if locations else None
+    if locations:
+        index = locations[-1][0]
+        # Preserve blank/progress lines when deciding adjacency. Removing
+        # them first could promote an echoed server name into an exception.
+        candidates = [line for line in reversed(raw_lines[max(0, index - 1):index + 1])
+                      if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
+    else:
+        candidates = lines
+    shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, candidates) if m), None)
+    mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, candidates) if m), None)
+    exception = any(re.search(r"\(\w+Error\)|^\w*Error:", line) for line in candidates)
     if where is None and shell_code is None and mysql_code is None and not exception:
         return None
-    # The numbered exception is more specific than preceding progress or ERROR lines.
-    message = next((line for line in candidates if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
+    # An inline exception belongs to the location's own line, even when it
+    # has no number. A bare call site instead takes its adjacent exception.
+    message = candidates[0] if locations and not re.match(r"^at STDIN:\d+\b", candidates[0]) else None
+    if message is None:
+        message = next((line for line in candidates if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
     if message is None:
         message = next((line for line in candidates if re.search(r"^ERROR:|Error|error|\(\w+Error\)", line)), None)
     message = message if message is not None else candidates[0]
     # A wrapped exception can carry several numbers; its final cause wins.
     message_codes = [match for pattern in (_SHELL_CODE, _MYSQL_CODE) for match in pattern.finditer(message)]
-    code = (int(max(message_codes, key=lambda match: match.start()).group(1)) if message_codes else
-            shell_code if shell_code is not None else mysql_code if mysql_code is not None else 0)
+    code = int(max(message_codes, key=lambda match: match.start()).group(1)) if message_codes else 0
     message = _STDIN_LINE.sub("", message).strip()
     message = re.sub(r"^ERROR:\s*", "", message)
     if (where is None and shell_code is None and code in CONNECT_ERRORS and not exception and

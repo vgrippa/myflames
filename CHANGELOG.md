@@ -33,9 +33,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 - Cluster, **Users and roles**, Kill, Variables and replication skip actions whose identity check cannot run now report the server's reason and record that the identity was unavailable. A different server still reports an identity mismatch.
 
-- MySQL Shell errors without a statement location keep an unknown outcome. Progress text cannot turn them into an identity refusal, and a read after the error reports any visible partial change.
+- MySQL Shell errors without a statement location keep an unknown outcome. Only the final stderr location and its adjacent exception supply a statement error; progress and earlier echoed text cannot turn it into an identity refusal or change its error number. A read after the error reports any visible partial change.
 
-- Cluster GRANT suggestions now escape schema wildcards on MySQL 5.7, MySQL before 8.0.16 and MariaDB, where schema grants always use wildcard matching.
+- Cluster GRANT suggestions escape backslashes and schema wildcards on MySQL 5.7, MySQL before 8.0.16 and MariaDB, where schema grants always use wildcard matching. Privilege reads avoid Galera status unless a node UUID is needed and work when MariaDB has a custom version string.
+
+- Cluster actions require MySQL Shell 8.0.32 or later to read their private credentials file. Older installations show the version found and offer **Get MySQL Shell**. Rejoin requires metadata 2.0.0 or later and stays disabled unless the cluster's ClusterSet status can be verified as exactly OK.
 
 - Rejoining a missing InnoDB Cluster member in a Group connection now uses the active ONLINE member with quorum. Desync and Resync for another Galera node both stay available for review, which checks that node's own state.
 
@@ -50,6 +52,6 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- Cluster changes through MySQL Shell now verify the server UUID inside the sending session before any cluster operation. Galera identity guards also compare the node UUID, so matching server names, ids and ports cannot authorize a different node.
+- Cluster changes through MySQL Shell check the global session's server UUID, then the group UUID reported by the returned AdminAPI Cluster object. ClusterSet actions compare the returned set's name and every member cluster's group UUID with the reviewed metadata. The action uses that checked object. Galera SQL identity guards also compare the node UUID, so matching server names, ids and ports cannot authorize a different node.
 
-- Suggested Cluster GRANTs read the account, grants and schema wildcard setting in one login and refuse changed identity snapshots. Schema names containing underscores or percent signs are escaped according to that setting, preventing a suggestion from granting access to other matching schemas.
+- Suggested Cluster GRANTs read the account, grants and schema wildcard setting in one login and refuse changed identity snapshots. Schema names containing backslashes, underscores or percent signs are escaped according to that setting, preventing a suggestion from granting access to other matching schemas.

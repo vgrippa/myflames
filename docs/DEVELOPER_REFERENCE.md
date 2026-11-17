@@ -1737,9 +1737,13 @@ after-read or retry. Account plans that need several client
 invocations guard each invocation; a refusal after an earlier accepted
 statement retains a partial outcome. Cluster SQL and UDF actions are covered
 by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
-the first statement reads `@@global.server_uuid` through the Shell's own
-`session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. A different
-UUID throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
+the first line reads `@@global.server_uuid` through the Shell's global
+`session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. It then
+checks the returned AdminAPI object's extended status: a Cluster's group UUID,
+or a ClusterSet's name and complete member cluster/group UUID map, against the
+reviewed server's variable and metadata reads. The action reuses that object;
+AdminAPI manages its own member connections. A different identity
+throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
 exception to a refusal with `sent: []`. Its guard is reviewed, token-bound and
 audited like the SQL prefix, and later error line numbers exclude it.
 ProxySQL Admin and Readyset actions do not expose these identity variables
@@ -1767,14 +1771,15 @@ flag govern the write. The token still belongs to the active connection,
 and its details bind the target, so it cannot move between servers.
 The Audit log's `connection` names the saved target, and its `target`
 contains the reviewed expectations, including the same `target` binding.
-SQL sends carry the target's SQL UUID guard; MySQL Shell sends carry the
-equivalent JavaScript guard through their own session.
+SQL sends carry the target's SQL UUID guard; MySQL Shell sends check its
+global session UUID and the returned AdminAPI object's identity before acting.
 Apply-time target refusals (including group removal and a forgotten remote
 password) produce an audited `refused` result before password lookup. A login
 consent refusal after `audit.attempt` completes that pending record as `refused`
 with no statements sent, rather than an error or an unknown outcome. MySQL
 Shell checks the same consent before reading credentials and immediately before
-spawn, then its first JavaScript statement checks the reviewed server UUID.
+spawn, then its first JavaScript line checks the global session's reviewed
+server UUID and the returned AdminAPI object's reviewed cluster identity.
 
 Every editor owner path checks the connection, including ended sessions,
 status, export, stop, close, commit, and rollback. Ended sessions compare
@@ -5331,13 +5336,13 @@ recorded with the tables, separate from fixture or live-test evidence.
 | `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2181` |
 | `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
 | `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
-| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
-| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
-| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.27+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2182` |
+| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
+| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
+| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2182` |
 | `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2192` |
-| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2193` |
-| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
-| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
+| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2193` |
+| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
+| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
 | `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
 | `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
 | `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2217`; `myflames/dbops.py:1549` |
@@ -5381,8 +5386,13 @@ responsible for its member logins and the privileges needed by each step.
 
 `dbops.read_grants` reads tagged USER(), CURRENT_USER(), VERSION(),
 CONNECTION_ID(), server_id, hostname and port, plain SHOW GRANTS, and the
-optional server_uuid, partial_revokes and wsrep_gcomm_uuid values in one
-client invocation with `--skip-reconnect`. Framed identity/account snapshots
+optional server_uuid and partial_revokes values in one
+client invocation with `--skip-reconnect`. `galera_identity=True` additionally
+reads and requires a valid wsrep_gcomm_uuid in both snapshots, only for callers
+that need Galera node identity. Ordinary reads, including dump and restore
+preflights, omit GLOBAL_STATUS. The presence of server_uuid in the variable
+results determines whether to validate a MySQL UUID; VERSION() is not engine
+evidence because MariaDB permits a custom version string. Framed identity/account snapshots
 before and after the grants must match, including the optional variables;
 an incomplete or changed snapshot returns no account or grants. The shared `privileges.parse_grants` / `privileges.has`
 model handles effective login-time roles and partial revokes; Cluster adds no
@@ -5475,9 +5485,12 @@ actions" comment in `cluster.py`:
 MySQL Shell actions stay in the catalog when `mysqlsh` is missing, too old,
 or the connection uses SSH; each condition has its own reason and fix.
 `cluster_shell.find_shell` uses the client inventory and its ownership and
-version checks. Mode switches need MySQL Shell 8.0.14 or later (the topology
-methods first appear in Shell 8.0.14), ClusterSet changes (including Make primary
-within a replica cluster) need 8.0.27 or later, and member rejoin needs 8.1 or
+version checks. Mode switches and ClusterSet changes (including Make primary
+within a replica cluster) need MySQL Shell 8.0.32 or later: that is the first
+Shell version to read the private `--defaults-file` used for credentials
+(Shell tag 8.0.32, `mysqlshdk/shellcore/shell_options.cc:205–214,887–891`).
+Older versions remain discoverable so the disabled action can name the
+version found and offer **Get MySQL Shell**. Member rejoin needs 8.1 or
 later for the incremental recovery option. Topology changes require MySQL
 8.0.13 on the connected server and every group member; a MISSING metadata row
 does not block Make primary. The connected member must be ONLINE with quorum,
@@ -5493,7 +5506,7 @@ the sent calls get them with `dba.getCluster()` and `dba.getClusterSet()`.
 | --- | --- | --- | --- |
 | `switch_to_multi_primary` | `dba.getCluster().switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
 | `switch_to_single_primary` | `dba.getCluster().switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
-| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | target in metadata and MISSING, OFFLINE or ERROR, valid metadata address, an ONLINE primary and quorum, cluster not invalidated | member name |
+| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | metadata 2.0.0+, target in metadata and MISSING, OFFLINE or ERROR, valid metadata address, an ONLINE primary and quorum, cluster not invalidated, local cluster's ClusterSet global status exactly OK when in a set | member name |
 | `switchover` Make primary… | `dba.getCluster().setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
 | `set_primary_cluster:<name>` | `dba.getClusterSet().setPrimaryCluster("<name>");` | target a non-invalidated replica cluster in the set, local cluster not invalidated | target cluster name |
 | `force_primary_cluster` Fail over to this cluster… | `dba.getClusterSet().forcePrimaryCluster("<local_cluster>");` | connected to a non-invalidated replica cluster | local cluster name |
@@ -5527,6 +5540,17 @@ uses `Cluster.setPrimaryInstance()` because the server refuses the Group
 Replication switchover function while the replica channel runs on its primary.
 ClusterSet plans warn when their metadata view comes from a replica cluster.
 
+Member rejoin requires metadata 2.0.0 or later and, within a ClusterSet, the
+local cluster's `globalStatus` to be exactly `OK` (Shell tag 8.4.0,
+`modules/adminapi/common/preconditions.cc:352–358`). `OK_NOT_REPLICATING`,
+`OK_NOT_CONSISTENT`, `OK_MISCONFIGURED`, `NOT_OK` and unknown status disable
+it with the reason. The SQL status report does not establish that complete
+AdminAPI status, which includes remote GTID consistency checks
+(`modules/adminapi/cluster_set/cluster_set_impl.cc:593–600`), so a ClusterSet
+member rejoin stays disabled when the status is unavailable. Its fix directs
+the user to check status and rejoin in MySQL Shell; a running local channel
+does not prove `OK`.
+
 Every MySQL Shell change uses the same reviewed-change policy, review token
 and audit path as the other Cluster changes. The exact call is shown at
 review; before sending, the plan is made again from a fresh cluster read and
@@ -5553,13 +5577,28 @@ sessions can fall back to PREFERRED), before creating credentials or sending any
 VERIFY_CA always passes a CA file, including a private system-root bundle when no
 explicit CA was saved, so member sessions retain CA verification. The time limit is 600 s.
 
-Before these calls, the first script statement uses the Shell session's
+Before these calls, the first script line uses the Shell global session's
 `runSql("SELECT @@global.server_uuid").fetchOne()[0]` to compare the reviewed
 UUID, throwing `MYFLAMES_IDENTITY_MISMATCH` if different. No AdminAPI method
-is evaluated before this check. Shell's
+is evaluated before this check. AdminAPI opens separate connections
+(`modules/adminapi/mod_dba.cc:849–862`), so this UUID check covers only the
+global session. The rest of that same first line obtains and checks the
+AdminAPI object: `Cluster.status({extended: 1}).defaultReplicaSet.groupName`
+must match the reviewed server's own `group_replication_group_name` variable.
+The field exists in Shell 8.0.32 (`modules/adminapi/cluster/status.cc:1555–1556,1798`
+at that tag). ClusterSet actions use `ClusterSet.status({extended: 2})`:
+`domainName` and the exact cluster-name to `clusters[name].groupName` map must
+match the set name and every cluster group UUID read from this server's
+metadata. Extended level 2 retains those group names (Shell tag 8.0.32,
+`modules/adminapi/cluster_set/status.cc:132–164`). A missing or changed identity
+throws the same mismatch marker before any action. The reviewed action calls
+`myflamesCluster` or `myflamesClusterSet`, reusing the checked object instead
+of obtaining another object with new unchecked connections. Shell's
 `mysqlshdk/shellcore/shell_core.cc:140–177` evaluates stdin JavaScript as one
 script, so that exception prevents subsequent calls. `session_guard` exposes
-the derived JavaScript line to review, token binding and audit. `ShellWriter`
+the derived JavaScript line to review, token binding and audit. Its identities
+come from `expect.server_identity`, including the AdminAPI object kind and
+group UUID or ClusterSet name/group map. `ShellWriter`
 maps the first-line marker to `refused` / `identity_mismatch` with every
 reviewed call `not_sent`; no after-read follows. Later exception locations
 subtract this prefix line, and a marker in a later AdminAPI error cannot
@@ -5575,8 +5614,15 @@ to `ERROR <n> at line <l>: <message>` only when stderr supplies a call location,
 using the MySQL Shell number, the MySQL number, or 0 when neither is present.
 MySQL Shell appends that location in `mysqlshdk/scripting/types.cc:717` and
 `mysqlshdk/scripting/polyglot/utils/polyglot_error.cc:438`. The last stderr
-location takes precedence over embedded text; stdout is progress and cannot
-supply a location or an exception number. Without a location, a numbered or
+location takes precedence over embedded text; only that physical line and
+its immediately preceding line supply the exception message and number.
+Blank and progress lines are preserved when deciding adjacency, so earlier
+echoed server text cannot be promoted into the exception. The location's
+line is preferred over its predecessor; the last number within the chosen
+exception line wins. NOTE, WARNING and INFO lines cannot supply a location;
+Unicode separators inside a line do not create extra output lines. Stdout is
+progress and cannot supply a location or an
+exception number. Without a location, a numbered or
 typed exception retains its message with the statement location and outcome
 unknown; no line 1 is invented and no identity mismatch is inferred.
 Since one AdminAPI call can fail after
