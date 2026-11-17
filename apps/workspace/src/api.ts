@@ -382,6 +382,9 @@ export type Connection = {
   ssh_port?: number;
   /** Topology discovery consent group ("" or absent means no group). */
   group?: string;
+  /** Set on a Group connection (POST /api/connect): the connection group this
+   * connection is the active member of. Part of the connection's identity. */
+  group_name?: string;
 };
 /** Production asks before every write; Development only before risky ones. */
 export type ConnectionType = "production" | "development";
@@ -423,6 +426,111 @@ export type ConnectionGroup = {
   join: ConnectionGroupJoin[];
   suggested_name?: string;
 };
+
+// ---- Group connections (POST /api/connect, /api/profiles/groups/*) -----------
+// A connection group opened as one Group connection (ui._connect_response):
+// the reply is the active member's connection/test discovery plus
+// group_connection. Live member facts are read for the other members only on
+// an explicit open or Refresh (probe_members: true).
+
+/** The safety a group member or a whole Group connection is judged by. */
+export type GroupSafety = { type: ConnectionType; read_only: boolean };
+export type GroupConnectionMember = {
+  profile_id: string;
+  profile_name: string;
+  host: string;
+  port: number;
+  safety: GroupSafety;
+  /** Live facts; null when the member was not probed or could not be read. */
+  server_uuid: string | null;
+  role: string | null;
+  state: string | null;
+  reachable: boolean | null;
+};
+export type GroupConnection = {
+  group_name: string;
+  /** The strictest member type (the backend computes it); read_only is the active member's own. */
+  effective_safety: GroupSafety;
+  active_member_profile_id: string;
+  primary_profile_id: string | null;
+  members: GroupConnectionMember[];
+};
+/** POST /api/connect: the active member's discovery plus group_connection. */
+export type GroupConnectResult = {
+  version: string;
+  engine?: string;
+  flavor?: string;
+  product?: string;
+  schemas?: string[];
+  databases?: string[];
+  databases_truncated?: boolean;
+  databases_error?: string;
+  through_ssh?: string;
+  group_connection: GroupConnection;
+};
+/** Open a connection group as one Group connection. probe (an explicit open
+ * or Refresh) logs in to the other members; without it only the active
+ * member is read. */
+export function openConnectionGroup(
+  name: string,
+  options: { activeMember?: string; probe?: boolean } = {},
+  signal?: AbortSignal,
+) {
+  return api<GroupConnectResult>("connect", {
+    group_name: name,
+    ...(options.activeMember ? { active_member_profile_id: options.activeMember } : {}),
+    ...(options.probe ? { probe_members: true } : {}),
+  }, signal);
+}
+/** One connection group, as connection_groups.list_groups reports it. */
+export type ProfileGroup = {
+  name: string;
+  profile_ids: string[];
+  count: number;
+  /** The strictest member type: any Production member makes it production. */
+  type: ConnectionType;
+  /** True only when every member is read-only. */
+  read_only: boolean;
+};
+export type GroupSaveResult = {
+  group: string;
+  name: string;
+  profile_ids: string[];
+  updated: string[];
+  groups: ProfileGroup[];
+  /** The whole saved-connections list after the edit (never a password). */
+  profiles: Profile[];
+};
+/** Create or edit one connection group (rename with previousName); the saved
+ * connections of members that leave the group stay. */
+export function saveConnectionGroup(name: string, profileIds: string[], previousName?: string, signal?: AbortSignal) {
+  return api<GroupSaveResult>("profiles/groups/save", {
+    name,
+    profile_ids: profileIds,
+    ...(previousName ? { previous_name: previousName } : {}),
+  }, signal);
+}
+/** Delete one connection group; its saved connections stay. */
+export function deleteConnectionGroup(name: string) {
+  return api<{ deleted: boolean; group: string; name: string; updated: string[]; groups: ProfileGroup[]; profiles: Profile[] }>(
+    "profiles/groups/delete", { name });
+}
+/** The groups of a saved-connections list, as connection_groups.list_groups
+ * computes them (the picker lists groups beside saved connections). */
+export function profileGroups(profiles: Pick<Profile, "id" | "group" | "type" | "read_only">[]): ProfileGroup[] {
+  const byName = new Map<string, ProfileGroup>();
+  for (const p of profiles) {
+    const name = (p.group || "").trim();
+    if (!name) continue;
+    let group = byName.get(name);
+    if (!group) byName.set(name, (group = { name, profile_ids: [], count: 0, type: "development", read_only: true }));
+    group.profile_ids.push(p.id);
+    group.count += 1;
+    if (p.type !== "development") group.type = "production";
+    if (p.read_only !== true) group.read_only = false;
+  }
+  return [...byName.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name));
+}
 
 // ---- Audit trail of server writes (dbops.py, /api/audit/*) ------------------
 

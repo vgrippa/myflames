@@ -6,6 +6,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ## [Unreleased]
 
+### New features
+
+- A connection group opens as one **Group connection** from the connection picker: the picker lists groups beside the saved connections (name, server count and the strictest safety of the members), and opening one starts on the member the backend picks (the primary or source). The top bar and the status bar name the Group connection, and **Edit group…** (in the picker, in the status bar and on Home's Connections place) opens the one group editor: rename the group, add or remove saved connections, or delete the group (its saved connections stay). Edits apply at once; a save that removes the active member moves the Group connection to the primary.
+
 ### Improvements
 
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.

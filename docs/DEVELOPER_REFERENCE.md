@@ -1768,6 +1768,24 @@ Local `audit purge` has its separate confirmation contract.
   in one transaction while keeping every saved connection and its saved password
   intact. Both return `groups` (`connection_groups.list_groups(profiles)`) and
   `profiles` (`store.list("profile")`, never a password or `secret_ref`).
+  The workspace opens a group as one **Group connection** from the connection
+  picker (`main.tsx` `openGroup`, `api.openConnectionGroup` with
+  `probe_members: true` on an explicit open or Refresh, never on automatic
+  refresh): the picker lists groups beside the saved connections
+  (`api.profileGroups`, the same computation as `list_groups`) with the name,
+  the server count and the strictest safety pill. The Group connection
+  carries `group_name` on every request (`binding.ts connectionKey` includes
+  it, so views reload when the group or the active member changes) and is
+  judged by the reply's `effective_safety`; the top bar and the status bar
+  name it (`binding.ts groupConnectionLabel`, "Group connection mf-ic · 3
+  servers") and the status bar has **Edit group…**. One group editor sheet
+  (`GroupEditorSheet.tsx`, a lazy chunk) is shared by the picker, the status
+  bar and Home's Connections place: rename, add and remove members
+  (`profiles/groups/save`), and delete (`profiles/groups/delete`, whose
+  confirmation says the saved connections stay). After a save that removes
+  the active member, the Group connection re-opens without probing on the
+  member the backend picks and says so. Tests:
+  `apps/workspace/test/group-connections.mjs`.
 
   `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
   allowlist) opens a connection group as one Group connection:
