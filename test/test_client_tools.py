@@ -383,6 +383,63 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['installations'], [])
         self.assertEqual([s['version'] for s in report['shells']], ['9.6.0', '8.4.13'])
 
+    def test_shell_startup_tree_abuse_is_skipped_without_any_version_probe(self):
+        from myflames import cluster_shell, lifecycle
+        system = self.root / 'etc-mysql'
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        for relative, directory in (
+                ('share/mysqlsh', True), ('share/mysqlsh/mysqlshrc.js', False),
+                ('share/mysqlsh/mysqlshrc.py', False), ('bin/mysqlshrc.js', False),
+                ('lib/mysqlsh/plugins/p/init.py', False), ('etc-mysql/mysqlsh', True),
+                ('etc-mysql/mysqlsh/mysqlshrc.js', False)):
+            path = self.root / relative if relative.startswith('etc-mysql') else shell.parent.parent / relative
+            private_client_dir(path if directory else path.parent)
+            if not directory:
+                path.write_text('/* untrusted code */\n')
+            path.chmod(0o777)
+            try:
+                with self.subTest(relative=relative), \
+                        mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(system)), \
+                        mock.patch.object(ct, 'probe') as probe, \
+                        mock.patch.object(ct.subprocess, 'run') as run, \
+                        mock.patch.dict(os.environ, {'PATH': str(shell.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                        mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()):
+                    candidates = ct.snapshot(path=str(shell.parent), common_dirs=(), bundled=False)
+                    self.assertIn('trust_error', candidates[0])
+                    report = self.discover(shell.parent)
+                    self.assertEqual(report['shells'], [])
+                    self.assertEqual([s['path'] for s in report['skipped']], [str(shell)])
+                    self.assertIn('Other users can change', report['skipped'][0]['reason'])
+                    self.assertIsNone(cluster_shell.find_shell(refresh=True))
+                    probe.assert_not_called()
+                    run.assert_not_called()
+            finally:
+                path.chmod(0o700)
+
+    def test_shell_tree_symlink_to_world_writable_directory_is_never_probed(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        target = private_client_dir(self.root / 'other-user')
+        target.chmod(0o777)
+        share = private_client_dir(shell.parent.parent / 'share')
+        (share / 'mysqlsh').symlink_to(target, target_is_directory=True)
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+        self.assertFalse(report['shells'])
+        self.assertEqual(len(report['skipped']), 1)
+        probe.assert_not_called()
+
+    def test_discover_rechecks_shell_tree_after_snapshot(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        directory = private_client_dir(shell.parent.parent / 'share/mysqlsh')
+        candidates = ct.snapshot(path=str(shell.parent), common_dirs=(), bundled=False)
+        directory.chmod(0o777)
+        with mock.patch.object(ct, 'snapshot', return_value=candidates), mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+        self.assertFalse(report['shells'])
+        self.assertEqual(len(report['skipped']), 1)
+        probe.assert_not_called()
+
     def test_inventory_copies_keep_banners_metadata_and_failed_probes(self):
         mysql = self.make(self.root / 'first', banner='mysql Ver 8.4.13 for test')
         failed = self.make(self.root / 'second', 'mysqldump', banner='unknown', exit_code=2)

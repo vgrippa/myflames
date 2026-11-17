@@ -150,7 +150,10 @@ def snapshot(path=None, common_dirs=None, bundled=None):
                                  os.path.dirname(real), bundle)), order=order, source=source)
             order += 1
             try:
-                connector.checked_program(binary, real, candidate['bundled'] and source == 'bundled')
+                if name == 'mysqlsh':
+                    connector.checked_shell_program(binary, real)
+                else:
+                    connector.checked_program(binary, real, candidate['bundled'] and source == 'bundled')
             except connector.ClientMissingError as exc:
                 candidate['trust_error'] = str(exc)
                 refused.append(candidate)
@@ -234,7 +237,10 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
         try:
             if candidate.get('trust_error'):
                 raise connector.ClientMissingError(candidate['trust_error'])
-            connector.checked_program(binary, candidate['realpath'], candidate['bundled'])
+            if name == 'mysqlsh':
+                connector.checked_shell_program(binary, candidate['realpath'])
+            else:
+                connector.checked_program(binary, candidate['realpath'], candidate['bundled'])
         except connector.ClientMissingError as exc:
             reason = ('Other users can change %s, so myflames does not run programs from it.' % binary
                       if 'changed by other users' in str(exc) else str(exc))

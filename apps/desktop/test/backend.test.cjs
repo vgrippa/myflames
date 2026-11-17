@@ -559,10 +559,11 @@ test('the packaged backend never receives the update test hooks', () => {
   // environment allowlist must keep them out of the packaged backend too.
   for (const platform of ['darwin', 'win32', 'linux']) {
     const env = backendEnvironment('/desktop', { PATH: '/usr/bin', MYFLAMES_TEST_UPDATE: '99.0.0',
-      MYFLAMES_TEST_UPDATE_FILE: '/tmp/evil.zip', MYFLAMES_UPDATES_DIR: '/tmp/elsewhere' }, platform, { readdirSync() { throw new Error('none'); } });
+      MYFLAMES_TEST_UPDATE_FILE: '/tmp/evil.zip', MYFLAMES_UPDATES_DIR: '/tmp/elsewhere', MYFLAMES_TOOLS_DIR: '/tmp/evil-tools' }, platform, { readdirSync() { throw new Error('none'); } });
     assert.equal(env.MYFLAMES_TEST_UPDATE, undefined, platform);
     assert.equal(env.MYFLAMES_TEST_UPDATE_FILE, undefined, platform);
     assert.equal(env.MYFLAMES_UPDATES_DIR, undefined, 'main.cjs sets it, never the inherited environment');
+    assert.equal(env.MYFLAMES_TOOLS_DIR, undefined, 'main.cjs supplies the checked tools folder');
   }
 });
 
@@ -582,4 +583,33 @@ test('Windows passes the folders a chosen database client may live in to the bac
 test('main.cjs names the real profile for the backend (a chosen client may live under it)', () => {
   const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.cjs'), 'utf8');
   assert.match(main, /env\.MYFLAMES_USER_PROFILE = os\.homedir\(\);/);
+});
+
+
+test('main creates private tools and refuses links or shared existing folders', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  const source = main.slice(main.indexOf('function prepareToolsDirectory('), main.indexOf('const toolsDirectory ='));
+  const prepare = vm.runInNewContext(source + '\nprepareToolsDirectory', { fs, path, process });
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'myflames-tools-'));
+  try {
+    const tools = prepare(root);
+    assert.equal(tools, path.join(root, 'tools'));
+    assert.ok(fs.lstatSync(tools).isDirectory());
+    assert.equal(prepare(root), tools);
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(tools).mode & 0o777, 0o700);
+      fs.chmodSync(tools, 0o755);
+      assert.throws(() => prepare(root), /private/);
+      fs.chmodSync(tools, 0o700);
+      fs.rmdirSync(tools);
+      const target = fs.mkdtempSync(path.join(root, 'target-'));
+      fs.symlinkSync(target, tools);
+      assert.throws(() => prepare(root), /real private folder/);
+      assert.ok(fs.lstatSync(tools).isSymbolicLink());
+    }
+    assert.match(main, /env\.MYFLAMES_TOOLS_DIR = toolsDirectory;/);
+    assert.match(main, /process\.platform === 'win32' && process\.env\.MYFLAMES_DESKTOP_DATA/);
+    assert.match(main, /env\.MYFLAMES_DESKTOP_DATA = dataDirectory;/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

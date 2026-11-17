@@ -23,6 +23,23 @@ fs.mkdirSync(updatesDirectory, { recursive: true, mode: 0o700 });
 // mkdir leaves an existing folder's mode alone; updater.checkFolder refuses
 // one that is shared, owned by someone else or a link.
 try { if (!fs.lstatSync(updatesDirectory).isSymbolicLink()) fs.chmodSync(updatesDirectory, 0o700); } catch { /* checked before use */ }
+// Managed tools are executable code: never follow a tools link, including
+// when mkdir would otherwise accept a symlink to an existing directory.
+function prepareToolsDirectory(dataDirectory) {
+  const directory = path.join(dataDirectory, 'tools');
+  try {
+    const info = fs.lstatSync(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('The tools folder must be a real private folder.');
+    if (process.platform !== 'win32' && (info.uid !== process.geteuid() || (info.mode & 0o077))) {
+      throw new Error('The tools folder must be private to your user account.');
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    fs.mkdirSync(directory, { mode: 0o700 });
+  }
+  return directory;
+}
+const toolsDirectory = prepareToolsDirectory(dataDirectory);
 let backend, launching, window, quitting = false, exiting = false, fatal = false, blockedSmokeRequests = 0;
 // The update the person chose to install ({ version, relaunch }), and the
 // macOS restart that lets Squirrel.Mac quit the app itself.
@@ -140,6 +157,12 @@ async function start() {
   // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
   env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
   env.MYFLAMES_UPDATES_DIR = updatesDirectory;
+  env.MYFLAMES_TOOLS_DIR = toolsDirectory;
+  // Windows custom data folders have no checked ownership/DACL guarantee.
+  // Preserve this trusted desktop choice for the managed install guard.
+  if (process.platform === 'win32' && process.env.MYFLAMES_DESKTOP_DATA) {
+    env.MYFLAMES_DESKTOP_DATA = dataDirectory;
+  }
   // The packaged backend entry stops itself if this process dies uncleanly.
   env.MYFLAMES_DESKTOP_PARENT = String(process.pid);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
