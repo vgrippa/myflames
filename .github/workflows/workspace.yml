@@ -69,7 +69,7 @@ jobs:
         working-directory: apps/workspace
         # Fixed waits in several suites fail under parallel load on 4-vCPU runners (measured locally).
         run: |
-          npm run test:suites -- --jobs 1 --shard ${{ matrix.shard }}/6 \
+          npm run test:suites -- --jobs 1 --retries 1 --shard ${{ matrix.shard }}/6 \
             --receipt "${{ github.workspace }}/local/workspace-suites/shard-${{ matrix.shard }}.json" \
             --log-dir "${{ github.workspace }}/local/workspace-suites/logs-${{ matrix.shard }}"
       - uses: actions/upload-artifact@v7
@@ -110,6 +110,7 @@ jobs:
           path: local/workspace-suite-receipts
       - name: Prove complete suite coverage
         if: always()
+        # The checker also appends flaky suite names and shards to the run summary.
         run: node scripts/check_workspace_receipts.mjs local/workspace-suite-receipts
       - name: Require every shard to succeed
         if: always()

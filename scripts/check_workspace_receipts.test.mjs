@@ -16,8 +16,8 @@ function fixture() {
   entries['live.mjs'] = { kind: 'live' };
   entries['helper.mjs'] = { kind: 'helper' };
   const receipts = Array.from({ length: 6 }, (_, i) => ({ exit_status: 0, commit: SHA,
-    counts: { passed: i === 5 ? 1 : 2, failed: 0, timed_out: 0, quarantined_failed: i === 5 ? 1 : 0, quarantined_passed: 0 },
-    suites: [i * 2, i * 2 + 1].map((n) => ({ file: `suite-${n}.mjs`, seconds: 1,
+    counts: { passed: i === 5 ? 1 : 2, flaky: 0, failed: 0, timed_out: 0, quarantined_failed: i === 5 ? 1 : 0, quarantined_passed: 0 },
+    suites: [i * 2, i * 2 + 1].map((n) => ({ file: `suite-${n}.mjs`, seconds: 1, attempts: 1,
       status: n === 11 ? 'quarantined-failed' : 'passed' })) }));
   return { manifest: { version: 1, entries }, receipts };
 }
@@ -29,6 +29,37 @@ test('six receipts cover only suite entries, exactly once, with manifest-authori
   receipts[5].counts.quarantined_failed = 0;
   receipts[5].counts.quarantined_passed = 1;
   assert.equal(checkReceipts(manifest, receipts), 12);
+});
+
+test('non-safety flaky suites pass with matching counts; quarantine cannot become flaky', () => {
+  const { manifest, receipts } = fixture();
+  const suite = receipts[0].suites[0];
+  suite.status = 'flaky';
+  suite.attempts = 2;
+  receipts[0].counts.passed--;
+  assert.throws(() => checkReceipts(manifest, receipts, SHA), /counts do not match/);
+  receipts[0].counts.flaky++;
+  assert.equal(checkReceipts(manifest, receipts, SHA), 12);
+  receipts[5].suites[1].status = 'flaky';
+  assert.throws(() => checkReceipts(manifest, receipts, SHA), /report its quarantine outcome/);
+});
+
+test('a safety suite must have passed, using either manifest or receipt safety metadata', () => {
+  for (const source of ['manifest', 'receipt', 'both']) {
+    const { manifest, receipts } = fixture();
+    if (source !== 'receipt') manifest.entries['suite-0.mjs'].safety = 'Asserts review is required before writing.';
+    if (source !== 'manifest') receipts[0].suites[0].safety = true;
+    assert.equal(checkReceipts(manifest, receipts, SHA), 12);
+    for (const status of ['flaky', 'failed', 'timed_out', 'quarantined-failed', 'quarantined-passed', 'skipped', undefined]) {
+      const changed = clone(receipts);
+      changed[0].suites[0].status = status;
+      assert.throws(() => checkReceipts(manifest, changed, SHA), /suite-0\.mjs must have passed without retries \(safety suite\)/);
+    }
+  }
+  // Quarantine never authorizes a safety suite's non-passing outcome.
+  const { manifest, receipts } = fixture();
+  manifest.entries['suite-11.mjs'].safety = 'Asserts cancelling review sends no write.';
+  assert.throws(() => checkReceipts(manifest, receipts, SHA), /safety suite/);
 });
 
 test('missing/extra receipts, unsuccessful exits, omissions and duplicates fail independently of job status', () => {
@@ -71,7 +102,8 @@ test('malformed receipts, mismatched counts and a different source commit cannot
     const changed = clone(receipts); changed[0] = invalid;
     assert.throws(() => checkReceipts(manifest, changed));
   }
-  for (const counts of [null, {}, { ...receipts[0].counts, passed: 3 }, { ...receipts[0].counts, failed: 1 }]) {
+  for (const counts of [null, {}, { ...receipts[0].counts, passed: 3 }, { ...receipts[0].counts, failed: 1 },
+    { ...receipts[0].counts, flaky: 1 }, { ...receipts[0].counts, flaky: undefined }]) {
     const changed = clone(receipts); changed[0].counts = counts;
     assert.throws(() => checkReceipts(manifest, changed), /counts do not match/);
   }
@@ -86,6 +118,7 @@ test('CLI reads the nested download-artifact layout and fails for missing, extra
   const { manifest, receipts } = fixture();
   const manifestPath = path.join(directory, 'manifest.json');
   const downloads = path.join(directory, 'downloads');
+  const summaryPath = path.join(directory, 'summary.md');
   await fs.writeFile(manifestPath, JSON.stringify(manifest));
   for (let i = 0; i < 6; i++) {
     const folder = path.join(downloads, `workspace-suites-receipt-${i + 1}`);
@@ -93,15 +126,31 @@ test('CLI reads the nested download-artifact layout and fails for missing, extra
     await fs.writeFile(path.join(folder, `shard-${i + 1}.json`), JSON.stringify(receipts[i]));
   }
   const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], {
-    encoding: 'utf8', env: { ...process.env, GITHUB_SHA: SHA }, timeout: 5000,
+    encoding: 'utf8', env: { ...process.env, GITHUB_SHA: SHA, GITHUB_STEP_SUMMARY: summaryPath }, timeout: 5000,
   });
   assert.equal(run().status, 2);
   const success = run(downloads, manifestPath);
   assert.equal(success.status, 0, success.stderr);
   assert.match(success.stdout, /all 12 suites exactly once/);
+  assert.match(success.stdout, /Flaky suites:\n  \(none\)/);
+  assert.match(await fs.readFile(summaryPath, 'utf8'), /No flaky suites/);
+  // The downloaded filename, rather than the suite's order, identifies its shard.
+  receipts[1].suites[0].status = 'flaky';
+  receipts[1].suites[0].attempts = 2;
+  receipts[1].counts.passed--;
+  receipts[1].counts.flaky++;
+  const flakyShard = path.join(downloads, 'workspace-suites-receipt-2', 'shard-2.json');
+  await fs.writeFile(flakyShard, JSON.stringify(receipts[1]));
+  const flaky = run(downloads, manifestPath);
+  assert.equal(flaky.status, 0, flaky.stderr);
+  assert.match(flaky.stdout, /suite-2\.mjs \(shard 2\/6\)/);
+  assert.match(await fs.readFile(summaryPath, 'utf8'), /\| suite-2\.mjs \| 2\/6 \|/);
   const shard = path.join(downloads, 'workspace-suites-receipt-1', 'shard-1.json');
   await fs.rm(shard);
-  assert.match(run(downloads, manifestPath).stderr, /exactly 6 receipts; found 5/);
+  await fs.writeFile(summaryPath, '');
+  const missing = run(downloads, manifestPath);
+  assert.match(missing.stderr, /exactly 6 receipts; found 5/);
+  assert.match(await fs.readFile(summaryPath, 'utf8'), /\| suite-2\.mjs \| 2\/6 \|/);
   await fs.writeFile(shard, '{');
   assert.equal(run(downloads, manifestPath).status, 1);
   await fs.writeFile(shard, JSON.stringify(receipts[0]));

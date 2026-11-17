@@ -43,6 +43,7 @@ async function fixture(t, specifications = { 'pass.mjs': { source: pass } }) {
     entries[file] = { kind, script: null, reason: 'Runner regression fixture.' };
     if (kind === 'suite' || kind === 'live') entries[file].timeout = specification.timeout ?? 5;
     if (Object.hasOwn(specification, 'quarantine')) entries[file].quarantine = specification.quarantine;
+    if (Object.hasOwn(specification, 'safety')) entries[file].safety = specification.safety;
     if (kind === 'live') entries[file].needs = Object.hasOwn(specification, 'needs') ? specification.needs : [];
     if (Object.hasOwn(specification, 'env')) entries[file].env = specification.env;
     if (specification.source === null) await fs.mkdir(path.join(testDir, file));
@@ -153,6 +154,153 @@ async function run(fake, args = [], { build = false, signalAfter, signalFile, de
 const listed = (result) => result.stdout.trim().split('\n').filter(Boolean);
 const logDirectory = (result) => /^Workspace suite logs: (.+)$/m.exec(result.stdout)?.[1];
 
+function retrySuite({ failures = 1, hang = false } = {}) {
+  // The workspace is shared between attempts, unlike the private HOME/TMPDIR.
+  return `
+import fs from 'node:fs';
+const file = '../../retry-attempts.json';
+let attempts = [];
+try { attempts = JSON.parse(fs.readFileSync(file, 'utf8')); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
+if (attempts.some(({ home }) => fs.existsSync(home))) throw Error('PREVIOUS_HOME_NOT_CLEANED');
+attempts.push({ home: process.env.HOME, tmp: process.env.TMPDIR });
+fs.writeFileSync(file, JSON.stringify(attempts));
+fs.writeFileSync(process.env.TMPDIR + '/attempt-marker', 'private');
+if (attempts.length <= ${failures}) {
+  for (let n = 0; n < 75; n++) console.error('RETRY_FAILURE_LINE_' + n);
+  ${hang ? 'setInterval(() => {}, 1000);' : 'process.exitCode = 7;'}
+} else console.log('RETRY_PASS_MARKER');
+`;
+}
+
+test('a first-run failure passes as flaky only when a retry is enabled, keeping both logs and fresh private folders', async (t) => {
+  for (const retries of [0, 1]) {
+    const fake = await fixture(t, { 'retry.mjs': { source: retrySuite() } });
+    await fakeGit(fake);
+    const receiptPath = path.join(fake.root, 'receipt.json');
+    const result = await run(fake, ['--retries', String(retries), '--receipt', receiptPath]);
+    assert.equal(result.code, retries ? 0 : 1, result.output);
+    const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+    const suite = receipt.suites[0];
+    assert.equal(suite.status, retries ? 'flaky' : 'failed');
+    assert.equal(suite.attempts, retries + 1);
+    assert.equal(suite.safety, undefined);
+    assert.equal(receipt.exit_status, result.code);
+    assert.deepEqual(receipt.counts, { passed: 0, flaky: retries, failed: retries ? 0 : 1,
+      timed_out: 0, quarantined_failed: 0, quarantined_passed: 0 });
+    const logs = await fs.readdir(logDirectory(result));
+    assert.deepEqual(logs.sort(), retries ? ['retry.mjs.attempt-2.log', 'retry.mjs.log'] : ['retry.mjs.log']);
+    assert.match(await fs.readFile(path.join(logDirectory(result), 'retry.mjs.log'), 'utf8'), /RETRY_FAILURE_LINE_0\n/);
+    if (retries) {
+      assert.match(await fs.readFile(path.join(logDirectory(result), 'retry.mjs.attempt-2.log'), 'utf8'), /RETRY_PASS_MARKER/);
+      assert.match(result.stderr, /FLAKY suites/);
+      assert.match(result.stderr, /retry\.mjs: passed on attempt 2/);
+      assert.match(result.stderr, /RETRY_FAILURE_LINE_45\n/);
+      assert.match(result.stderr, /RETRY_FAILURE_LINE_74/);
+      assert.doesNotMatch(result.stderr, /RETRY_FAILURE_LINE_44\n/);
+    } else assert.doesNotMatch(result.stderr, /FLAKY suites|RETRY retry\.mjs/);
+    const attempts = JSON.parse(await fs.readFile(path.join(fake.root, 'retry-attempts.json'), 'utf8'));
+    assert.equal(attempts.length, retries + 1);
+    assert.equal(new Set(attempts.map(({ home }) => home)).size, attempts.length);
+    assert.equal(new Set(attempts.map(({ tmp }) => tmp)).size, attempts.length);
+    for (const { home, tmp } of attempts) {
+      assert.equal(tmp, path.join(home, 'tmp'));
+      await assert.rejects(fs.stat(home), { code: 'ENOENT' });
+    }
+  }
+});
+
+test('retry exhaustion preserves the final failed or timed-out outcome; N retries permits N additional attempts', async (t) => {
+  for (const hang of [false, true]) {
+    const fake = await fixture(t, { 'retry.mjs': { source: retrySuite({ failures: 2, hang }) } });
+    await fakeGit(fake);
+    const receiptPath = path.join(fake.root, 'receipt.json');
+    const result = await run(fake, ['--retries=1', '--timeout', '0.5', '--receipt', receiptPath]);
+    assert.equal(result.code, 1, result.output);
+    const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+    assert.equal(receipt.suites[0].attempts, 2);
+    assert.equal(receipt.suites[0].status, hang ? 'timed_out' : 'failed');
+    assert.equal(receipt.counts.flaky, 0);
+    assert.equal(receipt.counts[hang ? 'timed_out' : 'failed'], 1);
+    assert.equal(JSON.parse(await fs.readFile(path.join(fake.root, 'retry-attempts.json'), 'utf8')).length, 2);
+    assert.deepEqual((await fs.readdir(logDirectory(result))).sort(), ['retry.mjs.attempt-2.log', 'retry.mjs.log']);
+    assert.doesNotMatch(result.stderr, /FLAKY suites/);
+  }
+  const fake = await fixture(t, { 'retry.mjs': { source: retrySuite({ failures: 2 }) } });
+  await fakeGit(fake);
+  const receiptPath = path.join(fake.root, 'receipt.json');
+  const result = await run(fake, ['--retries', '2', '--receipt', receiptPath]);
+  assert.equal(result.code, 0, result.output);
+  assert.equal(JSON.parse(await fs.readFile(receiptPath, 'utf8')).suites[0].attempts, 3);
+  assert.match(result.stderr, /retry\.mjs: passed on attempt 3/);
+});
+
+test('a timed-out first attempt can pass on retry with the same timeout and a fresh HOME', async (t) => {
+  const fake = await fixture(t, { 'retry.mjs': { source: retrySuite({ hang: true }), timeout: 0.5 } });
+  await fakeGit(fake);
+  const receiptPath = path.join(fake.root, 'receipt.json');
+  const result = await run(fake, ['--retries', '1', '--receipt', receiptPath]);
+  assert.equal(result.code, 0, result.output);
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.suites[0].status, 'flaky');
+  assert.equal(receipt.suites[0].attempts, 2);
+  assert.match(result.stderr, /retry\.mjs \(TIMED OUT;/);
+});
+
+test('safety, quarantine and live suites run once even with retries enabled, and safety stays gating', async (t) => {
+  for (const specification of [
+    { safety: 'Asserts no write occurs without review.' },
+    { safety: 'Asserts no write occurs without review.', quarantine: 'Erroneously quarantined safety suite.' },
+    { quarantine: 'Known ordinary failure, tracked in QA.' },
+    { kind: 'live' },
+  ]) {
+    const fake = await fixture(t, { 'retry.mjs': { ...specification, source: retrySuite() } });
+    await fakeGit(fake);
+    const receiptPath = path.join(fake.root, 'receipt.json');
+    const result = await run(fake, ['--retries', '1', '--receipt', receiptPath,
+      ...(specification.kind ? ['--kind', specification.kind] : [])]);
+    const quarantined = specification.quarantine && !specification.safety;
+    assert.equal(result.code, quarantined ? 0 : 1, result.output);
+    const suite = JSON.parse(await fs.readFile(receiptPath, 'utf8')).suites[0];
+    assert.equal(suite.attempts, 1);
+    assert.equal(suite.status, quarantined ? 'quarantined-failed' : 'failed');
+    assert.equal(suite.safety, specification.safety ? true : undefined);
+    assert.equal(JSON.parse(await fs.readFile(path.join(fake.root, 'retry-attempts.json'), 'utf8')).length, 1);
+    assert.deepEqual(await fs.readdir(logDirectory(result)), ['retry.mjs.log']);
+    assert.doesNotMatch(result.stderr, /RETRY retry\.mjs|FLAKY suites/);
+  }
+  const fake = await fixture(t, { 'pass.mjs': { safety: 'Asserts review is required.' } });
+  await fakeGit(fake);
+  const receiptPath = path.join(fake.root, 'receipt.json');
+  const result = await run(fake, ['--retries', '1', '--receipt', receiptPath]);
+  assert.equal(result.code, 0, result.output);
+  const suite = JSON.parse(await fs.readFile(receiptPath, 'utf8')).suites[0];
+  assert.equal(suite.status, 'passed');
+  assert.equal(suite.safety, true);
+  assert.equal(suite.attempts, 1);
+});
+
+test('safety requires a nonempty one-line string and is rejected on every non-suite kind', async (t) => {
+  const fake = await fixture(t);
+  for (const safety of ['', ' \t ', null, false, 0, [], {}, 'first\nsecond', 'first\rsecond',
+    'first\u0085second', 'first\u2028second', 'first\u2029second']) {
+    fake.entries['pass.mjs'].safety = safety;
+    await fs.writeFile(fake.manifest, JSON.stringify({ version: 1, entries: fake.entries }));
+    const result = await run(fake, ['--list']);
+    assert.equal(result.code, 2, result.output);
+    assert.match(result.stderr, /safety must be a nonempty, one-line string/);
+    assert.doesNotMatch(result.stdout, /Workspace suite logs/);
+  }
+  for (const kind of ['live', 'helper', 'generator', 'fixture']) {
+    fake.entries['pass.mjs'] = { kind, script: null, reason: 'Fixture.', safety: 'Asserts review is required.' };
+    if (kind === 'live') { fake.entries['pass.mjs'].timeout = 5; fake.entries['pass.mjs'].needs = []; }
+    await fs.writeFile(fake.manifest, JSON.stringify({ version: 1, entries: fake.entries }));
+    const result = await run(fake, ['--list']);
+    assert.equal(result.code, 2, result.output);
+    assert.match(result.stderr, /only suite entries may have safety/);
+  }
+});
+
 test('inventory mismatch reports both lists before a build, suite, or selection', async (t) => {
   const fake = await fixture(t, { 'pass.mjs': { source: 'throw new Error("SUITE_MUST_NOT_RUN");' } });
   await fs.writeFile(path.join(fake.testDir, 'unlisted.mjs'), pass);
@@ -187,7 +335,7 @@ test('failures and timeouts remain failures, print their last 60 lines, and ente
   assert.deepEqual(logs.sort(), ['fail.mjs.log', 'hang.mjs.log', 'pass.mjs.log']);
   assert.match(await fs.readFile(path.join(logDirectory(result), 'fail.mjs.log'), 'utf8'), /FAIL_LINE_0\n/);
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.deepEqual(receipt.counts, { passed: 1, failed: 1, timed_out: 1, quarantined_failed: 0, quarantined_passed: 0 });
+  assert.deepEqual(receipt.counts, { passed: 1, flaky: 0, failed: 1, timed_out: 1, quarantined_failed: 0, quarantined_passed: 0 });
   assert.equal(receipt.exit_status, result.code);
   assert.equal(receipt.commit, SHA);
   assert.equal(receipt.clean_tree, true);
@@ -222,7 +370,7 @@ test('quarantined failures and timeouts still run, retain their tails, and do no
   assert.match(result.stderr, /QUARANTINE_HANG/);
   assert.match(await fs.readFile(path.join(logDirectory(result), 'fail.mjs.log'), 'utf8'), /QUARANTINE_LINE_0\n/);
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.deepEqual(receipt.counts, { passed: 1, failed: 0, timed_out: 0, quarantined_failed: 2, quarantined_passed: 0 });
+  assert.deepEqual(receipt.counts, { passed: 1, flaky: 0, failed: 0, timed_out: 0, quarantined_failed: 2, quarantined_passed: 0 });
   assert.equal(receipt.exit_status, 0);
   assert.deepEqual(Object.fromEntries(receipt.suites.map((suite) => [suite.file, suite.status])),
     { 'pass.mjs': 'passed', 'fail.mjs': 'quarantined-failed', 'hang.mjs': 'quarantined-failed' });
@@ -230,7 +378,7 @@ test('quarantined failures and timeouts still run, retain their tails, and do no
   const onlyQuarantined = await run(fake, ['--only', 'fail.mjs,hang.mjs', '--receipt', receiptPath]);
   assert.equal(onlyQuarantined.code, 0, onlyQuarantined.output);
   assert.deepEqual(JSON.parse(await fs.readFile(receiptPath, 'utf8')).counts,
-    { passed: 0, failed: 0, timed_out: 0, quarantined_failed: 2, quarantined_passed: 0 });
+    { passed: 0, flaky: 0, failed: 0, timed_out: 0, quarantined_failed: 2, quarantined_passed: 0 });
 });
 
 test('quarantined passes request quarantine removal and have their own receipt status', async (t) => {
@@ -244,7 +392,7 @@ test('quarantined passes request quarantine removal and have their own receipt s
   assert.ok(result.stdout.includes(quarantine));
   assert.doesNotMatch(result.stderr, /Quarantined failures:|=== pass\.mjs/);
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.deepEqual(receipt.counts, { passed: 0, failed: 0, timed_out: 0, quarantined_failed: 0, quarantined_passed: 1 });
+  assert.deepEqual(receipt.counts, { passed: 0, flaky: 0, failed: 0, timed_out: 0, quarantined_failed: 0, quarantined_passed: 1 });
   assert.equal(receipt.suites[0].status, 'quarantined-passed');
   assert.equal(receipt.exit_status, 0);
 });
@@ -264,7 +412,7 @@ test('quarantine cannot hide an ordinary suite failure or timeout', async (t) =>
   assert.match(result.stderr, /ORDINARY_FAILURE/);
   assert.match(result.stderr, /ORDINARY_TIMEOUT/);
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.deepEqual(receipt.counts, { passed: 0, failed: 1, timed_out: 1, quarantined_failed: 1, quarantined_passed: 0 });
+  assert.deepEqual(receipt.counts, { passed: 0, flaky: 0, failed: 1, timed_out: 1, quarantined_failed: 1, quarantined_passed: 0 });
   assert.equal(receipt.exit_status, 1);
 });
 
@@ -613,7 +761,7 @@ test('receipt records successful dirty provenance, and unavailable provenance ca
   let receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.commit, SHA);
   assert.equal(receipt.clean_tree, false);
-  assert.deepEqual(receipt.counts, { passed: 1, failed: 0, timed_out: 0, quarantined_failed: 0, quarantined_passed: 0 });
+  assert.deepEqual(receipt.counts, { passed: 1, flaky: 0, failed: 0, timed_out: 0, quarantined_failed: 0, quarantined_passed: 0 });
   assert.equal(receipt.exit_status, 0);
   await fakeGit(fake, { top: path.dirname(fake.root) });
   const unavailable = await run(fake, ['--receipt', receiptPath]);
@@ -629,6 +777,8 @@ test('invalid flags, invalid manifest/durations, and empty runs cannot pass', as
   const fake = await fixture(t);
   for (const args of [['--jobs', '0'], ['--jobs', '1.5'], ['--timeout', 'NaN'], ['--timeout', '-2'],
     ['--shard', '0/2'], ['--shard', '3/2'], ['--shard', '1/0'], ['--kind', 'helper'],
+    ['--retries', '-1'], ['--retries', '1.5'], ['--retries', 'NaN'], ['--retries', 'Infinity'],
+    ['--retries', '9007199254740992'], ['--retries', ' '], ['--retries'],
     ['--only', 'pass.mjs,pass.mjs'], ['--only', 'pass.mjs,'], ['--jobs'], ['--unknown']]) {
     const result = await run(fake, args);
     assert.equal(result.code, 2, `${args.join(' ')}: ${result.output}`);
@@ -790,8 +940,10 @@ test('a denied ps cannot certify cleanup or trigger an unverified group kill',
     for (const quarantine of [undefined, 'Known failure; tracked in QA.']) {
       const fake = await fixture(t, { 'pass.mjs': quarantine ? { quarantine } : {} });
       await executable(fake, 'ps', 'process.exitCode = 3;');
-      const result = await run(fake);
+      const result = await run(fake, ['--retries', '1']);
       assert.equal(result.code, 1, result.output);
+      assert.equal((await fs.readFile(path.join(fake.root, 'started-pids.jsonl'), 'utf8')).trim().split('\n').length, 1);
+      assert.deepEqual(await fs.readdir(logDirectory(result)), ['pass.mjs.log']);
       assert.match(result.stderr, /pass\.mjs.*FAILED/);
       assert.match(result.stderr, /Cannot inspect suite processes with ps/);
       assert.doesNotMatch(result.stdout, /QUARANTINED/);

@@ -6281,6 +6281,12 @@ last 60 log lines under a separate "Quarantined failures" heading, but
 does not fail the run. A quarantined suite that passes is listed as
 "passed while quarantined; remove the quarantine".
 
+Only `suite` entries may also carry `safety`, a nonempty, one-line string
+describing the write-safety assertion the suite protects. Mark the whole
+suite when any assertion checks write safety. Safety suites never retry
+and must pass on their first attempt; a `quarantine` on the same entry
+cannot soften a safety failure.
+
 Pass runner flags after npm's `--`, for example
 `npm run test:suites -- --jobs 2 --shard 1/3 --receipt artifacts/workspace.json`:
 
@@ -6288,9 +6294,19 @@ Pass runner flags after npm's `--`, for example
   rounded down, at least 1 and capped at 4. The workspace builds once with
   `npm run build` before workers start; `--no-build` uses an existing build.
   A failed or timed-out build fails the run and starts no suites.
+- `--retries N` permits N additional attempts after an ordinary suite fails
+  or times out (a nonnegative integer, default 0). CI opts in with
+  `--retries 1`; local runs do not retry by default. Each attempt gets a
+  fresh private HOME/TMPDIR, the same timeout and the same cleanup before
+  another attempt starts. Safety suites, quarantined suites, live suites
+  and the build never retry. Interruptions and runner/cleanup errors also
+  remain gating. A suite that passes on a retry reports `flaky`, exits
+  successfully and remains tracked in the receipt; the FLAKY section lists
+  each such suite with the first attempt's last 30 failure-log lines.
+  Exhausted retries retain the final `failed` or `timed_out` status.
 - `--timeout SECONDS` overrides every selected entry's timeout and the build
   timeout (otherwise 900 s for the build). A timeout fails the run unless
-  the suite is quarantined. On macOS and Linux, after a worker exits
+  the suite is quarantined or passes on a permitted retry. On macOS and Linux, after a worker exits
   (success, failure, timeout or interruption), cleanup scans full command
   lines with `ps -ww`. It stops every live process whose command or working
   folder references that worker's unique private HOME/TMPDIR, including
@@ -6322,20 +6338,24 @@ Pass runner flags after npm's `--`, for example
   shard, exits 2.
 - `--log-dir PATH` chooses the parent of a fresh run directory. Without it,
   a temporary run directory is created. Its path prints at the start;
-  `build.log` and `<file>.log` retain complete stdout/stderr. The last 60
+  `build.log` and `<file>.log` retain complete stdout/stderr. Retries retain
+  separate `<file>.attempt-2.log`, `<file>.attempt-3.log`, etc.; every
+  attempt's complete log remains available. The last 60
   lines of each failed or timed-out worker print at the end. Logs remain
   available after the run. A status line
   (`[N/M done; Xs elapsed] running: a, b`) prints to stderr every 30 s,
   including during the build.
 - `--durations-out PATH` atomically writes measured seconds for the suites
-  that ran, including failures and timeouts. Only this flag writes duration
+  that ran, including failures and timeouts and the sum of all attempts
+  for a retried suite. Only this flag writes duration
   data; ordinary runs never update the recorded scheduling input.
 - `--receipt PATH` atomically writes `commit` (full Git SHA), `clean_tree`
   (boolean, captured before the build), `command`, ISO `started` and
-  `finished` timestamps, `node`, `counts` (`passed`, `failed`, `timed_out`,
+  `finished` timestamps, `node`, `counts` (`passed`, `flaky`, `failed`, `timed_out`,
   `quarantined_failed`, `quarantined_passed`),
-  `suites` (`file`, `seconds`, `status`), and `exit_status`. Suite statuses
-  are `passed`, `failed`, `timed_out`, `quarantined-failed` or
+  `suites` (`file`, cumulative `seconds`, `status`, integer `attempts`, plus
+  `safety: true` for safety suites), and `exit_status`. Suite statuses
+  are `passed`, `flaky`, `failed`, `timed_out`, `quarantined-failed` or
   `quarantined-passed`; quarantined timeouts count as `quarantined_failed`.
   Build failures have zero completed suites. A root without verifiable
   Git provenance records `commit: null`
@@ -6382,7 +6402,8 @@ the inspector's viewport before measuring and double-clicking it; a Group
 field and its consent hint may put Home's form actions below the scrollport.
 
 Execution exits 0 only if at least one selected suite ran and every selected
-non-quarantined suite passed. A completed run containing only quarantined
+non-quarantined suite passed or was flaky, with safety suites always
+requiring `passed` on their first attempt. A completed run containing only quarantined
 suites may exit 0, even if all of them failed. Non-quarantined suite failures,
 build, interruption, cleanup and output-write failures exit 1;
 inventory, manifest, duration-data, argument and empty-selection
@@ -6449,7 +6470,9 @@ per tag and never cancels.
 - `workspace.yml` (Workspace suites): push and pull requests to master, plus
   manual runs, without path filters. Six duration-balanced shards on
   ubuntu-24.04 use Node 22 and Python 3.14, with one suite at a time and one
-  build per shard. Puppeteer's browser cache is keyed by its locked version.
+  build per shard. CI passes `--retries 1` to retry an ordinary failing or
+  timed-out suite once; write-safety and quarantined suites never retry.
+  Puppeteer's browser cache is keyed by its locked version.
   Setting `kernel.apparmor_restrict_unprivileged_userns=0` permits Chrome's
   sandbox to launch on Ubuntu 24.04. Per-shard receipts always upload and
   logs upload on failure; both artifacts are retained for 14 days. The
@@ -6460,9 +6483,15 @@ per tag and never cancels.
   manifest and `GITHUB_SHA`: exactly six JSON receipts must have
   `exit_status: 0` and the current commit, their `suites` must cover every
   manifest `suite` entry exactly once (no extras, omissions or duplicates),
-  and every non-quarantined suite must report `passed`. Quarantine is
+  and every non-quarantined suite must report `passed` or non-safety `flaky`.
+  A safety suite identified by the manifest or receipt must report `passed`;
+  a flaky safety suite is an error. Quarantine is
   authorized only by the manifest, and each receipt's counts must agree
   with its actual statuses. Missing or malformed artifacts fail this check.
+  The checker prints the flaky suite list and appends suite names and shard
+  numbers to `$GITHUB_STEP_SUMMARY`, making intermittent failures visible
+  on the run page and tracked in the uploaded receipts. Parsed receipts
+  still contribute their flaky list when another shard fails validation.
   The aggregate also requires `needs.shard.result` to be `success`; matrix
   state alone cannot prove coverage.
 - `windows-desktop.yml` (Windows desktop): push and pull requests that touch

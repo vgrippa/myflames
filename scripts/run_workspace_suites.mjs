@@ -21,6 +21,7 @@ class UsageError extends Error {}
 
 const help = `Usage: node scripts/run_workspace_suites.mjs [options]
   --jobs N              Parallel suites (default: half the CPUs, capped at 4)
+  --retries N           Retry failed non-safety suites N times (default: 0)
   --timeout SECONDS     Override every suite timeout (also bounds the build)
   --durations PATH      Recorded seconds (default: scripts/workspace_suite_durations.json)
   --durations-out PATH  Write measured seconds; never written implicitly
@@ -45,9 +46,10 @@ function positive(value, flag, integer = false) {
 }
 
 function parseOptions(argv) {
-  const options = { root: DEFAULT_ROOT, kind: 'suite', jobs: Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2))) };
+  const options = { root: DEFAULT_ROOT, kind: 'suite', retries: 0,
+    jobs: Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2))) };
   const values = new Set(['--jobs', '--timeout', '--durations', '--durations-out', '--log-dir',
-    '--only', '--kind', '--shard', '--receipt', '--root']);
+    '--only', '--kind', '--shard', '--receipt', '--root', '--retries']);
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const [flag, ...suffix] = argv[index].split('=');
@@ -63,6 +65,13 @@ function parseOptions(argv) {
     options[flag.slice(2)] = value;
   }
   if (typeof options.jobs === 'string') options.jobs = positive(options.jobs, '--jobs', true);
+  if (typeof options.retries === 'string') {
+    const retries = Number(options.retries);
+    if (!options.retries.trim() || !Number.isSafeInteger(retries) || retries < 0) {
+      throw new UsageError('--retries must be a nonnegative integer');
+    }
+    options.retries = retries;
+  }
   if (options.timeout !== undefined) options.timeout = positive(options.timeout, '--timeout');
   if (!['suite', 'live'].includes(options.kind)) throw new UsageError('--kind must be suite or live');
   if (options.only !== undefined) {
@@ -157,6 +166,13 @@ async function inventory(options) {
         throw new UsageError(`${file}: quarantine must be a nonempty, one-line string`);
       }
     }
+    if (Object.hasOwn(entry, 'safety')) {
+      if (entry.kind !== 'suite') throw new UsageError(`${file}: only suite entries may have safety`);
+      if (typeof entry.safety !== 'string' || !entry.safety.trim()
+          || /[\r\n\u0085\u2028\u2029]/.test(entry.safety)) {
+        throw new UsageError(`${file}: safety must be a nonempty, one-line string`);
+      }
+    }
     for (const key of ['needs', 'env']) {
       if ((key === 'needs' && entry.kind === 'live') || Object.hasOwn(entry, key)) {
         if (entry.kind !== 'live' || !Array.isArray(entry[key])
@@ -193,6 +209,7 @@ async function selectSuites(options, entries) {
   const suites = Object.entries(entries)
     .filter(([file, entry]) => entry.kind === options.kind && (!options.only || options.only.includes(file)))
     .map(([file, entry]) => ({ file, timeout: options.timeout ?? entry.timeout, quarantine: entry.quarantine,
+      safety: Boolean(entry.safety),
       needs: entry.needs || [], env: entry.env || [],
       weight: Object.hasOwn(durations, file) ? durations[file] : DEFAULT_WEIGHT }))
     .sort((a, b) => b.weight - a.weight || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
@@ -345,7 +362,7 @@ async function cleanupProcesses(child, home, name) {
   throw new Error(`${name}: private-path processes remain after cleanup`);
 }
 
-async function runProcess(command, args, name, timeout, options, state, forwarded = []) {
+async function runProcess(command, args, name, timeout, options, state, forwarded = [], attempt = 1) {
   const started = performance.now();
   let home;
   let log;
@@ -355,7 +372,7 @@ async function runProcess(command, args, name, timeout, options, state, forwarde
   let timedOut = false;
   let code = null;
   let signal = null;
-  const logPath = path.join(state.logDir, `${name}.log`);
+  const logPath = path.join(state.logDir, `${name}${attempt > 1 ? `.attempt-${attempt}` : ''}.log`);
   try {
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-workspace-home-'));
     const temporary = path.join(home, 'tmp');
@@ -363,7 +380,7 @@ async function runProcess(command, args, name, timeout, options, state, forwarde
     log = await fs.open(logPath, 'wx', 0o600);
     child = spawn(command, args, { cwd: options.workspace, detached: true,
       env: isolatedEnvironment(home, temporary, forwarded), stdio: ['ignore', log.fd, log.fd] });
-    state.active.set(child, name);
+    state.active.set(child, attempt > 1 ? `${name} (attempt ${attempt})` : name);
     const ended = new Promise((resolve) => {
       child.once('error', (error) => { failure = error; resolve(); });
       child.once('exit', (exitCode, exitSignal) => { code = exitCode; signal = exitSignal; resolve(); });
@@ -398,7 +415,7 @@ async function runProcess(command, args, name, timeout, options, state, forwarde
     code, signal, error: failure?.message, logPath };
 }
 
-async function printFailure(result) {
+async function printFailure(result, tailLines = 60) {
   const outcome = result.outcome ?? result.status;
   console.error(`\n=== ${result.file} (${outcome === 'timed_out' ? 'TIMED OUT' : 'FAILED'}; exit ${result.code ?? result.signal ?? 'unknown'}) ===`);
   if (result.quarantine) console.error(`Quarantine: ${result.quarantine}`);
@@ -408,7 +425,7 @@ async function printFailure(result) {
     const input = createReadStream(result.logPath, { encoding: 'utf8' });
     for await (const line of createInterface({ input, crlfDelay: Infinity })) {
       lines.push(line);
-      if (lines.length > 60) lines.shift();
+      if (lines.length > tailLines) lines.shift();
     }
     console.error(lines.join('\n'));
   } catch (error) {
@@ -449,6 +466,7 @@ async function writeJson(destination, value) {
 
 function counts(results) {
   return { passed: results.filter((result) => result.status === 'passed').length,
+    flaky: results.filter((result) => result.status === 'flaky').length,
     failed: results.filter((result) => result.status === 'failed').length,
     timed_out: results.filter((result) => result.status === 'timed_out').length,
     quarantined_failed: results.filter((result) => result.status === 'quarantined-failed').length,
@@ -497,9 +515,29 @@ async function execute(options, state) {
     const worker = async () => {
       while (index < suites.length && !state.interrupted) {
         const suite = suites[index++];
-        const result = await runProcess(process.execPath, [`test/${suite.file}`], suite.file, suite.timeout, options, state,
-          [...suite.needs, ...suite.env, ...(SUITE_ENV[suite.file] || [])]);
-        if (suite.quarantine && !result.error) {
+        const attempts = [];
+        while (true) {
+          // runProcess owns a fresh HOME/TMPDIR and completes cleanup before
+          // returning, so every retry starts from the same isolated boundary.
+          const attempt = await runProcess(process.execPath, [`test/${suite.file}`], suite.file, suite.timeout, options, state,
+            [...suite.needs, ...suite.env, ...(SUITE_ENV[suite.file] || [])], attempts.length + 1);
+          attempts.push(attempt);
+          // Runner/cleanup errors and interruptions must remain gating. Only
+          // ordinary suite failures/timeouts can be retried, never live labs.
+          if (attempt.status === 'passed' || attempt.error || state.interrupted
+              || suite.safety || suite.quarantine || options.kind !== 'suite' || attempts.length > options.retries) break;
+          console.error(`RETRY ${suite.file}: attempt ${attempts.length} ${attempt.status}; starting attempt ${attempts.length + 1}`);
+        }
+        const last = attempts[attempts.length - 1];
+        const result = { ...last, attempts: attempts.length,
+          seconds: Number(attempts.reduce((total, attempt) => total + attempt.seconds, 0).toFixed(6)),
+          ...(suite.safety ? { safety: true } : {}) };
+        if (last.status === 'passed' && attempts.length > 1) {
+          result.status = 'flaky';
+          result.firstAttempt = attempts[0];
+        }
+        // Safety stays gating even if a manifest entry also has quarantine.
+        if (suite.quarantine && !suite.safety && !result.error) {
           // Retain the process outcome so quarantined timeouts keep their diagnostic.
           result.outcome = result.status;
           result.quarantine = suite.quarantine;
@@ -512,6 +550,14 @@ async function execute(options, state) {
     await Promise.all(Array.from({ length: Math.min(options.jobs, suites.length) }, worker));
     for (const result of state.results) {
       if (result.status === 'failed' || result.status === 'timed_out') await printFailure(result);
+    }
+    const flaky = state.results.filter((result) => result.status === 'flaky');
+    if (flaky.length) {
+      console.error('\nFLAKY suites (passed on retry; first attempt failure, last 30 lines):');
+      for (const result of flaky) {
+        console.error(`  ${result.file}: passed on attempt ${result.attempts}`);
+        await printFailure(result.firstAttempt, 30);
+      }
     }
     const quarantinedFailures = state.results.filter((result) => result.status === 'quarantined-failed');
     if (quarantinedFailures.length) {
@@ -526,7 +572,7 @@ async function execute(options, state) {
       }
     }
     const totals = counts(state.results);
-    console.log(`\nSuites: ${totals.passed} passed, ${totals.failed} failed, ${totals.timed_out} timed out, `
+    console.log(`\nSuites: ${totals.passed} passed, ${totals.flaky} flaky, ${totals.failed} failed, ${totals.timed_out} timed out, `
       + `${totals.quarantined_failed} quarantined failed, ${totals.quarantined_passed} quarantined passed; ${state.results.length}/${suites.length} ran`);
     if (options['durations-out']) {
       await writeJson(options['durations-out'], Object.fromEntries(state.results.slice()
@@ -568,7 +614,9 @@ async function main() {
       await writeJson(options.receipt, { ...state.provenance,
         command: process.argv.map((arg) => JSON.stringify(arg)).join(' '),
         started: state.started, finished: new Date().toISOString(), node: process.version,
-        counts: counts(state.results), suites: state.results.map(({ file, seconds, status }) => ({ file, seconds, status })),
+        counts: counts(state.results),
+        suites: state.results.map(({ file, seconds, status, attempts, safety }) =>
+          ({ file, seconds, status, attempts, ...(safety ? { safety: true } : {}) })),
         exit_status: exitStatus });
     } catch (error) {
       console.error(`Cannot write receipt: ${error.message}`);

@@ -5,18 +5,21 @@
       "kind": "suite",
       "script": "test:account-connection-races",
       "timeout": 180,
+      "safety": "A reconnect or incidental read never authenticates with a partially typed password; only the explicit commit sends credentials (test at line 72, asserts at lines 87-89).",
       "reason": "Socket-free node --test regressions of the account/connection components; header: no sockets, responses released explicitly."
     },
     "accounts-all-grants.mjs": {
       "kind": "suite",
       "script": "test:accounts-all",
       "timeout": 300,
+      "safety": "Every recorded grant case reaches the real review UI and Apply is forbidden: /api/accounts/apply is wired to fail if called (line 86).",
       "reason": "Browser tour of every recorded SHOW PRIVILEGES grant case through the real review UI with Apply forbidden; long because it walks the full grant catalog."
     },
     "accounts.mjs": {
       "kind": "suite",
       "script": "test:accounts",
       "timeout": 180,
+      "safety": "Account changes apply only from the reviewed plan; a malformed plan is refused and Cancel audits a decline ('malformed-plan refusal', line 187; browser summary line 833).",
       "reason": "Accounts UI on a fixture shell and the real server with a throwaway HOME; header states no source or packaged asset is rewritten."
     },
     "action-feedback-batch-b.mjs": {
@@ -43,6 +46,7 @@
       "kind": "suite",
       "script": "test:action-feedback",
       "timeout": 180,
+      "safety": "An uncertain Stop never sends a second KILL and a write action never resends (lines 59 and 69).",
       "reason": "Executes the real feedback handlers and harness branches without a server or browser; run first by test:action-feedback."
     },
     "action-feedback-seed.py": {
@@ -60,12 +64,14 @@
       "kind": "suite",
       "script": "test:action-feedback",
       "timeout": 600,
+      "safety": "Kill sessions re-checks the connection policy after Confirm; a refused or failed check means KILL was never requested (scenario kill-sessions-policy, action-feedback-lib.mjs:1038).",
       "reason": "Runs every converted action (batches B/C plus operations scenarios) against a seeded throwaway server with held replies; long tour with per-action waits, parallel only via ACTION_FEEDBACK_WORKERS."
     },
     "analysis-projection.mjs": {
       "kind": "suite",
       "script": "test:analysis-projection",
       "timeout": 180,
+      "safety": "Run analysis projects DML into a SELECT and captures nothing before confirmation; Explain never prepares (lines 62-63 and 78).",
       "reason": "Real Python SQL-preparation endpoint with mocked capture, via perf-harness; proves Run analysis projects and Explain never prepares."
     },
     "argument-hints-unit.mjs": {
@@ -89,6 +95,7 @@
       "kind": "suite",
       "script": "test:auth",
       "timeout": 180,
+      "safety": "The launch secret is one-time and never stored, the session cookie is HttpOnly, and cross-port cookie theft and CSRF are refused (line 104).",
       "reason": "Real browser authentication against an isolated workspace, no mocked API; launches its own throwaway server and HOME."
     },
     "baselines-unit.mjs": {
@@ -136,6 +143,7 @@
       "kind": "suite",
       "script": "test:cluster",
       "timeout": 180,
+      "safety": "Cluster switchover sends only from the review sheet; Cancel is recorded as declined with the reviewed statements (line 231).",
       "reason": "Cluster place on mocked /api/live/cluster with backend-computed reports and the real Python server for sessions; no cluster contacted."
     },
     "compare-text.mjs": {
@@ -160,12 +168,14 @@
       "kind": "suite",
       "script": "test:config",
       "timeout": 180,
+      "safety": "Cancelling a SET PERSIST/SET GLOBAL review never sends a write and records exactly one audit record (lines 381-383).",
       "reason": "Parameters view on recorded config-1.0 reports with mocked plan/apply endpoints and the object-changes fixture stub."
     },
     "connection-binding.mjs": {
       "kind": "suite",
       "script": "test:connection-binding",
       "timeout": 180,
+      "safety": "Kill is off on another connection and a cancelled confirmation sends nothing (lines 279 and 342).",
       "reason": "Binding of reports, selections and Kill to the owning connection; two saved connections on an isolated server, database replies mocked."
     },
     "connection-helpers.mjs": {
@@ -177,12 +187,14 @@
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "Restoring the readiness cache never sends a readiness request; a saved connection is not probed without user action (line 97).",
       "reason": "no npm script; connection-readiness contracts bundled with esbuild against stubbed React/api, in-memory localStorage, no sockets."
     },
     "connections-readiness.mjs": {
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "A saved production connection is not checked on startup; readiness is read only after the user chooses or tests the connection (line 107).",
       "reason": "no npm script; browser suite on a seeded throwaway store with mocked database endpoints; header states no real database is contacted."
     },
     "connections-ssh.mjs": {
@@ -225,6 +237,7 @@
       "kind": "suite",
       "script": "test:digest-actions",
       "timeout": 180,
+      "safety": "Opening the Run analysis confirmation never starts the capture (line 473) and a denial arriving mid-review disables confirm (lines 397-400).",
       "reason": "Top statements row actions (Explain, Run analysis, parameters, Explain top N) on mocked live reads with the real plan endpoints."
     },
     "digest-times.mjs": {
@@ -292,6 +305,7 @@
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "File tokens are bound to the chosen path: a swapped token is refused, nothing is written outside it (lines 130-135), and request bodies never carry a path (line 168).",
       "reason": "no npm script; real authenticated file endpoints and real temporary files with only the native chooser replaced in Python; no database or SQL execution."
     },
     "editor-files-unit.mjs": {
@@ -377,6 +391,7 @@
       "kind": "suite",
       "script": "test:editor",
       "timeout": 300,
+      "safety": "Cancelling reviewed DDL/DML sends one decline and nothing runs ('Cancelled. Nothing was sent', line 860); denied privileges block both buttons and shortcuts (line 1786).",
       "reason": "The main Query editor tour (run, results, stop, transactions, export, history, schema browser, restore) on the packaged page and real server with mocked database; the largest editor suite."
     },
     "engine-words.mjs": {
@@ -448,6 +463,7 @@
       "kind": "suite",
       "script": "test:files",
       "timeout": 180,
+      "safety": "unsure: an SSH host is contacted only after the host-key trust sheet is confirmed; host_key_unknown opens the trust step before any retry (lines 258-270).",
       "reason": "Files place and SSH connection sheets with every request intercepted; no workspace server; launches with --no-sandbox."
     },
     "files-live.mjs": {
@@ -548,6 +564,7 @@
       "kind": "suite",
       "script": "test:import-csv",
       "timeout": 180,
+      "safety": "CSV import applies only from the review sheet; Escape and Cancel are recorded as declined (header lines 5-6) and an expired review refuses with 'Nothing was sent' (line 189).",
       "reason": "Import CSV wizard on mocked csv-inspect/plan/result replies; IMPORT_CSV_SHOTS optional."
     },
     "index-suggestion-click.mjs": {
@@ -572,6 +589,7 @@
       "kind": "suite",
       "script": "test:instruments",
       "timeout": 180,
+      "safety": "Instrument enable/disable writes carry the one-shot review token (confirm_token assert, line 94); Cancel is recorded as declined (line 126).",
       "reason": "Performance Schema instrument selection and reviewed writes on fixtures with live engine defaults; --unit runs the pure SQL builder without a browser."
     },
     "investigation.mjs": {
@@ -590,6 +608,7 @@
       "kind": "suite",
       "script": "test:locks",
       "timeout": 180,
+      "safety": "unsure: kill reconciliation re-checks the target session; a replacement session within the same second is not attributed the kill (lines 66-67).",
       "reason": "Kill reconciliation pure functions executed from the AST; header: no browser or server."
     },
     "kit-primitives.mjs": {
@@ -626,6 +645,7 @@
       "kind": "suite",
       "script": "test:locks",
       "timeout": 180,
+      "safety": "Kill sends the server-issued review token (line 136); Escape and Cancel send nothing and are recorded as declined (lines 486-487).",
       "reason": "Locks view on captured locks-1.0/1.1 reports with the real Python server for plans; honors MYFLAMES_BROWSER_ARGS."
     },
     "maintenance-convenience.mjs": {
@@ -638,18 +658,21 @@
       "kind": "suite",
       "script": "test:maintenance",
       "timeout": 180,
+      "safety": "The reviewed lifecycle plan with its review token is forwarded to execution without alteration (line 90).",
       "reason": "Folder helpers with real path functions and an in-memory API transport; header: no browser, filesystem listing or server writes."
     },
     "maintenance.mjs": {
       "kind": "suite",
       "script": "test:maintenance",
       "timeout": 180,
+      "safety": "Dump/restore/clone start only from the typed review; a cancelled acknowledgement never carries into a new review (line 600) and cancel keeps the starting connection (line 477).",
       "reason": "Maintenance view on backend-computed lifecycle reports (ops-fixtures.py); mocked lifecycle endpoints."
     },
     "measure-again.mjs": {
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "Opening the CREATE INDEX review applies nothing ('a write review is not an applied index', line 253) and confirmation preserves the reviewed SQL (line 118).",
       "reason": "no npm script; suggested index to reviewed write to confirmed measurement; all database endpoints mocked, real isolated Python server for SQL preparation."
     },
     "memory-fixtures.py": {
@@ -764,6 +787,7 @@
       "kind": "suite",
       "script": "test:perf-regressions",
       "timeout": 180,
+      "safety": "ProxySQL action invalidation must never send a write (line 254, assert.fail in sendProxySqlAction).",
       "reason": "Deterministic node --test regressions executing the real TS functions with controlled hooks; header: no DOM, server, sleeps or React; PERF_SOURCE_ROOT overrides the source tree."
     },
     "placeholders.mjs": {
@@ -812,6 +836,7 @@
       "kind": "suite",
       "script": "test:profiles",
       "timeout": 180,
+      "safety": "Kill stays off while the connection policy is unknown and names the reason (lines 625-626).",
       "reason": "Remembered passwords, connection type and read-only safety on the packaged UI with an isolated server and vault backend."
     },
     "proxysql-fixtures.py": {
@@ -823,6 +848,7 @@
       "kind": "suite",
       "script": "test:proxysql",
       "timeout": 180,
+      "safety": "ProxySQL writes send the review token apart from the plan (lines 287-288); Cancel and Escape record a declined attempt with nothing sent (line 241).",
       "reason": "ProxySQL place on mocked endpoints answering backend-computed reports/plans/results (proxysql-fixtures.py); no ProxySQL contacted."
     },
     "query-digest-baselines.mjs": {
@@ -857,12 +883,14 @@
       "kind": "suite",
       "script": "test:readyset",
       "timeout": 180,
+      "safety": "Readyset writes send the review token apart from the plan (lines 416-417).",
       "reason": "Readyset place on mocked endpoints answering backend-computed reports and plans (readyset-fixtures.py); no Readyset contacted."
     },
     "release-rf3-regressions.mjs": {
       "kind": "suite",
       "script": "test:release-rf3",
       "timeout": 180,
+      "safety": "Bulk kill policy: a policy change or failed policy read while the kill review is open never sends the kill, and an attempted write keeps its outcome (test/release-rf3-regressions.mjs:89-136).",
       "reason": "Release rf-3 node --test regressions executing the actual handlers and JSX; header: no browser, listening sockets or database."
     },
     "replication-source-version.mjs": {
@@ -875,6 +903,7 @@
       "kind": "suite",
       "script": "test:replication",
       "timeout": 180,
+      "safety": "Replication skip sends the review token bound to the reviewed skip plan (line 376).",
       "reason": "Replication view on replication-1.0 reports recorded live and written by ops-fixtures.py; skip and skip-loop endpoints answered from the same recordings."
     },
     "report-table-export.mjs": {
@@ -905,6 +934,7 @@
       "kind": "suite",
       "script": "test:review-auth",
       "timeout": 180,
+      "safety": "KILL with a missing, changed, replayed or expired review token is refused; only the reviewed KILL executes (lines 51-68).",
       "reason": "Real browser HTTP/review gates with a replay connection behind KILL; throwaway HOME and vault backend."
     },
     "review-read-hooks.mjs": {
@@ -917,12 +947,14 @@
       "kind": "suite",
       "script": "test:reviewed-actions-unit",
       "timeout": 180,
+      "safety": "A reviewed action never retries (line 99) and a stale completed send never acts on the replacement connection (line 88).",
       "reason": "Reviewed-action hook executed without a DOM or a listening socket; children remain inspectable JSX."
     },
     "reviewed-sql-actions.mjs": {
       "kind": "suite",
       "script": "test:reviewed-sql-actions",
       "timeout": 180,
+      "safety": "A denied server-generated SQL statement sends no run (lines 120-126).",
       "reason": "Server-generated SQL actions on an isolated editor session with mocked writes, via perf-harness."
     },
     "safe-updates-info.mjs": {
@@ -994,6 +1026,7 @@
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "Kill from a blocking chain opens the KILL review distinguishing query vs connection kill before anything is sent (lines 70-80).",
       "reason": "no npm script; blocking chain and no-wait reports via perf-harness with every live read intercepted; header: no real database is used."
     },
     "sessions-ddl-unit.mjs": {
@@ -1006,6 +1039,7 @@
       "kind": "suite",
       "script": "test:sessions",
       "timeout": 180,
+      "safety": "A denied Kill cannot open its sheet (line 765); Cancel and Escape send nothing and are recorded as declined (lines 333-336).",
       "reason": "Sessions view on sessions-1.0 reports computed from live recordings (server-fixtures.py); mocked live endpoint."
     },
     "settings-page.mjs": {
@@ -1095,6 +1129,7 @@
       "kind": "suite",
       "script": "test:table-data",
       "timeout": 180,
+      "safety": "Table edits apply only from the mandatory review: Cancel applies nothing (line 61) and an unknown outcome never replays writes (line 72).",
       "reason": "Explicit table-grid editing on synthetic API replies via perf-harness; live proof stays in table-data-live.mjs; TABLE_DATA_SHOTS optional."
     },
     "table-index-pagination.mjs": {
@@ -1107,6 +1142,7 @@
       "kind": "suite",
       "script": null,
       "timeout": 180,
+      "safety": "Rendering the Rebuild component never opens or executes a statement (line 51).",
       "reason": "no npm script; Rebuild component and ownership projection executed from Tables.tsx without a socket or browser."
     },
     "tables.mjs": {
@@ -1160,6 +1196,7 @@
       "kind": "suite",
       "script": "test:topology-groups",
       "timeout": 180,
+      "safety": "An unticked production connection is never sent to /api/profiles/group (line 593); unsaved connections never acquire a saved identity by name or endpoint (header).",
       "reason": "Topology connection groups: Group field, datalist, save through /api/profiles/save and display in list and picker; isolated server."
     },
     "tuning-browser.mjs": {
