@@ -72,6 +72,9 @@ INDEX = textwrap.dedent("""\
 
 OLDER = PAGE.replace("3.4.0 (2026-12-01)", "3.3.9 (2026-11-20)").replace("3.4.0 is", "3.3.9 is")
 
+CREDIT = ("Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and "
+          "[Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).")
+
 
 def run(script, *args, **kwargs):
     return subprocess.run([sys.executable, str(SCRIPTS / script)] + list(args), stdout=subprocess.PIPE,
@@ -173,14 +176,46 @@ class ReleaseNotesTest(unittest.TestCase):
 
     def test_cli_notes_do_not_add_the_inspiration_credit(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")
-        credit = "Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/)."
-        self.assertIn(credit, readme)
+        self.assertIn(CREDIT, readme)
         with tempfile.TemporaryDirectory() as tmp:
             page = Path(tmp) / "3.4.0.md"
             page.write_text(PAGE, encoding="utf-8")
             done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertNotIn("Inspired by", done.stdout)
+
+    def test_page_and_main_refuse_the_inspiration_credit(self):
+        cases = (
+            ("exact credit", CREDIT),
+            ("reworded credit", "The work of Brendan Gregg and Tanel Poder inspired myflames."),
+            ("reversed names and case", "We thank TANEL PODER and brendan gregg for the inspiration."),
+            ("wrapped credit", "The work of Brendan\nGregg and Tanel\nPoder inspired myflames."),
+            ("fenced credit", "```text\n" + CREDIT + "\n```"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "3.4.0.md"
+            for label, credit in cases:
+                with self.subTest(label=label):
+                    # Leading blank lines must not shift the reported source line.
+                    text = "\n\n" + PAGE + "\n" + credit + "\n"
+                    line = len(("\n\n" + PAGE + "\n").splitlines()) + 1
+                    if label == "fenced credit":
+                        line += 1
+                    message = "custom/3.4.0.md line %d has the inspiration credit" % line
+                    with self.assertRaises(notes.ReleaseNotesError) as caught:
+                        notes.page(text, "3.4.0", "custom/3.4.0.md")
+                    self.assertIn(message, str(caught.exception))
+                    path.write_text(text, encoding="utf-8")
+                    done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    self.assertEqual(done.stdout, "")
+                    self.assertIn("%s/3.4.0.md line %d has the inspiration credit" % (path.parent.name, line), done.stderr)
+
+    def test_a_single_inspiration_author_is_not_the_credit(self):
+        for author in ("Brendan Gregg", "Tanel Poder"):
+            with self.subTest(author=author):
+                text = PAGE.replace("It works.", "Adds a link to %s's work." % author)
+                self.assertIn(author, notes.page(text, "3.4.0")[1])
 
 
 class RealReleaseNotesTest(unittest.TestCase):
@@ -530,6 +565,16 @@ def workflow_step(path, name):
 @unittest.skipUnless(shutil.which("bash"), "needs bash")
 class DocsSyncWorkflowTest(unittest.TestCase):
     """Abuse cases for .github/workflows/docs-sync.yml's shell steps."""
+
+    def test_release_checks_out_the_workflow_commit_without_credentials(self):
+        workflow = (REPO / ".github/workflows/docs-sync.yml").read_text(encoding="utf-8")
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        release_job = jobs.split("\n  release:\n", 1)[1]
+        checkout = release_job.split("      - uses: actions/checkout@", 1)[1].split("\n      - ", 1)[0]
+        settings = [line.strip() for line in checkout.splitlines()]
+        self.assertIn("ref: ${{ github.sha }}", settings)
+        self.assertIn("persist-credentials: false", settings)
+        self.assertNotIn("refs/tags/", release_job)
 
     def run_tag_step(self, tag):
         script = workflow_step(REPO / ".github/workflows/docs-sync.yml", "Release tag")
