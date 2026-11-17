@@ -12,6 +12,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Improvements
 
+- The workspace loads Plans and Learn on demand, reducing the code needed to open the first screen.
+
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.
 - The Query editor toolbar has **Find** and **Find and replace** buttons, and an **Editing actions** menu lists every editing command with its shortcut, including **Toggle Tab moving focus**.
 

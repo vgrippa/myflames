@@ -75,9 +75,9 @@ for (const file of sources) {
 }
 
 // Modules loaded through lazyComponent must not be imported statically by the
-// shell or by Server (type-only imports are erased and fine).
+// shell or their parent view (type-only imports are erased and fine).
 const lazyIn = (text) => [...text.matchAll(/lazyComponent\(\(\) => import\("\.\/([^"]+)"\)/g)].map((m) => m[1]);
-for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx"]) {
+for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx", "PlanScreen.tsx"]) {
   const text = await read(file);
   const lazy = lazyIn(text);
   assert.ok(lazy.length > 0, `${file} loads parts lazily`);
@@ -88,6 +88,10 @@ for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx"]) {
   }
 }
 
+// Plans and Learn stay behind the same loading boundary as other places.
+for (const module of ["PlanScreen", "Teach"])
+  assert.ok(lazyIn(main).includes(module), `main.tsx loads ${module} through lazyComponent`);
+
 // The committed build: one stylesheet, and the entry chunk stays small.
 const assets = path.join(here, "../../../myflames/ui_assets");
 const html = await fs.readFile(path.join(assets, "index.html"), "utf8").catch(() => "");
@@ -97,16 +101,30 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // About 365 KB after the split (1.1 MB before), 442 KB by 3.3.2 and 475 KB
-  // in 3.3.3, where the shell gained Back and Forward history, Cmd+K object
-  // search and recents, and readiness facts on Home. Home, the sidebar and
-  // the shell only: a place or view belongs in a lazy chunk. Next step to win
-  // room back: move main.tsx's plan screen into a lazy chunk.
+  // 469,138 bytes after moving main.tsx's Plans screen (Explore, Compare
+  // and the investigation notebook) and Learn into lazy chunks, down from
+  // 500,608 bytes. Plan state, imports, session restore and navigation stay
+  // in the shell. Keep 30 KB of room for release work: a place or view
+  // belongs in a lazy chunk, while the 500,000-byte ceiling stays fixed.
   assert.ok(size < 500_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 
   const entryText = await fs.readFile(path.join(assets, "assets", entry), "utf8");
   for (const marker of [".cm-content", ".cm-editor"])
     assert.ok(!entryText.includes(marker), `entry chunk ${entry} includes CodeMirror marker ${marker}`);
+
+  for (const [name, markers] of [
+    ["PlanScreen", ["No plan is open", "Comparison measurements", "Investigation notebook"]],
+    ["Teach", ["myflames-lesson-focus", "Loading lesson"]],
+  ]) {
+    const chunk = files.find((f) => f.startsWith(`${name}-`) && f.endsWith(".js"));
+    assert.ok(chunk, `build has a ${name} chunk`);
+    const chunkText = await fs.readFile(path.join(assets, "assets", chunk), "utf8");
+    for (const marker of markers) {
+      assert.ok(chunkText.includes(marker), `${chunk} includes ${name} marker ${marker}`);
+      assert.ok(!entryText.includes(marker), `entry chunk ${entry} includes ${name} marker ${marker}`);
+    }
+  }
+  console.log(`Entry chunk: ${entry} (${size} bytes); Plans and Learn remain lazy.`);
 
   const queryLab = files.find((f) => /^QueryLab.*\.js$/.test(f));
   assert.ok(queryLab, "build has a QueryLab chunk");

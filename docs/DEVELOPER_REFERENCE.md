@@ -1461,8 +1461,8 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the command palette, Learn and the shared kit (about 365 KB,
-1.1 MB before the split). Other places and views load their own chunk the
+connections, the command palette and the shared kit (about 469 KB after
+splitting the Plans screen and Learn, 1.1 MB before the original split). Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1472,9 +1472,18 @@ workspace did not load." with Reload):
   loading with sign-in and the session read, and calls to its handle made
   before it mounts wait in `withLab`), Query digest, Server (with Workload,
   Tuning and Database diagram),
-  Replication, Cluster, Investigations, the Audit log, and the Plans chart and
-  execution context. Once the first screen is up, `preloadWhenIdle` loads
-  Server, Replication, Cluster and the Plans chart in idle time, one chunk at a time.
+  Replication, Cluster, Investigations, the Audit log, Plans and Learn.
+  `PlanScreen.tsx` holds Explore, Compare and the investigation notebook;
+  the shell keeps their state, imports, exports, session restore and navigation.
+  Opening the notebook from Investigations loads the same chunk. Learn mounts
+  on its first visit and stays mounted afterward, so its lesson survives a
+  trip to another place; a session reset starts it over. Once the first screen
+  is up, `preloadWhenIdle` loads Server, Replication, Cluster and the other
+  frequently opened places in idle time, one chunk at a time, followed by
+  Plans and its chart and execution context. This fetches code without
+  mounting a place or reading a server.
+- `PlanScreen.tsx`: the Plans chart and execution context use their own lazy
+  boundaries, retaining the same fallback while their chunks arrive.
 - `Server.tsx`: the views it uses only as components (InnoDB, Tuning,
   Processlist, Waits, I/O, Indexes, Tables, Parameters, Database diagram (its
   own place, still drawn by Server), Users and roles), preloaded in idle time once the place has mounted. Health,
@@ -1514,10 +1523,13 @@ Rules for code that splits:
 - `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
   `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
   followed by `themes.css` last and `main.tsx` importing it first, that no lazily loaded module is
-  also imported statically by `main.tsx`, `Server.tsx` or `QueryLab.tsx`,
+  also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
+  `PlanScreen.tsx`,
   that the committed build has exactly one stylesheet, and that the entry
-  chunk stays under 500,000 bytes (about 475 KB in 3.3.3; Home, the sidebar
-  and the shell only, a place or view belongs in a lazy chunk). The chart
+  chunk stays under 500,000 bytes (469,138 bytes after extracting Plans and
+  Learn from a 500,608-byte entry). It also requires Plans and Learn chunks
+  and checks that their view text stays out of the entry. Home, the sidebar
+  and the shell stay eager; a place or view belongs in a lazy chunk. The chart
   runtime has its own
   80 KB budget (`test_chart_data.py`).
 
