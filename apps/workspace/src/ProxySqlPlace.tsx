@@ -380,6 +380,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
         <p>ProxySQL keeps three copies of its configuration: memory (what Admin edits), runtime (what it uses) and disk (what it loads at its next start). A change here edits memory and loads it to runtime; Save to disk is a separate change. Each one shows the exact statements, asks first, and is recorded in the Audit log.</p>
         <p>Galera and Group Replication monitors move servers between their hostgroups by health, so a backend can run in another hostgroup than its configuration row.</p>
         <p>Query digests lists the top digests in one order (slowest, most time, most frequent, highest rate, most rows sent) with filters, read with ORDER BY and LIMIT in Admin. Each one shows where the active query rules send it, evaluated here, next to the hostgroup it ran on.</p>
+        <p>Motion on the topology shows links that were running when last read; it does not measure traffic or throughput. Stopped, failed and unknown links stay still, and your system’s reduced motion setting turns motion off.</p>
       </>}
       status={<>
         <ViewStatus loading={reads.loading || digestReads.loading || (actions.planning ? "Reading the target for review…" : undefined)} error={failed || actions.error}
