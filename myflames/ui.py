@@ -168,9 +168,6 @@ def _discover_response(path, payload, workspace=None):
                     from .cluster import attach_topology_tiers, read_status, with_actions
                     report = read_status(conn, _identity=identity)
                     attach_topology_tiers(conn, report, **t_args)
-                    report = with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)),
-                                          group_profiles=profiles, current_profile=current,
-                                          group_name=(payload.get("connection") or {}).get("group_name") if current else None)
                 elif path == "/api/live/proxysql":
                     from .proxysql import read_status
                     report = read_status(conn, **t_args)
@@ -179,6 +176,15 @@ def _discover_response(path, payload, workspace=None):
                     report = read_status(conn, schema=payload.get("schema") or "readyset", **t_args)
                 if workspace is not None and getattr(workspace, "store", None) is not None:
                     finish_read(workspace.store, report, payload.get("connection") or {}, profiles, current, identity=identity)
+                if path == "/api/live/cluster":
+                    # The probes just confirmed peer identities. Build the
+                    # catalog from the updated store in this same response.
+                    if workspace is not None and getattr(workspace, "store", None) is not None:
+                        from .connection_groups import request_profiles
+                        profiles, current = request_profiles(workspace.store, payload.get("connection") or {})
+                    report = with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)),
+                                          group_profiles=profiles, current_profile=current,
+                                          group_name=(payload.get("connection") or {}).get("group_name") if current else None)
                 return report
             if path == "/api/live/readyset/explain-cache":
                 from .readyset import explain_cache
@@ -2020,7 +2026,7 @@ def _action_response(path, payload, workspace):
         # before any credentials are read, using the requested saved target.
         target_id = payload.get("target_profile_id", plain.get("profile_id"))
         target = workspace.store.get("profile", target_id) if isinstance(target_id, str) and len(target_id) <= 200 else None
-        route = target if isinstance(target, dict) else plain
+        route = dict(target, group_name=plain.get("group_name")) if isinstance(target, dict) else plain
         safety = dbops.connection_safety(target, route, store=workspace.store)
         decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
                                 safety.get("profile_name"))

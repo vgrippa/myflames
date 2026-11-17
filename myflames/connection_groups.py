@@ -144,10 +144,23 @@ def probe_note(profile, exc):
         profile.get('name') or profile.get('id') or 'unnamed', profile.get('group') or '', safe_problem(exc))
 
 
-def record_read(opener, profile, outcome, message=''):
+def record_read(opener, profile, outcome, message='', identity=None):
     scope = getattr(opener, 'group_scope', None)
     if scope is not None:
-        scope.record(profile, outcome, message)
+        scope.record(profile, outcome, message, identity)
+
+
+class _ProfileRead(dict):
+    """Public read outcome with private evidence from this profile's probe.
+
+    Attributes are deliberately outside the JSON report. In particular, a
+    reported peer UUID or an address suggestion cannot supply this evidence.
+    """
+    def __init__(self, profile):
+        super(_ProfileRead, self).__init__(id=profile['id'], name=profile.get('name') or profile['id'],
+                                           type=profile.get('type') or 'production')
+        self.profile = dict(profile)
+        self.identity = {}
 
 
 class GroupScope(object):
@@ -158,16 +171,17 @@ class GroupScope(object):
         self.read = []
         self.attempted = set()
 
-    def record(self, profile, outcome, message=''):
+    def record(self, profile, outcome, message='', identity=None):
         if profile.get('id') not in {p['id'] for p in self.profiles}:
             return
         item = next((r for r in self.read if r['id'] == profile['id']), None)
-        if item is not None and item['outcome'] == 'read':
-            return
         if item is None:
-            item = {'id': profile['id'], 'name': profile.get('name') or profile['id'],
-                    'type': profile.get('type') or 'production'}
+            item = _ProfileRead(profile)
             self.read.append(item)
+        if outcome == 'read' and identity:
+            item.identity.update(identity)
+        if item.get('outcome') == 'read':
+            return
         item.update(outcome=outcome, message=message)
 
     def opener(self, original):
@@ -431,7 +445,7 @@ def request_profiles(store, connection):
 
 
 def finish_read(store, report, connection, profiles, current, identity=None):
-    """Persist only the current profile; suggestions never cause a login."""
+    """Persist direct observations only; suggestions never cause a login."""
     reads = (report.get('connection_group') or {}).get('read') or []
     report['connection_group'] = describe(report, profiles, current, reads,
                                           connection.get('ssh_host') or connection.get('host'), identity=identity)
@@ -441,4 +455,18 @@ def finish_read(store, report, connection, profiles, current, identity=None):
         except Exception:
             # Saving non-secret evidence is best effort, just like reading it.
             pass
+        if any(isinstance(read, _ProfileRead) and read.identity for read in reads):
+            # Recheck consent after the probes, and bind each observation to
+            # the endpoint it actually read. Revoked or edited profiles cannot
+            # gain evidence from another member's report or from a stale read.
+            fresh_profiles, fresh_current = request_profiles(store, connection)
+            allowed = {p['id']: p for p in members(fresh_profiles, fresh_current)}
+            for read in reads:
+                if (not isinstance(read, _ProfileRead) or not read.identity or
+                        read['id'] not in allowed or read.profile.get('group') != fresh_current.get('group')):
+                    continue
+                try:
+                    store.record_topology_identity(read['id'], read.identity, expected=read.profile)
+                except Exception:
+                    pass
     return report

@@ -1409,10 +1409,18 @@
             "self",
             "member_name"
           ],
-          "description": "Execution target. In a Group connection, profile_id names the selected member's saved connection, matched by node identity. An address never selects a route.",
+          "description": "Execution target. In a Group connection, profile_id names a saved connection confirmed by node identity, or a unique address suggestion with confirm true. Review must prove the session's node identity before issuing a token.",
           "properties": {
             "profile_id": {
               "type": ["string", "null"]
+            },
+            "confirm": {
+              "type": "boolean",
+              "description": "Review must confirm this address-suggested connection's own node identity."
+            },
+            "note": {
+              "type": "string",
+              "description": "Explanation displayed under an enabled action."
             },
             "self": {
               "type": "boolean"

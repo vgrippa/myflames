@@ -1744,7 +1744,7 @@ Local `audit purge` has its separate confirmation contract.
   `topology_identity`, rejects a top-level `group` argument, and saves imported
   profiles with `group: ""`. `topology_identity` is never accepted from
   `/api/profiles/save` or `/api/connections/import` and is never returned in
-  reports; it is written only for the connection in use after a direct read of
+  reports; it is written for the connection in use after a direct read of
   that connection (`connection_groups.finish_read` calling
   `connection_groups.identity_from_report` and
   `WorkspaceStore.record_topology_identity(profile_id, identity, expected=current)`),
@@ -1765,6 +1765,20 @@ Local `audit purge` has its separate confirmation contract.
   over 128 characters and `source_uuids` lists with more than 32 entries (or an
   entry over 128 characters) are refused (clearing that inspected field), never
   truncated, and an identity write error never fails the status read.
+  Existing consenting group probes also record the probed profile's own node
+  identity through `finish_read`, with `expected=profile`: MySQL's
+  `server_uuid` from that probe's `SHOW GLOBAL VARIABLES`, or Galera/PXC's
+  `wsrep_node_uuid` from `SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'` on the
+  same connection. A peer's membership table, reported address, ProxySQL or
+  Readyset backend UUID never supplies this evidence. `GroupScope` keeps the
+  endpoint snapshot and identity as private attributes of its read outcome;
+  they are not fields in the serialized report. Before persisting them,
+  `finish_read` rechecks the active profile and each peer's current group
+  membership; the store rechecks the observed endpoint. Cached probes retain
+  their existing fingerprint, attempt registry, `PROFILE_READ_LIMIT` and
+  `PROFILE_BUDGET_S` rules. Recording adds no probe, never retries a cached
+  login and does not expand automatic refresh or ungrouped reads. Connections
+  excluded by the existing topology candidate filter remain unprobed.
   `POST /api/profiles/group` (`ui._profile_response` ->
   `WorkspaceStore.assign_profile_group(profile_ids, group)`, in
   `_WORKSPACE_PATHS`) validates `group` with `validate_group` (`""` clears the
@@ -1853,6 +1867,13 @@ Local `audit purge` has its separate confirmation contract.
   `"Server for this tab"`, `rebindMember`), and refuses Run, Explain and Run
   analysis until a current member is chosen. Tests:
   `apps/workspace/test/group-connections.mjs`.
+
+  Every editor request that names `connection.group_name` rechecks the stored
+  profile's membership in `_connection_facts`, including runs on an already
+  open tab session. A removed member refuses with
+  `This saved connection is outside the current connection group.` before
+  any statement or password lookup, as a fresh saved login does. A typed
+  password cannot bypass that check.
 
   `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
   allowlist) opens a connection group as one Group connection:
@@ -4751,25 +4772,48 @@ Privilege evaluation has one hook (`_action_privileges`) and still fills
 check disabled the action; that earlier reason and fix keep precedence.
 
 `target` has `self: boolean, member_name: string | null`, and, in a Group
-connection, `profile_id: string | null`. Group member actions route through
-that member's saved connection. Catalog routing requires matching recorded
-`server_uuid` on MySQL or `wsrep_node_uuid` (the observed `wsrep_gcomm_uuid`)
-on Galera, current group membership, and a saved password for another member.
-The active member can use its request password (typed or saved); its live
-identity is sufficient without an earlier recording. More than one current
-group profile claiming the same member UUID disables the action with no route,
-even if one profile has no saved password or is the active member. The reason
-names all conflicting saved connections, for example
+connection, `profile_id: string | null`, with optional `confirm: boolean` and
+`note: string`. Group member actions route through that member's saved
+connection. A recorded `server_uuid` on MySQL or `wsrep_node_uuid` (the observed
+`wsrep_gcomm_uuid`) on Galera confirms the route. The profile must currently
+belong to the group and have a saved password for another member. The active
+member can use its request password (typed or saved); its live identity is
+sufficient without an earlier recording.
+
+Stored identity evidence takes precedence over addresses. More than one
+current group profile claiming the same member UUID disables the action with
+no route, even if one profile has no saved password or is the active member.
+The reason names all conflicting saved connections, for example
 `prod-db-2 and prod-db-3 both report this member's identity.`, with the fix
-`Open each once to refresh them, or remove the stale one.` Planning and every
-apply login reject the same ambiguity without picking by store order.
-A host:port match only suggests a connection; it never selects an action route.
-When no profile has confirmed the member UUID but group profiles match the
-member's address, the disabled action says
-`No saved connection in this group is confirmed as <member> yet.` and
-`Open <saved names> once to confirm it.` (or `them` for several profiles).
-Without an identity match or address suggestion it keeps
-`Add a saved connection for <member> to this group.` as its reason and fix.
+`Open each saved connection to check its identity, or remove the stale one.`
+Planning and every apply login reject the same ambiguity without picking by
+store order. A confirmed profile without a saved password cannot be replaced
+by an address suggestion.
+
+Only when no stored or active-session identity confirms the member, the catalog
+checks its reported host and port against current group members' saved
+endpoints using `topology_links.match_database_endpoint` normalization,
+including its IPv6 and scoped loopback rules. Exactly one match with usable
+credentials keeps the action eligible with that `target.profile_id`,
+`target.confirm: true`, and the note
+`Review checks that prod-db-2 (db-2:3306) is this member.` The place displays
+`target.note` under an enabled action in the same muted style as disabled
+reasons and connects it with `aria-describedby`. The address only chooses the
+saved connection the user's Review click tries; it never proves identity or
+authorizes a write. A catalog-only suggestion cannot produce a write plan.
+Several address matches disable the action and name all matching profiles,
+including matches with no saved password. No identity or address match keeps
+`Add a saved connection for <member> to this group.` as the reason and fix.
+
+Catalog evaluation makes no new logins. Tier discovery deliberately skips
+known cluster-member endpoints, so Refresh cannot be offered as a way to
+confirm their saved connections. Successful existing tier probes can still
+record their own node identities before the catalog's store snapshot. On a
+Review click, planning uses the selected saved connection with the existing
+membership, endpoint, credential and policy checks, proves its own UUID and
+local-member identity, then records that identity before issuing a review
+token. A failed proof records nothing and issues no token, for example
+`prod-db-2 (db-2:3306) does not reach db-2: it reports a different server.`
 Remote grants are not inferred from the active account: planning reads
 grants on the target. MySQL Shell eligibility uses that target's SSH fields.
 Outside a Group connection, local-node SQL still requires the connected
@@ -4783,12 +4827,14 @@ identify a stored **profile**, with a saved password when it is another member, 
 `connection.group_name`. The request's own saved profile must also still
 belong to that group and its endpoint fields must be unedited. An omitted
 target in a Group connection selects its active saved member (`clusterApi.ts`
-`planClusterAction` and `sendClusterAction` send `{connection, action,
-member_key}` without `target_profile_id`, so UI requests use that active-member
-default unless a caller supplies `target_profile_id`). Invalid
+`planClusterAction` and `sendClusterAction` pass the catalog's saved member
+route as `target_profile_id` and retain it for the reviewed send; callers that
+omit it use the active-member default). Invalid
 targets in plan requests refuse with HTTP 400 before any password lookup.
 Apply refuses a target that left the group or forgot its password with an
-audited `refused` result and nothing sent. ProxySQL and
+audited `refused` result and nothing sent. The refusal route retains the
+request's `group_name` so the audit uses the group's strictest current type,
+as the review does, before any password lookup. ProxySQL and
 Readyset plan/action handlers reject the field, including null, with 400.
 The connection is constructed only from the target's stored endpoint
 fields and its own saved password, as for `replication.profile_opener`, except

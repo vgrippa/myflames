@@ -245,6 +245,7 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
         const off = !!blocked || busy || !a.enabled;
         const reasonId = `${base}-why-${i}`;
         const hasReason = !a.enabled && !!(a.why_not || a.fix || a.grant_sql || a.privileges_unreadable);
+        const note = a.enabled ? a.target?.note : undefined;
         const explanation = [...new Set([a.why_not, a.fix].filter(Boolean))].join(" ");
         const editGroup = !a.enabled && a.scope === "member" && a.target?.profile_id === null && groupName && onEditGroup
           ? () => onEditGroup(groupName) : undefined;
@@ -254,10 +255,11 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
         return (
           <Fragment key={a.id}>
             <button type="button" className={`button${a.danger ? " danger" : ""}`} title={blocked || a.description}
-              aria-disabled={off} aria-describedby={hasReason ? reasonId : undefined}
+              aria-disabled={off} aria-describedby={hasReason || note ? reasonId : undefined}
               onClick={() => { if (!off) onStart(a); }}>
               {planning === a.id ? "Reading…" : a.label}
             </button>
+            {note && <div className="cluster-action-why" id={reasonId}><p>{note}</p></div>}
             {hasReason && (
               <div className="cluster-action-why" id={reasonId}>
                 {explanation && <p>{explanation}</p>}

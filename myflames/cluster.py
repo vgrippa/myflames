@@ -2421,9 +2421,38 @@ def _member_profiles(report, member, checks):
     return list(candidates.values())
 
 
+def _member_address_profiles(report, member, checks):
+    """Saved endpoints Review may try, without logging in or proving identity.
+
+    Use the topology matcher's host, port and loopback rules. Check each
+    profile separately so duplicate addresses remain ambiguous, including
+    profiles without a saved password.
+    """
+    from .topology_links import match_database_endpoint, split_host_port
+    uuid = member.get("uuid")
+    if not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
+        return []
+    host, port = split_host_port(member.get("address"), 3306)
+    host, port = member.get("host") or host, member.get("port") or port
+    current = checks.get("current_profile") or {}
+    candidates = {}
+    for profile in checks.get("group_profiles") or ():
+        if (not isinstance(profile, dict) or not profile.get("id") or
+                profile.get("group") != checks.get("group_name")):
+            continue
+        endpoint = {"kind": "database", "profile_host": profile.get("host"),
+                    "profile_port": profile.get("port") or 3306, "ssh_host": profile.get("ssh_host")}
+        match, _ = match_database_endpoint(host, port, [endpoint], observer_host=current.get("host"))
+        if match is not None:
+            candidates[profile["id"]] = profile
+    return list(candidates.values())
+
+
 def _member_profile(report, member, checks):
-    """Fail closed on conflicting UUIDs; never choose a route by address."""
+    """Prefer confirmed identity; a unique address only chooses Review's login."""
     candidates = _member_profiles(report, member, checks)
+    if not candidates:
+        candidates = _member_address_profiles(report, member, checks)
     if len(candidates) != 1:
         return None
     profile = candidates[0]
@@ -2434,25 +2463,24 @@ def _member_profile(report, member, checks):
 
 
 def _member_route_issue(report, member, checks):
-    """Explain a missing route; address matches are suggestions only."""
+    """Explain ambiguity or missing credentials without promising extra probes."""
     candidates = _member_profiles(report, member, checks)
     if len(candidates) > 1:
         names = sorted(p.get("name") or p["id"] for p in candidates)
         return ("%s %s report this member's identity." %
                 (" and ".join(names), "both" if len(names) == 2 else "all"),
-                "Open each once to refresh them, or remove the stale one.")
+                "Open each saved connection to check its identity, or remove the stale one.")
+    if not candidates:
+        candidates = _member_address_profiles(report, member, checks)
+        if len(candidates) > 1:
+            names = sorted(p.get("name") or p["id"] for p in candidates)
+            return ("%s %s use this member's address." %
+                    (" and ".join(names), "both" if len(names) == 2 else "all"),
+                    "Keep one saved connection for this member in the group, or correct their addresses.")
     if candidates:
         return ("The saved connection %s has no saved password." % (candidates[0].get("name") or candidates[0]["id"]),
                 "Save its password before reviewing a cluster action.")
-    host, port = _split_address(member.get("address"))
-    suggestions = sorted(p.get("name") or p["id"] for p in checks.get("group_profiles") or ()
-                         if isinstance(p, dict) and p.get("id") and p.get("group") == checks.get("group_name")
-                         and host and str(p.get("host") or "").lower() == host.lower()
-                         and (port is None or str(p.get("port") or 3306) == str(port)))
     name = member.get("name") or "this member"
-    if suggestions:
-        return ("No saved connection in this group is confirmed as %s yet." % name,
-                "Open %s once to confirm %s." % (" and ".join(suggestions), "it" if len(suggestions) == 1 else "them"))
     fix = "Add a saved connection for %s to this group." % name
     return fix, fix
 
@@ -2657,6 +2685,11 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     issue = target_issue
     if grouped:
         action["target"]["profile_id"] = profile.get("id") if profile else None
+        if profile and scope == "member" and not _member_profiles(report, target, checks):
+            from .topology_links import format_endpoint
+            action["target"].update(confirm=True, note="Review checks that %s (%s) is this member." %
+                                    (profile.get("name") or profile["id"],
+                                     format_endpoint(profile.get("host") or "127.0.0.1", profile.get("port") or 3306)))
         if target and profile is None:
             issue = _member_route_issue(report, target, checks)
         if scope == "member" and not member.get("local"):
@@ -2867,12 +2900,16 @@ def target_server_identity(report):
     return {"server_uuid": (report.get("server") or {}).get("server_uuid")}
 
 
-def _check_member_target(report, member):
+def _check_member_target(report, member, target):
     """A Group member action must be local by identity, never by host:port."""
     own = next(iter(target_server_identity(report).values()), None)
     if (not member or not member.get("local") or not isinstance(own, str) or not _UUID.fullmatch(own)
             or own != member.get("uuid")):
-        raise ValueError("The saved connection does not reach the selected cluster member. Refresh and review again.")
+        from .topology_links import format_endpoint
+        endpoint = target["endpoint"]
+        server = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
+        raise ValueError("%s does not reach %s: it reports a different server." %
+                         (server, (member or {}).get("name") or "the selected member"))
 
 
 def plan_action(report, action, member_key=None, checks=None, target=None):
@@ -2894,10 +2931,15 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
     if selected is None:
         raise ValueError("That change is not offered for this member now. Refresh and try again.")
     if target is not None and selected["scope"] == "member":
-        _check_member_target(report, next((m for m in _members(report) if m.get("key") == member_key), None))
+        _check_member_target(report, next((m for m in _members(report) if m.get("key") == member_key), None), target)
     if not selected["enabled"]:
         raise ActionUnavailable(" ".join(text for text in
                                         (selected["why_not"], selected["fix"], selected["grant_sql"]) if text))
+    if selected["target"].get("confirm"):
+        # An address suggestion is catalog-only. The caller must reopen the
+        # saved target and supply its binding; that fresh local identity then
+        # replaces the suggestion before any write plan can be produced.
+        raise ValueError("Review this action through the member's saved connection to confirm its identity.")
     if selected["scope"] == "overview":
         member_key = local["key"]
     checks = checks or {}

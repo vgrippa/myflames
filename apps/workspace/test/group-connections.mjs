@@ -55,7 +55,8 @@ const stopTemplate = clusterFixture.members[0].actions.find((a) => a.id === "sto
 const startTemplate = clusterFixture.members[0].actions.find((a) => a.id === "start_member");
 
 /** Synthetic Group catalog: db-2's topology address deliberately matches an
- * unrelated saved connection, while its confirmed route is p-ic-2. */
+ * unrelated saved connection, while its confirmed route is p-ic-2. Once db-3
+ * joins the group, its address suggestion needs identity confirmation in Review. */
 function clusterReport(connection) {
   const report = clone(clusterFixture);
   report.kind = "group_replication";
@@ -77,7 +78,9 @@ function clusterReport(connection) {
     const grouped = !!connection.group_name;
     const routed = grouped && profile.group === connection.group_name;
     const target = { self: m.local, member_name: m.name,
-      ...(grouped ? { profile_id: routed ? profile.id : null } : {}) };
+      ...(grouped ? { profile_id: routed ? profile.id : null } : {}),
+      ...(routed && i === 2 ? { confirm: true,
+        note: `Review checks that ${profile.name} (${profile.host}:${profile.port}) is this member.` } : {}) };
     const missing = `Add a saved connection for ${m.name} to this group.`;
     const reason = grouped ? (routed ? null : missing)
       : m.local ? null : "Stop Group Replication runs on the server it stops.";
@@ -203,26 +206,31 @@ const h = await open("/api/unused-group-connections", "group-connections", {
   // member switch or an automatic refresh must only ever log in to the shown
   // member (the backend re-checks the group name and membership at login).
   "/api/live/health": (body) => {
+    assert.equal(body.connection.password, "", "server picker reads never carry another member's typed password");
     healthCalls.push({ profile: body.connection?.profile_id || "", group: body.connection?.group_name || "" });
     return { status: 200, body: healthFixture };
   },
   // Editor runs never reach a server here: refused, but recorded so a tab's
   // member binding shows in the request (its profile id and the group name).
   "/api/editor/run": (body) => {
+    assert.equal(body.connection.password, "", "editor member runs never carry another member's typed password");
     editorRuns.push(body);
     return { status: 200, body: { status: "refused", message: "Runs are mocked in this suite." } };
   },
   "/api/live/cluster": (body) => {
+    assert.equal(body.connection.password, "", "Cluster member reads keep the request password empty");
     clusterCalls.push(body);
     return { status: 200, body: clusterReport(body.connection) };
   },
   "/api/live/cluster/plan": (body) => {
+    assert.equal(body.connection.password, "", "Cluster plans never carry another member's typed password");
     clusterPlans.push(body);
     const plan = stopPlan(body);
     planReplies.push(plan);
     return { status: 200, body: plan };
   },
   "/api/live/cluster/action": (body) => {
+    assert.equal(body.connection.password, "", "Cluster actions never carry another member's typed password");
     clusterSends.push(body);
     return { status: 200, body: {
       schema_version: "cluster-action-1.1", action: "stop_member", status: "done", message: "Group Replication stopped.",
@@ -583,6 +591,20 @@ try {
   assert.equal(clusterCalls.at(-1).connection.name, "Group connection mf-ic · 3 servers");
   assert.deepEqual(connectCalls.at(-1), { group_name: "mf-ic", active_member_profile_id: "p-ic-1" });
   assert.equal(await page.$(".view-inspector .cluster-edit-group"), null, "the fresh catalog has a saved route for db-3");
+  const suggestedStop = await page.$$eval(".view-inspector .review-actions > button", (buttons) => {
+    const button = buttons.find((b) => b.textContent.trim() === "Stop Group Replication…");
+    const note = document.getElementById(button.getAttribute("aria-describedby"));
+    return { disabled: button.getAttribute("aria-disabled"), note: note?.querySelector("p")?.textContent,
+      muted: note?.classList.contains("cluster-action-why") };
+  });
+  assert.deepEqual(suggestedStop, { disabled: "false",
+    note: "Review checks that db-3 (10.0.0.13:3306) is this member.", muted: true },
+    "an enabled address suggestion explains Review's identity check under its action");
+  assert.equal(await page.$$eval(".view-inspector .cluster-action-why p", (notes) =>
+    notes.filter((n) => n.textContent.startsWith("Review checks that")).length), 1,
+  "the disabled Start action does not show an enabled-action note");
+  await layoutMatrix(page, h.shots, "group-cluster-confirm-member", { frame: ".view-inspector" });
+  await page.setViewport({ width: 1440, height: 900 });
 
   // A single saved connection, even one in the same saved group, keeps the
   // original request shapes and connected-member explanation.

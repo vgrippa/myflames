@@ -2402,6 +2402,11 @@ def _connection_facts(payload, store):
         if not isinstance(profile_id, str) or len(profile_id) > 200:
             raise ValueError("Invalid connection field: profile_id")
         profile = store.get("profile", profile_id)
+    if connection.get("group_name") is not None:
+        from .connection_groups import validate_group
+        group = validate_group(connection["group_name"])
+        if not group or not isinstance(profile, dict) or profile.get("group") != group:
+            raise ValueError("This saved connection is outside the current connection group.")
     safety = dbops.connection_safety(profile, connection, store=store)
     keyed = dict(options)
     keyed["profile_id"] = profile_id or None

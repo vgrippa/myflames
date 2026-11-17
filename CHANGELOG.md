@@ -20,4 +20,6 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Cluster actions in a Group connection can review a member through a unique matching saved address. Review confirms that connection's server identity before allowing the change, without extra background logins. Group topology reads also remember identities confirmed by existing probes. Query editor tabs refuse runs after their member leaves the group, and refused Cluster actions keep the group's safety type in the audit.
+
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.

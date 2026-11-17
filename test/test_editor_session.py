@@ -1685,6 +1685,24 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(session.port, 3307)
         self.assertFalse(self.logged("tab1", "SELECT 5"))
 
+    def test_group_removal_refuses_run_on_existing_session_before_sending(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.assertEqual(self.run_sql("SELECT 1")["status"], "complete")
+        session = self.registry.get("tab1")
+        self.assertIsNotNone(session)
+        self.store.assign_profile_group([profile["id"]], "")
+        before = self.session_log()
+        with mock.patch.object(session, "start_run", wraps=session.start_run) as send, \
+                self.assertRaisesRegex(ValueError, "^This saved connection is outside the current connection group\\.$"):
+            self.run_sql("SELECT 5")
+        send.assert_not_called()
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.logged("tab1", "SELECT 5"))
+        # Cleanup does not require the revoked group route.
+        self.connection.pop("group_name")
+
     def test_gate_2_row_limit_never_kills_a_call(self):
         result = self.run_sql("CALL rows_then_write()", limit=100, wait=0)
         self.assertEqual(result["status"], "running")

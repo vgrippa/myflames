@@ -323,8 +323,9 @@ export type ClusterAction = {
   grant_sql: string | null;
   privileges_unreadable: boolean;
   /** Where the change runs. In a Group connection, profile_id is the
-   * backend's identity-confirmed saved route, or null when none is usable. */
-  target: { self: boolean; member_name: string | null; profile_id?: string | null };
+   * backend's saved route, or null when none is usable. confirm marks an
+   * address suggestion whose identity Review must prove before issuing a token. */
+  target: { self: boolean; member_name: string | null; profile_id?: string | null; confirm?: boolean; note?: string };
 };
 
 /** The member-scope actions that change only the server they run on

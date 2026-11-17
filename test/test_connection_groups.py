@@ -400,7 +400,7 @@ class TestReadConsent(GroupCase):
                 self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
                 self.assertNotIn('topology_identity', report)
 
-    def test_place_requests_scope_openers_and_write_only_current_identity(self):
+    def test_place_requests_scope_openers_and_record_only_direct_identities(self):
         """Exercise request wiring as well as the lower-level scope guards."""
         current = self.save('current', 'G', host='current-db')
         self.save('inside', 'G', host='inside.example')
@@ -440,9 +440,12 @@ class TestReadConsent(GroupCase):
                             report = ui.api_response('/api/live/' + path, {'connection': connection}, workspace)
                         self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
                         self.assertEqual([c[0][0] for c in record.call_args_list],
-                                         ['current'] if mode in ('group', 'no_group') else [])
+                                         ['current', 'inside'] if mode == 'group' else
+                                         ['current'] if mode == 'no_group' else [])
                         self.assertNotIn('topology_identity', report)
-                        self.assertNotIn('topology_identity', self.store._profile('inside'))
+                        if mode == 'group':
+                            self.assertEqual(self.store._profile('inside')['topology_identity']['server_uuid'],
+                                             '11111111-1111-1111-1111-111111111111')
                         self.assertNotIn('topology_identity', self.store._profile('outside'))
                     finally:
                         if path == 'proxysql':
@@ -504,6 +507,151 @@ class TestReadConsent(GroupCase):
                 bad['connection_group'].update(change)
                 with self.assertRaises(AssertionError):
                     validate(bad, schema)
+
+
+class TestPeerIdentityRecording(GroupCase):
+    """Own-session evidence survives the existing bounded group probes."""
+    def setUp(self):
+        super(TestPeerIdentityRecording, self).setUp()
+        self.profiles = [self.save('db-%d' % (i + 1), 'G', type='development') for i in range(3)]
+        scenario = copy.deepcopy(CF.SCENARIOS['gr-8.4-two-members'])
+        scenario['variables'].update(server_uuid=CF.SERVER_UUIDS[0], hostname='db-1')
+        scenario['tables']['performance_schema.replication_group_members'] = [
+            CF._gr_member(i, host='db-%d' % (i + 1)) for i in range(3)]
+        scenario['tables']['performance_schema.replication_group_member_stats'] = [CF._gr_stats(i) for i in range(3)]
+        self.local = CF.ScenarioConn(scenario)
+        self.peers = {p['host']: FakeProbeConn('database', hostname=p['name'], uuid=CF.SERVER_UUIDS[i],
+                                             gr_group='group', gr_members=[
+                                                 [CF.SERVER_UUIDS[j], 'db-%d' % (j + 1), '3306', 'ONLINE', 'SECONDARY']
+                                                 for j in range(3)])
+                      for i, p in enumerate(self.profiles) if i}
+        self.connection = dict(self.request(self.profiles[0]), group_name='G')
+        self.workspace = types.SimpleNamespace(store=self.store)
+        self.opened = []
+
+    def read(self):
+        def factory(**options):
+            self.opened.append(options['host'])
+            return self.local if options['host'] == self.profiles[0]['host'] else self.peers[options['host']]
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=factory):
+            return ui.api_response('/api/live/cluster', {'connection': self.connection}, self.workspace)
+
+    def test_group_cluster_read_records_both_peers_and_enables_routes_without_extra_probes(self):
+        before = {p['id']: self.store._profile(p['id'], include_updated=True) for p in self.profiles}
+        with mock.patch.object(self.store, 'record_topology_identity', wraps=self.store.record_topology_identity) as record:
+            report = self.read()
+        self.assertEqual(self.opened[0], self.profiles[0]['host'])
+        self.assertCountEqual(self.opened, [p['host'] for p in self.profiles])
+        self.assertEqual(len(tl._probe_attempts), 2)
+        for i, profile in enumerate(self.profiles):
+            after = self.store._profile(profile['id'], include_updated=True)
+            self.assertEqual(after['topology_identity']['server_uuid'], CF.SERVER_UUIDS[i])
+            after.pop('topology_identity')
+            self.assertEqual(after, before[profile['id']])
+        calls = {call.args[0]: call for call in record.call_args_list}
+        for profile in self.profiles[1:]:
+            self.assertEqual(calls[profile['id']].kwargs['expected'], profile)
+        for index in (1, 2):
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertTrue(action['enabled'], action)
+            self.assertEqual(action['target']['profile_id'], self.profiles[index]['id'])
+        # The evidence stays internal and cached reads do not open peers again.
+        self.assertNotIn('topology_identity', json.dumps(report))
+        self.assertFalse(any('identity' in read for read in report['connection_group']['read']))
+        self.read()
+        self.assertEqual(self.opened[-1], self.profiles[0]['host'])
+        self.assertCountEqual(self.opened, [p['host'] for p in self.profiles] + [self.profiles[0]['host']])
+        self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_cluster_member_endpoints_need_no_probe_and_offer_identity_check_on_review(self):
+        self.profiles = [self.store.save('profile', dict(p, host='db-%d' % (i + 1)), p['id'],
+                                       password='test-password', remember=True)
+                         for i, p in enumerate(self.profiles)]
+        self.connection = dict(self.request(self.profiles[0]), group_name='G')
+        report = self.read()
+        # Tier discovery intentionally skips the cluster's own addresses.
+        # Rendering their actions must not add any convenience logins.
+        self.assertEqual(self.opened, ['db-1'])
+        self.assertEqual(len(tl._probe_attempts), 0)
+        for index in (1, 2):
+            profile = self.profiles[index]
+            self.assertNotIn('topology_identity', self.store._profile(profile['id']))
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertTrue(action['enabled'], action)
+            self.assertEqual(action['target']['profile_id'], profile['id'])
+            self.assertIs(action['target']['confirm'], True)
+            self.assertEqual(action['target']['note'], 'Review checks that %s (%s:3306) is this member.' %
+                             (profile['name'], profile['host']))
+            validate(report, json.loads((ROOT / 'docs/schemas/cluster-1.0.json').read_text(encoding='utf-8')))
+
+    def test_wrong_backend_uuid_belongs_only_to_its_profile_and_duplicates_fail_closed(self):
+        self.peers[self.profiles[1]['host']].cfg['uuid'] = CF.SERVER_UUIDS[2]
+        report = self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.assertEqual(self.store._profile('db-1')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        for index in (1, 2):
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertFalse(action['enabled'])
+            self.assertIsNone(action['target']['profile_id'])
+            if index == 2:
+                self.assertEqual(action['why_not'], "db-2 and db-3 both report this member's identity.")
+            else:
+                self.assertEqual(action['why_not'], 'Add a saved connection for db-2 to this group.')
+        self.assertEqual(len(self.opened), 3)
+
+    def test_ungrouped_read_never_records_peer_identities_or_opens_peers(self):
+        self.store.assign_profile_group(['db-1'], '')
+        self.connection.pop('group_name')
+        self.read()
+        self.assertEqual(self.opened, [self.profiles[0]['host']])
+        for profile in self.profiles[1:]:
+            self.assertNotIn('topology_identity', self.store._profile(profile['id']))
+        self.assertEqual(len(tl._probe_attempts), 0)
+
+    def test_galera_and_pxc_record_only_the_own_gcomm_uuid(self):
+        for kind in ('galera', 'pxc'):
+            with self.subTest(kind=kind):
+                tl._reset_cache_for_tests()
+                peer = self.peers[self.profiles[1]['host']]
+                peer.cfg.update(wsrep=True, gcomm_uuid=CF.SERVER_UUIDS[1],
+                                version_comment='Percona XtraDB Cluster' if kind == 'pxc' else 'MariaDB Server',
+                                wsrep_members=[[CF.SERVER_UUIDS[2], 'other node', 'other:3306']])
+                with mock.patch.object(peer, 'run', wraps=peer.run) as run:
+                    self.read()
+                identity = self.store._profile('db-2')['topology_identity']
+                self.assertEqual(identity['wsrep_node_uuid'], CF.SERVER_UUIDS[1])
+                self.assertNotIn('server_uuid', identity)
+                self.assertEqual(sum(tl._WSREP_STATUS_SQL in call.args[0] for call in run.call_args_list), 1)
+                self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_endpoint_edit_or_group_removal_after_probe_prevents_persistence(self):
+        for change in ('endpoint', 'group', 'active_group'):
+            with self.subTest(change=change):
+                tl._reset_cache_for_tests()
+                for profile in self.profiles:
+                    self.store.save('profile', profile, profile['id'], password='test-password', remember=True)
+                original = cg.finish_read
+                def finishing(store, report, connection, profiles, current, identity=None):
+                    if change == 'endpoint':
+                        profile = self.profiles[1]
+                        store.save('profile', dict(profile, host='changed'), profile['id'], password='new', remember=True)
+                    else:
+                        store.assign_profile_group(['db-1' if change == 'active_group' else 'db-2'], '')
+                    return original(store, report, connection, profiles, current, identity)
+                with mock.patch.object(cg, 'finish_read', side_effect=finishing):
+                    self.read()
+                self.assertNotIn('topology_identity', self.store._profile('db-2'))
+
+    def test_public_read_rows_cannot_supply_identity_evidence(self):
+        current = self.profiles[0]
+        forged = {'connection_group': {'read': [dict(id='db-2', name='db-2', type='development', outcome='read',
+                                                    identity={'server_uuid': CF.SERVER_UUIDS[1]})]}}
+        cg.finish_read(self.store, forged, self.connection, self.profiles, current)
+        self.assertNotIn('topology_identity', self.store._profile('db-2'))
 
 
 class TestReviewRegressions(GroupCase):

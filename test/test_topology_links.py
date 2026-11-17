@@ -124,6 +124,8 @@ class FakeProbeConn(object):
             return batch_rows(self.cfg.get("gr_members", []))
         if "WSREP_CLUSTER_MEMBERS" in upper:
             return batch_rows(self.cfg.get("wsrep_members", []))
+        if s == topology_links._WSREP_STATUS_SQL:
+            return batch_rows([["wsrep_gcomm_uuid", self.cfg["gcomm_uuid"]]]) if self.cfg.get("gcomm_uuid") else ""
         if "SHOW REPLICA STATUS" in upper or "SHOW ALL SLAVES STATUS" in upper:
             return xml_rows(self.cfg.get("channels", []))
         if "SHOW REPLICAS" in upper or "SHOW SLAVE HOSTS" in upper:
