@@ -1668,6 +1668,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
             return refuse('refused', message)
     out['before'] = before
     generated = plan._generated
+    generated_applied = False
     try:
         for i, (sql, display) in enumerate(zip(plan._statements, plan['statements'])):
             audit = trail()
@@ -1721,6 +1722,10 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                             for line in result.split('\n') if line]
                     if rows and len(rows[0]) >= 3:
                         generated = rows[0][2]
+                # MariaDB create sets the final password in its second
+                # statement, after CREATE USER and before ACCOUNT UNLOCK.
+                if generated and (engine == 'mysql' or plan['operation'] == 'password' or i == 1):
+                    generated_applied = True
                 audit.complete('ok', outcome='sent')
                 out['sent'].append(display)
                 out['statements'].append({'index': i, 'statement': display, 'status': 'ok'})
@@ -1738,6 +1743,10 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     if out['status'] == 'partial' and plan['operation'] == 'create' and engine == 'mariadb':
         out['warnings'].append('The account was created but stays locked: set a password that the server accepts, '
                                'then unlock it, or drop it.')
+    if generated_applied:
+        # Keep the only copy available to the user even when the next login's
+        # identity guard refuses. Never attach it to an audit or after-state.
+        out['generated_password'] = generated
     if out.get('outcome') in ('identity_mismatch', 'identity_unavailable'):
         return out
     try:
@@ -1755,6 +1764,4 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                 out['warnings'].append('The after-state could not be attached to the audit record.')
     except (ConnectorError, ValueError):
         out['warnings'].append('The statements may have changed the account, but it could not be read afterwards.')
-    if generated and out['status'] in ('applied', 'partial'):
-        out['generated_password'] = generated  # Returned once; never audited or stored.
     return out

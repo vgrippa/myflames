@@ -653,34 +653,46 @@ class EditorSession(EditorInsights):
                 raise ConnectorError(problem)
             self.connection_id = _int(row.get("connection_id"))
             self.server_version = row.get("version") or ""
-            # @@version_comment decides, as everywhere else: a MariaDB server whose
-            # @@version was changed at startup still names itself there.
+            # Both version strings can be customized on MariaDB. Optional
+            # variables below supply engine evidence without an unknown-variable
+            # error, and a failed identity read must not prevent opening a tab.
             comment = row.get("version_comment")
             identity = (product_identity(self.server_version, comment) if comment
                         else identity_from_version(self.server_version))
             self.engine = identity["engine"]
-            from . import client_tools
-            client_tools.remember_server(client_tools.endpoint_key(options), self.engine, self.server_version)
             self.server_product = identity["product"]
             self.server_identity = self._identity_row(row)
-            if self.server_identity is None:
-                raise ConnectorError("The server identity could not be read; no editor statements were sent.")
-            if self.engine == "mysql":
-                # MariaDB has no server_uuid. Read MySQL's UUID only after
-                # detecting the engine, through this tab's existing session.
-                uuid_step = self._helper(TAG + "SELECT CONNECTION_ID() AS connection_id, "
-                                         "@@global.server_uuid AS server_uuid")
-                uuid_row = self._helper_row(uuid_step) if not uuid_step.real_errors() else None
-                if not uuid_row or _int(uuid_row.get("connection_id")) != self.connection_id:
-                    raise ConnectorError("The server identity could not be read; no editor statements were sent.")
-                self.server_identity["server_uuid"] = uuid_row.get("server_uuid")
-            # Validate now, so a session never starts with an unusable helper
-            # binding. MySQL uses UUID; MariaDB uses id, hostname and port.
-            from .dbops import target_session_guard
-            try:
-                target_session_guard(self.engine, self.server_identity)
-            except ValueError as exc:
-                raise ConnectorError(str(exc)) from None
+            self._kill_identity = None
+            variables_step = self._helper(TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+                                                "('server_uuid', 'wsrep_on')")
+            variable_sets = [entry for entry in variables_step.entries if entry["type"] == "rows"]
+            if (variables_step.marker and not variables_step.real_errors() and len(variable_sets) == 1 and
+                    [column["name"].lower() for column in variable_sets[0]["columns"]] ==
+                    ["variable_name", "value"]):
+                variables = {name.lower(): value for name, value in variable_sets[0]["rows"]}
+                # MySQL registers server_uuid; MariaDB does not. SHOW succeeds
+                # with no row when an optional variable is absent.
+                detected_engine = "mariadb" if "server_uuid" not in variables else self.engine
+                kill_identity = dict(self.server_identity or {})
+                if detected_engine == "mysql":
+                    kill_identity["server_uuid"] = variables.get("server_uuid")
+                elif (variables.get("wsrep_on") or "").upper() in ("ON", "1"):
+                    # Galera peers can share id, hostname and port. Bind KILL
+                    # to the node UUID, including a missing value to fail closed.
+                    node_step = self._helper(TAG + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'")
+                    node = self._helper_row(node_step) if node_step.marker and not node_step.real_errors() else None
+                    kill_identity["wsrep_gcomm_uuid"] = (node.get("Value") if node and
+                        (node.get("Variable_name") or "").lower() == "wsrep_gcomm_uuid" else None)
+                check = self._helper(TAG + "SELECT CONNECTION_ID() AS connection_id")
+                checked = self._helper_row(check) if check.marker and not check.real_errors() else None
+                if checked and self.connection_id and _int(checked.get("connection_id")) == self.connection_id:
+                    if detected_engine != self.engine:
+                        self.engine, self.server_product = detected_engine, "MariaDB"
+                    self._kill_identity = kill_identity if self.server_identity is not None else None
+                    if self.engine == "mysql" and self.server_identity is not None:
+                        self.server_identity["server_uuid"] = variables.get("server_uuid")
+            from . import client_tools
+            client_tools.remember_server(client_tools.endpoint_key(options), self.engine, self.server_version)
             self._apply_state(row)
             # The defaults file holds the password: the client has read it.
             credentials.close()
@@ -1261,7 +1273,7 @@ class EditorSession(EditorInsights):
         """
         from . import dbops
         try:
-            guard = dbops.target_session_guard(self.engine, self.server_identity)
+            guard = dbops.target_session_guard(self.engine, getattr(self, "_kill_identity", None))
         except ValueError:
             raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
         try:

@@ -253,6 +253,12 @@ def grouped_read(function):
         parent = getattr(opener, 'group_scope', None)
         pid = values.get('current_profile_id')
         current = current_profile(profiles, pid, explicit_current or getattr(opener, 'current_profile', None))
+        if current and identity is not None and '_topology_observation' not in identity:
+            # Callers without a store-issued token still retain the read's
+            # start order, just like saved-peer probes. Never re-date it when
+            # finish_read publishes the result.
+            from .workspace_store import _topology_probe_observation
+            identity['_topology_observation'] = _topology_probe_observation(current)
         scope = parent or GroupScope(profiles, current)
         if 'profiles' in values:
             values['profiles'] = members(profiles, scope.current)
@@ -444,6 +450,22 @@ def request_profiles(store, connection):
         return [], None
 
 
+def begin_read(store, current):
+    """Private identity sink with an observation reserved before the first read.
+
+    Saving optional topology evidence may fail without preventing a status
+    read. An invalid token then prevents a later save from acquiring a newer
+    timestamp for evidence that was actually collected earlier.
+    """
+    if not current:
+        return {}
+    try:
+        observation = store.begin_topology_observation()
+    except Exception:
+        observation = False
+    return {'_topology_observation': observation}
+
+
 def finish_read(store, report, connection, profiles, current, identity=None):
     """Persist direct observations only; suggestions never cause a login."""
     reads = (report.get('connection_group') or {}).get('read') or []
@@ -451,7 +473,8 @@ def finish_read(store, report, connection, profiles, current, identity=None):
                                           connection.get('ssh_host') or connection.get('host'), identity=identity)
     if current:
         try:
-            store.record_topology_identity(current['id'], identity_from_report(report, identity), expected=current)
+            store.record_topology_identity(current['id'], identity_from_report(report, identity), expected=current,
+                                            observation=(identity or {}).get('_topology_observation'))
         except Exception:
             # Saving non-secret evidence is best effort, just like reading it.
             pass

@@ -1114,6 +1114,48 @@ class AccountsTest(unittest.TestCase):
             self.assertNotIn(generated, json.dumps(self.store.audit_records()))
             self.assertIsNone(plan._generated)
 
+    def test_mariadb_generated_create_password_survives_a_later_identity_refusal(self):
+        # Use the real planner, executor, guard classification and redaction.
+        # Only the SQL connection's server answers are synthetic.
+        for code, outcome in ((1242, 'identity_mismatch'), (1142, 'identity_unavailable')):
+            for refused_index in (0, 1, 2):
+                with self.subTest(code=code, refused_index=refused_index):
+                    self.conn = FakeConn('mariadb', exists=False)
+                    plan = self.plan('create', random_password=True)
+                    generated = plan._generated
+                    calls = []
+
+                    def execute(sql, extra_flags=None, timeout=None):
+                        calls.append(sql)
+                        if len(calls) - 1 == refused_index:
+                            raise ConnectorError('mysql client exited 1: ERROR %d (42000) at line 1: '
+                                                 'The identity check refused this login' % code)
+                        if len(calls) == 1:
+                            self.conn.exists, self.conn.locked = True, True
+                        elif len(calls) == 2:
+                            self.assertIn('SET PASSWORD FOR', sql)
+                            self.assertIn(generated, sql)
+                        return ''
+
+                    self.conn.run_stdin = execute
+                    result = self.apply(plan)
+                    self.assertEqual(len(calls), refused_index + 1)
+                    self.assertEqual(result['status'], 'refused' if refused_index == 0 else 'partial')
+                    self.assertEqual(result['outcome'], outcome)
+                    self.assertEqual([s['status'] for s in result['statements']],
+                                     ['ok'] * refused_index + ['not_sent'] * (3 - refused_index))
+                    if refused_index == 2:
+                        self.assertEqual(result['generated_password'], generated)
+                    else:
+                        self.assertNotIn('generated_password', result)
+                    self.assertNotIn(generated, json.dumps(self.store.audit_records()))
+                    self.assertNotIn(generated, json.dumps(plan))
+                    self.assertIsNone(plan._generated)
+                    self.assertFalse(plan._passwords)
+                    self.assertFalse(plan._statements)
+                    with self.assertRaises(ValueError):
+                        self.apply(plan)
+
     def test_timeout_is_unknown_and_audit_failure_sends_nothing(self):
         plan = self.plan('lock')
         self.conn.run_stdin = mock.Mock(side_effect=ConnectorError('Query timed out after 30s; the outcome is unknown.'))

@@ -28,8 +28,17 @@ This file lists the changes merged since the last release. Add an entry under [U
 - In a Group connection, **Users and roles**, Kill, Variables and replication skips re-check group membership and the group's strictest write policy at every login. A removed member or a changed policy refuses the earlier review, including when a password was typed. Every review expires if the group is deleted and recreated, even with the same name and members.
 - Opening a Group connection re-checks both the active member and each probed member before every login. Removing either member, changing its saved address or recreating the group prevents later logins under the old consent. A stored server identity can no longer be overwritten by an older in-flight or cached probe.
 - Query editor Stop and Close confirm the server on the connection sending `KILL QUERY` before interrupting a statement. If the server cannot be confirmed, no KILL is sent. A tab whose member left its group can still roll back, stop and close its existing session to release locks, while new statements stay refused.
+- Query editor Stop and Close on MariaDB Galera also confirm the node UUID, preventing an interrupt from reaching another node with the same server name, id and port.
 
 ### Bug fixes
+
+- Query editor tabs open when optional server identity variables cannot be read, including MariaDB with custom version strings. If the required identity is unavailable, Stop and Close report that the server could not be confirmed before sending an interrupt.
+- Users and roles returns a generated password when MariaDB accepted it but a later identity check prevented unlocking the new account. The password is shown once and is never recorded in the audit.
+- MySQL Shell exception messages containing text such as `at STDIN:1` no longer supply a false error location. An error without Shell's own call-site line keeps an unknown outcome and still reads the cluster for visible partial changes.
+
+- In a Group connection, a running replication skip loop no longer disappears when the Server: control shows another member: the banner stays, names the server the loop runs on, and Stop still reaches it, and the sidebar's loop badge stays while the loop runs.
+
+- **Cluster**: on a Group connection the cluster-wide actions now offer **Edit group…** and the group-limited **Use <connection>** link like the member actions, and a topology card's Use suggestion names only the group's members. Testing or saving a connection from Home no longer sends the stored group to the server.
 
 - Cluster, **Users and roles**, Kill, Variables and replication skip actions whose identity check cannot run now report the server's reason and record that the identity was unavailable. A different server still reports an identity mismatch.
 

@@ -1716,7 +1716,7 @@ are bound too, with read-only permitted for the donor read.
 Accounts and the Query editor retain their own bounded review
 registries and confirmation contracts.
 
-Kill, Variables and replication skip connections are opened through
+Kill, Variables, replication skip, ProxySQL and Readyset connections are opened through
 `ui._group_guarded_connection`. Its `conn._login_guard` re-reads the active
 member's saved endpoint, current membership, group generation and, for a
 reviewed send, effective write policy before transport setup and every client
@@ -1813,6 +1813,17 @@ Local `audit purge` has its separate confirmation contract.
 ### Profiles
 
 Group member write requests recheck saved membership, the active profile and the group's strictest policy at transport setup and immediately before every client login, including background jobs and helper connections; a local refusal is audited through `_group_login_refusal`.
+
+Every live read that opens a database client for a request carrying
+`connection.group_name` installs the read form of the same guard, without a
+reviewed write identity. This includes
+Server views, replication status, full analysis, schema catalog and structure,
+object search, table columns, readiness, connection tests and legacy capture
+jobs (including their script and cancellation clients). A member removed or
+moved, an edited saved endpoint, or a recreated group refuses the next login
+even when the same request already completed an earlier client invocation.
+Read consent does not bind the group's write policy; making a member read-only
+does not revoke an otherwise consenting read.
 
 `python3 -m myflames profiles list [--json]`, `profiles set NAME [--type production|development] [--read-only | --read-write]`, `profiles forget NAME`,
   `profiles delete NAME` manage workspace connection profiles and their saved
@@ -1930,7 +1941,7 @@ Group member write requests recheck saved membership, the active profile and the
   reports; it is written for the connection in use after a direct read of
   that connection (`connection_groups.finish_read` calling
   `connection_groups.identity_from_report` and
-  `WorkspaceStore.record_topology_identity(profile_id, identity, expected=current)`),
+  `WorkspaceStore.record_topology_identity(profile_id, identity, expected=current, observation=token)`),
   only while the stored profile still matches `_same_endpoint(expected, stored)`
   (an endpoint edit in flight or on save drops `topology_identity`), without
   changing `updated` or `secret_ref`. `identity_from_report` records no identity
@@ -1959,8 +1970,16 @@ Group member write requests recheck saved membership, the active profile and the
   older than or equal to the one already recorded, so an in-flight or cached
   probe cannot overwrite a newer direct read. `begin_topology_observation()`
   reserves a store-bound sequence before a waiting read; pass that token as
-  `observation` to `record_topology_identity`. Calls without a token reserve
-  one on entry. Sequences survive reopening the store, foreign-store tokens
+  `observation` to `record_topology_identity`. Direct workspace reads and
+  routed Cluster action plans call `connection_groups.begin_read` before
+  collecting identity. Its private `_topology_observation` sink reaches
+  `finish_read`, never the JSON report; overlapping reads that finish in
+  reverse order retain the identity of the newer start. Readers without a
+  store-issued token retain their monotonic start through `grouped_read`, as
+  probes do. A failed reservation permits the read but prevents publishing
+  its evidence with a later timestamp. Calls without a token reserve one on
+  entry to the record operation, so callers of waiting reads must retain a
+  start token. Sequences survive reopening the store, foreign-store tokens
   are refused, and replayed tokens change nothing. Probe ordering and store
   sequences live in the private `topology_observations` table, leaving profile
   timestamps and public identity fields unchanged. Across processes, where a
@@ -2841,12 +2860,19 @@ planner, write gate and session engine from the CLI.
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
 - Identity: startup reads connection id, version, hostname, port and server id
-  through the tab's persistent session. After detecting MySQL, it reads
-  `SELECT CONNECTION_ID() AS connection_id, @@global.server_uuid AS server_uuid`
-  in that same session and requires the connection id to match and the UUID
-  to be valid. MariaDB has no server UUID and uses server id, hostname and
-  port instead. An identity that cannot build a guard refuses startup before
-  any user statement. Later identity probes include the MySQL UUID.
+  through the tab's persistent session, then reads optional `server_uuid` and
+  `wsrep_on` with `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)`.
+  A successful read without `server_uuid` identifies MariaDB even when both
+  version strings are customized. MySQL uses the UUID; MariaDB uses server id,
+  hostname and port, plus `wsrep_gcomm_uuid` from `SHOW GLOBAL STATUS` when
+  `wsrep_on` is ON. A final `SELECT CONNECTION_ID()` must still match before
+  binding this identity to KILL helpers. Optional identity errors, a changed
+  id or incomplete identity leave the tab open for reads. Stop and Close's
+  helper refuses KILL with "The server could not be confirmed" when its
+  required identity is unavailable; a missing or changed Galera node UUID
+  cannot fall back to the shared id, hostname and port. The KILL binding is
+  separate from the write identity. Later write probes include the MySQL UUID.
+  Regression tests: `test/test_editor_session_identity.py`.
 - Framing: a random client delimiter is set once (`DELIMITER __mf<hex>_`);
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
@@ -5619,18 +5645,22 @@ unknown. A statement exception maps
 to `ERROR <n> at line <l>: <message>` only when stderr supplies a call location,
 using the MySQL Shell number, the MySQL number, or 0 when neither is present.
 MySQL Shell appends that location in `mysqlshdk/scripting/types.cc:717` and
-`mysqlshdk/scripting/polyglot/utils/polyglot_error.cc:438`. The last stderr
+`mysqlshdk/scripting/polyglot/utils/polyglot_error.cc:438`. Only a physical
+line consisting of ` at STDIN:<line>` (with optional `:<column>`, spaces or
+tabs and a CRLF terminator) supplies a location. The last such stderr
 location takes precedence over embedded text; only that physical line and
 its immediately preceding line supply the exception message and number.
 Blank and progress lines are preserved when deciding adjacency, so earlier
-echoed server text cannot be promoted into the exception. The location's
-line is preferred over its predecessor; the last number within the chosen
+echoed server text cannot be promoted into the exception. The immediately
+preceding exception supplies its message; the last number within that
 exception line wins. NOTE, WARNING and INFO lines cannot supply a location;
 Unicode separators inside a line do not create extra output lines. Stdout is
 progress and cannot supply a location or an
 exception number. Without a location, a numbered or
 typed exception retains its message with the statement location and outcome
 unknown; no line 1 is invented and no identity mismatch is inferred.
+An exception message containing `at STDIN:1` without a standalone call-site
+line stays unlocated and cannot suppress the after-read.
 Since one AdminAPI call can fail after
 some steps ran, `verify_on_error` reads the cluster again and reports partial
 when the before/after comparison shows a visible change. That read also runs
@@ -5677,6 +5707,13 @@ and a fresh read that supersedes the displayed catalog).
 
 ### ProxySQL
 
+Group connection reads, plans, fresh apply reads, reviewed sends and after
+reads use `ui._group_guarded_connection`. Each client login rechecks current
+group consent. Apply also binds the reviewed connection identity and effective
+write policy. If membership changes during pending-audit preparation, the
+send is refused locally, its statements remain `not_sent`, and the pending
+audit record finishes as `refused` / `changed` without starting a write client.
+
 After a reviewed action completes (including an unknown outcome), the workspace
 stops pending digest reads and clears cached routing before refreshing the main
 report. A separate digest revision triggers a fresh read when Query digests is
@@ -5712,6 +5749,13 @@ A row change refuses while the module has other changes in memory (LOAD would ap
 `myflames/reviewed_writes.py` and `apps/workspace/src/ActionReview.tsx`. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or when the client printed an error with no line, before it read any statement (it could not connect or log in; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action` or `cluster_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
 
 ### Readyset
+
+Group connection status, explain-cache, cache export and plan reads use the
+read consent guard; reviewed actions use the same per-login check with the
+reviewed connection identity and effective policy. Revocation during audit
+preparation starts no write client and finishes the pending audit record as
+`refused` / `changed`, with every reviewed statement `not_sent`. The guard also
+covers each fresh apply read and the read after an accepted send.
 
 The Readyset place reads a Readyset SQL adapter (`3307`) or Admin SQL (`6036`) listener (`myflames/readyset.py`, `myflames/topology_links.py`, `docs/schemas/readyset-1.0.json`; checked against the Readyset source at `6d2adde9b0`, `public/readyset-adapter`, `public/readyset-sql-parsing`, `public/nom-sql` and `public/replicators`, and live on `public.ecr.aws/readyset/readyset:latest-stable` behind ProxySQL 3.0.11 and in front of MySQL 8.4 GTID primary/replica in `scripts/readyset-matrix.sh`).
 
@@ -5768,6 +5812,7 @@ Backend `myflames/privileges.py` (the one SHOW GRANTS parser, `has`, `requiremen
   CLI account show/grant commands diagnose a missing MariaDB user that matches a role and suggest `--role`; `show --json` adds `role_hint` to its missing-account result. Denied role reads do not assert that a role exists. MySQL roles share the account namespace and need no extra probe. Regression coverage: `test/test_accounts_cli.py`.
 - `POST /api/accounts/plan {connection, operation, user, host, role?, ...}` (`account-plan-1.0`): reads only. `operation` create, drop, rename (`new_user` or `new_name`, `new_host`), lock, unlock, expire, password (`password` or `random_password`, MySQL `current_password` for REPLACE), grant and revoke (`privileges[]`, `level` global|database|table|column|routine|proxy, `database`, `table`, `columns[]`, `routine`, `kind`, `pattern`, `proxy {name, host}`, `grant_option`), roles (`mode` grant|revoke|default, `roles[] {name, host}`, `admin_option`, `special` ALL|NONE), options (`limits`, `expire`, `password_options`). `password` is accepted only for create and password and never echoed. Response: `schema_version, plan_id (= change_set_id), operation, request (the non-secret request), name, host, role, engine, version, account, action, before (account-1.0), expect, connection_identity, actor, actor_server, statements[] (passwords as '[redacted]'), warnings[], guards {blocked[], typed_name, self_lockout, protected, after_management}, privileges (the can() answer for the actor), effects {sessions[], definers[], warnings[]} (drop, rename), dependencies[] (granted roles), generates_password, classification, policy {action, tone, title, text, connection_type, read_only}, status ready|blocked`. Plans live on the workspace server as `_account_plans` (request and redacted statements only, no secret; 30 minutes, 200 at most per server, single use). Non-server callers of the plan helpers use a separate fallback store. Apply claims the plan atomically before opening a connection; a missing typed name restores it with its original expiry. Policy refusals leave it usable.
 - `POST /api/accounts/apply {connection, plan_id, expect, confirmed, typed_name?, password?, current_password?}` (`account-change-1.0`, in `ui._WRITE_PATHS`): `dbops.gate` on the connection's policy first (account changes are risky: a read-only connection refuses and nothing is opened, Production and Development need `confirmed: true`; the refusal is audited and returned with `audit_id`), then the saved password, then a fresh account fingerprint is compared with both `expect` and the reviewed fingerprint before rebuilding the plan. On a Group connection, consent and the group's strictest policy are re-read from the store right before the password lookup, right after it, at every client login (`conn._login_guard`, raising `ProfileReadError`), and right before the first statement (`accounts.apply`'s `before_send`): a member removed from the group or made Read-only in between gets an audited `refused` with outcome `changed` and nothing sent; a refusal after an earlier accepted statement reports `partial`. A typed password does not skip the membership check (`connection_with_saved_password` checks it before returning). A dropped or newly created account, or revoked privileges that invalidate planning, returns `status: stale` with audit `status: refused, outcome: stale`. Drift during a failed rebuild is checked again; unchanged invalid input remains an error. Rebuilt statements must equal the reviewed ones; `accounts.apply` then re-checks the connection identity, server version and identity, actor (`read_privileges`), every granted role's fingerprint, the account against `expect`, the rename destination, the guards and the privilege answer, and sends each statement with `connector.run_stdin` (stdin, `dbops.WRITE_CLIENT_FLAGS`, `--skip-reconnect`, empty temporary HOME, allowlisted environment), stopping at the first error. Response: `schema_version, change_set_id, operation, account, status, message, statements[] {index, statement, status ok|denied|refused_by_server|interrupted|unknown|not_sent, error, message}, before, after, diff {added[], removed[], levels, attributes_before/after, defaults_before/after, exists_before/after}, warnings[], audit_ids[], generated_password (once, MySQL RANDOM PASSWORD or the MariaDB generated one)`. Statuses: `applied`, `partial` (a later statement failed; a MariaDB create that stopped at SET PASSWORD leaves the account locked), `refused`, `needs_confirmation`, `needs_typed_name` (the plan stays usable), `stale`, `denied`, `refused_by_server`, `interrupted`, `unknown`. One `AuditTrail` record per statement (operation `accounts.<operation>`, `target.change_set_id`); refusals one finished record; a cancelled sheet calls `/api/audit/declined`. Server text is kept only for errors that never quote the statement (`accounts._SAFE_ERROR_TEXT`), redacted; others by number.
+- Generated passwords: once a password-setting statement succeeds, apply returns `generated_password` even when a subsequent identity guard refuses and the outcome is partial. On MariaDB create, this means SET PASSWORD succeeded before ACCOUNT UNLOCK was refused; the password is still returned while the account stays locked. A refusal before the password-setting statement succeeds returns no generated password. The plan is consumed and its private password and SQL fields are cleared; the returned secret is never added to audit records or after-state reads. Regression tests: `test/test_accounts.py`.
 - Workspace batch review (`Accounts.tsx`, `accountsApi.ts`): compact compatible edits into groups and plan every group sequentially, retaining errors beside their group. One sheet lists every exact statement, warning and guard; an error or blocked plan disables Apply until fixed or removed. Typed-name fields are deduplicated by account. Apply re-plans each group immediately before its one-shot apply, using that fresh plan's `plan_id` and `expect`; it re-checks the connection before planning and sending. New statements, warnings or typed/self-lockout guards stop the batch for another review. Stop at the first refusal, partial result, failure or lost response; show every group's applied/failed/not-sent status, then refresh the list, selected account and privilege model. Earlier groups are not rolled back. Cancel, Escape and removal each post one declined audit per planned group; backend apply retains per-statement audit records. Browser suite `accounts.mjs` and its `--unit` adapter tests cover batch ordering, fresh fingerprints, per-group errors, cancel audits and stopping.
 
 - Statements (one account, one level, one role per statement; tag `/*myflames:accounts*/`): names backquoted with doubled backquotes (MariaDB roles without host, `PUBLIC` bare); database grants escape `_`, `%` and `\` unless `pattern` (MySQL with `partial_revokes` ON matches literally and refuses patterns); privileges from the allowlist per engine, version and level (MySQL dynamic names from `SHOW PRIVILEGES`); passwords are doubled-quote literals inside the statement's own `NO_BACKSLASH_ESCAPES` session (`_with_password_mode`, restored after; verified live with a password ending in a backslash on all five servers with the mysql 8.0 client), NUL and line breaks refused. MySQL: `CREATE USER a IDENTIFIED BY 'x' | RANDOM PASSWORD [ACCOUNT LOCK]`, `ALTER USER a IDENTIFIED BY ... [REPLACE 'current']` (binary log: the hash, checked live). MariaDB New user: `CREATE USER a ACCOUNT LOCK`, `SET PASSWORD FOR a = PASSWORD('x')` (binary log: the hash), `ALTER USER a ACCOUNT UNLOCK`; with an active `PASSWORD VALIDATION` plugin (`information_schema.PLUGINS`) the first step is `CREATE USER a IDENTIFIED BY '<32-character random>' ACCOUNT LOCK` because the plugin refuses an empty password with 1819 (live on 10.11 and 11.4 with simple_password_check: the binary log shows only the temporary password, the typed one is validated by SET PASSWORD, a weak one leaves the account locked). Every MariaDB password plan warns that only the binary log is protected (the general and slow logs keep the typed text, checked live). Default roles: MySQL `ALTER USER a DEFAULT ROLE ...`, MariaDB `SET DEFAULT ROLE r FOR a` (one role or NONE).

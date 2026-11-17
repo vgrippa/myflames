@@ -1756,7 +1756,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         self.assertEqual(self.workspace.jobs.payloads[-1]['query'], 'SELECT 1')
         for path in ('/api/live/top', '/api/live/running', '/api/live/explain-connection'):
             with self.subTest(path=path), mock.patch.object(ui, '_discover_response',
-                                                            side_effect=lambda p, payload: payload) as discover:
+                                                            side_effect=lambda p, payload, **kwargs: payload) as discover:
                 payload = self.call(path, {'connection': self.connect(profile_id), 'limit': 5})
                 self.assertEqual(payload['connection']['password'], self.PASSWORD)
                 self.assertEqual(payload['limit'], 5)

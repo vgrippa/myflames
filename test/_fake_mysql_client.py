@@ -180,6 +180,11 @@ class Client(object):
                                             "Lost connection to MySQL server during query'" % line)
             return
         upper = text.upper()
+        if upper == "SHOW GLOBAL VARIABLES WHERE VARIABLE_NAME IN ('SERVER_UUID', 'WSREP_ON')":
+            rows = ([["server_uuid", "11111111-2222-3333-4444-555555555555"]] if ENGINE == "mysql" else
+                    [["wsrep_on", "OFF"]])
+            self.result(statement, ["Variable_name", "Value"], rows)
+            return
         if "CONNECTION_ID() AS CONNECTION_ID" in upper:
             names = re.findall(r"\bAS (\w+)", text)
             if "in_transaction" in names and ENGINE == "mysql":

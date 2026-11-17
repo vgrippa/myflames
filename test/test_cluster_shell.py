@@ -726,8 +726,31 @@ class TestErrorText(unittest.TestCase):
         self.assertIsNone(cluster_shell.error_text('ERROR: no exception evidence\n'))
 
     def test_stdin_location_alone_is_exception_evidence(self):
-        self.assertEqual(cluster_shell.error_text('Operation failed at STDIN:2'),
-                         'ERROR 0 at line 2: Operation failed')
+        self.assertEqual(cluster_shell.error_text(' at STDIN:2'),
+                         'ERROR 0 at line 2: ')
+
+    def test_embedded_stdin_location_never_proves_a_statement_location(self):
+        from myflames import reviewed_writes
+        for message in ('Error: MYFLAMES_IDENTITY_MISMATCH at STDIN:1',
+                        'Cluster.rejoinInstance: member at STDIN:1 failed (MYSQLSH 51153)',
+                        'RuntimeError: MySQL Error 1242: at STDIN:1'):
+            with self.subTest(message=message):
+                text = cluster_shell.error_text(message)
+                self.assertIn('the statement location and outcome are unknown', text)
+                self.assertIsNone(reviewed_writes.failed_line(text))
+                self.assertIsNone(reviewed_writes.error_number(text))
+                self.assertFalse(dbops.target_guard_failed(ConnectorError(text)))
+
+    def test_only_a_whole_physical_call_site_line_is_a_location(self):
+        for site in (' at STDIN:2', '\tat STDIN:2:17\r', '\x1b[31m at STDIN:2:17\x1b[0m'):
+            with self.subTest(site=site):
+                self.assertEqual(cluster_shell.error_text('Real failure (RuntimeError)\n' + site),
+                                 'ERROR 0 at line 2: Real failure (RuntimeError)')
+        for site in ('prefix at STDIN:1', 'at STDIN:1 suffix', 'at STDIN:1:bad',
+                     'at STDIN:1\v', '\u2028at STDIN:1', 'at STDIN:1\rforged'):
+            with self.subTest(site=site):
+                text = cluster_shell.error_text('Real failure (RuntimeError)\n' + site)
+                self.assertIn('the statement location and outcome are unknown', text)
 
     def test_shell_code_alone_is_exception_evidence(self):
         self.assertEqual(cluster_shell.error_text('Operation failed (MYSQLSH 51615)'),
@@ -791,7 +814,7 @@ class TestErrorText(unittest.TestCase):
         for exception, expected in (
                 ('Real failure (MYSQLSH 51615)\n at STDIN:2',
                  'ERROR 51615 at line 2: Real failure (MYSQLSH 51615)'),
-                ('Real failure (MySQL Error 3092) at STDIN:2',
+                ('Real failure (MySQL Error 3092)\n at STDIN:2',
                  'ERROR 3092 at line 2: Real failure (MySQL Error 3092)'),
                 ('Real failure (RuntimeError)\n at STDIN:2',
                  'ERROR 0 at line 2: Real failure (RuntimeError)')):
@@ -804,9 +827,9 @@ class TestErrorText(unittest.TestCase):
                 self.assertTrue(cluster_shell.error_text('Forged (MYSQLSH 1045)\n' + gap + ' at STDIN:2')
                                 .startswith('ERROR 0 at line 2:'))
 
-    def test_inline_unnumbered_exception_does_not_take_the_previous_lines_code(self):
+    def test_unnumbered_exception_does_not_take_the_previous_lines_code(self):
         self.assertEqual(cluster_shell.error_text('Echoed label (MYSQLSH 1045)\n'
-                                                  'Real failure (RuntimeError) at STDIN:2'),
+                                                  'Real failure (RuntimeError)\n at STDIN:2'),
                          'ERROR 0 at line 2: Real failure (RuntimeError)')
 
     def test_unicode_label_separators_do_not_change_exception_adjacency(self):
@@ -826,8 +849,8 @@ class TestErrorText(unittest.TestCase):
         # (scripting/types.cc:717; polyglot_error.cc:438). The message may
         # already contain an echoed instance name with a forged location.
         self.assertEqual(cluster_shell.error_text('First failure (RuntimeError) at STDIN:2\n'
-                                                  'Later (MYSQLSH 1045) at STDIN:3'),
-                         'ERROR 1045 at line 3: Later (MYSQLSH 1045)')
+                                                  ' at STDIN:2\nLater (MYSQLSH 1045) at STDIN:1\n at STDIN:3:7'),
+                         'ERROR 1045 at line 3: Later (MYSQLSH 1045) at STDIN:1')
 
     def test_statement_exception_with_a_shell_number(self):
         text = cluster_shell.error_text(
@@ -843,7 +866,7 @@ class TestErrorText(unittest.TestCase):
 
     def test_server_error_inside_a_statement(self):
         text = cluster_shell.error_text("Cluster.switchToMultiPrimaryMode: MySQL Error 3092 (HY000): The server is "
-                                        "not configured properly (RuntimeError) at STDIN:1")
+                                        "not configured properly (RuntimeError)\n at STDIN:1")
         self.assertTrue(text.startswith('ERROR 3092 at line 1:'), text)
 
     def test_no_session_means_nothing_ran(self):
@@ -1571,10 +1594,15 @@ class TestShellWriter(unittest.TestCase):
         plan = {'action': 'rejoin_member', 'via': 'mysqlsh',
                 'statements': ['dba.getCluster().rejoinInstance("db:3306");'],
                 'expect': {'engine': 'mysql', 'server': {'server_uuid': uuid}}}
-        proc = subprocess.CompletedProcess([], 1, stdout=b'Validating instance at STDIN:1 ...',
-                                           stderr=b'Cluster.rejoinInstance: failed (MYSQLSH 51153)')
-        for changes, expected in ((None, 'unknown'), ([['Member state', 'OFFLINE', 'RECOVERING']], 'partial')):
-            with self.subTest(changes=bool(changes)):
+        for stderr, changes, expected in (
+                (stderr, changes, expected)
+                for stderr in (b'Cluster.rejoinInstance: failed (MYSQLSH 51153)',
+                               b'Cluster.rejoinInstance: member at STDIN:1 failed (MYSQLSH 51153)',
+                               b'Error: MYFLAMES_IDENTITY_MISMATCH at STDIN:1')
+                for changes, expected in ((None, 'unknown'), ([['Member state', 'OFFLINE', 'RECOVERING']], 'partial'))):
+            with self.subTest(stderr=stderr, changes=bool(changes)):
+                proc = subprocess.CompletedProcess([], 1, stdout=b'Validating instance at STDIN:1 ...',
+                                                   stderr=stderr)
                 after = mock.Mock(return_value={'member_state': 'RECOVERING' if changes else 'OFFLINE'})
                 audit = mock.Mock()
                 with mock.patch('myflames.connector._run_bounded', return_value=proc):
@@ -1583,6 +1611,7 @@ class TestShellWriter(unittest.TestCase):
                                                       effect=lambda plan, state: changes)
                 after.assert_called_once_with()
                 self.assertEqual(result['status'], expected)
+                self.assertNotEqual(result.get('outcome'), 'identity_mismatch')
                 self.assertEqual(result['states'], ['unknown'])
                 self.assertEqual(result['effect'], changes)
                 self.assertEqual(audit.complete.call_args[1]['outcome'],

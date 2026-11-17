@@ -1159,8 +1159,9 @@ class WorkspaceStore:
     def begin_topology_observation(self):
         """Reserve a start sequence shared by every instance of this store.
 
-        Call before a read that can wait. A direct record without a token
-        reserves one on entry, before reading or changing the profile.
+        Call before collecting server evidence and retain this token until
+        publication. A record without a token reserves one on entry to this
+        store operation; that fallback cannot order overlapping server reads.
         """
         conn = self._transaction()
         try:

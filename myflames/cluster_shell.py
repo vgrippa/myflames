@@ -50,7 +50,7 @@ from .connector import ConnectorError
 #: Errors MySQL Shell prints when it cannot open its first session: nothing ran.
 #: (2006 and 2013, a lost connection, are left out: a session may have run.)
 CONNECT_ERRORS = (1044, 1045, 1130, 2002, 2003, 2005, 2026, 2059, 2061)
-_STDIN_LINE = re.compile(r"\bat STDIN:(\d+)\b")
+_STDIN_LINE = re.compile(r"[ \t]*at STDIN:([0-9]+)(?::[0-9]+)?[ \t]*\r?")
 _SHELL_CODE = re.compile(r"\(MYSQLSH (\d+)\)")
 _MYSQL_CODE = re.compile(r"MySQL Error (\d+)")
 _ANSI = re.compile(r"(?:\x1b|\\u001[bB]|\\x1[bB])\[[0-9;?]*[ -/]*[@-~]")
@@ -151,16 +151,16 @@ def error_text(stderr, stdout=""):
     text = _ANSI.sub("", stderr or "")
     # Split physical output lines only. Unicode separators in an echoed
     # server label must not change which exception is next to a call site.
-    raw_lines = [" ".join(raw.split()) for raw in text.split("\n")]
+    physical_lines = text.split("\n")
+    raw_lines = [" ".join(raw.split()) for raw in physical_lines]
     lines = [line for line in raw_lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
     if not lines:
         return None
     # mysql-shell/mysqlshdk/scripting/types.cc:717 appends the location;
     # scripting/polyglot/utils/polyglot_error.cc:438 appends backtrace sites.
     # Keep the last stderr site, never one from stdout progress.
-    locations = [(index, match) for index, line in enumerate(raw_lines)
-                 if not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)
-                 for match in _STDIN_LINE.finditer(line)]
+    locations = [(index, match) for index, line in enumerate(physical_lines)
+                 for match in [_STDIN_LINE.fullmatch(line)] if match]
     where = int(locations[-1][1].group(1)) if locations else None
     if locations:
         index = locations[-1][0]
@@ -175,9 +175,9 @@ def error_text(stderr, stdout=""):
     exception = any(re.search(r"\(\w+Error\)|^\w*Error:", line) for line in candidates)
     if where is None and shell_code is None and mysql_code is None and not exception:
         return None
-    # An inline exception belongs to the location's own line, even when it
-    # has no number. A bare call site instead takes its adjacent exception.
-    message = candidates[0] if locations and not re.match(r"^at STDIN:\d+\b", candidates[0]) else None
+    # Only a standalone call site proves a location. Exception text can echo
+    # arbitrary server labels, including embedded "at STDIN:1" strings.
+    message = candidates[-1] if locations else None
     if message is None:
         message = next((line for line in candidates if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
     if message is None:
@@ -186,7 +186,7 @@ def error_text(stderr, stdout=""):
     # A wrapped exception can carry several numbers; its final cause wins.
     message_codes = [match for pattern in (_SHELL_CODE, _MYSQL_CODE) for match in pattern.finditer(message)]
     code = int(max(message_codes, key=lambda match: match.start()).group(1)) if message_codes else 0
-    message = _STDIN_LINE.sub("", message).strip()
+    message = ("" if _STDIN_LINE.fullmatch(message) else message).strip()
     message = re.sub(r"^ERROR:\s*", "", message)
     if (where is None and shell_code is None and code in CONNECT_ERRORS and not exception and
             re.match(r"^MySQL Error %d\b" % code, message)):

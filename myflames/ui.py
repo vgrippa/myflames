@@ -58,7 +58,6 @@ def _discover_response(path, payload, workspace=None):
     sessions.py, innodb_status.py, error_log.py, cluster.py, proxysql.py, readyset.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
     config_review.py; the schema picker's list is perf_common.schema_catalog)."""
     from .live import connection_options
-    from .connector import MySQLConnection
     from . import discover
     if path == "/api/live/ddl-progress":
         from .ddl_progress import check_ids
@@ -96,9 +95,10 @@ def _discover_response(path, payload, workspace=None):
         if payload.get("schema"):
             schemas = check_schemas([payload.get("schema")] + list(schemas or ()))
     if path == "/api/live/report":
-        return _report_response(payload, options, schemas)
+        return _report_response(payload, options, schemas, workspace)
     try:
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, payload.get("connection"),
+                                       getattr(workspace, "store", None)) as conn:
             if path == "/api/live/index-suggestion":
                 from .index_hint import read_suggestion
                 return read_suggestion(conn, payload.get("digest"), payload.get("schema"))
@@ -162,9 +162,9 @@ def _discover_response(path, payload, workspace=None):
                         "current_profile": current}, profiles, current
 
             if path in ("/api/live/cluster", "/api/live/proxysql", "/api/live/readyset"):
-                from .connection_groups import finish_read
+                from .connection_groups import begin_read, finish_read
                 t_args, profiles, current = _topo_args()
-                identity = {}
+                identity = begin_read(getattr(workspace, "store", None), current)
                 if path == "/api/live/cluster":
                     from .cluster import attach_topology_tiers, read_status, with_actions
                     report = read_status(conn, _identity=identity)
@@ -258,11 +258,10 @@ def _discover_response(path, payload, workspace=None):
         _reraise_redacted(exc, password)
 
 
-def _report_response(payload, options, schemas):
+def _report_response(payload, options, schemas, workspace=None):
     """The Full analysis (report.analysis_report): one run per connection at
     a time; an identical request while one runs waits for it and gets the
     same report (report.run_single_flight)."""
-    from .connector import MySQLConnection
     from .perf_common import ALL_SCHEMAS_TABLE_LIMIT
     from . import report as report_module
     password = options.get("password")
@@ -276,7 +275,7 @@ def _report_response(payload, options, schemas):
     settings = (interval, tuple(schemas or ()), limit)
 
     def work():
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, connection, getattr(workspace, "store", None)) as conn:
             return report_module.analysis_report(conn, interval, schemas=schemas, require_choice_above=limit)
     try:
         return report_module.run_single_flight(key, settings, work)
@@ -629,9 +628,8 @@ def _bulk_kill_response(payload, workspace):
     }
 
 
-def _table_columns_response(payload):
+def _table_columns_response(payload, workspace=None):
     from .live import connection_options
-    from .connector import MySQLConnection
     options = connection_options(payload.get("connection"))
     schema = payload.get("schema")
     table = payload.get("table")
@@ -644,7 +642,7 @@ def _table_columns_response(payload):
            "FROM information_schema.COLUMNS "
            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
            "ORDER BY ORDINAL_POSITION" % (perf_common.literal(schema), perf_common.literal(table)))
-    with MySQLConnection(**options) as conn:
+    with _group_guarded_connection(options, payload.get("connection"), getattr(workspace, "store", None)) as conn:
         rows = conn.query_rows(sql)
         cols = []
         for r in rows:
@@ -1282,15 +1280,15 @@ def _replication_response(path, payload, workspace):
     from . import dbops, replication as rp
     if path == "/api/live/replication":
         from .live import connection_options
-        from .connector import MySQLConnection
         options = connection_options(payload.get("connection"))
         options["query_timeout"] = 30
         try:
-            with MySQLConnection(**options) as conn:
+            with _group_guarded_connection(options, payload.get("connection"),
+                                           getattr(workspace, "store", None)) as conn:
                 # Source versions: the relay log, else a matching saved connection
                 # (opened at most once per process for the same settings and password).
                 conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
-                from .connection_groups import finish_read, members, request_profiles
+                from .connection_groups import begin_read, finish_read, members, request_profiles
                 store = getattr(workspace, 'store', None)
                 profiles, current = request_profiles(store, conn_in)
                 pid = current['id'] if current else None
@@ -1301,7 +1299,7 @@ def _replication_response(path, payload, workspace):
                                                    group_name=conn_in.get('group_name'), connection=conn_in)
                     else:
                         opener = rp.profile_opener(store, pid, current)
-                identity = {}
+                identity = begin_read(store, current)
                 report = rp.read_status(conn, source_versions=True, profiles=members(profiles, current),
                                         open_profile=opener,
                                         replica_host=rp.reached_host(options),
@@ -1544,17 +1542,29 @@ def _connection_test_report(conn, options, password):
     return result
 
 
-def _test_connection_response(payload):
+def _test_connection_response(payload, workspace=None):
     """Test a connection and return server identity plus a bounded database list."""
     from .live import connection_options
-    from .connector import MySQLConnection
     options = connection_options(payload.get("connection"))
     password = options.get("password")
     try:
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, payload.get("connection"), getattr(workspace, "store", None)) as conn:
             return _connection_test_report(conn, options, password)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, password)
+
+
+def _readiness_response(payload, workspace):
+    """Read readiness with the same per-login consent as other server views."""
+    from . import readiness
+    from .live import connection_options
+    options = connection_options(payload.get("connection"))
+    options.update(query_timeout=readiness.TIMEOUT, connect_timeout=readiness.TIMEOUT)
+    try:
+        with _group_guarded_connection(options, payload.get("connection"), getattr(workspace, "store", None)) as conn:
+            return readiness.read_readiness(conn)
+    except (ValueError, ConnectorError) as exc:
+        _reraise_redacted(exc, options.get("password"))
 
 
 #: Group connection probes (POST /api/connect with probe_members: true): at
@@ -1929,17 +1939,16 @@ def _accounts_response(path, payload, workspace):
             editor_session.invalidate_privileges(workspace)
 
 
-def _catalog_response(payload, path="/api/live/catalog"):
+def _catalog_response(payload, path="/api/live/catalog", workspace=None):
     """catalog-1.0 for the schema browser, or table-structure-1.0 for Table
     structure; the password never reaches an error."""
     from .live import connection_options
-    from .connector import MySQLConnection
     from .schema_browser import catalog_report, check_table, table_structure
     prefix, after = check_table(payload.get("prefix")), check_table(payload.get("after"))
     options = connection_options(payload.get("connection"))
     options["query_timeout"] = 30
     try:
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, payload.get("connection"), getattr(workspace, "store", None)) as conn:
             if path == "/api/live/table-structure":
                 return table_structure(conn, payload.get("schema"), payload.get("table"))
             return catalog_report(conn, payload.get("schema"), payload.get("table"),
@@ -1949,17 +1958,16 @@ def _catalog_response(payload, path="/api/live/catalog"):
         _reraise_redacted(exc, options.get("password"))
 
 
-def _object_search_response(payload):
+def _object_search_response(payload, workspace=None):
     """object-search-1.0 for the command palette: one bounded information_schema
     read with a 2-second budget; the password never reaches an error."""
     from .live import connection_options
-    from .connector import MySQLConnection
     from .schema_browser import check_search, object_search
     text = check_search(payload.get("text"))
     options = connection_options(payload.get("connection"))
     options["query_timeout"] = 2
     try:
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, payload.get("connection"), getattr(workspace, "store", None)) as conn:
             return object_search(conn, text)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, options.get("password"))
@@ -2266,14 +2274,18 @@ def _action_response(path, payload, workspace):
         return options
 
     def guarded_connection(options):
-        conn = MySQLConnection(**options)
         if routed:
+            conn = MySQLConnection(**options)
             conn._login_guard = current_target
             conn._group_login_started = False
-        return conn
+            return conn
+        return _group_guarded_connection(options, connection, workspace.store,
+                                         identity=None if planning else identity)
 
     if planning:
         options = open_options()
+        from .connection_groups import begin_read
+        observation = begin_read(workspace.store, target_profile).get("_topology_observation")
         try:
             with guarded_connection(options) as conn:
                 plan = _action_plan(kind, module, conn, payload, target=binding,
@@ -2282,7 +2294,8 @@ def _action_response(path, payload, workspace):
                 current_target()
                 live_identity = plan["expect"]["target"]["server_identity"]
                 try:
-                    workspace.store.record_topology_identity(target_profile["id"], live_identity, expected=target_profile)
+                    workspace.store.record_topology_identity(target_profile["id"], live_identity,
+                                                              expected=target_profile, observation=observation)
                 except Exception:
                     raise ValueError("Could not save the target server's identity. Nothing was sent. "
                                      "Try reviewing the action again.") from None
@@ -2350,6 +2363,11 @@ def _action_response(path, payload, workspace):
         raise
     except reviewed_writes.Refusal as exc:
         return reviewed_writes.refused(out, str(exc), exc.outcome, audit, expect, progress)
+    except ProfileReadError as exc:
+        audit_id = _group_login_refusal(audit, statements, exc, expect)
+        result = reviewed_writes.refused(out, str(exc), "changed", target=expect, progress=progress)
+        result["audit_id"] = audit_id
+        return result
     except (ValueError, ConnectorError) as exc:
         if progress is not None:
             progress.fail()
@@ -2658,7 +2676,12 @@ def api_response(path, payload, workspace=None):
             return _session_capture_response(payload, workspace)
         if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS:
             payload = _with_saved_password(payload, workspace)
-        if path == "/api/live/start": return workspace.jobs.start(payload)
+        if path == "/api/live/start":
+            from .accounts_api import _group_login_guard
+            guard = _group_login_guard(getattr(workspace, "store", None), payload.get("connection"))
+            if guard is not None:
+                return workspace.jobs.start(payload, login_guard=guard)
+            return workspace.jobs.start(payload)
         if path in ("/api/live/status", "/api/live/cancel"):
             from . import dbops
             connection = payload.get("connection")
@@ -2669,10 +2692,9 @@ def api_response(path, payload, workspace=None):
                 job.cancel()
             return job.snapshot()
         if path == "/api/live/readiness":
-            from .readiness import response
-            return response(payload)
+            return _readiness_response(payload, workspace)
         if path == "/api/connection/test":
-            return _test_connection_response(payload)
+            return _test_connection_response(payload, workspace)
         if path == "/api/live/kill/prepare":
             return _kill_prepare(payload, workspace)
         if path == "/api/live/kill":
@@ -2682,24 +2704,21 @@ def api_response(path, payload, workspace=None):
         if path == "/api/live/kill/bulk":
             return _bulk_kill_response(payload, workspace)
         if path == "/api/live/table-columns":
-            return _table_columns_response(payload)
+            return _table_columns_response(payload, workspace)
         if path in _REPLICATION_PATHS:
             return _replication_response(path, payload, workspace)
         if path in _CATALOG_PATHS:
-            return _catalog_response(payload, path)
+            return _catalog_response(payload, path, workspace)
         if path in _OBJECT_SEARCH_PATHS:
-            return _object_search_response(payload)
+            return _object_search_response(payload, workspace)
         if path in _VARIABLE_PATHS:
             return _variable_response(path, payload, workspace)
         if path in _ACTION_PATHS:
             return _action_response(path, payload, workspace)
         if path == _ACTION_PROGRESS_PATH:
             return _action_progress(workspace).get(payload.get("progress_id"))
-        if path in ("/api/live/readyset", "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches",
-                    "/api/live/proxysql", "/api/live/cluster"):
-            return _discover_response(path, payload, workspace=workspace)
         if path in _SERVER_VIEW_PATHS:
-            return _discover_response(path, payload)
+            return _discover_response(path, payload, workspace=workspace)
         raise ValueError("Unknown workspace operation.")
     if path.startswith("/api/teach/"):
         from .teach import (LESSONS, CURRICULUM, LESSON_FAMILIES, _FAMILY_LABELS,
