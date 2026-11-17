@@ -659,6 +659,22 @@ class EditorSession(EditorInsights):
             self.server_identity = self._identity_row(row)
             if self.server_identity is None:
                 raise ConnectorError("The server identity could not be read; no editor statements were sent.")
+            if self.engine == "mysql":
+                # MariaDB has no server_uuid. Read MySQL's UUID only after
+                # detecting the engine, through this tab's existing session.
+                uuid_step = self._helper(TAG + "SELECT CONNECTION_ID() AS connection_id, "
+                                         "@@global.server_uuid AS server_uuid")
+                uuid_row = self._helper_row(uuid_step) if not uuid_step.real_errors() else None
+                if not uuid_row or _int(uuid_row.get("connection_id")) != self.connection_id:
+                    raise ConnectorError("The server identity could not be read; no editor statements were sent.")
+                self.server_identity["server_uuid"] = uuid_row.get("server_uuid")
+            # Validate now, so a session never starts with an unusable helper
+            # binding. MySQL uses UUID; MariaDB uses id, hostname and port.
+            from .dbops import target_session_guard
+            try:
+                target_session_guard(self.engine, self.server_identity)
+            except ValueError as exc:
+                raise ConnectorError(str(exc)) from None
             self._apply_state(row)
             # The defaults file holds the password: the client has read it.
             credentials.close()
@@ -1218,13 +1234,11 @@ class EditorSession(EditorInsights):
                 kill_options = dict(options)
                 kill_options["query_timeout"] = KILL_TIMEOUT
                 kill_options["binary"] = self._checked_helper_binary()
-                with MySQLConnection(**kill_options) as control:
-                    control.run(TAG + "KILL QUERY %d" % connection_id, extra_flags=list(_write_flags()),
-                                timeout=KILL_TIMEOUT)
+                self._send_kill(kill_options, connection_id)
                 with self.lock:
                     step.kill_sent_at = time.monotonic()
                 return "sent", None
-            except ConnectorError as exc:
+            except (ConnectorError, ValueError) as exc:
                 text = str(exc)
                 password = options.get("password")
                 if password:
@@ -1232,6 +1246,26 @@ class EditorSession(EditorInsights):
                 with self.lock:
                     self._note("KILL QUERY failed: " + text)
                 return "failed", text
+
+    def _send_kill(self, options, connection_id):
+        """Guard the helper's own login before it can kill this tab's id.
+
+        A successful probe on another connection cannot authorize a KILL
+        behind a router. Batch mode and no reconnect stop at the guard error.
+        """
+        from . import dbops
+        try:
+            guard = dbops.target_session_guard(self.engine, self.server_identity)
+        except ValueError:
+            raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
+        try:
+            with MySQLConnection(**options) as control:
+                control.run("\n".join(guard + [TAG + "KILL QUERY %d" % connection_id]),
+                            extra_flags=list(_write_flags()) + ["--skip-reconnect"], timeout=KILL_TIMEOUT)
+        except ConnectorError as exc:
+            if dbops.target_guard_failed(exc):
+                raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
+            raise
 
     # -- state ----------------------------------------------------------------------------
 
@@ -1258,7 +1292,7 @@ class EditorSession(EditorInsights):
         keys = ("connection_id", "version", "hostname", "port", "server_id")
         if row is None or any(row.get(key) in (None, "") for key in keys):
             return None
-        return {key: row[key] for key in keys}
+        return {key: row[key] for key in keys + (("server_uuid",) if "server_uuid" in row else ())}
 
     def _probe(self):
         """Re-read the actual session, never return the startup identity cache.
@@ -1267,7 +1301,8 @@ class EditorSession(EditorInsights):
         Call only while holding run_lock, before a run, never between its units.
         """
         step = self._helper(TAG + "SELECT CONNECTION_ID() AS connection_id, VERSION() AS version, "
-                                  "@@hostname AS hostname, @@port AS port, @@server_id AS server_id")
+                                  "@@hostname AS hostname, @@port AS port, @@server_id AS server_id" +
+                            (", @@global.server_uuid AS server_uuid" if self.engine == "mysql" else ""))
         if not step.marker or self.ended or step.real_errors():
             return None
         return self._identity_row(self._helper_row(step))
@@ -1890,10 +1925,8 @@ class EditorSession(EditorInsights):
                 kill = dict(kill_options)
                 kill["query_timeout"] = KILL_TIMEOUT
                 kill["binary"] = self._checked_helper_binary()
-                with MySQLConnection(**kill) as control:
-                    control.run(TAG + "KILL QUERY %d" % self.connection_id, extra_flags=list(_write_flags()),
-                                timeout=KILL_TIMEOUT)
-            except ConnectorError:
+                self._send_kill(kill, self.connection_id)
+            except (ConnectorError, ValueError):
                 pass
         self._terminate()
         if self._conn is not None:
@@ -3873,7 +3906,7 @@ def api_response(path, payload, workspace, fill_password=None):
             # cleanup of the tab's existing session, so it uses that
             # session's own authenticated run options instead.
             run = session.run
-            full = dict(run.options) if run is not None else None
+            full = dict(run.options) if run is not None and run.options is not None else None
         result = session.stop(full, force=payload.get("force") is True)
         if full and full.get("password") and result.get("message"):
             result["message"] = result["message"].replace(full["password"], "[redacted]")

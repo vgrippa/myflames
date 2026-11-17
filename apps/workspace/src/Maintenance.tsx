@@ -781,7 +781,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     const known = new Set(memoryRef.current.jobs.map((b) => b.report.id));
     const from = pConnection(p);
     try {
-      const checked = policy ? await policy.check() : from;
+      const checked = policy ? await policy.check(from) : from;
       if (!live() || connectionKey(checked) !== p.key) throw new Error("The connection or its write policy changed. Nothing was started. Run the preflight and confirm again.");
       // Python rebuilds the complete preflight on a fresh connection before
       // starting. An old local plan is also reviewed again explicitly.

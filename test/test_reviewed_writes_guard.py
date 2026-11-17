@@ -183,6 +183,53 @@ class GuardTests(unittest.TestCase):
                                        lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual((out['status'], out['states']), ('unknown', ['unknown', 'unknown']))
 
+    def test_guard_read_errors_are_unavailable_instead_of_mismatches(self):
+        for code, message in [(1142, "SELECT command denied to user 'monitor' for table 'global_status'"),
+                              (1146, "Table 'performance_schema.global_status' doesn't exist")]:
+            with self.subTest(code=code):
+                plan = self.plan()
+                error = 'ERROR %d (42000) at line 1: %s' % (code, message)
+                after = mock.Mock()
+                out = reviewed_writes.execute(Writer(error), plan, lambda: copy.deepcopy(plan), 'test',
+                                               audit=self.audit(), read_after=after)
+                self.assertEqual((out['status'], out['outcome'], out['sent']),
+                                 ('refused', 'identity_unavailable', []))
+                self.assertEqual(out['states'], ['not_sent', 'not_sent'])
+                self.assertIn('The identity check could not run: ' + message, out['message'])
+                self.assertNotIn('not the one you reviewed', out['message'])
+                after.assert_not_called()
+                record = next(r for r in self.records() if r['id'] == out['audit_id'])
+                self.assertEqual((record['status'], record['outcome'], record['error_code']),
+                                 ('refused', 'identity_unavailable', code))
+
+    def test_galera_null_reviewed_node_identity_is_unavailable_before_sending(self):
+        for engine, identity in [('mysql', MYSQL), ('pxc', MYSQL), ('mariadb', MARIA)]:
+            with self.subTest(engine=engine):
+                plan = self.plan(engine, dict(identity, wsrep_gcomm_uuid=None))
+                plan['expect']['kind'] = 'pxc' if engine == 'pxc' else 'galera'
+                writer, after = Writer(), mock.Mock()
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test',
+                                               audit=self.audit(), read_after=after)
+                self.assertEqual((out['status'], out['outcome'], writer.writes),
+                                 ('refused', 'identity_unavailable', []))
+                self.assertIn('Galera node UUID', out['message'])
+                self.assertNotIn('enable performance_schema', out['message'])
+                after.assert_not_called()
+
+    def test_guard_unavailable_diagnostic_redacts_password_and_ignores_sql_echo(self):
+        plan = self.plan()
+        secret = 'fixture-guard-secret'
+        error = ("mysql client exited 1: --------------\nALTER USER app IDENTIFIED BY '%s';\n--------------\n"
+                 "ERROR 1142 (42000) at line 1: SELECT denied for '%s'" % (secret, secret))
+        writer = Writer(error)
+        writer.password = secret
+        out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
+        self.assertEqual((out['status'], out['outcome']), ('refused', 'identity_unavailable'))
+        self.assertIn('The identity check could not run: SELECT denied', out['message'])
+        self.assertNotIn(secret, repr(out))
+        self.assertNotIn('ALTER USER', out['message'])
+        self.assertNotIn(secret, repr(self.records()))
+
     def test_real_connector_sends_guard_on_stdin_without_force_or_reconnect(self):
         plan = self.plan()
         reply = subprocess.CompletedProcess([], 1, stdout=b'', stderr=MISMATCH.encode('utf-8'))

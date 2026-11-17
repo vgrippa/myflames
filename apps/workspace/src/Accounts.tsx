@@ -169,7 +169,7 @@ function AccountsListView({ connection, disabled = false, onBack, selection, rep
     const key = reads.key;
     operation.current = true; setBusy("Preparing review…"); setError("");
     try {
-      const checked = await policy!.check();
+      const checked = await policy!.check(connection);
       if (!mounted.current || reads.currentKey() !== key || connectionKey(checked) !== key) throw new Error("The connection changed. Review this account on the connection in use.");
       if (checked.read_only) throw new Error("This connection is read-only.");
       const via = { connection: { ...checked }, key, label: connectionLabel(checked) };
@@ -209,7 +209,7 @@ function AccountsListView({ connection, disabled = false, onBack, selection, rep
     operation.current = true; setBusy("Applying account changes…"); setError("");
     try {
       const outcomes = await applyAccountGroups(r.via.connection, r.groups, typedNames, async () => {
-        const checked = await policy!.check();
+        const checked = await policy!.check(connection);
         if (!mounted.current || reads.currentKey() !== r.via.key || connectionKey(checked) !== r.via.key)
           throw new Error("The connection changed.");
         if (checked.read_only) throw new Error("This connection is read-only.");

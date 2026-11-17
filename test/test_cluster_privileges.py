@@ -354,6 +354,37 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
         self.assertIn('GRANT could not be built because partial_revokes could not be read', action['why_not'])
         self.assertIn('quorum', action['fix'])
 
+    def test_schema_grants_before_partial_revokes_use_wildcard_escaping(self):
+        missing = [(('INSERT',), 'data_%', False)]
+        for engine, version in [('mysql', '5.7.44'), ('mysql', '8.0.0'), ('mysql', '8.0.15'),
+                                ('percona', '5.7.44-48'), ('mysql', '8.0.15-Percona'),
+                                ('mariadb', '10.11.16-MariaDB'), ('mariadb', '11.4.13-MariaDB')]:
+            with self.subTest(engine=engine, version=version):
+                report = {'engine': engine, 'server_version': version}
+                model = m._grant_model(report, {'checked': True, 'account': ACCOUNT,
+                                               'grants': [statement(['USAGE'])], 'partial_revokes': None})
+                self.assertIsNotNone(model)
+                self.assertIs(model['grant_partial_revokes'], False)
+                suggestion = m._grant_sql(missing, model['account'], model['grant_partial_revokes'])
+                self.assertEqual(suggestion, 'GRANT INSERT ON `data\\_\\%`.* TO `monitor`@`%`;')
+                parsed = privileges.parse_grants([suggestion], engine, version)
+                self.assertIs(privileges.has(parsed, 'INSERT', 'database', database='data_%'), True)
+                self.assertIsNot(privileges.has(parsed, 'INSERT', 'database', database='dataXX'), True)
+
+    def test_schema_grant_setting_stays_unknown_on_failed_or_supported_version_reads(self):
+        for version in ('8.0.16', '8.0.36', '8.4.11', '', '8.0'):
+            with self.subTest(version=version):
+                report = {'engine': 'mysql', 'server_version': version}
+                grants = {'checked': True, 'account': ACCOUNT, 'grants': [statement(['USAGE'])],
+                          'partial_revokes': None}
+                model = m._grant_model(report, grants)
+                self.assertIsNone(model['grant_partial_revokes'])
+                self.assertIsNone(m._grant_sql([(('INSERT',), 'data_%', False)], ACCOUNT,
+                                               model['grant_partial_revokes']))
+        for engine, version in [('mysql', '5.7.44'), ('mysql', '8.0.15'), ('mariadb', '11.4.13')]:
+            self.assertIsNone(m._grant_model({'engine': engine, 'server_version': version},
+                                             {'checked': False, 'error': 'read failed'}))
+
     def test_current_user_quoting_never_changes_the_account(self):
         cases = [("o'reilly@%", "`o'reilly`@`%`"), ('back\\slash@host%', '`back\\slash`@`host%`'),
                  ('tick`user@::1', '`tick``user`@`::1`'), ('user@2001:db8::42', '`user`@`2001:db8::42`'),

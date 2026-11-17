@@ -217,6 +217,7 @@ type RefreshRun = {
 };
 /** One view's read for Refresh all: the same parameters and request as its own Refresh. */
 type RefreshTask = {
+  connection: Connection;
   view: ServerKind;
   label: string;
   params: string;
@@ -284,6 +285,7 @@ export function Server({
   onNavigatePlace,
   picker,
   connection,
+  topologyConnection = connection,
   disabled,
   settings,
   initial,
@@ -329,6 +331,8 @@ export function Server({
   onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
+  /** Shared Cluster and Replication reports belong to the window's connection. */
+  topologyConnection?: Connection;
   /** A Group connection (one connection group as one connection): the
    * Server: control and the member's name, address and role, drawn in every
    * view's header (kit.tsx ViewServerContext). Choosing a member switches
@@ -455,6 +459,8 @@ export function Server({
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
   latestConnection.current = connection;
+  const latestTopologyConnection = useRef(topologyConnection);
+  latestTopologyConnection.current = topologyConnection;
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
   useEffect(() => {
@@ -939,10 +945,13 @@ export function Server({
     const live = <T,>(b: Bound<T> | null) => (b && b.key === key ? b.report : null);
     const tasks: RefreshTask[] = [];
     const add = (view: ServerKind, params: string, path: string, body: (c: Connection) => object, accept: (b: Bound<never>) => void | boolean) => {
+      const via = view === "cluster" || view === "replication" ? latestTopologyConnection.current : latestConnection.current;
+      const readKey = connectionKey(via);
       // The view's own read still on its way is joined, never replaced.
-      const own = lastViewRead(view, key);
-      const joined = own && readRunning(key, own.params) ? own : null;
+      const own = lastViewRead(view, readKey);
+      const joined = own && readRunning(readKey, own.params) ? own : null;
       tasks.push({
+        connection: via,
         view,
         label: ALL_SERVER_VIEWS.find((v) => v.id === view)?.label || READ_LABELS[view] || view,
         params: joined ? joined.params : params,
@@ -1054,7 +1063,7 @@ export function Server({
     // Existing individual reads occupy worker slots too. Join them before
     // starting new requests, otherwise a held Locks read plus three sampling
     // reads would exceed the global budget.
-    return tasks.sort((a, b) => Number(readRunning(key, b.params)) - Number(readRunning(key, a.params)) || order_(a.view) - order_(b.view));
+    return tasks.sort((a, b) => Number(readRunning(connectionKey(b.connection), b.params)) - Number(readRunning(connectionKey(a.connection), a.params)) || order_(a.view) - order_(b.view));
   }
   /** Refresh every Server section of the connection in use; a second call while one runs does nothing. */
   async function refreshAll() {
@@ -1093,13 +1102,16 @@ export function Server({
         // A newer read of this view (its own Refresh) wins over this one.
         const generation = nextGeneration(task.view);
         const current = task;
+        const readKey = connectionKey(current.connection);
+        const currentConnection = () => current.view === "cluster" || current.view === "replication"
+          ? latestTopologyConnection.current : latestConnection.current;
         try {
-          const result = await sharedRead(key, current.params, (signal) => current.request(c, signal), { signal: controller.signal });
+          const result = await sharedRead(readKey, current.params, (signal) => current.request(current.connection, signal), { signal: controller.signal });
           if (controller.signal.aborted) throw new DOMException("Stopped", "AbortError");
           // Refreshed only when shown: a newer read of the view (or another
           // connection) replaced this one, so its answer is dropped.
-          if (connectionKey(latestConnection.current) === key && latestGeneration(current.view) === generation) {
-            const accepted = current.accept({ key, label, report: result as never });
+          if (connectionKey(currentConnection()) === readKey && latestGeneration(current.view) === generation) {
+            const accepted = current.accept({ key: readKey, label: connectionLabel(current.connection), report: result as never });
             update(current.view, accepted === false
               ? { state: "replaced", result, report: reportOfRef.current(current.view) }
               : { state: "ok", at: new Date().toISOString(), error: undefined });
@@ -1108,7 +1120,7 @@ export function Server({
           const stopped = controller.signal.aborted || (e as Error).name === "AbortError";
           const report = reportOfRef.current(current.view);
           update(current.view, stopped ? { state: "stopped", report } : { state: "failed", error: (e as Error).message, report });
-          if (!stopped && current.view === "cluster" && connectionKey(latestConnection.current) === key) propOnClusterFailed?.(key, (e as Error).message);
+          if (!stopped && current.view === "cluster" && connectionKey(currentConnection()) === readKey) propOnClusterFailed?.(readKey, (e as Error).message);
         }
       }
     };
@@ -1456,7 +1468,7 @@ export function Server({
   const viewServer = groupServer && groupServerMember ? (
     <span className="group-server" data-member={groupServer.member}>
       <GroupServerPicker group={groupServer.group} value={groupServer.member} narrow={compact} onChoose={groupServer.onChoose} />
-      <span className="view-server-name">{groupMemberLabel(groupServerMember)}</span>
+      {!compact && groupServer.group.members.length <= 4 && <span className="view-server-name">{groupMemberLabel(groupServerMember)}</span>}
       {groupServer.note && <span className="group-server-note" role="status">{groupServer.note}</span>}
     </span>
   ) : null;

@@ -84,6 +84,16 @@ export function matchingProfile(m: ClusterMember, profiles?: Profile[]): Profile
   return profiles.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
 }
 
+/** On a Group connection, an action's reason names the saved login to use.
+ * Addresses can belong to routers or several profiles, so they cannot choose
+ * that Group action's link. */
+export function namedGroupProfile(reason: string, groupName?: string, profiles?: Profile[]): Profile | undefined {
+  if (!groupName) return undefined;
+  const named = profiles?.filter((p) => (p.group || "").trim() === groupName &&
+    reason.includes(`Connect to ${p.name} to `)) || [];
+  return named.length === 1 ? named[0] : undefined;
+}
+
 /** The engine and version a card or row names: the member's own (Group
  * Replication) or this server's (the connected node). Percona XtraDB Cluster
  * is PXC here (the summary names the product); another Galera node's version

@@ -24,7 +24,8 @@ export type QueryTab = {
   target?: TabTarget;
   /** A Group connection's member this tab runs on (its saved connection id):
    * bound from the place's Server: control when the tab was created, kept
-   * when the control moves. Absent: the connection in use. */
+   * when the control moves. A restored binding stays blocked without its
+   * group until the user explicitly rebinds it. Absent: the connection in use. */
   member?: string;
   /** The member's profile name at bind time, so a member the group no longer
    * has is still named ("not in this group any more"). */

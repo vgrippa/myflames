@@ -588,10 +588,22 @@ export const QueryLab = forwardRef<
   // The tab list, for file saves that finish after an await.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
+  // The latest runtime, updated in the same task as every change (a
+  // continuation such as Commit and close reads it before React renders).
+  const runtimeRef = useRef(runtime);
+  const tabConnection = connectionFor(tab);
+  // Async continuations resolve the same tab using the latest group and settings.
+  const resolveConnection = useRef(connectionFor);
+  resolveConnection.current = connectionFor;
+  function currentTabConnection(id: string): Connection {
+    const current = tabsRef.current.find((t) => t.id === id);
+    return current ? resolveConnection.current(current) : connectionRef.current;
+  }
   // The connection's schema list pre-fills the default-database picker (one
   // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
   // read only while the editor is on screen: a hidden editor never reads.
-  const { catalog: schemaCatalog, reloadStale: reloadStaleSchemaCatalog } = useSchemaCatalog(connection, onScreen);
+  const { catalog: schemaCatalog, reloadStale: reloadStaleSchemaCatalog } = useSchemaCatalog(tabConnection, onScreen && !groupMemberProblem(tab));
   // Back on screen, a list invalidated or replaced while the editor was
   // hidden is read or attached by useSchemaCatalog itself; an unchanged list
   // stays (each read counts tables), and opening the picker re-reads one
@@ -690,7 +702,7 @@ export const QueryLab = forwardRef<
   const [tableData, setTableData] = useState<{ connection: Connection; schema: string; table: string } | null>(null);
   // Import CSV from the Schemas panel: one import at a time, bound to the
   // connection it was opened on; its line stays under the toolbar.
-  const importCsv = useImportCsv(connection);
+  const importCsv = useImportCsv(tabConnection);
   const [job, setJob] = useState<Job | null>(null);
   // The connection the capture was started on: the server answers its status
   // and Cancel only for that connection.
@@ -834,12 +846,8 @@ export const QueryLab = forwardRef<
     mode: string;
     inSession: boolean;
   } | null>(null);
-  const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
-  // The latest runtime, updated in the same task as every change (a
-  // continuation such as Commit and close reads it before React renders).
-  const runtimeRef = useRef(runtime);
   const rt = runtime[tab.id] || blankRuntime();
-  const sessionServer = rt.sessionKey === connectionKey(connection) && !rt.session?.ended ? rt.session : null;
+  const sessionServer = rt.sessionKey === connectionKey(tabConnection) && !rt.session?.ended ? rt.session : null;
   const engine = sessionServer?.engine || privileges?.report?.engine;
   const version = sessionServer?.server_version || privileges?.report?.version || "";
   const versionParts = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
@@ -847,7 +855,7 @@ export const QueryLab = forwardRef<
     (Number(versionParts[1]) > 8 || (Number(versionParts[1]) === 8 &&
       (Number(versionParts[2]) > 0 || Number(versionParts[3]) >= 16)));
   const effectiveExplainFormat = explainFormat === "tree" && !treeAvailable ? "table" : explainFormat;
-  const analysisBinding = JSON.stringify([tab.id, tab.sql, tab.parameters, connectionKey(connection), timeout, repeat, trace, conditions]);
+  const analysisBinding = JSON.stringify([tab.id, tab.sql, tab.parameters, connectionKey(tabConnection), timeout, repeat, trace, conditions]);
   useEffect(() => { setAnalysisReview(null); }, [analysisBinding]);
   useEffect(() => {
     if (!measurePending) return;
@@ -908,7 +916,7 @@ export const QueryLab = forwardRef<
   const sheetOpener = useRef<HTMLElement | null>(null);
   useFocusScope(browserSheet, { open: narrow && onScreen && !tableData && sheet === "browser", onClose: () => setSheet(""), returnFocus: () => sheetOpener.current });
   useFocusScope(historySheet, { open: narrow && onScreen && !tableData && sheet === "history", onClose: () => setSheet(""), returnFocus: () => sheetOpener.current });
-  const showBrowser = narrow ? sheet === "browser" : layout.browser;
+  const showBrowser = !groupMemberProblem(tab) && (narrow ? sheet === "browser" : layout.browser);
   const showHistory = narrow ? sheet === "history" : layout.history;
   // The palette's object search reveals an object here (opens the pane, then
   // the browser expands the schema and focuses the row).
@@ -947,11 +955,11 @@ export const QueryLab = forwardRef<
   }
 
   useImperativeHandle(ref, () => ({
-    navigationSelection: () => ({ tabId, reveal: browserReveal?.connection === connectionKey(connection)
+    navigationSelection: () => ({ tabId, reveal: browserReveal?.connection === connectionKey(tabConnection)
       ? { connection: browserReveal.connection, schema: browserReveal.schema, table: browserReveal.table } : null }),
     restoreNavigation: (selection: QueryNavigation) => {
       const id = tabs.some((t) => t.id === selection.tabId) ? selection.tabId : tabId;
-      const reveal = selection.reveal?.connection === connectionKey(connection) ? selection.reveal : null;
+      const reveal = selection.reveal?.connection === connectionKey(currentTabConnection(id)) ? selection.reveal : null;
       setTabId(id);
       setBrowserReveal(reveal ? { ...reveal, n: ++browserRevealSerial.current } : null);
       if (reveal) {
@@ -966,7 +974,8 @@ export const QueryLab = forwardRef<
       if (tabs.some((t) => t.id === id)) setTabId(id);
     },
     openSql: (sql: string, options?: SqlOpenOptions) =>
-      options?.append && !options.indexOrigin ? appendStatement(sql) : openStatement(sql, options?.indexOrigin),
+      options?.append && !options.indexOrigin && (!options.from || options.from === connectionKey(tabConnection))
+        ? appendStatement(sql) : openStatement(sql, options?.indexOrigin, options?.from),
     closeTab: (id: string) => {
       void requestClose(id);
     },
@@ -981,7 +990,7 @@ export const QueryLab = forwardRef<
     revealInSchemaBrowser: (schema: string, table: string | null) => {
       if (narrow) setSheet("browser");
       else setLayout((l) => (l.browser ? l : { ...l, browser: true }));
-      setBrowserReveal({ connection: connectionKey(connection), schema, table, n: ++browserRevealSerial.current });
+      setBrowserReveal({ connection: connectionKey(tabConnection), schema, table, n: ++browserRevealSerial.current });
     },
   }));
   /** Save query…: the sheet asks for a name (the tab's), a folder and a note. */
@@ -994,12 +1003,39 @@ export const QueryLab = forwardRef<
     }
     setSaveFor(id);
   }
+  function openingTarget(expect?: string) {
+    if (expect !== undefined) {
+      const member = group?.members.find((m) => {
+        const via = memberConnection?.(m.profile_id);
+        return via && connectionKey(via) === expect;
+      });
+      if (!member) return expect === connectionKey(connection) ? { connection, binding: {} } : null;
+      const via = memberConnection?.(member.profile_id);
+      return via ? { connection: via, binding: { member: member.profile_id, member_name: member.profile_name } } : null;
+    }
+    const via = group && groupMember ? memberConnection?.(groupMember) : null;
+    // The Server: control's member is gone (a group change between render and
+    // click): never fall back to the window connection; the caller says the
+    // connection changed and opens nothing.
+    if (group && groupMember && !via) return null;
+    return { connection: via || connection, binding: via ? { member: groupMember, member_name: memberNameOf(groupMember) } : {} };
+  }
+  /** The error a null openingTarget shows: the target vanished mid-choice. */
+  function openingChanged() {
+    setStatus("");
+    setError("The connection in use changed, so nothing was opened. Choose it again.");
+  }
   /** Open a saved query in a new tab, its SQL as saved; nothing runs. */
   function openSaved(q: SavedQuery) {
     const id = crypto.randomUUID();
-    setTabs((ts) => [...ts, { id, name: clipName(q.name).trimEnd() || `Query ${ts.length + 1}`, sql: q.sql, parameters: "{}" }]);
+    const opened = openingTarget();
+    if (!opened) {
+      openingChanged();
+      return;
+    }
+    setTabs((ts) => [...ts, { id, name: clipName(q.name).trimEnd() || `Query ${ts.length + 1}`, sql: q.sql, parameters: "{}", ...opened.binding }]);
     setTabId(id);
-    const where = q.database && q.database !== connection.database ? ` It was saved for the database ${q.database}.` : "";
+    const where = q.database && q.database !== opened.connection.database ? ` It was saved for the database ${q.database}.` : "";
     note(id, `Opened the saved query “${q.name}” in a new tab. Nothing ran.${where}`);
     if (narrow) setSheet("");
     window.requestAnimationFrame(() => editor.current?.focus());
@@ -1032,7 +1068,8 @@ export const QueryLab = forwardRef<
    * text opens with a parameters skeleton and waits for values.
    */
   function openDigest(row: TopStatement, rank: number, action: DigestAction, expect?: string, measureBefore?: SuggestedIndexOrigin) {
-    if (expect !== undefined && expect !== connectionKey(connection)) {
+    const opened = openingTarget(expect);
+    if (!opened) {
       setStatus("");
       setError("The connection in use changed after you chose this statement, so nothing ran. Refresh Top statements and choose it again.");
       return;
@@ -1051,12 +1088,13 @@ export const QueryLab = forwardRef<
       name: digestName(rank, row),
       sql: refused ? q.text.trim() : q.sql,
       parameters: refused ? "{}" : skeleton(q.names),
+      ...opened.binding,
     };
     if (source) {
       next.source = source;
       // The tab stays bound to the server the statement came from, also for
       // a run deferred until its parameters are filled in, and after restore.
-      next.target = { key: connectionKey(connection), label: connectionLabel(connection) };
+      next.target = { key: connectionKey(opened.connection), label: connectionLabel(opened.connection) };
     }
     if (q.names.length && !refused) {
       next.fill = q.names;
@@ -1258,12 +1296,12 @@ export const QueryLab = forwardRef<
   useEffect(() => {
     const id = tab.id;
     const at = runtimeRef.current[id];
-    if (at?.probed) return;
+    if (at?.probed || groupMemberProblem(tab)) return;
     // Marked only once answered: a probe cut short by a tab switch or a
     // failure is asked again the next time the tab is shown.
     const gen = at?.gen ?? 0;
     const controller = new AbortController();
-    api<EditorReply>("editor/status", { tab_id: id, wait: 0, connection: connectionRef.current }, controller.signal).then(
+    api<EditorReply>("editor/status", { tab_id: id, wait: 0, connection: tabConnection }, controller.signal).then(
       (reply) => {
         const now = runtimeRef.current[id] || blankRuntime();
         // A run started meanwhile knows better than this answer.
@@ -1271,9 +1309,9 @@ export const QueryLab = forwardRef<
         patchRuntime(id, { probed: true });
         if (!reply.session) return;
         const session = reply.session;
-        const key = sessionKeyFor(session, connectionRef.current);
+        const key = sessionKeyFor(session, tabConnection);
         // Bound to the connection in use only when the session says it is that one.
-        const verified = key === connectionKey(connectionRef.current) ? connectionRef.current : null;
+        const verified = key === connectionKey(tabConnection) ? tabConnection : null;
         patchRuntime(id, { session, sessionKey: key, sessionConnection: verified });
         if (reply.run && reply.run.state === "running" && reply.run.kind === "run") {
           patchRuntime(id, { running: true, run: reply.run, gen: gen + 1 });
@@ -1284,12 +1322,12 @@ export const QueryLab = forwardRef<
     );
     return () => controller.abort();
     // Once per tab until answered; the runtime ref holds the rest.
-  }, [tab.id]);
+  }, [tab.id, connectionKey(tabConnection), !!groupMemberProblem(tab)]);
   // QueryLab stays mounted in other places. Read only for the visible tab,
   // never while its user SQL or transaction action owns the session pipe.
   useEffect(() => {
-    if (!onScreen || tableData || rt.session?.in_transaction !== true || rt.session.ended ||
-        rt.running || rt.operation || rt.stopping || rt.sessionKey !== connectionKey(connection)) return;
+    if (!onScreen || tableData || groupMemberProblem(tab) || rt.session?.in_transaction !== true || rt.session.ended ||
+        rt.running || rt.operation || rt.stopping || rt.sessionKey !== connectionKey(tabConnection)) return;
     const id = tab.id, gen = rt.gen, sessionId = rt.session.connection_id, key = rt.sessionKey;
     let stopped = false, timer = 0, controller: AbortController | null = null;
     const schedule = () => { window.clearTimeout(timer); if (!stopped && !document.hidden) timer = window.setTimeout(read, 10000); };
@@ -1300,7 +1338,7 @@ export const QueryLab = forwardRef<
       controller = new AbortController();
       try {
         const reply = await api<EditorReply>("editor/status", {
-          tab_id: id, connection: current.sessionConnection || connectionRef.current, refresh_insights: true, wait: 0,
+          tab_id: id, connection: current.sessionConnection || currentTabConnection(id), refresh_insights: true, wait: 0,
         }, controller.signal);
         const latest = runtimeRef.current[id];
         if (!stopped && !controller.signal.aborted && latest?.gen === gen && !latest.running && !latest.operation &&
@@ -1323,7 +1361,7 @@ export const QueryLab = forwardRef<
     schedule();
     return () => { stopped = true; window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visibility); };
   }, [tab.id, onScreen, tableData, rt.session?.connection_id, rt.session?.in_transaction, rt.session?.ended,
-      rt.running, rt.operation, rt.stopping, rt.gen, rt.sessionKey, connectionKey(connection)]);
+      rt.running, rt.operation, rt.stopping, rt.gen, rt.sessionKey, connectionKey(tabConnection)]);
   const target = useMemo(
     () => runTarget(tab.sql, cursor.start, cursor.end),
     [tab.sql, cursor.start, cursor.end],
@@ -1355,14 +1393,14 @@ export const QueryLab = forwardRef<
   const previewEpoch = JSON.stringify([rt.gen, rt.running, rt.session?.connection_id,
     rt.session?.sql_mode, rt.session?.ended, privileges?.loading, privileges?.error]);
   const previewGeneration = useMemo(() => Symbol(),
-    [scopedKey, allKey, previewEpoch, privileges?.report, connection.password]);
+    [scopedKey, allKey, previewEpoch, privileges?.report, tabConnection.password]);
   const [previews, setPreviews] = useState<{
     generation: symbol;
     values: Record<string, EditorPrivilegePreview>;
   } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    if (!tab.sql.trim() || rt.running) return () => controller.abort();
+    if (!tab.sql.trim() || rt.running || groupMemberProblem(tab)) return () => controller.abort();
     const timer = window.setTimeout(() => {
       void Promise.all([previewScoped, previewBase].map(async payload => {
         try {
@@ -1427,18 +1465,19 @@ export const QueryLab = forwardRef<
   /** Why tab *t* may not run on the connection in use: a Top statements tab
    * runs only on the server it came from until it is moved explicitly. */
   function bindingProblem(t: Tab) {
+    const tabConnection = connectionFor(t);
     if (!t.source) return "";
     if (!t.target)
-      return `This statement came from Top statements, and the workspace did not record which server it was read from. Choose Use this connection to run it on ${connectionLabel(connection)}.`;
-    if (t.target.key !== connectionKey(connection))
-      return `This statement came from Top statements on ${t.target.label || "another connection"}, not the connection in use. Switch back, or choose Use this connection to run it on ${connectionLabel(connection)}.`;
+      return `This statement came from Top statements, and the workspace did not record which server it was read from. Choose Use this connection to run it on ${connectionLabel(tabConnection)}.`;
+    if (t.target.key !== connectionKey(tabConnection))
+      return `This statement came from Top statements on ${t.target.label || "another connection"}, not the connection in use. Switch back, or choose Use this connection to run it on ${connectionLabel(tabConnection)}.`;
     return "";
   }
   /** Move a Top statements tab to the connection in use (an explicit choice). */
   function bindToConnection() {
-    changeTab({ target: { key: connectionKey(connection), label: connectionLabel(connection) } });
+    changeTab({ target: { key: connectionKey(tabConnection), label: connectionLabel(tabConnection) } });
     setError("");
-    setStatus(`This tab now runs on ${connectionLabel(connection)}.`);
+    setStatus(`This tab now runs on ${connectionLabel(tabConnection)}.`);
   }
   /** The member a tab is bound to, as the group names it now (its profile
    * name at bind time when the group no longer has it). */
@@ -1448,7 +1487,8 @@ export const QueryLab = forwardRef<
   /** Why tab *t* may not run: its member left the group (a group edit while
    * connected). It runs again once the user picks a member for it. */
   function groupMemberProblem(t: Tab) {
-    if (!group || !t.member) return "";
+    if (!t.member) return "";
+    if (!group) return `This tab ran on ${t.member_name || t.member}, which is not open now.`;
     if (group.members.some((m) => m.profile_id === t.member)) return "";
     return `${t.member_name || "This tab's server"} is not in this group any more. Pick a server for this tab to run it.`;
   }
@@ -1456,7 +1496,12 @@ export const QueryLab = forwardRef<
    * choice, like Use this connection for a Top statements tab). */
   function rebindMember(id: string, memberId: string) {
     if (!group?.members.some((m) => m.profile_id === memberId)) return;
-    changeTab({ member: memberId, member_name: memberNameOf(memberId) }, id);
+    const via = memberConnection?.(memberId);
+    if (!via) return;
+    const t = tabsRef.current.find((item) => item.id === id);
+    changeTab({ member: memberId, member_name: memberNameOf(memberId),
+      ...(t?.source ? { target: { key: connectionKey(via), label: connectionLabel(via) } } : {}),
+    }, id);
     setError("");
   }
   /** The connection a run of *t* uses: a tab bound to a group member runs on
@@ -1465,6 +1510,13 @@ export const QueryLab = forwardRef<
    * the connection names none. */
   function connectionFor(t: Tab): Connection {
     const bound = t.member && group && memberConnection ? memberConnection(t.member) : null;
+    // Keep an unavailable binding disconnected even if a future caller misses
+    // its UI guard. Port 0 is refused before any login, as in a cleared picker.
+    if (t.member && !bound) return {
+      profile_id: t.member, name: t.member_name || t.member, host: "", port: 0,
+      user: "", database: "", ssl_mode: "", ssl_ca: "", password: "",
+      type: "production", read_only: true,
+    };
     const base = bound || connection;
     const measurement = runtimeRef.current[t.id]?.measureBefore;
     // A measurement runs in its statement's schema; otherwise the tab's chosen
@@ -1496,12 +1548,12 @@ export const QueryLab = forwardRef<
     setStarting(true);
     if (mode === "analyze") changeTab({ result_tab: "plan" }, t.id);
     try {
-      const expectedConnection = connectionKey(connectionRef.current);
+      const expectedConnection = connectionKey(connectionFor(t));
       const prepared = mode === "analyze"
         ? await api<{ sql: string; converted: boolean; warning: string; problem: string }>("analysis/prepare-query", { query: sql })
         : { sql, converted: false, warning: "", problem: "" };
       if (pending.cancelled) return;
-      if (expectedConnection !== connectionKey(connectionRef.current))
+      if (expectedConnection !== connectionKey(currentTabConnection(t.id)))
         throw new Error("The connection changed. Review the query and try again.");
       if (prepared.problem) throw new Error(prepared.problem);
       if (prepared.converted) {
@@ -1640,7 +1692,6 @@ export const QueryLab = forwardRef<
 
   /** The session of the tab is on another connection than the one it runs on
    * now (the connection in use, or its bound group member). */
-  const tabConnection = connectionFor(tab);
   const mismatch = !!rt.session && !rt.session.ended && !!rt.sessionKey && rt.sessionKey !== connectionKey(tabConnection);
   const mismatchReason = mismatch && rt.session
     ? `This tab is still connected to ${sessionName(rt.session)}. Close its session to run on ${connectionShortName(tabConnection)}.`
@@ -1649,8 +1700,9 @@ export const QueryLab = forwardRef<
    * on another connection. Every execution path checks it (Run, Run all,
    * Explain, Run analysis, their shortcuts, Load more). */
   function sessionProblem(id: string) {
-    const now = runtimeRef.current[id] || blankRuntime();
     const t = tabsRef.current.find((x) => x.id === id);
+    if (t && groupMemberProblem(t)) return groupMemberProblem(t);
+    const now = runtimeRef.current[id] || blankRuntime();
     const expected = t ? connectionFor(t) : connectionRef.current;
     if (now.session && !now.session.ended && now.sessionKey && now.sessionKey !== connectionKey(expected))
       return `This tab is still connected to ${sessionName(now.session)}. Close its session to run on ${connectionShortName(expected)}.`;
@@ -1890,7 +1942,7 @@ export const QueryLab = forwardRef<
       try {
         reply = await api<EditorReply>(
           "editor/status",
-          { tab_id: id, run_id: runId, wait: 5, connection: sessionConnectionOf(id) || connectionRef.current },
+          { tab_id: id, run_id: runId, wait: 5, connection: sessionConnectionOf(id) || currentTabConnection(id) },
           controller.signal,
         );
       } catch (e) {
@@ -1932,7 +1984,7 @@ export const QueryLab = forwardRef<
     // whichever connection is on screen now: views on screen read it again,
     // a hidden editor when it is shown (this callback may be from an earlier
     // render, so it never decides visibility itself).
-    if (!meta.action && runMayChangeDatabases(run)) invalidateSchemaCatalog(sessionConnectionOf(id) || connectionRef.current);
+    if (!meta.action && runMayChangeDatabases(run)) invalidateSchemaCatalog(sessionConnectionOf(id) || currentTabConnection(id));
     // A completed statement does not acknowledge a Stop still on its way.
     patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);
@@ -2036,12 +2088,16 @@ export const QueryLab = forwardRef<
   }
   /** Start a new session after one ended (never done without asking). */
   function reconnect(id = tab.id) {
+    const t = tabsRef.current.find((x) => x.id === id);
+    if (!t) return;
+    const problem = groupMemberProblem(t);
+    if (problem) return setError(problem);
     const now = runtimeRef.current[id] || blankRuntime();
     if (now.running || now.operation || now.stopping) return;
     setRunClientMissing(null);
     setError("");
     // Keep the ended-session banner (and its focused button) until the reply.
-    void send(id, "editor/open", { tab_id: id, connection: connectionFor(tab), ...(now.safe === true ? { safe_updates: true } : {}) }, { runSql: "" });
+    void send(id, "editor/open", { tab_id: id, connection: connectionFor(t), ...(now.safe === true ? { safe_updates: true } : {}) }, { runSql: "" });
   }
   function setSafeUpdates(on: boolean) {
     const id = tab.id;
@@ -2067,13 +2123,19 @@ export const QueryLab = forwardRef<
     if (rt.fileBusy) return;
     patchRuntime(tab.id, { fileBusy: true });
     setError("");
+    const opened = openingTarget();
+    if (!opened) {
+      patchRuntime(tab.id, { fileBusy: false });
+      openingChanged();
+      return;
+    }
     try {
       const reply = await api<EditorFileOpenReply>("editor/file/open", {});
       if (reply.cancelled) return;
       const id = crypto.randomUUID();
       const base = reply.name.replace(/\.(sql|txt)$/i, "");
       const name = clipName(base || reply.name, MAX_TAB_NAME) || reply.name;
-      setTabs((ts) => [...ts, { id, name, sql: reply.sql, parameters: "{}" }]);
+      setTabs((ts) => [...ts, { id, name, sql: reply.sql, parameters: "{}", ...opened.binding }]);
       setTabId(id);
       patchRuntime(id, { file: { token: reply.token, name: reply.name, savedSql: reply.sql } });
       note(id, reply.warning ? `Opened ${reply.name}. ${reply.warning}` : `Opened ${reply.name}.`);
@@ -2168,7 +2230,8 @@ export const QueryLab = forwardRef<
       now.session.connection_id === now.runSessionId &&
       !!now.runKey &&
       now.runKey === now.sessionKey &&
-      now.runKey === connectionKey(connectionRef.current)
+      now.runKey === connectionKey(currentTabConnection(id)) &&
+      !groupMemberProblem(tabsRef.current.find((t) => t.id === id) || tab)
     );
   }
   /** Load more: run one read again with a larger row limit, in the same
@@ -2209,13 +2272,13 @@ export const QueryLab = forwardRef<
         // the CLI: read them again, and send nothing under another policy.
         let fresh: Connection;
         try {
-          fresh = await policy.check();
+          fresh = await policy.check(currentTabConnection(p.tabId));
         } catch (e) {
           setPending(null);
           setError(`Could not read this connection's settings (${(e as Error).message}), so nothing was sent.`);
           return;
         }
-        if (connectionKey(fresh) !== p.key) {
+        if (connectionKey(fresh) !== p.key || connectionKey(currentTabConnection(p.tabId)) !== p.key) {
           setPending(null);
           void send(p.tabId, p.path, { ...p.payload, decline: true }, p.meta);
           setError("This connection's type or read-only setting changed after you reviewed the statements, so nothing was sent. Run again to review them under the new setting.");
@@ -2247,6 +2310,9 @@ export const QueryLab = forwardRef<
     delete rest[id];
     runtimeRef.current = rest;
     setRuntime(rest);
+    // The replacement tab keeps the member binding only while it still names
+    // one; a mid-change group leaves it unbound rather than on another member.
+    const opened = openingTarget();
     setTabs((ts) => {
       const index = ts.findIndex((t) => t.id === id);
       const remainingTabs = ts.filter((t) => t.id !== id);
@@ -2258,6 +2324,7 @@ export const QueryLab = forwardRef<
           name: "Query 1",
           sql: "",
           parameters: "{}",
+          ...(opened?.binding || {}),
         }];
       }
       if (id === tabId && remainingTabs.length) setTabId(remainingTabs[Math.max(0, index - 1)].id);
@@ -2279,9 +2346,14 @@ export const QueryLab = forwardRef<
       setClosingFile({ tabId: id, keepTab });
       return "asks";
     }
+    if (t && groupMemberProblem(t) && !sessionConnectionOf(id)) {
+      if (!keepTab) { removeTab(id); return "closed"; }
+      note(id, groupMemberProblem(t), true);
+      return "error";
+    }
     patchRuntime(id, { operation: "close", note: "", noteError: false, sessionFeedback: { phase: "pending", message: "Closing the session…", startedAt: Date.now(), endedAt: null } });
     try {
-      const reply = await api<EditorClose>("editor/close", { tab_id: id, connection: sessionConnectionOf(id) || connectionRef.current });
+      const reply = await api<EditorClose>("editor/close", { tab_id: id, connection: sessionConnectionOf(id) || currentTabConnection(id) });
       if (reply.closed) {
         if (keepTab) {
           patchRuntime(id, { session: null, sessionKey: "", sessionConnection: null });
@@ -2312,7 +2384,7 @@ export const QueryLab = forwardRef<
       const reply = await api<EditorClose>("editor/close", {
         tab_id: c.tabId,
         discard: true,
-        connection: sessionConnectionOf(c.tabId) || connectionRef.current,
+        connection: sessionConnectionOf(c.tabId) || currentTabConnection(c.tabId),
       });
       if (reply.closed) {
         setClosing(null);
@@ -2346,8 +2418,9 @@ export const QueryLab = forwardRef<
     if (narrow) setSheet("");
   }
   /** Open *statement* in a new tab, selected, without running it. */
-  function openStatement(statement: string, indexOrigin?: SuggestedIndexOrigin) {
-    if (indexOrigin && indexOrigin.target.key !== connectionKey(connectionRef.current)) {
+  function openStatement(statement: string, indexOrigin?: SuggestedIndexOrigin, from?: string) {
+    const opened = openingTarget(indexOrigin?.target.key || from);
+    if (!opened) {
       setError("The connection changed. Refresh the statements before opening the suggested index.");
       return;
     }
@@ -2364,7 +2437,7 @@ export const QueryLab = forwardRef<
         parameters: "{}",
         ...(indexOrigin ? { source: normalizeSource({ kind: "digest", digest: indexOrigin.statement.digest, schema: indexOrigin.statement.schema }) || undefined,
           target: { ...indexOrigin.target } } : {}),
-        ...(group && groupMember ? { member: groupMember, member_name: memberNameOf(groupMember) || undefined } : {}),
+        ...opened.binding,
       },
     ]);
     setTabId(id);
@@ -2511,7 +2584,7 @@ export const QueryLab = forwardRef<
   const errorPosition = rt.run?.error?.position;
   const errorMark = !stale && errorPosition ? wordAt(tab.sql, errorPosition.offset) : null;
   const statementMark = runPart.scope === "statement" && runPart.total > 1 && !runPart.problem ? { start: runPart.start, end: runPart.end } : null;
-  const safeChecked = session && !session.ended && session.safe_updates !== null ? session.safe_updates : rt.safe ?? connection.type !== "development";
+  const safeChecked = session && !session.ended && session.safe_updates !== null ? session.safe_updates : rt.safe ?? tabConnection.type !== "development";
   const txOpen = !!session && !session.ended && session.in_transaction !== false;
   let tx: [Tone, string, string] = ["off", "No session", "The first run opens this tab's session: one server connection kept until the tab closes."];
   if (session?.ended) tx = ["problem", "Session ended", session.message || ""];
@@ -2532,7 +2605,7 @@ export const QueryLab = forwardRef<
     : !["pending", "running", "not_run"].includes(s.status));
   // A tab may retain a session/results from another connection. Publish only
   // evidence belonging to the connection named by the shell's active scope.
-  const statusKey = connectionKey(connection);
+  const statusKey = connectionKey(tabConnection);
   const statusSession = rt.sessionKey === statusKey ? session : null;
   const statusRun = rt.runKey === statusKey ? runLabel : null;
   // Edited since the last save (a tab opened from or saved to a file).
@@ -2549,7 +2622,7 @@ export const QueryLab = forwardRef<
       : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
     : rt.probed && !session ? "No session" : undefined;
   useWindowStatus(`query:${statusKey}:${tab.id}`, {
-    connectionState: connectionLabel(connection),
+    connectionState: connectionLabel(tabConnection),
     engineVersion: statusSession?.server_version ? `${statusSession.server_product || (statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server")} ${statusSession.server_version}` : undefined,
     sessionState: sessionText ? `${sessionText}${fileDirty ? " · Edited" : ""}` : fileDirty ? "Edited" : undefined,
     // The transaction state is in the editor toolbar, and the rows and time
@@ -2575,7 +2648,7 @@ export const QueryLab = forwardRef<
     void startCapture(tab, statement.text, rt.explainParameters || {}, "explain", "the Explain result", true);
   }
   const indexApplied = !!rt.indexOrigin && !!rt.indexDdl && !rt.explain && indexWasApplied(rt.run, rt.indexDdl);
-  const canMeasure = indexApplied && rt.indexOrigin?.target.key === connectionKey(connection) && rt.runKey === connectionKey(connection);
+  const canMeasure = indexApplied && rt.indexOrigin?.target.key === connectionKey(tabConnection) && rt.runKey === connectionKey(tabConnection);
   function measureAgain() {
     if (!canMeasure || busy || rt.running || rt.operation || !rt.indexOrigin) return;
     openDigest(rt.indexOrigin.statement, 1, "analyze", rt.indexOrigin.target.key, rt.indexOrigin);
@@ -2609,7 +2682,7 @@ export const QueryLab = forwardRef<
   return (
     <section className="query-lab" aria-labelledby="query-editor-title">
       <h1 id="query-editor-title" className="visually-hidden">Query editor</h1>
-      {tableData && <TableData connection={tableData.connection} currentConnectionKey={connectionKey(connection)}
+      {tableData && <TableData connection={tableData.connection} currentConnectionKey={connectionKey(tabConnection)}
         schema={tableData.schema} table={tableData.table} onClose={() => {
           setTableData(null);
           window.requestAnimationFrame(() => editor.current?.focus());
@@ -2619,8 +2692,8 @@ export const QueryLab = forwardRef<
         <div ref={browserSheet} className="schema-browser-slot" hidden={!showBrowser}
           role={narrow && showBrowser ? "dialog" : undefined} aria-label="Schemas" tabIndex={-1}>
           <SchemaBrowser
-            connection={connection}
-            visible={onScreen && showBrowser && !tableData}
+            connection={tabConnection}
+            visible={onScreen && showBrowser && !tableData && !groupMemberProblem(tab)}
             width={narrow ? 0 : layout.browser_width}
             onWidth={(w) => setLayout((l) => ({ ...l, browser_width: w }))}
             onClose={() => togglePane("browser")}
@@ -2629,16 +2702,16 @@ export const QueryLab = forwardRef<
             onOpenTable={onOpenTable}
             reveal={browserReveal}
             onOpenData={tableData ? undefined : (schema, table, from) => {
-              if (from !== connectionKey(connection)) {
+              if (groupMemberProblem(tab) || from !== connectionKey(tabConnection)) {
                 setError("The connection changed. Refresh the schema browser before opening table data.");
                 return;
               }
               // A second click cannot replace a draft before the grid's own
               // discard confirmation has called onClose.
-              setTableData(current => current || { connection: { ...connection }, schema, table });
+              setTableData(current => current || { connection: { ...tabConnection }, schema, table });
             }}
             onImportCsv={(target, from) => {
-              if (from !== connectionKey(connection)) {
+              if (groupMemberProblem(tab) || from !== connectionKey(tabConnection)) {
                 setError("The connection changed. Reload the schemas before importing.");
                 return;
               }
@@ -2730,7 +2803,7 @@ export const QueryLab = forwardRef<
                       >
                         <span className="query-tab-label">
                           {t.name}
-                          {group && t.member && (
+                          {t.member && (
                             <span className={`query-tab-member${groupMemberProblem(t) ? " is-gone" : ""}`}>
                               {" · "}{memberNameOf(t.member) || t.member_name || t.member}
                             </span>
@@ -2835,17 +2908,21 @@ export const QueryLab = forwardRef<
               }
             }}
           >
-            {group && groupMemberProblem(tab) && (
+            {groupMemberProblem(tab) && (
               <p className="group-member-note" role="note">
                 <Icon name="warning" size={14} />
                 <span>{groupMemberProblem(tab)}</span>
-                <Select
+                {group ? <Select
                   label="Server for this tab"
                   className="group-member-rebind"
                   value=""
                   options={[["", "Pick a server…"] as [string, string], ...group.members.map((m): [string, string] => [m.profile_id, m.profile_name])]}
                   onChange={(id: string) => { if (id) rebindMember(tab.id, id); }}
-                />
+                /> : <button type="button" className="text-button" onClick={() => {
+                  changeTab({ member: undefined, member_name: undefined,
+                    ...(tab.source ? { target: { key: connectionKey(connection), label: connectionLabel(connection) } } : {}) });
+                  setError("");
+                }}>Use this connection</button>}
               </p>
             )}
             <div className="editor-toolbar" role="toolbar" aria-label="Run and settings">
@@ -2969,7 +3046,7 @@ export const QueryLab = forwardRef<
                     data-action="database"
                     value={databaseShown}
                     disabled={running || busy || rt.fileBusy || !!rt.operation}
-                    onFocus={() => reloadStaleSchemaCatalog(CATALOG_STALE_MS)}
+                    onFocus={() => { if (!groupMemberProblem(tab)) reloadStaleSchemaCatalog(CATALOG_STALE_MS); }}
                     onChange={(e) => void chooseDatabase(e.target.value)}
                   >
                     <option value="">None</option>
@@ -3177,7 +3254,7 @@ export const QueryLab = forwardRef<
                   {shortDigest(tab.source.digest)}
                 </code>
                 {tabSchema &&
-                  (!rt.measureBefore && connection.database
+                  (!rt.measureBefore && tabConnection.database
                     ? ` · runs in ${tabSchema}, the connection's schema`
                     : ` · runs in ${tabSchema}, the schema it was recorded in`)}
                 {rt.measureBefore && !tabSchema && " · runs without a default schema"}
@@ -3206,7 +3283,7 @@ export const QueryLab = forwardRef<
             {mismatch && session && (
               <div className="editor-banner is-warn" data-banner="mismatch">
                 <span>
-                  This tab is still connected to {sessionName(session)}. Close its session to run on {connectionShortName(connection)}.
+                  This tab is still connected to {sessionName(session)}. Close its session to run on {connectionShortName(tabConnection)}.
                 </span>
                 <ActionButton small primary busy={rt.operation === "close"} busyLabel="Closing…"
                   disabled={rt.operation !== "close" && (running || sessionBusy)} onClick={() => void requestClose(tab.id, true)}>
@@ -3243,7 +3320,7 @@ export const QueryLab = forwardRef<
             {status && (
               <Notice variant="note">{status}</Notice>
             )}
-            {runClientMissing && runClientMissing.tabId === tab.id && runClientMissing.connection === connectionKey(connection) ? (
+            {runClientMissing && runClientMissing.tabId === tab.id && runClientMissing.connection === connectionKey(tabConnection) ? (
               <ClientMissingNotice text={runClientMissing.text} onRetry={() => {
                 const retry = runClientMissing.retry;
                 setRunClientMissing(null);
@@ -3327,7 +3404,7 @@ export const QueryLab = forwardRef<
                 {ddlItem && <DdlMeter item={ddlItem} />}
               </div>
               {ddlShown && <DdlUnavailable progress={ddlShown}
-                onOpenInstruments={rt.sessionKey === connectionKey(connection) ? onOpenInstruments : undefined} />}
+                onOpenInstruments={rt.sessionKey === connectionKey(tabConnection) ? onOpenInstruments : undefined} />}
             </div>}
             <div
               className="editor-splitter"
@@ -3378,7 +3455,7 @@ export const QueryLab = forwardRef<
               <StatementInsight key={insightStatement.index} statement={insightStatement} numbered={insightStatements.length > 1}
                 disabled={busy || !canReload(tab.id) || !!analysisGate.disabledReason || !!rt.operation || rt.stopping}
                 busy={analysisBusy}
-                onOpenInstruments={onOpenInstruments && rt.runKey === connectionKey(connection)
+                onOpenInstruments={onOpenInstruments && rt.runKey === connectionKey(tabConnection)
                   ? () => onOpenInstruments(insightStatement.server_stats?.available === false &&
                     insightStatement.server_stats.reason.startsWith("Performance Schema is off") ? "ps" : "consumer:events_statements_history") : undefined}
                 onAnalyze={() => {
@@ -3393,7 +3470,7 @@ export const QueryLab = forwardRef<
               base={0}
               stale={stale}
               fromConnection={
-                rt.run && rt.runKey && rt.runKey !== connectionKey(connection)
+                rt.run && rt.runKey && rt.runKey !== connectionKey(tabConnection)
                   ? rt.runConnectionName || (session ? sessionName(session) : "") || undefined
                   : undefined
               }
@@ -3441,7 +3518,7 @@ export const QueryLab = forwardRef<
         </div>}
       </div>
       {analysisReview && analysisReview.binding === analysisBinding && <ConfirmSheet
-        title={`Run analysis on ${connectionLabel(connection)}?`}
+        title={`Run analysis on ${connectionLabel(tabConnection)}?`}
         description={/^\s*(?:\(|SELECT\b|WITH\b|TABLE\b)/i.test(analysisReview.sql.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|(?:--\s|#)[^\n]*(?:\n|$))*/, ""))
           ? `Run analysis runs the statement ${runtimeRef.current[analysisReview.tab.id]?.measureBefore ? 1 : repeat} time(s) in a read-only transaction, with a ${timeout} s time limit per run.`
           : "This is not a SELECT, so Run analysis does not run it. It prepares a SELECT that reads the same rows, when the statement allows one, in a new tab for you to review first. Nothing runs now."}

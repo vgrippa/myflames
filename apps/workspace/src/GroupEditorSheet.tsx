@@ -98,6 +98,7 @@ export function GroupEditorSheet({
   if (confirmDelete) {
     return (
       <ConfirmSheet
+        key="delete"
         className="group-editor-sheet"
         title={`Delete group ${group}?`}
         description={`Only the group is removed. Its saved connections stay, with their saved passwords; myflames just stops reading them together.`}
@@ -115,6 +116,7 @@ export function GroupEditorSheet({
 
   return (
     <ConfirmSheet
+      key="edit"
       className="group-editor-sheet"
       title={`Edit group ${group}`}
       description="A group opens as one Group connection from the connection picker. Connections in the same group may be read together to draw a cluster or replication topology."
@@ -160,6 +162,9 @@ export function GroupEditorSheet({
       </ul>
       {ticked.length === 0 && (
         <p className="hint" role="note">A group needs at least one saved connection.</p>
+      )}
+      {ticked.length > 16 && (
+        <p className="hint" role="alert">A group can contain at most 16 saved connections. Uncheck {ticked.length - 16} to save.</p>
       )}
       <div className="group-editor-footer">
         <button

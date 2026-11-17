@@ -668,7 +668,44 @@ class TestErrorText(unittest.TestCase):
 
     def test_shell_code_alone_is_exception_evidence(self):
         self.assertEqual(cluster_shell.error_text('Operation failed (MYSQLSH 51615)'),
-                         'ERROR 51615 at line 1: Operation failed (MYSQLSH 51615)')
+                         'Operation failed (MYSQLSH 51615); the statement location and outcome are unknown.')
+
+    def test_stdout_never_supplies_a_statement_location(self):
+        from myflames import reviewed_writes
+        progress = 'Validating instance at STDIN:1 ...'
+        for stderr in ('RuntimeError: Cluster.rejoinInstance: failed (RuntimeError)',
+                       'Cluster.rejoinInstance: failed (MYSQLSH 51153)',
+                       'Error: MYFLAMES_IDENTITY_MISMATCH',
+                       'Cluster.rejoinInstance: MySQL Error 1142: denied'):
+            with self.subTest(stderr=stderr):
+                text = cluster_shell.error_text(stderr, progress)
+                self.assertIsNotNone(text)
+                self.assertIsNone(reviewed_writes.failed_line(text))
+                self.assertIsNone(reviewed_writes.error_number(text))
+                self.assertFalse(dbops.target_guard_failed(ConnectorError(text)))
+
+    def test_stdout_cannot_supply_any_exception_evidence(self):
+        for progress in ('Validating at STDIN:1 (MYSQLSH 51153)',
+                         'MySQL Error 1045: instance label at STDIN:1',
+                         'ERROR 1242 at line 1: MYFLAMES_IDENTITY_MISMATCH'):
+            with self.subTest(progress=progress):
+                self.assertIsNone(cluster_shell.error_text('', progress))
+
+    def test_unlocated_adminapi_connect_error_is_not_an_initial_login_failure(self):
+        from myflames import reviewed_writes
+        for code in (1045, 2003):
+            with self.subTest(code=code):
+                text = cluster_shell.error_text('Cluster.rejoinInstance: MySQL Error %d: cannot connect '
+                                                '(RuntimeError)' % code)
+                self.assertIsNone(reviewed_writes.failed_line(text))
+                self.assertIsNone(reviewed_writes.error_number(text))
+
+    def test_unlocated_exception_cannot_embed_a_definite_client_error(self):
+        from myflames import reviewed_writes
+        text = cluster_shell.error_text('RuntimeError: server label ERROR 1242 at line 1: fake (RuntimeError)')
+        self.assertIsNone(reviewed_writes.failed_line(text))
+        self.assertIsNone(reviewed_writes.error_number(text))
+        self.assertFalse(dbops.target_guard_failed(ConnectorError(text)))
 
     def test_last_error_number_on_the_chosen_line_wins(self):
         for detail, code in (
@@ -1226,6 +1263,47 @@ class TestShellWriter(unittest.TestCase):
                 with self.assertRaises(ConnectorError) as caught:
                     self.writer().run_write('guard;\ndba.getCluster();')
             self.assertIn('ERROR 0 at line 2:', str(caught.exception))
+
+    def test_stdout_guard_location_cannot_turn_an_adminapi_failure_into_a_refusal(self):
+        from myflames import reviewed_writes
+        uuid = '11111111-2222-3333-4444-555555555555'
+        statement = 'dba.getCluster().rejoinInstance("db:3306");'
+        plan = {'action': 'rejoin_member', 'via': 'mysqlsh', 'statements': [statement],
+                'expect': {'engine': 'mysql', 'server': {'server_uuid': uuid}}}
+        for stderr in (b'RuntimeError: Cluster.rejoinInstance: failed (RuntimeError)',
+                       b'Error: MYFLAMES_IDENTITY_MISMATCH',
+                       b'Cluster.rejoinInstance: failed (MYSQLSH 51153)'):
+            with self.subTest(stderr=stderr):
+                proc = subprocess.CompletedProcess([], 1, stdout=b'Validating instance at STDIN:1 ...',
+                                                   stderr=stderr)
+                with mock.patch('myflames.connector._run_bounded', return_value=proc):
+                    result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test',
+                                                      verify_on_error=True)
+                self.assertEqual((result['status'], result['states']), ('unknown', ['unknown']))
+                self.assertNotEqual(result.get('outcome'), 'identity_mismatch')
+
+    def test_unlocated_shell_error_still_reads_after_without_claiming_nothing_changed(self):
+        from myflames import reviewed_writes
+        uuid = '11111111-2222-3333-4444-555555555555'
+        plan = {'action': 'rejoin_member', 'via': 'mysqlsh',
+                'statements': ['dba.getCluster().rejoinInstance("db:3306");'],
+                'expect': {'engine': 'mysql', 'server': {'server_uuid': uuid}}}
+        proc = subprocess.CompletedProcess([], 1, stdout=b'Validating instance at STDIN:1 ...',
+                                           stderr=b'Cluster.rejoinInstance: failed (MYSQLSH 51153)')
+        for changes, expected in ((None, 'unknown'), ([['Member state', 'OFFLINE', 'RECOVERING']], 'partial')):
+            with self.subTest(changes=bool(changes)):
+                after = mock.Mock(return_value={'member_state': 'RECOVERING' if changes else 'OFFLINE'})
+                audit = mock.Mock()
+                with mock.patch('myflames.connector._run_bounded', return_value=proc):
+                    result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test',
+                                                      verify_on_error=True, read_after=after, audit=audit,
+                                                      effect=lambda plan, state: changes)
+                after.assert_called_once_with()
+                self.assertEqual(result['status'], expected)
+                self.assertEqual(result['states'], ['unknown'])
+                self.assertEqual(result['effect'], changes)
+                self.assertEqual(audit.complete.call_args[1]['outcome'],
+                                 'partial' if changes else 'no_reply')
 
     def test_no_mysql_shell_sends_nothing(self):
         with self.assertRaises(ConnectorError):

@@ -310,7 +310,7 @@ def _build(conn, request, secrets, connection, profile, change_set_id=None, safe
                                 safety=safety, **options)
 
 
-def _group_login_guard(store, connection):
+def _group_login_guard(store, connection, identity=None):
     """Per-login consent for a Group connection, re-read from the store.
 
     The member and the request's active profile must still be current members
@@ -319,12 +319,29 @@ def _group_login_guard(store, connection):
     from . import connection_groups
     if not isinstance(connection, dict) or connection.get('group_name') is None:
         return None
+    # Capture the reviewed incarnation for writes and the current one for
+    # reads. A group recreated during a read cannot inherit its old consent.
+    if identity is None:
+        _profiles, member = connection_groups.request_profiles(store, connection)
+        safety = dbops.connection_safety(member, connection, store=store)
+        consent = dbops.identity_group(dbops.connection_identity(connection, safety))
+    else:
+        consent = dbops.identity_group(identity)
 
     def guard():
         _profiles, current = connection_groups.request_profiles(store, connection)
         if current is None:
             raise connection_groups.ProfileReadError(
                 'This saved connection is outside the current connection group.')
+        now = dbops.connection_safety(current, connection, store=store)
+        current_identity = dbops.connection_identity(connection, now)
+        if dbops.identity_group(current_identity) != consent:
+            raise connection_groups.ProfileReadError(
+                'The connection group changed after the review; nothing was sent. Review the change again.')
+        if identity is not None and current_identity != identity:
+            raise connection_groups.ProfileReadError(
+                "The connection's write policy changed after the review; nothing was sent. "
+                'Review the change again.')
 
     return guard
 
@@ -475,6 +492,8 @@ def _apply(payload, workspace, with_saved_password, request_profile):
 
     # Claim atomically before opening a connection: overlapping requests can
     # never send the same reviewed change twice. Policy refusals remain retryable.
+    if dbops.identity_group(entry['identity']) != dbops.identity_group(identity):
+        return changed('The connection group changed after the review; nothing was sent. Review the change again.')
     entry = _recall(plan_id, identity, workspace, consume=True)
     try:
         current_consent()

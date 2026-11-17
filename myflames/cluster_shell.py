@@ -101,22 +101,25 @@ def _connection(conn):
 
 
 def error_text(stderr, stdout=""):
-    """The error line reviewed_writes reads, from MySQL Shell's output."""
-    text = _ANSI.sub("", "%s\n%s" % (stderr or "", stdout or ""))
+    """The error reviewed_writes reads, using stderr exception evidence only.
+
+    stdout contains AdminAPI progress and may echo instance or cluster names.
+    Neither a statement location nor an exception number can come from it.
+    """
+    text = _ANSI.sub("", stderr or "")
     lines = [" ".join(raw.split()) for raw in text.splitlines()]
     lines = [line for line in lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
     if not lines:
         return None
-    # Shell appends the actual call site after the exception text. Prefer its
-    # last stderr location over a server message that embeds "at STDIN:1",
-    # and do not let ordinary stdout progress override stderr evidence.
-    locations = list(_STDIN_LINE.finditer(_ANSI.sub("", stderr or "")))
-    if not locations:
-        locations = list(_STDIN_LINE.finditer(_ANSI.sub("", stdout or "")))
+    # mysql-shell/mysqlshdk/scripting/types.cc:717 appends the location;
+    # scripting/polyglot/utils/polyglot_error.cc:438 appends backtrace sites.
+    # Keep the last stderr site, never one from stdout progress.
+    locations = list(_STDIN_LINE.finditer(text))
     where = int(locations[-1].group(1)) if locations else None
     shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
     mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
-    if where is None and shell_code is None and mysql_code is None:
+    exception = any(re.search(r"\(\w+Error\)|^\w*Error:", line) for line in lines)
+    if where is None and shell_code is None and mysql_code is None and not exception:
         return None
     # The numbered exception is more specific than preceding progress or ERROR lines.
     message = next((line for line in lines if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
@@ -129,10 +132,20 @@ def error_text(stderr, stdout=""):
             shell_code if shell_code is not None else mysql_code if mysql_code is not None else 0)
     message = _STDIN_LINE.sub("", message).strip()
     message = re.sub(r"^ERROR:\s*", "", message)
-    if where is None and shell_code is None and code in CONNECT_ERRORS:
-        # The first session could not be opened: no statement was read.
+    if (where is None and shell_code is None and code in CONNECT_ERRORS and not exception and
+            re.match(r"^MySQL Error %d\b" % code, message)):
+        # src/mysqlsh/main.cc:633-645 prints this bare database error when
+        # opening the first session fails. An AdminAPI-wrapped connect error
+        # can occur after earlier steps ran and proves no such thing.
         return "ERROR %d: %s" % (code, message)
-    return "ERROR %d at line %d: %s" % (code, where or 1, message)
+    if where is None:
+        # A number alone does not prove that the first statement failed. Do
+        # not synthesize the ERROR/line framing used for definite outcomes,
+        # or let embedded server text supply that framing to the parsers.
+        message = re.sub(r"\bERROR(\s+\d+)", r"error\1", message)
+        message = re.sub(r"\bat line(\s+\d+)\b", r"at input line\1", message)
+        return "%s; the statement location and outcome are unknown." % message
+    return "ERROR %d at line %d: %s" % (code, where, message)
 
 
 class ShellWriter(object):

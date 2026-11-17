@@ -200,6 +200,7 @@ def _evict_locked():
 
 def _claim_probe(profile, open_profile, reads, remaining):
     from .replication import _settings_fingerprint
+    from .workspace_store import _topology_probe_observation
     name = _profile_name(profile)
     profile_id = profile.get("id") or name
     with _cache_lock:
@@ -230,7 +231,7 @@ def _claim_probe(profile, open_profile, reads, remaining):
         for old in [k for k in _probe_cache if k[0] == key[0]]:
             del _probe_cache[old]
         entry = {"done": threading.Event(), "data": None, "problem": None, "kept": True,
-                 "key": key, "connect": connect}
+                 "key": key, "connect": connect, "observation": _topology_probe_observation(profile)}
         _probe_attempts.add(key)
         _probe_pending[profile_id] = entry
         _probe_cache[key] = entry
@@ -616,15 +617,18 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
                     record_read(open_profile, profile, 'not_reached', entry['problem'])
                 entry = None
                 break
-            # A probe this request waited on ran now; a plain cache hit may be
-            # older than the stored identity it would overwrite.
+            # Waiting for a probe does not change when its observation began.
+            # Plain cache hits keep answering topology questions without
+            # publishing identity evidence again.
             fresh = True
         if entry and entry.get("data"):
             data = entry["data"]
             identity = None
             if fresh and data.get("kind") == "database":
                 field = "wsrep_node_uuid" if data.get("cluster_kind") in ("galera", "pxc") else "server_uuid"
-                identity = {field: data.get(field)}
+                # This private evidence follows the original probe through
+                # pending waits and cache hits. Publication is not a new read.
+                identity = {field: data.get(field), '_topology_observation': entry['observation']}
             record_read(open_profile, profile, "read", identity=identity)
             probed.append(entry["data"])
         elif entry and entry.get("problem"):

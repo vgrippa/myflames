@@ -2522,6 +2522,11 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
         result["sent"] = send_state["sent"] = True
     try:
         conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+    except ProfileReadError as exc:
+        # The connector rejected consent before the client process started.
+        # An armed send boundary is not evidence that SQL reached the server.
+        send_state["sent"] = False
+        return _unsent(result, audit, "refused", "changed", str(exc), expect, verified)
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())
@@ -2563,6 +2568,9 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     result["status"] = "skipped"
     try:
         result["after"] = _read_after(conn, channel, plan, settle_s, sleep)
+    except ProfileReadError:
+        result["after"] = {"present": None, "passed": None,
+                           "diagnostic": "Connection group consent changed after the script succeeded."}
     except BaseException as exc:
         if audit is not None:
             audit.complete("unknown", outcome="unverified", message="Script succeeded; verification failed: " + str(exc))

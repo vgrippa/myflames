@@ -1,0 +1,184 @@
+"""Group revocation through real apply endpoints and connector login checks.
+
+Only the client process boundary is replayed. SQL classification, saved
+credentials, policy, token claims, per-login guards and audits stay real.
+"""
+import contextlib
+import types
+from unittest import mock
+
+import test_cluster_group_actions as group_actions
+import test_connection_groups as groups
+import test_locks as lock_tests
+import test_replication as replication_tests
+import test_variables as variable_tests
+from myflames import connector, dbops, replication, ui
+
+
+class GroupConsentTests(groups.GroupCase):
+    def setUp(self):
+        super(GroupConsentTests, self).setUp()
+        self.workspace = types.SimpleNamespace(store=self.store)
+        self.profile = self.save('active', 'G', host='127.0.0.1', user='root', type='development')
+        self.connection = dict(self.request(self.profile), group_name='G')
+        self.invocations = []
+
+    @contextlib.contextmanager
+    def client(self, replay, revoke_at_write=False):
+        """Exercise MySQLConnection itself, including the last spawn check."""
+        original = connector.MySQLConnection._run_write_with_defaults
+
+        def invoke(argv, **options):
+            sql = options['input'].decode() if 'input' in options else argv[argv.index('-e') + 1]
+            self.invocations.append(sql)
+            if sql == 'SELECT @@version_comment':
+                text = 'MySQL Community Server (GPL)\n'
+            elif sql.startswith("/*myflames:privileges*/ SELECT 'myflames_who'"):
+                # Explicit synthetic login evidence. Parse it through the real
+                # privileges reader instead of replacing the privilege gate.
+                text = ('myflames_who\troot@localhost\troot@localhost\tNONE\t8.4.11\n'
+                        'GRANT SUPER, SYSTEM_VARIABLES_ADMIN, SESSION_VARIABLES_ADMIN, '
+                        'REPLICATION_SLAVE_ADMIN ON *.* TO `root`@`localhost`\n'
+                        'server_uuid\t11111111-2222-3333-4444-555555555555\n'
+                        'server_id\t1\nhostname\tfixture-db\nport\t3306\n')
+            elif 'information_schema.APPLICABLE_ROLES' in sql:
+                text = ''
+            elif 'input' in options:
+                text = replay.run_write(sql, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            else:
+                text = replay.run(sql, extra_flags=['--comments'])
+            return types.SimpleNamespace(returncode=0, stdout=(text or '').encode(), stderr=b'')
+
+        def write(conn, sql, flags, timeout, defaults):
+            if revoke_at_write:
+                # Defaults and credentials have already been prepared. The
+                # final connector login check must still revoke this send.
+                self.store.delete_connection_group('G')
+            return original(conn, sql, flags, timeout, defaults)
+
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded', side_effect=invoke), \
+                mock.patch.object(connector.MySQLConnection, '_run_write_with_defaults', write):
+            yield
+
+    def kill_payload(self, scenario):
+        safety = dbops.connection_safety(self.profile, self.connection, store=self.store)
+        expect = lock_tests.bound_kill_expect(scenario.conn, connection=self.connection, safety=safety)
+        payload = dict(connection=self.connection, connection_id=41, mode='connection', expect=expect)
+        review = ui.api_response('/api/live/kill/prepare', payload, self.workspace)
+        return dict(payload, review_token=review['review_token'], confirmed=True)
+
+    def test_consent_recreated_group_refuses_the_original_kill_review(self):
+        scenario = lock_tests.KillScenario()
+        payload = self.kill_payload(scenario)
+        self.store.delete_connection_group('G')
+        self.store.save_connection_group('G', [self.profile['id']])
+        with self.client(scenario.conn):
+            result = ui.api_response('/api/live/kill', payload, self.workspace)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.invocations, [])
+        self.assertFalse(scenario.killed)
+
+    def test_consent_group_deleted_inside_kill_login_sends_nothing(self):
+        scenario = lock_tests.KillScenario()
+        payload = self.kill_payload(scenario)
+        with self.client(scenario.conn, revoke_at_write=True):
+            result = ui.api_response('/api/live/kill', payload, self.workspace)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertTrue(self.invocations, 'the endpoint performed its real preflight reads')
+        self.assertFalse(scenario.killed)
+        self.assertFalse(any('KILL CONNECTION' in sql for sql in self.invocations))
+        record = self.store.audit_records()[0]
+        self.assertEqual(record['status'], 'refused')
+
+    def test_consent_group_deleted_inside_persist_login_sends_nothing(self):
+        replay, data = variable_tests.replay('mysql-8.4', 'persist')
+        args = data['args']
+        payload = dict(connection=self.connection, name=args['name'], value=args['value'], mode=args['mode'])
+        with self.client(replay):
+            plan = ui.api_response('/api/live/variable/plan', payload, self.workspace)
+        self.assertEqual(plan['status'], 'ready', plan)
+        self.invocations.clear()
+        with self.client(replay, revoke_at_write=True):
+            result = ui.api_response('/api/live/variable/apply',
+                                     dict(payload, expect=plan['expect'], confirmed=True), self.workspace)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertTrue(self.invocations)
+        self.assertFalse(any('SET PERSIST ' in sql for sql in self.invocations))
+        self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+
+    def test_consent_group_deleted_inside_replication_skip_login_sends_nothing(self):
+        report, _ = replication_tests.status('mysql-8.4-gtid-error')
+        plan = replication.plan_skip(report, '')
+        details = dict(channel='', expect=plan['identity'], statements=plan['statements'])
+        identity = ui._review_identity(self.connection, self.workspace)
+        token = ui._review_tokens(self.workspace).issue('replication_skip', identity, details)
+        replay, _ = replication_tests.replay('replication', 'mysql-8.4-gtid-skip')
+        with self.client(replay, revoke_at_write=True):
+            result = ui.api_response('/api/live/replication/skip',
+                dict(details, connection=self.connection, review_token=token, confirmed=True), self.workspace)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertFalse(result.get('sent'))
+        self.assertTrue(self.invocations)
+        self.assertFalse(any('SET GTID_NEXT' in sql or 'START REPLICA SQL_THREAD' in sql for sql in self.invocations))
+        self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+
+    def discovery_race(self, change):
+        self.store.assign_profile_group(['active'], 'G')
+        self.save('peer', 'G')
+        store, contacts = self.store, []
+
+        class Client(groups._FakeMemberConn):
+            def __init__(self, **options):
+                super(Client, self).__init__(**options)
+                if self.host == 'peer.example':
+                    change()
+
+            def __enter__(self):
+                self._login_guard()
+                contacts.append(self.host)
+                return super(Client, self).__enter__()
+
+            def server_version(self):
+                self._login_guard()
+                return super(Client, self).server_version()
+
+            def server_version_comment(self):
+                self._login_guard()
+                return super(Client, self).server_version_comment()
+
+            def query_rows(self, sql):
+                self._login_guard()
+                return super(Client, self).query_rows(sql)
+
+        groups._FakeMemberConn.reset()
+        with mock.patch.object(connector, 'MySQLConnection', Client):
+            result = ui.api_response('/api/connect', dict(group_name='G', active_member_profile_id='active',
+                                                         probe_members=True), self.workspace)
+        peer = next(p for p in result['group_connection']['members'] if p['profile_id'] == 'peer')
+        self.assertFalse(peer['reachable'], peer)
+        self.assertNotIn('peer.example', contacts)
+
+    def test_consent_active_member_removed_during_discovery_stops_peer_logins(self):
+        self.discovery_race(lambda: self.store.assign_profile_group(['active'], ''))
+
+    def test_consent_peer_endpoint_edited_during_discovery_stops_old_endpoint_login(self):
+        def edit():
+            value = dict(self.store.get('profile', 'peer'), host='edited-peer.example')
+            self.store.save('profile', value, 'peer', password='new-test-password', remember=True)
+        self.discovery_race(edit)
+
+    def test_consent_recreated_group_refuses_the_original_cluster_review(self):
+        # Reuse the synthetic three-member scenario while executing the actual
+        # plan and action endpoint, registry and saved target checks.
+        case = group_actions.GroupActionTests(methodName='runTest')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        plan = case.plan()
+        case.store.delete_connection_group('G')
+        case.store.save_connection_group('G', [p['id'] for p in case.profiles])
+        case.opened.clear()
+        result = case.apply(plan)
+        self.assertEqual((result['status'], result['sent']), ('refused', []))
+        self.assertEqual(case.opened, [])
+        case.assert_no_writes()

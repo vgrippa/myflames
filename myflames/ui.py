@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .connector import ConnectorError, client_missing_error
+from .connection_groups import ProfileReadError
 from .parser import analyze_plan
 # Compatibility exports for one release; validation is independent of HTTP.
 from .plan_input import MAX_PLAN, _plan
@@ -334,6 +335,26 @@ def _review_identity(connection, workspace):
     return dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
 
 
+def _group_guarded_connection(options, connection, store, identity=None):
+    """Keep consent current at transport setup and every client spawn."""
+    from .accounts_api import _group_login_guard
+    from .connector import MySQLConnection
+    conn = MySQLConnection(**options)
+    guard = _group_login_guard(store, connection, identity)
+    if guard is not None:
+        conn._login_guard = guard
+        conn._group_login_started = False
+    return conn
+
+
+def _group_login_refusal(audit, statements, exc, target=None):
+    """A local consent rejection proves that this client never spawned."""
+    if audit.pending:
+        audit.complete("refused", outcome="changed", message=str(exc))
+        return audit.id
+    return audit.outcome(statements, "refused", outcome="changed", message=str(exc), target=target)
+
+
 def _kill_review_details(payload):
     from .locks import _check_kill_args
     connection_id, mode, expect = payload.get("connection_id"), payload.get("mode", "connection"), payload.get("expect")
@@ -404,9 +425,14 @@ def _kill_response(payload, workspace):
         options = connection_options(payload.get("connection"))
         password = audit.password = options.get("password")
         audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, plain, workspace.store,
+                                       dbops.connection_identity(plain, safety)) as conn:
             return kill_session(conn, connection_id, mode, expect, audit=audit, decision=decision,
                                 confirmed=payload.get("confirmed") is True, connection=plain, before_send=consume)
+    except ProfileReadError as exc:
+        result = refused_result(connection_id, mode, str(exc))
+        result["audit_id"] = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect)
+        return result
     except KeyboardInterrupt as exc:
         audit.fail(exc, [KILL_TAG + statement])
         raise
@@ -498,7 +524,8 @@ def _bulk_kill_response(payload, workspace):
         for audit in audits:
             audit.password = password
             audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, plain, workspace.store,
+                                       dbops.connection_identity(plain, safety)) as conn:
             context = _kill_context(conn)
             try:
                 for target, statement, audit in zip(targets, details["statements"], audits):
@@ -512,6 +539,10 @@ def _bulk_kill_response(payload, workspace):
                         results.append(row)
                         if res.get("status") == "killed":
                             accepted.append((row, res, audit))
+                    except ProfileReadError as exc:
+                        audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect)
+                        results.append({"connection_id": cid, "status": "refused", "message": str(exc),
+                                        "audit_id": audit_id, "after": None})
                     except (ValueError, ConnectorError) as exc:
                         audit.fail(exc, [KILL_TAG + statement])
                         results.append({"connection_id": cid, "status": "error",
@@ -527,6 +558,13 @@ def _bulk_kill_response(payload, workspace):
                 # An interrupted after-read cannot turn an accepted KILL into a failed send.
                 for row, _res, audit in accepted:
                     audit.complete("ok", outcome="killed", message=row["message"], after=row["after"])
+    except ProfileReadError as exc:
+        completed = {row["connection_id"] for row in results}
+        for target, statement, audit in zip(targets, details["statements"], audits):
+            if target["connection_id"] not in completed:
+                audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, target["expect"])
+                results.append({"connection_id": target["connection_id"], "status": "refused", "message": str(exc),
+                                "audit_id": audit_id, "after": None})
     except (KeyboardInterrupt, ValueError, ConnectorError) as exc:
         for audit, statement in zip(audits, details["statements"]):
             audit.fail(exc, [KILL_TAG + statement])
@@ -1002,7 +1040,8 @@ def _replication_audit(workspace, operation, connection, safety, decision):
     from . import dbops
     plain = dict(connection) if isinstance(connection, dict) else {}
     password = plain.get("password") if isinstance(plain.get("password"), str) else None
-    state = {"connection": {k: plain.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}, "password": password}
+    state = {"connection": {k: plain.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")},
+             "password": password, "identity": dbops.connection_identity(plain, safety)}
 
     def decision_reader():
         # A confirmation authorizes the saved policy at that moment. Loops
@@ -1041,12 +1080,12 @@ def _replication_open(payload, workspace, state):
     """A connection for a replication write, with the saved password filled
     only now (after the policy). The caller closes it."""
     from .live import connection_options
-    from .connector import MySQLConnection
     options = connection_options(_with_saved_password(payload, workspace).get("connection"))
     state["password"] = options.get("password") or state["password"]
     state["connection"] = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
     options["query_timeout"] = 30
-    return MySQLConnection(**options)
+    return _group_guarded_connection(options, payload.get("connection"), workspace.store,
+                                     state.get("identity"))
 
 
 def _replication_skip_response(payload, workspace, safety=None):
@@ -1092,6 +1131,12 @@ def _replication_skip_response(payload, workspace, safety=None):
             audit.password, audit.connection = state["password"], state["connection"]
             return rp.skip_one(conn, channel, expect, audit=audit, decision=decision, confirmed=True,
                                statements=statements, decision_reader=state["decision_reader"], before_send=consume)
+    except ProfileReadError as exc:
+        result = {"schema_version": rp.SKIP_SCHEMA_VERSION, "engine": None, "server_version": None,
+                  "channel": payload.get("channel"), "method": target.get("method"),
+                  "statements": list(payload.get("statements") or []), "verified": [], "target": target,
+                  "plan": None, "after": None}
+        return rp._unsent(result, audit, "refused", "changed", str(exc), target)
     except (Exception, KeyboardInterrupt) as exc:
         _replication_preflight_error(audit, state, exc, target, tagged)
         _reraise_redacted(exc, state["password"])
@@ -1524,6 +1569,11 @@ def _connect_response(payload, workspace):
     if active is None:
         active = primary or members[0]
 
+    from .accounts_api import _group_login_guard
+    from .workspace_store import ENDPOINT_FIELDS, _same_endpoint
+    active_route = dict({k: active.get(k) for k in ENDPOINT_FIELDS}, profile_id=active["id"], group_name=group_name)
+    active_guard = _group_login_guard(store, active_route)
+
     def open_member(profile, with_facts):
         value = {k: profile.get(k) for k in ("host", "port", "user", "database", "ssl_mode", "ssl_ca",
                                              "ssh_host", "ssh_user", "ssh_port")
@@ -1537,8 +1587,11 @@ def _connect_response(payload, workspace):
         def login_guard():
             # Consent is the store at every login: a member removed from the
             # group while discovery runs gets no later client invocation.
+            active_guard()
             current = store.get("profile", profile["id"])
-            if not isinstance(current, dict) or (current.get("group") or "") != group_name:
+            if (not isinstance(current, dict) or (current.get("group") or "") != group_name
+                    or not _same_endpoint(current, profile)
+                    or current.get("group_generation") != profile.get("group_generation")):
                 raise connection_groups.ProfileReadError(
                     "This saved connection is outside the current connection group.")
 
@@ -1833,7 +1886,7 @@ def _variable_response(path, payload, workspace):
     options = connection_options(payload.get("connection"))
     options["query_timeout"] = 30
     try:
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, payload.get("connection"), workspace.store) as conn:
             if path == "/api/live/variable":
                 return variables.read_variable(conn, name)
             plan = variables.plan_change(conn, name, payload.get("value"), mode)
@@ -1902,8 +1955,13 @@ def _variable_apply(payload, workspace):
         options["query_timeout"] = 30
         password = audit.password = options.get("password")
         audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
-        with MySQLConnection(**options) as conn:
+        with _group_guarded_connection(options, connection, workspace.store,
+                                       dbops.connection_identity(connection, safety)) as conn:
             return variables.apply_change(conn, request, expect, decision=decision, confirmed=True, audit=audit)
+    except ProfileReadError as exc:
+        result = variables.unsent_result(name, mode, request["requested"], "refused", str(exc))
+        result["audit_id"] = _group_login_refusal(audit, [variables.TAG + expect["statement"]], exc, expect)
+        return result
     except (ValueError, ConnectorError) as exc:
         audit.fail(exc, [variables.TAG + expect["statement"]])
         _reraise_redacted(exc, password)

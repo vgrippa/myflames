@@ -70,11 +70,11 @@ export function passwordStatus(p?: Profile) {
 }
 /** The non-secret fields of a connection or saved connection, in session
  * order. Spaces pasted around the host or CA path, or after the database,
- * are dropped as the server drops them (live.connection_options). */
-export function connectionFields(c: Partial<Connection>): SessionConnection & { group: string } {
+ * are dropped as the server drops them (live.connection_options). Stored
+ * group metadata stays on profiles; Group requests carry group_name. */
+export function connectionFields(c: Partial<Connection>): SessionConnection {
   return {
     name: c.name || "",
-    group: c.group || "",
     host: trimPasted(c.host || ""),
     port: c.port || 3306,
     user: c.user || "",
@@ -217,7 +217,7 @@ const groupTag = (g?: string) => g ? <span className="connection-group-tag" titl
  * confirmed under another policy (changed in another tab or the CLI) sends
  * nothing: its connection key no longer matches.
  */
-export type WritePolicy = { blocked: string; check: () => Promise<Connection> };
+export type WritePolicy = { blocked: string; check: (connection?: Connection) => Promise<Connection> };
 export const WritePolicyContext = createContext<WritePolicy | null>(null);
 export function useWritePolicy() {
   return useContext(WritePolicyContext);
@@ -1502,12 +1502,16 @@ export function ConnectionPicker({
         <div className="picker-panel">
           <h3 className="popover-title">Connection in use</h3>
           <label className="field">Connection
-            <Select label="Connection" value={active.id} onChange={id => {
+            <Select label="Connection" value={activeGroup ? "group-connection" : active.id} onChange={id => {
+              if (id === "group-connection") return;
               onSwitch(id);
               const chosen = profiles.find(p => p.id === id);
-              if (chosen) void checkReadiness({ ...chosen, profile_id: chosen.id,
+              // The probe sends the connection fields only (connectionFields):
+              // stored group metadata never leaves the profile list.
+              if (chosen) void checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
                 password: id === active.id ? active.password : "" }).catch(() => {});
             }} options={[
+              ...(activeGroup ? [["group-connection", name] as [string, string]] : []),
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),
               ...profiles.map((p): [string, string] => [p.id, p.group ? `${p.name} (${p.group})` : p.name]),
             ]} />

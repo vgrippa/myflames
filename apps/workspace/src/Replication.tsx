@@ -309,7 +309,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     const live = captureScope();
     let sent = false;
     try {
-      const checked = policy ? await policy.check() : c.connection;
+      const checked = policy ? await policy.check(c.connection) : c.connection;
       if (!live() || connectionKey(checked) !== c.key) throw new Error("The connection or its write policy changed. Nothing was sent. Refresh and confirm again.");
       // An old or changed plan is shown again and needs another click. Python
       // repeats this check immediately before sending the script.

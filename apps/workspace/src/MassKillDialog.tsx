@@ -441,7 +441,7 @@ export function MassKillDialog({
     let attempted = false;
     try {
       // Re-read the type and read-only flag: they may have changed since the review.
-      const active = policy ? await policy.check() : connection;
+      const active = policy ? await policy.check(connection) : connection;
       if (connectionKey(active) !== connectionKey(connection)) {
         setPending(null);
         const message = "The connection or its type or read-only setting changed after this review, so nothing was sent. Check it and try again.";

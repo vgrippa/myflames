@@ -1778,10 +1778,20 @@ Local `audit purge` has its separate confirmation contract.
   identity through `finish_read`, with `expected=profile`: MySQL's
   `server_uuid` from that probe's `SHOW GLOBAL VARIABLES`, or Galera/PXC's
   `wsrep_node_uuid` from `SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'` on the
-  same connection. Only a probe that ran during this read (including one this
-  read waited on) supplies that evidence: a cached probe's data still answers
-  topology questions but records no identity, so it cannot overwrite a newer
-  identity a direct read stored. A peer's membership table, reported address, ProxySQL or
+  same connection. Each probe retains its monotonic start order in the cache,
+  including while another request waits for it. Publishing or reusing a result
+  never gives it a new observation time. A plain cache hit answers topology
+  questions without publishing identity evidence again. The store refuses an observation
+  older than or equal to the one already recorded, so an in-flight or cached
+  probe cannot overwrite a newer direct read. `begin_topology_observation()`
+  reserves a store-bound sequence before a waiting read; pass that token as
+  `observation` to `record_topology_identity`. Calls without a token reserve
+  one on entry. Sequences survive reopening the store, foreign-store tokens
+  are refused, and replayed tokens change nothing. Probe ordering and store
+  sequences live in the private `topology_observations` table, leaving profile
+  timestamps and public identity fields unchanged. Across processes, where a
+  probe's monotonic origin is unrelated, its preceding identity snapshot must
+  still match the store. A peer's membership table, reported address, ProxySQL or
   Readyset backend UUID never supplies this evidence. `GroupScope` keeps the
   endpoint snapshot and identity as private attributes of its read outcome;
   they are not fields in the serialized report. Before persisting them,
@@ -2268,18 +2278,32 @@ hostname, port or wsrep_node_name cannot replace node identity. MariaDB
 `Show::variables_fields_info` (VARIABLE_NAME, VARIABLE_VALUE), and their
 `mysql-test/suite/wsrep/r/variables.result:58` records wsrep_gcomm_uuid.
 MySQL's columns are defined in `storage/perfschema/table_global_status.cc:65–66`.
+This table does not require Performance Schema to be enabled: its share is
+`perpetual` (`table_global_status.cc:81`), and `ha_perfschema.cc:111–112`
+allows perpetual tables with instrumentation disabled. Its
+`pfs_truncatable_world_acl` also permits SELECT without a table grant
+(`table_global_status.cc:73`, `pfs_engine_table.cc:1139–1148`). An absent
+wsrep_gcomm_uuid row still fails the NULL-safe comparison; it never authorizes
+a write and is not evidence that Performance Schema is disabled.
 
 A match sets a session variable to NULL and changes no persistent state. A
 mismatch raises server error 1242 at script line 1, so batch processing stops
-before the reviewed SQL. A server error on that guard returns `refused`,
-outcome `identity_mismatch`, and `sent: []`, with the message: "The server
+before the reviewed SQL. That deliberate error returns `refused`, outcome
+`identity_mismatch`, and `sent: []`, with the message: "The server
 answering this connection is not the one you reviewed. Nothing was sent.
-Refresh and review again." MariaDB can echo the statement before its ERROR
+Refresh and review again." In `reviewed_writes.execute`, other server errors
+on guard line 1, including 1142 and 1146, return
+`refused` / `identity_unavailable`, with
+`The identity check could not run: <server message>. Nothing was sent. Refresh and review again.`
+`dbops.target_guard_failed` returns these refusal details (truthy), or None
+when the error does not prove that the guard stopped the batch.
+MariaDB can echo the statement before its ERROR
 line, so the parser locates the ERROR line within the output. Later error
 line numbers subtract the guard line before identifying the user's statement.
 A client transport error still has an unknown outcome. The pending audit
 includes the guard before the reviewed statements and finishes `refused` with
-`identity_mismatch` when the guard fails; no after-read or retry follows.
+the corresponding `identity_mismatch` or `identity_unavailable` outcome;
+no after-read or retry follows a definite guard refusal.
 The scalar-subquery behavior is documented in the
 [MySQL manual](https://dev.mysql.com/doc/refman/8.4/en/subquery-errors.html)
 and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/subqueries/subqueries-scalar-subqueries).
@@ -5032,11 +5056,20 @@ Schema GRANT suggestions use the partial_revokes value from this same login,
 never the earlier status preflight. With it OFF, `_`, `%` and backslash in a
 schema name are escaped as database-pattern literals before identifier
 quoting. With it ON, names remain literal, including underscores and percent
-signs. When the setting is unknown and a schema needs such escaping,
+signs. MySQL 5.7 and 8.0.0–8.0.15 have no partial_revokes variable and always
+use wildcard matching, so a successful grant read on those versions uses
+the same escaping as OFF. MariaDB also always uses wildcard matching.
+When the setting is unknown on a version that has it, or the version is
+incomplete or unknown, and a schema needs such escaping,
 `grant_sql` is null and the catalog explains that the GRANT could not be
 built. A globally scoped suggestion needs no schema escaping. This follows
 MySQL `sql/auth/sql_auth_cache.cc:1426–1430`: wild_compare with
-partial_revokes OFF and strcmp with it ON.
+partial_revokes OFF and strcmp with it ON. Historical source evidence is
+`mysql-5.7.44:sql/auth/sql_auth_cache.cc:1033`,
+`mysql-8.0.15:sql/auth/sql_auth_cache.cc:1163` (unconditional wild_compare),
+and `mysql-8.0.16:sql/auth/sql_auth_cache.cc:1181–1184` (the new switch).
+MariaDB `sql/sql_acl.cc:3257` uses wild_compare unconditionally. Failed
+grant reads still return no model or suggestion on every engine/version.
 
 When a readable model cannot satisfy a requirement, `missing_privileges`
 names each missing alternative with its required scope and grant option.
@@ -5186,13 +5219,27 @@ claim an identity refusal.
 
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
-reviewed-write result is failed with nothing sent. A statement exception maps
-to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
-number, or 0 when neither is present. Since one AdminAPI call can fail after
+reviewed-write result is failed with nothing sent. Only the bare initial
+`MySQL Error <n>` format from Shell `src/mysqlsh/main.cc:633–645` establishes
+that failure: an AdminAPI-wrapped connection error without a location remains
+unknown. A statement exception maps
+to `ERROR <n> at line <l>: <message>` only when stderr supplies a call location,
+using the MySQL Shell number, the MySQL number, or 0 when neither is present.
+MySQL Shell appends that location in `mysqlshdk/scripting/types.cc:717` and
+`mysqlshdk/scripting/polyglot/utils/polyglot_error.cc:438`. The last stderr
+location takes precedence over embedded text; stdout is progress and cannot
+supply a location or an exception number. Without a location, a numbered or
+typed exception retains its message with the statement location and outcome
+unknown; no line 1 is invented and no identity mismatch is inferred.
+Since one AdminAPI call can fail after
 some steps ran, `verify_on_error` reads the cluster again and reports partial
-when the before/after comparison shows a visible change. A timeout or Shell
-exit without an error message leaves the outcome unknown and is never retried
-automatically. This read does not prove the state of members it cannot see.
+when the before/after comparison shows a visible change. That read also runs
+for an unlocated exception: a visible change is partial, while no visible
+change or a failed after-read leaves the outcome unknown. Individual statement
+states stay unknown when no call location was reported. A timeout or Shell
+exit without an error message also leaves the outcome unknown unless an
+after-read observes a partial change. No error is retried automatically.
+This read does not prove the state of members it cannot see.
 
 Never use "GCache" wording. There are no catalog actions for `SET GLOBAL
 wsrep_on` (sessions opened later stop replicating their writes), PXC, Galera

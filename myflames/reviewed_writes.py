@@ -289,7 +289,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
-    from .dbops import may_have_run, target_guard_failed, shift_guard_error, TARGET_IDENTITY_MISMATCH
+    from .dbops import may_have_run, target_guard_failed, shift_guard_error
     from .connection_groups import ProfileReadError
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
@@ -343,16 +343,18 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         return out
     except ConnectorError as exc:
         from .dbops import redact
-        if out["session_guard"] and target_guard_failed(exc):
-            out.update(status="refused", outcome="identity_mismatch", message=TARGET_IDENTITY_MISMATCH,
+        pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
+        guard_failure = target_guard_failed(exc) if out["session_guard"] else None
+        if guard_failure:
+            out.update(status="refused", outcome=guard_failure["outcome"],
+                       message=redact(guard_failure["message"], pw),
                        not_sent=list(statements), states=["not_sent"] * len(statements))
             _set(progress, "finished", out["states"], "refused")
             if audit is not None:
-                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=out["message"])
+                audit.complete("refused", outcome=out["outcome"], error=redact(str(exc), pw), message=out["message"])
             return out
         if out["session_guard"]:
             exc = shift_guard_error(exc)
-        pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
         text = redact(str(exc), pw)
         out["error"] = redact(server_message(text), pw)
         code, line = error_number(text), failed_line(text)
@@ -363,10 +365,31 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             out["message"] = ("No reply arrived (%s), so whether %s ran is unknown. Nothing will be sent again: "
                               "refresh and check the state before you do anything else."
                               % (out["error"], "these statements" if len(statements) > 1 else "the statement"))
-            _set(progress, "finished", out["states"], "unknown")
+            # An AdminAPI exception can omit its call site after changing
+            # the cluster. A read can show a partial change, but an unchanged
+            # visible snapshot cannot prove that no operation ran elsewhere.
+            if verify_on_error and read_after is not None:
+                _set(progress, "reading")
+                try:
+                    out["after"] = read_after()
+                except (ConnectorError, ValueError):
+                    out["after"] = None
+                if effect is not None and out["after"] is not None:
+                    try:
+                        out["effect"] = effect(fresh, out["after"])
+                    except (KeyError, TypeError, ValueError):
+                        out["effect"] = None
+                if out["effect"]:
+                    out["status"] = "partial"
+                    out["message"] = ("An error was reported (%s), and part of the change is visible. "
+                                      "The statement location is unknown; check the current state before "
+                                      "doing anything else." % out["error"])
+            _set(progress, "finished", out["states"], out["status"])
             if audit is not None:
-                audit.complete("unknown", outcome="timeout" if "timed out" in text else "no_reply", error=text,
-                               message=out["message"])
+                audit.complete("error" if out["status"] == "partial" else "unknown",
+                               outcome="partial" if out["status"] == "partial" else
+                               "timeout" if "timed out" in text else "no_reply", error=text,
+                               message=out["message"], after=out["after"])
             return out
         if line is None:
             out["status"] = "failed"

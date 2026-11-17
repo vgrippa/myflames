@@ -610,6 +610,26 @@ class TestPeerIdentityRecording(GroupCase):
                          'a cached probe must not overwrite the newer identity')
         self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
 
+    def test_inflight_probe_never_overwrites_a_newer_direct_read(self):
+        original = tl._probe_connection
+
+        def probe(conn, profile, remaining=None):
+            observed = original(conn, profile, remaining)
+            if profile['id'] == 'db-2':
+                # The probe has observed the old UUID but has not published it.
+                # A direct read of the same, unchanged endpoint finishes now.
+                self.store.record_topology_identity('db-2', {'server_uuid': CF.SERVER_UUIDS[0]},
+                                                    expected=self.store._profile('db-2'))
+            return observed
+
+        with mock.patch.object(tl, '_probe_connection', side_effect=probe):
+            self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0],
+                         'a cache hit must retain the original observation order')
+
     def test_cluster_member_endpoints_need_no_probe_and_offer_identity_check_on_review(self):
         self.profiles = [self.store.save('profile', dict(p, host='db-%d' % (i + 1)), p['id'],
                                        password='test-password', remember=True)

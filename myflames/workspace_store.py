@@ -16,6 +16,7 @@ import datetime
 from contextlib import closing
 import hashlib
 import hmac
+import itertools
 import json
 import math
 import os
@@ -45,6 +46,32 @@ ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ss
 #: target is appended only when set, so existing fingerprints stay valid.
 _BASE_ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
 _SSH_ENDPOINT_FIELDS = ('ssh_host', 'ssh_user', 'ssh_port')
+
+_TOPOLOGY_EPOCH = uuid.uuid4().hex
+_TOPOLOGY_START_ORDER = itertools.count(1)
+_TOPOLOGY_CLOCK_SETTING = 'topology.observation_clock'
+
+
+class _TopologyObservation(object):
+    """Private start-order evidence, never a field in a server report.
+
+    Store-issued observations have a durable sequence and store binding.
+    Probes do not own a store: they retain their process-monotonic start and
+    the preceding stored observation instead, including across cache hits.
+    """
+    def __init__(self, store=None, sequence=None, previous=None):
+        self.store = store
+        self.sequence = sequence
+        self.epoch = _TOPOLOGY_EPOCH
+        # A strict monotonic sequence also orders starts within one clock
+        # tick on platforms whose monotonic timer has coarse resolution.
+        self.started = next(_TOPOLOGY_START_ORDER)
+        self.previous = previous
+
+
+def _topology_probe_observation(profile):
+    return _TopologyObservation(previous=dict(profile.get('topology_identity') or {}))
+
 
 # Session restore: one autosaved workspace snapshot (see validate_session_state).
 SESSION_MAX_BYTES = 64 * 1024 * 1024
@@ -406,6 +433,11 @@ class WorkspaceStore:
                          'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL, ssh TEXT)')
             conn.execute('CREATE INDEX IF NOT EXISTS audit_attempted_at ON audit (attempted_at)')
             conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            # Private ordering metadata, separate from public identity fields.
+            # Additive, as with the other derived tables: no version migration.
+            conn.execute('CREATE TABLE IF NOT EXISTS topology_observations '
+                         '(profile_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, '
+                         'epoch TEXT NOT NULL, started INTEGER NOT NULL)')
             # A cache of investigation list metadata, derived from records and
             # refreshed by list_investigations: an older myflames sharing this
             # file writes records only, so no version bump or migration.
@@ -1091,11 +1123,40 @@ class WorkspaceStore:
         return {'deleted': True, 'group': name, 'name': name, 'updated': cleared_ids,
                 'groups': list_groups(profiles), 'profiles': profiles}
 
-    def record_topology_identity(self, profile_id, identity, expected=None):
+    def _topology_clock(self, conn):
+        row = conn.execute('SELECT value FROM settings WHERE key=?', (_TOPOLOGY_CLOCK_SETTING,)).fetchone()
+        return json.loads(row[0]) if row else {'store': uuid.uuid4().hex, 'sequence': 0}
+
+    def _issue_topology_observation(self, conn):
+        clock = self._topology_clock(conn)
+        clock['sequence'] += 1
+        conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                     (_TOPOLOGY_CLOCK_SETTING, json.dumps(clock)))
+        return _TopologyObservation(clock['store'], clock['sequence'])
+
+    def begin_topology_observation(self):
+        """Reserve a start sequence shared by every instance of this store.
+
+        Call before a read that can wait. A direct record without a token
+        reserves one on entry, before reading or changing the profile.
+        """
+        conn = self._transaction()
+        try:
+            observation = self._issue_topology_observation(conn)
+            conn.execute('COMMIT')
+            return observation
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+
+    def record_topology_identity(self, profile_id, identity, expected=None, observation=None):
         """Record evidence from the opened connection without touching other fields.
 
-        An endpoint edit during the read invalidates its evidence. The timestamp
-        of the profile itself stays unchanged: this is not a credential edit.
+        An endpoint edit or a newer observation invalidates the evidence. The
+        profile timestamp stays unchanged: this is not a credential edit.
         """
         from .connection_groups import IDENTITY_FIELDS
         if not isinstance(identity, dict) or not identity:
@@ -1111,12 +1172,46 @@ class WorkspaceStore:
             clean['source_uuids'] = list(dict.fromkeys(sources))
         if not inspected:
             return
+        if observation is None:
+            observation = identity.get('_topology_observation')
+        if observation is None:
+            observation = self.begin_topology_observation()
+        if not isinstance(observation, _TopologyObservation) or observation.epoch != _TOPOLOGY_EPOCH:
+            return
         clean['recorded_at'] = _now()
         conn = self._transaction()
         try:
             kind, value = self._record(conn, profile_id)
             if kind == 'profile' and (expected is None or _same_endpoint(expected, value)):
                 previous = dict(value.get('topology_identity') or {})
+                row = conn.execute('SELECT sequence, epoch, started FROM topology_observations WHERE profile_id=?',
+                                   (profile_id,)).fetchone()
+                recorded = dict(zip(('sequence', 'epoch', 'started'), row)) if row else {}
+                clock = self._topology_clock(conn)
+                if observation.store is not None:
+                    valid = (observation.store == clock['store'] and
+                             isinstance(observation.sequence, int) and
+                             0 < observation.sequence <= clock['sequence'])
+                    # A probe can publish between reserving this token and
+                    # completing its read. Its later commit sequence must
+                    # not make an earlier probe appear to have started later.
+                    newer = valid and (observation.started > recorded.get('started', 0)
+                                       if recorded.get('epoch') == observation.epoch else
+                                       observation.sequence > recorded.get('sequence', 0))
+                elif recorded.get('epoch') == observation.epoch:
+                    newer = observation.started > recorded.get('started', 0)
+                else:
+                    # Another process can write this database. Its monotonic
+                    # origin is unrelated: only accept the probe if its saved
+                    # snapshot has not been superseded in the meantime.
+                    newer = observation.previous == previous
+                if not newer:
+                    conn.execute('COMMIT')
+                    return
+                issued = observation if observation.store is not None else self._issue_topology_observation(conn)
+                conn.execute('INSERT OR REPLACE INTO topology_observations VALUES (?, ?, ?, ?)',
+                             (profile_id, max(issued.sequence, recorded.get('sequence', 0)),
+                              observation.epoch, observation.started))
                 if (clean.get('server_uuid') and previous.get('server_uuid') and
                         clean['server_uuid'] != previous['server_uuid']):
                     # The same endpoint can reach another server. None of the

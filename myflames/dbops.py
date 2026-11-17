@@ -1115,13 +1115,25 @@ def target_session_guard(engine, identity):
 
 
 def target_guard_failed(exc):
-    """A server refusal of script line 1, even after MariaDB's SQL echo.
+    """Refusal details for script line 1, or None when its outcome is unknown.
 
     A transport error at that line still has an unknown outcome. Only a
     server answer proves the batch stopped before the reviewed statements.
+    Error 1242 is the SQL guard's deliberate mismatch; a different server
+    error means the check could not run, not that another server answered.
+    Existing boolean callers can still test the returned details directly.
     """
     match = _TARGET_ERROR.search(str(exc))
-    return bool(match and int(match.group(2)) == 1 and not 2000 <= int(match.group(1)) <= 2999)
+    if not match or int(match.group(2)) != 1 or 2000 <= int(match.group(1)) <= 2999:
+        return None
+    if int(match.group(1)) == 1242:
+        return {"outcome": "identity_mismatch", "message": TARGET_IDENTITY_MISMATCH}
+    # Discard any MariaDB SQL echo before the actual ERROR line. Callers
+    # additionally redact their connection password before display/audit.
+    message = redact(str(exc)[match.end():].strip())
+    return {"outcome": "identity_unavailable",
+            "message": "The identity check could not run: %s. Nothing was sent. Refresh and review again."
+                       % message.rstrip(".")}
 
 
 def shift_guard_error(exc):
@@ -1211,6 +1223,13 @@ def _group_safety(safety, profile, connection, store, target_profile=None):
         profiles = None
     if not isinstance(profiles, (list, tuple)):
         return dict(safety, type=DEFAULT_CONNECTION_TYPE)
+    if group is not None:
+        # Consent belongs to this stored incarnation of the group. Never
+        # accept a generation supplied by the request or a stale profile.
+        member = next((p for p in profiles if isinstance(p, dict) and p.get("id") == active_id
+                       and p.get("group") == group), None)
+        safety = dict(safety, group_name=group,
+                      group_generation=(member or {}).get("group_generation") or "")
     candidates = [safety["type"]]
     if group is not None:
         candidates.append(group_effective_safety(profiles, group))
@@ -1278,7 +1297,27 @@ def connection_identity(connection, safety=None):
     read_only = source.get("read_only") is True
     if ctype != DEFAULT_CONNECTION_TYPE or read_only:
         key += [ctype, read_only]
+    if isinstance(safety, dict) and safety.get("group_name"):
+        # A mapping cannot be mistaken for the optional SSH list at index 6
+        # by identity_endpoint. Cleanup remains bound only to its endpoint.
+        key.append({"group_name": safety["group_name"],
+                    "group_generation": safety.get("group_generation") or ""})
     return json.dumps(key, separators=(",", ":"), ensure_ascii=False)
+
+
+def identity_group(identity):
+    """The store-derived consent binding, apart from endpoint and policy.
+
+    Account plans allow a policy change to reach the current policy gate,
+    but must never survive changing or recreating their connection group.
+    """
+    try:
+        key = json.loads(identity) if isinstance(identity, str) else None
+    except ValueError:
+        return None
+    if isinstance(key, list) and key and isinstance(key[-1], dict):
+        return key[-1]
+    return None
 
 
 #: Elements of a :func:`connection_identity` list that name the endpoint.

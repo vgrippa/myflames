@@ -30,7 +30,7 @@ import {
   type ClusterAction, type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
 } from "./clusterApi";
 import {
-  ClusterMark, ClusterTopology, GLOSSARY, matchingProfile, memberAddress, memberEngine, memberEngineFull, memberFlow,
+  ClusterMark, ClusterTopology, GLOSSARY, matchingProfile, namedGroupProfile, memberAddress, memberEngine, memberEngineFull, memberFlow,
   memberKey, routerKey, type LocalMarker,
 } from "./ClusterTopology";
 import "./cluster.css";
@@ -250,8 +250,11 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
         const editGroup = !a.enabled && a.scope === "member" && a.target?.profile_id === null && groupName && onEditGroup
           ? () => onEditGroup(groupName) : undefined;
         const member = !a.target?.self ? report.members.find((m) => m.key === a.member_key) : undefined;
-        const use = !a.enabled && member && onSwitchConnection && /connect to/i.test(a.fix || "")
-          ? matchingProfile(member, profiles) : undefined;
+        // Group hints name a consenting saved login. A single connection can
+        // suggest switching to any saved login at the member's address.
+        const use = !a.enabled && member && onSwitchConnection
+          ? groupName ? namedGroupProfile(a.fix || "", groupName, profiles) : matchingProfile(member, profiles)
+          : undefined;
         return (
           <Fragment key={a.id}>
             <button type="button" className={`button${a.danger ? " danger" : ""}`} title={blocked || a.description}

@@ -685,7 +685,7 @@ export async function sendKill(active: Connection, target: KillTarget, mode: "co
     // The type and read-only flag as they are now (another tab or the CLI
     // may have changed them): the dialog was confirmed under the old ones.
     try {
-      active = await policy.check();
+      active = await policy.check(active);
     } catch (e) {
       return {
         status: "error",

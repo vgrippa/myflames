@@ -33,6 +33,53 @@ class TestWorkspaceStore(unittest.TestCase):
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
 
+    def test_topology_observations_keep_start_order_across_store_instances(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = self.store.begin_topology_observation()
+        reopened = WorkspaceStore(self.path)
+        newer = reopened.begin_topology_observation()
+        reopened.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile, observation=newer)
+        before = reopened._profile('db', include_updated=True)
+        self.store.record_topology_identity('db', {'server_uuid': 'old'}, expected=profile, observation=older)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+        # Equal observations are idempotent, even if a caller supplies new data.
+        self.store.record_topology_identity('db', {'server_uuid': 'replay'}, expected=profile, observation=newer)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+        self.store.record_topology_identity('db', {'server_uuid': 'direct'}, expected=profile)
+        self.assertEqual(self.store._profile('db')['topology_identity']['server_uuid'], 'direct')
+
+    def test_topology_observation_rejects_tokens_from_another_store(self):
+        self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        other = WorkspaceStore(self.path.parent / 'other.sqlite3')
+        observation = other.begin_topology_observation()
+        self.store.record_topology_identity('db', {'server_uuid': 'foreign'}, observation=observation)
+        self.assertNotIn('topology_identity', self.store._profile('db'))
+
+    def test_newer_reserved_observation_can_finish_after_an_older_probe(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = workspace_store._topology_probe_observation(profile)
+        newer = self.store.begin_topology_observation()
+        self.store.record_topology_identity('db', {'server_uuid': 'old', '_topology_observation': older},
+                                            expected=profile)
+        self.store.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile, observation=newer)
+        before = self.store._profile('db', include_updated=True)
+        self.assertEqual(before['topology_identity']['server_uuid'], 'new')
+        self.store.record_topology_identity('db', {'server_uuid': 'replay', '_topology_observation': older},
+                                            expected=profile)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+
+    def test_probe_rejects_a_changed_snapshot_from_another_process_epoch(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = workspace_store._topology_probe_observation(profile)
+        # A separate workspace process has an unrelated monotonic origin.
+        with patch.object(workspace_store, '_TOPOLOGY_EPOCH', 'another-process'):
+            reopened = WorkspaceStore(self.path)
+            reopened.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile)
+        before = self.store._profile('db', include_updated=True)
+        self.store.record_topology_identity('db', {'server_uuid': 'old', '_topology_observation': older},
+                                            expected=profile)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+
     def test_client_choice_read_and_clear_do_not_create_a_database(self):
         self.assertIsNone(self.store.client_choice('mysql'))
         self.assertIsNone(self.store.set_client_choice('mysql', None))

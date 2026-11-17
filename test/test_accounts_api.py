@@ -504,6 +504,23 @@ class AccountsApiTest(unittest.TestCase):
         record = self.workspace.store.audit_records()[0]
         self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
 
+    def test_consent_recreated_group_refuses_the_original_account_plan(self):
+        connection = self.grouped_connection()
+        plan = self.call('/api/accounts/plan', connection=connection, operation='create', user='t_api', host='%',
+                         password='x-pw')
+        self.workspace.store.delete_connection_group('G')
+        self.workspace.store.save_connection_group('G', ['g1'])
+        self.opened.clear()
+        with mock.patch.object(self.workspace.store, 'connection_with_saved_password',
+                               wraps=self.workspace.store.connection_with_saved_password) as password:
+            result = self.call('/api/accounts/apply', connection=connection, plan_id=plan['plan_id'],
+                               expect=plan['expect'], confirmed=True, password='x-pw')
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertIn('group', result['message'].lower())
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.conn.stdin, [])
+        password.assert_not_called()
+
     def test_group_apply_rechecks_the_strictest_policy_after_the_password_lookup(self):
         connection = self.grouped_connection()
         plan = self.call('/api/accounts/plan', connection=connection, operation='create', user='t_api', host='%',

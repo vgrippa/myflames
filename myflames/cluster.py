@@ -2239,8 +2239,17 @@ def _grant_model(report, grants):
         model = privileges.parse_grants(grants.get("grants"), report.get("engine"), report.get("server_version"),
                                          partial_revokes=partial is True)
         model["account"] = grants.get("account")
-    # The parser's default is not evidence that the variable was read. Keep
-    # unknown separate so advisory schema GRANTs never guess their meaning.
+    if not isinstance(partial, bool):
+        version = _version_of(report)
+        if report.get("engine") == "mariadb" or (
+                report.get("engine") in ("mysql", "percona", "percona_server", "pxc") and
+                len(version) == 3 and (5, 7, 0) <= version < (8, 0, 16)):
+            # MySQL 5.7.44 sql/auth/sql_auth_cache.cc:1033 and 8.0.15:1163
+            # always wild_compare; 8.0.16:1181 adds mysqld_partial_revokes().
+            # MariaDB sql/sql_acl.cc:3257 also always wild_compare.
+            partial = False
+    # A successful read on an engine without partial_revokes has known
+    # wildcard semantics. On versions with the variable, absence is unknown.
     model["grant_partial_revokes"] = partial if isinstance(partial, bool) else None
     if not model.get("grants") or model.get("unparsed") or not model.get("fresh_session", True):
         return None

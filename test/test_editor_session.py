@@ -1051,7 +1051,19 @@ class ProcessTests(unittest.TestCase):
         # Add identity fields to this test's client without changing the shared fixture.
         client = FAKE.read_text(encoding="utf-8").replace(
             '"connection_id": str(self.conn_id),',
-            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+            '"server_uuid": "11111111-2222-3333-4444-555555555555",')
+        # Model batch abort on a first-line identity guard, before any KILL.
+        # The persistent editor stays on its original server; only the helper
+        # can be routed elsewhere by this synthetic test control.
+        client = client.replace('def one_shot(sql):\n', '''def one_shot(sql):
+    with open(os.path.join(STATE, "helper-batches.log"), "a") as handle:
+        handle.write(repr(sql) + "\\n")
+    first = sql.split("\\n", 1)[0]
+    if first.startswith("SET @myflames_target = ") and os.environ.get("FAKE_HELPER_MISMATCH") == "1":
+        sys.stderr.write("ERROR 1242 (21000) at line 1: Subquery returns more than 1 row\\n")
+        return 1
+''')
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
         client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
@@ -2101,6 +2113,42 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(final["run"]["stopped"]["by"], "user")
         self.assertEqual(self.rows(self.run_sql("SELECT 7")), [["7"]])
         self.assertFalse(final["session"]["ended"])
+
+    def test_consent_stop_helper_on_another_server_sends_no_kill(self):
+        self.run_sql("SELECT 1 /*gate*/", wait=0)
+        self.until(lambda: self.logged("tab1", "SELECT 1 /*gate*/"), "the statement to start")
+        try:
+            with mock.patch.dict(os.environ, FAKE_HELPER_MISMATCH="1"):
+                stopped = self.call("/api/editor/stop")
+            self.assertFalse(stopped["stopped"], stopped)
+            self.assertIn("server could not be confirmed", stopped["message"].lower())
+            self.assertFalse((self.state / "kills.log").exists(), "the wrong server received a KILL")
+            script = (self.state / "helper-batches.log").read_text()
+            self.assertIn("SET @myflames_target = ", script)
+        finally:
+            self.release()
+            self.assertTrue(self.registry.get("tab1").run.done.wait(5))
+
+    def test_consent_close_helper_on_another_server_sends_no_kill(self):
+        self.run_sql("SELECT 1 /*gate*/", wait=0)
+        self.until(lambda: self.logged("tab1", "SELECT 1 /*gate*/"), "the statement to start")
+        with mock.patch.dict(os.environ, FAKE_HELPER_MISMATCH="1"):
+            closed = self.call("/api/editor/close", discard=True)
+        self.assertTrue(closed["closed"])
+        self.assertFalse((self.state / "kills.log").exists(), "Close killed an unrelated server's statement")
+
+    def test_consent_stop_completed_run_after_group_removal_is_an_unsent_refusal(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.assertEqual(self.run_sql("SELECT 1")["status"], "complete")
+        self.store.assign_profile_group([profile["id"]], "")
+        from myflames import ui
+        stopped = ui.api_response("/api/editor/stop", {"connection": self.connection, "tab_id": "tab1"},
+                                  self.workspace)
+        self.assertFalse(stopped["stopped"])
+        self.assertIn("Nothing is running", stopped["message"])
+        self.assertFalse((self.state / "kills.log").exists())
 
     def test_stop_control_connection_scrubs_environment_and_errors(self):
         self.run_sql("SELECT 1 /*gate*/", wait=0)

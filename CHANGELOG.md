@@ -20,9 +20,15 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- In a Group connection, **Users and roles** changes re-check group membership and the group's strictest write policy at every login and right before sending, so a member removed from the group or made Read-only after the review receives nothing; a typed password no longer skips the membership check. Opening a Group connection installs the same per-login check on its member probes. A group deleted and recreated with the same name and members no longer matches an earlier Cluster review. A stored server identity can no longer be overwritten by an older cached probe. A query editor tab whose member left the group can still roll back, stop and close its existing session, so an open transaction does not keep its locks; new statements stay refused.
+- In a Group connection, **Users and roles** changes re-check group membership and the group's strictest write policy at every login and right before sending, so a member removed from the group or made Read-only after the review receives nothing; a typed password no longer skips the membership check. Opening a Group connection installs the same per-login check on its member probes. A group deleted and recreated with the same name and members no longer matches an earlier Cluster review. A stored server identity can no longer be overwritten by an older in-flight or cached probe. A query editor tab whose member left the group can still roll back, stop and close its existing session, so an open transaction does not keep its locks; new statements stay refused.
 
 ### Bug fixes
+
+- A Cluster action whose identity check cannot run now reports the server's reason and records that the identity was unavailable. A different server still reports an identity mismatch.
+
+- MySQL Shell errors without a statement location keep an unknown outcome. Progress text cannot turn them into an identity refusal, and a read after the error reports any visible partial change.
+
+- Cluster GRANT suggestions now escape schema wildcards on MySQL 5.7, MySQL before 8.0.16 and MariaDB, where schema grants always use wildcard matching.
 
 - Rejoining a missing InnoDB Cluster member in a Group connection now uses the active ONLINE member with quorum. Desync and Resync for another Galera node both stay available for review, which checks that node's own state.
 
