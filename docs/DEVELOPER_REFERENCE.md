@@ -6475,7 +6475,8 @@ per tag and never cancels.
   Puppeteer's browser cache is keyed by its locked version.
   Setting `kernel.apparmor_restrict_unprivileged_userns=0` permits Chrome's
   sandbox to launch on Ubuntu 24.04. Per-shard receipts always upload and
-  logs upload on failure; both artifacts are retained for 14 days. The
+  logs upload on failure or when the receipt lists a flaky suite, preserving
+  every attempt's logs; both artifacts are retained for 14 days. The
   aggregate `suites` check runs even after failure or cancellation and
   downloads all `workspace-suites-receipt-*` artifacts with
   `actions/download-artifact@v7`, retaining each artifact's directory. It
@@ -6484,13 +6485,17 @@ per tag and never cancels.
   `exit_status: 0` and the current commit, their `suites` must cover every
   manifest `suite` entry exactly once (no extras, omissions or duplicates),
   and every non-quarantined suite must report `passed` or non-safety `flaky`.
-  A safety suite identified by the manifest or receipt must report `passed`;
-  a flaky safety suite is an error. Quarantine is
+  Every suite must report a positive integer `attempts`; a `flaky` suite
+  must have at least two attempts. A safety suite identified by the manifest
+  or receipt must report `passed` with exactly one attempt. The checker
+  independently rejects a manifest `safety` field unless it is a nonempty,
+  one-line string. Quarantine is
   authorized only by the manifest, and each receipt's counts must agree
   with its actual statuses. Missing or malformed artifacts fail this check.
   The checker prints the flaky suite list and appends suite names and shard
-  numbers to `$GITHUB_STEP_SUMMARY`, making intermittent failures visible
-  on the run page and tracked in the uploaded receipts. Parsed receipts
+  numbers as inline code to `$GITHUB_STEP_SUMMARY`, replacing backticks and
+  keeping table separators inert, making intermittent failures visible on
+  the run page and tracked in the uploaded receipts. Parsed receipts
   still contribute their flaky list when another shard fails validation.
   The aggregate also requires `needs.shard.result` to be `success`; matrix
   state alone cannot prove coverage.

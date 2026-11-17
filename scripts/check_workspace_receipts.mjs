@@ -19,6 +19,12 @@ export function checkReceipts(manifest, receipts, commit) {
   }
   const expected = new Map(Object.entries(manifest.entries).filter(([, entry]) => entry.kind === 'suite'));
   if (!expected.size) throw new Error('Manifest contains no suite entries');
+  for (const [file, entry] of expected) {
+    if (Object.hasOwn(entry, 'safety') && (typeof entry.safety !== 'string' || !entry.safety.trim()
+        || /[\r\n\u0085\u2028\u2029]/.test(entry.safety))) {
+      throw new Error(`${file}: safety must be a nonempty, one-line string`);
+    }
+  }
   const seen = new Set();
   for (const [index, receipt] of receipts.entries()) {
     const label = `Receipt ${index + 1}`;
@@ -31,15 +37,21 @@ export function checkReceipts(manifest, receipts, commit) {
       if (seen.has(suite.file)) throw new Error(`${label}: duplicate suite ${suite.file}`);
       seen.add(suite.file);
       const entry = expected.get(suite.file);
+      if (!Number.isInteger(suite.attempts) || suite.attempts < 1) {
+        throw new Error(`${label}: ${suite.file} attempts must be a positive integer`);
+      }
       // The manifest is authoritative even if a receipt omits its safety flag.
       // A receipt that declares safety must also never soften a failure.
-      const safety = Boolean(entry.safety) || suite.safety === true;
+      const safety = Object.hasOwn(entry, 'safety') || suite.safety === true;
       const allowed = safety ? ['passed']
         : entry.quarantine ? ['quarantined-failed', 'quarantined-passed'] : ['passed', 'flaky'];
-      if (!allowed.includes(suite.status)) {
+      if (!allowed.includes(suite.status) || (safety && suite.attempts !== 1)) {
         const requirement = safety ? 'have passed without retries (safety suite)'
           : entry.quarantine ? 'report its quarantine outcome' : 'have passed or be flaky';
-        throw new Error(`${label}: ${suite.file} must ${requirement}; got ${suite.status}`);
+        throw new Error(`${label}: ${suite.file} must ${requirement}; got ${suite.status} (${suite.attempts} attempts)`);
+      }
+      if (suite.status === 'flaky' && suite.attempts < 2) {
+        throw new Error(`${label}: ${suite.file} flaky suites require at least 2 attempts`);
       }
       counts[COUNT_KEYS[suite.status]] += 1;
     }
@@ -74,13 +86,14 @@ async function reportFlaky(files, receipts) {
   for (const suite of flaky) console.log(`  ${suite.file} (shard ${suite.shard}/${SHARDS})`);
   if (!flaky.length) console.log('  (none)');
   if (process.env.GITHUB_STEP_SUMMARY) {
-    // Escape manifest names before placing them into the Markdown table.
-    const cell = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\|/g, '&#124;').replace(/[\r\n]/g, ' ');
+    // Even invalid receipts are reported. Code spans suppress links and HTML;
+    // keep pipes outside those spans as entities so they cannot split a cell.
+    const cell = (value) => String(value).replace(/`/g, "'").replace(/[\r\n\u0085\u2028\u2029]/g, ' ')
+      .split('|').map((part) => `\` ${part} \``).join('&#124;');
     const lines = ['### Flaky workspace suites', ''];
     if (flaky.length) {
       lines.push('| Suite | Shard |', '| --- | --- |',
-        ...flaky.map((suite) => `| ${cell(suite.file)} | ${suite.shard}/${SHARDS} |`));
+        ...flaky.map((suite) => `| ${cell(suite.file)} | ${cell(`${suite.shard}/${SHARDS}`)} |`));
     } else lines.push('No flaky suites.');
     await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
   }

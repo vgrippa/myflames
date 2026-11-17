@@ -72,6 +72,23 @@ jobs:
           npm run test:suites -- --jobs 1 --retries 1 --shard ${{ matrix.shard }}/6 \
             --receipt "${{ github.workspace }}/local/workspace-suites/shard-${{ matrix.shard }}.json" \
             --log-dir "${{ github.workspace }}/local/workspace-suites/logs-${{ matrix.shard }}"
+      - name: Detect flaky suites
+        id: receipt
+        if: always()
+        env:
+          RECEIPT_PATH: local/workspace-suites/shard-${{ matrix.shard }}.json
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          let receipt;
+          try {
+            receipt = JSON.parse(fs.readFileSync(process.env.RECEIPT_PATH, 'utf8'));
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+          const flaky = Array.isArray(receipt?.suites) && receipt.suites.some(suite => suite?.status === 'flaky');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `flaky=${flaky}\n`);
+          NODE
       - uses: actions/upload-artifact@v7
         name: Upload suite receipt
         if: always()
@@ -82,7 +99,7 @@ jobs:
           if-no-files-found: warn
       - uses: actions/upload-artifact@v7
         name: Upload suite logs
-        if: failure()
+        if: failure() || steps.receipt.outputs.flaky == 'true'
         with:
           name: workspace-suites-logs-${{ matrix.shard }}
           path: local/workspace-suites/logs-${{ matrix.shard }}
