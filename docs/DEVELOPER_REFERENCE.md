@@ -1734,7 +1734,7 @@ Local `audit purge` has its separate confirmation contract.
   over 128 characters and `source_uuids` lists with more than 32 entries (or an
   entry over 128 characters) are refused (clearing that inspected field), never
   truncated, and an identity write error never fails the status read.
-  `POST /api/profiles/group` (`ui._profiles_response` ->
+  `POST /api/profiles/group` (`ui._profile_response` ->
   `WorkspaceStore.assign_profile_group(profile_ids, group)`, in
   `_WORKSPACE_PATHS`) validates `group` with `validate_group` (`""` clears the
   group; `None`, >80 characters or control/format/surrogate characters raise
@@ -1745,6 +1745,25 @@ Local `audit purge` has its separate confirmation contract.
   and leaves every profile unchanged), updates `group` and `updated` while
   preserving `secret_ref` and `topology_identity`, and returns
   `{"updated": ids, "group": group}`.
+  `POST /api/profiles/groups/save` (`{name, profile_ids, previous_name}`) and
+  `POST /api/profiles/groups/delete` (`{name}`) (`ui._profile_group_response` ->
+  `WorkspaceStore.save_connection_group(name, profile_ids, previous_name=None)`
+  and `WorkspaceStore.delete_connection_group(name)`) are dispatched by their
+  full path before the generic `/api/profiles/` branch, listed in the POST
+  allowlist, and enforce strict request schemas (unknown keys, wrong types and
+  over-long strings are refused with 400). `save_connection_group` validates
+  `name` (and optional `previous_name`) with `validate_group` (requiring a
+  non-empty `name` of at most `GROUP_MAX_LEN` = 80 characters and at most 200
+  characters before trimming), caps membership at `GROUP_MAX_MEMBERS` (16; 1 to
+  16 profile IDs of 1–200 characters), and in one `BEGIN IMMEDIATE` transaction
+  checks that every ID exists with `kind = 'profile'`, refuses a `name` already
+  used by another group (unless it is the same group being renamed), renames
+  the group when `previous_name` is given, sets `group = name` on every listed
+  profile, and clears `group = ""` on profiles that were in the group and are
+  not listed. `delete_connection_group(name)` clears `group = ""` on its members
+  in one transaction while keeping every saved connection and its saved password
+  intact. Both return `groups` (`connection_groups.list_groups(profiles)`) and
+  `profiles` (`store.list("profile")`, never a password or `secret_ref`).
 
   Consent rule and `connection_group` report field: a topology or source-version
   read (`Cluster`, `Replication`, `ProxySQL`, `Readyset`, and the CLI
@@ -1753,29 +1772,36 @@ Local `audit purge` has its separate confirmation contract.
   connections in the same non-empty `group` as the connection in use
   (`connection_groups.members(profiles, current)`), never to the connection in
   use itself (`id != current["id"]`), and never when the connection in use is
-  unsaved or has `group == ""`. `request_profiles(store, connection)` fails
+  unsaved or has `group == ""`. There is no in-memory revocation registry:
+  consent is derived from the store at every login. `request_profiles(store, connection)` fails
   closed: if `store` is `None`, `store.list("profile")` raises or does not
   return a `list` or `tuple` of dicts, it returns `([], None)` so no saved
   connection is read; if `connection.profile_id` names a profile whose stored
   `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`, `ssh_host`,
   `ssh_user`, `ssh_port`) differ from `connection`
-  (`not _same_endpoint(connection, current)`), `current` becomes `None` so an
-  edited endpoint cannot borrow the saved connection's group consent (`members`
-  is `[]`), while `profiles` is still passed for non-login suggestions.
+  (`not _same_endpoint(connection, current)`), or if `connection.group_name` is
+  set and does not match the stored profile's non-empty `group`, `current`
+  becomes `None` so an edited endpoint or mismatched `group_name` cannot borrow
+  the saved connection's group consent (`members` is `[]`), while `profiles` is
+  still passed for non-login suggestions.
   `@grouped_read` (on `cluster.read_status`, `cluster.attach_topology_tiers`,
   `replication.read_status`, `replication.attach_source_versions`,
   `proxysql.read_status` and `readyset.read_status`) and
   `replication.profile_opener` enforce the same check at call, `prepare`,
-  connect and before every client login (`GroupScope.opener`, `consent(profile)`
-  before and after `connection_with_saved_password`, and
+  connect and before every client login (`GroupScope.opener().check`,
+  `consent(profile)` before and after `connection_with_saved_password`, and
   `conn._login_guard = login_consent` checked by
   `MySQLConnection._check_login_consent` in `_invocation_defaults` and
   `_run_client`): each statement of a probe starts its own client login, and
-  before each one `login_consent` checks again that both connections are still
-  in the same group and that the target's endpoint and saved password
+  before each one `consent` / `login_consent` re-reads the store (`store.get`
+  and `request_profiles`) and checks again that the request's own profile is a
+  stored, unedited profile and a current member of the active group (and of
+  `group_name` when named), that the target is a `profile` record in the same
+  group with a saved password, and that the target's endpoint and saved password
   (`_stored_fingerprint`) are unchanged; if the store becomes unreadable, the
   current or target profile is deleted, or its endpoint, `group` or saved
-  password changes in flight, `ProfileReadError` stops the rest of that probe
+  password changes in flight (including via another `WorkspaceStore` instance on
+  the same file), `ProfileReadError` stops the rest of that probe
   before the client is run. The member is reported in `connection_group.read`
   as `not_reached` when the refusal comes before any login, and as `failed`
   when an earlier statement of the probe already logged in
@@ -6103,7 +6129,7 @@ stdout is the ranked table (or JSON); stderr has `source:`, `clock:`, `counted:`
 
 ### Saved connections and Database diagram Load
 
-`savedConnections.ts` (not `main.tsx`) owns the one list of saved connections per window. `useSavedConnections(load = true)` (React `useSyncExternalStore`) returns `{items, loaded, error, secretStore}`; `refreshSavedConnections()` reads `profiles/list` (the workspace store on this computer: no server is read, nothing is sent). The latest read wins: an older answer, success or failure, never replaces a newer one, and every caller gets the latest read's answer (write-policy checks keep that rule). An unchanged answer keeps the list's identity and publishes nothing. When it is read: once the workspace session is restored (the shell, `useSavedConnections(false)` plus its first read), after every create, edit, rename, delete, password save or forget in this window (Connections calls the shell's `refresh`, which is `refreshSavedConnections`), when the window comes back (`focus`, `visibilitychange`; at most once a second, only after a first read), and when a Compare tab opens or Refresh choices is pressed. A component shown on its own reads it once on mount. Every list reads it: the connection picker, Home's Connections, Compare's Source and Target (`ServerCompare.tsx`), Schema versions' Compare sides, Maintenance's clone donor, Cluster's member switch and the Audit log's connection names (the last four through the shell's props). A chosen side keeps its choice while it exists (choices are ids); a chosen saved connection that was deleted stays chosen and says so: "<name> (deleted)" (`deletedConnectionLabel`, from the names this window has seen, "A deleted saved connection" otherwise), the setup says "Target: the saved connection “<name>” was deleted. Choose another target." and Compare stays off; Schema versions' side reads "<name> (deleted)" or "<connection> · no saved password"; Maintenance's clone donor "Fill from saved connection" names "<name> (deleted)" and says the copied fields stay. The connection in use deleted in another window or with the CLI is kept on the next read as an unsaved connection and the picker shows "<name> (not saved)" with the note "The saved connection “<name>” was deleted. Its settings are kept as an unsaved connection." (a deletion on Home still clears it). Tests: `apps/workspace/test/saved-connections.mjs` (`npm run test:saved-connections`), `profiles.mjs --unit`.
+`savedConnections.ts` (not `main.tsx`) owns the one list of saved connections per window. `useSavedConnections(load = true)` (React `useSyncExternalStore`) returns `{items, loaded, error, secretStore}`; `refreshSavedConnections()` reads `profiles/list` (the workspace store on this computer: no server is read, nothing is sent). The latest read wins: an older answer, success or failure, never replaces a newer one, and every caller gets the latest read's answer (write-policy checks keep that rule). An unchanged answer keeps the list's identity and publishes nothing. When it is read: once the workspace session is restored (the shell, `useSavedConnections(false)` plus its first read), after every create, edit, rename, delete, password save or forget in this window (Connections calls the shell's `refresh`, which is `refreshSavedConnections`), when the window comes back (`focus`, `visibilitychange`; at most once a second, only after a first read), and when a Compare tab opens or Refresh choices is pressed. A component shown on its own reads it once on mount. Every list reads it: the connection picker, Home's Connections, Compare's Source and Target (`ServerCompare.tsx`), Schema versions' Compare sides, Maintenance's clone donor, Cluster's member switch and the Audit log's connection names (the last four through the shell's props). A chosen side keeps its choice while it exists (choices are ids); a chosen saved connection that was deleted stays chosen and says so: "<name> (deleted)" (`deletedConnectionLabel`, from the names this window has seen, "A deleted saved connection" otherwise), the setup says "Target: the saved connection “<name>” was deleted. Choose another target." and Compare stays off; Schema versions' side reads "<name> (deleted)" or "<connection> · no saved password"; Maintenance's clone donor "Fill from saved connection" names "<name> (deleted)" and says the copied fields stay. The connection in use deleted in another window or with the CLI is kept on the next read as an unsaved connection and the picker shows "<name> (not saved)" with the note "The saved connection “<name>” was deleted. Its settings are kept as an unsaved connection." (a deletion on Home still clears it). Whole-group edits (`POST /api/profiles/groups/save` with `{name, profile_ids, previous_name}` capped at 16 members, and `POST /api/profiles/groups/delete` with `{name}`) return the updated `groups` and secret-free `profiles` lists and take effect at once on the next login through the store-backed consent check (`replication.profile_opener` and `GroupScope.opener().check`). Tests: `apps/workspace/test/saved-connections.mjs` (`npm run test:saved-connections`), `profiles.mjs --unit`, `test/test_connection_groups.py`.
 
 Database diagram (`SchemaDiagram.tsx`, `schema-diagram.css`): choosing a database never reads it (a diagram read can be large, a keyboard walk through a closed select fires one change per arrow press, and a shown diagram is never replaced without asking); opening the place still reads nothing and Server's Refresh all still reads the chosen database once. Empty state: a live database chosen shows "See how the tables of <db> connect", one sentence naming what is read and through which connection ("Nothing on the server changes."), primary **Load <db>** (`.diagram-load`, an `ActionButton`) and secondary **Import a schema**; its progress (`Reading <db>…`, seconds after 1 s, Stop once slow) and error with **Try again** show once under the button (`.diagram-load-status`, `ActionStatus keepLine`), and the status line under the toolbar takes them over only once a diagram is shown; a load started there moves focus to the canvas. A connection but no database shows "Choose a database"; no connection leaves **Import a schema** as the only, primary action. The toolbar's one Refresh (`data-action="refresh"`) reads **Load** or **Loading…** until the diagram on screen is the chosen database read from the connection in use, then **Refresh** or **Refreshing…**. Another database chosen while a diagram is shown (and only after the user chose it) shows `<db> is chosen. The diagram shows <shown>.` with **Load <db>** (`.diagram-choice`), and the "Replace this diagram?" sheet confirms with **Load <db>**. A diagram from another connection says "This diagram was read from <connection>." with **Load <db>**. **Diagram | Mermaid** shows only with a diagram (Mermaid files import through Import a schema, format Mermaid). **Reload database list** is an icon button (`.diagram-reload-list`) and "Database list updated." shows only after it was pressed. Shared kit: `ViewLayout` takes `refreshLabel` (default "Refresh") and `refreshBusyLabel` (default "Refreshing…"), used as the button's `aria-label` and in the other-connection note, and `otherAction.text` replaces the note's generated sentence. Tests: `schema-diagram.mjs`, `action-feedback-batch-b.mjs` (`diagram-load`, `diagram-rebuild`).
 

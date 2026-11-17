@@ -15,6 +15,8 @@ import unicodedata
 IDENTITY_FIELDS = ('server_uuid', 'gr_group_name', 'cluster_kind', 'cluster_name',
                    'cluster_id', 'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid')
 CLUSTER_IDENTITY_FIELDS = tuple(key for key in IDENTITY_FIELDS if key != 'server_uuid')
+GROUP_MAX_LEN = 80
+GROUP_MAX_MEMBERS = 16
 
 
 class ProfileReadError(ValueError):
@@ -24,10 +26,40 @@ class ProfileReadError(ValueError):
 def validate_group(value):
     if not isinstance(value, str) or any(unicodedata.category(c) in ('Cc', 'Cf', 'Cs') for c in value):
         raise ValueError('A connection group must be text without control characters.')
+    if len(value) > 200:
+        raise ValueError('A connection group must have at most 80 characters.')
     value = value.strip()
-    if len(value) > 80:
+    if len(value) > GROUP_MAX_LEN:
         raise ValueError('A connection group must have at most 80 characters.')
     return value
+
+
+def list_groups(profiles, preferred_order=None):
+    """Distinct non-empty connection groups across *profiles*, ordered by name."""
+    by_name = {}
+    for profile in profiles or ():
+        if not isinstance(profile, dict) or not isinstance(profile.get('id'), str):
+            continue
+        group = (profile.get('group') or '').strip()
+        if not group:
+            continue
+        by_name.setdefault(group, []).append(profile)
+    groups = []
+    for name in sorted(by_name, key=lambda g: (g.lower(), g)):
+        group_profiles = by_name[name]
+        order = (preferred_order or {}).get(name)
+        if order:
+            rank = {pid: idx for idx, pid in enumerate(order)}
+            group_profiles = sorted(group_profiles, key=lambda p: rank.get(p['id'], len(rank)))
+        ctype = 'production' if any(p.get('type') != 'development' for p in group_profiles) else 'development'
+        groups.append({
+            'name': name,
+            'profile_ids': [p['id'] for p in group_profiles],
+            'count': len(group_profiles),
+            'type': ctype,
+            'read_only': all(bool(p.get('read_only')) for p in group_profiles),
+        })
+    return groups
 
 
 def current_profile(profiles, profile_id, current=None):
@@ -98,15 +130,29 @@ class GroupScope(object):
         if original is None or not self.profiles:
             return None
         allowed = {p['id']: p for p in self.profiles}
+        consent = getattr(original, 'consent', None)
 
         def check(profile):
-            if profile.get('id') not in allowed or profile.get('group') != self.current.get('group'):
-                raise ValueError('This saved connection is outside the current connection group.')
+            prof = {'id': profile} if isinstance(profile, str) else profile
+            if not isinstance(prof, dict) or prof.get('id') not in allowed or (
+                    'group' in prof and prof.get('group') != self.current.get('group')):
+                raise ProfileReadError('This saved connection is outside the current connection group.')
+            if callable(consent):
+                consent(profile)
+
+        def attach_guard(conn, profile):
+            guard = getattr(conn, '_login_guard', None)
+            if callable(guard):
+                def login_guard():
+                    check(profile)
+                    guard()
+                conn._login_guard = login_guard
+            return conn
 
         def open_profile(profile):
             check(profile)
-            self.attempted.add(profile['id'])
-            return original(profile)
+            self.attempted.add(profile['id'] if isinstance(profile, dict) else profile)
+            return attach_guard(original(profile), profile)
         prepare = getattr(original, 'prepare', None)
         if callable(prepare):
             def prepared(profile):
@@ -114,10 +160,12 @@ class GroupScope(object):
                 fingerprint, connect = prepare(profile)
                 def guarded():
                     check(profile)
-                    self.attempted.add(profile['id'])
-                    return connect()
+                    self.attempted.add(profile['id'] if isinstance(profile, dict) else profile)
+                    return attach_guard(connect(), profile)
                 return fingerprint, guarded
             open_profile.prepare = prepared
+        open_profile.check = check
+        open_profile.consent = check
         open_profile.group_scope = self
         open_profile.current_profile = self.current
         return open_profile
@@ -327,6 +375,10 @@ def request_profiles(store, connection):
         current = current_profile(profiles, (connection or {}).get('profile_id'))
         if current and not _same_endpoint(connection, current):
             current = None
+        if current and isinstance(connection, dict) and connection.get('group_name') is not None:
+            group_name = validate_group(connection.get('group_name'))
+            if not group_name or current.get('group') != group_name:
+                current = None
         return profiles, current
     except Exception:
         # Optional saved topology evidence must never fail the open-server read.

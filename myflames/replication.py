@@ -1612,7 +1612,7 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
     return report
 
 
-def profile_opener(store, current_profile_id=None, expected_current=None):
+def profile_opener(store, current_profile_id=None, expected_current=None, group_name=None, connection=None):
     """``open_profile(profile)`` for :func:`attach_source_versions`: a client
     for one saved connection with its own saved password (filled by
     ``store.connection_with_saved_password``, which checks the endpoint),
@@ -1622,47 +1622,124 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
     (a new one on every password save; keyed for this process), read from
     the workspace store without the secret store, and a function that looks
     the password up and opens it."""
+    from .connection_groups import current_profile, request_profiles, validate_group
     from .connector import MySQLConnection
     from .live import connection_options
     from .workspace_store import _same_endpoint
 
+    if isinstance(current_profile_id, dict):
+        if connection is None:
+            connection = current_profile_id
+        if expected_current is None:
+            expected_current = current_profile_id
+        if group_name is None and 'group_name' in current_profile_id:
+            group_name = current_profile_id.get('group_name')
+        current_profile_id = current_profile_id.get('profile_id') or current_profile_id.get('id')
+    if isinstance(expected_current, dict):
+        if connection is None:
+            connection = expected_current
+        if group_name is None and 'group_name' in expected_current:
+            group_name = expected_current.get('group_name')
+        if current_profile_id is None:
+            current_profile_id = expected_current.get('profile_id') or expected_current.get('id')
+    if isinstance(connection, dict):
+        if group_name is None and 'group_name' in connection:
+            group_name = connection.get('group_name')
+        if current_profile_id is None:
+            current_profile_id = connection.get('profile_id') or connection.get('id')
+
     try:
-        selected = expected_current or (store.get('profile', current_profile_id) if current_profile_id else None)
+        initial = (store.get('profile', current_profile_id)
+                   if isinstance(current_profile_id, str) and 0 < len(current_profile_id) <= 200 else None)
+    except Exception:
+        initial = None
+    if isinstance(connection, dict):
+        req_conn = dict(connection)
+        if current_profile_id and not req_conn.get('profile_id'):
+            req_conn['profile_id'] = current_profile_id
+        if group_name is not None:
+            req_conn['group_name'] = group_name
+    elif isinstance(initial, dict):
+        req_conn = dict(initial, profile_id=current_profile_id)
+        if group_name is not None:
+            req_conn['group_name'] = group_name
+    else:
+        req_conn = None
+    try:
+        if req_conn is not None:
+            _, selected = request_profiles(store, req_conn)
+            if selected is None and group_name is None and isinstance(expected_current, dict):
+                selected = expected_current
+            elif selected is not None and isinstance(expected_current, dict) and 'group' in expected_current:
+                if expected_current.get('group') != selected.get('group'):
+                    selected = None
+        else:
+            selected = expected_current if isinstance(expected_current, dict) else initial
     except Exception:
         selected = None
 
+    def _as_profile(profile):
+        if isinstance(profile, str):
+            return {'id': profile}, True
+        if isinstance(profile, dict):
+            return profile, False
+        return {}, False
+
     def consent(profile):
+        prof, by_id = _as_profile(profile)
+        target_id = prof.get('id')
+        if not isinstance(target_id, str) or not (0 < len(target_id) <= 200):
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        if not isinstance(current_profile_id, str) or not (0 < len(current_profile_id) <= 200):
+            raise ProfileReadError('This saved connection is outside the current connection group.')
         try:
-            current = store.get('profile', current_profile_id) if current_profile_id else None
-            target = store.get('profile', profile.get('id'))
+            current = store.get('profile', current_profile_id)
+            target = store.get('profile', target_id)
         except Exception:
             raise ProfileReadError('Saved connection group consent could not be read; no saved connection was opened.') from None
         if not target:
-            raise ProfileReadError('The saved connection %s no longer exists, so it was not read.' % _profile_name(profile))
-        if not selected or not current or not _same_endpoint(selected, current) or \
-                current.get('group') != selected.get('group') or not current.get('group') or \
-                not target or target.get('id') == current_profile_id or \
-                target.get('group') != current.get('group') or profile.get('group') != current.get('group'):
+            raise ProfileReadError('The saved connection %s no longer exists, so it was not read.' % _profile_name(prof))
+        want_group = None
+        if group_name is not None:
+            try:
+                want_group = validate_group(group_name)
+            except ValueError:
+                want_group = ''
+            if not want_group:
+                raise ProfileReadError('This saved connection is outside the current connection group.')
+        profiles, req_current = request_profiles(store, req_conn) if req_conn is not None else ([], None)
+        req_target = current_profile(profiles, target_id)
+        active_group = want_group if want_group is not None else (selected.get('group') if isinstance(selected, dict) else None)
+        if (not selected or not current or not req_current or not req_target or
+                not _same_endpoint(selected, current) or not _same_endpoint(req_current, current) or
+                not active_group or current.get('group') != active_group or req_current.get('group') != active_group or
+                target.get('id') == current_profile_id or
+                target.get('group') != active_group or req_target.get('group') != active_group or
+                (not by_id and 'group' in prof and prof.get('group') != active_group)):
             raise ProfileReadError('This saved connection is outside the current connection group.')
+        if (want_group is not None or by_id) and (not target.get('remember_password') or not req_target.get('remember_password')):
+            raise ProfileReadError('The saved connection %s has no saved password, so it was not read.' % _profile_name(prof))
 
     def prepare(profile):
+        prof, by_id = _as_profile(profile)
         consent(profile)
+        target_id = prof.get("id")
         # One current record, including its save time and password reference;
         # a stale request must never recreate an earlier fingerprint.
-        stored = store._profile(profile.get("id"), include_updated=True)
+        stored = store._profile(target_id, include_updated=True)
         if stored is None:
             raise ProfileReadError("The saved connection %s no longer exists, so it was not read."
-                             % _profile_name(profile))
+                             % _profile_name(prof))
         fields = ("host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port")
-        if any(profile.get(k) != stored.get(k) for k in fields):
+        if not by_id and any(k in prof for k in fields) and any(prof.get(k) != stored.get(k) for k in fields):
             raise ProfileReadError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
-                             "current settings." % _profile_name(profile))
+                             "current settings." % _profile_name(prof))
         fingerprint = _stored_fingerprint(stored)
 
         def login_consent():
             consent(profile)
             try:
-                current = store._profile(profile.get('id'), include_updated=True)
+                current = store._profile(target_id, include_updated=True)
                 unchanged = (current is not None and _same_endpoint(stored, current) and
                              _stored_fingerprint(current) == fingerprint)
             except Exception:
@@ -1672,20 +1749,25 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
 
         def connect():
             consent(profile)
+            if not stored.get("remember_password"):
+                raise ProfileReadError("The saved connection %s has no saved password, so it was not read."
+                                 % _profile_name(prof))
             value = {k: stored.get(k) for k in fields if stored.get(k) not in (None, "")}
-            value["profile_id"] = profile.get("id")
+            value["profile_id"] = target_id
+            if group_name is not None:
+                value["group_name"] = group_name
             options = connection_options(store.connection_with_saved_password(value))
             # The secret lookup reads the store again and may wait. A save
             # during it must not send new credentials under an old claim.
-            current = store._profile(profile.get("id"), include_updated=True)
+            current = store._profile(target_id, include_updated=True)
             current_fingerprint = _stored_fingerprint(current) if current else None
             if current_fingerprint != fingerprint:
                 raise ProfileReadError("Not checked: the saved connection %s changed while its password was being "
-                                 "read. Refresh to check its current settings." % _profile_name(profile))
+                                 "read. Refresh to check its current settings." % _profile_name(prof))
             consent(profile)
             if not options.get("password"):
                 raise ProfileReadError("The saved connection %s has no saved password, so it was not read."
-                                 % _profile_name(profile))
+                                 % _profile_name(prof))
             options.update(connect_timeout=SOURCE_CONNECT_TIMEOUT_S, query_timeout=SOURCE_QUERY_TIMEOUT_S)
             conn = MySQLConnection(**options)
             conn._login_guard = login_consent
@@ -1695,8 +1777,10 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
 
     def open_profile(profile):
         return prepare(profile)[1]()
+    open_profile.consent = consent
     open_profile.prepare = prepare
     open_profile.current_profile = selected
+    open_profile.group_name = group_name
     return open_profile
 
 

@@ -933,6 +933,104 @@ class WorkspaceStore:
             conn.close()
         return {'updated': ids, 'group': group}
 
+    def save_connection_group(self, name, profile_ids, previous_name=None):
+        """Create or edit a connection group (rename, add and remove members) in one write transaction."""
+        from .connection_groups import GROUP_MAX_MEMBERS, list_groups, validate_group
+        name = validate_group(name)
+        if not name:
+            raise ValueError('Enter a connection group name.')
+        if previous_name is not None:
+            previous_name = validate_group(previous_name) or None
+        if not isinstance(profile_ids, list) or not profile_ids or any(
+                not isinstance(key, str) or not key or len(key) > 200 for key in profile_ids):
+            raise ValueError('Choose 1 to %d saved connection IDs.' % GROUP_MAX_MEMBERS)
+        ids = list(dict.fromkeys(profile_ids))
+        if len(profile_ids) > GROUP_MAX_MEMBERS or len(ids) > GROUP_MAX_MEMBERS:
+            raise ValueError('A connection group can have at most %d saved connections (1 to %d).'
+                             % (GROUP_MAX_MEMBERS, GROUP_MAX_MEMBERS))
+        id_set = set(ids)
+        conn = self._transaction()
+        try:
+            target_rows = []
+            for key in ids:
+                kind, value = self._record(conn, key)
+                if kind != 'profile' or not isinstance(value, dict):
+                    raise ValueError('Unknown saved connection ID: %s' % key)
+                target_rows.append((key, value))
+            all_profiles = []
+            for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+                try:
+                    value = json.loads(payload)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    all_profiles.append((key, value))
+            existing_in_name = {key for key, value in all_profiles if value.get('group') == name}
+            if previous_name is not None:
+                if previous_name != name and existing_in_name:
+                    raise ValueError('A connection group named %r already exists.' % name)
+                clear_groups = {previous_name, name}
+            else:
+                if existing_in_name and not (existing_in_name & id_set):
+                    raise ValueError('A connection group named %r already exists.' % name)
+                clear_groups = {name}
+            now = _now()
+            updated_ids = []
+            for key, value in target_rows:
+                if value.get('group') != name:
+                    value['group'] = name
+                    conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                 (now, json.dumps(value, allow_nan=False), key))
+                updated_ids.append(key)
+            for key, value in all_profiles:
+                if key not in id_set and value.get('group') in clear_groups:
+                    value['group'] = ''
+                    conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                 (now, json.dumps(value, allow_nan=False), key))
+                    updated_ids.append(key)
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        profiles = self.list('profile')
+        return {'group': name, 'name': name, 'profile_ids': ids, 'updated': updated_ids,
+                'groups': list_groups(profiles, {name: ids}), 'profiles': profiles}
+
+    def delete_connection_group(self, name):
+        """Clear a connection group on its members while keeping every saved connection and password."""
+        from .connection_groups import list_groups, validate_group
+        name = validate_group(name)
+        if not name:
+            raise ValueError('Enter a connection group name.')
+        cleared_ids = []
+        if self.path.exists():
+            conn = self._transaction()
+            try:
+                now = _now()
+                for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+                    try:
+                        value = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if isinstance(value, dict) and value.get('group') == name:
+                        value['group'] = ''
+                        conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                     (now, json.dumps(value, allow_nan=False), key))
+                        cleared_ids.append(key)
+                conn.execute('COMMIT')
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute('ROLLBACK')
+                raise
+            finally:
+                conn.close()
+        profiles = self.list('profile')
+        return {'deleted': True, 'group': name, 'name': name, 'updated': cleared_ids,
+                'groups': list_groups(profiles), 'profiles': profiles}
+
     def record_topology_identity(self, profile_id, identity, expected=None):
         """Record evidence from the opened connection without touching other fields.
 
@@ -1892,6 +1990,11 @@ class WorkspaceStore:
             if not isinstance(profile_id, str) or len(profile_id) > 200:
                 raise ValueError('Invalid connection field: profile_id')
             clean['profile_id'] = profile_id
+        group_name = value.get('group_name')
+        if group_name is not None:
+            from .connection_groups import validate_group
+            group_name = validate_group(group_name)
+            clean['group_name'] = group_name
         value = clean
         if not profile_id:
             return value
@@ -1902,6 +2005,8 @@ class WorkspaceStore:
         profile = self._profile(profile_id)
         if profile is None:
             raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
+        if group_name is not None and (not group_name or profile.get('group') != group_name):
+            raise ValueError('This saved connection is outside the current connection group.')
         if not profile.get('remember_password'):
             return value
         from . import secret_store

@@ -144,10 +144,18 @@ def _discover_response(path, payload, workspace=None):
                 from .connection_groups import members, request_profiles
                 if workspace is None or getattr(workspace, "store", None) is None:
                     return {}, [], None
-                profiles, current = request_profiles(workspace.store, payload.get("connection") or {})
+                conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
+                profiles, current = request_profiles(workspace.store, conn_in)
                 pid = current['id'] if current else None
+                opener = None
+                if current and current.get('group'):
+                    if conn_in.get('group_name') is not None:
+                        opener = rp.profile_opener(workspace.store, pid, current,
+                                                   group_name=conn_in.get('group_name'), connection=conn_in)
+                    else:
+                        opener = rp.profile_opener(workspace.store, pid, current)
                 return {"profiles": members(profiles, current),
-                        "open_profile": rp.profile_opener(workspace.store, pid, current) if current and current.get('group') else None,
+                        "open_profile": opener,
                         "reached_host": rp.reached_host(options), "current_profile_id": pid,
                         "current_profile": current}, profiles, current
 
@@ -1158,9 +1166,16 @@ def _replication_response(path, payload, workspace):
                 store = getattr(workspace, 'store', None)
                 profiles, current = request_profiles(store, conn_in)
                 pid = current['id'] if current else None
+                opener = None
+                if current and current.get('group'):
+                    if conn_in.get('group_name') is not None:
+                        opener = rp.profile_opener(store, pid, current,
+                                                   group_name=conn_in.get('group_name'), connection=conn_in)
+                    else:
+                        opener = rp.profile_opener(store, pid, current)
                 identity = {}
                 report = rp.read_status(conn, source_versions=True, profiles=members(profiles, current),
-                                        open_profile=rp.profile_opener(store, pid, current) if current and current.get('group') else None,
+                                        open_profile=opener,
                                         replica_host=rp.reached_host(options),
                                         current_profile_id=pid, current_profile=current,
                                         topology_tiers=True, _identity=identity)
@@ -1836,6 +1851,24 @@ def _with_saved_password(payload, workspace):
     return dict(payload, connection=filled)
 
 
+def _profile_group_response(path, payload, store):
+    """Save or delete a connection group as one object; responses never contain a password."""
+    if path == "/api/profiles/groups/save":
+        if set(payload) - {"name", "profile_ids", "previous_name"}:
+            raise ValueError("Unexpected connection group field.")
+        if "name" not in payload or "profile_ids" not in payload:
+            raise ValueError("Send name and profile_ids to save a connection group.")
+        return store.save_connection_group(
+            payload.get("name"), payload.get("profile_ids"), payload.get("previous_name"))
+    if path == "/api/profiles/groups/delete":
+        if set(payload) - {"name"}:
+            raise ValueError("Unexpected connection group field.")
+        if "name" not in payload:
+            raise ValueError("Send the connection group name to delete.")
+        return store.delete_connection_group(payload.get("name"))
+    raise ValueError("Unknown workspace operation.")
+
+
 def _profile_response(operation, payload, store):
     """Connection profiles. Responses never contain a password."""
     from . import secret_store
@@ -2080,9 +2113,11 @@ def api_response(path, payload, workspace=None):
     if path.startswith(("/api/investigations/", "/api/profiles/", "/api/live/", "/api/connection/")):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
+        if path in ("/api/profiles/groups/save", "/api/profiles/groups/delete"):
+            return _profile_group_response(path, payload, workspace.store)
         if path.startswith(("/api/investigations/", "/api/profiles/")):
             kind = "investigation" if path.startswith("/api/investigations/") else "profile"
-            operation = path.rsplit("/", 1)[-1]
+            operation = path[len("/api/investigations/"):] if kind == "investigation" else path[len("/api/profiles/"):]
             if kind == "profile":
                 return _profile_response(operation, payload, workspace.store)
             if operation == "list":
@@ -2744,6 +2779,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/teach/catalog", "/api/teach/lesson",
                              "/api/investigations/list", "/api/investigations/get", "/api/investigations/save", "/api/investigations/delete",
                              "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete", "/api/profiles/group",
+                             "/api/profiles/groups/save", "/api/profiles/groups/delete",
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",

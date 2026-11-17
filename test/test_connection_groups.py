@@ -927,6 +927,284 @@ class TestReviewRegressions(GroupCase):
                 report = json.loads(out)
                 self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
 
+    def test_save_and_delete_connection_group_rename_add_remove_and_cap(self):
+        from myflames import secret_store
+        p1 = self.save('prof-a')
+        p2 = self.save('prof-b')
+        p3 = self.save('prof-c', type='development')
+        other = self.save('prof-other', 'other-group')
+        workspace = types.SimpleNamespace(store=self.store)
+
+        # Create group with two members.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': '  alpha  ', 'profile_ids': ['prof-a', 'prof-b']}, workspace)
+        self.assertEqual(res['name'], 'alpha')
+        self.assertEqual(res['profile_ids'], ['prof-a', 'prof-b'])
+        groups = {g['name']: g for g in res['groups']}
+        self.assertEqual(groups['alpha']['profile_ids'], ['prof-a', 'prof-b'])
+        self.assertEqual(groups['alpha']['type'], 'production')
+        self.assertEqual(groups['other-group']['profile_ids'], ['prof-other'])
+        for blob in (json.dumps(res['groups']), json.dumps(res['profiles'])):
+            self.assertNotIn('test-password', blob)
+            self.assertNotIn('secret_ref', blob)
+
+        # Edit group (add prof-c, remove prof-b) and rename alpha -> beta.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'previous_name': 'alpha', 'profile_ids': ['prof-a', 'prof-c']},
+                              workspace)
+        self.assertEqual(res['name'], 'beta')
+        groups = {g['name']: g for g in res['groups']}
+        self.assertNotIn('alpha', groups)
+        self.assertEqual(groups['beta']['profile_ids'], ['prof-a', 'prof-c'])
+        self.assertEqual(self.store.get('profile', 'prof-a')['group'], 'beta')
+        self.assertEqual(self.store.get('profile', 'prof-b')['group'], '')
+        self.assertEqual(self.store.get('profile', 'prof-c')['group'], 'beta')
+
+        # Renaming or creating with a name already used by another group is refused.
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            ui.api_response('/api/profiles/groups/save',
+                            {'name': 'other-group', 'previous_name': 'beta', 'profile_ids': ['prof-a']}, workspace)
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            ui.api_response('/api/profiles/groups/save',
+                            {'name': 'other-group', 'profile_ids': ['prof-b']}, workspace)
+        # Saving the same group name (with or without previous_name) succeeds.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'previous_name': 'beta', 'profile_ids': ['prof-a', 'prof-b']}, workspace)
+        self.assertEqual({p['id'] for p in res['profiles'] if p['group'] == 'beta'}, {'prof-a', 'prof-b'})
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'profile_ids': ['prof-a', 'prof-c']}, workspace)
+        self.assertEqual({p['id'] for p in res['profiles'] if p['group'] == 'beta'}, {'prof-a', 'prof-c'})
+
+        # 16-member cap: 16 succeeds, 17 or 20 is refused atomically.
+        many_ids = []
+        for i in range(20):
+            pid = 'member-%02d' % i
+            self.save(pid)
+            many_ids.append(pid)
+        res16 = ui.api_response('/api/profiles/groups/save',
+                                {'name': 'cap-group', 'profile_ids': many_ids[:16]}, workspace)
+        self.assertEqual(len(res16['profile_ids']), 16)
+        for bad_count in (17, 20):
+            with self.subTest(bad_count=bad_count):
+                with self.assertRaisesRegex(ValueError, '16'):
+                    ui.api_response('/api/profiles/groups/save',
+                                    {'name': 'cap-group', 'previous_name': 'cap-group',
+                                     'profile_ids': many_ids[:bad_count]}, workspace)
+        self.assertEqual({p['id'] for p in self.store.list('profile') if p['group'] == 'cap-group'},
+                         set(many_ids[:16]))
+
+        # Delete group: clears group on members, keeps every profile and its saved password.
+        del_res = ui.api_response('/api/profiles/groups/delete', {'name': 'beta'}, workspace)
+        self.assertTrue(del_res['deleted'])
+        self.assertNotIn('beta', {g['name'] for g in del_res['groups']})
+        for pid, orig in (('prof-a', p1), ('prof-b', p2), ('prof-c', p3)):
+            self.assertEqual(self.store.get('profile', pid)['group'], '')
+            self.assertTrue(self.store.get('profile', pid)['has_saved_password'])
+            self.assertEqual(self.store.connection_with_saved_password(self.request(orig))['password'], 'test-password')
+        self.assertEqual(self.store.get('profile', other['id'])['group'], 'other-group')
+
+    def test_abuse_f3_group_endpoints_strict_schema_and_allowlist(self):
+        import http.client
+        prof_a = self.save('prof-a', 'g')
+        raw_before = self.store._profile('prof-a')
+        workspace = types.SimpleNamespace(store=self.store)
+
+        # Direct API calls with id or value keys are refused and leave prof-a and its password untouched.
+        bad_payloads = [
+            ('/api/profiles/groups/delete', {'name': 'g', 'id': 'prof-a'}),
+            ('/api/profiles/groups/delete', {'id': 'prof-a'}),
+            ('/api/profiles/groups/delete', {}),
+            ('/api/profiles/groups/delete', {'name': ''}),
+            ('/api/profiles/groups/delete', {'name': 'x' * 81}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'id': 'prof-a'}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'value': {'host': 'evil.example'}}),
+            ('/api/profiles/groups/save', {'id': 'prof-a', 'value': {'host': 'evil.example'}}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': 'prof-a'}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': []}),
+            ('/api/profiles/groups/save', {'name': 'x' * 81, 'profile_ids': ['prof-a']}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'previous_name': 123}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'previous_name': 'x' * 81}),
+        ]
+        for path, payload in bad_payloads:
+            with self.subTest(path=path, payload=payload):
+                with self.assertRaises(ValueError):
+                    ui.api_response(path, payload, workspace)
+                self.assertEqual(self.store._profile('prof-a'), raw_before)
+                self.assertEqual(self.store.connection_with_saved_password(self.request(prof_a))['password'],
+                                 'test-password')
+
+        # HTTP server dispatch and allowlist verification.
+        server = ui.WorkspaceServer(store_path=str(self.store.path))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def post(path, payload):
+            conn = http.client.HTTPConnection(*server.server_address, timeout=10)
+            try:
+                conn.request('POST', path, body=json.dumps(payload),
+                             headers={'Content-Type': 'application/json', 'X-Myflames-Token': server.token,
+                                      'Origin': server.origin,
+                                      'Cookie': server.cookie_name + '=' + server.session_secret})
+                response = conn.getresponse()
+                return response.status, json.loads(response.read().decode('utf-8'))
+            finally:
+                conn.close()
+
+        status, body = post('/api/profiles/groups/delete', {'name': 'g', 'id': 'prof-a'})
+        self.assertEqual(status, 400, body)
+        status, body = post('/api/profiles/groups/save',
+                            {'name': 'g', 'profile_ids': ['prof-a'], 'id': 'prof-a', 'value': {'host': 'evil'}})
+        self.assertEqual(status, 400, body)
+        self.assertEqual(self.store._profile('prof-a'), raw_before)
+        self.assertEqual(self.store.connection_with_saved_password(self.request(prof_a))['password'], 'test-password')
+
+        for unallowed in ('/api/profiles/groups', '/api/profiles/groups/other',
+                          '/api/profiles/other/save', '/api/profiles/other/delete'):
+            with self.subTest(unallowed=unallowed):
+                status, body = post(unallowed, {'name': 'g'})
+                self.assertEqual(status, 404, body)
+
+    def test_abuse_f4_per_login_consent_flips_and_second_store_instance(self):
+        # 1. Group field flips between prepare and connect (including with group_name).
+        for edit_kind in ('save_group_remove', 'delete_group', 'flip_adapter'):
+            with self.subTest(stage='prepare_to_connect', edit_kind=edit_kind):
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G')
+                req_conn = dict(self.request(current), group_name='G')
+                opener = rp.profile_opener(self.store, current['id'], current, group_name='G', connection=req_conn)
+                fingerprint, connect = opener.prepare(peer)
+                self.assertTrue(fingerprint)
+                if edit_kind == 'save_group_remove':
+                    self.store.save_connection_group('G', [current['id']], previous_name='G')
+                elif edit_kind == 'delete_group':
+                    self.store.delete_connection_group('G')
+                else:
+                    real_get = self.store.get
+                    self.store.get = lambda kind, key: (
+                        dict(real_get(kind, key), group='') if key == 'peer' else real_get(kind, key))
+                try:
+                    with mock.patch.object(connector, 'MySQLConnection') as factory, \
+                            self.assertRaises(cg.ProfileReadError):
+                        connect()
+                    factory.assert_not_called()
+                finally:
+                    if edit_kind == 'flip_adapter':
+                        del self.store.get
+
+        # 2. Group field flips between two statements of one probe.
+        for edit_kind in ('save_group_remove', 'delete_group', 'second_store_instance'):
+            with self.subTest(stage='mid_probe', edit_kind=edit_kind):
+                tl._reset_cache_for_tests()
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G')
+                second_store = WorkspaceStore(self.store.path)
+                req_conn = dict(self.request(current), group_name='G')
+                scope = cg.GroupScope([current, peer], current)
+                opener = scope.opener(rp.profile_opener(
+                    self.store, current['id'], current, group_name='G', connection=req_conn))
+                calls = []
+                fake = FakeProbeConn('database')
+
+                def invoke(argv, **kwargs):
+                    sql = argv[argv.index('-e') + 1]
+                    calls.append(sql)
+                    answer = fake.run(sql)
+                    if len(calls) == 1:
+                        if edit_kind == 'save_group_remove':
+                            self.store.save_connection_group('G', [current['id']], previous_name='G')
+                        elif edit_kind == 'delete_group':
+                            self.store.delete_connection_group('G')
+                        else:
+                            second_store.save_connection_group('G', [current['id']], previous_name='G')
+                    return types.SimpleNamespace(returncode=0, stdout=answer.encode(), stderr=b'')
+
+                with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                        mock.patch.object(connector, '_run_bounded', side_effect=invoke):
+                    probed, notes = tl.probe_saved_profiles([peer], opener, skip_profile_id=current['id'], current=current)
+                self.assertEqual(len(calls), 1, 'revoked member logged in for a second statement')
+                self.assertEqual(probed, [])
+                self.assertEqual(scope.read[0]['outcome'], 'failed')
+                self.assertTrue(notes)
+
+        # 3. Second WorkspaceStore instance on the same file removes a member; next login in first instance is refused.
+        current = self.save('current', 'G')
+        peer = self.save('peer', 'G')
+        store1 = WorkspaceStore(self.store.path)
+        store2 = WorkspaceStore(self.store.path)
+        req_conn = dict(self.request(current), group_name='G')
+        opener1 = rp.profile_opener(store1, current['id'], current, group_name='G', connection=req_conn)
+        conn1 = opener1(peer)
+        store2.save_connection_group('G', [current['id']], previous_name='G')
+        with conn1, mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded') as invoke:
+            with self.assertRaises(cg.ProfileReadError):
+                conn1.run('SELECT 1')
+            invoke.assert_not_called()
+        with mock.patch.object(connector, 'MySQLConnection') as factory, \
+                self.assertRaises(cg.ProfileReadError):
+            opener1(peer)
+        factory.assert_not_called()
+
+    def test_abuse_f9_refuses_invalid_targets_and_edited_active_member_with_zero_password_lookups(self):
+        from myflames import secret_store
+        from test_workspace_store import bundle
+        current = self.save('current', 'G')
+        valid_peer = self.save('peer', 'G')
+        other_group_peer = self.save('other-peer', 'H')
+        no_pass_peer = self.store.save(
+            'profile', {'name': 'no-pass', 'host': 'nopass.example', 'port': 3306, 'user': 'dba', 'group': 'G'},
+            'no-pass', remember=False)
+        investigation = self.store.save('investigation', bundle(), 'inv-record')
+
+        lookups = []
+        real_get_secret = secret_store.get_secret
+
+        def counting_get_secret(key, backend=None):
+            lookups.append((key, backend))
+            return real_get_secret(key, backend)
+
+        with mock.patch.object(secret_store, 'get_secret', side_effect=counting_get_secret):
+            # 1. Active member with edited host + valid target_profile_id -> refused, 0 lookups.
+            edited_conn = dict(self.request(current), host='edited.example', group_name='G')
+            _, req_cur = cg.request_profiles(self.store, edited_conn)
+            self.assertIsNone(req_cur)
+            bad_opener = rp.profile_opener(self.store, current['id'], edited_conn, group_name='G', connection=edited_conn)
+            for target in (valid_peer, valid_peer['id']):
+                with self.assertRaises(cg.ProfileReadError):
+                    bad_opener(target)
+            self.assertEqual(lookups, [])
+
+            # 2. Target in another group, investigation record id, or member with no saved password -> refused, 0 lookups.
+            good_conn = dict(self.request(current), group_name='G')
+            opener = rp.profile_opener(self.store, current['id'], current, group_name='G', connection=good_conn)
+            scope = cg.GroupScope([current, valid_peer, no_pass_peer], current)
+            scoped_opener = scope.opener(opener)
+
+            for bad_target in (other_group_peer, other_group_peer['id'],
+                               {'id': investigation['id'], 'group': 'G'}, investigation['id'],
+                               no_pass_peer, no_pass_peer['id'],
+                               'unknown-id', 'x' * 201, ''):
+                with self.subTest(bad_target=bad_target):
+                    with self.assertRaises(cg.ProfileReadError):
+                        opener(bad_target)
+                    with self.assertRaises(cg.ProfileReadError):
+                        scoped_opener(bad_target)
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(
+                    {'profile_id': investigation['id'], 'host': '127.0.0.1', 'port': 3306, 'user': 'dba'})
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(
+                    dict(self.request(other_group_peer), group_name='G'))
+            self.assertEqual(lookups, [], 'refused target triggered a secret_store password lookup')
+
+            # Positive control: valid member in group G with a saved password looks up its password once.
+            conn = opener(valid_peer['id'])
+            self.assertEqual(len(lookups), 1)
+            self.assertEqual(conn.host, valid_peer['host'])
+
 
 if __name__ == '__main__':
     unittest.main()

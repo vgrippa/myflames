@@ -602,3 +602,50 @@ class TestWorkspaceStore(unittest.TestCase):
             with self.subTest(capture=capture), self.assertRaises(ValueError):
                 self.store.save('investigation', value)
         self.assertFalse(self.path.exists())
+
+    def test_save_and_delete_connection_group(self):
+        # Deleting a group before storage exists validates the name and does not create the database.
+        with self.assertRaises(ValueError):
+            self.store.delete_connection_group('')
+        empty_del = self.store.delete_connection_group('nonexistent')
+        self.assertEqual(empty_del['groups'], [])
+        self.assertEqual(empty_del['profiles'], [])
+        self.assertFalse(self.path.exists())
+
+        p1 = self.store.save('profile', {'name': 'db-1', 'host': 'db1.example', 'user': 'dba'}, 'p1',
+                             password='pw-1', remember=True)
+        p2 = self.store.save('profile', {'name': 'db-2', 'host': 'db2.example', 'user': 'dba'}, 'p2',
+                             password='pw-2', remember=True)
+        p3 = self.store.save('profile', {'name': 'db-3', 'host': 'db3.example', 'user': 'dba'}, 'p3',
+                             password='pw-3', remember=True)
+        inv = self.store.save('investigation', bundle(), 'inv-1')
+
+        saved = self.store.save_connection_group('  prod-eu  ', ['p1', 'p2'])
+        self.assertEqual(saved['name'], 'prod-eu')
+        self.assertEqual([g['name'] for g in saved['groups']], ['prod-eu'])
+        self.assertEqual(saved['groups'][0]['profile_ids'], ['p1', 'p2'])
+
+        # Rename prod-eu -> prod-global while adding p3 and removing p2.
+        renamed = self.store.save_connection_group('prod-global', ['p1', 'p3'], previous_name='prod-eu')
+        self.assertEqual(renamed['name'], 'prod-global')
+        self.assertEqual([g['name'] for g in renamed['groups']], ['prod-global'])
+        self.assertEqual(renamed['groups'][0]['profile_ids'], ['p1', 'p3'])
+        self.assertEqual(self.store.get('profile', 'p2')['group'], '')
+
+        # Non-profile record ID is refused atomically.
+        with self.assertRaises(ValueError):
+            self.store.save_connection_group('prod-global', ['p1', inv['id']], previous_name='prod-global')
+        self.assertEqual({p['id'] for p in self.store.list('profile') if p['group'] == 'prod-global'}, {'p1', 'p3'})
+
+        # Delete group keeps all profiles and their saved passwords.
+        deleted = self.store.delete_connection_group('prod-global')
+        self.assertTrue(deleted['deleted'])
+        self.assertEqual(deleted['groups'], [])
+        for pid, host, pw in (('p1', 'db1.example', 'pw-1'),
+                              ('p2', 'db2.example', 'pw-2'),
+                              ('p3', 'db3.example', 'pw-3')):
+            prof = self.store.get('profile', pid)
+            self.assertEqual(prof['group'], '')
+            self.assertTrue(prof['has_saved_password'])
+            filled = self.store.connection_with_saved_password({'profile_id': pid, 'host': host, 'port': 3306, 'user': 'dba'})
+            self.assertEqual(filled['password'], pw)
