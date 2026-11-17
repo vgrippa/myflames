@@ -7,6 +7,7 @@ network service is started and no database write is performed.
 import copy
 import json
 import os
+import sqlite3
 import tempfile
 import types
 import unittest
@@ -14,7 +15,7 @@ from email.message import Message
 from unittest import mock
 
 import _cluster_fixtures as F
-from myflames import cluster, connection_groups, dbops, secret_store, ui
+from myflames import cluster, connection_groups, dbops, reviewed_writes, secret_store, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import ENDPOINT_FIELDS, WorkspaceStore
 from test_cluster_actions import Writes
@@ -210,8 +211,66 @@ class GroupActionTests(unittest.TestCase):
                       if a['id'] == 'stop_member')
         self.assertFalse(action['enabled'])
         self.assertIsNone(action['target']['profile_id'])
-        self.assertEqual(action['why_not'], 'Add a saved connection for db-2 to this group.')
-        self.assertEqual(action['fix'], action['why_not'])
+        self.assertEqual(action['why_not'], 'No saved connection in this group is confirmed as db-2 yet.')
+        self.assertEqual(action['fix'], 'Open prod-db-2 once to confirm it.')
+
+    def test_duplicate_uuid_first_in_store_order_never_selects_a_route_or_plans(self):
+        self.store.record_topology_identity('prof-db-3', {'server_uuid': F.SERVER_UUIDS[1]})
+        duplicate = self.store.get('profile', 'prof-db-3')
+        profiles = [duplicate, self.target, self.active]
+        reason = "prod-db-2 and prod-db-3 both report this member's identity."
+        fix = 'Open each once to refresh them, or remove the stale one.'
+        report = cluster.read_status(self.clients['db-1'])
+        checks = dict(group_profiles=profiles, current_profile=self.active, group_name='G')
+        member = next(m for m in report['members'] if m['key'] == self.member_key)
+        self.assertIsNone(cluster._member_profile(report, member, checks))
+        action = next(a for a in cluster.available_actions(report, self.member_key, checks) if a['id'] == 'stop_member')
+        self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+        self.assertEqual((action['why_not'], action['fix']), (reason, fix))
+        with self.assertRaisesRegex(ValueError, reason):
+            cluster.plan_action(report, 'stop_member', self.member_key, checks)
+        # The HTTP planner reads the target directly, but must retain the same
+        # ambiguity refusal even though that fresh report marks it local.
+        original = self.store.list
+        with mock.patch.object(self.store, 'list', side_effect=lambda kind: profiles if kind == 'profile' else original(kind)):
+            with self.assertRaisesRegex(ValueError, reason):
+                self.plan()
+        self.assert_no_writes()
+        self.assertEqual(len(ui._review_tokens(self.workspace).entries), 0)
+
+    def test_duplicate_uuid_added_after_review_refuses_before_secret_lookup(self):
+        plan = self.plan()
+        self.store.record_topology_identity('prof-db-3', {'server_uuid': F.SERVER_UUIDS[1]})
+        self.opened.clear()
+        with mock.patch.object(secret_store, 'get_secret') as lookup:
+            result = self.apply(plan)
+        self.assertEqual((result['status'], result['sent']), ('refused', []))
+        self.assertIn("both report this member's identity", result['message'])
+        lookup.assert_not_called()
+        self.assertEqual(self.opened, [])
+        self.assert_no_writes()
+
+    def test_restarted_galera_node_suggests_saved_addresses_without_routing(self):
+        report = cluster.read_status(MemberClient(F.conn('galera-11.8-healthy')))
+        member = next(m for m in report['members'] if not m['local'])
+        member['address'] = 'db-2:3306'
+        # An old gcomm UUID survived the restart. The address is only a hint.
+        profile = dict(self.target, topology_identity={'wsrep_node_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'})
+        for profiles, reason, fix in [
+                ([profile], 'No saved connection in this group is confirmed as %s yet.' % member['name'],
+                 'Open prod-db-2 once to confirm it.'),
+                ([], 'Add a saved connection for %s to this group.' % member['name'],
+                 'Add a saved connection for %s to this group.' % member['name'])]:
+            with self.subTest(saved=bool(profiles)):
+                checks = dict(group_profiles=profiles, current_profile=self.active, group_name='G')
+                action = next(a for a in cluster.available_actions(report, member['key'], checks)
+                              if a['id'] == 'desync_node')
+                self.assertEqual((action['enabled'], action['target']['profile_id']), (False, None))
+                self.assertEqual((action['why_not'], action['fix']), (reason, fix))
+                with self.assertRaises(ValueError) as caught:
+                    cluster.plan_action(report, 'desync_node', member['key'], checks)
+                self.assertIn(reason, str(caught.exception))
+                self.assertIn(fix, str(caught.exception))
 
     def test_catalog_cannot_use_another_group_or_an_unsaved_password(self):
         report = cluster.read_status(self.clients['db-1'])
@@ -333,10 +392,87 @@ class GroupActionTests(unittest.TestCase):
         plan = self.plan()
         self.store.assign_profile_group([self.target['id']], '')
         self.opened.clear()
-        with mock.patch.object(secret_store, 'get_secret') as lookup, self.assertRaises(ValueError):
-            self.apply(plan)
+        with mock.patch.object(secret_store, 'get_secret') as lookup:
+            result = self.apply(plan)
+        self.assertEqual((result['status'], result['sent']), ('refused', []))
+        (record,) = self.records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['target'], plan['expect'])
+        self.assertEqual(record['connection']['profile_name'], 'prod-db-2')
         lookup.assert_not_called()
         self.assertEqual(self.opened, [])
+
+    def test_password_forgotten_after_review_is_audited_before_any_lookup(self):
+        plan = self.plan()
+        self.store.forget_password(self.target['id'])
+        self.opened.clear()
+        with mock.patch.object(secret_store, 'get_secret') as lookup:
+            result = self.apply(plan)
+        self.assertEqual((result['status'], result['sent']), ('refused', []))
+        self.assertIn('no saved password', result['message'])
+        (record,) = self.records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['target'], plan['expect'])
+        self.assertEqual(record['connection']['profile_name'], 'prod-db-2')
+        lookup.assert_not_called()
+        self.assertEqual(self.opened, [])
+        self.assert_no_writes()
+
+    def test_active_member_without_saved_password_uses_request_password(self):
+        self.store.forget_password(self.active['id'])
+        report = cluster.read_status(self.clients['db-1'])
+        local = next(m for m in report['members'] if m['local'])
+        checks = dict(group_profiles=self.store.list('profile'), current_profile=self.store.get('profile', self.active['id']),
+                      group_name='G')
+        action = next(a for a in cluster.available_actions(report, local['key'], checks) if a['id'] == 'stop_member')
+        self.assertTrue(action['enabled'], action)
+        self.assertEqual(action['target']['profile_id'], self.active['id'])
+        payload = dict(connection=self.connection, action='stop_member', member_key=local['key'])
+        with mock.patch.object(secret_store, 'get_secret') as lookup:
+            plan = self.api('/api/live/cluster/plan', payload)
+            reviewed = dict(plan)
+            token = reviewed.pop('review_token')
+            result = self.api('/api/live/cluster/action', dict(payload, plan=reviewed, review_token=token,
+                              confirmed=True, typed=plan.get('typed_guard')))
+        self.assertEqual((result['status'], result['sent']), ('done', plan['statements']))
+        self.assertEqual([o['password'] for o in self.opened], ['active-request-secret'] * 2)
+        self.assertEqual(plan['server_name'], 'prod-db-1 (db-1:3306)')
+        self.assertEqual(plan['expect']['target']['server_identity'], {'server_uuid': F.SERVER_UUIDS[0]})
+        lookup.assert_not_called()
+
+    def test_remote_member_without_saved_password_refuses_before_any_lookup(self):
+        self.store.forget_password(self.target['id'])
+        with mock.patch.object(secret_store, 'get_secret') as lookup, self.assertRaisesRegex(ValueError, 'no saved password'):
+            self.plan()
+        lookup.assert_not_called()
+        self.assertEqual(self.opened, [])
+        self.assert_no_writes()
+
+    def test_identity_record_failure_is_plain_and_issues_no_token(self):
+        with mock.patch.object(self.store, 'record_topology_identity',
+                               side_effect=sqlite3.OperationalError('database is locked: private-store-detail')):
+            with self.assertRaises(ValueError) as caught:
+                self.plan()
+        self.assertEqual(str(caught.exception), "Could not save the target server's identity. Nothing was sent. "
+                         'Try reviewing the action again.')
+        self.assertEqual(len(ui._review_tokens(self.workspace).entries), 0)
+        self.assert_no_writes()
+
+    def test_consent_revoked_at_write_login_finishes_pending_audit_as_refused(self):
+        plan = self.plan()
+        client = self.clients['db-2']
+        original = client.run_write
+        def remove_at_login(*args, **kwargs):
+            self.store.assign_profile_group([self.target['id']], '')
+            return original(*args, **kwargs)
+        with mock.patch.object(client, 'run_write', side_effect=remove_at_login):
+            result = self.apply(plan)
+        self.assertEqual((result['status'], result['sent'], result['states']), ('refused', [], ['not_sent']))
+        (record,) = self.records()
+        self.assertEqual((record['id'], record['status'], record['outcome']),
+                         (result['audit_id'], 'refused', 'changed'))
+        self.assertEqual(record['target'], plan['expect'])
+        self.assert_no_writes()
 
     def test_consent_is_rechecked_between_two_target_read_logins(self):
         client = self.clients['db-2']
@@ -402,7 +538,7 @@ class GroupActionTests(unittest.TestCase):
         self.assertIn('SSH', action['why_not'])
 
     def test_f10_topology_label_cannot_name_the_saved_target_in_review(self):
-        for label in ('prod-db-2</b>', 'prod-db-1'):
+        for label in ('prod-db-2</b>', 'prod-db-1', 'e', 'Stop Group Replication'):
             with self.subTest(label=label):
                 report = cluster.read_status(self.clients['db-2'])
                 member = next(m for m in report['members'] if m['uuid'] == F.SERVER_UUIDS[1])
@@ -414,6 +550,8 @@ class GroupActionTests(unittest.TestCase):
                 self.assertEqual(dict(plan['facts'])['Runs on'], plan['server_name'])
                 self.assertEqual(dict(plan['facts'])['Listed in the cluster as'], label)
                 self.assertEqual(dict(plan['facts'])['Server UUID'], F.SERVER_UUIDS[1])
+                self.assertEqual(plan['title'], 'Stop Group Replication on prod-db-2 (db-2:3306)?')
+                self.assertEqual(plan['confirm_label'], 'Stop Group Replication')
                 self.assertNotIn(label + '?', plan['title'])
 
     def test_galera_binding_uses_wsrep_node_identity_and_guard(self):
@@ -423,6 +561,11 @@ class GroupActionTests(unittest.TestCase):
         self.clients['db-2'] = client
         plan = self.plan(action='desync_node', member_key=local['key'])
         self.assertEqual(plan['expect']['target']['server_identity'], {'wsrep_node_uuid': local['uuid']})
+        stored = self.store.get('profile', self.target['id'])
+        self.assertEqual(stored['topology_identity']['server_uuid'], F.SERVER_UUIDS[1])
+        # Another reader records an unrelated key after review. It cannot
+        # invalidate the node UUID selected by the Galera plan.
+        self.store.record_topology_identity(self.target['id'], {'server_uuid': F.SERVER_UUIDS[1]})
         result = self.apply(plan)
         self.assertEqual(result['status'], 'done', result)
         self.assertIn('@@global.wsrep_node_name', client.writes[0].splitlines()[0])
@@ -435,6 +578,18 @@ class GroupActionTests(unittest.TestCase):
         with mock.patch.object(cluster, 'read_status', return_value=report), self.assertRaises(ValueError):
             self.plan(action='desync_node', member_key=local['key'])
         self.assert_no_writes()
+
+    def test_first_server_uuid_record_after_galera_review_still_sends(self):
+        self.store.record_topology_identity(self.target['id'], {'server_uuid': None})
+        client = self.clients['db-2'] = MemberClient(F.conn('galera-11.8-healthy'))
+        report = cluster.read_status(client)
+        local = next(m for m in report['members'] if m['local'])
+        plan = self.plan(action='desync_node', member_key=local['key'])
+        self.store.record_topology_identity(self.target['id'], {'server_uuid': F.SERVER_UUIDS[1]})
+        result = self.apply(plan)
+        self.assertEqual((result['status'], result['sent']), ('done', plan['statements']))
+        self.assertEqual(len(client.writes), 1)
+        self.assertEqual(self.store.get('profile', self.target['id'])['topology_identity']['wsrep_node_uuid'], local['uuid'])
 
     def test_galera_catalog_uses_node_uuid_evidence_and_never_just_node_address(self):
         report = cluster.read_status(MemberClient(F.conn('galera-11.8-healthy')))

@@ -284,6 +284,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     envelope (see the module docstring).
     """
     from .dbops import may_have_run, target_guard_failed, shift_guard_error, TARGET_IDENTITY_MISMATCH
+    from .connection_groups import ProfileReadError
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
     _set(progress, "checking")
@@ -323,6 +324,17 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         if audit is not None:
             audit.fail(exc, statements)
         raise
+    except (Refusal, ProfileReadError) as exc:
+        # Login consent can change after the pending record is durable. No
+        # subprocess ran: finish that same record rather than logging an error
+        # or leaving a pending attempt that suggests an uncertain write.
+        outcome = getattr(exc, "outcome", "changed")
+        out.update(status="refused", outcome=outcome, message=str(exc), not_sent=list(statements),
+                   states=["not_sent"] * len(statements))
+        _set(progress, "finished", out["states"], "refused")
+        if audit is not None:
+            audit.complete("refused", outcome=outcome, message=out["message"])
+        return out
     except ConnectorError as exc:
         from .dbops import redact
         if out["session_guard"] and target_guard_failed(exc):

@@ -558,6 +558,22 @@ class TestReviewRegressions(GroupCase):
                          {'server_uuid': 'new-server-uuid', 'source_uuids': ['new-source']})
         self.assertEqual(cg.describe(clustered, [self.store.get('profile', 'current')])['suggestions'], [])
 
+    def test_pxc_binding_ignores_first_server_uuid_record_and_preserves_node_identity(self):
+        current = self.save('current', group='G')
+        report = CF.report('pxc-8.4-healthy')
+        node_identity = cluster.target_server_identity(report)
+        self.assertEqual(set(node_identity), {'wsrep_node_uuid'})
+        self.assertTrue(node_identity['wsrep_node_uuid'])
+        self.store.record_topology_identity(current['id'], node_identity)
+        connection = dict(self.request(current), group_name=current['group'])
+        before = ui._action_target_binding(self.store.get('profile', current['id']), connection, report['kind'])
+        self.assertEqual(before['server_identity'], node_identity)
+        self.store.record_topology_identity(current['id'], {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        after = self.store.get('profile', current['id'])
+        self.assertEqual(after['topology_identity']['wsrep_node_uuid'], node_identity['wsrep_node_uuid'])
+        self.assertEqual(after['topology_identity']['server_uuid'], '11111111-2222-3333-4444-555555555555')
+        self.assertEqual(ui._action_target_binding(after, connection, report['kind']), before)
+
     def test_read_replica_identity_uses_cluster_not_group_replication(self):
         # MySQL-only: MariaDB does not expose InnoDB Cluster read replicas.
         current = self.save('current')

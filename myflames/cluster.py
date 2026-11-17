@@ -2401,25 +2401,60 @@ _LOCAL_ACTIONS = {
 }
 
 
-def _member_profile(report, member, checks):
-    """Identity evidence can suggest a route; an address never selects one.
+def _member_profiles(report, member, checks):
+    """All current profiles claiming this UUID, including unsaved passwords.
 
-    Planning still proves the identity on the saved connection itself. A
-    missing password or stale group record must not produce a usable route.
+    Credential availability cannot resolve conflicting identity evidence.
+    The opened member's live identity can confirm its own stored endpoint.
     """
     field = "wsrep_node_uuid" if report.get("kind") in ("galera", "pxc") else "server_uuid"
     uuid = member.get("uuid")
     if not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
-        return None
+        return []
     current = checks.get("current_profile") or {}
+    candidates = {p["id"]: p for p in checks.get("group_profiles") or () if isinstance(p, dict) and p.get("id")
+                  and p.get("group") == checks.get("group_name")
+                  and (p.get("topology_identity") or {}).get(field) == uuid}
     if (member.get("local") and current.get("group") == checks.get("group_name") and
-            current.get("remember_password") and target_server_identity(report).get(field) == uuid):
-        return current
-    candidates = [p for p in checks.get("group_profiles") or () if isinstance(p, dict) and p.get("id")
-                  and p.get("group") == checks.get("group_name") and p.get("remember_password")
-                  and (p.get("topology_identity") or {}).get(field) == uuid]
-    current_id = (checks.get("current_profile") or {}).get("id")
-    return next((p for p in candidates if p["id"] == current_id), candidates[0] if candidates else None)
+            current.get("id") and target_server_identity(report).get(field) == uuid):
+        candidates[current["id"]] = current
+    return list(candidates.values())
+
+
+def _member_profile(report, member, checks):
+    """Fail closed on conflicting UUIDs; never choose a route by address."""
+    candidates = _member_profiles(report, member, checks)
+    if len(candidates) != 1:
+        return None
+    profile = candidates[0]
+    current = checks.get("current_profile") or {}
+    if profile.get("remember_password") or (member.get("local") and profile["id"] == current.get("id")):
+        return profile
+    return None
+
+
+def _member_route_issue(report, member, checks):
+    """Explain a missing route; address matches are suggestions only."""
+    candidates = _member_profiles(report, member, checks)
+    if len(candidates) > 1:
+        names = sorted(p.get("name") or p["id"] for p in candidates)
+        return ("%s %s report this member's identity." %
+                (" and ".join(names), "both" if len(names) == 2 else "all"),
+                "Open each once to refresh them, or remove the stale one.")
+    if candidates:
+        return ("The saved connection %s has no saved password." % (candidates[0].get("name") or candidates[0]["id"]),
+                "Save its password before reviewing a cluster action.")
+    host, port = _split_address(member.get("address"))
+    suggestions = sorted(p.get("name") or p["id"] for p in checks.get("group_profiles") or ()
+                         if isinstance(p, dict) and p.get("id") and p.get("group") == checks.get("group_name")
+                         and host and str(p.get("host") or "").lower() == host.lower()
+                         and (port is None or str(p.get("port") or 3306) == str(port)))
+    name = member.get("name") or "this member"
+    if suggestions:
+        return ("No saved connection in this group is confirmed as %s yet." % name,
+                "Open %s once to confirm %s." % (" and ".join(suggestions), "it" if len(suggestions) == 1 else "them"))
+    fix = "Add a saved connection for %s to this group." % name
+    return fix, fix
 
 
 def _member_issue(report, action, member, checks):
@@ -2622,9 +2657,8 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     issue = target_issue
     if grouped:
         action["target"]["profile_id"] = profile.get("id") if profile else None
-        if scope == "member" and profile is None:
-            fix = "Add a saved connection for %s to this group." % (member.get("name") or "this member")
-            issue = (fix, fix)
+        if target and profile is None:
+            issue = _member_route_issue(report, target, checks)
         if scope == "member" and not member.get("local"):
             # The active member's grants and SSH transport say nothing about
             # another saved login. Read its grants only when planning there.
@@ -2645,8 +2679,8 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     if issue:
         action.update(enabled=False, why_not=issue[0], fix=issue[1])
     _action_privileges(report, action, checks)
-    if grouped and scope == "member" and profile is None:
-        action["why_not"] = action["fix"]
+    if grouped and target and profile is None:
+        action["why_not"] = issue[0]
     return action
 
 
@@ -2869,6 +2903,12 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
     checks = checks or {}
     member = next(m for m in _members(report) if m.get("key") == member_key)
     cluster = report.get("cluster") or {}
+    server_name = None
+    if target is not None:
+        from .topology_links import format_endpoint
+        endpoint = target["endpoint"]
+        server_name = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
+    member_name = server_name if selected["scope"] == "member" else None
     expect = dict(_server_identity(report), member=_identity(member), local=_identity(local),
                   component=cluster.get("component"), quorum=cluster.get("quorum"), topology=cluster.get("topology"))
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
@@ -2889,26 +2929,23 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
         plan["verified"].append("MySQL Shell installed")
         plan["facts"] += [["Runs with", "MySQL Shell %s (%s)" % (shell.get("version") or "", shell["path"])],
                           ["Privilege", _SHELL_PRIVILEGE]]
-        _plan_shell(report, plan, action, member, local, expect)
+        _plan_shell(report, plan, action, member, local, expect, server_name=member_name)
     elif kind in ("innodb_cluster", "group_replication"):
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
         plan["facts"].append(["Privilege", "Needs %s" %
                               ("SUPER" if _version_of(report) < (8, 0, 0) else _GR_PRIVILEGE)])
-        _plan_group(report, plan, action, member, local, checks, expect)
+        _plan_group(report, plan, action, member, local, checks, expect, server_name=member_name)
     else:
         galera = report.get("galera") or {}
         expect.update(desync=galera.get("desync"), wsrep_on=galera.get("wsrep_on"),
                       local_state=(galera.get("metrics") or {}).get("local_state_comment"))
         plan["facts"].append(["Privilege", "Needs SUPER"])
-        _plan_galera(report, plan, action, member, expect)
+        _plan_galera(report, plan, action, member, expect, server_name=member_name)
     plan["expect"] = expect
     if target is not None:
         # The caller supplies only a store-built binding. Node identity comes
         # from this fresh report and is persisted before a token is issued.
         expect["target"] = dict(target, server_identity=target_server_identity(report))
-        from .topology_links import format_endpoint
-        endpoint = target["endpoint"]
-        server_name = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
         plan["server_name"] = server_name
         plan["facts"][0] = ["Runs on", server_name]
         identity = target_server_identity(report)
@@ -2918,12 +2955,8 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
         if selected["scope"] == "member":
             # Topology labels are untrusted display data. Keep them on their
             # own fact line, never in place of the saved server's name.
-            name = member.get("name")
-            for key in ("title", "confirm_label", "target_text"):
-                if name and isinstance(plan.get(key), str):
-                    plan[key] = plan[key].replace(name, server_name)
             plan["target_text"] = server_name
-            if plan.get("typed_guard") == name:
+            if plan.get("typed_guard") == server_name:
                 plan["typed_guard"] = target["profile_name"]
         if plan.get("via") == "mysqlsh":
             plan["warnings"].append("MySQL Shell connects to every member with %s's account." % target["profile_name"])
@@ -3021,8 +3054,8 @@ def _effect(plan, before, after):
              word(after.get("topology"), "Mode not reported by the server")]]
 
 
-def _plan_group(report, plan, action, member, local, checks, expect):
-    name = member.get("name")
+def _plan_group(report, plan, action, member, local, checks, expect, server_name=None):
+    name = server_name or member.get("name")
     primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
     online = [m for m in _group_members(report) if m.get("state") == "ONLINE"]
     if action == "switchover":
@@ -3122,10 +3155,10 @@ def _js(value):
     return json.dumps(value)
 
 
-def _plan_shell(report, plan, action, member, local, expect):
+def _plan_shell(report, plan, action, member, local, expect, server_name=None):
     """The plan for a change MySQL Shell runs: one AdminAPI call."""
     base, target = _action_name(action)
-    name = member.get("name")
+    name = server_name or member.get("name")
     cs = report.get("clusterset") or {}
     cluster = (report.get("cluster") or {}).get("name") or "the cluster"
     primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
@@ -3243,8 +3276,8 @@ def _plan_shell(report, plan, action, member, local, expect):
                                 "MySQL Shell reads the primary cluster's before it changes anything.")
 
 
-def _plan_galera(report, plan, action, member, expect):
-    name = member.get("name")
+def _plan_galera(report, plan, action, member, expect, server_name=None):
+    name = server_name or member.get("name")
     metrics = (report.get("galera") or {}).get("metrics") or {}
     if action == "desync_node":
         plan.update(eyebrow="SET GLOBAL", title="Desync %s?" % name, confirm_label="Desync this node",
@@ -3334,7 +3367,8 @@ def _done_text(plan, after):
     return "Sent. The group is %s." % ((after or {}).get("topology") or "not readable").replace("_", "-")
 
 
-def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None, target=None):
+def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None, target=None,
+                   group_checks=None):
     """Send a reviewed plan: read the cluster again, refuse with nothing sent
     when the member, the server or the group changed, then send it.
     *progress* follows the steps for the sheet (reviewed_writes.Progress)."""
@@ -3350,6 +3384,8 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
             raise ValueError("This connection now reaches another server or cluster.")
         checks = action_checks(conn, report, reviewed["action"], check_grants=False)
+        if group_checks is not None:
+            checks.update(group_checks())
         binding = target() if callable(target) else target
         plan = plan_action(report, reviewed["action"], reviewed.get("member_key"), checks, target=binding)
         state["before"] = _after(report, reviewed)

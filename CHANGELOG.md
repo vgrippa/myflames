@@ -19,3 +19,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Cluster actions in a Group connection can use the selected member's own saved login through `/api/live/cluster/action`. Reviews name that saved server and bind its endpoint, group and node identity; changing the target after review sends nothing.
 
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
+
+- Fixed Cluster reviews whose titles or confirmation labels changed when a member's topology label matched part of the action text. The active member can use a typed password, and recording an unrelated server identity no longer invalidates a Galera review. Restarted nodes with an unconfirmed identity suggest which saved connection to open.
+
+### Security fixes
+
+- Cluster actions refuse ambiguous member identities and name the saved connections that need refreshing. Group consent is checked again before MySQL Shell opens a login. Refusals after review, including group removal or a forgotten saved password, leave an Audit log record with nothing sent.

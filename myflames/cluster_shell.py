@@ -132,7 +132,14 @@ class ShellWriter(object):
 
     def run_write(self, script, extra_flags=None, timeout=None):
         from . import dbops, lifecycle
+        from .connection_groups import ProfileReadError
         from .connector import _run_bounded, _same_dir, bundled_client_dir, checked_program
+        from .reviewed_writes import Refusal
+        # Consent precedes all credential access and is checked again at spawn
+        # after option-file creation and executable validation may have waited.
+        guard = getattr(self._conn, "_login_guard", None)
+        if guard is not None:
+            guard()
         password = getattr(self._conn, "password", None)
         tool = {"name": "mysqlsh", "path": self._shell["path"], "engine": "mysql"}
         try:
@@ -140,11 +147,16 @@ class ShellWriter(object):
                 bundle = bundled_client_dir()
                 argv[0] = checked_program(self._shell["path"], self._shell.get("realpath"), bundled=bool(
                     bundle and _same_dir(os.path.dirname(os.path.realpath(self._shell["path"])), bundle)))
+                if guard is not None:
+                    guard()
+                    self._conn._group_login_started = True
                 proc = _run_bounded(self.argv(argv), timeout or 120, input=(script or "").encode("utf-8"),
                                     env=env, kill_tree=True)
         except subprocess.TimeoutExpired:
             raise ConnectorError("MySQL Shell timed out after %ss; the outcome is unknown." % (timeout or 120)) \
                 from None
+        except (Refusal, ProfileReadError):
+            raise
         except ValueError as exc:
             raise ConnectorError(dbops.redact(str(exc), password)) from None
         except OSError as exc:

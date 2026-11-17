@@ -1122,6 +1122,33 @@ class TestShellWriter(unittest.TestCase):
         credentials.assert_not_called()
         self.assertFalse(os.path.exists(self.out))
 
+    def test_login_consent_precedes_password_and_credential_file_access(self):
+        from myflames import lifecycle, reviewed_writes
+        guard = mock.Mock(side_effect=reviewed_writes.Refusal('Group consent changed.', 'changed'))
+        writer = self.writer(_login_guard=guard)
+        with mock.patch.object(type(writer._conn), 'password', new_callable=mock.PropertyMock,
+                               side_effect=AssertionError('read password before consent')) as password, \
+                mock.patch.object(lifecycle, '_credentials') as credentials, \
+                mock.patch('myflames.connector._run_bounded') as spawn:
+            with self.assertRaises(reviewed_writes.Refusal):
+                writer.run_write('NEVER SEND')
+        guard.assert_called_once_with()
+        password.assert_not_called()
+        credentials.assert_not_called()
+        spawn.assert_not_called()
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_login_consent_is_rechecked_at_shell_spawn(self):
+        from myflames import reviewed_writes
+        guard = mock.Mock(side_effect=[None, reviewed_writes.Refusal('Group consent changed.', 'changed')])
+        writer = self.writer(_login_guard=guard)
+        with mock.patch('myflames.connector._run_bounded') as spawn:
+            with self.assertRaises(reviewed_writes.Refusal):
+                writer.run_write('NEVER SEND')
+        self.assertEqual(guard.call_count, 2)
+        spawn.assert_not_called()
+        self.assertFalse(os.path.exists(self.out))
+
     def test_errors_in_the_reviewed_writes_shape(self):
         if os.name != 'posix':
             self.skipTest('POSIX program')

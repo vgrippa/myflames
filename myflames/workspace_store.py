@@ -1057,7 +1057,8 @@ class WorkspaceStore:
             kind, value = self._record(conn, profile_id)
             if kind == 'profile' and (expected is None or _same_endpoint(expected, value)):
                 previous = dict(value.get('topology_identity') or {})
-                if clean.get('server_uuid') and clean['server_uuid'] != previous.get('server_uuid'):
+                if (clean.get('server_uuid') and previous.get('server_uuid') and
+                        clean['server_uuid'] != previous['server_uuid']):
                     # The same endpoint can reach another server. None of the
                     # old server's evidence belongs to the newly observed UUID.
                     previous.clear()

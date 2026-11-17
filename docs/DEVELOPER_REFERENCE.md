@@ -1579,7 +1579,11 @@ TLS mode and CA, SSH host, user and port), node `server_identity`, and
 `group_name`. The server builds this object, persists the identity observed
 while planning, and rebuilds the object from the current store before any
 password lookup on apply. A changed endpoint, identity, profile, name or
-group refuses the review with nothing sent. Both the request's active
+group refuses the review with nothing sent. Only the node identity key selected
+by `cluster.target_server_identity` participates: `server_uuid` for Group
+Replication and InnoDB Cluster, `wsrep_node_uuid` for Galera/PXC. Planning records
+only that key without clearing the other; an unrelated UUID recorded later does
+not invalidate the review. Both the request's active
 profile and target must still be unedited/current members of the named
 group; every client login checks consent again, including after a secret
 lookup. The strictest current group type and the target's own Read-only
@@ -1589,6 +1593,12 @@ The Audit log's `connection` names the saved target, and its `target`
 contains the reviewed expectations, including the same `target` binding.
 SQL sends carry the target's UUID guard. The separate MySQL Shell guard
 remains outside this SQL send contract.
+Apply-time target refusals (including group removal and a forgotten remote
+password) produce an audited `refused` result before password lookup. A login
+consent refusal after `audit.attempt` completes that pending record as `refused`
+with no statements sent, rather than an error or an unknown outcome. MySQL
+Shell checks the same consent before reading credentials and immediately before
+spawn. These checks do not add a same-session identity guard to MySQL Shell.
 
 Every editor owner path checks the connection, including ended sessions,
 status, export, stop, close, commit, and rollback. Ended sessions compare
@@ -1750,7 +1760,7 @@ Local `audit purge` has its separate confirmation contract.
   the Cluster read is authoritative for `CLUSTER_IDENTITY_FIELDS`).
   `record_topology_identity` replaces or clears only the fields the view
   inspected (`set(identity) & (set(IDENTITY_FIELDS) | {"source_uuids"})`),
-  leaving fields owned by the other view intact unless `server_uuid` changed on
+  leaving fields owned by the other view intact unless a previously recorded `server_uuid` changed on
   the same endpoint (which drops the previous identity first); string values
   over 128 characters and `source_uuids` lists with more than 32 entries (or an
   entry over 128 characters) are refused (clearing that inspected field), never
@@ -4704,11 +4714,22 @@ check disabled the action; that earlier reason and fix keep precedence.
 connection, `profile_id: string | null`. Group member actions route through
 that member's saved connection. Catalog routing requires matching recorded
 `server_uuid` on MySQL or `wsrep_node_uuid` (the observed `wsrep_gcomm_uuid`)
-on Galera, current group membership, and a saved password. A host:port match
-only suggests a connection; it never selects an action route. Without an
-identity-matched saved connection the member action is disabled with
+on Galera, current group membership, and a saved password for another member.
+The active member can use its request password (typed or saved); its live
+identity is sufficient without an earlier recording. More than one current
+group profile claiming the same member UUID disables the action with no route,
+even if one profile has no saved password or is the active member. The reason
+names all conflicting saved connections, for example
+`prod-db-2 and prod-db-3 both report this member's identity.`, with the fix
+`Open each once to refresh them, or remove the stale one.` Planning and every
+apply login reject the same ambiguity without picking by store order.
+A host:port match only suggests a connection; it never selects an action route.
+When no profile has confirmed the member UUID but group profiles match the
+member's address, the disabled action says
+`No saved connection in this group is confirmed as <member> yet.` and
+`Open <saved names> once to confirm it.` (or `them` for several profiles).
+Without an identity match or address suggestion it keeps
 `Add a saved connection for <member> to this group.` as its reason and fix.
-An active member's live identity is sufficient without an earlier recording.
 Remote grants are not inferred from the active account: planning reads
 grants on the target. MySQL Shell eligibility uses that target's SSH fields.
 Outside a Group connection, local-node SQL still requires the connected
@@ -4718,14 +4739,18 @@ actions default to the active member.
 `POST /api/live/cluster/plan` and `/api/live/cluster/action` accept the optional
 top-level `target_profile_id`.
 If present, the id must be non-empty text of at most 200 characters and
-identify a stored **profile**, with a saved password, in the request's
+identify a stored **profile**, with a saved password when it is another member, in the request's
 `connection.group_name`. The request's own saved profile must also still
 belong to that group and its endpoint fields must be unedited. An omitted
 target in a Group connection selects its active saved member. Invalid
-targets refuse with HTTP 400 before any password lookup. ProxySQL and
+targets in plan requests refuse with HTTP 400 before any password lookup.
+Apply refuses a target that left the group or forgot its password with an
+audited `refused` result and nothing sent. ProxySQL and
 Readyset plan/action handlers reject the field, including null, with 400.
 The connection is constructed only from the target's stored endpoint
-fields and its own saved password, as for `replication.profile_opener`.
+fields and its own saved password, as for `replication.profile_opener`, except
+that the request's active member can use its own typed password. The request's
+password is never copied to another member's route.
 
 For a Group member plan the freshly read target session's own server UUID
 (Galera: gcomm/node UUID) must equal the clicked member's UUID, and that
@@ -4736,6 +4761,10 @@ and the existing in-client SQL guard covers a change at the write login.
 The review's `server_name`, `target_text` and Runs on fact use the stored
 profile name and endpoint, such as `prod-db-2 (db-2:3306)`. The live UUID
 and `Listed in the cluster as` topology label have their own fact lines.
+The plan builders format member titles and confirmation labels directly from
+that saved server name; no topology-label substring replacement occurs. An
+identity-recording failure refuses planning with a plain sentence and no token,
+without exposing a store exception.
 
 `POST /api/live/cluster/plan` reads the server again and evaluates the same
 catalog. `plan_action` raises `ActionUnavailable` for a disabled entry with

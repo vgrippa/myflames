@@ -12,6 +12,7 @@ from unittest import mock
 
 from myflames import accounts, cluster, dbops, locks, privileges, replication, reviewed_writes, variables
 from myflames.connector import ConnectorError, MySQLConnection
+from myflames.connection_groups import ProfileReadError
 from myflames.workspace_store import WorkspaceStore
 
 UUID = '11111111-2222-3333-4444-555555555555'
@@ -118,6 +119,34 @@ class GuardTests(unittest.TestCase):
                                                read_after=after, progress=progress)
                 self.assert_mismatch(out, writer)
                 self.assertEqual(progress.snapshot()['states'], ['not_sent', 'not_sent'])
+                after.assert_not_called()
+
+    def test_write_login_consent_refusal_completes_one_pending_audit(self):
+        for error in (reviewed_writes.Refusal('Group consent changed. Nothing was sent.', 'changed'),
+                      ProfileReadError('This saved connection is outside the current connection group.')):
+            with self.subTest(refusal=type(error).__name__):
+                plan, writer, audit = self.plan(), Writer(), self.audit()
+                after = mock.Mock()
+                progress = reviewed_writes.Progress(2)
+                def refuse_login(sql, **kwargs):
+                    self.assertTrue(audit.pending)
+                    raise error
+                writer.run_write = refuse_login
+                before_count = len(self.records())
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=audit,
+                                               read_after=after, progress=progress)
+                self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'changed', []))
+                self.assertEqual(out['not_sent'], plan['statements'])
+                self.assertEqual(out['states'], ['not_sent', 'not_sent'])
+                self.assertEqual(progress.snapshot()['phase'], 'finished')
+                self.assertEqual(progress.snapshot()['status'], 'refused')
+                records = self.records()
+                self.assertEqual(len(records), before_count + 1)
+                record = next(r for r in records if r['id'] == out['audit_id'])
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+                self.assertEqual(record['target'], plan['expect'])
+                self.assertEqual(record['statements'], [MYSQL_GUARD] + plan['statements'])
+                self.assertEqual(writer.writes, [])
                 after.assert_not_called()
 
     def test_error_at_line_three_names_second_user_statement(self):
