@@ -1431,11 +1431,45 @@ _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/
 _SETTINGS_PATHS = ('/api/settings/editor', '/api/settings/ui')
 # Application client selection is separate from saved connection credentials.
 _CLIENT_PATHS = ('/api/client/tools', '/api/client/tools/choose')
+#: Managed MySQL Shell downloads (managed_shell.py, answered by
+#: _shell_response): status is read-only and never touches the network,
+#: install starts the one process-wide flight (idempotent while it runs),
+#: cancel must name the running job's id. No connection, no saved password,
+#: no SQL; every reply is managed_shell's own status payload.
+_MANAGED_SHELL_PATHS = ('/api/client/shell/status', '/api/client/shell/install',
+                        '/api/client/shell/cancel')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
 
 
 class _ClientChoiceError(ValueError):
     """A plain, user-facing refusal from the client tools chooser."""
+
+
+class _ManagedShellError(ValueError):
+    """A plain, user-facing refusal from the managed MySQL Shell download."""
+
+
+def _shell_response(path, payload, workspace):
+    from . import managed_shell
+    if workspace is None:
+        raise ValueError("This operation requires a running workspace.")
+    # The workspace store's folder is the fallback root of the tools folder.
+    directory = os.fspath(workspace.store.path.parent)
+    try:
+        if path == '/api/client/shell/cancel':
+            if set(payload) - {'id'}:
+                raise ValueError("Unexpected MySQL Shell field.")
+            job_id = payload.get('id')
+            if not isinstance(job_id, str) or not 0 < len(job_id) <= 64:
+                raise ValueError("Name the running MySQL Shell download to stop.")
+            managed_shell.cancel(job_id)
+        elif payload:
+            raise ValueError("Unexpected MySQL Shell field.")
+        elif path == '/api/client/shell/install':
+            managed_shell.start_install(directory)
+    except managed_shell.Refused as exc:
+        raise _ManagedShellError(str(exc)) from None
+    return managed_shell.status(directory)
 
 
 def _client_settings_response(path, payload, workspace):
@@ -2000,6 +2034,8 @@ def api_response(path, payload, workspace=None):
         return hosts_response()
     if path in _CLIENT_PATHS:
         return _client_settings_response(path, payload, workspace)
+    if path in _MANAGED_SHELL_PATHS:
+        return _shell_response(path, payload, workspace)
     if path == "/api/app/update/check":
         from . import app_update
         result = app_update.check_for_updates(force=payload.get("force") is True)
@@ -2357,6 +2393,19 @@ class WorkspaceServer(ThreadingHTTPServer):
         deadline.daemon = True
         deadline.start()
         try:
+            # A running MySQL Shell download stops with the workspace: cancel
+            # closes its sockets, then a bounded join lets cleanup finish.
+            from . import managed_shell
+            with managed_shell._LOCK:
+                shell_job = managed_shell._JOB
+            if shell_job is not None:
+                try:
+                    managed_shell.cancel(shell_job.id)
+                except ValueError:
+                    pass
+                shell_thread = shell_job.thread
+                if shell_job.state in managed_shell._ACTIVE and shell_thread is not None:
+                    shell_thread.join(managed_shell.REQUEST_TIMEOUT + 5)
             # Lifecycle tools (dump, restore, clone) run in their own process
             # groups, beyond a supervisor's signal to this process group. Stop
             # them first and boundedly, before cleanup that can block on the
@@ -2508,7 +2557,7 @@ def request_error_text(exc, prefix=True):
     (*prefix* False: never, for a client error passed through as it is)."""
     from .dbops import connection_error_text
     text = str(exc)
-    if isinstance(exc, _ClientChoiceError):
+    if isinstance(exc, (_ClientChoiceError, _ManagedShellError)):
         return text
     plain = connection_error_text(text)
     if plain:
@@ -2769,7 +2818,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
-                + _CLIENT_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
+                + _CLIENT_PATHS + _MANAGED_SHELL_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
                 + _BASELINE_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",

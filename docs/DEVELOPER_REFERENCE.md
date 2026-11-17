@@ -4615,7 +4615,21 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 
 `managed_shell.py` exposes local-only `status(workspace_directory=None)`,
 `start_install(workspace_directory=None)`, `cancel(job_id)` and
-`installed_bin_dir(workspace_directory=None)` for a later HTTP/UI slice.
+`installed_bin_dir(workspace_directory=None)`, wired to the workspace through
+three authenticated POST endpoints in `ui.py` (`_MANAGED_SHELL_PATHS`,
+`_shell_response`): `POST /api/client/shell/status` and
+`POST /api/client/shell/install` accept exactly `{}`, and
+`POST /api/client/shell/cancel` accepts only `id` (the running job's id, a
+string of at most 64 characters); any other key or type is a 400 before
+`managed_shell` is called. All three answer with the `managed-shell-status-1.0`
+payload of `managed_shell.status` (install starts or rejoins the single flight
+first; a `Refused` is a 400 with its plain sentence). The workspace directory
+argument is the workspace store's folder (`MYFLAMES_TOOLS_DIR` wins when the
+desktop sets it). No connection, saved password or SQL is involved, and the
+reply contains nothing outside the tools folder. `WorkspaceServer.server_close`
+cancels a running job and joins its thread with a bounded wait. Tests:
+`test/test_ui_http.py` (`TestManagedShellHTTP`), including a stale cancel id
+that must not stop the running job.
 One process-wide `InstallJob` reports `downloading | verifying | installing |
 done | failed | cancelled`, received/total bytes, elapsed seconds and a plain
 error. Repeated starts reuse the active flight. Cancellation closes download
@@ -4625,8 +4639,11 @@ a newer download.
 An exclusive OS lock on `mysqlsh/.install.lock` covers validation, stale cleanup,
 download, probe, publish and failure/cancel cleanup. A second backend refuses
 before cleaning or contacting the network. The private regular lock file holds
-the owner's PID and stays in place to avoid inode replacement races; the kernel
-releases its lock on close or process exit, including a crash.
+the owner's PID while the job runs and is removed when the job ends (on Windows
+`O_TEMPORARY` removes it at the final close); the kernel releases the lock on
+close or process exit, so a stale file left by a dead process is recovered: a
+new install locks it and rechecks the inode before any work, never following a
+link.
 
 The packaged `mysql-shell.lock.json` (`mysql-shell-lock-1.0`) records product,
 version, license/links, Oracle's signing fingerprint and `archives` entries for
@@ -4676,6 +4693,20 @@ exactly one trailing slash before segment validation. Case and Unicode aliases
 and filesystem `EEXIST` at file or symlink creation refuse the whole stage.
 Implicit ancestors use the same NFC and casefold identities as explicit entries;
 an exact-spelling implicit directory may be declared once later in the archive.
+The Settings > Client tools dialog shows the MySQL Shell section
+(`ManagedShell` in `apps/workspace/src/ClientTools.tsx`, helpers `shellStatus`
+/ `shellInstall` / `shellCancel` in `api.ts`): with no usable MySQL Shell on
+this computer it offers **Get MySQL Shell** with the download and installed
+sizes, the license and Oracle downloads links; a found Shell older than the
+pinned version says so and names it on the button; an unsupported platform
+offers only the Oracle downloads link. While the job runs, a 500 ms status poll
+drives a determinate download bar (after 10 s without progress it says it is
+still waiting for cdn.mysql.com), then the checksum and install lines, and
+**Stop** (armed after 600 ms, focus returns to the button); the outcome is the
+ready, stopped or plain failure line with **Try again**. A finished install
+re-reads the client tools so the managed copy shows under Found on this
+computer. Browser coverage: `apps/workspace/test/client-tools.mjs` (mocked
+endpoints; 1440 and 720 px, light and dark).
 Tests: `test_managed_shell.py`,
 `test_pin_mysql_shell.py`, desktop `backend.test.cjs`.
 

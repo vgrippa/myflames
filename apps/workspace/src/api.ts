@@ -186,6 +186,31 @@ export const clientTools = (connection?: Connection, refresh = false, signal?: A
  * path answers 400 with a plain sentence. */
 export const chooseClientTools = (engine: ClientToolsEngine, path: string | null, connection?: Connection) =>
   api<ClientTools>("client/tools/choose", { engine, path, ...(connection ? { connection } : {}) });
+
+// ---- Managed MySQL Shell (Settings > Client tools > MySQL Shell) ----------
+// managed-shell-status-1.0 (docs/DEVELOPER_REFERENCE.md): the backend's
+// managed_shell module downloads the pinned Oracle MySQL Shell into
+// myflames's data folder on request; nothing is redistributed by myflames.
+export type ShellJobState = "downloading" | "verifying" | "installing" | "done" | "failed" | "cancelled";
+export type ManagedShellJob = {
+  id: string; state: ShellJobState; version: string;
+  received: number; total: number; elapsed_s: number; error: string | null;
+};
+export type ManagedShellStatus = {
+  schema_version: "managed-shell-status-1.0";
+  supported: boolean;
+  unsupported_reason: string | null;
+  platform: string | null;
+  pinned: { version: string; size: number; license: string; license_url: string; downloads_url: string } | null;
+  installed: { path: string; version: string; origin: string; origin_label: string } | null;
+  job: ManagedShellJob | null;
+};
+/** Read-only status of the managed MySQL Shell; never starts a download. */
+export const shellStatus = () => api<ManagedShellStatus>("client/shell/status", {});
+/** Start (or rejoin) the single download flight; a refusal answers 400. */
+export const shellInstall = () => api<ManagedShellStatus>("client/shell/install", {});
+/** Stop the running download; the id must be the running job's. */
+export const shellCancel = (id: string) => api<ManagedShellStatus>("client/shell/cancel", { id });
 // Capture and erase the fragment as soon as this module loads. It is never
 // written to storage, the DOM, a request URL, or the saved workspace.
 let launchSecret = "";

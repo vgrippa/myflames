@@ -13,7 +13,9 @@
 // when nothing was found.
 // Mocked /api/client/tools, /api/client/tools/choose, /api/connection/test,
 // /api/lifecycle/tools, /api/editor/* and /api/accounts/*; the real Python
-// server for the rest. Screenshots at 1440 and 720 px, light and dark.
+// server for the rest. The MySQL Shell section mocks /api/client/shell/*:
+// idle, downloading with progress, Stop, failed, done, too old and
+// unsupported. Screenshots at 1440 and 720 px, light and dark.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -160,9 +162,28 @@ const lifecycleTools = {
   },
 };
 
+// The managed MySQL Shell endpoints (managed-shell-status-1.0): a mutable
+// state the scenarios below steer. `shellNext` is the job install returns.
+const SHELL_PINNED = { version: "9.7.0", size: 157547585, license: "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
+  license_url: "https://www.mysql.com/about/legal/licensing/oem/", downloads_url: "https://dev.mysql.com/downloads/shell/9.7.html" };
+let shellState = { supported: true, unsupported_reason: null, platform: "darwin-arm64", pinned: SHELL_PINNED, installed: null, job: null };
+let shellNext = null;
+const shellJob = (state, extra = {}) => ({ id: "c".repeat(32), state, version: "9.7.0", received: 0, total: SHELL_PINNED.size, elapsed_s: 0.2, error: null, ...extra });
+const shellStatusAnswer = () => ({ status: 200, body: { schema_version: "managed-shell-status-1.0", ...shellState } });
+const SHELL_33 = 51990703; // 33% of 157547585: "52 MB of 158 MB"
+
 const h = await open("/api/live/health", "client-tools", {
   "/api/client/tools": (body) => toolsAnswer(!!body.connection),
-  "/api/client/tools/choose": (body) => {
+  "/api/client/shell/status": () => shellStatusAnswer(),
+  "/api/client/shell/install": () => {
+    shellState.job = shellNext || shellJob("downloading");
+    shellNext = null;
+    return shellStatusAnswer();
+  },
+  "/api/client/shell/cancel": (body) => {
+    if (shellState.job && body.id === shellState.job.id) shellState.job = { ...shellState.job, state: "cancelled", error: null };
+    return shellStatusAnswer();
+  },  "/api/client/tools/choose": (body) => {
     if (body.path === REFUSED) return { status: 400, body: { error: "That path is not a MySQL or MariaDB client." } };
     stored[body.engine] = resolveChoice(body.engine, body.path);
     return toolsAnswer(!!body.connection);
@@ -409,6 +430,136 @@ try {
   await h.button("Try again", inspectorNotice + " ");
   for (let i = 0; i < 100 && accountReads() === readsBefore; i++) await pause(50);
   assert.equal(accountReads(), readsBefore + 1, "Try again reads the account again");
+
+  // 17. MySQL Shell, idle: nothing usable found; the offer, the provenance
+  // line with sizes, and both Oracle links.
+  const shellSection = `${dialog} [data-shell-section]`;
+  const openDialog = async () => {
+    await page.click(".settings-button");
+    await page.waitForSelector(".settings-page .source-item");
+    await page.locator(".settings-page .source-item ::-p-text(Client tools)").click();
+    await h.button("Client tools…", ".settings-panel ");
+    await page.waitForSelector(`${dialog}[open]`);
+    await page.waitForSelector(`${shellSection} .managed-shell-actions > *`);
+  };
+  const closeDialog = async () => {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.client-tools-dialog"));
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".settings-page"));
+  };
+  const shellCalls = (path) => state.other.filter((r) => r.path === path).map((r) => r.body);
+  // The dialog scrolls its own body: bring the section into view after each
+  // viewport change, then assert it sits inside the window like shoot() does.
+  const shootShell = async (name) => {
+    for (const theme of ["light", "dark"]) for (const width of [1440, 720]) {
+      await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme }]);
+      await page.setViewport({ width, height: width === 720 ? 520 : 900 });
+      await page.$eval(shellSection, (e) => {
+        const d = e.closest("dialog");
+        if (d) d.scrollTop = Math.max(0, e.offsetTop - (d.clientHeight - e.offsetHeight) / 2);
+      });
+      await pause(100);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${name} fits ${width}`);
+      const box = await page.$eval(shellSection, (e) => {
+        const r = e.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      });
+      assert.ok(box.left >= 0 && box.top >= 0 && box.right <= width && box.bottom <= (width === 720 ? 520 : 900),
+        `${name} inside the window at ${width}: ${JSON.stringify(box)}`);
+      await page.screenshot({ path: path.join(shots, `client-tools-${name}-${theme}-${width}.png`) });
+    }
+    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
+    await page.setViewport({ width: 1440, height: 900 });
+  };
+
+  variant = "empty";
+  shellState = { supported: true, unsupported_reason: null, platform: "darwin-arm64", pinned: SHELL_PINNED, installed: null, job: null };
+  await openDialog();
+  assert.match(await h.text(shellSection), /MySQL Shell/);
+  assert.match(await h.text(shellSection), /Downloads MySQL Shell 9\.7\.0 \(158 MB, about 650 MB installed\) from Oracle into myflames's data folder; not redistributed by myflames\./);
+  const licenseLink = await page.$eval(`${shellSection} a`, (a) => a.href);
+  assert.equal(licenseLink, "https://www.mysql.com/about/legal/licensing/oem/");
+  const links = await page.$$eval(`${shellSection} a`, (as) => as.map((a) => [a.textContent, a.href]));
+  assert.deepEqual(links, [["GPLv2 license (Oracle)", "https://www.mysql.com/about/legal/licensing/oem/"],
+    ["Oracle downloads", "https://dev.mysql.com/downloads/shell/9.7.html"]]);
+  assert.equal(shellCalls("/api/client/shell/install").length, 0, "idle reads nothing but status");
+  await shootShell("shell-idle");
+
+  // 18. Downloading: the determinate bar with the progress line, Stop armed
+  // after 600 ms, and every poll only while the job runs.
+  await h.button("Get MySQL Shell", `${shellSection} `);
+  // Stop is disarmed until 600 ms into the run: read it as soon as it exists.
+  const stopAt = `${shellSection} .managed-shell-actions button.small`;
+  const stopHandle = await page.waitForSelector(stopAt);
+  assert.equal(await stopHandle.evaluate((b) => b.disabled), true, "Stop is not armed yet");
+  await page.waitForSelector(`${shellSection} progress`);
+  assert.match(await h.text(shellSection), /Downloading MySQL Shell 9\.7\.0 from Oracle: 0% \(0 MB of 158 MB\)/);
+  shellState.job = { ...shellState.job, received: SHELL_33 };
+  await page.waitForFunction(() => /from Oracle: 33% \(52 MB of 158 MB\)/.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  assert.equal(await page.$eval(`${shellSection} progress`, (p) => p.value), 33);
+  const polls = shellCalls("/api/client/shell/status").length;
+  await pause(700);
+  assert.ok(shellCalls("/api/client/shell/status").length > polls, "status is polled while the job runs");
+  assert.equal(await page.$eval(stopAt, (b) => b.disabled), false, "Stop is armed after 600 ms");
+  await shootShell("shell-downloading");
+
+  // 19. Stop cancels the running job; the cancelled line shows and focus
+  // returns to Get MySQL Shell. Polling stops once the job is no longer active.
+  await h.button("Stop", `${shellSection} `);
+  await page.waitForFunction(() => /Download stopped; nothing was installed\./.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  assert.equal(shellCalls("/api/client/shell/cancel").length, 1);
+  assert.deepEqual(shellCalls("/api/client/shell/cancel")[0], { id: "c".repeat(32) });
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("Get MySQL Shell"), {}, );
+  const pollsAfterStop = shellCalls("/api/client/shell/status").length;
+  await pause(1200);
+  assert.equal(shellCalls("/api/client/shell/status").length, pollsAfterStop, "no polling without a running job");
+  await closeDialog();
+
+  // 20. Failed: the backend's plain reason in an alert, with Try again.
+  shellNext = shellJob("failed", { error: "The download ended early." });
+  await openDialog();
+  await h.button("Get MySQL Shell", `${shellSection} `);
+  await page.waitForSelector(`${shellSection} [role="alert"]`);
+  assert.match(await h.text(`${shellSection} [role="alert"]`), /Could not install MySQL Shell: The download ended early\. Nothing was installed\./);
+  assert.ok(await page.$eval(`${shellSection} [role="alert"] button`, (b) => b.textContent === "Try again"), "the alert offers Try again");
+  await shootShell("shell-failed");
+
+  // 21. Done: the ready line, and the client tools list is read again so the
+  // new copy shows under Found on this computer.
+  shellNext = shellJob("downloading");
+  await h.button("Try again", `${shellSection} `);
+  await page.waitForSelector(`${shellSection} progress`);
+  const toolsBefore = toolsCalls().length;
+  shellState.job = { ...shellState.job, state: "done" };
+  await page.waitForFunction(() => /MySQL Shell 9\.7\.0 is ready\./.test(document.querySelector("[data-shell-section]")?.textContent || ""));
+  for (let i = 0; i < 100 && toolsCalls().length === toolsBefore; i++) await pause(50);
+  assert.equal(toolsCalls().length, toolsBefore + 1, "a finished install re-reads the client tools");
+  assert.equal(toolsCalls().at(-1).refresh, true, "the re-read re-probes");
+  await shootShell("shell-done");
+  await closeDialog();
+
+  // 22. Too old: a found 9.6.0 Shell with 9.7.0 pinned says so and names the
+  // pinned version on the button.
+  variant = "mysql843";
+  shellState = { supported: true, unsupported_reason: null, platform: "darwin-arm64", pinned: SHELL_PINNED, installed: null, job: null };
+  await openDialog();
+  await page.waitForSelector(`${shellSection} .managed-shell-actions .action-button`);
+  assert.match(await h.text(shellSection), /MySQL Shell 9\.6\.0 on this computer is older than 9\.7\.0, the version myflames works with\./);
+  assert.match(await h.text(`${shellSection} .managed-shell-actions`), /Get MySQL Shell 9\.7\.0/);
+  await shootShell("shell-too-old");
+  await closeDialog();
+
+  // 23. Unsupported platform: no Get button, only Open Oracle downloads.
+  shellState = { supported: false, unsupported_reason: "MySQL Shell downloads are available for macOS arm64, macOS x64 and Windows x64.", platform: null, installed: null, job: null };
+  await openDialog();
+  await page.waitForSelector(`${shellSection} a`);
+  assert.match(await h.text(shellSection), /MySQL Shell downloads are available for macOS arm64, macOS x64 and Windows x64\./);
+  assert.equal(await page.$(`${shellSection} .action-button`), null, "no Get MySQL Shell button on an unsupported platform");
+  assert.match(await h.text(`${shellSection} .managed-shell-actions`), /Open Oracle downloads/);
+  assert.equal(await page.$eval(`${shellSection} a`, (a) => a.href), "https://dev.mysql.com/downloads/shell/");
+  await shootShell("shell-unsupported");
+  await closeDialog();
 
   assert.deepEqual(h.errors, []);
   console.log(`Client tools suite passed. Screenshots: ${shots}`);

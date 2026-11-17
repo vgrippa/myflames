@@ -7,16 +7,22 @@ import { useEffect, useRef, useState, type Ref, type RefObject } from "react";
 import {
   chooseClientTools,
   clientTools,
+  shellCancel,
+  shellInstall,
+  shellStatus,
   type ClientToolUse,
   type ClientTools,
   type ClientToolsEngine,
   type ClientToolsInstallation,
+  type ClientToolsShell,
   type ClientToolsUsed,
+  type ManagedShellJob,
+  type ManagedShellStatus,
 } from "./api";
 import { connectionLabel } from "./binding";
 import { toolUseLine, type ToolLineServer } from "./clientToolsText";
 import { useConnectionInUse } from "./connectionInUse";
-import { errorText, Select, useFocusScope } from "./kit";
+import { ActionButton, errorText, Select, useFocusScope } from "./kit";
 import { droppedFilePath } from "./filesApi";
 import { Icon } from "./components";
 import { MAC, WINDOWS } from "./platform";
@@ -98,6 +104,245 @@ export function UsedForServer({
 
 type ClientAction = "read" | "detect" | "choose" | "";
 
+/** Whole megabytes (decimal) of a byte count, for download sizes. */
+const wholeMB = (bytes: number) => Math.round(bytes / 1e6);
+
+const versionTuple = (text: string) => text.split(".").map((part) => parseInt(part, 10) || 0);
+
+/** True when *version* is at least *pinned*, compared numerically. */
+function versionAtLeast(version: string, pinned: string): boolean {
+  const a = versionTuple(version);
+  const b = versionTuple(pinned);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d > 0;
+  }
+  return true;
+}
+
+const SHELL_POLL_MS = 500;
+/** Stop stays disarmed this long so a double click on Get cannot stop the job. */
+const SHELL_STOP_ARM_MS = 600;
+/** With no progress for this long, the line says what it is waiting for. */
+const SHELL_STALL_MS = 10_000;
+const ORACLE_DOWNLOADS = "https://dev.mysql.com/downloads/shell/";
+
+const shellRunning = (job: ManagedShellJob | null) =>
+  !!job && (job.state === "downloading" || job.state === "verifying" || job.state === "installing");
+
+/** The MySQL Shell section of the Client tools dialog: when no usable MySQL
+ * Shell is on this computer, myflames can download the pinned Oracle build
+ * into its own data folder (managed-shell-status-1.0; nothing is
+ * redistributed). While the download runs, a 500 ms poll drives the progress
+ * bar; Stop cancels it. */
+export function ManagedShell({
+  shells,
+  onReady,
+}: {
+  /** The MySQL Shell copies the Client tools read found, newest first. */
+  shells: ClientToolsShell[];
+  /** The pinned copy landed: the caller re-reads the client tools. */
+  onReady?: () => void;
+}) {
+  const [status, setStatus] = useState<ManagedShellStatus | null>(null);
+  const [readError, setReadError] = useState("");
+  const [pending, setPending] = useState<"" | "install" | "cancel">("");
+  const [armed, setArmed] = useState(false);
+  const [stalled, setStalled] = useState(false);
+  const getButton = useRef<HTMLSpanElement>(null);
+  const progress = useRef({ received: -1, at: 0 });
+
+  const job = status?.job ?? null;
+  const running = shellRunning(job);
+
+  function accept(reply: ManagedShellStatus) {
+    setReadError("");
+    setStatus((previous) => {
+      // A job this section never saw (another window started it) is adopted.
+      const next = reply.job;
+      if (next?.state === "downloading") {
+        if (next.received !== progress.current.received) {
+          progress.current = { received: next.received, at: Date.now() };
+        }
+        setStalled(Date.now() - progress.current.at >= SHELL_STALL_MS);
+      } else {
+        setStalled(false);
+      }
+      if (previous && shellRunning(previous.job) && !shellRunning(next)) {
+        if (next?.state === "done") onReady?.();
+        else if (next) window.setTimeout(() => getButton.current?.querySelector("button")?.focus(), 0);
+      }
+      return reply;
+    });
+  }
+
+  useEffect(() => {
+    let live = true;
+    shellStatus().then(
+      (reply) => { if (live) accept(reply); },
+      (e) => { if (live) setReadError(errorText(e)); },
+    );
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Poll only while a job runs.
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => {
+      shellStatus().then(
+        (reply) => accept(reply),
+        () => { /* a dropped poll is answered by the next one */ },
+      );
+    }, SHELL_POLL_MS);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  // Arm Stop 600 ms into the run; disarm when it ends.
+  useEffect(() => {
+    if (!running) { setArmed(false); return; }
+    const timer = window.setTimeout(() => setArmed(true), SHELL_STOP_ARM_MS);
+    return () => window.clearTimeout(timer);
+  }, [running]);
+
+  async function start() {
+    if (pending) return;
+    setPending("install");
+    try {
+      accept(await shellInstall());
+    } catch (e) {
+      setReadError(errorText(e));
+    } finally {
+      setPending("");
+    }
+  }
+
+  async function stop() {
+    if (pending || !job || !armed) return;
+    setPending("cancel");
+    try {
+      accept(await shellCancel(job.id));
+    } catch (e) {
+      setReadError(errorText(e));
+    } finally {
+      setPending("");
+    }
+  }
+
+  const pinned = status?.pinned ?? null;
+  const downloadsUrl = pinned?.downloads_url || ORACLE_DOWNLOADS;
+  const found = shells.find((s) => s.version) ?? null;
+  const usable = !!pinned && (!!status?.installed || shells.some((s) => versionAtLeast(s.version, pinned.version)));
+  const tooOld = !!pinned && !usable && !!found;
+  const stalledLine = stalled && job?.state === "downloading";
+  const busyLabel = job?.state === "verifying" ? "Verifying…" : job?.state === "installing" ? "Installing…" : "Downloading…";
+
+  return (
+    <section className="client-tools-section managed-shell" data-shell-section>
+      <div className="managed-shell-head">
+        <strong>MySQL Shell</strong>
+        <span className="managed-shell-actions">
+          {!status?.supported && status && (
+            <a href={downloadsUrl} target="_blank" rel="noopener noreferrer">Open Oracle downloads</a>
+          )}
+          {status?.supported && pinned && !running && (!usable || job?.state === "cancelled" || job?.state === "failed") && (
+            <span ref={getButton} className="managed-shell-get">
+              <ActionButton
+                primary
+                busy={pending === "install"}
+                busyLabel="Starting…"
+                onClick={() => void start()}
+              >
+                {tooOld || job?.state === "failed" ? `Get MySQL Shell ${pinned.version}` : "Get MySQL Shell"}
+              </ActionButton>
+            </span>
+          )}
+          {running && (
+            <>
+              <ActionButton primary busy busyLabel={busyLabel}>{busyLabel}</ActionButton>
+              <button
+                type="button"
+                className="button small"
+                disabled={!armed || pending === "cancel"}
+                onClick={() => void stop()}
+              >
+                {pending === "cancel" ? "Stopping…" : "Stop"}
+              </button>
+            </>
+          )}
+        </span>
+      </div>
+
+      <div className="managed-shell-status" role="status" aria-live="polite">
+        {running && job && (
+          <span className="managed-shell-progress">
+            {job.state === "downloading" ? (
+              <>
+                <progress
+                  max={100}
+                  value={job.total ? Math.min(100, Math.round((100 * job.received) / job.total)) : 0}
+                  aria-label="MySQL Shell download progress"
+                />
+                <span>
+                  {stalledLine
+                    ? "Still waiting for cdn.mysql.com."
+                    : `Downloading MySQL Shell ${job.version} from Oracle: ${
+                        job.total ? Math.min(100, Math.round((100 * job.received) / job.total)) : 0
+                      }% (${wholeMB(job.received)} MB of ${wholeMB(job.total)} MB)`}
+                </span>
+              </>
+            ) : (
+              <>
+                <progress aria-label="MySQL Shell install progress" />
+                <span>
+                  {job.state === "verifying"
+                    ? "Checking the SHA-256 checksum and archive files…"
+                    : `Checking MySQL Shell ${job.version} and moving it into place…`}
+                </span>
+              </>
+            )}
+          </span>
+        )}
+        {!running && job?.state === "done" && <span>{`MySQL Shell ${job.version} is ready.`}</span>}
+        {!running && job?.state === "cancelled" && <span>Download stopped; nothing was installed.</span>}
+        {!running && !job && usable && status?.installed && <span>{`MySQL Shell ${status.installed.version} is ready.`}</span>}
+      </div>
+
+      {job?.state === "failed" && (
+        <p className="form-error" role="alert">
+          Could not install MySQL Shell: {job.error} Nothing was installed.{" "}
+          <button type="button" className="button small" disabled={!!pending} onClick={() => void start()}>
+            Try again
+          </button>
+        </p>
+      )}
+      {readError && <p className="form-error" role="alert">{readError}</p>}
+
+      {status && !status.supported && (
+        <p className="hint">{status.unsupported_reason}</p>
+      )}
+      {status?.supported && pinned && !usable && !running && job?.state !== "done" && (
+        <>
+          {tooOld && (
+            <p className="hint">
+              {`MySQL Shell ${found?.version} on this computer is older than ${pinned.version}, the version myflames works with.`}
+            </p>
+          )}
+          <p className="hint">
+            {`Downloads MySQL Shell ${pinned.version} (${wholeMB(pinned.size)} MB, about ${
+              WINDOWS ? "750" : "650"
+            } MB installed) from Oracle into myflames's data folder; not redistributed by myflames.`}{" "}
+            <a href={pinned.license_url} target="_blank" rel="noopener noreferrer">GPLv2 license (Oracle)</a>
+            {" · "}
+            <a href={downloadsUrl} target="_blank" rel="noopener noreferrer">Oracle downloads</a>
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 /** The path a select choice sends for an installation: its client program's
  * path, or "bundled" for the bundled installation. */
 function choicePath(installation: ClientToolsInstallation): string {
@@ -169,6 +414,14 @@ export function ClientToolsDialog({
   }
 
   const detect = () => void apply("detect", () => clientTools(connection ?? undefined, true));
+  // A finished managed MySQL Shell install re-probes so the Found list and
+  // the Used for section show the new copy; a failed re-read keeps the page.
+  const reload = () => {
+    void clientTools(connection ?? undefined, true).then(
+      (reply) => setAnswer(reply),
+      () => { /* Detect again retries the read */ },
+    );
+  };
   const choose = (engine: ClientToolsEngine, path: string | null) =>
     void apply("choose", () => chooseClientTools(engine, path, connection ?? undefined));
 
@@ -346,6 +599,8 @@ export function ClientToolsDialog({
             </ul>
           )}
         </section>
+
+        <ManagedShell shells={answer?.shells || []} onReady={reload} />
 
         {error && (
           <p className="form-error" role="alert">{error}</p>
