@@ -62,11 +62,15 @@ async function stop() {
 }
 
 let browser;
+let diagPage = null;
+let diagErrors = null;
 try {
   let url = await start();
   browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
+  diagPage = page;
+  diagErrors = errors;
   const dialogs = [];
   const watch = (p) => {
     p.on("pageerror", (e) => errors.push(String(e)));
@@ -74,6 +78,9 @@ try {
       dialogs.push(d.type());
       d.accept();
     });
+    p.__bad = [];
+    p.on("response", (r) => { if (r.status() >= 400) p.__bad.push(`${r.status()} ${r.url()}`); });
+    p.on("requestfailed", (r) => p.__bad.push(`FAILED ${r.url()} ${r.failure()?.errorText || ""}`));
   };
   watch(page);
   const client = await page.createCDPSession();
@@ -115,8 +122,13 @@ try {
   }
   async function open(p, address) {
     await p.goto(address, { waitUntil: "networkidle0" });
+    // The element must exist and be past "loading": without the element the
+    // predicate was vacuously true while the page had not booted at all.
     await p.waitForFunction(
-      () => document.querySelector(".session-status")?.dataset.state !== "loading",
+      () => {
+        const el = document.querySelector(".session-status");
+        return !!el && el.dataset.state !== "loading";
+      },
     );
   }
   async function chart(p) {
@@ -302,7 +314,17 @@ try {
     await p.keyboard.press("Escape");
     await p.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
     await place(p, "Query editor");
-    await p.waitForSelector(".query-lab");
+    try {
+      await p.waitForSelector(".query-lab");
+    } catch (e) {
+      const diag = await p.evaluate(() => ({
+        viewStatus: document.querySelector(".view-status")?.textContent || "",
+        mainChildren: [...(document.querySelector("main")?.children || [])].map((c) => `${c.tagName}.${c.className}`).slice(0, 12),
+        labHost: !![...document.querySelectorAll("main div")].find((d) => d.querySelector(".view-status")),
+      })).catch((err) => `evaluate failed: ${err}`);
+      console.error("QUERY-LAB TIMEOUT diag:", JSON.stringify(diag), "pageErrors:", JSON.stringify(errors), "badResponses:", JSON.stringify(p.__bad || []));
+      throw e;
+    }
     assert.deepEqual(
       await p.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
       ["Query 1", "Orders by customer"],
@@ -331,6 +353,9 @@ try {
     await p.waitForSelector(".server-view[data-view=sessions]", { visible: true });
     assert.equal(await currentView(p), "sessions");
     await place(p, "Home");
+    // Home mounts on the first visit after a reload: wait for the row the
+    // next read asserts on.
+    await p.waitForSelector(".connection-row.is-active [data-col=name] strong");
     const unsavedName = await p.$eval(".connection-row.is-active [data-col=name] strong", el => el.textContent);
     await connectionAction(p, unsavedName, "Save");
     await p.waitForSelector(".connection-panel");
@@ -419,6 +444,9 @@ try {
   assert.equal((await page.$$('.home-start button ::-p-text(Explore sample plan)')).length, 1);
   assert.equal(await page.$('.topbar [aria-label="New query tab"]'), null);
   await place(page, "Query editor");
+  // First opening since the reload: the editor chunk loads and mounts here,
+  // so wait for the restored tab list before reading it.
+  await page.waitForSelector(".query-lab .query-tabs [role=tab][id^=query-tab-]");
   assert.deepEqual(
     await page.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
     ["Query 1"],
@@ -504,6 +532,9 @@ try {
   // ran before the editor's state reached the workspace).
   dialogs.length = 0;
   await place(page, "Query editor");
+  // The kept editor comes back on screen asynchronously; focusing it while it
+  // is still hidden is a no-op and the typed text would go nowhere.
+  await page.waitForSelector(".query-lab .sql-editor", { visible: true });
   await page.evaluate(() => {
     const original = MessagePort.prototype.postMessage;
     MessagePort.prototype.postMessage = function (...args) {
@@ -529,6 +560,20 @@ try {
 
   assert.deepEqual(errors, []);
   console.log("Session restore checks passed. " + directory);
+} catch (e) {
+  // Temporary diagnostics for the intermittent post-restart waits.
+  try {
+    const d = await diagPage.evaluate(() => ({
+      readyState: document.readyState,
+      rootChildren: document.getElementById("root")?.childElementCount,
+      sessionStatus: document.querySelector(".session-status")?.dataset.state ?? null,
+      bodyText: (document.body?.innerText || "").slice(0, 300),
+    }));
+    console.error("DIAG:", JSON.stringify(d), "pageErrors:", JSON.stringify(diagErrors), "badResponses:", JSON.stringify(diagPage.__bad || []));
+  } catch (inner) {
+    console.error("DIAG failed:", String(inner), "badResponses:", JSON.stringify(diagPage?.__bad || []));
+  }
+  throw e;
 } finally {
   if (browser) await browser.close();
   await stop();

@@ -236,11 +236,12 @@ export function authenticate(): Promise<string> {
   captureLaunchSecret();
   if (!authentication) {
     const body = JSON.stringify(launchSecret ? { secret: launchSecret } : {});
-    launchSecret = "";
-    authentication = fetch("/api/auth/session", {
+    const attempt = () => fetch("/api/auth/session", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": sessionProof() }, body,
     }).then(async response => {
+      // Any answer means the launch secret reached the server: it is spent.
+      launchSecret = "";
       const result = await response.json();
       if (!response.ok || typeof result.token !== "string" || !result.token)
         throw new ApiError(result.error || "Open the launch URL printed by myflames ui.", response.status, result);
@@ -250,6 +251,26 @@ export function authenticate(): Promise<string> {
       catch { /* This tab still works when browser storage is unavailable. */ }
       return result.token;
     });
+    // A network failure (a reset connection under load, a server still coming
+    // up) never delivered the request: retry twice with the same secret, and
+    // leave the promise uncached so a later call tries again. A refusal (an
+    // ApiError) is final and stays cached, failing every call the same way.
+    let pending: Promise<string>;
+    pending = (async () => {
+      let lastError: unknown;
+      for (let tries = 0; tries < 3; tries++) {
+        try {
+          return await attempt();
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      if (authentication === pending) authentication = null;
+      throw lastError;
+    })();
+    authentication = pending;
   }
   return authentication;
 }

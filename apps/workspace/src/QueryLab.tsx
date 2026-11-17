@@ -442,7 +442,11 @@ function EditorSplitButton({ action, label, open, onOpen, children }: {
       const width = Math.min(320, window.innerWidth - 16);
       const maxHeight = Math.max(0, window.innerHeight - 16);
       const height = Math.min(panel.current?.offsetHeight || 0, maxHeight);
-      const below = b.bottom + 4;
+      // A wrapped toolbar has rows below the button: open under the whole
+      // toolbar, never over the next row's controls.
+      const toolbar = button.current?.closest(".editor-toolbar")?.getBoundingClientRect();
+      const anchor = toolbar && toolbar.bottom > b.bottom + 1 ? toolbar.bottom : b.bottom;
+      const below = anchor + 4;
       const top = below + height <= window.innerHeight - 8
         ? below : Math.max(8, b.top - height - 4);
       setPosition({ width, maxHeight, left: Math.max(8, Math.min(b.left, window.innerWidth - width - 8)), top });
