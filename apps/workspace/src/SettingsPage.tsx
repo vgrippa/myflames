@@ -9,6 +9,7 @@
 // settings UI and editorSettings.ts stay out of the entry chunk.
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AboutDialog } from "./About";
+import { appVersion } from "./api";
 import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
 import { Checkbox, Select, SourceList } from "./kit";
@@ -17,6 +18,7 @@ import { CODE_TEXT_SIZE_MAX, CODE_TEXT_SIZE_MIN, fontChoices, type FontKind } fr
 import { NewsSetting } from "./HomeNews";
 import { QueryEditorSettings } from "./QueryEditorSettings";
 import { AutoUpdateSetting, UpdateMenuItem } from "./UpdateBadge";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { applyTheme, appliedThemeId, type ThemeId } from "./themes";
 import { THEMES } from "./theme-picker";
 import "./settings.css";
@@ -199,6 +201,7 @@ function AppearanceSettings() {
 export function SettingsPage({
   logo,
   section,
+  focusRequest,
   onSection,
   onBack,
   ready,
@@ -210,6 +213,8 @@ export function SettingsPage({
 }: {
   logo: string;
   section: SettingsSection;
+  /** A shell entry focuses the heading even when this section is already open. */
+  focusRequest: number;
   onSection: (section: SettingsSection) => void;
   /** Esc returns to where the user was (the shell's Back). */
   onBack: () => void;
@@ -244,10 +249,10 @@ export function SettingsPage({
   const aboutButton = useRef<HTMLButtonElement>(null);
   const clientButton = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // A section change moves focus to the section's heading.
+  // A section change or another shell entry moves focus to the heading.
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
-  }, [section]);
+  }, [section, focusRequest]);
   // Esc returns to where the user was; an open dialog keeps its keys.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -346,6 +351,12 @@ export function SettingsPage({
         )}
         {section === "updates" && (
           <>
+            <div className="settings-update-status" aria-label="Application version">
+              <strong>myflames {appVersion() || "development"}</strong>
+              <UpdateCheckStatus />
+              <CheckForUpdatesButton />
+              <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+            </div>
             <AutoUpdateSetting />
             <NewsSetting />
             <UpdateMenuItem onChoose={() => {}} />

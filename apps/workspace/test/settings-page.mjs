@@ -114,6 +114,27 @@ try {
     [["25","Slowest"],["50","Slow"],["100","Normal"],["150","Fast"],["200","Fastest"]]);
   await openSection("Updates and news");
   assert.equal(await text("#update-auto-hint"), "Asks GitHub for the latest release when myflames opens and once a day.");
+  // The installed version, update status and actions moved here from the
+  // status bar.
+  const updatesRow = await text(".settings-update-status");
+  assert.match(updatesRow, /myflames \d+\.\d+\.\d+/, "the section names the installed version");
+  assert.match(updatesRow, /Check for updates/, "Check for updates is here");
+  assert.equal(await page.$eval(".settings-update-status a", (e) => e.textContent), "View releases");
+  assert.equal(await page.$eval(".settings-update-status a", (e) => e.href), "https://github.com/vgrippa/myflames/releases");
+  const installedVersion = await text(".brand-version");
+  const footerText = await text(".window-statusbar");
+  assert.equal(footerText.includes(installedVersion), false, "the status bar holds no installed version text");
+  assert.doesNotMatch(footerText, /myflames|Check for updates|View releases/, "update actions live in Settings");
+  assert.equal(await page.$eval(".window-statusbar", (e) => e.tabIndex), -1, "the empty Settings footer is not a tab stop");
+  // Re-enter the same section through the version with the keyboard. The
+  // section value does not change, so this needs a fresh focus request.
+  for (const key of ["Enter", "Space"]) {
+    await page.focus(".brand-version");
+    await page.keyboard.press(key);
+    await page.waitForFunction(() => document.activeElement?.id === "settings-section-title");
+    assert.equal(await text(".settings-panel-title"), "Updates and news");
+  }
+  assert.equal(await page.$eval(".settings-update-status .update-check", (e) => e.getAttribute("role")), "status");
   assert.equal(await text("#news-toggle-hint"), "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.");
   // Client tools opens the dialog it has always opened.
   await openSection("Client tools");

@@ -53,7 +53,7 @@ Follow the [How-to guides](docs/handbook/howto.md) for Query editor tasks, setti
 1. Download `myflames-3.4.3-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
 2. Double-click `myflames.app`. It is signed with a Developer ID and notarized by Apple, so macOS opens it without extra steps. Releases before 3.3.0 were unsigned zips: Control-click those in Finder and choose **Open** the first time.
 
-The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder, and SSH host keys you trust in **File transfer** are kept in `ssh_known_hosts` there. The app keeps itself up to date: with **Settings > Check for updates automatically** on (the default) it checks at start and once a day, a badge beside the logo shows a newer release, its download progress and when it is ready, and **Update** followed by **Restart to update** installs it in place (on macOS, keep `myflames.app` in your Applications folder; on Windows the update installs silently when the app quits). You can also check on demand with **Check for updates** on Home or in **Settings > About myflames**.
+The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder, and SSH host keys you trust in **File transfer** are kept in `ssh_known_hosts` there. The app keeps itself up to date: with **Settings > Check for updates automatically** on (the default) it checks at start and once a day, a badge beside the logo shows a newer release, its download progress and when it is ready, and **Update** followed by **Restart to update** installs it in place (on macOS, keep `myflames.app` in your Applications folder; on Windows the update installs silently when the app quits). You can also check on demand with **Check for updates** in **Settings > Updates and news** or in About myflames.
 
 ### Windows app (preview)
 
@@ -93,7 +93,7 @@ In the **Text** group of **Settings > Appearance**, choose **Interface font** an
 
 Drag the sidebar's right edge to resize it, or focus the edge and use the arrow keys. Double-click, Home or End restores its default width. Sidebar and Server inspector widths, the Server view navigation choice, Health auto-refresh, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices survive app restarts. Narrow windows keep the compact navigation rail.
 
-The window status bar shows the installed version and update status on every screen, with **Check for updates** and **View releases** beside the current view's facts.
+The window status bar shows the current view's facts on every screen. The installed version sits beside the myflames name at the top of the sidebar; choose it for **Settings > Updates and news**, with the update status, **Check for updates** and **View releases**.
 
 ## Documentation
 

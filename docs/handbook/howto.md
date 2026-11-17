@@ -77,9 +77,9 @@ Use the layout controls to give navigation, SQL or results more room.
 2. Drag the sidebar's right edge to make it wider. For the keyboard alternative, press **Tab** until the edge has focus and use **Left** or **Right**; hold **Shift** for a larger step. Narrow windows use a compact navigation rail instead.
 3. Drag the divider between the SQL editor and its results down to make the editor taller, or up to give the results more room.
 4. Double-click the sidebar's right edge to restore its default width. With the edge focused, **Home** or **End** also restores it. Your chosen sidebar width survives app restarts.
-5. Look at the window status bar's right end for the installed version, **Check for updates** and **View releases**. The same bar appears on every screen.
+5. The installed version sits beside the myflames name at the top of the sidebar. Choose it to open **Settings > Updates and news**, with the update status, **Check for updates** and **View releases**.
 
-![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. Every screen's bottom status bar shows the installed version, Check for updates and View releases on the right.](../screenshots/howto-layout.gif)
+![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. The installed version sits beside the myflames name at the top of the sidebar.](../screenshots/howto-layout.gif)
 
 Related: [Sidebar and status bar](quickstart.md#sidebar-and-status-bar) and [Query workspace layout](../QUERY_WORKSPACE.md).
 

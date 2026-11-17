@@ -41,7 +41,7 @@ import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport 
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { MAC, shortcut } from "./platform";
 import { ViewOnScreenContext } from "./viewOnScreen";
-import { PLACES, Sidebar, type Place } from "./Sidebar";
+import { PLACES, Sidebar, SidebarToggle, type Place } from "./Sidebar";
 import {
   AccountPrivilegesSheet,
   ConnectionPicker,
@@ -1704,10 +1704,12 @@ function App() {
    * The gear, Command-comma or Ctrl-comma, and the palette open it; Back and Esc return
    * to where the user was. */
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  const [settingsFocusRequest, setSettingsFocusRequest] = useState(0);
   function openSettings(section: SettingsSection = "appearance") {
     traversing.current = null;
     pendingObjectLink.current = null;
     setSettingsSection(section);
+    setSettingsFocusRequest((request) => request + 1);
     setMode("settings");
     setLinkBack(null);
     setError("");
@@ -2099,6 +2101,7 @@ function App() {
         onOpenPlan={openPlan}
         onRemovePlan={removePlan}
         onOpenSettings={() => openSettings()}
+        onOpenUpdates={() => openSettings("updates")}
         settingsOpen={ready && mode === "settings"}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
         placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {
@@ -2112,7 +2115,8 @@ function App() {
         <div className="topbar-stack">
         {ready && connectionPlace && <ConnectionTypeStrip safety={safety} />}
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
-          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebar((current) => ({ ...current, open: !current.open }))}><Icon name="browser" /></button>
+          <SidebarToggle expanded={sidebarOpen} narrow={sidebar.narrow}
+            onToggle={() => setSidebar((current) => ({ ...current, open: !current.open }))} />
           <div className="topbar-title">
             {/* The place is named once. Server and Workload name the place
                 here and the view in its header (switch views from their own
@@ -2571,6 +2575,7 @@ function App() {
             <SettingsPage
               logo={logo}
               section={settingsSection}
+              focusRequest={settingsFocusRequest}
               onSection={setSettingsSection}
               onBack={settingsBack}
               ready={ready}
