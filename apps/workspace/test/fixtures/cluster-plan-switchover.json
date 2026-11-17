@@ -26,7 +26,7 @@
   ],
   [
    "Privilege",
-   "Needs SUPER or GROUP_REPLICATION_ADMIN"
+   "Needs GROUP_REPLICATION_ADMIN or SUPER"
   ],
   [
    "New primary",

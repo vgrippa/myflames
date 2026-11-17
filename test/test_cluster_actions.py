@@ -155,7 +155,7 @@ class TestOffered(Home):
         report = F.report('ic-8.4-healthy')
         report['server_version'] = '8.0.12'
         self.assertEqual([a['id'] for x in report['members'] for a in m.available_actions(report, x['key'])
-                          if a['enabled']], ['stop_member'], 'START/STOP predate the topology UDFs')
+                          if a['enabled']], [], 'All reviewed Group Replication changes need MySQL 8.0.13')
 
     def test_workspace_reports_match_the_schema(self):
         from pathlib import Path

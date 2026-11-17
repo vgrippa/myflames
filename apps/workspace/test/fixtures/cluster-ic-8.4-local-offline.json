@@ -140,7 +140,7 @@
      "member_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "MySQL Shell was not found on this computer.",
+     "why_not": "MySQL Shell was not found on this computer. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
      "target": {
       "self": true,
@@ -257,7 +257,7 @@
      "member_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "MySQL Shell was not found on this computer.",
+     "why_not": "MySQL Shell was not found on this computer. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
      "target": {
       "self": true,
@@ -386,7 +386,7 @@
      "member_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "MySQL Shell was not found on this computer.",
+     "why_not": "MySQL Shell was not found on this computer. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
      "target": {
       "self": true,
@@ -555,7 +555,7 @@
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
    "target": {
     "self": true,
@@ -579,7 +579,7 @@
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
    "target": {
     "self": true,
@@ -603,7 +603,7 @@
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
    "target": {
     "self": true,

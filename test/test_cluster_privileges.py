@@ -155,7 +155,7 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                         self.assert_missing(allowed, [], None, enabled=True)
 
     def test_start_stop_mysql_57_80_84_and_9(self):
-        for version in ((5, 7, 44), (8, 0, 0), (8, 0, 13), (8, 4, 11), (9, 7, 0)):
+        for version in ((5, 7, 44), (8, 0, 0), (8, 0, 12), (8, 0, 13), (8, 4, 11), (9, 7, 0)):
             for aid, state in (('start_member', 'OFFLINE'), ('stop_member', 'ONLINE')):
                 with self.subTest(version=version, action=aid):
                     report = self.report(version)
@@ -163,8 +163,19 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                     me['state'] = state
                     needs = [['SUPER']] if version < (8, 0, 0) else [['GROUP_REPLICATION_ADMIN', 'SUPER']]
                     action = self.action(report, aid, self.checks([statement(['USAGE'])]))
-                    self.assert_missing(action, needs, statement([needs[0][0]]))
                     allowed = self.action(report, aid, self.checks([statement(['SUPER'])]))
+                    if version < (8, 0, 13):
+                        self.assertEqual(action['missing_privileges'], needs)
+                        self.assertEqual(action['grant_sql'], statement([needs[0][0]]))
+                        self.assertEqual(allowed['missing_privileges'], [])
+                        self.assertIsNone(allowed['grant_sql'])
+                        for entry in (action, allowed):
+                            self.assertFalse(entry['enabled'])
+                            self.assertEqual(entry['why_not'], 'Needs MySQL 8.0.13 or later.')
+                        with self.assertRaisesRegex(m.ActionUnavailable, 'Needs MySQL 8.0.13 or later'):
+                            m.plan_action(report, aid, me['key'], self.checks([statement(['SUPER'])]))
+                        continue
+                    self.assert_missing(action, needs, statement([needs[0][0]]))
                     self.assert_missing(allowed, [], None, enabled=True)
                     plan = m.plan_action(report, aid, me['key'], self.checks([statement(['SUPER'])]))
                     self.assertEqual(plan['statements'], [m.CLUSTER_ACTION_TAG +

@@ -2360,14 +2360,9 @@ def _tool_issue(report, action, checks):
             return "This action needs MySQL Shell %s or later." % version, fix
     if report.get("kind") in ("group_replication", "innodb_cluster"):
         base, _ = _action_name(action["id"])
-        if base in ("start_member", "stop_member"):
-            if report.get("engine") != "mysql" or _version_of(report) < GR_MIN_VERSION:
-                return ("Needs MySQL 5.7.17 or later.",
-                        "Use a MySQL Group Replication member running MySQL 5.7.17 or later.")
-        else:
-            usable, why = _gr_usable(report)
-            if not usable:
-                return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
+        usable, why = _gr_usable(report)
+        if not usable:
+            return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
         if base in ("switchover", "switch_to_multi_primary", "switch_to_single_primary"):
             # Shell's shared Topology_configuration_command::prepare checks
             # every group member, but a MISSING metadata row is not a member
@@ -2753,15 +2748,18 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
     return report
 
 
-def action_checks(conn, report, action):
-    """Read this action's privileges on the sending connection, never from a
-    cached catalog. Also check the bootstrap flag and MySQL Shell as needed."""
+def action_checks(conn, report, action, check_grants=True):
+    """Check the bootstrap flag and MySQL Shell, plus fresh grants for planning.
+
+    Sending skips grants: the same-session identity guard and the server's
+    privilege checks enforce the reviewed write. All other checks still run.
+    """
     from . import dbops
     requirements, _ = _privilege_requirements(report, {"id": action, "via": _action_via(report, action)})
     # An explicit unknown prevents sibling catalog entries from triggering a
-    # lazy grants read when the selected action leaves validation to Shell.
+    # lazy grants read during send or when Shell validates the privileges.
     out = {"grants": None}
-    if requirements:
+    if check_grants and requirements:
         out["grants"] = _grant_model(report, dbops.read_grants(conn, CLUSTER_TAG),
                                      getattr(report, "_partial_revokes", False))
     if (report or {}).get("kind") == "innodb_cluster" and _via_shell(report, action):
@@ -3273,7 +3271,7 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         report = read_status(conn)
         if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
             raise ValueError("This connection now reaches another server or cluster.")
-        checks = action_checks(conn, report, reviewed["action"])
+        checks = action_checks(conn, report, reviewed["action"], check_grants=False)
         plan = plan_action(report, reviewed["action"], reviewed.get("member_key"), checks)
         state["before"] = _after(report, reviewed)
         state["plan"], state["shell"] = plan, _shell(checks)

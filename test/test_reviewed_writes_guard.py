@@ -279,33 +279,37 @@ class GuardTests(unittest.TestCase):
             self.assertIn(report['server']['server_uuid'], writer.writes[0].split('\n', 1)[0])
 
     def test_cluster_missing_reviewed_mariadb_id_is_refused(self):
-        # The Cluster reader is owned by a different worker. A plan without
-        # its new server_id field must be refused, never supplemented at send.
+        # An older reviewed plan without server_id must be refused, never
+        # supplemented from the fresh preflight identity at send.
         import _cluster_fixtures as fixtures
         report = fixtures.report('galera-11.8-healthy')
-        report['server'].pop('server_id', None)
         local = next(member for member in report['members'] if member['local'])
         plan = cluster.plan_action(report, 'desync_node', local['key'])
+        plan['expect']['server'].pop('server_id')
+        with self.assertRaisesRegex(ValueError, 'server_id'):
+            reviewed_writes.session_guard(plan)
         writer = Writer()
         with mock.patch.object(cluster, 'read_status', return_value=report):
             out = cluster.execute_action(writer, plan, audit=self.audit())
         self.assertEqual((out['status'], out['sent'], writer.writes), ('refused', [], []))
-        self.assertIn('server_id', out['message'])
+        self.assertEqual(out['outcome'], 'changed')
 
     def test_cluster_mariadb_uses_only_complete_reviewed_node_identity(self):
         import _cluster_fixtures as fixtures
         report = fixtures.report('galera-11.8-healthy')
-        # Explicit synthetic review evidence for the other worker's reader.
-        report['server'].update(server_id=42, wsrep_node_name=report['galera']['node_name'])
         local = next(member for member in report['members'] if member['local'])
         plan = cluster.plan_action(report, 'desync_node', local['key'])
+        # The fixture's preflight supplies server_id=1 outside the public
+        # report; the reviewed plan must retain that complete read identity.
+        self.assertNotIn('server_id', report['server'])
+        self.assertEqual(plan['expect']['server']['server_id'], 1)
         writer = Writer(MISMATCH)
         with mock.patch.object(cluster, 'read_status', return_value=report):
             out = cluster.execute_action(writer, plan, audit=self.audit())
         self.assert_mismatch(out, writer)
         line = writer.writes[0].split('\n', 1)[0]
         self.assertIn("@@global.hostname <> 'mf-galera-1'", line)
-        self.assertIn('@@global.server_id <> 42', line)
+        self.assertIn('@@global.server_id <> 1', line)
         self.assertIn('@@global.port <> 3306', line)
         self.assertIn("@@global.wsrep_node_name <> 'galera-1'", line)
 

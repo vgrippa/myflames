@@ -140,7 +140,7 @@
      "member_uuid": "11111111-1111-11f0-8a00-0242ac130002",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "This member has not left the group.",
+     "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
      "target": {
       "self": true,
@@ -257,7 +257,7 @@
      "member_uuid": "22222222-2222-11f0-8a00-0242ac130003",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "This member has not left the group.",
+     "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
      "target": {
       "self": true,
@@ -374,7 +374,7 @@
      "member_uuid": "33333333-3333-11f0-8a00-0242ac130004",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "This member has not left the group.",
+     "why_not": "This member has not left the group. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Rejoin a member only after it has left the group and its fault has been checked.",
      "target": {
       "self": true,
@@ -496,7 +496,7 @@
      "member_uuid": "44444444-4444-11f0-8a00-0242ac130005",
      "cluster_name": null,
      "enabled": false,
-     "why_not": "mf-rr-1:3306 is a read replica, not a Group Replication member.",
+     "why_not": "mf-rr-1:3306 is a read replica, not a Group Replication member. MySQL Shell checks the privileges it needs when it runs.",
      "fix": "Choose a Group Replication member.",
      "target": {
       "self": true,
@@ -706,7 +706,7 @@
    "member_uuid": null,
    "cluster_name": "drcluster",
    "enabled": false,
-   "why_not": "This connection is to a read replica, not a Group Replication member.",
+   "why_not": "This connection is to a read replica, not a Group Replication member. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Connect to an ONLINE Group Replication member, then Refresh.",
    "target": {
     "self": true,
@@ -730,7 +730,7 @@
    "member_uuid": null,
    "cluster_name": "mfcluster",
    "enabled": false,
-   "why_not": "This connection is to a read replica, not a Group Replication member.",
+   "why_not": "This connection is to a read replica, not a Group Replication member. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Connect to an ONLINE Group Replication member, then Refresh.",
    "target": {
     "self": true,
@@ -754,7 +754,7 @@
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "No invalidated cluster is recorded in this ClusterSet.",
+   "why_not": "No invalidated cluster is recorded in this ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
    "fix": "Use Rejoin cluster after a cluster has been invalidated.",
    "target": {
     "self": true,
