@@ -41,7 +41,7 @@
 .diagram-export-menu button { text-align: left; }
 .diagram-import-controls { margin-block-end: var(--space-3); }
 .diagram-paste textarea { min-height: 240px; max-height: 45vh; resize: vertical; width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: var(--text-code-sm); }
-.diagram-export-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; font-size: var(--text-sm); }
+.diagram-export-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; font-size: var(--text-code-sm); }
 @media (max-width: 650px) {
   .diagram-source { align-items: end; }
   .diagram-source label { display: grid; flex: 1; }

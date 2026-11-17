@@ -166,7 +166,12 @@ async function sweep(name, { prepare = null } = {}) {
       const m = await page.evaluate(() => {
         const vis = (e) => e && !e.closest("[hidden]") && e.getClientRects().length;
         const doc = document.documentElement;
-        const out = { page: doc.scrollWidth - doc.clientWidth };
+        const out = {
+          page: doc.scrollWidth - doc.clientWidth,
+          // Require the fact even when the whole status bar is missing or hidden.
+          lastRunRequired: !!(vis(document.querySelector(".query-lab")) &&
+            document.querySelector(".query-lab tbody tr")),
+        };
         const bar = [...document.querySelectorAll(".window-statusbar")].find(vis);
         if (bar) {
           out.statusbar = bar.scrollWidth - bar.clientWidth;
@@ -176,14 +181,15 @@ async function sweep(name, { prepare = null } = {}) {
           if (updates) out.updates = updates.scrollWidth - updates.clientWidth;
           // Last run and the engine version are not repeated in the editor.
           // Ellipsis is allowed; display:none or a zero-width fact is not.
-          if (vis(document.querySelector(".query-lab")) &&
-              document.querySelector(".query-lab tbody tr")) {
+          if (out.lastRunRequired) {
             out.missingFacts = ["engine", "connection", "session", "last-run"].filter(status => {
               const fact = bar.querySelector(`[data-status="${status}"]`);
               return !vis(fact) || fact.getBoundingClientRect().width <= 0 || !fact.title;
             });
-            const lastRun = bar.querySelector('[data-status="last-run"] time');
-            out.lastRunTime = lastRun?.dateTime;
+            const lastRun = bar.querySelector('[data-status="last-run"]');
+            out.lastRunText = lastRun?.textContent.trim() || "";
+            out.lastRunTextMatches = out.lastRunText ===
+              `Last run ${new Date("2026-10-15T12:05:00.000Z").toLocaleTimeString()}`;
           }
           const safety = [...bar.querySelectorAll(".safety-status")].find(vis);
           if (safety) {
@@ -207,7 +213,7 @@ async function sweep(name, { prepare = null } = {}) {
       if (m.facts > 0) problems.push(`status bar facts clip ${m.facts} px`);
       if (m.updates > 0) problems.push(`status bar version block clips ${m.updates} px`);
       if (m.missingFacts?.length) problems.push(`status facts hidden or missing tooltips: ${m.missingFacts.join(", ")}`);
-      if (m.lastRunTime !== undefined && m.lastRunTime !== "2026-10-15T12:05:00.000Z") problems.push(`wrong Last run time: ${m.lastRunTime}`);
+      if (m.lastRunRequired && !m.lastRunTextMatches) problems.push(`missing or wrong Last run text: ${m.lastRunText || "(empty)"}`);
       if (m.safety > 0) problems.push(`write-safety label clips ${m.safety} px`);
       if (m.dialog > 0) problems.push(`dialog runs ${m.dialog} px past the window`);
       if (m.tiles && (checkTiles || width === 1440)) {

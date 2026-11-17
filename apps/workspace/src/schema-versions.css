@@ -470,6 +470,8 @@
 }
 .schema-split {
   font-family: var(--font-mono);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
 }
 .schema-split .schema-split-num {
   width: 44px;
