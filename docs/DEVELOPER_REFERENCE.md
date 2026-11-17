@@ -1010,7 +1010,7 @@ the window-open handler always denies a new app window. Tests:
 
 A release is one commit in which the versions, the release notes, the README
 screenshots and the handbook agree, and one GitHub release whose notes and
-files come from that commit. AGENTS.md "Release sync" lists the steps; these
+files initially come from that commit. AGENTS.md "Release sync" lists the steps; these
 are the contracts of the tools that check them.
 
 - **Versions.** `apps/desktop/package.json` `version`, `myflames/__init__.py`
@@ -1022,10 +1022,10 @@ are the contracts of the tools that check them.
   the format in [Release notes](#release-notes) (title, sections, order, no
   heading deeper than level two, at least one entry, closed code fences, no em
   dash and no `/api/` path outside code fences) with a message on stderr that
-  says what to fix, and exits 1. The script then ends the notes with the
-  inspiration credit line (`CREDIT`, the README's "Inspired by Brendan Gregg's
-  FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless the page already
-  holds it, so no release's notes lose it.
+  says what to fix, and exits 1. It also refuses a page carrying the inspiration
+  credit: any page naming both inspiration authors, including wrapped or fenced
+  text, fails with the file and line in the error. Validation fails before
+  anything is written to stdout.
 - **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
   (`test/readme-screenshots.mjs`) builds nothing: it opens the built
   workspace in `myflames/ui_assets` through the perf harness (`open()` with
@@ -1092,14 +1092,17 @@ are the contracts of the tools that check them.
   `check_release_sync.py` and `check_release_verification.py` for the new
   version (the checkout fetches full history, so the evidence commits are
   there). When a release is published, or
-  by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
-  out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
-  replaces the release notes with `release_notes.py`'s text when they differ
-  (ignoring line endings and outer blank lines), fails when the tag has no
-  valid page for the version, and runs `check_release_assets.py`. Release
-  notes of releases published before the tag carried `docs/release-notes`
-  are edited by hand from master: `python3 scripts/release_notes.py X.Y.Z >
-  local/notes.md && gh release edit vX.Y.Z --notes-file local/notes.md`.
+  by hand for a tag (Actions > Docs and release sync > Run workflow), the whole
+  tag value must match `vX.Y.Z` (it is never echoed). The job checks out
+  `github.sha`: both the generator and the notes page come from the workflow
+  run's own commit, which is the tag's commit for a `release` event or the
+  dispatching branch head for `workflow_dispatch`. Dispatch from master to
+  sync an older release with the current generator and cleaned page, including
+  tags that predate `docs/release-notes`. Checkout uses
+  `persist-credentials: false`. The job replaces the release notes with
+  `release_notes.py`'s text when they differ (ignoring line endings and outer
+  blank lines), fails when the workflow commit has no valid page for the
+  version, and runs `check_release_assets.py`.
 - **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
   repository. Its `sync.yml` workflow (every 6 hours and on demand) checks this
   repository out at its latest release tag (the peeled commit of an annotated
@@ -1193,7 +1196,8 @@ messages, never in the notes.
   empty: Release highlights, New features, Improvements, Bug fixes, Security
   fixes, Deprecations and removals, Known issues, Packaging notes, Additional
   resources (always present: the download links, the Quickstart and GitHub
-  Issues). No other headings. The page ends with the inspiration credit line.
+  Issues). No other headings. The page does not repeat the inspiration credit: it
+  lives in the About myflames window, the README, NOTICE and HTML report footers.
 - **Release highlights.** Only for a version with three or more notable
   changes: two to four bullets of one sentence each, naming what is worth
   upgrading for. The detail stays in the sections below.
