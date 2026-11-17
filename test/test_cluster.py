@@ -12,6 +12,7 @@ test/_cluster_fixtures.py for where each comes from.
 """
 import ast
 import contextlib
+import copy
 import inspect
 import io
 import json
@@ -108,6 +109,291 @@ class TestEveryScenario(unittest.TestCase):
                                      sorted((f['status'] for f in report['findings']), key=lambda s: -rank[s]))
                     for f in report['findings']:
                         self.assertIn(f['text'], report['status_why'])
+
+
+class TestActionCatalog(unittest.TestCase):
+    """Catalog identities never disappear when state, tools or connection change."""
+    SHELL = {'path': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6', 'version_tuple': [8, 4, 6]}
+    MEMBER_IDS = {
+        'group_replication': {'switchover', 'stop_member', 'start_member'},
+        'innodb_cluster': {'switchover', 'stop_member', 'start_member', 'rejoin_instance'},
+        'galera': {'desync_node', 'resync_node', 'bootstrap_pc'},
+    }
+    MODES = {'switch_to_single_primary', 'switch_to_multi_primary'}
+    CLUSTERSET = {'set_primary_cluster', 'force_primary_cluster', 'rejoin_cluster'}
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                          'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def actions(self, report, target=None, checks=None):
+        checks = {'shell': self.SHELL} if checks is None else checks
+        actions = (m.overview_actions(report, checks) if target is None else
+                   m.available_actions(report, target['key'], checks))
+        return {a['id']: a for a in actions}
+
+    def assert_refused(self, report, action, target=None, checks=None):
+        checks = {'shell': self.SHELL} if checks is None else checks
+        with self.assertRaises(m.ActionUnavailable) as error:
+            m.plan_action(report, action['id'], target['key'] if target else None, checks)
+        self.assertEqual(str(error.exception), action['why_not'] + ' ' + action['fix'])
+
+    def test_every_kind_and_state_has_the_complete_catalog_and_shape(self):
+        from myflames import dbops, reviewed_writes
+        from test_chart_data import validate
+        for scenario in F.ALL:
+            report = m.with_actions(F.report(scenario), shell=self.SHELL)
+            with self.subTest(scenario=scenario):
+                validate(report, SCHEMA)
+                kind = report['kind']
+                expected = self.MEMBER_IDS.get(kind, set())
+                if kind == 'galera' and report['engine'] != 'mariadb':
+                    expected = set()
+                overview = self.MODES | self.CLUSTERSET if kind == 'innodb_cluster' else (
+                    self.MODES if kind == 'group_replication' else set())
+                self.assertEqual({a['id'].split(':')[0] for a in report['actions']}, overview)
+                if 'clusterset' in report:
+                    self.assertNotIn('actions', report['clusterset'], 'one home per action scope')
+                all_actions = list(report['actions'])
+                for target in report['members']:
+                    self.assertEqual({a['id'] for a in target['actions']}, expected)
+                    for action in target['actions']:
+                        self.assertEqual(action['scope'], 'member')
+                        self.assertEqual((action['member_key'], action['member_name'], action['member_uuid']),
+                                         (target['key'], target['name'], target['uuid']))
+                    all_actions.extend(target['actions'])
+                for action in report['actions']:
+                    self.assertEqual(action['scope'], 'overview')
+                    self.assertIsNone(action['member_key'])
+                    self.assertIsNone(action['member_name'])
+                    self.assertIsNone(action['member_uuid'])
+                for action in all_actions:
+                    self.assertEqual(set(action), set(SCHEMA['$defs']['action']['required']))
+                    self.assertEqual(action['schema_version'], 'cluster-action-1.1')
+                    self.assertIn(action['kind'], dbops.KINDS)
+                    self.assertIn(action['via'], ('sql', 'udf', 'mysqlsh'))
+                    self.assertEqual(set(action['target']), {'self', 'member_name'})
+                    self.assertEqual((action['missing_privileges'], action['grant_sql'],
+                                      action['privileges_unreadable']), ([], None, False))
+                    if action['enabled']:
+                        self.assertIsNone(action['why_not'])
+                        self.assertIsNone(action['fix'])
+                        plan = m.plan_action(report, action['id'], action['member_key'], {'shell': self.SHELL})
+                        self.assertEqual(action['kind'], reviewed_writes.worst_kind(plan['statements'])['kind'])
+                    else:
+                        self.assertTrue(action['why_not'])
+                        self.assertTrue(action['fix'])
+                        self.assertNotIn(chr(0x2014), action['why_not'] + action['fix'])
+
+    def test_every_disabled_action_refuses_with_the_catalog_text(self):
+        for scenario in F.ALL:
+            report = F.report(scenario)
+            for target in [None] + report['members']:
+                for action in self.actions(report, target).values():
+                    if not action['enabled']:
+                        with self.subTest(scenario=scenario, member=(target or {}).get('key'), action=action['id']):
+                            self.assert_refused(report, action, target)
+
+    def test_primary_and_secondary_connections_keep_identical_member_buttons(self):
+        primary = F.report('ic-8.4-healthy')
+        primary_member = next(x for x in primary['members'] if x['role'] == 'PRIMARY' and x['state'] == 'ONLINE')
+        for target in primary['members']:
+            target['local'] = target is primary_member
+        primary['local'] = primary_member['key']
+        primary['server'].update(server_uuid=primary_member['uuid'], hostname=primary_member['host'])
+        secondary = copy.deepcopy(primary)
+        new_local = next(x for x in secondary['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
+        for target in secondary['members']:
+            target['local'] = target is new_local
+        secondary['local'] = new_local['key']
+        secondary['server'].update(server_uuid=new_local['uuid'], hostname=new_local['host'])
+        for target in primary['members']:
+            other = next(x for x in secondary['members'] if x['key'] == target['key'])
+            before, after = self.actions(primary, target), self.actions(secondary, other)
+            self.assertEqual(set(before), set(after))
+            self.assertEqual(before['switchover']['enabled'], after['switchover']['enabled'])
+            self.assertEqual(before['stop_member']['enabled'], target['local'])
+            self.assertEqual(after['stop_member']['enabled'], other['local'])
+            action = before['stop_member'] if not target['local'] else after['stop_member']
+            connection_name = local(primary)['name'] if not target['local'] else local(secondary)['name']
+            self.assertEqual(action['why_not'],
+                'Stop Group Replication runs on the server it stops, %s; this connection is to %s.' %
+                (target['name'], connection_name))
+            self.assertEqual(action['fix'], 'Connect to %s to stop it.' % target['name'])
+            self.assertEqual(action['target'], {'self': False, 'member_name': target['name']})
+            self.assertEqual(before['switchover']['target'], {'self': True, 'member_name': local(primary)['name']})
+        self.assertEqual(set(self.actions(primary)), set(self.actions(secondary)))
+        self.assertEqual({aid: a['enabled'] for aid, a in self.actions(primary).items()},
+                         {aid: a['enabled'] for aid, a in self.actions(secondary).items()})
+
+    def test_local_states_keep_stop_and_start_visible(self):
+        for state in ('ONLINE', 'RECOVERING', 'OFFLINE', 'ERROR', 'UNREACHABLE'):
+            report = F.report('ic-8.4-healthy')
+            target = local(report)
+            target['state'] = state
+            checks = {'shell': self.SHELL, 'bootstrap_group': 'OFF'}
+            actions = self.actions(report, target, checks)
+            self.assertEqual(set(actions), self.MEMBER_IDS['innodb_cluster'])
+            self.assertEqual(actions['stop_member']['enabled'], state in ('ONLINE', 'RECOVERING', 'ERROR'))
+            self.assertEqual(actions['start_member']['enabled'], state == 'OFFLINE')
+            if state == 'ERROR':
+                self.assertEqual(actions['start_member']['fix'], 'Stop Group Replication on this member first.')
+                self.assert_refused(report, actions['start_member'], target, checks)
+
+    def test_all_local_node_actions_name_both_servers_when_remote(self):
+        for scenario, action_ids in (
+                ('ic-8.4-healthy', ('stop_member', 'start_member')),
+                ('galera-11.8-healthy', ('desync_node', 'resync_node', 'bootstrap_pc'))):
+            report = F.report(scenario)
+            target = next(x for x in report['members'] if not x['local'])
+            actions = self.actions(report, target)
+            for aid in action_ids:
+                action = actions[aid]
+                self.assertFalse(action['enabled'])
+                self.assertIn(target['name'], action['why_not'])
+                self.assertIn(local(report)['name'], action['why_not'])
+                self.assertTrue(action['fix'].startswith('Connect to %s to ' % target['name']))
+                self.assertEqual(action['target'], {'self': False, 'member_name': target['name']})
+                self.assert_refused(report, action, target)
+
+    def test_recovering_member_and_lost_quorum_block_group_changes(self):
+        for state in ('RECOVERING', 'UNREACHABLE'):
+            report = F.report('ic-8.4-healthy')
+            secondary = next(x for x in report['members'] if not x['local'])
+            secondary['state'] = state
+            self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'])
+            self.assertFalse(self.actions(report, secondary)['switchover']['enabled'])
+            self.assertTrue(self.actions(report, local(report))['stop_member']['enabled'])
+        report = F.report('gr-8.4-two-members')
+        report['cluster']['quorum'] = False
+        self.assertFalse(any(a['enabled'] for a in self.actions(report).values()))
+
+    def test_shell_missing_old_unknown_and_ssh_are_distinct(self):
+        report = F.report('ic-8.4-healthy')
+        cases = (
+            ({}, 'MySQL Shell was not found on this computer.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
+            ({'shell': dict(self.SHELL, version_tuple=[8, 0, 13])},
+             'This action needs MySQL Shell 8.0.14 or later.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
+            ({'shell': dict(self.SHELL, version_tuple=[])},
+             'The installed MySQL Shell version could not be read.', 'Install MySQL Shell 8.0.14 or later, then Refresh.'),
+            ({'shell': self.SHELL, 'ssh': True}, m._SHELL_SSH_NOTE,
+             'Connect directly to a group member from a host that reaches the members.'),
+        )
+        for checks, reason, fix in cases:
+            actions = self.actions(report, checks=checks)
+            action = actions['switch_to_multi_primary']
+            self.assertEqual(set(actions), self.MODES | self.CLUSTERSET)
+            self.assertEqual((action['enabled'], action['why_not'], action['fix']), (False, reason, fix))
+            self.assert_refused(report, action, checks=checks)
+        self.assertTrue(self.actions(report, checks={'shell': dict(self.SHELL, version_tuple=[8, 0, 14])})
+                        ['switch_to_multi_primary']['enabled'])
+
+    def test_topology_server_floor_checks_members_but_not_missing_metadata(self):
+        for name in ('ic-8.4-healthy', 'gr-8.4-two-members'):
+            report = F.report(name)
+            local(report)['version'] = '8.0.12'
+            self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'])
+            report = F.report(name)
+            report['server_version'] = '8.0.12'
+            self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'])
+        report = F.report('ic-8.4-member-offline')
+        secondary = next(x for x in report['members'] if x['state'] == 'ONLINE' and x['role'] == 'SECONDARY')
+        self.assertTrue(self.actions(report, secondary)['switchover']['enabled'], 'MISSING does not block switchover')
+        self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'], 'MISSING blocks mode switches')
+
+    def test_no_clusterset_and_no_candidate_each_keep_three_families(self):
+        report = F.report('ic-8.4-healthy')
+        actions = self.actions(report)
+        for aid in self.CLUSTERSET:
+            self.assertIn(aid, actions)
+            self.assertEqual(actions[aid]['why_not'], 'This cluster is not part of an InnoDB ClusterSet.')
+            self.assert_refused(report, actions[aid])
+        report = F.report('ic-8.4-clusterset-primary')
+        report['clusterset']['clusters'] = [c for c in report['clusterset']['clusters'] if c['local']]
+        actions = self.actions(report)
+        self.assertFalse(actions['set_primary_cluster']['enabled'])
+        self.assertFalse(actions['rejoin_cluster']['enabled'])
+        self.assertFalse(actions['force_primary_cluster']['enabled'])
+        for name in ('ic-8.4-clusterset-primary', 'ic-8.4-clusterset-replica'):
+            report = F.report(name)
+            self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'])
+            report['cluster']['topology'] = 'multi_primary'
+            self.assertFalse(self.actions(report)['switch_to_single_primary']['enabled'])
+
+    def test_read_replica_keeps_all_buttons_disabled_including_clusterset(self):
+        report = F.report('ic-8.4-read-replica-local')
+        report['clusterset'] = copy.deepcopy(F.report('ic-8.4-clusterset-primary')['clusterset'])
+        report['clusterset']['from_local_copy'] = True
+        self.assertEqual({a.split(':')[0] for a in self.actions(report)}, self.MODES | self.CLUSTERSET)
+        self.assertFalse(any(a['enabled'] for a in self.actions(report).values()))
+        for target in report['members']:
+            self.assertEqual(set(self.actions(report, target)), self.MEMBER_IDS['innodb_cluster'])
+            self.assertFalse(any(a['enabled'] for a in self.actions(report, target).values()))
+
+    def test_rejoin_accepts_missing_offline_error_with_an_online_primary(self):
+        for state in ('MISSING', 'OFFLINE', 'ERROR'):
+            report = F.report('ic-8.4-member-offline')
+            target = next(x for x in report['members'] if x['state'] == 'MISSING')
+            target['state'] = state
+            if state != 'MISSING':
+                target['state_source'] = 'replication_group_members'
+            action = self.actions(report, target)['rejoin_instance']
+            self.assertTrue(action['enabled'], (state, action))
+            self.assertEqual(m.plan_action(report, action['id'], target['key'], {'shell': self.SHELL})['via'], 'mysqlsh')
+            local(report)['role'] = 'SECONDARY'
+            action = self.actions(report, target)['rejoin_instance']
+            self.assertFalse(action['enabled'])
+            self.assertIn('No ONLINE primary', action['why_not'])
+            self.assert_refused(report, action, target)
+
+    def test_optional_gc_variable_is_read_and_blocks_only_multi_primary(self):
+        for name in ('gr-8.4-two-members', 'ic-8.4-metadata-2.4'):
+            for version, value in ((v, setting) for v in ('8.4.11', '9.7.0') for setting in (None, 'OFF', 'ON')):
+                scenario = copy.deepcopy(F.SCENARIOS[name])
+                scenario['variables'].update(version=version)
+                if value is not None:
+                    scenario['variables']['group_replication_preemptive_garbage_collection'] = value
+                conn = F.ScenarioConn(scenario)
+                report = m.read_status(conn)
+                self.assertTrue(any('group_replication_preemptive_garbage_collection' in sql for sql, _ in conn.calls))
+                action = self.actions(report)['switch_to_multi_primary']
+                self.assertEqual(action['enabled'], value != 'ON')
+                if value == 'ON':
+                    self.assertEqual(action['why_not'], 'group_replication_preemptive_garbage_collection is ON.')
+                    self.assert_refused(report, action)
+                    report['cluster']['topology'] = 'multi_primary'
+                    self.assertTrue(self.actions(report)['switch_to_single_primary']['enabled'])
+                elif value is None:
+                    self.assertNotIn('preemptive_garbage_collection', report['group_replication'])
+
+    def test_bootstrap_variable_is_read_and_unknown_is_not_assumed_off(self):
+        for value in (None, 'ON', 'OFF'):
+            edit = F.editor(('SHOW GLOBAL VARIABLES', F.pairs(group_replication_bootstrap_group=value)))
+            conn, _ = F.recorded('ic-8.4-local-offline', edit=edit)
+            report = m.read_status(conn)
+            action = self.actions(report, local(report))['start_member']
+            self.assertEqual(action['enabled'], value == 'OFF')
+            if action['enabled']:
+                plan = m.plan_action(report, 'start_member', local(report)['key'])
+                self.assertEqual(plan['expect']['bootstrap_group'], 'OFF')
+            else:
+                self.assert_refused(report, action, local(report))
+
+    def test_unreadable_cluster_keeps_actions_and_overview_plans_use_local(self):
+        report = F.report('ic-8.4-healthy')
+        plan = m.plan_action(report, 'switch_to_multi_primary', checks={'shell': self.SHELL})
+        self.assertEqual(plan['member_key'], local(report)['key'])
+        report['available'] = False
+        for target in [None] + report['members']:
+            for action in self.actions(report, target).values():
+                self.assertFalse(action['enabled'])
+                self.assert_refused(report, action, target)
+        with self.assertRaisesRegex(ValueError, 'not offered'):
+            m.plan_action(report, 'invented_action', local(report)['key'])
 
 
 class TestGalera(unittest.TestCase):

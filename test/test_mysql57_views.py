@@ -450,7 +450,13 @@ class TestGroupReplication(unittest.TestCase):
 
     def test_no_reviewed_changes_before_8_0_13(self):
         report, _ = self.read('gr-5.7-healthy')
-        self.assertEqual(cluster.with_actions(report)['members'][0].get('actions'), [])
+        catalog = cluster.with_actions(report)
+        self.assertEqual({a['id'] for a in catalog['members'][0]['actions']},
+                         {'switchover', 'stop_member', 'start_member'})
+        self.assertFalse(any(a['enabled'] for a in catalog['members'][0]['actions']))
+        self.assertEqual({a['id'] for a in catalog['actions']},
+                         {'switch_to_single_primary', 'switch_to_multi_primary'})
+        self.assertFalse(any(a['enabled'] for a in catalog['actions']))
 
     def test_undefined_primary_names_no_member(self):
         """5.7's group_replication_primary_member reads UNDEFINED when no member is

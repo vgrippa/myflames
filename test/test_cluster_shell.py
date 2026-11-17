@@ -36,7 +36,10 @@ def local(report):
 
 
 def offered(report, key, checks=CHECKS):
-    return [a['id'] for a in m.available_actions(report, key, checks)]
+    actions = m.available_actions(report, key, checks)
+    if key == local(report)['key']:
+        actions += m.overview_actions(report, checks)
+    return [a['id'] for a in actions if a['enabled']]
 
 
 def missing(report):
@@ -144,12 +147,51 @@ class TestClusterSetRead(unittest.TestCase):
         self.assertNotIn('clusterset', report)
         self.assertTrue(any('v2_cs_members' in n for n in report['notes']))
 
+    def test_read_replica_reads_the_clusterset_from_its_local_copy(self):
+        """Connected to a read replica of the ClusterSet's primary cluster:
+        the band comes from its replicated copy of the metadata."""
+        report = F.report('ic-8.4-read-replica-clusterset')
+        cs = report['clusterset']
+        self.assertEqual((cs['name'], cs['local_cluster'], cs['local_role'], cs['primary_cluster']),
+                         ('mfcs', 'mfcluster', 'PRIMARY', 'mfcluster'))
+        self.assertTrue(cs['from_local_copy'])
+        self.assertEqual([(c['name'], c['role'], c['local']) for c in cs['clusters']],
+                         [('mfcluster', 'PRIMARY', True), ('drcluster', 'REPLICA', False)])
+        self.assertEqual(cs['clusters'][0]['instances'], [])
+        self.assertEqual([i['address'] for i in cs['clusters'][1]['instances']],
+                         ['mf-dr-1:3306', 'mf-dr-2:3306', 'mf-dr-3:3306'])
+        self.assertEqual(local(report)['instance_type'], 'read-replica')
+        self.assertEqual(report['metadata']['local_copy'], 'read_replica')
+        notes = [n for n in report['notes'] if 'ClusterSet' in n]
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn('read replica', notes[0])
+        self.assertIn('replicated copy', notes[0])
+        self.assertEqual(json.loads(json.dumps(report))['clusterset'], cs)
+
+    def test_read_replica_clusterset_metadata_2_2_on_8_0_and_8_4(self):
+        for version in ('8.0.44', '8.4.11'):
+            with self.subTest(version=version):
+                scenario = F.SCENARIOS['ic-8.4-read-replica-clusterset']
+                conn = F.ScenarioConn(dict(scenario, variables=dict(scenario['variables'], version=version)))
+                report = m.read_status(conn)
+                self.assertEqual(report['server_version'], version)
+                cs = report['clusterset']
+                self.assertTrue(cs['from_local_copy'])
+                self.assertEqual((cs['local_cluster'], cs['primary_cluster']), ('mfcluster', 'mfcluster'))
+
+    def test_read_replica_outside_a_clusterset_is_unchanged(self):
+        conn = F.conn('ic-8.4-read-replica-local')
+        report = m.read_status(conn)
+        self.assertNotIn('clusterset', report)
+        self.assertFalse(any('ClusterSet' in n for n in report['notes']))
+        self.assertEqual(local(report)['state'], 'Replicating')
+
 
 class TestOffered(unittest.TestCase):
     def test_shell_action_version_thresholds(self):
         cases = (
-            ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', (8, 0, 0), (7, 9, 99)),
-            ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 0), (7, 9, 99)),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', (8, 0, 14), (8, 0, 13)),
+            ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 14), (8, 0, 13)),
             ('ic-8.4-member-offline', 'rejoin_instance', 'missing', (8, 1, 0), (8, 0, 34)),
             ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', (8, 0, 27), (8, 0, 26)),
             ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', (8, 0, 27), (8, 0, 26)),
@@ -227,7 +269,7 @@ class TestOffered(unittest.TestCase):
         for _ in range(2):
             m.with_actions(report, shell=SHELL, ssh=True)
             self.assertEqual(report['notes'].count(note), 1)
-            self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions']))
+            self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions'] if a['enabled']))
         for shell, ssh, scenario in ((SHELL, False, 'ic-8.4-healthy'),
                                      (None, True, 'ic-8.4-healthy'),
                                      (SHELL, True, 'gr-8.4-two-members')):
@@ -396,7 +438,8 @@ class TestPlans(unittest.TestCase):
         self.assertIn('Run cluster.rejoinInstance("%s", {recoveryMethod: "clone"}) in MySQL Shell' % target['address'],
                       warnings)
         self.assertNotIn('clone', ' '.join(plan['checks']))
-        self.assertNotIn('clone', m.available_actions(report, target['key'], CHECKS)[0]['description'])
+        self.assertNotIn('clone', next(a for a in m.available_actions(report, target['key'], CHECKS)
+                                        if a['id'] == 'rejoin_instance')['description'])
 
     def test_action_checks_records_ssh_only_for_shell_actions(self):
         report = F.report('ic-8.4-healthy')
@@ -484,9 +527,11 @@ class TestEffects(unittest.TestCase):
                             [['Primary cluster', 'mfcluster', 'mfcluster'], ['Invalidated', 'none', 'none']])
                 self.assertEqual(m._effect(plan, before, before), expected)
                 self.assertEqual(m._effect(plan, before, after),
-                                 expected + [['ClusterSet channel', 'Not readable', 'mf-a:3306 receiver ON']])
+                                 expected + [['ClusterSet channel', 'No channel in the view read here',
+                                              'mf-a:3306 receiver ON']])
                 self.assertEqual(m._effect(plan, after, before),
-                                 expected + [['ClusterSet channel', 'mf-a:3306 receiver ON', 'Not readable']])
+                                 expected + [['ClusterSet channel', 'mf-a:3306 receiver ON',
+                                              'No channel in the view read here']])
 
     def test_channel_does_not_change_other_actions_effects(self):
         report = F.report('ic-8.4-clusterset-replica')
@@ -497,6 +542,42 @@ class TestEffects(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertEqual(m._effect({'action': action}, with_channel, with_channel),
                                  m._effect({'action': action}, without_channel, without_channel))
+
+    def test_missing_values_say_why_never_not_readable(self):
+        """Every _effect path with missing before and after values names the
+        cause; "Not readable" never appears."""
+        no_primary = 'No member reported the PRIMARY role in the view read here'
+        cases = [
+            ({'action': 'switchover'}, {}, {},
+             [['Primary', no_primary, no_primary]]),
+            ({'action': 'set_primary_cluster:drcluster'}, {}, {},
+             [['Primary cluster', 'No primary cluster in the view read here',
+               'No primary cluster in the view read here'],
+              ['Invalidated', 'none', 'none']]),
+            ({'action': 'rejoin_instance'}, {}, {},
+             [['The instance', 'Not in the view read before the action', 'Not in the view read after the action']]),
+            ({'action': 'stop_member'}, {}, {},
+             [['This member', 'Not in the view read before the action', 'The read after the action failed']]),
+            ({'action': 'start_member'}, {'local': {'name': 'mf-ic-1:3306', 'state': 'OFFLINE'}}, {},
+             [['mf-ic-1:3306', 'OFFLINE', 'The read after the action failed']]),
+            ({'action': 'desync_node'}, {}, {},
+             [['wsrep_desync', 'No value reported before the action', 'No value reported after the action'],
+              ['State', 'No value reported before the action', 'No value reported after the action']]),
+            ({'action': 'resync_node'}, {'desync': 'ON', 'local_state': 'Donor/Desynced'}, {},
+             [['wsrep_desync', 'ON', 'No value reported after the action'],
+              ['State', 'Donor/Desynced', 'No value reported after the action']]),
+            ({'action': 'bootstrap_pc'}, {}, {},
+             [['Component', 'Component status not reported', 'Component status not reported']]),
+            ({'action': 'switch_to_single_primary'}, {}, {},
+             [['Group mode', 'Mode not reported by the server', 'Mode not reported by the server']]),
+            ({'action': 'switch_to_multi_primary'}, {'topology': 'single_primary'}, {},
+             [['Group mode', 'single-primary', 'Mode not reported by the server']]),
+        ]
+        for plan, before, after, expected in cases:
+            with self.subTest(action=plan['action']):
+                rows = m._effect(plan, before, after)
+                self.assertEqual(rows, expected)
+                self.assertNotIn('Not readable', json.dumps(rows))
 
 
 class TestErrorText(unittest.TestCase):
@@ -648,14 +729,15 @@ class Endpoints(Home):
 
     def test_read_endpoint_offers_the_shell_actions(self):
         report = self.api('/api/live/cluster', {'connection': self.connection}, F.conn('ic-8.4-member-offline'))
-        self.assertEqual([a['id'] for a in missing(report)['actions']], ['rejoin_instance'])
+        self.assertEqual([a['id'] for a in missing(report)['actions'] if a['enabled']], ['rejoin_instance'])
+        self.assertEqual(len(missing(report)['actions']), 4)
 
     def test_ssh_read_endpoint_offers_no_shell_actions_and_explains_why(self):
         conn = F.conn('ic-8.4-member-offline')
         conn.ssh_host = 'bastion.example'
         report = self.api('/api/live/cluster', {'connection': self.connection}, conn)
-        self.assertEqual(missing(report)['actions'], [])
-        self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions']))
+        self.assertFalse(any(a['enabled'] for a in missing(report)['actions']))
+        self.assertFalse(any(m._via_shell(report, a['id']) for x in report['members'] for a in x['actions'] if a['enabled']))
         self.assertEqual(sum('MySQL Shell changes are not offered over an SSH connection:' in n
                              for n in report['notes']), 1)
         self.assertIn('stop_member', [a['id'] for a in local(report)['actions']])
@@ -796,7 +878,7 @@ class Endpoints(Home):
                                               side_effect=shell):
                         result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
                     self.assertEqual(result['status'], 'partial', result)
-                    now = ('Not readable' if change == 'removed' else
+                    now = ('No channel in the view read here' if change == 'removed' else
                            '%s receiver %s, applier %s' % (after['clusterset']['channel']['source'],
                                                           after['clusterset']['channel']['receiver_state'],
                                                           after['clusterset']['channel']['applier_state']))

@@ -562,6 +562,20 @@
             "string",
             "null"
           ]
+        },
+        "bootstrap_group": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The corresponding group_replication_ global variable, when returned by SHOW; absence is tolerated."
+        },
+        "preemptive_garbage_collection": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The corresponding group_replication_ global variable, when returned by SHOW; absence is tolerated."
         }
       }
     },
@@ -815,13 +829,6 @@
         },
         "from_local_copy": {
           "type": "boolean"
-        },
-        "actions": {
-          "type": "array",
-          "description": "ClusterSet overview actions (cluster.available_actions). Added only by cluster.with_actions.",
-          "items": {
-            "$ref": "#/$defs/action"
-          }
         }
       }
     },
@@ -968,7 +975,7 @@
     },
     "actions": {
       "type": "array",
-      "description": "Reviewed changes for the cluster overview and members (cluster.available_actions). Added only by the workspace's POST /api/live/cluster (cluster.with_actions); myflames cluster and the MCP tool cluster_status leave it out.",
+      "description": "Every overview action for this cluster kind (cluster.overview_actions), enabled or disabled. Added only by the workspace live read (cluster.with_actions); member actions live only in members[].actions.",
       "items": {
         "$ref": "#/$defs/action"
       }
@@ -1142,7 +1149,7 @@
         },
         "actions": {
           "type": "array",
-          "description": "Reviewed changes this member offers (cluster.available_actions). Added only by the workspace's POST /api/live/cluster (cluster.with_actions); myflames cluster and the MCP tool cluster_status leave it out.",
+          "description": "Every member action for this cluster kind (cluster.available_actions), enabled or disabled. Added only by the workspace live read (cluster.with_actions).",
           "items": {
             "$ref": "#/$defs/action"
           }
@@ -1282,7 +1289,6 @@
         "via",
         "danger",
         "description",
-        "summary",
         "member_key",
         "member_name",
         "member_uuid",
@@ -1319,7 +1325,8 @@
           "enum": [
             "write",
             "risky"
-          ]
+          ],
+          "description": "dbops.KINDS classification; these global SQL/AdminAPI actions are risky."
         },
         "via": {
           "type": "string",
@@ -1333,9 +1340,6 @@
           "type": "boolean"
         },
         "description": {
-          "type": "string"
-        },
-        "summary": {
           "type": "string"
         },
         "member_key": {
@@ -1384,73 +1388,33 @@
             "items": {
               "type": "string"
             }
-          }
+          },
+          "description": "Reserved for privilege evaluation; currently []."
         },
         "grant_sql": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Reserved for privilege evaluation; currently null."
         },
         "privileges_unreadable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Reserved for privilege evaluation; currently false."
         },
         "target": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "connection",
             "self",
-            "member_key",
-            "member_name",
-            "member_uuid",
-            "host",
-            "port",
-            "reason"
+            "member_name"
           ],
+          "description": "Execution target. Node SQL runs on the selected member; UDFs and MySQL Shell run through the connected server. No saved-connection routing.",
           "properties": {
-            "connection": {
-              "type": "string",
-              "enum": [
-                "this_connection",
-                "not_this_connection"
-              ]
-            },
             "self": {
               "type": "boolean"
             },
-            "member_key": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "member_name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "member_uuid": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "host": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "port": {
-              "type": [
-                "integer",
-                "number",
-                "null"
-              ]
-            },
-            "reason": {
               "type": [
                 "string",
                 "null"
@@ -1458,7 +1422,73 @@
             }
           }
         }
-      }
+      },
+      "description": "Complete workspace catalog entry (cluster-action-1.1). Disabled entries have a plain reason and fix; enabled entries have null why_not and fix. Privilege fields are placeholders in this slice.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "why_not": {
+                "type": "null"
+              },
+              "fix": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "why_not": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fix": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "overview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "member_key": {
+                "type": "null"
+              },
+              "member_name": {
+                "type": "null"
+              },
+              "member_uuid": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "member_key": {
+                "type": "string"
+              },
+              "member_name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

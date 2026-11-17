@@ -102,7 +102,16 @@ def recorded(name, edit=None):
     data = load(name)
     from myflames import topology_links as tl
     # Explicit synthetic denial: these captures predate local client footprints.
-    calls = _with_clusterset_answer(data["calls"]) + [
+    # The catalog now reads optional bootstrap/GC variables in the same
+    # preflight. Adapt only the SELECT list in older captures, preserving
+    # their answers (absence is unknown, never a fabricated OFF value).
+    from myflames.cluster import EXTRA_VARIABLES
+    from myflames.perf_common import PREFLIGHT_VARIABLES
+    preflight_sql = "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ", ".join(
+        "'%s'" % n for n in sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES)))
+    calls = [[preflight_sql if c[0].startswith("/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE") else c[0]] + c[1:]
+             for c in data["calls"]]
+    calls = _with_clusterset_answer(calls) + [
         [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
         [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, '']]
     return ReplayConn(calls, edit=edit, version=_version(data)), data
@@ -565,6 +574,23 @@ _CS_CHANNEL_ON = {"performance_schema.replication_connection_status": [["ON", "0
                   "performance_schema.replication_applier_status": [["ON"]],
                   "performance_schema.replication_connection_configuration": [["mf-main-1", "3306"]]}
 
+
+def _read_replica_clusterset():
+    """Connected to a read replica of the ClusterSet's primary cluster: no
+    group, its replicated copy of the metadata, the channel running."""
+    instances = _instances(read_replica=RR_UUID) + _cs_instances("cid-2", "mf-dr", 30)
+    scenario = _ic([], [], version=(2, 2, 0), instances=instances,
+                   variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1", report_host="mf-rr-1",
+                                         group_replication_group_name=None,
+                                         group_replication_single_primary_mode=None,
+                                         group_replication_local_address=None,
+                                         group_replication_group_seeds=None))
+    scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = _cs(("cid-1", "mfcluster", "PRIMARY", False),
+                                                                            ("cid-2", "drcluster", "REPLICA", False))
+    scenario["extra"] = {"performance_schema.replication_connection_status": [["ON", "0", ""]],
+                         "performance_schema.replication_applier_status": [["ON"]]}
+    return scenario
+
 SCENARIOS.update({
     "ic-8.4-clusterset-primary": _clusterset(_cs(("cid-1", "mfcluster", "PRIMARY", False),
                                                  ("cid-2", "drcluster", "REPLICA", False))),
@@ -582,6 +608,12 @@ SCENARIOS.update({
     # This cluster itself invalidated, in its own copy of the metadata.
     "ic-8.4-clusterset-local-invalidated": _clusterset(
         _cs(("cid-0", "maincluster", "PRIMARY", False), ("cid-1", "mfcluster", "REPLICA", True)), _CS_CHANNEL_ON),
+    # Connected to a read replica of the ClusterSet's primary cluster (the
+    # ic-8.4-read-replica-local shape: no Group Replication plugin, the
+    # read_replica_replication channel running): the ClusterSet read comes
+    # from its replicated copy of the metadata (cluster.py _read_read_replica).
+    # Read replicas in a ClusterSet are a metadata 2.2.0 shape, on 8.0 and 8.4.
+    "ic-8.4-read-replica-clusterset": _read_replica_clusterset(),
 })
 
 

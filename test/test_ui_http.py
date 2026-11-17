@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from myflames import accounts_api, dbops, editor_session, lifecycle, ui
+import _cluster_fixtures as CF
+from myflames import accounts_api, cluster, cluster_shell, dbops, editor_session, lifecycle, ui
 # These handlers load lazily in ui.py and retain connector static helpers.
 # Import before replacing the factory so no module caches a test mock when
 # this suite runs before the server-view suites in the same interpreter.
@@ -80,6 +81,66 @@ class TestWriteHTTP(unittest.TestCase):
         elif path == '/api/live/variable/apply':
             payload['expect']['connection_identity'] = dbops.connection_identity(self.connection)
         return payload
+
+    def test_disabled_cluster_catalog_actions_return_exact_400_without_a_token(self):
+        shell = {'path': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6', 'version_tuple': [8, 4, 6]}
+        cases = (
+            ('galera-11.8-healthy', 'bootstrap_pc', 'local', shell, False),
+            ('galera-11.8-healthy', 'desync_node', 'remote', shell, False),
+            ('ic-8.4-healthy', 'switchover', 'primary', shell, False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview', None, False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview',
+             dict(shell, version_tuple=[8, 0, 13]), False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview', shell, True),
+            ('ic-8.4-healthy', 'set_primary_cluster', 'overview', shell, False),
+            ('ic-8.4-member-offline', 'stop_member', 'missing', shell, False),
+            ('ic-8.4-read-replica-local', 'switchover', 'local', shell, False),
+        )
+        tokens = ui._review_tokens(self.server)
+        for scenario, aid, who, installed, ssh in cases:
+            with self.subTest(scenario=scenario, action=aid, shell=installed, ssh=ssh):
+                conn = CF.conn(scenario)
+                conn.ssh_host = 'bastion.example' if ssh else None
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(cluster_shell, 'find_shell', return_value=installed):
+                    status, report = self.post('/api/live/cluster', {'connection': self.connection})
+                    self.assertEqual(status, 200, report)
+                    target = None if who == 'overview' else next(x for x in report['members'] if
+                        (x['local'] if who == 'local' else not x['local'] if who == 'remote' else
+                         x['role'] == 'PRIMARY' if who == 'primary' else x['state'] == 'MISSING'))
+                    actions = report['actions'] if target is None else target['actions']
+                    action = next(a for a in actions if a['id'] == aid)
+                    self.assertFalse(action['enabled'])
+                    expected = action['why_not'] + ' ' + action['fix']
+                    before = dict(tokens.entries)
+                    with mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+                        status, response = self.post('/api/live/cluster/plan', {
+                            'connection': self.connection, 'action': aid,
+                            'member_key': target['key'] if target else None,
+                            'enabled': True, 'why_not': None, 'fix': None})
+                    self.assertEqual((status, response), (400, {'error': expected}))
+                    self.assertNotIn('review_token', response)
+                    issue.assert_not_called()
+                    self.assertEqual(dict(tokens.entries), before)
+
+    def test_cluster_plan_reads_current_state_instead_of_trusting_the_catalog(self):
+        current = [CF.conn('galera-11.8-healthy')]
+        tokens = ui._review_tokens(self.server)
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=lambda **kw: current[0]):
+            status, report = self.post('/api/live/cluster', {'connection': self.connection})
+            self.assertEqual(status, 200)
+            target = next(x for x in report['members'] if x['local'])
+            action = next(a for a in target['actions'] if a['id'] == 'desync_node')
+            self.assertTrue(action['enabled'])
+            current[0] = CF.conn('galera-11.8-donor')
+            fresh = CF.report('galera-11.8-donor')
+            fresh_target = next(x for x in fresh['members'] if x['local'])
+            disabled = next(a for a in cluster.available_actions(fresh, fresh_target['key']) if a['id'] == 'desync_node')
+            with mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+                status, response = self.post('/api/live/cluster/plan', {
+                    'connection': self.connection, 'action': action['id'], 'member_key': target['key']})
+            self.assertEqual((status, response), (400, {'error': disabled['why_not'] + ' ' + disabled['fix']}))
+            issue.assert_not_called()
 
     def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
         self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)

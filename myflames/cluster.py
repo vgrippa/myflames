@@ -241,7 +241,8 @@ GALERA_VARIABLES = (
 EXTRA_VARIABLES = GALERA_VARIABLES + (
     "report_port", "server_uuid",
     "group_replication_group_name", "group_replication_single_primary_mode", "group_replication_local_address",
-    "group_replication_group_seeds",
+    "group_replication_group_seeds", "group_replication_bootstrap_group",
+    "group_replication_preemptive_garbage_collection",
 )
 
 WSREP_STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'"
@@ -1264,6 +1265,12 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
         "group_seeds": _text(variables.get("group_replication_group_seeds")),
         "view_id": None,
     }
+    # SHOW omits variables this version/plugin does not have. Keep absence
+    # distinct from OFF, especially for the START safety check.
+    for variable, field in (("group_replication_bootstrap_group", "bootstrap_group"),
+                            ("group_replication_preemptive_garbage_collection", "preemptive_garbage_collection")):
+        if variable in variables:
+            report["group_replication"][field] = _text(variables[variable])
     stats = reader.optional(_GR_STATS_SQL_57 if mysql57 else _GR_STATS_SQL,
                             "performance_schema.replication_group_member_stats", report["notes"])
     if stats is not None:
@@ -2036,7 +2043,7 @@ def check_in_text(router):
 #     sessions opened later only (Ma/sql/wsrep_var.cc:112-215), which
 #     silently diverges the data.
 # * InnoDB Cluster and InnoDB ClusterSet through MySQL Shell (cluster_shell.py;
-#   offered only when mysqlsh 8.0+ is installed; Sh/modules/adminapi/
+#   enabled only with a sufficiently recent mysqlsh; Sh/modules/adminapi/
 #   cluster/cluster_impl.cc and cluster_set/cluster_set_impl.cc):
 #   - mode switches: Cluster.switchToMultiPrimaryMode() and
 #     switchToSinglePrimaryMode() (:2840-2907): an InnoDB Cluster that is
@@ -2051,7 +2058,7 @@ def check_in_text(router):
 #   - ClusterSet.setPrimaryCluster(name) (cluster_set_impl.cc:2396), for a
 #     REPLICA cluster that is not invalidated; forcePrimaryCluster(name)
 #     (:3005), from a member of a replica cluster, typed (MySQL Shell refuses
-#     while the primary cluster is reachable and OK,
+#     while any instance of the primary cluster is reachable,
 #     verify_primary_cluster_not_recoverable); rejoinCluster(name) (:3324)
 #     for an invalidated cluster. A replica cluster's metadata is a
 #     replicated copy: MySQL Shell checks the primary cluster's before each.
@@ -2060,7 +2067,7 @@ def check_in_text(router):
 #     operation ran is judged from a read after it (reviewed_writes,
 #     verify_on_error).
 
-ACTION_SCHEMA_VERSION = "cluster-action-1.0"
+ACTION_SCHEMA_VERSION = "cluster-action-1.1"
 CLUSTER_ACTION_TAG = "/*myflames:cluster_op*/ "
 GR_UDF_MIN = (8, 0, 13)
 #: START GROUP_REPLICATION and the UDFs wait for the group (a join, the old
@@ -2116,10 +2123,6 @@ def _group_ready(report):
     return None
 
 
-def _action(aid, label, danger, description):
-    return {"id": aid, "label": label, "danger": danger, "description": description}
-
-
 #: What myflames passes to MySQL Shell: an instance as host:port (IPv6
 #: bracketed), a cluster name in the characters MySQL Shell allows (letters,
 #: digits, _ - ., not starting with a digit: Sh/modules/adminapi/common/
@@ -2128,7 +2131,13 @@ _ADDRESS = re.compile(r"(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+):[0-9]{1,5}")
 _CLUSTER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,62}")
 #: The actions MySQL Shell runs; ids with a cluster name end in ":<name>".
 SHELL_ACTIONS = ("rejoin_instance", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
-SHELL_MIN_VERSION = (8, 0, 0)
+#: All three topology methods first appear in Shell 8.0.14 (absent in
+#: 8.0.13): mysql-shell tag 8.0.14, modules/adminapi/mod_dba_cluster.cc:132-142.
+#: The session server and every group member need MySQL 8.0.13:
+#: modules/adminapi/cluster/topology_configuration_command.cc:49-54, 231-245;
+#: mysql-server tag mysql-8.0.13, plugin/group_replication/src/udf/
+#: udf_multi_primary.cc:87-94 registers the UDF (absent in mysql-8.0.12).
+SHELL_MIN_VERSION = (8, 0, 14)
 SHELL_CLUSTERSET_MIN_VERSION = (8, 0, 27)
 #: WL#15056 added rejoinInstance's recoveryMethod option in MySQL Shell 8.1.0.
 SHELL_REJOIN_MIN_VERSION = (8, 1, 0)
@@ -2136,6 +2145,13 @@ SHELL_REJOIN_MIN_VERSION = (8, 1, 0)
 SHELL_TIMEOUT = 600
 _SHELL_PRIVILEGE = ("The cluster administrator account: MySQL Shell connects to the members with this "
                     "connection's user and password")
+_SHELL_SSH_NOTE = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
+                   "members directly, outside the tunnel, with this connection's user and password. Run them in "
+                   "MySQL Shell from a host that reaches the members.")
+
+
+class ActionUnavailable(ValueError):
+    """A catalog refusal, already worded for the user (including its fix)."""
 
 
 def _shell(checks, minimum=SHELL_MIN_VERSION):
@@ -2158,146 +2174,357 @@ def _action_name(action):
     return base, name or None
 
 
-def _clusterset_actions(cs):
-    """ClusterSet changes offered on a member of any cluster in the set
-    (Cluster_set_impl::set_primary_cluster, force_primary_cluster and
-    rejoin_cluster; MySQL Shell checks the set's state again before each)."""
-    out = []
+def _shell_minimum(report, action):
+    base, _ = _action_name(action)
+    if base == "rejoin_instance":
+        return SHELL_REJOIN_MIN_VERSION
+    if base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster") or (
+            base == "switchover" and (report.get("clusterset") or {}).get("local_role") == "REPLICA"):
+        return SHELL_CLUSTERSET_MIN_VERSION
+    return SHELL_MIN_VERSION
+
+
+def _tool_issue(report, action, checks):
+    """Tool/version checks precede state checks; never expose client error text."""
+    if action["via"] == "mysqlsh":
+        minimum = _shell_minimum(report, action["id"])
+        version = ".".join(str(n) for n in minimum)
+        if checks.get("ssh"):
+            return _SHELL_SSH_NOTE, "Connect directly to a group member from a host that reaches the members."
+        shell = checks.get("shell")
+        fix = "Install MySQL Shell %s or later, then Refresh." % version
+        if not isinstance(shell, dict) or not shell.get("path"):
+            return "MySQL Shell was not found on this computer.", fix
+        if not shell.get("version_tuple"):
+            return "The installed MySQL Shell version could not be read.", fix
+        if tuple(shell["version_tuple"]) < minimum:
+            return "This action needs MySQL Shell %s or later." % version, fix
+    if report.get("kind") in ("group_replication", "innodb_cluster"):
+        usable, why = _gr_usable(report)
+        if not usable:
+            return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
+        base, _ = _action_name(action["id"])
+        if base in ("switchover", "switch_to_multi_primary", "switch_to_single_primary"):
+            # Shell's shared Topology_configuration_command::prepare checks
+            # every group member, but a MISSING metadata row is not a member
+            # and does not block setPrimaryInstance (cluster_impl.cc:2911-2915).
+            for member in _group_members(report):
+                version = _version_of({"server_version": member.get("version")})
+                if not version:
+                    return ("A group member's MySQL version could not be read.",
+                            "Refresh from an ONLINE member to read the group versions.")
+                if version < GR_UDF_MIN:
+                    return ("Every group member must run MySQL 8.0.13 or later for this change.",
+                            "Upgrade the group members to MySQL 8.0.13 or later, then Refresh.")
+    return None
+
+
+def _group_issue(report):
+    local = _local_member(report)
+    if local and (local.get("role") == "READ_REPLICA" or local.get("instance_type") == "read-replica"):
+        return ("This connection is to a read replica, not a Group Replication member.",
+                "Connect to an ONLINE Group Replication member, then Refresh.")
+    if not local or local.get("state_source") != "replication_group_members":
+        return ("This connection is not to a Group Replication member.",
+                "Connect to an ONLINE Group Replication member, then Refresh.")
+    why = _group_ready(report)
+    if why:
+        return why, "Restore an ONLINE member with quorum and wait for recovery or connectivity to settle, then Refresh."
+    return None
+
+
+_LOCAL_ACTIONS = {
+    "stop_member": ("Stop Group Replication runs on the server it stops", "stop it"),
+    "start_member": ("Start Group Replication runs on the server it starts", "start it"),
+    "desync_node": ("Desync runs on the node it changes", "desync it"),
+    "resync_node": ("Resync runs on the node it changes", "resync it"),
+    "bootstrap_pc": ("Bootstrap runs on the node it changes", "bootstrap its component"),
+}
+
+
+def _member_issue(report, action, member, checks):
+    base = action["id"]
+    kind = report.get("kind")
+    state = member.get("state")
+    name = member.get("name") or "This member"
+    if kind in ("innodb_cluster", "group_replication"):
+        if member.get("role") == "READ_REPLICA" or member.get("instance_type") == "read-replica":
+            return ("%s is a read replica, not a Group Replication member." % name,
+                    "Choose a Group Replication member.")
+        if base == "rejoin_instance":
+            if not member.get("in_metadata"):
+                return "This member is not recorded in the cluster metadata.", "Add it to the cluster in MySQL Shell first."
+            if state not in ("MISSING", "OFFLINE", "ERROR"):
+                return ("This member has not left the group.",
+                        "Rejoin a member only after it has left the group and its fault has been checked.")
+            if not _ADDRESS.fullmatch(member.get("address") or ""):
+                return "This member has no valid MySQL Shell address.", "Correct its address in the cluster metadata, then Refresh."
+            issue = _group_issue(report)
+            if issue:
+                return issue
+            if not any(m.get("role") == "PRIMARY" and m.get("state") == "ONLINE" for m in _group_members(report)):
+                return "No ONLINE primary is visible in this cluster.", "Restore an ONLINE primary before rejoining a member."
+            if (report.get("clusterset") or {}).get("invalidated"):
+                return ("This cluster is invalidated in its ClusterSet.",
+                        "Rejoin this cluster to the ClusterSet before rejoining a member.")
+            return None
+        if member.get("state_source") != "replication_group_members":
+            return "This member is not in the group view.", "Connect to this member and Refresh to read its state."
+        if base == "stop_member":
+            if state not in ("ONLINE", "RECOVERING", "ERROR"):
+                return ("Group Replication is already stopped or its state is unknown on this member.",
+                        "Refresh on this member to read its state before stopping Group Replication.")
+            return None
+        if base == "start_member":
+            if state == "ERROR":
+                return ("Group Replication is still running on this member in ERROR.",
+                        "Stop Group Replication on this member first.")
+            if state != "OFFLINE":
+                return "This member is not OFFLINE.", "Stop Group Replication on this member before starting it again."
+            bootstrap = checks.get("bootstrap_group", (report.get("group_replication") or {}).get("bootstrap_group"))
+            bootstrap = str(bootstrap or "").upper()
+            if bootstrap in ("ON", "1"):
+                return ("group_replication_bootstrap_group is ON, so starting would create a new group.",
+                        "Set group_replication_bootstrap_group to OFF, then Refresh.")
+            if bootstrap not in ("OFF", "0"):
+                return ("The Group Replication bootstrap setting could not be read.",
+                        "Read group_replication_bootstrap_group and confirm it is OFF, then Refresh.")
+            return None
+        if (report.get("cluster") or {}).get("topology") != "single_primary":
+            return "Make primary needs single-primary mode.", "Switch the group to single-primary mode first."
+        if member.get("role") == "PRIMARY":
+            return "%s is already the primary." % name, "Choose an ONLINE secondary."
+        if state != "ONLINE":
+            return "%s is not ONLINE." % name, "Wait for recovery or rejoin this member, then Refresh."
+        if member.get("role") != "SECONDARY":
+            return "%s is not a secondary." % name, "Choose an ONLINE secondary."
+        if not _UUID.fullmatch(member.get("uuid") or ""):
+            return "This member has no valid Group Replication UUID.", "Refresh the cluster and verify this member's identity."
+        if action["via"] == "mysqlsh" and not _ADDRESS.fullmatch(member.get("address") or ""):
+            return "This member has no valid MySQL Shell address.", "Correct its address in the cluster metadata, then Refresh."
+        return _group_issue(report)
+    galera = report.get("galera") or {}
+    metrics = galera.get("metrics") or {}
+    if (galera.get("wsrep_on") or "").upper() != "ON":
+        return "Galera replication is not enabled on this node.", "Enable Galera replication on this node, then Refresh."
+    comment = (metrics.get("local_state_comment") or "").strip()
+    desync = (galera.get("desync") or "").upper()
+    if base == "desync_node":
+        if desync == "ON":
+            return "This node is already desynced.", "Resync this node before desyncing it again."
+        if desync != "OFF" or comment != "Synced":
+            return ("This node is not Synced with wsrep_desync OFF.",
+                    "Wait for the node to become Synced and confirm wsrep_desync is OFF, then Refresh.")
+    elif base == "resync_node":
+        if desync != "ON":
+            return ("wsrep_desync is not ON on this node.",
+                    "Resync only a node desynced with wsrep_desync; let a state transfer or backup finish on its own.")
+    else:
+        if (report.get("cluster") or {}).get("component") != "non-Primary":
+            return "This node is not in a non-Primary component.", "Bootstrap only after verifying this component has lost its Primary status."
+        if metrics.get("connected") is not True:
+            return "This node is not connected to its Galera component.", "Restore the node's Galera connection, then Refresh."
+        if _joining(metrics):
+            return "This node is joining the component.", "Wait for the state transfer to finish, then Refresh."
+    return None
+
+
+def _overview_issue(report, action):
+    issue = _group_issue(report)
+    if issue:
+        return issue
+    base, name = _action_name(action["id"])
+    cs = report.get("clusterset") or {}
+    if base in ("switch_to_multi_primary", "switch_to_single_primary"):
+        if report.get("kind") == "innodb_cluster":
+            # Shell forbids BOTH switches in any ClusterSet, including its
+            # primary cluster (cluster_impl.cc:2838-2880; common/preconditions.cc).
+            if cs:
+                return ("Mode switches are not supported for a cluster in a ClusterSet.",
+                        "Keep this ClusterSet cluster in single-primary mode.")
+            if _missing(report) or any(m.get("state") != "ONLINE" for m in _group_members(report)):
+                return "Every cluster member must be ONLINE for a mode switch.", "Rejoin offline or missing members and wait for recovery, then Refresh."
+            if not any(m.get("state") == "ONLINE" and m.get("role") == "PRIMARY" for m in _group_members(report)):
+                return "No ONLINE primary is visible in this cluster.", "Restore an ONLINE primary before changing the cluster mode."
+        topology = (report.get("cluster") or {}).get("topology")
+        desired = "multi_primary" if base == "switch_to_multi_primary" else "single_primary"
+        if topology == desired:
+            return ("The group is already in %s mode." % desired.replace("_", "-"),
+                    "Choose the other mode to change the topology.")
+        if topology not in ("single_primary", "multi_primary"):
+            return "The group mode could not be read.", "Refresh from an ONLINE Group Replication member."
+        # MySQL 8.4+/9.x rejects the multi-primary UDF while this is ON:
+        # mysql-server/plugin/group_replication/src/udf/udf_multi_primary.cc:118-121.
+        if base == "switch_to_multi_primary" and _on(
+                (report.get("group_replication") or {}).get("preemptive_garbage_collection")):
+            return ("group_replication_preemptive_garbage_collection is ON.",
+                    "Set group_replication_preemptive_garbage_collection to OFF, then Refresh.")
+        return None
+    if base in ("set_primary_cluster", "force_primary_cluster") and cs.get("invalidated"):
+        return "This cluster is invalidated in its ClusterSet.", "Rejoin this cluster to the ClusterSet first."
+    if base == "force_primary_cluster":
+        if cs.get("local_role") != "REPLICA":
+            return "This cluster is not a replica cluster of the ClusterSet.", "Connect to a non-invalidated replica cluster to fail over to it."
+        if not _CLUSTER_NAME.fullmatch(cs.get("local_cluster") or ""):
+            return "This cluster has no valid ClusterSet name.", "Correct the cluster name in the metadata, then Refresh."
+        # SQL metadata cannot prove every instance of the primary cluster is
+        # unreachable. Do not infer this from a channel error or local copy.
+        # Shell's verify_primary_cluster_not_recoverable is the final gate.
+        return None
+    if not cs.get("primary_cluster"):
+        return "No primary cluster is recorded in this ClusterSet.", "Restore a primary cluster in MySQL Shell, then Refresh."
+    return None
+
+
+def _action_privileges(report, action, checks):
+    """Single hook for the next slice's privilege checks; no grants are guessed."""
+    action.update(missing_privileges=[], grant_sql=None, privileges_unreadable=False)
+    return action
+
+
+def _evaluate_action(report, aid, label, danger, description, scope, checks, member=None, cluster_name=None,
+                     target_issue=None):
+    """One eligibility result shared by the catalog and fresh-read planning.
+
+    First failure wins: target, tool/version, readable report, then state.
+    Global changes execute through the connected member; node SQL must run
+    on the selected node. There is no saved-connection routing in this slice.
+    """
+    local = _local_member(report)
+    target = member if aid in _LOCAL_ACTIONS else local
+    via = ("mysqlsh" if _via_shell(report, aid) else "udf" if aid in
+           ("switchover", "switch_to_multi_primary", "switch_to_single_primary") else "sql")
+    # All these SQL/AdminAPI changes have dbops' risky classification. danger
+    # remains the existing presentation hint, independently of write policy.
+    action = {"schema_version": ACTION_SCHEMA_VERSION, "id": aid, "label": label, "scope": scope,
+              "kind": "risky", "via": via, "danger": danger, "description": description,
+              "member_key": member.get("key") if member else None,
+              "member_name": member.get("name") if member else None,
+              "member_uuid": member.get("uuid") if member else None, "cluster_name": cluster_name,
+              "enabled": True, "why_not": None, "fix": None,
+              "target": {"self": bool(target and target.get("local")),
+                         "member_name": target.get("name") if target else (report.get("server") or {}).get("hostname")}}
+    issue = target_issue
+    if aid in _LOCAL_ACTIONS and not member.get("local"):
+        where = (local or {}).get("name") or (report.get("server") or {}).get("hostname") or "an unidentified server"
+        operation, fix = _LOCAL_ACTIONS[aid]
+        name = member.get("name") or "the selected member"
+        issue = ("%s, %s; this connection is to %s." % (operation, name, where),
+                 "Connect to %s to %s." % (name, fix))
+    if issue is None:
+        issue = _tool_issue(report, action, checks)
+    if issue is None and not report.get("available"):
+        issue = ("The cluster could not be read on this connection.", "Refresh with an account that can read the cluster state.")
+    if issue is None:
+        issue = (_member_issue(report, action, member, checks) if scope == "member" else
+                 _overview_issue(report, action))
+    if issue:
+        action.update(enabled=False, why_not=issue[0], fix=issue[1])
+    return _action_privileges(report, action, checks)
+
+
+def _clusterset_actions(report, checks):
+    """Stable ClusterSet families, with bare disabled ids when no target fits.
+
+    Candidate targets come from the actual metadata fields, never invented
+    global_status/primary_unreachable fields. Shell checks remote reachability
+    and GTIDs before changing a ClusterSet, as it did before this catalog.
+    """
+    cs = report.get("clusterset") or {}
     clusters = [c for c in cs.get("clusters") or () if _CLUSTER_NAME.fullmatch(c.get("name") or "")]
-    if not cs.get("invalidated"):
-        for c in clusters:
-            if c.get("role") == "REPLICA" and not c.get("invalidated"):
-                out.append(_action("set_primary_cluster:%s" % c["name"], "Make %s the primary cluster…" % c["name"],
-                                   True, "MySQL Shell switches the ClusterSet over to %s (setPrimaryCluster): the "
-                                         "current primary cluster becomes a replica cluster." % c["name"]))
-    for c in clusters:
-        if c.get("invalidated"):
-            out.append(_action("rejoin_cluster:%s" % c["name"], "Rejoin %s to the ClusterSet…" % c["name"], True,
-                               "MySQL Shell rejoins the invalidated cluster %s as a replica cluster "
-                               "(rejoinCluster)." % c["name"]))
-    if cs.get("local_role") == "REPLICA" and not cs.get("invalidated") \
-            and _CLUSTER_NAME.fullmatch(cs.get("local_cluster") or ""):
-        out.append(_action("force_primary_cluster", "Fail over to this cluster…", True,
-                           "MySQL Shell makes %s the primary cluster without the current primary cluster "
-                           "(forcePrimaryCluster), which is invalidated. Only when the primary cluster is lost."
-                           % cs["local_cluster"]))
+    replicas = [c for c in clusters if c.get("role") == "REPLICA" and not c.get("invalidated")]
+    invalidated = [c for c in clusters if c.get("invalidated")]
+    no_set = (("This cluster is not part of an InnoDB ClusterSet.",
+               "Create or join a ClusterSet in MySQL Shell, then Refresh.") if not cs else None)
+    out = []
+    for target in replicas or [None]:
+        name = target["name"] if target else None
+        issue = no_set or (("No non-invalidated replica cluster is recorded in this ClusterSet.",
+                            "Add or rejoin a replica cluster in MySQL Shell, then Refresh.") if not target else None)
+        out.append(_evaluate_action(
+            report, "set_primary_cluster:%s" % name if name else "set_primary_cluster",
+            "Make %s the primary cluster…" % name if name else "Make primary cluster…", True,
+            "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+            "overview", checks, cluster_name=name, target_issue=issue))
+    out.append(_evaluate_action(
+        report, "force_primary_cluster", "Fail over to this cluster…", True,
+        "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster "
+        "(forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+        "overview", checks, cluster_name=cs.get("local_cluster"), target_issue=no_set))
+    for target in invalidated or [None]:
+        name = target["name"] if target else None
+        issue = no_set or (("No invalidated cluster is recorded in this ClusterSet.",
+                            "Use Rejoin cluster after a cluster has been invalidated.") if not target else None)
+        out.append(_evaluate_action(
+            report, "rejoin_cluster:%s" % name if name else "rejoin_cluster",
+            "Rejoin %s to the ClusterSet…" % name if name else "Rejoin cluster to the ClusterSet…", True,
+            "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+            "overview", checks, cluster_name=name, target_issue=issue))
     return out
 
 
 def available_actions(report, member_key=None, checks=None):
-    """The reviewed changes offered on the member *member_key* (group-wide
-    changes are offered on the connected member). Empty for a report that
-    is not available, not a cluster, or a member this server cannot act on."""
-    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+    """Every member-scope action for this kind, including disabled actions."""
+    if not report:
         return []
     member = next((m for m in _members(report) if m.get("key") == member_key), None)
     if member is None:
         return []
     kind = report.get("kind")
-    out = []
+    definitions = []
     if kind in ("innodb_cluster", "group_replication"):
-        usable, _ = _gr_usable(report)
-        if not usable:
-            return []
-        shell = _shell(checks)
-        cs = report.get("clusterset")
-        ic = kind == "innodb_cluster"
-        if member.get("state_source") == "metadata":
-            # In the metadata, not in the group: MySQL Shell's rejoinInstance,
-            # run through this ONLINE member (Cluster_impl::rejoin_instance:
-            # quorum, a primary, and a ClusterSet in a usable state).
-            if (ic and _shell(checks, SHELL_REJOIN_MIN_VERSION) and member.get("state") == "MISSING"
-                    and member.get("in_metadata")
-                    and _ADDRESS.fullmatch(member.get("address") or "") and _group_ready(report) is None
-                    and not (cs and cs.get("invalidated"))):
-                out.append(_action("rejoin_instance", "Rejoin to the cluster…", True,
-                                   "MySQL Shell rejoins %s to the cluster with incremental recovery from a donor "
-                                   "(Cluster.rejoinInstance)." % member.get("name")))
-            return out
-        if member.get("state_source") != "replication_group_members":
-            return []
-        topology = report.get("cluster", {}).get("topology")
-        # A replica cluster's primary runs the clusterset_replication channel,
-        # which the switchover UDF refuses; MySQL Shell's setPrimaryInstance
-        # moves the channel (see the comment above).
-        replica_cluster = bool(cs and cs.get("local_role") == "REPLICA")
-        if (topology == "single_primary" and member.get("role") == "SECONDARY" and member.get("state") == "ONLINE"
-                and _UUID.match(member.get("uuid") or "") and _group_ready(report) is None
-                and (not replica_cluster or (_shell(checks, SHELL_CLUSTERSET_MIN_VERSION)
-                                             and _ADDRESS.fullmatch(member.get("address") or "")))):
-            out.append(_action("switchover", "Make primary…", True,
-                               "Makes %s the primary; the current primary becomes a read-only secondary once its "
-                               "running transactions finish." % member.get("name")))
-        if member.get("local"):
-            if member.get("state") in ("ONLINE", "RECOVERING", "ERROR"):
-                out.append(_action("stop_member", "Stop Group Replication…", True,
-                                   "This member leaves the group and becomes read-only (super_read_only ON)."))
-            if member.get("state") == "OFFLINE":
-                out.append(_action("start_member", "Start Group Replication…", False,
-                                   "Joins this member to the group. Recovery may replace its data with a clone."))
-            if kind == "group_replication" and _group_ready(report) is None:
-                if topology == "single_primary":
-                    out.append(_action("switch_to_multi_primary", "Switch the group to multi-primary…", True,
-                                       "Every member accepts writes, and the mode is persisted."))
-                elif topology == "multi_primary":
-                    out.append(_action("switch_to_single_primary", "Switch the group to single-primary…", True,
-                                       "The group elects one primary; the others become read-only."))
-            elif (ic and shell and _group_ready(report) is None and not cs and not _missing(report)
-                  and all(m.get("state") == "ONLINE" for m in _group_members(report))):
-                # MySQL Shell's switchTo*Mode: every member ONLINE, an InnoDB
-                # Cluster only, never one in a ClusterSet
-                # (Cluster_impl::switch_to_multi_primary_mode, All_online).
-                if topology == "single_primary":
-                    out.append(_action("switch_to_multi_primary", "Switch the cluster to multi-primary…", True,
-                                       "MySQL Shell switches the cluster: every member accepts writes, and it sets "
-                                       "auto_increment on every member and the mode in the metadata."))
-                elif topology == "multi_primary":
-                    out.append(_action("switch_to_single_primary", "Switch the cluster to single-primary…", True,
-                                       "MySQL Shell switches the cluster: one primary is elected, the others become "
-                                       "read-only, and it resets auto_increment and the metadata mode."))
-            if (ic and _shell(checks, SHELL_CLUSTERSET_MIN_VERSION) and cs and member.get("state") == "ONLINE"
-                    and _group_ready(report) is None):
-                out.extend(_clusterset_actions(cs))
-    elif kind == "galera" and report.get("engine") == "mariadb" and member.get("local"):
-        galera = report.get("galera") or {}
-        metrics = galera.get("metrics") or {}
-        comment = (metrics.get("local_state_comment") or "").strip()
-        wsrep_on = (galera.get("wsrep_on") or "").upper()
-        desync = (galera.get("desync") or "").upper()
-        if wsrep_on != "ON":
-            return []
-        if desync == "OFF" and comment == "Synced":
-            out.append(_action("desync_node", "Desync this node…", False,
-                               "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."))
-        elif desync == "ON":
-            out.append(_action("resync_node", "Resync this node…", False,
-                               "Puts this node back in flow control (wsrep_desync = OFF)."))
-        component = report.get("cluster", {}).get("component")
-        if component == "non-Primary" and metrics.get("connected") is True and not _joining(metrics):
-            out.append(_action("bootstrap_pc", "Bootstrap a Primary component…", True,
-                               "Makes this node, and the nodes it reaches, a Primary component that accepts writes."))
+        definitions = [
+            ("switchover", "Make primary…", True, "Makes this member the primary; the current primary becomes a read-only secondary."),
+            ("stop_member", "Stop Group Replication…", True, "This member leaves the group and becomes read-only (super_read_only ON)."),
+            ("start_member", "Start Group Replication…", False, "Joins this member to the group. Recovery may replace its data with a clone."),
+        ]
+        if kind == "innodb_cluster":
+            definitions.append(("rejoin_instance", "Rejoin to the cluster…", True,
+                                "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance)."))
+    elif kind == "galera" and report.get("engine") == "mariadb":
+        definitions = [
+            ("desync_node", "Desync this node…", False, "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."),
+            ("resync_node", "Resync this node…", False, "Puts this node back in flow control (wsrep_desync = OFF)."),
+            ("bootstrap_pc", "Bootstrap a Primary component…", True, "Makes this node, and the nodes it reaches, a Primary component that accepts writes."),
+        ]
+    return [_evaluate_action(report, aid, label, danger, description, "member", checks or {}, member=member)
+            for aid, label, danger, description in definitions]
+
+
+def overview_actions(report, checks=None):
+    """Every overview action, evaluated against the connected member."""
+    if not report or report.get("kind") not in ("innodb_cluster", "group_replication"):
+        return []
+    checks = checks or {}
+    ic = report.get("kind") == "innodb_cluster"
+    out = [
+        _evaluate_action(report, "switch_to_single_primary", "Switch to single-primary…", True,
+                         "The group elects one primary; the other members become read-only." +
+                         (" MySQL Shell updates auto_increment and the cluster metadata." if ic else ""),
+                         "overview", checks),
+        _evaluate_action(report, "switch_to_multi_primary", "Switch to multi-primary…", True,
+                         "Every member accepts writes, and the mode is persisted." +
+                         (" MySQL Shell updates auto_increment and the cluster metadata." if ic else ""),
+                         "overview", checks),
+    ]
+    if ic:
+        out.extend(_clusterset_actions(report, checks))
     return out
 
 
 def with_actions(report, shell=None, ssh=False):
-    """*report* with each member's ``actions`` (the workspace's Cluster place
-    reads it this way; the CLI and MCP report has no actions). The changes
-    MySQL Shell runs are offered when *shell* (cluster_shell.find_shell, looked
-    up here for an InnoDB Cluster when not given) is installed and the
-    connection does not use SSH."""
+    """Attach the workspace catalog once per scope; CLI and MCP stay read-only."""
     if shell is None and report.get("kind") == "innodb_cluster":
         from .cluster_shell import find_shell
         shell = find_shell()
     checks = {"shell": shell, "ssh": ssh}
     if shell and report.get("kind") == "innodb_cluster" and ssh:
-        note = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
-                "members directly, outside the tunnel, with this connection's user and password. Run them in "
-                "MySQL Shell from a host that reaches the members.")
         notes = report.setdefault("notes", [])
-        if note not in notes:
-            notes.append(note)
+        if _SHELL_SSH_NOTE not in notes:
+            notes.append(_SHELL_SSH_NOTE)
     for member in report.get("members") or ():
         member["actions"] = available_actions(report, member.get("key"), checks)
+    report["actions"] = overview_actions(report, checks)
     return report
 
 
@@ -2362,16 +2589,27 @@ def _connected_text(report, local):
 def plan_action(report, action, member_key=None, checks=None):
     """The reviewed plan for *action* on *member_key* from *report* (a fresh
     read) and *checks* (:func:`action_checks`). Raises ValueError when the action is
-    not offered for that member now."""
-    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+    disabled now, with exactly the catalog's reason and fix. Overview actions
+    use the connected member; their member_key may be omitted."""
+    if not report or report.get("kind") in (None, "none"):
         raise ValueError("No cluster was read on this connection.")
-    if not isinstance(action, str) or not isinstance(member_key, str):
+    if not isinstance(action, str) or (member_key is not None and not isinstance(member_key, str)):
         raise ValueError("Choose a member and an action.")
-    if action not in [a["id"] for a in available_actions(report, member_key, checks)]:
+    local = _local_member(report)
+    catalog = available_actions(report, member_key, checks)
+    # Keep member identity checks for legacy callers that pass a key for an
+    # overview action. Never let that key move a group-wide operation.
+    if member_key is None or (local and member_key == local.get("key")):
+        catalog += overview_actions(report, checks)
+    selected = next((a for a in catalog if a["id"] == action), None)
+    if selected is None:
         raise ValueError("That change is not offered for this member now. Refresh and try again.")
+    if not selected["enabled"]:
+        raise ActionUnavailable(selected["why_not"] + " " + selected["fix"])
+    if selected["scope"] == "overview":
+        member_key = local["key"]
     checks = checks or {}
     member = next(m for m in _members(report) if m.get("key") == member_key)
-    local = _local_member(report)
     cluster = report.get("cluster") or {}
     expect = dict(_server_identity(report), member=_identity(member), local=_identity(local),
                   component=cluster.get("component"), quorum=cluster.get("quorum"), topology=cluster.get("topology"))
@@ -2382,7 +2620,7 @@ def plan_action(report, action, member_key=None, checks=None):
                       ["Cluster", "%s%s" % (kind_label(report), " %s" % cluster["name"] if cluster.get("name") else "")]]}
     kind = report.get("kind")
     if kind in ("innodb_cluster", "group_replication") and _via_shell(report, action):
-        shell = _shell(checks)
+        shell = _shell(checks, _shell_minimum(report, action))
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
         expect["missing"] = sorted(m.get("key") for m in _missing(report))
         expect["shell"] = shell["path"]
@@ -2439,9 +2677,11 @@ def _checks(action, member, local):
 
 def _effect(plan, before, after):
     """What changed: (what, before, now) rows from the reads before and after
-    the send."""
-    def word(value):
-        return "Not readable" if value in (None, "") else str(value).replace("_", "-")
+    the send. A missing value says why it is missing: a read that failed is
+    told apart from a server that reported no value, and no cell ever reads
+    "Not readable"."""
+    def word(value, missing):
+        return missing if value in (None, "") else str(value).replace("_", "-")
 
     def name(side, key):
         return ((side or {}).get(key) or {}).get("name")
@@ -2456,29 +2696,43 @@ def _effect(plan, before, after):
                            (("receiver", "receiver_state"), ("applier", "applier_state")) if item.get(key))
         return " ".join(x for x in (item.get("source"), states) if x) or None
 
+    # In multi-primary mode every ONLINE member reports PRIMARY, so the
+    # snapshot's primary is a member; None means no ONLINE or RECOVERING
+    # member reported PRIMARY in the view read here, or that read failed.
+    no_primary = "No member reported the PRIMARY role in the view read here"
     action = _action_name(plan["action"])[0]
     if action in ("switchover", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
         if action == "switchover":
-            rows = [["Primary", word(name(before, "primary")), word(name(after, "primary"))]]
+            rows = [["Primary", word(name(before, "primary"), no_primary), word(name(after, "primary"), no_primary)]]
         else:
-            rows = [["Primary cluster", word(before.get("cs_primary")), word(after.get("cs_primary"))],
-                    ["Invalidated", word(", ".join(before.get("cs_invalidated") or ()) or "none"),
-                     word(", ".join(after.get("cs_invalidated") or ()) or "none")]]
+            rows = [["Primary cluster", word(before.get("cs_primary"), "No primary cluster in the view read here"),
+                     word(after.get("cs_primary"), "No primary cluster in the view read here")],
+                    ["Invalidated", ", ".join(before.get("cs_invalidated") or ()) or "none",
+                     ", ".join(after.get("cs_invalidated") or ()) or "none"]]
         if before.get("cs_channel") is not None or after.get("cs_channel") is not None:
-            rows.append(["ClusterSet channel", word(channel(before)), word(channel(after))])
+            rows.append(["ClusterSet channel", word(channel(before), "No channel in the view read here"),
+                         word(channel(after), "No channel in the view read here")])
         return rows
     if action == "rejoin_instance":
-        return [[name(after, "member") or name(before, "member") or "The instance", word(state(before, "member")),
-                 word(state(after, "member"))]]
+        return [[name(after, "member") or name(before, "member") or "The instance",
+                 word(state(before, "member"), "Not in the view read before the action"),
+                 word(state(after, "member"), "Not in the view read after the action")]]
     if action in ("stop_member", "start_member"):
-        return [[name(after, "local") or name(before, "local") or "This member", word(state(before, "local")),
-                 word(state(after, "local"))]]
+        # The after state comes from the member's own row; None there means
+        # the read after the action failed, not that the server said nothing.
+        return [[name(after, "local") or name(before, "local") or "This member",
+                 word(state(before, "local"), "Not in the view read before the action"),
+                 word(state(after, "local"), "The read after the action failed")]]
     if action in ("desync_node", "resync_node"):
-        return [["wsrep_desync", word(before.get("desync")), word(after.get("desync"))],
-                ["State", word(before.get("local_state")), word(after.get("local_state"))]]
+        return [["wsrep_desync", word(before.get("desync"), "No value reported before the action"),
+                 word(after.get("desync"), "No value reported after the action")],
+                ["State", word(before.get("local_state"), "No value reported before the action"),
+                 word(after.get("local_state"), "No value reported after the action")]]
     if action == "bootstrap_pc":
-        return [["Component", word(before.get("component")), word(after.get("component"))]]
-    return [["Group mode", word(before.get("topology")), word(after.get("topology"))]]
+        return [["Component", word(before.get("component"), "Component status not reported"),
+                 word(after.get("component"), "Component status not reported")]]
+    return [["Group mode", word(before.get("topology"), "Mode not reported by the server"),
+             word(after.get("topology"), "Mode not reported by the server")]]
 
 
 def _plan_group(report, plan, action, member, local, checks, expect):
@@ -2520,7 +2774,8 @@ def _plan_group(report, plan, action, member, local, checks, expect):
         plan["undo"] = "START GROUP_REPLICATION;" + (" Not enough after the last member: the group must be "
                                                      "bootstrapped again." if last else "")
     elif action == "start_member":
-        bootstrap = (checks.get("bootstrap_group") or "").upper()
+        bootstrap = (checks.get("bootstrap_group", (report.get("group_replication") or {}).get("bootstrap_group"))
+                     or "").upper()
         if bootstrap not in ("0", "OFF"):
             raise ValueError("group_replication_bootstrap_group is %s, so START GROUP_REPLICATION would %s. Nothing "
                              "is offered." % (bootstrap or "not readable",
@@ -2671,8 +2926,8 @@ def _plan_shell(report, plan, action, member, local, expect):
                           ["Primary cluster to invalidate", cs.get("primary_cluster") or "Not recorded"]]
         plan["warnings"] += ["Only when the primary cluster is lost: if it still takes writes, the ClusterSet "
                              "splits in two. Fence it, or make sure it is down, first.",
-                             "MySQL Shell refuses while the primary cluster is reachable and healthy; use Make "
-                             "primary cluster (setPrimaryCluster) then."]
+                             "MySQL Shell refuses while any instance of the primary cluster is reachable; use "
+                             "Make primary cluster (setPrimaryCluster) for a planned switchover."]
         plan["typed_guard"] = target
         plan["undo"] = ("Cannot be undone. Once %s is back and consistent, rejoin it with "
                         "dba.getClusterSet().rejoinCluster(%s);" % (lost, _js(cs.get("primary_cluster") or "")))

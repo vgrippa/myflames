@@ -1747,7 +1747,7 @@ def _action_response(path, payload, workspace):
     ProxySQL places. Action refuses before opening any connection on a
     read-only connection or without confirmation; a missing, expired or
     changed review is refused too. Refusals and every send are audited
-    (dbops.AuditTrail); the envelope is cluster-action-1.0 or
+    (dbops.AuditTrail); the envelope is cluster-action-1.1 or
     proxysql-action-1.0 (reviewed_writes.py)."""
     from . import dbops, reviewed_writes
     from .live import connection_options
@@ -2507,8 +2507,11 @@ def request_error_text(exc, prefix=True):
     one that does not say what failed gets "Could not complete the request: "
     (*prefix* False: never, for a client error passed through as it is)."""
     from .dbops import connection_error_text
+    from .cluster import ActionUnavailable
     text = str(exc)
-    if isinstance(exc, _ClientChoiceError):
+    # Catalog refusals already contain the exact disabled-button reason and
+    # fix. Keep their text intact through the HTTP 400 boundary.
+    if isinstance(exc, (_ClientChoiceError, ActionUnavailable)):
         return text
     plain = connection_error_text(text)
     if plain:
