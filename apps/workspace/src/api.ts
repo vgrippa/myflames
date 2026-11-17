@@ -232,15 +232,28 @@ function captureLaunchSecret() {
   if (window.location.hash) window.history.replaceState(null, "", window.location.pathname + window.location.search);
 }
 captureLaunchSecret();
+/** The server's overload refusal (ui.py `_refuse_request`): a 503 written
+ * before the request is read, so the launch secret never reached the server
+ * and the attempt may be retried like one that got no answer. */
+class OverloadRefusal extends Error {
+  constructor() {
+    super("The server is busy. Open the launch URL printed by myflames ui to try again.");
+  }
+}
 export function authenticate(): Promise<string> {
   captureLaunchSecret();
   if (!authentication) {
     const body = JSON.stringify(launchSecret ? { secret: launchSecret } : {});
-    launchSecret = "";
-    authentication = fetch("/api/auth/session", {
+    const attempt = () => fetch("/api/auth/session", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": sessionProof() }, body,
     }).then(async response => {
+      // The overload refusal (ui.py _refuse_request) is written before the
+      // request is read: the secret never reached the server, so a 503 does
+      // not spend it and the attempt is retried like one without an answer.
+      if (response.status === 503) throw new OverloadRefusal();
+      // Any other answer means the launch secret reached the server: it is spent.
+      launchSecret = "";
       const result = await response.json();
       if (!response.ok || typeof result.token !== "string" || !result.token)
         throw new ApiError(result.error || "Open the launch URL printed by myflames ui.", response.status, result);
@@ -249,6 +262,34 @@ export function authenticate(): Promise<string> {
       try { window.localStorage.setItem(SESSION_PROOF, result.token); }
       catch { /* This tab still works when browser storage is unavailable. */ }
       return result.token;
+    });
+    // Retry only a failure that left the launch secret unread: fetch rejects
+    // with TypeError when the server was still starting, restarting, or reset
+    // the connection before reading the request, and the overload refusal is
+    // a 503 the server writes before reading the request. Any other HTTP
+    // answer spends the secret. The promise stays uncached after such a
+    // failure so a later call tries again; a refusal (an ApiError) is final
+    // and stays cached, failing every call the same way.
+    let unanswered = false;
+    const pending: Promise<string> = (async () => {
+      let lastError: unknown;
+      for (let tries = 0; tries < 3; tries++) {
+        try {
+          return await attempt();
+        } catch (error) {
+          if (!(error instanceof TypeError || error instanceof OverloadRefusal)) throw error;
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      unanswered = true;
+      throw lastError;
+    })();
+    authentication = pending;
+    // Leave the promise uncached when every attempt failed without an answer,
+    // so a later call tries again.
+    pending.catch(() => {
+      if (unanswered && authentication === pending) authentication = null;
     });
   }
   return authentication;
