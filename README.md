@@ -89,6 +89,8 @@ Choose a theme in **Settings > Appearance**, where a card per theme previews its
 
 Editor palettes are adapted for readable text and selections. Chart operator colors, status meanings and Production (purple) and Development (teal) connection colors keep their meaning in every theme. Palette credits and licenses are in [NOTICE](NOTICE).
 
+In the **Text** group of **Settings > Appearance**, choose **Interface font** and **Interface text size** (**Smaller**, **Default**, **Large**, **Larger** or **Largest**, 12 to 16 px) for workspace text, and **Code font** and **Code text size** (**11 px** to **20 px**) for the Query editor and SQL or code blocks; **Restore default text settings** resets them to **System default**, **Default** and **13 px**. **Inter (included)** and **JetBrains Mono (included)** ship with the app (font licenses in [NOTICE](NOTICE)), other supported fonts appear when installed on this computer, and your choices survive app restarts.
+
 Drag the sidebar's right edge to resize it, or focus the edge and use the arrow keys. Double-click, Home or End restores its default width. Sidebar and Server inspector widths, the Server view navigation choice, Health auto-refresh, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices survive app restarts. Narrow windows keep the compact navigation rail.
 
 The window status bar shows the installed version and update status on every screen, with **Check for updates** and **View releases** beside the current view's facts.

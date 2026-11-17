@@ -1263,13 +1263,13 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
   return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
     <div className="window-statusbar-facts">
       {lead}
-      {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
-      {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
-      {value.sessionState && <span data-status="session">{value.sessionState}</span>}
-      {value.transaction && <span data-status="transaction">{value.transaction}</span>}
+      {value.engineVersion && <span data-status="engine" title={value.engineVersion}>{value.engineVersion}</span>}
+      {value.connectionState && <span data-status="connection" title={value.connectionState}>{value.connectionState}</span>}
+      {value.sessionState && <span data-status="session" title={value.sessionState}>{value.sessionState}</span>}
+      {value.transaction && <span data-status="transaction" title={value.transaction}>{value.transaction}</span>}
       {ran && <span data-status="last-run">Last run {ran}</span>}
-      {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
-      {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
+      {knownNumber(value.durationMs) && <span data-status="duration" title={`${value.durationMs.toLocaleString()} ms`}>{value.durationMs.toLocaleString()} ms</span>}
+      {knownNumber(value.rows) && <span data-status="rows" title={`${value.rows.toLocaleString()} ${value.rows === 1 ? "row" : "rows"}`}>{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
       {/* Drawn, not announced: the view's own status line announces its read. */}
       {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
       {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}

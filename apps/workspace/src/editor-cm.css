@@ -9,7 +9,7 @@
   color: var(--ink);
   background: var(--surface);
   font-family: var(--font-mono);
-  font-size: var(--text-md);
+  font-size: var(--text-code);
 }
 .sql-editor-wrap.sql-cm .cm-editor.cm-focused {
   outline: 2px solid var(--focus);

@@ -1632,8 +1632,8 @@ button.grouped-row.is-selected:hover {
   font-weight: var(--section-weight);
 }
 /* A group's share of the summary's count (Health: "1 problem, 1 to watch"),
-   shown only where the tiles form a strip that scrolls sideways (900 px and
-   below), so a flagged tile out of view still adds up at a glance. */
+   shown only where the tiles form a strip (900 px and below), so a flagged
+   tile out of view still adds up at a glance when the strip scrolls. */
 .tile-section-status {
   display: none;
 }
@@ -1802,6 +1802,21 @@ button.metric-tile.is-selected:hover {
   .tile-grid .tile-foot {
     margin-top: 0;
     min-height: 0;
+  }
+}
+/* Interface text scaled up (Settings > Appearance > Text): the strip's chips
+   grow past the row sooner, so the strip wraps to a second row instead of
+   scrolling sideways and hiding a tile. The tile's own text still ellipsizes
+   inside a chip narrower than its words. */
+@media (max-width: 900px) {
+  :root[data-text-scale="large"] .tile-grid {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  :root[data-text-scale="large"] .tile-item {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
   }
 }
 .sparkline {

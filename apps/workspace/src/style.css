@@ -1,5 +1,37 @@
 /* Design tokens (see .claude/skills/web-design). Rules use tokens only; when
    a rule with a raw value is touched, it moves to the nearest token. */
+
+/* The bundled fonts (src/fonts, versions and hashes in fonts.lock.json):
+   Inter for the interface, JetBrains Mono for code, both SIL Open Font
+   License 1.1. Settings > Appearance offers them as "(included)". */
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
   /* Apple standard design school light mode tokens */
   --ink-secondary: #515154;
@@ -122,6 +154,10 @@
   --leading-xl: 28px;
   --text-2xl: 28px;
   --leading-2xl: 34px;
+  /* Code text (the Query editor, pre and code): the Code text size setting
+     sets this token on the root (fonts.ts); 13 px matches the editor's
+     designed size. */
+  --text-code: 13px;
   /* View titles (the header of each view) and section headers. */
   --text-title: 15px;
   --leading-title: 20px;
@@ -632,7 +668,7 @@ small,
 pre,
 code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code);
 }
 pre {
   white-space: pre-wrap;
@@ -4502,6 +4538,25 @@ kbd {
 }
 @media (max-width: 900px) {
   .window-statusbar-facts { gap: var(--space-2); }
+  /* The shrink order when the text is scaled up (Settings > Appearance >
+     Text): the safety detail ("· changes ask first") yields first; the word
+     and the dot stay, the full sentence remains the tooltip. */
+  :root[data-text-scale="large"] .safety-status-detail { display: none; }
+  /* Then the facts that repeat what the view itself already shows: the
+     engine version, the transaction, the last run and its counts. The
+     safety, the connection, the session and the refreshed state stay, and
+     every fact keeps its full text as its tooltip. The gaps shrink with
+     them, so the row fits whatever the fact texts are. */
+  :root[data-text-scale="large"] .window-statusbar-facts { gap: var(--space-1); }
+  :root[data-text-scale="large"] .window-statusbar-facts > :is(
+    [data-status="engine"],
+    [data-status="transaction"],
+    [data-status="last-run"],
+    [data-status="duration"],
+    [data-status="rows"]
+  ) { display: none; }
+  /* The releases list stays one click away in About myflames. */
+  :root[data-text-scale="large"] .window-statusbar-updates > a { display: none; }
 }
 .safety-status {
   display: inline-flex;
