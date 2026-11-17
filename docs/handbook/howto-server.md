@@ -11,6 +11,7 @@ Task guides for the Server and Workload places and the Tuning place. Reading a s
 - [Change server parameters and compare two servers](howto-server.md#change-server-parameters-and-compare-two-servers)
 - [Enable a Performance Schema preset](howto-server.md#enable-a-performance-schema-preset)
 - [Check an upgrade and dump or restore a database](howto-server.md#check-an-upgrade-and-dump-or-restore-a-database)
+- [Get MySQL Shell](howto-server.md#get-mysql-shell)
 - [Create a database user and edit its grants](howto-server.md#create-a-database-user-and-edit-its-grants)
 - [Grade a server and run a full analysis](howto-server.md#grade-a-server-and-run-a-full-analysis)
 
@@ -164,7 +165,19 @@ What you see: the preflight runs reads only, then the review sheet shows the com
 Good to know:
 
 - **Check upgrade** only reads; it reports findings, and never says an upgrade is safe. On MariaDB it lists the mariadb-upgrade steps to run on the server host.
-- Dumps and restores need the matching client tools installed on this computer; when none can run, the tab names the missing program instead of starting.
+- Dumps and restores need the matching client tools installed on this computer (for MySQL Shell, use **Get MySQL Shell** in **Settings** > **Client tools** > **Client tools…**; see [Get MySQL Shell](#get-mysql-shell)); when none can run, the tab names the missing program and offers **Choose client tools…** instead of starting.
+
+## Get MySQL Shell
+
+Use this when no usable MySQL Shell is on this computer and you want myflames to download Oracle's pinned MySQL Shell build for **Cluster** and **Maintenance**.
+
+1. Click the gear at the bottom of the sidebar (**⌘,** / **Ctrl+,**) to open **Settings**, choose **Client tools**, and click **Client tools…** (or click **Change…** under **Used for this server** in **Server** > **Maintenance**).
+2. In the **Client tools** dialog, scroll to **MySQL Shell**. When no usable copy is found, it offers **Get MySQL Shell** and notes that it downloads MySQL Shell 9.7.0 from Oracle into myflames's data folder (`tools/mysqlsh`), with **GPLv2 license (Oracle)** and **Oracle downloads** links (myflames does not redistribute MySQL Shell). If an installed copy is older than 9.7.0, it says `MySQL Shell <version> on this computer is older than 9.7.0, the version myflames works with.` and offers **Get MySQL Shell 9.7.0**; on an unsupported platform, it explains why and offers **Open Oracle downloads** instead.
+3. Click **Get MySQL Shell** (or **Get MySQL Shell 9.7.0**). The progress bar shows `Downloading MySQL Shell 9.7.0 from Oracle` with the percentage and megabytes received (or `Still waiting for cdn.mysql.com.` after 10 seconds with no progress), then `Checking the SHA-256 checksum and archive files…` and `Checking MySQL Shell 9.7.0 and moving it into place…`; the SHA-256 checksum and archive files are verified before anything runs.
+4. To cancel a running download, click **Stop** (`Download stopped; nothing was installed.`). If a download or check fails, the section reports `Could not install MySQL Shell:` with the error (`Nothing was installed.`) and offers **Try again** (and **Get MySQL Shell 9.7.0**).
+5. When the install finishes, the status reads `MySQL Shell 9.7.0 is ready.` and the copy appears under **Found on this computer** as `Downloaded by myflames`, preferred over other MySQL Shell copies. Close the dialog with its **×** button; **Cluster** and **Server** > **Maintenance** (**Upgrade check**, **Dump** and **Restore**) use it afterwards.
+
+Related: [Maintenance](server.md#maintenance), [Cluster](server.md#cluster) and [Connect to a server](quickstart.md#connect-to-a-server).
 
 ## Create a database user and edit its grants
 

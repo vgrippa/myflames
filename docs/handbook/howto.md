@@ -136,7 +136,7 @@ Use this when you need to change a row in a supported base table and inspect the
 1. In **Query editor** > **Schemas**, right-click the table you want to change.
 2. Choose **Edit table data…**.
 3. Change one cell's value in the table panel.
-4. Choose **Review 1 changes**.
+4. Choose **Review 1 change**.
 5. Inspect the statements in **Apply table changes?**.
 6. Choose **Apply changes**.
 7. After the operation completes, choose **Reload rows** to read the saved values.

@@ -35,7 +35,7 @@ What you see: the sheet shows the exact statement or MySQL Shell call and checks
 
 Good to know:
 
-- InnoDB Cluster changes run through MySQL Shell installed on this computer and are not offered over an SSH connection, because MySQL Shell connects to the other members directly.
+- InnoDB Cluster changes run through MySQL Shell installed on this computer (use **Get MySQL Shell** in **Settings** > **Client tools** > **Client tools…** if needed; see [Get MySQL Shell](howto-server.md#get-mysql-shell)) and are not offered over an SSH connection, because MySQL Shell connects to the other members directly.
 - On MariaDB Galera there is no primary to switch; a node's inspector offers **Desync this node…** and **Resync this node…** to take it out of flow control for a backup and back in, and a member listed as MISSING in an InnoDB Cluster offers **Rejoin to the cluster…**.
 
 ## Take a ProxySQL backend out of traffic
