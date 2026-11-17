@@ -74,18 +74,41 @@ for (const file of sources) {
   }
 }
 
-// Modules loaded through lazyComponent must not be imported statically by the
-// shell or by Server (type-only imports are erased and fine).
-const lazyIn = (text) => [...text.matchAll(/lazyComponent\(\(\) => import\("\.\/([^"]+)"\)/g)].map((m) => m[1]);
-for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx"]) {
-  const text = await read(file);
-  const lazy = lazyIn(text);
-  assert.ok(lazy.length > 0, `${file} loads parts lazily`);
-  for (const module of lazy) {
-    const statics = [...text.matchAll(new RegExp(`^import\\s+(?!type\\b)([^;]*?)\\s+from\\s+"\\./${module}";`, "gms"))]
-      .filter((m) => !/^\{\s*(type\s+\w+\s*,?\s*)+\}$/.test(m[1]));
-    assert.equal(statics.length, 0, `${file} imports ./${module} statically and lazily`);
+// Inspect every dynamic import, including chart preloads beside PlanScreen.
+// Looking only at the first import in a Promise.all loader misses siblings.
+const dynamicIn = (text) => [...text.matchAll(/\bimport\s*\(\s*["']\.\/([^"']+)["']\s*\)/g)].map((m) => m[1]);
+function assertNoStaticLazyImports(text, file) {
+  const dynamic = new Set(dynamicIn(text));
+  assert.ok(dynamic.size > 0, `${file} loads parts dynamically`);
+  for (const m of text.matchAll(editorImports)) {
+    if (m[3].startsWith("./") && isValueImport(m[1], m[2])) {
+      assert.ok(!dynamic.has(m[3].slice(2)), `${file} imports ${m[3]} statically and dynamically`);
+    }
   }
+  for (const m of text.matchAll(sideEffectImports)) {
+    assert.ok(!m[1].startsWith("./") || !dynamic.has(m[1].slice(2)),
+      `${file} imports ${m[1]} statically and dynamically`);
+  }
+}
+for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx", "PlanScreen.tsx"])
+  assertNoStaticLazyImports(await read(file), file);
+
+// Prove the guard covers all three shell imports, with both value forms,
+// while allowing imports that TypeScript erases.
+for (const module of ["PlanScreen", "PlanChart", "ContextPanel"]) {
+  for (const statement of [`import { ${module} } from "./${module}";`, `import "./${module}";`]) {
+    assert.throws(() => assertNoStaticLazyImports(`${main}\n${statement}`, "main.tsx"),
+      /statically and dynamically/, `the shell guard rejects a static ${module} import`);
+  }
+  assertNoStaticLazyImports(`${main}\nimport type { ${module} } from "./${module}";`, "main.tsx");
+  assertNoStaticLazyImports(`${main}\nimport { type ${module} } from "./${module}";`, "main.tsx");
+}
+
+// Plans and Learn stay behind the same loading boundary as other places.
+for (const module of ["PlanScreen", "Teach"]) {
+  assert.ok(dynamicIn(main).includes(module), `main.tsx loads ${module} dynamically`);
+  assert.match(main, new RegExp(`const ${module} = lazyComponent\\(`),
+    `main.tsx loads ${module} through lazyComponent`);
 }
 
 // The committed build: one stylesheet, and the entry chunk stays small.
@@ -97,16 +120,30 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // About 365 KB after the split (1.1 MB before), 442 KB by 3.3.2 and 475 KB
-  // in 3.3.3, where the shell gained Back and Forward history, Cmd+K object
-  // search and recents, and readiness facts on Home. Home, the sidebar and
-  // the shell only: a place or view belongs in a lazy chunk. Next step to win
-  // room back: move main.tsx's plan screen into a lazy chunk.
+  // 479,634 bytes after moving Explore, Compare and Learn into lazy chunks,
+  // down from master ef74ba2d's committed 508,046 bytes. The notebook stays
+  // eager in the shell alongside plan state, imports and navigation, leaving
+  // about 20 KB below the fixed 500,000-byte ceiling for release work.
+  // A place or view belongs in a lazy chunk.
   assert.ok(size < 500_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 
   const entryText = await fs.readFile(path.join(assets, "assets", entry), "utf8");
   for (const marker of [".cm-content", ".cm-editor"])
     assert.ok(!entryText.includes(marker), `entry chunk ${entry} includes CodeMirror marker ${marker}`);
+
+  for (const [name, markers] of [
+    ["PlanScreen", ["No plan is open", "Comparison measurements"]],
+    ["Teach", ["myflames-lesson-focus", "Loading lesson"]],
+  ]) {
+    const chunk = files.find((f) => f.startsWith(`${name}-`) && f.endsWith(".js"));
+    assert.ok(chunk, `build has a ${name} chunk`);
+    const chunkText = await fs.readFile(path.join(assets, "assets", chunk), "utf8");
+    for (const marker of markers) {
+      assert.ok(chunkText.includes(marker), `${chunk} includes ${name} marker ${marker}`);
+      assert.ok(!entryText.includes(marker), `entry chunk ${entry} includes ${name} marker ${marker}`);
+    }
+  }
+  console.log(`Entry chunk: ${entry} (${size} bytes); Plans and Learn remain lazy.`);
 
   const queryLab = files.find((f) => /^QueryLab.*\.js$/.test(f));
   assert.ok(queryLab, "build has a QueryLab chunk");
