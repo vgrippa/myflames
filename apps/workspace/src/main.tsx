@@ -572,6 +572,7 @@ function App() {
   const [groupConnection, setGroupConnection] = useState<GroupConnection | null>(null);
   // The group open in the group editor sheet (picker, status bar).
   const [groupEditor, setGroupEditor] = useState<string | null>(null);
+  const [groupRevision, setGroupRevision] = useState(0);
   function applyConnection(id: string, fields: SessionConnection, password: string, group: GroupConnection | null = null) {
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });
@@ -627,6 +628,7 @@ function App() {
         ? connectionFields(profile)
         : connectionFields(member ? { name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only } : {});
       applyConnection(gc.active_member_profile_id, fields, "", gc);
+      setGroupRevision((revision) => revision + 1);
       if (!stillMember) {
         setConnectionNote(`The active member left the group. The Group connection moved to ${member?.profile_name || gc.active_member_profile_id}.`);
       }
@@ -1637,7 +1639,21 @@ function App() {
   const checkPolicy = useCallback(async () => {
     const items = await refreshProfiles();
     const active = activeRef.current;
-    return requestConnection(active, connectionSafety(active, items));
+    const freshSafety = connectionSafety(active, items);
+    const checked = requestConnection(active, freshSafety);
+    const group = groupActiveRef.current;
+    if (group) {
+      const members = items.filter((p) => (p.group || "").trim() === group.group_name);
+      if (!freshSafety.endpointMatches || !members.some((p) => p.id === active.id)) {
+        throw new Error("The active saved connection changed or left this group. Open the Group connection again.");
+      }
+      // Confirmation must preserve the Group connection's identity and use
+      // its freshly read strictest type. Read-only remains this member's flag.
+      checked.group_name = group.group_name;
+      checked.name = groupConnectionLabel(group.group_name, members.length);
+      checked.type = members.some((p) => p.type !== "development") ? "production" : "development";
+    }
+    return checked;
   }, [refreshProfiles]);
   const writePolicy = useMemo(() => ({ blocked: policyBlocked, check: checkPolicy }), [policyBlocked, checkPolicy]);
   const request = useMemo(
@@ -2777,7 +2793,8 @@ function App() {
                 <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
                   onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
-                  profiles={profiles} onSwitchConnection={switchConnection} />
+                  profiles={profiles} onSwitchConnection={switchConnection}
+                  onEditGroup={setGroupEditor} groupRevision={groupRevision} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>

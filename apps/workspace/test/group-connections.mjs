@@ -7,12 +7,14 @@
 // member the backend picks.
 // The real workspace server on a temporary store (vault backend, throwaway
 // HOME); /api/connect and /api/profiles/* are mocked from a mutable profiles
-// list, server views are refused by the harness. Run after `npm run build`:
+// list. Cluster reads and reviewed actions are mocked too: a member's catalog
+// route must survive review and confirmation, without matching its address.
+// Other server views are refused by the harness. Run after `npm run build`:
 // node test/group-connections.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { load, open, pause } from "./perf-harness.mjs";
-import { layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseConnection, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
 
 const base = {
   port: 3306,
@@ -42,6 +44,74 @@ const deleteCalls = [];
 const healthCalls = [];
 const editorRuns = [];
 const healthFixture = await load("health-mysql-8.4.json");
+const clusterFixture = await load("cluster-ic-8.4-healthy.json");
+const clusterCalls = [];
+const clusterPlans = [];
+const clusterSends = [];
+const planReplies = [];
+const clusterProfileIds = ["p-ic-1", "p-ic-2", "p-ic-3"];
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const stopTemplate = clusterFixture.members[0].actions.find((a) => a.id === "stop_member");
+const startTemplate = clusterFixture.members[0].actions.find((a) => a.id === "start_member");
+
+/** Synthetic Group catalog: db-2's topology address deliberately matches an
+ * unrelated saved connection, while its confirmed route is p-ic-2. */
+function clusterReport(connection) {
+  const report = clone(clusterFixture);
+  report.kind = "group_replication";
+  report.metadata = null;
+  report.routers = [];
+  report.actions = [];
+  report.findings = [];
+  report.connection_group = null;
+  report.captured_at = new Date().toISOString();
+  report.members.forEach((m, i) => {
+    const profile = profiles.find((p) => p.id === clusterProfileIds[i]);
+    m.name = `db-${i + 1}`;
+    m.label = m.name;
+    m.host = i === 1 ? "10.0.0.99" : profile.host;
+    m.address = `${m.host}:${m.port}`;
+    m.endpoint = m.address;
+    m.local = profile.id === connection.profile_id;
+    m.role = i === 0 ? "PRIMARY" : "SECONDARY";
+    const grouped = !!connection.group_name;
+    const routed = grouped && profile.group === connection.group_name;
+    const target = { self: m.local, member_name: m.name,
+      ...(grouped ? { profile_id: routed ? profile.id : null } : {}) };
+    const missing = `Add a saved connection for ${m.name} to this group.`;
+    const reason = grouped ? (routed ? null : missing)
+      : m.local ? null : "Stop Group Replication runs on the server it stops.";
+    m.actions = [
+      { ...clone(stopTemplate), member_key: m.key, member_name: m.name, member_uuid: m.uuid,
+        enabled: !reason, why_not: reason, fix: reason, target },
+      { ...clone(startTemplate), member_key: m.key, member_name: m.name, member_uuid: m.uuid,
+        enabled: false, why_not: grouped && !routed ? missing : "This member is not OFFLINE.",
+        fix: grouped && !routed ? missing : "Stop Group Replication on this member before starting it again.", target },
+    ];
+  });
+  const local = report.members.find((m) => m.local);
+  report.local = local.key;
+  report.server = { hostname: local.host, port: local.port, report_host: local.host, server_uuid: local.uuid };
+  return report;
+}
+
+function stopPlan(body) {
+  const report = clusterReport(body.connection);
+  const member = report.members.find((m) => m.key === body.member_key);
+  const profile = profiles.find((p) => p.id === (body.target_profile_id || body.connection.profile_id));
+  const target = `${profile.name} (${profile.host}:${profile.port})`;
+  return {
+    schema_version: "cluster-action-1.1", action: "stop_member", member_key: member.key,
+    eyebrow: "STOP GROUP_REPLICATION", title: `Stop Group Replication on ${target}?`,
+    confirm_label: "Stop Group Replication", description: "This member leaves the group and becomes read-only (super_read_only ON).",
+    target_text: target, server_name: target, statements: ["/*myflames:cluster_op*/ STOP GROUP_REPLICATION;"],
+    facts: [["Runs on", target], ["Listed in the cluster as", member.name]], warnings: [],
+    typed_guard: member.role === "PRIMARY" ? profile.name : null,
+    undo: "START GROUP_REPLICATION;", next: null, expect: { kind: report.kind, member: { key: member.key, uuid: member.uuid } },
+    policy: { action: "confirm", tone: "danger", title: "Review cluster change", text: "Confirm the reviewed change." },
+    review_token: `fixture-stop-${planReplies.length + 1}`,
+  };
+}
 
 function groupList() {
   const byName = new Map();
@@ -142,6 +212,28 @@ const h = await open("/api/unused-group-connections", "group-connections", {
     editorRuns.push(body);
     return { status: 200, body: { status: "refused", message: "Runs are mocked in this suite." } };
   },
+  "/api/live/cluster": (body) => {
+    clusterCalls.push(body);
+    return { status: 200, body: clusterReport(body.connection) };
+  },
+  "/api/live/cluster/plan": (body) => {
+    clusterPlans.push(body);
+    const plan = stopPlan(body);
+    planReplies.push(plan);
+    return { status: 200, body: plan };
+  },
+  "/api/live/cluster/action": (body) => {
+    clusterSends.push(body);
+    return { status: 200, body: {
+      schema_version: "cluster-action-1.1", action: "stop_member", status: "done", message: "Group Replication stopped.",
+      statements: body.plan.statements, sent: body.plan.statements, not_sent: [], error: null,
+      after: null, undo: "START GROUP_REPLICATION;", next: null, audit_id: "mock-cluster-stop", states: ["done"],
+    } };
+  },
+  "/api/live/action/progress": () => ({ status: 200, body: {
+    schema_version: "action-progress-1.0", phase: "checking", states: ["waiting"], status: null,
+    elapsed_s: 0, waiting_s: 0, timeout_s: 120,
+  } }),
 });
 const { page } = h;
 await fs.mkdir(h.shots, { recursive: true });
@@ -389,6 +481,130 @@ try {
   await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
   await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("cluster-ic-1"));
   assert.ok(!(await page.$(".window-statusbar .statusbar-group-edit")), "no Edit group… without a Group connection");
+
+  // --- Cluster member actions use the catalog's saved route. ---------------
+  // Start a fresh Group connection with db-1 active and db-3 not yet in the
+  // group. The topology calls db-2 by an address belonging to p-solo, so any
+  // attempt to infer its action route from the address fails these assertions.
+  for (let i = 0; i < clusterProfileIds.length; i++) {
+    const profile = profiles.find((p) => p.id === clusterProfileIds[i]);
+    profile.name = `db-${i + 1}`;
+    profile.group = i < 2 ? "mf-ic" : "";
+    // The active db-1 is Development, but db-2 makes the Group connection
+    // Production. Confirmation must retain that freshly checked group type.
+    profile.type = i === 1 ? "production" : "development";
+  }
+  primaryId = "p-ic-1";
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="query"]');
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-ic"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-ic · 2 servers"));
+  await page.click('.main-nav button[data-place="cluster"]');
+  const clusterView = '.server-view[data-view="cluster"]';
+  const review = "dialog.action-review[open]";
+  const db1Key = clusterFixture.members[0].key;
+  const db2Key = clusterFixture.members[1].key;
+  const db3Key = clusterFixture.members[2].key;
+  const groupRequest = {
+    name: "Group connection mf-ic · 2 servers", host: "10.0.0.11", port: 3306, user: "dba", database: "",
+    ssl_mode: "PREFERRED", ssl_ca: "", read_only: false, password: "", type: "production",
+    profile_id: "p-ic-1", group_name: "mf-ic",
+  };
+  const clickStop = () => page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  const closeReview = async () => {
+    await page.evaluate(() => [...document.querySelectorAll("dialog.action-review[open] .sheet-actions button")]
+      .find((b) => b.textContent.trim() === "Close").click());
+    await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+  };
+  const assertSend = (body, connection, plan, typed, route = {}) => {
+    const { review_token, ...reviewed } = plan;
+    assert.match(body.progress_id, /^[0-9a-f]{32}$/);
+    assert.deepEqual(body, {
+      connection, plan: reviewed, review_token, typed, confirmed: true, progress_id: body.progress_id, ...route,
+    }, "the exact action body preserves the review and its saved route");
+  };
+  await page.waitForSelector(`${clusterView} .cluster-card`, { visible: true });
+  const identity = await page.$eval(`${clusterView} .cluster-identity`, (e) => e.textContent);
+  assert.match(identity, /Each member's actions run through its own saved connection in mf-ic\./);
+  assert.doesNotMatch(identity, /act on this server only/);
+  await layoutMatrix(page, h.shots, "group-cluster-actions", { frame: clusterView });
+  await page.setViewport({ width: 1440, height: 900 });
+
+  await h.select(`${clusterView} .cluster-card[data-row-key="${db2Key}"]`);
+  const plansBeforeStop = clusterPlans.length;
+  await clickStop();
+  await page.waitForSelector(review, { visible: true });
+  assert.equal(clusterPlans.length, plansBeforeStop + 1);
+  assert.deepEqual(clusterPlans.at(-1), {
+    connection: groupRequest, action: "stop_member", member_key: db2Key, target_profile_id: "p-ic-2",
+  }, "planning uses db-2's catalog profile, never the matching address or the active db-1");
+  assert.equal(await page.$eval(`${review} .ops-target strong`, (e) => e.textContent), "db-2 (10.0.0.12:3306)");
+  assert.match(await page.$eval(review, (e) => e.textContent), /Listed in the cluster as\s*db-2/);
+  await layoutMatrix(page, h.shots, "group-cluster-review", { frame: review });
+  await page.setViewport({ width: 1440, height: 900 });
+  const sendsBeforeStop = clusterSends.length;
+  await page.click(`${review} .sheet-actions button:last-child`);
+  await page.waitForSelector(`${review} .action-outcome[data-status="done"]`);
+  assert.equal(clusterSends.length, sendsBeforeStop + 1);
+  assertSend(clusterSends.at(-1), groupRequest, planReplies.at(-1), "", { target_profile_id: "p-ic-2" });
+  await closeReview();
+
+  // A member with no saved route keeps the exact reason, stays focusable,
+  // sends nothing, and opens the same group editor used by the picker.
+  await h.select(`${clusterView} .cluster-card[data-row-key="${db3Key}"]`);
+  const missingStop = await page.$$eval(".view-inspector .review-actions > button", (buttons) => {
+    const button = buttons.find((b) => b.textContent.trim() === "Stop Group Replication…");
+    return { disabled: button.getAttribute("aria-disabled"), tab: button.tabIndex,
+      reason: document.getElementById(button.getAttribute("aria-describedby"))?.querySelector("p")?.textContent };
+  });
+  assert.deepEqual(missingStop, { disabled: "true", tab: 0, reason: "Add a saved connection for db-3 to this group." });
+  const beforeDisabled = clusterPlans.length;
+  await clickStop();
+  assert.equal(clusterPlans.length, beforeDisabled, "a disabled missing-route action does not plan");
+  assert.equal(await page.$(review), null);
+  await layoutMatrix(page, h.shots, "group-cluster-missing-route", { frame: ".view-inspector" });
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.click(".view-inspector .cluster-edit-group");
+  await page.waitForSelector(sheet, { visible: true });
+  assert.equal((await page.$$(sheet)).length, 1, "there is one shared editor sheet");
+  assert.equal(await page.$eval(`${sheet} input[aria-label="Group name"]`, (e) => e.value), "mf-ic");
+  await layoutMatrix(page, h.shots, "group-cluster-edit-group", { frame: sheet });
+  await page.setViewport({ width: 1440, height: 900 });
+  await tick("p-ic-3");
+  const readsBeforeSave = clusterCalls.length;
+  await page.click(`${sheet} .sheet-buttons button.primary`);
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .some((b) => b.textContent.trim() === "Stop Group Replication…" && b.getAttribute("aria-disabled") === "false"));
+  assert.ok(clusterCalls.length > readsBeforeSave, "saving the group reads the Cluster place again");
+  assert.equal(clusterCalls.at(-1).connection.group_name, "mf-ic");
+  assert.equal(clusterCalls.at(-1).connection.name, "Group connection mf-ic · 3 servers");
+  assert.deepEqual(connectCalls.at(-1), { group_name: "mf-ic", active_member_profile_id: "p-ic-1" });
+  assert.equal(await page.$(".view-inspector .cluster-edit-group"), null, "the fresh catalog has a saved route for db-3");
+
+  // A single saved connection, even one in the same saved group, keeps the
+  // original request shapes and connected-member explanation.
+  await chooseConnection(page, "p-ic-1");
+  await h.refresh();
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .cluster-identity`)?.textContent.includes("Stop and Start act on this server only."), {}, clusterView);
+  assert.doesNotMatch(await page.$eval(`${clusterView} .cluster-identity`, (e) => e.textContent), /Each member's actions/);
+  await h.select(`${clusterView} .cluster-card[data-row-key="${db1Key}"]`);
+  await clickStop();
+  await page.waitForSelector(review, { visible: true });
+  const { group_name: _group, ...singleRequest } = { ...groupRequest, name: "db-1", type: "development" };
+  assert.deepEqual(clusterPlans.at(-1), { connection: singleRequest, action: "stop_member", member_key: db1Key },
+    "a single saved connection sends no target_profile_id in its plan body");
+  assert.equal(Object.hasOwn(clusterPlans.at(-1), "target_profile_id"), false);
+  await page.type(`${review} .action-typed input`, "db-1");
+  await layoutMatrix(page, h.shots, "single-cluster-review", { frame: review });
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.click(`${review} .sheet-actions button:last-child`);
+  await page.waitForSelector(`${review} .action-outcome[data-status="done"]`);
+  assertSend(clusterSends.at(-1), singleRequest, planReplies.at(-1), "db-1");
+  assert.equal(Object.hasOwn(clusterSends.at(-1), "target_profile_id"), false);
+  await closeReview();
 
   console.log("group-connections: all checks passed");
 } finally {

@@ -322,26 +322,29 @@ export type ClusterAction = {
   missing_privileges: string[][];
   grant_sql: string | null;
   privileges_unreadable: boolean;
-  /** Where the change runs: self when it runs on the connected server. */
-  target: { self: boolean; member_name: string | null };
+  /** Where the change runs. In a Group connection, profile_id is the
+   * backend's identity-confirmed saved route, or null when none is usable. */
+  target: { self: boolean; member_name: string | null; profile_id?: string | null };
 };
 
 /** The member-scope actions that change only the server they run on
  * (cluster.py _LOCAL_ACTIONS): the identity line names them. */
 export const LOCAL_ACTION_IDS = new Set(["stop_member", "start_member", "desync_node", "resync_node", "bootstrap_pc"]);
 
-/** The identity sentence under the Cluster summary: the server this
- * connection is, and that member-only changes act on it. Built from the
- * report's own fields only; a missing field drops its part of the sentence. */
-export function identityText(report: ClusterReport): string {
+/** The identity sentence under the Cluster summary: the server read here,
+ * then either the Group connection's saved routes or the connected server's
+ * local actions. A missing report field drops its part of the sentence. */
+export function identityText(report: ClusterReport, groupName = ""): string {
+  const route = groupName ? `Each member's actions run through its own saved connection in ${groupName}.` : "";
   const me = report.members.find((m) => m.local);
-  if (!me) return "";
+  if (!me) return route;
   const server = report.server || {};
   const address = me.host ? (me.port ? `${me.host.includes(":") ? `[${me.host}]` : me.host}:${me.port}` : me.host)
     : me.address || (server.hostname ? `${server.hostname}${server.port ? `:${server.port}` : ""}` : "");
   let text = `You are connected to ${me.name}${address && address !== me.name ? ` (${address})` : ""}`;
   const detail = [me.role ? `a ${me.role}` : "", me.state || ""].filter(Boolean).join(", ");
   text += `${detail ? `, ${detail}` : ""}.`;
+  if (route) return `${text} ${route}`;
   const verbs = (me.actions || []).filter((a) => LOCAL_ACTION_IDS.has(a.id))
     .map((a) => a.label.replace(/[….]+$/, "").split(" ")[0]).filter(Boolean);
   if (verbs.length) {
@@ -351,8 +354,10 @@ export function identityText(report: ClusterReport): string {
   return text;
 }
 
-export const planClusterAction = (connection: Connection, action: string, memberKey: string | null) =>
-  api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey });
+export const planClusterAction = (connection: Connection, action: string, memberKey: string | null, targetProfileId: string | null = null) =>
+  api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey,
+    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}) });
 
-export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string) =>
-  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId });
+export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string, targetProfileId: string | null = null) =>
+  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId,
+    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}) });
