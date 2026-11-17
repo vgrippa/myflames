@@ -8,20 +8,16 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### New features
 
-- A connection group opens as one **Group connection** from the connection picker: the picker lists groups beside the saved connections (name, server count and the strictest safety of the members), and opening one starts on the member the backend picks (the primary or source). The top bar and the status bar name the Group connection, and **Edit group…** (in the picker, in the status bar and on Home's Connections place) opens the one group editor: rename the group, add or remove saved connections, or delete the group (its saved connections stay). Edits apply at once; a save that removes the active member moves the Group connection to the primary.
+- Adds **Group connections** in the connection picker, opening a connection group under the strictest safety of its members with a **Server:** picker in single-server places and the Query editor that starts on the primary or source and names the server in every view header and query tab. **Edit group…** in the picker, the status bar and Home's **Connections** place renames the group, adds or removes saved connections, or deletes the group while keeping its saved connections; removing a member moves open views to the primary. In **Cluster**, member actions in a Group connection run through that member's saved connection and name that saved server in the review, or explain which saved connection to add, open or refresh when a member's identity is not confirmed.
 
 ### Improvements
 
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.
 
+- **Cluster** now keeps every action for the cluster kind visible on the Cluster overview (**Switch to single-primary…**, **Switch to multi-primary…**, and ClusterSet switchover, failover and rejoin) and in each member's or node's inspector (**Make primary…**, **Stop Group Replication…**, **Start Group Replication…** and **Rejoin to the cluster…**, or on MariaDB Galera **Desync this node…**, **Resync this node…** and **Bootstrap a Primary component…**). Actions that cannot run now stay disabled with the reason and fix in plain words under them, and when the connection's account lacks a privilege they show the exact `GRANT` statement for that account to copy ("Run it as an administrator, then Refresh.").
+
+- **Cluster** now shows InnoDB ClusterSet topology when connected to an InnoDB Cluster read replica, reading the replica's replicated metadata copy and noting that it may be behind the primary cluster. After a Cluster action runs, the before-and-after table states why any value was not reported in plain words instead of saying "Not readable".
+
 ### Bug fixes
 
-- Cluster actions in a Group connection can use the selected member's own saved login through `/api/live/cluster/action`. Reviews name that saved server and bind its endpoint, group and node identity; changing the target after review sends nothing.
-
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
-
-- Fixed Cluster reviews whose titles or confirmation labels changed when a member's topology label matched part of the action text. The active member can use a typed password, and recording an unrelated server identity no longer invalidates a Galera review. Restarted nodes with an unconfirmed identity suggest which saved connection to open.
-
-### Security fixes
-
-- Cluster actions refuse ambiguous member identities and name the saved connections that need refreshing. Group consent is checked again before MySQL Shell opens a login. Refusals after review, including group removal or a forgotten saved password, leave an Audit log record with nothing sent.

@@ -1734,8 +1734,8 @@ Local `audit purge` has its separate confirmation contract.
   `Cc`, `Cf` or `Cs`) and an internal `topology_identity` dict
   (`connection_groups.IDENTITY_FIELDS`: `server_uuid`, `gr_group_name`,
   `cluster_kind`, `cluster_name`, `cluster_id`, `clusterset_id`,
-  `clusterset_name`, `wsrep_cluster_uuid`, plus `source_uuids` and
-  `recorded_at`), neither secret. `group` is returned by `/api/profiles/list|save`
+  `clusterset_name`, `wsrep_cluster_uuid`, `wsrep_node_uuid`, plus
+  `source_uuids` and `recorded_at`), neither secret. `group` is returned by `/api/profiles/list|save`
   and `profiles list --json` (`_present` defaults it to `""`) and accepted by
   `/api/profiles/save` (`value.group`; omitting `group` on an update preserves
   the stored value, and `forget_password` keeps both `group` and
@@ -1811,7 +1811,47 @@ Local `audit purge` has its separate confirmation contract.
   (`profiles/groups/save`), and delete (`profiles/groups/delete`, whose
   confirmation says the saved connections stay). After a save that removes
   the active member, the Group connection re-opens without probing on the
-  member the backend picks and says so. Tests:
+  member the backend picks and says so.
+  Single-server places get a **Server:** picker (`GroupServerPicker.tsx`
+  `GroupServerPicker` and `groupMemberLabel`: `"<profile_name> · <host>:<port>"`
+  plus `" · <ROLE>"` when `role` is present; a `Segmented` control up to 4
+  members in a wide window, a `Select` in a narrow window or above 4 members,
+  never listing unsaved topology peers). `main.tsx` keeps `memberByPlace`
+  (`"server"` and `"query"`, in-memory only; absent entries default via
+  `memberOf` to `groupActive.active_member_profile_id`, the primary or source).
+  The `"server"` choice drives `Server.tsx` (`serverRequest`, `groupServer`),
+  which provides `viewServer` (`ViewServerContext` in `kit.tsx` `ViewLayout`:
+  `GroupServerPicker`, `.view-server-name` with `groupMemberLabel`, and optional
+  `.group-server-note`) in every view header across the places `Server.tsx`
+  renders (`serverPlace`: `server` views Health, InnoDB, Error log, Locks,
+  Indexes, Tables, Parameters, Instruments, Maintenance and Users and roles;
+  `workload` views Top statements, Processlist, Memory, Waits and I/O; `tuning`
+  Tuning; and `diagram` Database diagram). The `"query"` choice drives
+  `QueryLab.tsx` (`group`, `groupMember`), which renders `GroupServerPicker` in
+  `.editor-connection`; each new tab created while in a Group connection
+  (`addTab`, `openSql`) binds `{member: groupMember, member_name}` and shows
+  ` · <member_name>` in `.query-tab-label`, and `connectionFor(t)` runs the tab
+  on `memberConnection(t.member)`. `main.tsx` `memberRequest(id)` returns `null`
+  for a non-member, or builds a `Connection` for that current member of
+  `groupActive` from its stored profile (falling back to the
+  `group_connection.members` entry), carrying its `profile_id` (`id`), its own
+  endpoint fields, `group_name: group.group_name`,
+  `name: "<groupConnectionLabel> · <member.profile_name>"`, and the group's
+  strictest safety (`group.effective_safety.type` and
+  `group.effective_safety.read_only`, `endpointMatches: true`, `known: true`).
+  Switching the picker does not call `POST /api/connect`; the view read or
+  editor run logs in to the chosen member with its `profile_id` and
+  `group_name`. When a group edit removes a member that `"server"` or `"query"`
+  had selected in `memberByPlace`, `main.tsx` deletes that entry so the place
+  moves to `groupActive.active_member_profile_id` (the primary or source) and
+  sets `memberNote` (`"<names> is/are not in this group any more; its views
+  moved to <active_member>."`, shown in `.group-server-note` until the next
+  explicit choice); in `QueryLab.tsx`, a tab bound to a removed member
+  (`groupMemberProblem(t)`) marks `.query-tab-member.is-gone`, shows
+  `.group-member-note` (`"<member_name> is not in this group any more. Pick a
+  server for this tab to run it."`) with `.group-member-rebind` (`Select`
+  `"Server for this tab"`, `rebindMember`), and refuses Run, Explain and Run
+  analysis until a current member is chosen. Tests:
   `apps/workspace/test/group-connections.mjs`.
 
   `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
@@ -4742,7 +4782,10 @@ If present, the id must be non-empty text of at most 200 characters and
 identify a stored **profile**, with a saved password when it is another member, in the request's
 `connection.group_name`. The request's own saved profile must also still
 belong to that group and its endpoint fields must be unedited. An omitted
-target in a Group connection selects its active saved member. Invalid
+target in a Group connection selects its active saved member (`clusterApi.ts`
+`planClusterAction` and `sendClusterAction` send `{connection, action,
+member_key}` without `target_profile_id`, so UI requests use that active-member
+default unless a caller supplies `target_profile_id`). Invalid
 targets in plan requests refuse with HTTP 400 before any password lookup.
 Apply refuses a target that left the group or forgot its password with an
 audited `refused` result and nothing sent. ProxySQL and
@@ -4910,18 +4953,18 @@ It issues no review token and sends no write, regardless of a caller-supplied
 ##### State and execution
 
 The enabled-state rules below apply to catalog entries; failure disables the
-entry instead of hiding it. Sources and line references are in the "reviewed
+entry instead of hiding it (`ClusterPlace.tsx` `ActionGroup` renders `report.actions` in `section.cluster-actions` under `Changes · the whole cluster` and `member.actions` in each member's inspector, keeping disabled buttons in the tab order with `aria-disabled="true"` and `aria-describedby` pointing to `.cluster-action-why`, which shows `why_not` and `fix`, a `Use <connection>` button when `fix` asks to connect to a member matching a saved profile, `<Commands>` with `grant_sql` and `"Run it as an administrator, then Refresh."`, and the `privileges_unreadable` hint). After execution, `_effect(plan, before, after)` builds `[what, before, now]` rows and replaces any missing `None` or `""` value with a specific reason (`"No member reported the PRIMARY role in the view read here"`, `"No primary cluster in the view read here"`, `"No channel in the view read here"`, `"Not in the view read before the action"`, `"Not in the view read after the action"`, `"The read after the action failed"`, `"No value reported before the action"`, `"No value reported after the action"`, `"Component status not reported"`, `"Mode not reported by the server"`), never `"Not readable"`. Sources and line references are in the "reviewed
 actions" comment in `cluster.py`:
 
 | Action | Statement (tagged `/*myflames:cluster_op*/`) | Enabled when | Typed name |
 | --- | --- | --- | --- |
 | `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+ (including all group members), except a ClusterSet replica cluster (MySQL Shell route below); single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
-| `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member, ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member |
-| `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member, OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read in preflight and again at plan and send time; ON or unreadable refuses); ERROR requires stopping Group Replication first | no |
+| `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member (or in a Group connection a member with a confirmed saved connection in the group), ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member (`target.profile_name` on a routed Group member plan) |
+| `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member (or in a Group connection a member with a confirmed saved connection in the group), OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read in preflight and again at plan and send time; ON or unreadable refuses); ERROR requires stopping Group Replication first | no |
 | `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication (InnoDB Cluster uses MySQL Shell below), from the connected member, group ready as for switchover; the other mode is active; multi-primary is disabled while `group_replication_preemptive_garbage_collection` is ON (read in preflight when present, absent variables tolerated) | the connected member's name |
-| `desync_node` Desync this node… | `SET GLOBAL wsrep_desync = ON;` | MariaDB Galera, the connected node, `wsrep_on` ON, `wsrep_desync` OFF and Synced | no |
-| `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node, `wsrep_desync` ON | no |
-| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node, `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name |
+| `desync_node` Desync this node… | `SET GLOBAL wsrep_desync = ON;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, `wsrep_desync` OFF and Synced | no |
+| `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_desync` ON | no |
+| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name (`target.profile_name` on a routed Group member plan) |
 
 MySQL Shell actions stay in the catalog when `mysqlsh` is missing, too old,
 or the connection uses SSH; each condition has its own reason and fix.
