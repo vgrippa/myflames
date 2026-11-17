@@ -76,7 +76,7 @@ for (const file of sources) {
 
 // Modules loaded through lazyComponent must not be imported statically by the
 // shell or their parent view (type-only imports are erased and fine).
-const lazyIn = (text) => [...text.matchAll(/lazyComponent\(\(\) => import\("\.\/([^"]+)"\)/g)].map((m) => m[1]);
+const lazyIn = (text) => [...text.matchAll(/lazyComponent\(\s*\(\) => (?:Promise\.all\(\[)?\s*import\("\.\/([^"]+)"\)/g)].map((m) => m[1]);
 for (const file of ["main.tsx", "Server.tsx", "QueryLab.tsx", "PlanScreen.tsx"]) {
   const text = await read(file);
   const lazy = lazyIn(text);
@@ -101,10 +101,11 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // 469,138 bytes after moving main.tsx's Plans screen (Explore, Compare
+  // 477,216 bytes after moving main.tsx's Plans screen (Explore, Compare
   // and the investigation notebook) and Learn into lazy chunks, down from
-  // 500,608 bytes. Plan state, imports, session restore and navigation stay
-  // in the shell. Keep 30 KB of room for release work: a place or view
+  // 503,371 bytes on master. Plan state, imports, session restore and
+  // navigation stay in the shell. Keep 30 KB of room for release work: a
+  // place or view
   // belongs in a lazy chunk, while the 500,000-byte ceiling stays fixed.
   assert.ok(size < 500_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 

@@ -1461,7 +1461,7 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the command palette and the shared kit (about 469 KB after
+connections, the command palette and the shared kit (about 477 KB after
 splitting the Plans screen and Learn, 1.1 MB before the original split). Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
@@ -1475,15 +1475,23 @@ workspace did not load." with Reload):
   Replication, Cluster, Investigations, the Audit log, Plans and Learn.
   `PlanScreen.tsx` holds Explore, Compare and the investigation notebook;
   the shell keeps their state, imports, exports, session restore and navigation.
-  Opening the notebook from Investigations loads the same chunk. Learn mounts
-  on its first visit and stays mounted afterward, so its lesson survives a
-  trip to another place; a session reset starts it over. Once the first screen
+  Opening the notebook from Investigations loads the same chunk. PlanScreen
+  renders PlanChart and ContextPanel on its first paint, so its loader fetches
+  all three chunks together, and a session restored on Plans or Compare
+  preloads them at startup instead of waiting for the idle queue. If the
+  PlanScreen chunk cannot be read, `lazyComponent`'s `onFailed` tells the
+  shell, which closes an open notebook request so the failure stays visible
+  and Save investigation collapses. Learn mounts on its first visit and stays
+  mounted afterward in a hidden container, like the other lazy places, so its
+  lesson survives a trip to another place and its chunk's loading or failure
+  text shows only while Learn is open; a session reset starts it over. Once the first screen
   is up, `preloadWhenIdle` loads Server, Replication, Cluster and the other
   frequently opened places in idle time, one chunk at a time, followed by
   Plans and its chart and execution context. This fetches code without
   mounting a place or reading a server.
 - `PlanScreen.tsx`: the Plans chart and execution context use their own lazy
-  boundaries, retaining the same fallback while their chunks arrive.
+  boundaries, retaining the same fallback while their chunks arrive (fetched
+  together with PlanScreen, above).
 - `Server.tsx`: the views it uses only as components (InnoDB, Tuning,
   Processlist, Waits, I/O, Indexes, Tables, Parameters, Database diagram (its
   own place, still drawn by Server), Users and roles), preloaded in idle time once the place has mounted. Health,
@@ -1526,8 +1534,8 @@ Rules for code that splits:
   also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
   `PlanScreen.tsx`,
   that the committed build has exactly one stylesheet, and that the entry
-  chunk stays under 500,000 bytes (469,138 bytes after extracting Plans and
-  Learn from a 500,608-byte entry). It also requires Plans and Learn chunks
+  chunk stays under 500,000 bytes (477,216 bytes after extracting Plans and
+  Learn from a 503,371-byte entry). It also requires Plans and Learn chunks
   and checks that their view text stays out of the entry. Home, the sidebar
   and the shell stay eager; a place or view belongs in a lazy chunk. The chart
   runtime has its own

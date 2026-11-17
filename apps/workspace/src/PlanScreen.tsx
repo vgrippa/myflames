@@ -13,10 +13,11 @@ const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanCh
 const ContextPanel = lazyComponent(() => import("./ContextPanel").then((m) => m.ContextPanel));
 const ExecutionContext = lazyComponent(() => import("./ContextPanel").then((m) => m.ExecutionContext));
 
-/** Idle loading fetches code only; nothing mounts or reads from a server. */
+/** Idle loading fetches code only; nothing mounts or reads from a server. The
+ * two chunks load together (the shell's PlanScreen loader fetches them the
+ * same way). */
 export async function preloadPlanViews() {
-  await PlanChart.preload();
-  await ContextPanel.preload();
+  await Promise.all([PlanChart.preload(), ContextPanel.preload()]);
 }
 
 type PlanScreenProps = {

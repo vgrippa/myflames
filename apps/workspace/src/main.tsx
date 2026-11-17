@@ -104,7 +104,15 @@ const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 // command palette), not a place in the sidebar's navigation.
 const SettingsPage = lazyComponent(() => import("./SettingsPage").then((m) => m.SettingsPage));
 const Teach = lazyComponent(() => import("./Teach").then((m) => m.Teach));
-const PlanScreen = lazyComponent(() => import("./PlanScreen").then((m) => m.PlanScreen));
+// PlanScreen renders PlanChart and ContextPanel on its first paint, so their
+// chunks load together with it instead of starting after it renders. The
+// investigation notebook sheet lives in this chunk: a failed read tells the
+// shell, which closes an open notebook so the failure stays visible.
+const PLAN_SCREEN_FAILED = "myflames-plan-screen-failed";
+const PlanScreen = lazyComponent(
+  () => Promise.all([import("./PlanScreen"), import("./PlanChart"), import("./ContextPanel")]).then(([screen]) => screen.PlanScreen),
+  () => window.dispatchEvent(new Event(PLAN_SCREEN_FAILED)),
+);
 type PlanExportSnapshot =
   | ({ kind: "plan"; name: string } & PlanReportRequest)
   | { kind: "compare"; before: string; after: string; hide_literals: boolean; name: string };
@@ -267,6 +275,14 @@ function App() {
     if (mode === "inspect" || mode === "compare") setPlansView(mode);
     if (mode !== "inspect" && mode !== "compare" && mode !== "library") setNotebookOpen(false);
   }, [mode]);
+  // The notebook sheet lives in PlanScreen's chunk. If that chunk cannot be
+  // read (lazy.tsx) the sheet never mounts: close the request so the failure
+  // is visible and Save investigation does not stay expanded.
+  useEffect(() => {
+    const close = () => setNotebookOpen(false);
+    window.addEventListener(PLAN_SCREEN_FAILED, close);
+    return () => window.removeEventListener(PLAN_SCREEN_FAILED, close);
+  }, []);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
   const [selectedId, setSelectedId] = useState("");
@@ -1651,6 +1667,10 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
+    if (!ready) return;
+    // A session restored on Plans or Compare gets its chunks now (all three
+    // together), not when the idle queue reaches them.
+    if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
     if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
@@ -2545,20 +2565,27 @@ function App() {
               onAuditLog={openAuditLog}
             />
           )}
-          {mountTeach && <Teach
-            key={resetKey}
-            active={ready && mode === "teach"}
-            onLessonChange={setTeachLesson}
-            initialLesson={lesson}
-            onReturn={
-              returnToPlan
-                ? () => {
-                    setMode("inspect");
-                    setReturnToPlan(false);
-                  }
-                : undefined
-            }
-          />}
+          {mountTeach && (
+            // Mounted on its first visit and kept, hidden, after it, like the
+            // other lazy places: its chunk's loading or failure text shows
+            // only while Learn is the place on screen.
+            <div hidden={mode !== "teach"}>
+              <Teach
+                key={resetKey}
+                active={ready && mode === "teach"}
+                onLessonChange={setTeachLesson}
+                initialLesson={lesson}
+                onReturn={
+                  returnToPlan
+                    ? () => {
+                        setMode("inspect");
+                        setReturnToPlan(false);
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          )}
           {(mode === "inspect" || mode === "compare" || (mode === "library" && notebookOpen)) ? (
             <PlanScreen
               {...{
