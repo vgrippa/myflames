@@ -594,7 +594,7 @@ def _check_shell_tree_trust(real):
                 continue
             # DirEntry.is_symlink misses Windows junctions. Resolve both kinds
             # of link, validate the target, and walk it, including at the root.
-            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            if stat.S_ISLNK(info.st_mode) or (getattr(info, 'st_file_attributes', 0) or 0) & 0x400:
                 current = os.path.realpath(current)
                 info = check_node(current)
             if not stat.S_ISDIR(info.st_mode):
@@ -607,7 +607,7 @@ def _check_shell_tree_trust(real):
                 for entry in entries:
                     child = check_node(entry.path)
                     if (stat.S_ISDIR(child.st_mode) or stat.S_ISLNK(child.st_mode) or
-                            getattr(child, 'st_file_attributes', 0) & 0x400):
+                            (getattr(child, 'st_file_attributes', 0) or 0) & 0x400):
                         pending.append((entry.path, child))
 
     visited = set()
