@@ -1343,9 +1343,14 @@ the 11 px floor) and `--leading-xs` (16), `--leading-sm` (18), `--leading-md`
 (20), `--leading-lg` (22), `--leading-xl` (28), `--leading-2xl` (34) and
 `--leading-title` (20) to `Math.round(base * scale)px`; `code_text_size`
 (clamped to 11–20, default 13) sets `--text-code` to `${codeSize}px` (consumed
-by `.sql-editor-wrap.sql-cm .cm-editor` in `editor-cm.css`, `pre, code` in
-`style.css` and `.settings-code-preview` in `settings.css`) and
-`--editor-line-h` to `${Math.round(codeSize * 20 / 13)}px` (`.cm-scroller` and
+by `.sql-editor-wrap.sql-cm .cm-editor` in `editor-cm.css` and
+`.settings-code-preview` in `settings.css`); other code surfaces use
+`--text-code-sm` (12 px base) or `--text-code-xs` (11 px base), each scaled by
+`codeSize / 13`, including generic `pre, code`, reviewed SQL, expanded plan
+SQL, digest SQL, Explain JSON and Locks/Sessions statements. The default
+13/13 setting preserves every surface's previous base size. Fixed code line
+heights scale in the same ratio (`--leading-code-sm` has an 18 px base).
+`applyFonts` also sets `--editor-line-h` to `${Math.round(codeSize * 20 / 13)}px` (`.cm-scroller` and
 `.cm-gutters` in `editor-cm.css`).
 
 The workspace vendors two SIL Open Font License 1.1 families in
@@ -1393,7 +1398,12 @@ and Unknown.
 `FactStrip` uses the same breakpoint to collapse into Details. `Fields`
 uses a label column sized to its longest label up to 40% of the available
 width, with a flexible value column; at 900 px and below each value follows
-its label on a separate line. `WindowStatusBar` keeps safety words visible while other facts truncate before the version and update actions. Server,
+its label on a separate line. `WindowStatusBar` keeps safety words visible
+while other facts truncate before the version and update actions. At large
+text sizes in windows up to 900 px, safety detail yields to its tooltip and
+the releases link remains in About; engine version, transaction, last run,
+duration and rows stay visible with ellipses and full tooltips because a view
+may not show them elsewhere. Server,
 Workload, Tuning and Database diagram share the latest version read for the
 connection in use; other connection places publish their own read version.
 Unknown fields stay hidden. Visible Esc hints use a keycap.

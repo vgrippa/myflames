@@ -902,8 +902,8 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
 }
 
 /* Narrow layouts: the inspector is a bottom sheet over the content. */
@@ -1340,7 +1340,7 @@
   outline-offset: -2px;
 }
 .data-table code {
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .sort-button {
   display: inline-flex;
@@ -1440,6 +1440,7 @@
   white-space: nowrap;
 }
 .cell-sql {
+  font-size: var(--text-code-sm);
   font-family: var(--font-mono);
 }
 /* A name and its flags on one line: the name truncates (full text on hover),

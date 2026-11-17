@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 const bundled = await build({stdin:{contents:'export * from "./src/uiPreferences"; export * from "./src/themes";',resolveDir:fileURLToPath(new URL('../',import.meta.url))},bundle:true,write:false,format:'iife',globalName:'Preferences',platform:'browser'});
-const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1,inspector_width:340,explain_format:'table',files_show_hidden:false,files_transfers_open:true,diagram_zoom_speed:100};
+const defaults={theme:'system',sidebar_width:208,server_nav_collapsed:true,health_auto_production:-1,health_auto_development:-1,inspector_width:340,explain_format:'table',files_show_hidden:false,files_transfers_open:true,diagram_zoom_speed:100,ui_font:'system',ui_text_size:13,code_font:'system',code_text_size:13};
 function harness(timers = {setTimeout,clearTimeout}) {
   const requests=[],style={},storage=new Map([['myflames.inspector.width','420'],['myflames.editor.explainFormat','json'],['myflames.files.showHidden','1'],['myflames.files.transfersOpen','0'],['myflames.serverNavCollapsed','false'],['myflames.health.auto.production','30'],['myflames.health.auto.development','0']]);
   const sandbox={console,...timers,URLSearchParams,AbortController,window:{location:{hash:'',pathname:'/',search:''},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)}},document:{documentElement:{dataset:{theme:'dark'},style:{setProperty:(k,v)=>style[k]=v}}}};

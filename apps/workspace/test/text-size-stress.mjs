@@ -59,6 +59,7 @@ let runN = 0;
 const runReply = (statements, results) => ({
   schema_version: "editor-run-1.0", id: `run-${++runN}`, kind: "run", state: "complete",
   statements, results, stopped: null, message: null,
+  finished_at: "2026-10-15T12:05:00.000Z",
   counts: { statements: statements.length, run: statements.length, rows: results.reduce((a, r) => a + r.row_count, 0), affected_rows: 0, warnings: 0, errors: 0 },
   audit_id: null, history_id: null,
 });
@@ -173,6 +174,17 @@ async function sweep(name, { prepare = null } = {}) {
           if (facts) out.facts = facts.scrollWidth - facts.clientWidth;
           const updates = bar.querySelector(".window-statusbar-updates");
           if (updates) out.updates = updates.scrollWidth - updates.clientWidth;
+          // Last run and the engine version are not repeated in the editor.
+          // Ellipsis is allowed; display:none or a zero-width fact is not.
+          if (vis(document.querySelector(".query-lab")) &&
+              document.querySelector(".query-lab tbody tr")) {
+            out.missingFacts = ["engine", "connection", "session", "last-run"].filter(status => {
+              const fact = bar.querySelector(`[data-status="${status}"]`);
+              return !vis(fact) || fact.getBoundingClientRect().width <= 0 || !fact.title;
+            });
+            const lastRun = bar.querySelector('[data-status="last-run"] time');
+            out.lastRunTime = lastRun?.dateTime;
+          }
           const safety = [...bar.querySelectorAll(".safety-status")].find(vis);
           if (safety) {
             const words = safety.querySelector(".safety-status-text");
@@ -194,6 +206,8 @@ async function sweep(name, { prepare = null } = {}) {
       if (m.statusbar > 0) problems.push(`status bar clips ${m.statusbar} px`);
       if (m.facts > 0) problems.push(`status bar facts clip ${m.facts} px`);
       if (m.updates > 0) problems.push(`status bar version block clips ${m.updates} px`);
+      if (m.missingFacts?.length) problems.push(`status facts hidden or missing tooltips: ${m.missingFacts.join(", ")}`);
+      if (m.lastRunTime !== undefined && m.lastRunTime !== "2026-10-15T12:05:00.000Z") problems.push(`wrong Last run time: ${m.lastRunTime}`);
       if (m.safety > 0) problems.push(`write-safety label clips ${m.safety} px`);
       if (m.dialog > 0) problems.push(`dialog runs ${m.dialog} px past the window`);
       if (m.tiles && (checkTiles || width === 1440)) {

@@ -46,7 +46,7 @@
   background: var(--surface-subtle);
   border-right: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   line-height: var(--editor-line-h);
 }
 .sql-editor-wrap.sql-cm .cm-lineNumbers .cm-gutterElement {

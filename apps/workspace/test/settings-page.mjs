@@ -265,7 +265,35 @@ try {
       const style = getComputedStyle(element);
       return { family: style.fontFamily, size: style.fontSize };
     };
+    // Real selector ancestry catches code overrides that a generic <code>
+    // probe misses. Keep the original base sizes when the setting is 13.
+    const surfaces = [
+      ["generic pre", 12, '<pre>SELECT 1</pre>', "pre"],
+      ["generic code", 12, '<code>SELECT 1</code>', "code"],
+      ["reviewed write", 12, '<div class="editor-confirm"><pre class="sheet-statements">DELETE FROM orders</pre></div>', "pre"],
+      ["expanded plan SQL", 12, '<div class="plan-header-tools"><details class="sql-card" open><pre class="plan-header-panel">SELECT 1</pre></details></div>', "pre"],
+      ["plan JSON", 12, '<div class="plan-inspector"><div class="raw-fields"><pre>{}</pre></div></div>', "pre"],
+      ["digest SQL", 12, '<div class="qd-code"><pre>SELECT 1</pre></div>', "pre"],
+      ["digest table", 12, '<table class="data-table"><tbody><tr><td><code class="qd-statement">SELECT 1</code></td></tr></tbody></table>', "code"],
+      ["Locks/Sessions statement", 12, '<table class="data-table"><tbody><tr><td><code class="cell-sql">SELECT 1</code></td></tr></tbody></table>', "code"],
+      ["Locks/Sessions expanded statement", 12, '<pre class="inspector-sql"><code>SELECT 1</code></pre>', "code"],
+      ["SQL analyzed", 12, '<details class="sent-sql" open><summary>SQL analyzed</summary><pre>SELECT 1</pre></details>', "pre"],
+      ["Explain JSON", 12, '<pre class="row-panel-json">{}</pre>', "pre"],
+      ["history SQL", 12, '<div class="history-sql">SELECT 1</div>', ".history-sql"],
+      ["message SQL", 12, '<code class="message-sql">SELECT 1</code>', "code"],
+      ["trace value", 11, '<div class="trace-value"><code>orders</code></div>', "code"],
+      ["Session SQL filter", 11, '<div class="mass-kill-field"><input type="text" class="cell-sql" value="SELECT"></div>', "input"],
+    ];
+    const codeSurfaces = surfaces.map(([name, base, html, selector]) => {
+      const container = document.createElement("div");
+      container.innerHTML = html;
+      probe.appendChild(container);
+      const size = getComputedStyle(container.querySelector(selector)).fontSize;
+      container.remove();
+      return { name, base, size };
+    });
     const value = {
+      codeSurfaces,
       bodyText: read(document.querySelector('[data-preview="interface"]')),
       codeText: read(document.querySelector('[data-preview="code"] code')),
       editor: read(probe.querySelector(".cm-editor")),
@@ -274,7 +302,30 @@ try {
     probe.remove();
     return value;
   });
+  const assertCodeMetrics = (metrics, size) => {
+    assert.equal(metrics.editorLine, `${Math.round(size * 20 / 13)}px`,
+      `editor line height follows code size ${size}`);
+    for (const surface of metrics.codeSurfaces) {
+      assert.ok(Math.abs(parseFloat(surface.size) - surface.base * size / 13) < 0.01,
+        `${surface.name}: ${surface.size}, expected ${surface.base} * ${size} / 13 px`);
+    }
+  };
+  // A computed font-family can name a font that failed to download. Require
+  // a loaded @font-face, so a missing bundled URL fails this assertion.
+  const assertBundledFontLoaded = async (family, size) => {
+    const loaded = await page.evaluate(async (family, size) => {
+      const specification = `400 ${size}px "${family}"`;
+      try {
+        const faces = await document.fonts.load(specification, "SELECT id FROM orders");
+        return { checked: document.fonts.check(specification),
+          faces: faces.map(face => ({ family: face.family.replace(/["']/g, ""), status: face.status })) };
+      } catch (error) { return { error: String(error), faces: [] }; }
+    }, family, size);
+    assert.ok(loaded.checked && loaded.faces.some(face => face.family === family && face.status === "loaded"),
+      `${family} must load from its bundled font file: ${JSON.stringify(loaded)}`);
+  };
   let metrics = await textMetrics();
+  assertCodeMetrics(metrics, 13);
   assert.deepEqual([metrics.bodyText.size, metrics.codeText.size, metrics.editor.size], ["13px", "13px", "13px"], "the defaults keep today's sizes");
   const choose = async (id, value, fragment) => {
     const saving = page.waitForResponse((r) => r.url().endsWith("/api/settings/ui") &&
@@ -284,9 +335,17 @@ try {
   };
   await choose("ui-font", "inter", '"ui_font":"inter"');
   await choose("ui-text-size", "16", '"ui_text_size":16');
+  assertCodeMetrics(await textMetrics(), 13);
+  await assertBundledFontLoaded("Inter", 16);
   await choose("code-font", "jetbrains-mono", '"code_font":"jetbrains-mono"');
   await choose("code-text-size", "20", '"code_text_size":20');
   metrics = await textMetrics();
+  assertCodeMetrics(metrics, 20);
+  // The review's independent-size case: interface stays at 13, code at 20.
+  await choose("ui-text-size", "13", '"ui_text_size":13');
+  assertCodeMetrics(await textMetrics(), 20);
+  await choose("ui-text-size", "16", '"ui_text_size":16');
+  await assertBundledFontLoaded("JetBrains Mono", 20);
   assert.ok(metrics.bodyText.family.includes("Inter") && metrics.bodyText.size === "16px",
     `the interface font and size reach body text (${JSON.stringify(metrics.bodyText)})`);
   assert.ok(metrics.codeText.family.includes("JetBrains Mono") && metrics.codeText.size === "20px",
@@ -305,6 +364,7 @@ try {
   await choose("ui-text-size", "12", '"ui_text_size":12');
   await choose("code-text-size", "11", '"code_text_size":11');
   metrics = await textMetrics();
+  assertCodeMetrics(metrics, 11);
   assert.deepEqual([metrics.bodyText.size, metrics.codeText.size, metrics.editor.size], ["12px", "11px", "11px"],
     "the smallest sizes apply");
   // The choices survive a reload.
@@ -320,6 +380,9 @@ try {
     await page.$eval("#code-text-size", (e) => e.value),
   ], ["inter", "12", "jetbrains-mono", "11"], "the text choices survive a reload");
   metrics = await textMetrics();
+  assertCodeMetrics(metrics, 11);
+  await assertBundledFontLoaded("Inter", 12);
+  await assertBundledFontLoaded("JetBrains Mono", 11);
   assert.ok(metrics.bodyText.family.includes("Inter") && metrics.bodyText.size === "12px" && metrics.codeText.size === "11px",
     "the reloaded choices are applied");
   // Restore default text settings resets the four preferences.
@@ -330,6 +393,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#ui-font")?.value === "system"
     && document.querySelector("#code-font")?.value === "system");
   metrics = await textMetrics();
+  assertCodeMetrics(metrics, 13);
   assert.deepEqual([metrics.bodyText.size, metrics.codeText.size, metrics.editor.size], ["13px", "13px", "13px"], "Restore default text settings applies");
   // With font detection reporting nothing installed, only System default and
   // the shipped fonts are offered; the persisted defaults survive.

@@ -206,6 +206,9 @@
   font-family: var(--font-mono);
   font-size: var(--text-code);
 }
+.settings-code-preview code {
+  font-size: inherit;
+}
 @media (max-width: 720px) {
   /* The compact list above the controls; the page keeps scrolling in the
      main area, never sideways. */

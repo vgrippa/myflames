@@ -174,8 +174,8 @@
   display: block;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
