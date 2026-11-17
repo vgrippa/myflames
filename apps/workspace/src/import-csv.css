@@ -405,8 +405,8 @@ p.import-csv-blockers {
   background: var(--surface-muted);
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

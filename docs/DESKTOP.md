@@ -34,13 +34,16 @@ tests and platform limitations.
 
 ## Design direction
 
-Home shows the installed engine version and a link to published releases.
-With **Settings > Check for updates automatically** on (the default), the app
-checks at start and once a day; **Check for updates** in Home's version footer
-and About myflames still checks on demand, and the result and its time are kept
+The installed myflames version appears beside the name at the top of the sidebar.
+Choose it for **Settings > Updates and news**, which holds update status,
+**Check for updates** and **View releases**. With **Check for updates automatically**
+on in that section (the default), the app checks at start and once a day;
+**Check for updates** there and in About myflames checks on demand, and the result and its time are kept
 in the app's own workspace store. Update status reads **Not checked yet** before
 the first check. When a newer release is found, a badge beside the logo follows
-its download; **Update** downloads the release's update file, verifies it
+its download. When the wide sidebar is hidden, its toggle shows an update dot
+and names the state; screen readers announce a new update and when it is ready.
+**Update** downloads the release's update file, verifies it
 against the release's SHA-256 and stages it, and **Restart to update** installs
 it in place (on macOS only while the app sits in an Applications folder; on
 Windows the installer runs silently after the app quits). **Download…** still

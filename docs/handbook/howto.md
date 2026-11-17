@@ -57,10 +57,12 @@ Related: [Edit SQL, suggestions and checks](queries.md#edit-sql-suggestions-and-
 Use find and replace to locate repeated text and change it throughout a query tab.
 
 1. Open a **Query editor** tab containing repeated text, such as the `status` names in the [multiple-cursor example](#multiple-cursors).
-2. Press **⌘F** / **Ctrl+F** and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
-3. Press **⌥⌘F** / **Ctrl+H** to open Replace, then type `state` in **Replace with**.
+2. Click **Find** in the editor toolbar, or press **⌘F** / **Ctrl+F**, and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
+3. Click **Find and replace** in the editor toolbar, or press **⌥⌘F** / **Ctrl+H**, then type `state` in **Replace with**.
 4. Check the highlighted matches. Choose **Replace** to change one match or **Replace all** to change all matches in the tab.
 5. Click back in the editor and press **⌘Z** / **Ctrl+Z** to undo the replacement in one step.
+
+The toolbar's **Editing actions** menu lists editing commands with their shortcuts, including **Go to line**, line comments, cursor actions and **Toggle Tab moving focus** (**⇧⌥M** / **Ctrl+M**). **Find**, **Find and replace** and **Go to line** are also in the command palette (**⌘K** / **Ctrl+K**).
 
 ![In a Query editor tab with repeated status names, press Command+F on macOS or Ctrl+F on Windows and Linux and search for status. While Find is open, Command+G or Ctrl+G advances to the next match. Press Option+Command+F or Ctrl+H, enter state in Replace with and check the highlighted matches. Choose Replace for one match or Replace all for the whole tab. Click in the editor and press Command+Z or Ctrl+Z to undo the replacement in one step.](../screenshots/howto-find-replace.gif)
 
@@ -68,12 +70,14 @@ Related: [Work with SQL and results](queries.md#work-with-sql-and-results).
 
 ## Settings and themes
 
-Use Settings to choose a theme and change how the Query editor behaves.
+Use Settings to choose a theme, fonts and text sizes, and change how the Query editor behaves.
 
 1. Click the gear at the bottom of the sidebar, or press **⌘,** / **Ctrl+,**, to open **Settings**.
 2. Choose **Appearance**. Select **Dark** to try it across the app, then **System** to follow your operating system's appearance again. There are 17 choices.
-3. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
-4. Press **Esc** or choose **Back** to return to your previous view. Your theme and editor settings are kept on this computer across app restarts.
+3. Scroll to **Text** in **Appearance**. Open **Interface font** and choose **Inter (included)**, **System default** or an installed font from your computer, then choose **Smaller**, **Default**, **Large**, **Larger** or **Largest** in **Interface text size** (12 to 16 px) to scale workspace text.
+4. Open **Code font** and choose **JetBrains Mono (included)**, **System default** or an installed monospace font, then pick **11 px** to **20 px** in **Code text size** for the Query editor and SQL or code blocks. The preview lines and the workspace update right away; choose **Restore default text settings** to return to **System default**, **Default** and **13 px**.
+5. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
+6. Press **Esc** or choose **Back** to return to your previous view. Your theme, text and editor settings are kept on this computer across app restarts.
 
 ![Click the sidebar gear or press Command+comma on macOS or Ctrl+comma on Windows and Linux to open Settings. Choose Appearance and select Dark to try it, then System to follow the operating system again; there are 17 choices. Choose Query editor and switch Multiple cursors off and back on. Press Esc or choose Back to return to your previous view. Theme and editor settings are saved on this computer across restarts.](../screenshots/howto-settings-theme.gif)
 
@@ -87,9 +91,9 @@ Use the layout controls to give navigation, SQL or results more room.
 2. Drag the sidebar's right edge to make it wider. For the keyboard alternative, press **Tab** until the edge has focus and use **Left** or **Right**; hold **Shift** for a larger step. Narrow windows use a compact navigation rail instead.
 3. Drag the divider between the SQL editor and its results down to make the editor taller, or up to give the results more room.
 4. Double-click the sidebar's right edge to restore its default width. With the edge focused, **Home** or **End** also restores it. Your chosen sidebar width survives app restarts.
-5. Look at the window status bar's right end for the installed version, **Check for updates** and **View releases**. The same bar appears on every screen.
+5. The installed version sits beside the myflames name at the top of the sidebar. Choose it to open **Settings > Updates and news**, with the update status, **Check for updates** and **View releases**.
 
-![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. Every screen's bottom status bar shows the installed version, Check for updates and View releases on the right.](../screenshots/howto-layout.gif)
+![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. The installed version sits beside the myflames name at the top of the sidebar.](../screenshots/howto-layout.gif)
 
 Related: [Sidebar and status bar](quickstart.md#sidebar-and-status-bar) and [Work with SQL and results](queries.md#work-with-sql-and-results).
 

@@ -134,6 +134,7 @@ Switch to the **Versions** tab at the top of **Server** > **Parameters** to brow
 ### Tools
 
 - **What you see**: **Used for this server** (the client binary, version and selection reason for the active connection, with **Change…** to open **Client tools** and **Check for updates**), **Detected tools** on this computer, and **Offered for this server** (which maintenance operations the detected tools support). Click **Detect again** after installing or updating MySQL Shell or database client packages.
+- **MySQL Shell on demand**: when no usable MySQL Shell is on this computer, the **MySQL Shell** section of **Client tools** offers **Get MySQL Shell**. It downloads the pinned Oracle build into myflames's data folder with its checksum verified before anything runs, shows the progress with a **Stop** button, and links the GPLv2 license and Oracle's download page; myflames does not redistribute MySQL Shell. Cluster, the maintenance tools and the client chooser then use it.
 
 ### Upgrade check
 

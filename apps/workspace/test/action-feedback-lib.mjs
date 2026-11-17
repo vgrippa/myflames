@@ -717,7 +717,7 @@ export const SCENARIOS = [
       await click(page, "Edit table data…");
       await visible(page, ".table-data-panel input");
       await page.locator('input[aria-label="name for first"]').fill("Bob");
-      await click(page, "Review 1 changes", ".table-data-panel");
+      await click(page, "Review 1 change", ".table-data-panel");
       await page.waitForSelector("dialog.confirm-sheet[open]");
     },
     target: confirmButton("dialog.confirm-sheet[open]"),

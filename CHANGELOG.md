@@ -6,10 +6,22 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ## [Unreleased]
 
+### New features
+
+- Settings > Appearance now has a Text group: choose the interface font and text size (12 to 16 px) and the code font and text size (11 to 20 px) for the Query editor and all SQL and code text, with a live preview and a Restore default text settings button. The Inter and JetBrains Mono fonts are included with the app, and fonts already installed on the computer are offered too.
+- **Settings > Client tools…** can now get MySQL Shell for you: when no usable MySQL Shell is found on this computer, **Get MySQL Shell** downloads Oracle's pinned MySQL Shell 9.7.0 build from Oracle into myflames's data folder (nothing is redistributed by myflames), with a progress bar, a Stop button and checksum verification before anything runs. The downloaded copy is detected immediately and used in preference to other MySQL Shell installations.
+
 ### Improvements
 
+- The workspace loads Plans and Learn on demand, reducing the code needed to open the first screen (the entry chunk goes from 508,046 to 479,634 bytes).
+- The installed version moved from the window status bar to the top of the sidebar beside the myflames name; choosing it opens **Settings > Updates and news**, which now holds the update status, **Check for updates** and **View releases**. When an update is available, downloading or ready, the badge beside the logo alerts you and names the new version. On the compact icon rail the version text hides and the logo's tooltip names the version.
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.
+- The Query editor toolbar has **Find** and **Find and replace** buttons, and an **Editing actions** menu lists every editing command with its shortcut, including **Toggle Tab moving focus**.
 
 ### Bug fixes
 
+- Fixed Save investigation becoming unavailable when Plans could not load, a delayed notebook taking focus from another dialog, and files dropped into Plans being ignored while it loaded. A chart that cannot load now leaves the rest of Plans available.
+- Fixed an issue where long version labels could push the update badge outside the sidebar. Update alerts remain visible when the sidebar is hidden, and screen readers announce a new update and when it is ready.
+- Fixed an issue where choosing the version while **Updates and news** was already open did not move keyboard focus to its heading. Empty status bars are skipped by Tab.
+- Fixed an issue where the table data editor's review button read **Review 1 changes** for a single change.
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.

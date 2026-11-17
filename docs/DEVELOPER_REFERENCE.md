@@ -311,7 +311,14 @@ failure; child processes run outside the cache lock. `refresh=True` bypasses
 cached results. Workspace startup warms discovery on a daemon thread without
 blocking the window. `mysqlpump` is presence-only, with null version and
 version tuple; it is deprecated, never probed, selected or marked used. Shell
-copies are listed separately, newest first.
+copies are listed separately: the verified managed copy first, then other
+copies newest first. Every discovery re-reads the managed install's pointer
+and metadata through `managed_shell.installed_bin_dir()`, so installing after
+an earlier inventory read needs no cache expiry; its tree trust walk reuses
+the five-second Shell cache only for `cache_shell_trust` reads, never on
+refresh.
+Only that validated published bin folder is added, and only for `mysqlsh`;
+discovery never searches the tools folder for staging or retired copies.
 
 `select` is pure. For each supported role it considers the server's own engine,
 using that program's version even in a mixed-version folder. Automatic ranks
@@ -330,8 +337,10 @@ Roles are `client` (queries), `dump`, `load` (SQL restores and CLONE), `backup`
 `mariadb-dump`, accepting its own `mysql` and `mysqldump` compatibility names.
 Load uses the client in the selected dump installation; if it has no client,
 load is missing. Without a selected dump, an own-engine query client can supply
-load. MySQL Shell uses the newest discovered Shell independently of the Settings
-choice and is selected only for a known MySQL server. Auxiliary programs such
+load. MySQL Shell prefers the verified managed copy over PATH copies of any
+version, otherwise the newest discovered Shell, independently of the Settings
+choice; it is selected only for a known MySQL server. The managed origin is
+`managed`, labeled `Downloaded by myflames`. Auxiliary programs such
 as `mariadb-upgrade` use the same series ranking through `select_program`.
 An unknown or unrecognized server gets only a query client: installed before
 bundled, then mysql before mariadb, then discovery order. If a known server has
@@ -445,7 +454,8 @@ leaving the active choice intact. Both return `client-tools-1.0`:
   `origin`, `origin_label`, `bundled`, `has_auth_plugins`, `programs` keyed by
   name with `{path, realpath, version}` (no mysqlpump), and `chosen_for[]`.
   Order is engine, descending version, then discovery order/key.
-- `shells[]`: `{path, realpath, version, origin, origin_label}`, newest first;
+- `shells[]`: `{path, realpath, version, origin, origin_label}`, managed first,
+  then other copies newest first;
   `skipped[]`: `{path, reason}`; `choice`: mysql and mariadb objects with
   `{path, installation, error}` (null where absent).
 - With a connection only: `server` `{engine, version, product}` or null,
@@ -485,7 +495,7 @@ authentication, validation, wire fields, removed routes and typed errors).
 helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
 (`npm run test:client-tools`), replacing `database-client.mjs`.
 
-**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh), and `diagram_zoom_speed` (integer 25, 50, 100, 150 or 200, default 100; Diagram wheel zoom speed in Settings > Workspace). Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/ui-preferences-unit.mjs` and `test/shell-layout.mjs`.
+**UI preferences.** `POST /api/settings/ui` is in `_SETTINGS_PATHS`, requires the usual local session and CSRF token, and never opens a database server connection or writes an audit record. `{}` returns `ui-preferences-1.0`, with `preferences` and `defaults`. `{"set": {...}}` validates every change before writing `ui.<key>` JSON rows in one transaction; unknown keys, invalid values, unknown outer fields and a non-dict `set` (including null) return 400. A read, including an empty `set`, never creates the workspace database. Stored `ui.` prefixes are case-sensitive. `workspace_store.UI_PREFERENCE_DEFAULTS` defines `theme` (`system`, or exactly one of the single literal `UI_THEME_IDS` list matching TypeScript `THEME_IDS`), `sidebar_width` (integer 208–320, default 208), `server_nav_collapsed` (boolean, default true), `inspector_width` (integer 280–560, default 340), `explain_format` (`table`, `tree` or `json`, default `table`), `files_show_hidden` (boolean, default false), `files_transfers_open` (boolean, default true), `health_auto_production` / `health_auto_development` (each an integer -1, 0, 10, 30 or 60, default -1; -1 follows the sampling window and 0 disables refresh), `diagram_zoom_speed` (integer 25, 50, 100, 150 or 200, default 100; Diagram wheel zoom speed in Settings > Workspace), `ui_font` (`system`, or one of the literal `UI_FONT_IDS` allowlist matching `interface` entries in `src/fonts.ts`, default `system`), `ui_text_size` (integer 12–16, `UI_TEXT_SIZE_MIN`–`UI_TEXT_SIZE_MAX`, default 13), `code_font` (`system`, or one of the literal `UI_CODE_FONT_IDS` allowlist matching `code` entries in `src/fonts.ts`, default `system`), and `code_text_size` (integer 11–20, `UI_CODE_TEXT_SIZE_MIN`–`UI_CODE_TEXT_SIZE_MAX`, default 13; see [Shared view presentation](#shared-view-presentation) for Settings > Appearance > Text). Interface and code font allowlists are separate and never accept free text, so CSS cannot reach the page through a preference. Booleans and floats are refused for integer preferences. Unknown or malformed stored rows fall back to defaults. The index reads only the theme through a read-only connection with a 0.5-second lock timeout, without creating or migrating storage. It refuses symlink store paths, omits its theme attribute if preference storage cannot be read and still returns 200. `src/uiPreferences.ts` shares a module value and listeners, displays changes immediately, serializes writes, ignores stale answers and re-reads after the latest write fails. Startup waits up to 1.5 seconds for preferences before mounting the sidebar with the current values; a late answer still updates the theme, fonts, sidebar width and subscribed controls. The renderer exposes `window.__myflamesFlushUiPreferences()` to drain the serialized preference queue for up to 1.5 seconds, including writes queued during the drain. Desktop quit, direct window close and Restart to update call it before stopping the backend; a direct close then replays the ordinary window close so its unsaved-work check still applies. The replay guard lasts until the window closes, the renderer refuses unload, or two seconds pass, so asynchronous close events do not flush again and a later close after refusal can drain new preferences. Restart to update still overrides an unload refusal. The main process also bounds an unresponsive renderer to 1.6 seconds. A crashed renderer or timed-out write can still lose its last pending preference. Tests: `test/test_workspace_store.py`, `test/test_ui.py`, `test/test_fonts_lock.py`, `test/ui-preferences-unit.mjs`, `test/settings-page.mjs`, `test/text-size-stress.mjs` and `test/shell-layout.mjs`.
 
 **Query editor settings and variable names.** `POST /api/settings/editor`
 (ui.py `_SETTINGS_PATHS`; no connection, no server read, no audit) reads and
@@ -542,7 +552,7 @@ compact neutral navigation, open-query links, a command palette and full-width
 Server details.
 
 Update checks run only when the workspace asks: **Check for updates** in
-the window status bar on every screen and in About myflames (`UpdateCheck.tsx`, shared state in
+Settings > Updates and news and in About myflames (`UpdateCheck.tsx`, shared state in
 `updateStatus.ts`) posts `/api/app/update/check` with `force: true`. The
 `app-update-1.0` answer carries `checked_at` (UTC, when the release metadata was
 read; a cached answer keeps its time), and a failed check carries `error` plus a
@@ -557,12 +567,13 @@ workspace, the check also stores `last_check` (`checked_at`, `outcome`
 `reason`; never release notes or URLs) in the workspace store's `settings`
 table (`app_update_last_check`). `/api/app/update/status` returns
 `app-update-status-1.0` with that record and never reads the network; a record
-made by another myflames version is dropped. The footer shows "Checked today at
+made by another myflames version is dropped. The Updates and news section
+shows "Checked today at
 10:42", "Checked yesterday" or "Checked Oct 18" in local time with the full
 timestamp in the tooltip ("Tried …" for a failure), "Not checked yet" before
 the first check, "Last check unknown" when the stored record could not be read
-(retried when Home or About mounts again), and a result older than 24 hours, or
-one whose time cannot be read, as "Last result: …".
+(retried when the section or About mounts again), and a result older than 24
+hours, or one whose time cannot be read, as "Last result: …".
 **Check for updates automatically** in Settings (on by default, stored in the
 workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
 `POST /api/app/update/settings` with an optional `{"auto_check": bool}` returns
@@ -570,13 +581,29 @@ workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
 after it opens when there is no stored check, the last one is older than 24
 hours, or the last one failed more than an hour ago, re-testing that hourly; an
 automatic check uses the same `/api/app/update/check` as the button, and a
-failed automatic check shows no badge (the window status bar shows the reason as
-before). When a current check found a newer version, a round badge appears
+failed automatic check shows no badge (the Updates and news section shows the
+reason as
+before). The installed version sits beside the myflames name at the top of
+the sidebar as its own small control (`Sidebar.tsx` `.brand-version`), opening
+Settings > Updates and news. The name, version and badge stay on one line
+at every sidebar width; only the version shrinks with an ellipsis, retaining
+its full text in its accessible name and tooltip. On the 48 px icon rail the
+text hides and the brand's tooltip names the version. When a current check found a newer
+version, a round badge appears
 beside the flame logo and the myflames name at the top of the sidebar
-(`UpdateBadge.tsx`): available (a download arrow), the download's progress (a
+(`UpdateBadge.tsx`): available (a download arrow, its accessible name "Update
+available: myflames <version>"), the download's progress (a
 ring with the percent in its tooltip), preparing (a spinner) and ready (a green
 restart arrow); on the 48 px icon rail (651–900 px windows) it is a dot on the
-logo's corner, and a result older than 24 hours shows no badge. While an update
+logo's corner, and a result older than 24 hours shows no badge. When the wide
+sidebar is hidden, `SidebarToggle` shows the same alert as a dot and appends
+`updatePhaseLabel` to its accessible name and tooltip (for example, "Show
+sidebar. Update available: myflames 3.2.0"). Available, downloading, preparing
+and ready states follow the badge; stale or absent updates draw no dot.
+`UpdateBadge` portals an always-mounted polite, atomic live region to the
+page root, outside the hideable sidebar. It announces each version's available
+and ready labels once per window; download percentages and opening Settings
+or the update dialog do not repeat those announcements. While an update
 is pending, the Settings page's Updates and news section also lists **Update
 available…**, **Update progress…** or **Restart to update…**; clicking the
 badge or the menu item
@@ -891,7 +918,9 @@ the window-open handler always denies a new app window. Tests:
   Settings page (`SettingsPage.tsx`): a page in the main area, not a place in
   the sidebar's navigation, with a section list on the left (the Server
   place's `SourceList`): Appearance, Query editor, Workspace (Restore
-  workspace on startup and Start fresh), Updates and news (Check for updates
+  workspace on startup and Start fresh), Updates and news (the installed
+  version with the update status, Check for updates and View releases, Check
+  for updates
   automatically, Show MySQL and MariaDB news on Home, and the update item
   while one is pending) and Client tools, with Audit log and About myflames
   as actions at the bottom of the list. It opens from the gear, ⌘, (Ctrl+,
@@ -1010,7 +1039,7 @@ the window-open handler always denies a new app window. Tests:
 
 A release is one commit in which the versions, the release notes, the README
 screenshots and the handbook agree, and one GitHub release whose notes and
-files come from that commit. AGENTS.md "Release sync" lists the steps; these
+files initially come from that commit. AGENTS.md "Release sync" lists the steps; these
 are the contracts of the tools that check them.
 
 - **Versions.** `apps/desktop/package.json` `version`, `myflames/__init__.py`
@@ -1022,10 +1051,10 @@ are the contracts of the tools that check them.
   the format in [Release notes](#release-notes) (title, sections, order, no
   heading deeper than level two, at least one entry, closed code fences, no em
   dash and no `/api/` path outside code fences) with a message on stderr that
-  says what to fix, and exits 1. The script then ends the notes with the
-  inspiration credit line (`CREDIT`, the README's "Inspired by Brendan Gregg's
-  FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless the page already
-  holds it, so no release's notes lose it.
+  says what to fix, and exits 1. It also refuses a page carrying the inspiration
+  credit: any page naming both inspiration authors, including wrapped or fenced
+  text, fails with the file and line in the error. Validation fails before
+  anything is written to stdout.
 - **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
   (`test/readme-screenshots.mjs`) builds nothing: it opens the built
   workspace in `myflames/ui_assets` through the perf harness (`open()` with
@@ -1092,14 +1121,17 @@ are the contracts of the tools that check them.
   `check_release_sync.py` and `check_release_verification.py` for the new
   version (the checkout fetches full history, so the evidence commits are
   there). When a release is published, or
-  by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
-  out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
-  replaces the release notes with `release_notes.py`'s text when they differ
-  (ignoring line endings and outer blank lines), fails when the tag has no
-  valid page for the version, and runs `check_release_assets.py`. Release
-  notes of releases published before the tag carried `docs/release-notes`
-  are edited by hand from master: `python3 scripts/release_notes.py X.Y.Z >
-  local/notes.md && gh release edit vX.Y.Z --notes-file local/notes.md`.
+  by hand for a tag (Actions > Docs and release sync > Run workflow), the whole
+  tag value must match `vX.Y.Z` (it is never echoed). The job checks out
+  `github.sha`: both the generator and the notes page come from the workflow
+  run's own commit, which is the tag's commit for a `release` event or the
+  dispatching branch head for `workflow_dispatch`. Dispatch from master to
+  sync an older release with the current generator and cleaned page, including
+  tags that predate `docs/release-notes`. Checkout uses
+  `persist-credentials: false`. The job replaces the release notes with
+  `release_notes.py`'s text when they differ (ignoring line endings and outer
+  blank lines), fails when the workflow commit has no valid page for the
+  version, and runs `check_release_assets.py`.
 - **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
   repository. Its `sync.yml` workflow (every 6 hours and on demand) checks this
   repository out at its latest release tag (the peeled commit of an annotated
@@ -1193,7 +1225,8 @@ messages, never in the notes.
   empty: Release highlights, New features, Improvements, Bug fixes, Security
   fixes, Deprecations and removals, Known issues, Packaging notes, Additional
   resources (always present: the download links, the Quickstart and GitHub
-  Issues). No other headings. The page ends with the inspiration credit line.
+  Issues). No other headings. The page does not repeat the inspiration credit: it
+  lives in the About myflames window, the README, NOTICE and HTML report footers.
 - **Release highlights.** Only for a version with three or more notable
   changes: two to four bullets of one sentence each, naming what is worth
   upgrading for. The detail stays in the sections below.
@@ -1296,6 +1329,78 @@ then build and run `theme-contrast.mjs` for computed styles and `themes.mjs`
 for registry completeness, palette actions, restore, base resolution and frame
 isolation. Recheck 1440 and 720 px layouts and light/dark OS preferences.
 
+Settings > Appearance also renders a **Text** group (`TextSettings` in
+`SettingsPage.tsx`, styled in `settings.css`) below the theme cards:
+**Interface font** (`#ui-font`), **Interface text size** (`#ui-text-size`:
+**Smaller** `12`, **Default** `13`, **Large** `14`, **Larger** `15`,
+**Largest** `16`), **Code font** (`#code-font`), **Code text size**
+(`#code-text-size`: **11 px** to **20 px**, default **13 px**), one-line live
+previews (`The quick brown fox` and `SELECT id, name FROM orders WHERE id = 42;`),
+**Restore default text settings** (writes `{ui_font: "system", ui_text_size: 13,
+code_font: "system", code_text_size: 13}` through `setUiPreference`), and an
+alert paragraph (`#text-settings-error`, visually hidden while empty) with a
+request sequence counter that ignores superseded saves. Controls stay disabled
+until `loadUiPreferences()` resolves so an unhydrated select cannot overwrite a
+stored choice. Shipped fonts append ` (included)` (**Inter (included)** and
+**JetBrains Mono (included)**).
+
+`apps/workspace/src/fonts.ts` (imported by `main.tsx`, with no editor or lazy
+view imports) holds `FONT_CHOICES`, keeping its `interface` ids equal to
+`workspace_store.UI_FONT_IDS` (`system`, `inter`, `sf-pro`, `helvetica-neue`,
+`segoe-ui`, `arial`, `roboto`, `open-sans`, `source-sans-3`, `ibm-plex-sans`,
+`noto-sans`, `verdana`) and its `code` ids equal to `UI_CODE_FONT_IDS`
+(`system`, `jetbrains-mono`, `sf-mono`, `menlo`, `monaco`, `consolas`,
+`cascadia-mono`, `cascadia-code`, `fira-code`, `source-code-pro`,
+`ibm-plex-mono`, `roboto-mono`, `ubuntu-mono`, `hack`, `courier-new`). Because
+`document.fonts.check` is unreliable for local fonts, `detectInstalled(family)`
+measures a probe string (`"mmmmmmmmmmlliWwQq@123"`) on a 2D `<canvas>` at
+`72px` against `monospace`, `sans-serif` and `serif`, treating a width
+difference above `0.5` px for `72px "<family>", <generic>` as installed
+(`window.__myflamesDetectFont` overrides detection in tests). `fontChoices(kind)`
+caches the result once per launch and offers **System default**, shipped fonts
+and detected installed families. `applyFonts(preferences)` runs at startup with
+`currentUiPreferences()` and subscribes to `subscribeUiPreferences`, writing
+inline custom properties on `document.documentElement`: `"system"` (or an
+unknown id via `fontById`) removes `--font-sans` or `--font-mono` so
+`style.css` and theme rules apply, while named choices set `--font-sans` or
+`--font-mono` to `"<family>"` ahead of the system stack; `ui_text_size` (clamped
+to 12–16, default 13) computes `scale = size / 13` (1 at 13 px, preserving
+stylesheet values), setting `--text-xs` (11), `--text-sm` (12), `--text-md`
+(13), `--text-base` (13), `--text-lg` (15), `--text-xl` (20), `--text-2xl` (28)
+and `--text-title` (15) to `Math.max(11, Math.round(base * scale))px` (keeping
+the 11 px floor) and `--leading-xs` (16), `--leading-sm` (18), `--leading-md`
+(20), `--leading-lg` (22), `--leading-xl` (28), `--leading-2xl` (34) and
+`--leading-title` (20) to `Math.round(base * scale)px`; `code_text_size`
+(clamped to 11–20, default 13) sets `--text-code` to `${codeSize}px` (consumed
+by `.sql-editor-wrap.sql-cm .cm-editor` in `editor-cm.css` and
+`.settings-code-preview` in `settings.css`); other code surfaces use
+`--text-code-sm` (12 px base) or `--text-code-xs` (11 px base), each scaled by
+`codeSize / 13`, including generic `pre, code`, reviewed SQL, expanded plan
+SQL, digest SQL, Explain JSON and Locks/Sessions statements. The default
+13/13 setting preserves every surface's previous base size. Fixed code line
+heights scale in the same ratio (`--leading-code-sm` has an 18 px base).
+`applyFonts` also sets `--editor-line-h` to `${Math.round(codeSize * 20 / 13)}px` (`.cm-scroller` and
+`.cm-gutters` in `editor-cm.css`).
+
+The workspace vendors two SIL Open Font License 1.1 families in
+`apps/workspace/src/fonts/`, wired into `apps/workspace/src/style.css` via
+`@font-face` (`font-display: swap`), built into `myflames/ui_assets`, and
+attributed under `Bundled fonts` in `NOTICE`: Inter 4.1 (`InterVariable.woff2`,
+weight `100 900`, `Inter-LICENSE.txt`) and JetBrains Mono 2.304
+(`JetBrainsMono-Regular.woff2`, `JetBrainsMono-Italic.woff2`,
+`JetBrainsMono-Bold.woff2`, `JetBrainsMono-OFL.txt`).
+`apps/workspace/src/fonts/fonts.lock.json` (`fonts-lock-1.0`) pins each font's
+`name`, `version`, HTTPS `source` archive URL, `zip_sha256`, `license` and
+per-file `path` and `sha256`. `test/test_fonts_lock.py` validates
+`fonts-lock-1.0`, verifies every listed file's SHA-256 and that
+`apps/workspace/src/fonts/` contains only `fonts.lock.json` and the listed
+files, and checks that every `.woff2` entry in the lock file is referenced in
+`apps/workspace/src/style.css`. Additional coverage:
+`test/test_workspace_store.py`
+(`test_ui_font_and_text_size_preferences_are_persisted_and_strict`),
+`apps/workspace/test/settings-page.mjs` and
+`apps/workspace/test/text-size-stress.mjs`.
+
 Measured durations and ages use `durationText` (`duration.ts`). Duration table
 cells and the Processlist inspector, Locks summary facts and Replication lag
 facts use `Duration` (`PerfShared.tsx`) for exact seconds, including decimal
@@ -1322,7 +1427,12 @@ and Unknown.
 `FactStrip` uses the same breakpoint to collapse into Details. `Fields`
 uses a label column sized to its longest label up to 40% of the available
 width, with a flexible value column; at 900 px and below each value follows
-its label on a separate line. `WindowStatusBar` keeps safety words visible while other facts truncate before the version and update actions. Server,
+its label on a separate line. `WindowStatusBar` keeps safety words visible
+while other facts truncate before the version and update actions. At large
+text sizes in windows up to 900 px, safety detail yields to its tooltip and
+the releases link remains in About; engine version, transaction, last run,
+duration and rows stay visible with ellipses and full tooltips because a view
+may not show them elsewhere. Server,
 Workload, Tuning and Database diagram share the latest version read for the
 connection in use; other connection places publish their own read version.
 Unknown fields stay hidden. Visible Esc hints use a keycap.
@@ -1380,8 +1490,9 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the command palette, Learn and the shared kit (about 365 KB,
-1.1 MB before the split). Other places and views load their own chunk the
+connections, the command palette, the investigation notebook and the shared
+kit (about 480 KB after splitting the Plans screen and Learn, 1.1 MB before
+the original split). Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1391,9 +1502,31 @@ workspace did not load." with Reload):
   loading with sign-in and the session read, and calls to its handle made
   before it mounts wait in `withLab`), Query digest, Server (with Workload,
   Tuning and Database diagram),
-  Replication, Cluster, Investigations, the Audit log, and the Plans chart and
-  execution context. Once the first screen is up, `preloadWhenIdle` loads
-  Server, Replication, Cluster and the Plans chart in idle time, one chunk at a time.
+  Replication, Cluster, Investigations, the Audit log, Plans and Learn.
+  `PlanScreen.tsx` holds Explore and Compare; the shell keeps their state,
+  imports, exports, session restore, navigation and the investigation notebook.
+  The notebook opens immediately from Plans or Investigations, even if a Plans
+  or chart chunk is delayed or fails. It has no pending chunk request: changing
+  places or opening another shell dialog closes it, and it cannot open over an
+  existing modal. Save investigation's `aria-expanded` reflects the mounted
+  sheet. The shell accepts file drops across empty Plans while PlanScreen is
+  loading, using the same import handler after it mounts. PlanScreen renders
+  PlanChart and ContextPanel on its first paint, so its loader starts all three
+  chunks together but resolves on PlanScreen alone. Chart preload rejections
+  are caught; their own lazy boundaries show the failure and Reload inside the
+  chart/inspector areas. A failed PlanScreen keeps its failure and Reload visible
+  while Plans is open, independent of the notebook. A session restored on Plans
+  or Compare starts these loads at startup instead of waiting for the idle queue.
+  Learn mounts on its first visit and stays mounted afterward in a hidden container, like the other lazy places, so its
+  lesson survives a trip to another place and its chunk's loading or failure
+  text shows only while Learn is open; a session reset starts it over. Once the first screen
+  is up, `preloadWhenIdle` loads Server, Replication, Cluster and the other
+  frequently opened places in idle time, one chunk at a time, followed by
+  Plans and its chart and execution context. This fetches code without
+  mounting a place or reading a server.
+- `PlanScreen.tsx`: the Plans chart and execution context use their own lazy
+  boundaries, retaining the same fallback while their chunks arrive (fetched
+  together with PlanScreen, above).
 - `Server.tsx`: the views it uses only as components (InnoDB, Tuning,
   Processlist, Waits, I/O, Indexes, Tables, Parameters, Database diagram (its
   own place, still drawn by Server), Users and roles), preloaded in idle time once the place has mounted. Health,
@@ -1433,12 +1566,22 @@ Rules for code that splits:
 - `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
   `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
   followed by `themes.css` last and `main.tsx` importing it first, that no lazily loaded module is
-  also imported statically by `main.tsx`, `Server.tsx` or `QueryLab.tsx`,
+  also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
+  `PlanScreen.tsx`,
   that the committed build has exactly one stylesheet, and that the entry
-  chunk stays under 500,000 bytes (about 475 KB in 3.3.3; Home, the sidebar
-  and the shell only, a place or view belongs in a lazy chunk). The chart
-  runtime has its own
-  80 KB budget (`test_chart_data.py`).
+  chunk stays under 500,000 bytes (479,634 bytes after extracting Plans and
+  Learn from master ef74ba2d's committed 508,046-byte entry). The source guard
+  covers all dynamic imports, including PlanChart and ContextPanel preloads
+  beside PlanScreen, and rejects static value and side-effect imports while
+  allowing erased type imports. It also requires Plans and Learn chunks and
+  checks that their view text stays out of the entry. Home, the sidebar, the
+  notebook and the shell stay eager; a place or view belongs in a lazy chunk.
+  The chart runtime has its own 80 KB budget (`test_chart_data.py`).
+- `test/investigation.mjs` (`npm run test:investigation`) intercepts Plans,
+  chart and context chunk requests to delay or reject them. It covers persistent
+  failure/Reload, repeated notebook opening from Plans and Investigations,
+  independent screen loading, modal focus ownership, navigation cancellation
+  and importing a file dropped before the empty Plans component mounts.
 
 Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
 their rows change. `useStableRows` (`kit.tsx`) keeps the previous array while
@@ -2887,6 +3030,39 @@ planner, write gate and session engine from the CLI.
   compiled by `test/sql-format-load.mjs`); browser suite `test/editor-tools.mjs`
   (`npm run test:editor-tools`; `EDITOR_TOOLS_SHOTS=<dir>` writes screenshots at
   1440x900 and 720x520, light and dark).
+- Toolbar editing actions (`QueryLab.tsx`, `editor/keymap.ts`): the
+  `format-tools` group contains **Find** (`search`) and **Find and replace**
+  (`replace`) buttons before **Format SQL**, followed by **Editing actions**
+  (`more`). The Find buttons call `SqlEditorHandle.openFind(mode)` and show
+  platform shortcuts from `EDITOR_SHORTCUTS` in their titles and
+  `aria-keyshortcuts`. They stay available on empty SQL, during a run and
+  without a server session; the workspace always keeps at least one query tab.
+  **Editing actions** uses the kit's keyboard-navigable `ContextMenu`, with
+  wrapping labels and shortcuts within the viewport. Toolbar context menus
+  opt into `portal` to render in `document.body`, above the editor/results
+  splitter and editor panes, keeping menu focus and Escape's return to the
+  opener. Editing actions also opts into `closeOnBlur`: focus moving outside
+  its items dismisses it without taking focus back from the destination.
+  Palette dispatch through `runEditorCommand` or `formatSql` closes the menu
+  before running the editor command. Other context menus keep their existing
+  placement and dismissal. The browser
+  suite `test/editor-find.mjs` hit-tests the menu at the divider's height in
+  1440x900 and 720x520 windows, light and dark. `EDITOR_ACTIONS` comes
+  from the shortcut table in its order, excluding `escape`, `indent`,
+  `outdent` and alias rows. **Toggle Tab moving focus** is last, with
+  Shift+Alt+M on macOS and Ctrl+M elsewhere, dispatched through the same
+  `runCommand` path; `editorActionShortcuts` includes every
+  platform alias on the same item, including the conditional Ctrl+G binding
+  for Go to line off Mac. Setting-gated commands stay visible and disabled
+  with `Turn on <setting label> in Settings > Query editor`, using
+  `EDITOR_SETTING_LABELS` (Multiple cursors, Problem warnings).
+  `SqlEditorHandle.runCommand(id): boolean` takes editor focus before running
+  the command from `editorCommands(settings)`, the same enabled command map
+  used by `editorKeymap`; unknown IDs and disabled commands return false
+  without taking focus. Commands that open a field or panel keep its focus.
+  The palette lists **Find**, **Find and replace** and **Go to line** next to
+  **Format SQL**, opening the Query editor first through
+  `QueryLabHandle.runEditorCommand` and `whenShown`.
 - Toolbar layout (`editor.css`): the editor toolbar wraps onto another row
   whenever its items do not fit, at any pane width; no fixed breakpoint can
   promise one row, since the Database picker's longest name, the scope, the
@@ -2932,7 +3108,7 @@ planner, write gate and session engine from the CLI.
   (`TABLE_ROWS`, the server's estimate) and `bytes` (`DATA_LENGTH + INDEX_LENGTH`) to each table,
   None for views, and `stats` to the report; Maintenance > Dump reads it for the one chosen database
   (MariaDB opens each table of that schema to answer). In `SchemaBrowser.tsx`, expanding a schema lists **Routines**, **Triggers** and **Events** folders after its tables and views; opening a folder loads its group on demand, double-click or Enter/Space on an object inserts `<quoted_schema>.<quoted_name>` at the editor cursor, and its context menu offers **Insert name** and **Show CREATE PROCEDURE / FUNCTION / TRIGGER / EVENT** (appended and run via `onQuery`). Tests: `test/test_schema_browser.py`, `test/test_ui.py`.
-- Find and replace (`apps/workspace/src/editor/FindBar.tsx`, `editor/find.ts`, `editor/findMarks.ts`, `editor-find.css`): `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux; `Ctrl+Alt+F` also works there) opens Find and replace above the editor. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches (`Ctrl+G` opens Go to line when Find is closed on Windows and Linux); Escape closes the bar and returns to the editor. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks, including above `HIGHLIGHT_LIMIT` (60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They plan CodeMirror changes (`planReplace`) dispatched as one transaction with `isolateHistory`, so one undo restores the text; a single Replace remembers its undo anchor, and an immediate undo returns the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs` and `test/editor-find-unit.mjs`.
+- Find and replace (`apps/workspace/src/editor/FindBar.tsx`, `editor/find.ts`, `editor/findMarks.ts`, `editor-find.css`): the toolbar's **Find** and **Find and replace** buttons open their respective modes above the editor and focus the Find field; replace mode also shows Replace with. `⌘F` (`Ctrl+F`) opens Find and `⌥⌘F` (`Ctrl+H` on Windows and Linux; `Ctrl+Alt+F` also works there) opens Find and replace above the editor. A single-line selection seeds the Find field; there is no 200-character selection limit. `Enter` / `⇧Enter` in Find and `⌘G` / `⇧⌘G` (`Ctrl+G` / `Ctrl+Shift+G`) step between matches (`Ctrl+G` opens Go to line when Find is closed on Windows and Linux); Escape closes the bar and returns to the editor. Toggles are **Match case** (`Aa`), **Whole word** (`|ab|`) and **Regular expression** (`.*`). `computeFind` uses a Unicode literal search and, for literal whole words, letters, numbers, `_` and `$` as word characters. Regex mode uses JavaScript `g` / `gi` expressions (no `u`), with JavaScript `\b` boundaries for Whole word, and ignores zero-length matches. `createRegexFinder` runs regex searches in a terminable worker, with `FIND_REGEX_TIMEOUT_MS` = 250 ms and "Pattern too slow to search" on timeout; invalid patterns set `aria-invalid` and report an error. Searches retain at most `FIND_MATCH_LIMIT` (100,000) matches, append `+` to a capped count, and draw at most `FIND_MARK_LIMIT` (1,000) marks, including above `HIGHLIGHT_LIMIT` (60,000 characters). **Replace** and **Replace all** insert replacement text literally, including `$&` and `$1`; capture-group expansion is not implemented. They plan CodeMirror changes (`planReplace`) dispatched as one transaction with `isolateHistory`, so one undo restores the text; a single Replace remembers its undo anchor, and an immediate undo returns the find anchor to the undone match. Tests: `apps/workspace/test/editor-find.mjs` and `test/editor-find-unit.mjs`.
 - Open and save `.sql` files, Continue on error, and the tab's default database picker (`QueryLab.tsx`, `QueryTabMenu.tsx`, `ResultsPane.tsx`, `session.ts`, `myflames/editor_session.py`, `myflames/file_picker.py`):
   - **Open and save `.sql` files**: **Open SQL file…** in the query tab menu or `⌘O` / `Ctrl+O` inside the Query editor calls `POST /api/editor/file/open` (`{}`). The native file dialog (`file_picker.choose_sql_file`, `.sql` and `.txt`, serialized by `folder_picker._DIALOG_LOCK`, 120 s timeout) resolves and checks its chosen path. The reader then opens through the checked parent without following a file or folder swapped for a symbolic link; it refuses anything but a regular file and checks the 5 MiB limit (`SQL_MAX_BYTES`, 5,242,880 bytes) both on the open descriptor and by reading at most one byte beyond the limit, so a file that grows during the read is refused too. It strips a UTF-8 BOM, replaces invalid UTF-8 bytes with `U+FFFD` with a `warning`, and opens a new tab named after the file (without `.sql` / `.txt`, clipped to 64 characters).
     The process-local `_FILE_TOKENS` map keeps at most 200 opaque tokens bound to the resolved path and its parent directory's device/inode; the renderer never supplies a write path. `⌘S` / `Ctrl+S` saves via `POST /api/editor/file/save` (`{sql, token}`). `⇧⌘S` / `Ctrl+Shift+S`, or Save without a binding, uses `{sql, save_as: true, name}` and `choose_save_file`. An `unknown_token` after a backend restart opens Save as within the same Save operation; success, cancellation or failure is reported, and a cancelled or failed save or close keeps the tab's unsaved edits. Save as suggests the bound file's name, or `<tab.name>.sql` without a binding. `_clean_suggested_name` removes path components and controls, replaces colons with hyphens, appends `.sql` when needed and clips the suggested name to 255 characters. On macOS and Windows the sanitized name reaches the native dialog through `MYFLAMES_SAVE_NAME` unchanged, including quotes and Unicode, never as script source.
@@ -4445,10 +4621,127 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 
 ### Server lifecycle: upgrade-check, dump, restore, clone
 
+#### MySQL Shell on demand (backend)
+
+`managed_shell.py` exposes local-only `status(workspace_directory=None)`,
+`start_install(workspace_directory=None)`, `cancel(job_id)`, `shutdown(timeout)` and
+`installed_bin_dir(workspace_directory=None)`, wired to the workspace through
+three authenticated POST endpoints in `ui.py` (`_MANAGED_SHELL_PATHS`,
+`_shell_response`): `POST /api/client/shell/status` and
+`POST /api/client/shell/install` accept exactly `{}`, and
+`POST /api/client/shell/cancel` accepts only `id` (the running job's id, a
+string of at most 64 characters); any other key or type is a 400 before
+`managed_shell` is called. All three answer with the `managed-shell-status-1.0`
+payload of `managed_shell.status` (install starts or rejoins the single flight
+first; a `Refused` is a 400 with its plain sentence). The workspace directory
+argument is the workspace store's folder (`MYFLAMES_TOOLS_DIR` wins when the
+desktop sets it). No connection, saved password or SQL is involved, and the
+reply contains nothing outside the tools folder. `WorkspaceServer.server_close`
+first runs `LifecycleJobs.shutdown()` to stop tool process groups, then calls
+`managed_shell.shutdown(timeout=1.0)` before the remaining session cleanup.
+The public helper sets the active job's cancel event and expires its watchdog
+under the job lock (closing download sockets, as `cancel` does), then waits at
+most the given timeout for its worker outside that lock; `ui.py` reads no
+installer private state. An interrupted cleanup may leave staging, retire or
+download-part trees; the next install's existing lock-protected `_clean_stale`
+removes them. Tests:
+`test/test_ui_http.py` (`TestManagedShellHTTP`), including a stale cancel id
+that must not stop the running job.
+One process-wide `InstallJob` reports `downloading | verifying | installing |
+done | failed | cancelled`, received/total bytes, elapsed seconds, a plain
+error and a boolean `cleaning` on every snapshot. `cleaning` is true exactly
+while a cancelled or failed job's worker thread remains alive removing files.
+Repeated starts reuse the active flight; while `cleaning` is true,
+`start_install` returns that same snapshot unchanged, with no new job or error.
+Once cleanup ends a new start can create a new job. Cancellation closes download
+sockets and stops/reaps the probe. Cancel with no job refuses with
+`No MySQL Shell download is running.` (HTTP 400); otherwise it requires the
+current job's exact id, and a stale id cannot cancel a newer download.
+An exclusive OS lock on `mysqlsh/.install.lock` covers validation, stale cleanup,
+download, probe, publish and failure/cancel cleanup. A second backend refuses
+before cleaning or contacting the network. The private regular lock file holds
+the owner's PID while the job runs and is removed when the job ends (on Windows
+`O_TEMPORARY` removes it at the final close); the kernel releases the lock on
+close or process exit, so a stale file left by a dead process is recovered: a
+new install locks it and rechecks the inode before any work, never following a
+link.
+
+The packaged `mysql-shell.lock.json` (`mysql-shell-lock-1.0`) records product,
+version, license/links, Oracle's signing fingerprint and `archives` entries for
+`darwin-arm64`, `darwin-x64`, `win32-x64`: version, CDN URL, compressed size,
+MD5, SHA-256 and root. `scripts/pin-mysql-shell.py VERSION OUTPUT_FOLDER`
+verifies published size/MD5 and the pinned PGP signature before computing
+SHA-256. It prints JSON; only `--write` replaces the lock. macOS codesign
+coverage is informational because the pinned tarballs are ad hoc signed.
+
+Storage is `MYFLAMES_TOOLS_DIR`, otherwise `<workspace store folder>/tools`.
+Its private `mysqlsh/` contains `.mysqlsh-download-*.part`, `.mysqlsh-stage-*`,
+versioned `mysqlsh-<version>-<platform>/` installs with `myflames-shell.json`,
+and the atomic `installed.json` pointer. Only the lock holder cleans stale
+download, stage, manifest, `.mysqlsh-probe-*` and `.retire-<32 hex digits>` entries,
+without following links. Desktop creates tools with mode 0700 or tightens an
+existing user-owned plain directory to 0700. Other storage errors never prevent
+app startup: the tools path is still passed to the backend, whose `status()`
+reports the private-folder refusal and whose installer refuses before network
+use. Windows refuses custom `MYFLAMES_DESKTOP_DATA`, reparse points in the tools
+path and locations outside the user profile roots. An unusable environment root
+is skipped so a different clean user-profile root can still authorize the path.
+The pointer is data: its folder must exactly match the pinned version/platform,
+resolve inside the private `mysqlsh/` directory, and carry a matching
+`myflames-shell.json` version and SHA-256. The executable and startup tree pass
+`checked_shell_program` without a bundled exemption. Discovery uses only
+`installed_bin_dir()` to add this managed copy, labels its origin `managed` /
+`Downloaded by myflames`, and prefers it to other Shell copies of any version.
+It reads the pointer on every inventory request; cached discovery/probe results
+cannot hide a newly installed copy. Only inventory reads that opt into the
+trust cache (`cache_shell_trust`) reuse its five-second tree walk. Every launch
+still rechecks through `connector.checked_shell_program`. An invalid pointer reports
+not installed and is never probed or preferred. An install returns `done`
+without downloading only after this same validation.
+
+Checks run in order: validate every lock field and host; check private,
+user-owned tools directories and trusted ancestors before writes/network;
+require 1.3 GB free; download with no ambient proxy, a TLS watchdog, CDN-only
+HTTPS redirects closed unread, a 15-second socket timeout, a 900-second
+deadline and declared/running/final size checks; verify SHA-256 on the exact
+open descriptor before parsing; extract confined files/directories, then
+sibling-only macOS symlinks, then check every resolved target after all links
+exist (forward sibling chains are allowed); check required structure and
+Mach-O cputype or PE32+ x64 headers; copy Windows VC++ DLLs only from regular
+files confined to the bundled client's real bin folder, with PE32+ x64 headers
+and SHA-256 matching the bundle's `manifest.json`; run an isolated, bounded
+`--no-defaults --disable-plugins --disable-builtin-plugins --version`
+probe; atomically publish the directory and pointer with rollback.
+Limits: 250 MiB compressed, 40,000 entries, 1.5 GiB expanded, depth 32.
+Traversal, absolute paths, device names, special files, hard links and Windows
+symlinks are refused; unsafe mode bits are stripped. Failure/cancel removes
+partial files and preserves a previous install. Zip directory entries lose
+exactly one trailing slash before segment validation. Case and Unicode aliases
+and filesystem `EEXIST` at file or symlink creation refuse the whole stage.
+Implicit ancestors use the same NFC and casefold identities as explicit entries;
+an exact-spelling implicit directory may be declared once later in the archive.
+The Settings > Client tools dialog shows the MySQL Shell section
+(`ManagedShell` in `apps/workspace/src/ClientTools.tsx`, helpers `shellStatus`
+/ `shellInstall` / `shellCancel` in `api.ts`): with no usable MySQL Shell on
+this computer it offers **Get MySQL Shell** with the download and installed
+sizes, the license and Oracle downloads links; a found Shell older than the
+pinned version says so and names it on the button; an unsupported platform
+offers only the Oracle downloads link. While the job runs, a 500 ms status poll
+drives a determinate download bar (after 10 s without progress it says it is
+still waiting for cdn.mysql.com), then the checksum and install lines, and
+**Stop** (armed after 600 ms, focus returns to the button); the outcome is the
+ready, stopped or plain failure line with **Try again**. A finished install
+re-reads the client tools so the managed copy shows under Found on this
+computer. Browser coverage: `apps/workspace/test/client-tools.mjs` (mocked
+endpoints; 1440 and 720 px, light and dark).
+Tests: `test_managed_shell.py`,
+`test_pin_mysql_shell.py`, desktop `backend.test.cjs`.
+
 Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle skill), CLI `myflames/lifecycle_cli.py`, endpoints in `ui.py` (`_lifecycle_*`). Tests: `test/test_lifecycle.py` (fake tool executables that record argv, env and option-file mode, strict replays of live recordings, a "regressions found on live servers" section) and `test/test_lifecycle_cli.py` (CLI exit codes, confirmations, audit, endpoints); fixtures and what was and was not verified live: `test/fixtures/lifecycle/PROVENANCE.txt`.
 
 - `python3 -m myflames upgrade-check --target-version X.Y.Z [--no-shell] [--config-path PATH] [--fail-on error|warning] [--json] [-o PATH] [-q]` (`upgrade-check-1.0`): `lifecycle.upgrade_check`. MySQL Shell (`mysqlsh --defaults-file=<0600> --js -- util check-for-server-upgrade --target-version=... --output-format=JSON`) when installed and the pair is in range (server older than the Shell, target at most the Shell's major.minor; otherwise exit 2 with a `--no-shell` hint); `parse_upgrade_json` reads `errorCount`/`warningCount`/`noticeCount` and `checksPerformed` (the Shell exits 0 with errors). `--no-shell` or no Shell: `_native_upgrade` (`partial: true`, `limitations[]`), every check version gated as source < change <= target: `removed_variables` from `performance_schema.variables_info` excluding COMPILED, DYNAMIC and PERSISTED (error: an unknown option in an option file or on the command line stops mysqld; `my_getopt.cc`), `removed_persisted_variables` (warning: logged and ignored at startup; `persisted_variable.cc`), on 5.7 the running values (warning); `reserved_identifiers` over schema, table, view, column, routine, trigger and event names with `reserved_words(source, target, source_reserved)` from `RESERVED_SINCE` minus the source's own `information_schema.KEYWORDS` (parity test against KEYWORDS read live on 8.0.46, 8.4.11, 9.7.2); `partition_engines` (5.7 sources only, joins TABLES for ENGINE); `utf8mb3` and `zero_date_defaults` in user schemas (notice from 8.0 sources, warning from 5.7); `native_password_users` (`'user'@'host'`, warning for 8.4, error for 9.x). MariaDB: `method: mariadb_upgrade_guidance`, never invokes the Shell; a target below 10 (a MySQL number) or older than the server is refused. Dump with MySQL Shell refuses when the Shell's major is older than the server's and warns for an older minor (`shell_version_gap`, mysql-shell `dumper.cc:5311-5334`); failed tool output is reduced to one line by `tool_error_line` with colour codes stripped. Counts are affected objects per severity; `--fail-on` exits 1. Read-only: endpoint `POST /api/lifecycle/upgrade-check` (`connection`, `target_version`, `prefer_shell`). HTTP `config_path` is rejected before connecting, also on `/api/lifecycle/prepare`; only the CLI accepts `--config-path`.
-- Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). TLS uses the actual tool engine's mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
+- Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). Classic tools use the actual tool engine's TLS mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
+- MySQL Shell trust and TLS: MySQL Shell uses `lifecycle._shell_tls_options`: DISABLED writes only ssl-mode; PREFERRED and REQUIRED omit stale ssl-ca, capath, crl and crlpath (Shell rejects them in those modes); VERIFY_CA keeps an explicit CA or writes a validated system-root PEM bundle as `ca-bundle.pem` (0600 in the 0700 temporary directory), refusing before launch when no bundle can be assembled. System roots come from Python's regular default CA file, or the trusted macOS Keychain roots when that file is unavailable; Windows uses `ssl.enum_certificates("ROOT")`, selecting X.509 certificates trusted for TLS server authentication. An empty or unreadable Windows root store refuses before launch. REQUIRED and VERIFY_IDENTITY remain supported for the single-session upgrade check, dump and restore. Shell discovery and launch use `connector.checked_shell_program` without a bundled exemption: the executable and its ancestors, bin and rc scripts, installation share/lib/libexec startup trees, and POSIX `/etc/mysql/mysqlsh` with its rc scripts must be trusted. The recursive check validates symlink owners and resolved targets and walks linked directories, including a linked top-level subtree, without revisiting directory cycles. Windows reparse points, including junctions, count as links. Any walk error or more than 40,000 lstat calls fails closed. Read-only Shell discovery can reuse successful walks for up to five seconds, keyed by the executable realpath and prefix/startup-root metadata (including prefix st_mtime); refresh and every actual launch, including a version probe, require a fresh walk. Descendant changes need not update prefix mtime, so cached inventory never authorizes execution. Windows resolves Shell folders and bundled Python inside the executable's same allowed local root, refusing UNC paths and escaping junctions. An untrusted Shell is listed in skipped and is never version-probed. Shell launches add `--disable-plugins` from 9.0.0 and `--disable-builtin-plugins` from 9.6.0, using the discovered version; unknown and older versions get no unsupported flags. Plugin flags precede the `--` separator in upgrade checks. Every Shell process, including version probes, sets `OPENSSL_CONF=os.devnull` so an ambient OpenSSL configuration is not loaded.
 - Tool release metadata: `tool_updates.enrich_tools`, invoked by `detect_tools(check_updates=True)` only after explicit UI detection/refresh. Each tool adds `download_url` and `update {status, latest_version, checked_at, source_url, message}`. Status is `not_checked`, `available`, `current`, `unknown`, `not_installed` or `deprecated`; current means no newer verified release in the checked series, not a compatibility or support guarantee. MySQL GA download headings and the MariaDB stable-series REST API supply versions. Fixed HTTPS endpoints only, no redirects or ambient proxies, 1 MiB response cap, 5 s socket timeout, 12 s caller budget, at most 8 in-flight workers and 64 cache keys; success TTL 1 hour, failure TTL 1 minute. Unsupported distributions/prereleases, mismatched series, malformed/future metadata and failed checks stay unknown. CLI discovery and lifecycle preflights do not request network checks.
 - `POST /api/lifecycle/choose-directory` accepts an empty object through the normal authenticated API. It opens the server host's folder dialog, with a 120 s deadline and one dialog at a time; no client-supplied script or path is executed. Cancel preserves the form path. The selected directory still undergoes normal preflight and empty-directory validation. Native folder selection accepts no command or path input and does not start a backup.
 - Dump folder facts: authenticated `POST /api/lifecycle/dump-info {directory}` accepts only `directory` and needs no connection or saved password. It is registered beside `choose-directory`, with the same authentication, CSRF header and request limits. It returns `{schema_version: "lifecycle-dump-info-1.0", tool: {name, version}, engine, scope: {schemas, tables}, structure_only, remap_allowed: true | false | null, remap_reason}`; `tool.version` is capped at 64 characters. Tool names are `mysqldump`, `mariadb-dump` or `mysqlsh`; engines are `mysql` or `mariadb`. Old manifests without `options.structure_only` report false. `dump_info` and `prepare_restore` share `_restore_input` (absolute/expanded real directory path, completed manifest validation and safe relative file records) and `_restore_sql_scan` with `_restore_remap`. A folder pick stays cheap: `dump_info` reads the manifest without checksumming every file (`verify=False`). For single-schema picked-table SQL dumps, it checks the opened `dump.sql` descriptor is a regular file and its size matches the manifest before reading; scans at most `DUMP_INFO_SCAN_BYTES` (16 MiB) and checks SHA-256. When the manifest record exceeds that cap, it skips the scan and returns `remap_allowed: null` with `remap_reason: "This dump is large; whether it can load into another database is decided when you review the restore."` A size mismatch refuses before any SQL read. Manifests, scanned SQL and preflight files are opened without following links or blocking on FIFOs, and must be regular files before reading. `prepare_restore` verifies every file, including its descriptor size before reading, and the restore file, directory and byte budgets before any restore; it stays the authority and retains its own scan limits. Files named outside the folder are refused by both. Whole-database SQL dumps report that they create their own databases; single-schema picked-table SQL dumps within the folder-pick scan budget scan `dump.sql` for CREATE DATABASE, CREATE SCHEMA, USE and qualified references; single-schema Shell table dumps allow remapping. Missing or unreadable folders/manifests, missing or unreadable scanned SQL, special files and invalid metadata raise `lifecycle.Refused`, using HTTP 400 `{error}` with an actionable sentence. Extra payload keys raise `ValueError` through the same HTTP 400 envelope. No tool, server connection or restore is started. These facts let Restore decide whether to offer a new database when the folder is picked. When reported, remap eligibility is independent of the proposed target name: a qualified reference to another database still refuses even if it spells that proposed name, so scanned folder facts and preflight cannot disagree. Restore preflight still reloads the folder and refuses unsupported remapping; jobs retain fresh validation and reviewed-write checks. Tests: `test/test_lifecycle.py` (folder facts/preflight agreement, SQL and Shell scopes, invalid metadata, traversal, symlinks, FIFO and directory refusal, missing SQL, checksum tampering, scan cap and size checks before reads), `test/test_lifecycle_cli.py` (route registration), `test/test_ui_http.py` (HTTP refusal, payload keys and authentication).
@@ -4599,14 +4892,23 @@ runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
 startup script or saved credential takes part. A socket connection passes
 through that socket. MySQL Shell changes are not offered over an SSH connection,
 because MySQL Shell connects to the other members directly with this connection's
-user and password; the place says so in its notes. MySQL Shell's member sessions
-take the user, password and CA files but not the profile's ssl-mode. The time limit is 600 s.
+user and password; the place says so in its notes. ShellWriter rechecks the Shell startup
+tree immediately before launch and uses the lifecycle Shell TLS option builder and
+version-gated plugin lockdown flags described above. MySQL Shell's AdminAPI member
+sessions copy CA files but can drop the profile's ssl-mode. ShellWriter therefore
+refuses VERIFY_IDENTITY (member host names are not verified) and REQUIRED (member
+sessions can fall back to PREFERRED), before creating credentials or sending anything.
+VERIFY_CA always passes a CA file, including a private system-root bundle when no
+explicit CA was saved, so member sessions retain CA verification. The time limit is 600 s.
 
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
 reviewed-write result is failed with nothing sent. A statement exception maps
 to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
-number, or 0 when neither is present. Since one AdminAPI call can fail after
+number, or 0 when neither is present. For a statement exception, only the line
+containing the first `at STDIN:<n>` or its immediately preceding physical line can
+supply the error number and message; earlier echoed text cannot supply the code.
+Since one AdminAPI call can fail after
 some steps ran, `verify_on_error` reads the cluster again and reports partial
 when the before/after comparison shows a visible change. A timeout or Shell
 exit without an error message leaves the outcome unknown and is never retried
@@ -7097,7 +7399,7 @@ that `~/.ssh/known_hosts` is unchanged.
 
 ## Workspace navigation and configuration controls
 
-The sidebar's right-edge separator uses pointer capture to resize `--sidebar-w` on the document root; `--sidebar-width` aliases it for every fixed layer. Width is clamped to 208–320 px (at least 400 px remains from a 720 px window before compact navigation applies). Its focusable vertical separator exposes current/minimum/maximum ARIA values. Left/Right move 8 px, Shift moves 24 px, and Home, End or double-click restores 208 px. The existing rail/drawer breakpoint stays at 900 px and ignores the stored width. The window footer renders on every ready place, including Home, Settings, Learn and Investigations. Facts retain their existing scoped publishers on the left; the right end owns version, shared update state and update/release actions. At narrower widths the update timestamp hides and outcome text compacts; left facts truncate first. Home has no separate version footer. `.workspace` reserves `--statusbar-h` below every place, retaining the top-level wrappers and sticky headers.
+The sidebar's right-edge separator uses pointer capture to resize `--sidebar-w` on the document root; `--sidebar-width` aliases it for every fixed layer. Width is clamped to 208–320 px (at least 400 px remains from a 720 px window before compact navigation applies). Its focusable vertical separator exposes current/minimum/maximum ARIA values. Left/Right move 8 px, Shift moves 24 px, and Home, End or double-click restores 208 px. The existing rail/drawer breakpoint stays at 900 px and ignores the stored width. The window footer renders on every ready place, including Home, Settings, Learn and Investigations. Facts retain their existing scoped publishers on the left, and the bar shows only the current view's facts: the version, shared update state and update/release actions live in the sidebar brand and Settings > Updates and news. At narrower widths the left facts truncate first. Only a bar with rendered facts is a keyboard stop; empty Home and Settings footers keep the reserved layout without entering the Tab order. Home has no separate version footer. `.workspace` reserves `--statusbar-h` below every place, retaining the top-level wrappers and sticky headers.
 
 Automatic first reads use `useOpenRead` and the report's connection key. Opening a view without a report for the connection in use reads once; a failed attempt waits for Refresh. Switching connections while the view stays on screen keeps its old report greyed until Refresh or a later reopening. Parameters, Instruments and Users and roles follow this rule too. Health, InnoDB, Locks, Processlist, Waits, I/O, Indexes, Tables and Replication retain their single-flight and stale-response guards. Every `useConnectionReads` request forwards its AbortSignal to `api()`. Tables and Indexes retain schema-size consent and pass visibility to `useSchemaCatalog(connection, enabled)`, including when compact navigation hides their detail. Explicit Refresh and Refresh all remain independent of these automatic-read gates.
 
@@ -7105,7 +7407,7 @@ Query Digest stores its report as `Bound<DigestReport>` through `useConnectionRe
 
 Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog.tsx`; `/api/live/kill/bulk/prepare` then `/api/live/kill/bulk`, `kill-bulk-1.0`, whose `message` reads "Kill sessions finished: N killed, …"). Its **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
 
-The window status bar reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
+The sidebar brand and the Settings Updates and news section read the installed version from the server-injected version meta tag. The View releases link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor, Query digest, Database diagram, Schema versions and Plans share
 the SQL workspace navigation group.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools; refresh never starts jobs or upgrade checks,
@@ -7116,7 +7418,7 @@ Back and Forward (`main.tsx` `navHistory`, `QueryLab.tsx`), cross-link chips and
 - **Back and Forward**: in-memory `navHistory` (capped at 100 entries) records settled places, `Server` and `Workload` views, `Plans` active plan (`selection.plan`) or `Compare` pair (`selection.compare`), and `Query editor` tab and schema-browser reveal (`selection.query = {tabId, reveal}`). `⌘[` and `⌘]` (`Ctrl+[` / `Ctrl+]`, plus `Alt+Left` / `Alt+Right` on Windows and Linux when no `<dialog open>` is active) and the top bar's Back / Forward controls step through the history. Traversal never switches the connection in use; when an entry was recorded on another connection, a notice says `"<label> was open on <entry.connectionName>; this window is on <now.name>. Nothing was switched: views read the connection in use."` Cross-links (`openServerTable`, `openDigest`, `openInstrumentsRow`, `openAudit`, `onNavigatePlace`, `SchemaVersionsPlace` `onOpenSql`, `Server` `onOpenSql` / `onOpenInvestigation`, `openObject` from `⌘K`) capture the origin via `linkOrigin()` and render a `.nav-back-chip` (**Back to `<label>`**) in the top bar that jumps back to the captured origin entry (re-inserting it if aged past 100 entries).
 - **`⌘K` / `Ctrl+K` recent destinations and object search**: when the search input is empty, up to five deduplicated **Recent** destinations from `navHistory` lead the list (`group: "Recent"`). Typing 2 to 128 characters filters commands (ranking commands whose `label` contains every word before keyword or group matches) and searches schema objects on the connection in use: first matching cached schema names from `useSchemaCatalog` (`group: "Database"`), then after a 250 ms debounce calling `POST /api/live/object-search` (`ui._OBJECT_SEARCH_PATHS`, read-only, saved-password helper, 2 s `query_timeout`, tagged `/*myflames:editor*/ `). `schema_browser.object_search` answers `object-search-1.0` (`{schema_version: "object-search-1.0", text, objects, limit: 50, truncated}`) from one `UNION ALL` over `information_schema.{TABLES, ROUTINES, TRIGGERS, EVENTS}` with `LIKE <hex-literal> ESCAPE '!'` (filtering `ROUTINE_TYPE IN ('PROCEDURE', 'FUNCTION')`), ordered by `BINARY obj_name, BINARY obj_schema, obj_kind`, bounded to `OBJECT_SEARCH_LIMIT = 50`. `perf_common.named_rows` reversibly escapes XML-forbidden control characters and its own escape marker before parsing client XML, then restores them in field names and values, so object groups and search retain exact names rather than stripping controls or failing the whole read (lone surrogates become U+FFFD). Choosing a database, table or view opens **Query editor** and calls `revealInSchemaBrowser` (setting the table filter to the table name so targets past the first unfiltered page are reachable in one bounded catalog read); choosing a procedure, function, trigger or event opens `SHOW CREATE {PROCEDURE|FUNCTION|TRIGGER|EVENT} <schema>.<name>` in a new query tab, selected and not run.
 
-The Settings page (`SettingsPage.tsx`, `settings.css`) is a page in the main area, not a place: while it is shown the gear carries `aria-current=page` and no place is current. The gear at the bottom of the sidebar, ⌘, (Ctrl+, on Windows and Linux) and the command palette's Settings action open it (a palette query about the editor opens it at the Query editor section); Escape and Back return to where the user was, skipping the consecutive Settings entries a reload that restored the page can leave, and focus returns to the gear. Its section list (the kit `SourceList`) holds Appearance, Query editor, Workspace, Updates and news and Client tools, with Audit log and About myflames as actions at the bottom; at 720 px and below the list sits above the controls. `main.tsx` loads the page lazily, so the settings UI and `editorSettings.ts` stay out of the entry chunk. Every control keeps its own storage and behavior; the page only lays them out. `test/settings-page.mjs` covers it.
+The Settings page (`SettingsPage.tsx`, `settings.css`) is a page in the main area, not a place: while it is shown the gear carries `aria-current=page` and no place is current. The gear at the bottom of the sidebar, ⌘, (Ctrl+, on Windows and Linux) and the command palette's Settings action open it (a palette query about the editor opens it at the Query editor section); Escape and Back return to where the user was, skipping the consecutive Settings entries a reload that restored the page can leave, and focus returns to the gear. Its section list (the kit `SourceList`) holds Appearance, Query editor, Workspace, Updates and news and Client tools, with Audit log and About myflames as actions at the bottom; at 720 px and below the list sits above the controls. `main.tsx` loads the page lazily, so the settings UI and `editorSettings.ts` stay out of the entry chunk. Every control keeps its own storage and behavior; the page only lays them out. A section change focuses its heading. Each shell entry also increments `focusRequest`, so choosing the brand version while Updates and news is already open focuses that heading again. `test/settings-page.mjs` covers it.
 
 ### Action feedback
 

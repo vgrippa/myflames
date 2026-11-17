@@ -18,9 +18,9 @@ The Windows build is a preview tested on Windows 11 x64. SSH tunnels stop with t
 
 ### Updates and news
 
-myflames checks GitHub for a newer release when it opens and once a day while **Settings** > **Updates and news** > **Check for updates automatically** is on (the default). Choose **Check for updates** in the window status bar on any screen or in **Settings** > **About myflames** to check on demand.
+myflames checks GitHub for a newer release when it opens and once a day while **Settings** > **Updates and news** > **Check for updates automatically** is on (the default). Choose **Check for updates** in **Settings** > **Updates and news** (the version beside the myflames name at the top of the sidebar opens it) or in **Settings** > **About myflames** to check on demand.
 
-When a newer release is available, a badge beside the logo at the top of the sidebar (and **Update…** in the status bar, or **Update available…** in **Settings** > **Updates and news**) opens **Software update**. Choose **Update** to download and verify the release against its published SHA-256, then **Restart to update**, or let it install the next time you quit. On macOS, keep `myflames.app` in Applications so it can update in place; otherwise **Download update** saves the installer to your Downloads folder. On Windows, the staged installer runs silently after the app quits.
+When a newer release is available, a badge beside the logo at the top of the sidebar (or **Update…** beside the update status, or **Update available…**, in **Settings** > **Updates and news**) opens **Software update**. Choose **Update** to download and verify the release against its published SHA-256, then **Restart to update**, or let it install the next time you quit. On macOS, keep `myflames.app` in Applications so it can update in place; otherwise **Download update** saves the installer to your Downloads folder. On Windows, the staged installer runs silently after the app quits.
 
 While **Home** is open, the **News** pane reads MySQL and MariaDB headlines from Planet MySQL and the MariaDB Foundation over HTTPS and caches them for six hours. Choose **Refresh news** to fetch them again, or turn off **Settings** > **Updates and news** > **Show MySQL and MariaDB news on Home** to stop news requests.
 
@@ -80,11 +80,13 @@ Open **Settings** from the gear at the bottom of the sidebar (`⌘,` on macOS, `
 
 Editor palettes keep readable text and selection contrast. Chart operator colors, status indicators, and **Production** (purple) and **Development** (teal) connection colors keep their meaning in every theme. Each theme card in **Settings** > **Appearance** names its palette credit; application license and inspiration credits appear in **Settings** > **About myflames**, and full third-party notices ship in the `NOTICE` file in the repository and app bundle.
 
+In the **Text** group of **Appearance**, choose **Interface font** and **Interface text size** (**Smaller**, **Default**, **Large**, **Larger** or **Largest**, 12 to 16 px) for workspace text, and **Code font** and **Code text size** (**11 px** to **20 px**) for the **Query editor** and SQL or code blocks; **Restore default text settings** resets them to **System default**, **Default** and **13 px**. **Inter (included)** and **JetBrains Mono (included)** ship with the app; other supported fonts appear when they are installed on this computer. Steps are in [Settings and themes](howto.md#settings-and-themes).
+
 ### Sidebar and status bar
 
 Drag the sidebar's right edge to resize it, or focus the edge and press Left or Right (hold Shift for larger steps). Double-clicking the edge or pressing Home or End restores the default width; narrow windows switch to a compact navigation rail. Sidebar and **Server** inspector widths, the **Server** view list mode, **Health** auto-refresh choices, the **Query editor** Explain format, and **File transfer** hidden-file and **Transfers**-panel choices persist across restarts.
 
-Every screen shares one bottom status bar. Its left side shows the current connection's write-safety state, session facts and refresh status; its right side shows the installed version, update status, **Check for updates** and **View releases**.
+Every screen shares one bottom status bar with the current connection's write-safety state, session facts and refresh status; narrow windows shorten these facts. The installed version sits beside the myflames name at the top of the sidebar; choose it for **Settings** > **Updates and news**, with the update status, **Check for updates** and **View releases**. On the compact rail the version text hides and the logo's tooltip names the version.
 
 ## Where to go next
 

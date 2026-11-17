@@ -26,7 +26,7 @@ try{
   await h.button('Edit table data');await page.waitForSelector('.table-data-panel input');
   const value='Browser applied '+server.engine;
   await page.locator('.table-data-panel tbody tr:first-child input[aria-label^="name for "]').fill(value);
-  await h.button('Review 1 changes','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
+  await h.button('Review 1 change','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
   assert.match(await h.text('.confirm-sheet'),/LOCK TABLES.*WRITE/s);assert.match(await h.text('.confirm-sheet'),/blocks other sessions/);
   await h.button('Apply changes','.confirm-sheet ');
   await page.waitForFunction(()=>document.querySelector('.table-data-panel [role=status]')?.textContent.includes('Changes committed'),{timeout:20000});
@@ -39,13 +39,13 @@ try{
     await page.select(`.table-data-panel tbody tr:last-child select[aria-label^="${column} value type"]`,'text');
     await page.locator(`.table-data-panel tbody tr:last-child input[aria-label^="${column} for "]`).fill(value);
   }
-  await h.button('Review 1 changes','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
+  await h.button('Review 1 change','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
   assert.match(await h.text('.confirm-sheet'),/INSERT INTO/);await h.button('Apply changes','.confirm-sheet ');
   await page.waitForFunction(()=>document.querySelector('.table-data-panel [role=status]')?.textContent.includes('Changes committed'),{timeout:20000});
   await h.button('Reload rows','.table-data-panel ');
   await page.waitForFunction(()=>[...document.querySelectorAll('.table-data-panel input[aria-label^="id for "]')].some(e=>e.value==='77'));
   for(const row of await page.$$('.table-data-panel tbody tr'))if(await row.$eval('input[aria-label^="id for "]',e=>e.value==='77')){await row.$eval('button',e=>e.click());break;}
-  await h.button('Review 1 changes','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
+  await h.button('Review 1 change','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
   assert.match(await h.text('.confirm-sheet'),/DELETE FROM.*WHERE.*77/s);await h.button('Apply changes','.confirm-sheet ');
   await page.waitForFunction(()=>document.querySelector('.table-data-panel [role=status]')?.textContent.includes('Changes committed'),{timeout:20000});
   await h.button('Reload rows','.table-data-panel ');

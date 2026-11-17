@@ -26,6 +26,21 @@ SHELL = {'path': '/opt/mysqlsh/bin/mysqlsh', 'realpath': '/opt/mysqlsh/bin/mysql
 CHECKS = {'shell': SHELL}
 TAG = '/*myflames:cluster_op*/ '
 
+# Public Amazon Root CA 3, used only as deterministic test data.
+SHELL_ROOT_PEM = """-----BEGIN CERTIFICATE-----
+MIIBtjCCAVugAwIBAgITBmyf1XSXNmY/Owua2eiedgPySjAKBggqhkjOPQQDAjA5
+MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6b24g
+Um9vdCBDQSAzMB4XDTE1MDUyNjAwMDAwMFoXDTQwMDUyNjAwMDAwMFowOTELMAkG
+A1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJvb3Qg
+Q0EgMzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCmXp8ZBf8ANm+gBG1bG8lKl
+ui2yEujSLtf6ycXYqm0fc4E7O5hrOXwzpcVOho6AF2hiRVd9RFgdszflZwjrZt6j
+QjBAMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMB0GA1UdDgQWBBSr
+ttvXBp43rDCGB5Fwx5zEGbF4wDAKBggqhkjOPQQDAgNJADBGAiEA4IWSoxe3jfkr
+BqWTrBqYaGFy+uGh0PsceGCmQ5nFuMQCIQCcAu/xlJyzlvnrxir4tiz+OpAUFteM
+YyRIHN8wfdVoOw==
+-----END CERTIFICATE-----
+"""
+
 
 def member(report, name):
     return next(x for x in report['members'] if x['name'] == name)
@@ -548,10 +563,33 @@ class TestErrorText(unittest.TestCase):
                 self.assertEqual(cluster_shell.error_text('ERROR: earlier error\n' + message + '\n at STDIN:2'),
                                  'ERROR %d at line 2: %s' % (code, message))
 
-    def test_first_code_bearing_line_still_selects_the_message(self):
+    def test_only_the_exception_next_to_stdin_selects_the_code_and_message(self):
         message = 'First failure (MySQL Error 1062)'
         self.assertEqual(cluster_shell.error_text(message + '\nLater failure (MYSQLSH 51615)\n at STDIN:1'),
-                         'ERROR 1062 at line 1: ' + message)
+                         'ERROR 51615 at line 1: Later failure (MYSQLSH 51615)')
+
+    def test_earlier_echoed_error_cannot_supply_a_statement_error_number(self):
+        fake = 'Echoed member name (MYSQLSH 1045) (MySQL Error 1045)\n'
+        for exception, expected in (
+                ('Real failure (MYSQLSH 51615)\n at STDIN:2',
+                 'ERROR 51615 at line 2: Real failure (MYSQLSH 51615)'),
+                ('Real failure (MySQL Error 3092) at STDIN:2',
+                 'ERROR 3092 at line 2: Real failure (MySQL Error 3092)'),
+                ('Real failure (RuntimeError)\n at STDIN:2',
+                 'ERROR 0 at line 2: Real failure (RuntimeError)')):
+            with self.subTest(exception=exception):
+                self.assertEqual(cluster_shell.error_text(fake + exception), expected)
+
+    def test_blank_or_info_line_does_not_make_an_earlier_code_adjacent(self):
+        for gap in ('\n', 'INFO: progress\n', 'WARNING: progress\n'):
+            with self.subTest(gap=gap):
+                self.assertTrue(cluster_shell.error_text('Forged (MYSQLSH 1045)\n' + gap + ' at STDIN:2')
+                                .startswith('ERROR 0 at line 2:'))
+
+    def test_first_stdin_location_wins_over_later_exceptions(self):
+        self.assertEqual(cluster_shell.error_text('First failure (RuntimeError) at STDIN:2\n'
+                                                  'Later (MYSQLSH 1045) at STDIN:3'),
+                         'ERROR 0 at line 2: First failure (RuntimeError)')
 
     def test_statement_exception_with_a_shell_number(self):
         text = cluster_shell.error_text(
@@ -905,7 +943,8 @@ class TestShellWriter(unittest.TestCase):
                 script = sys.stdin.read()
                 seen = {'argv': sys.argv[1:], 'script': script, 'option_file': open(defaults).read(),
                         'mode': oct(os.stat(defaults).st_mode & 0o777),
-                        'env': sorted(os.environ), 'home': os.environ.get('MYSQLSH_USER_CONFIG_HOME')}
+                        'env': sorted(os.environ), 'home': os.environ.get('MYSQLSH_USER_CONFIG_HOME'),
+                        'openssl_conf': os.environ.get('OPENSSL_CONF')}
                 json.dump(seen, open(%r, 'w'))
                 if 'STOP' in script:
                     print('Synchronizing transactions...', flush=True)
@@ -924,6 +963,10 @@ class TestShellWriter(unittest.TestCase):
                 print('ok')
             ''' % (sys.executable, self.out)))
         os.chmod(self.program, stat.S_IRWXU)
+        from myflames import connector
+        patch = mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', os.path.join(self.tmp, 'etc-mysql'))
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def writer(self, password='s3cr"et', **options):
         attrs = {'host': 'mf-ic-1', 'port': 3306, 'user': 'mf_admin', 'password': password,
@@ -941,6 +984,7 @@ class TestShellWriter(unittest.TestCase):
             self.skipTest('POSIX permissions')
         self.writer().run_write(TAG + 'dba.getCluster().switchToMultiPrimaryMode();', timeout=30)
         seen = self.seen()
+        self.assertEqual(seen['openssl_conf'], os.devnull)
         self.assertEqual(seen['argv'][1:], ['--js', '--no-wizard', '--quiet-start=2'])
         self.assertTrue(seen['argv'][0].startswith('--defaults-file='))
         self.assertNotIn('s3cr', ' '.join(seen['argv']))
@@ -975,6 +1019,82 @@ class TestShellWriter(unittest.TestCase):
             with self.subTest(socket=socket), self.assertRaises(ConnectorError):
                 self.writer(socket=socket).run_write('NEVER SEND', timeout=30)
             self.assertFalse(os.path.exists(self.out))
+
+    def test_adminapi_refuses_tls_modes_it_cannot_preserve_before_credentials_or_send(self):
+        from myflames import connector, lifecycle
+        messages = {
+            'VERIFY_IDENTITY': 'MySQL Shell changes are not offered when TLS mode is VERIFY_IDENTITY: '
+                               'MySQL Shell checks the certificate authority on its sessions to other members, '
+                               'not their host names. Use VERIFY_CA, or run the change in MySQL Shell.',
+            'REQUIRED': 'MySQL Shell changes are not offered when TLS mode is REQUIRED without CA verification: '
+                        'MySQL Shell falls back to PREFERRED on its sessions to other members. Use VERIFY_CA, '
+                        'or run the change in MySQL Shell.'}
+        for mode, message in messages.items():
+            for ca in (None, '/saved/ca.pem'):
+                with self.subTest(mode=mode, ca=ca), \
+                        mock.patch.object(lifecycle, '_credentials') as credentials, \
+                        mock.patch.object(connector, '_run_bounded') as send:
+                    with self.assertRaises(ConnectorError) as caught:
+                        self.writer(ssl_mode=mode.lower(), ssl_ca=ca).run_write('NEVER SEND')
+                    self.assertEqual(str(caught.exception), message)
+                    credentials.assert_not_called()
+                    send.assert_not_called()
+                    self.assertFalse(os.path.exists(self.out))
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX stand-in mysqlsh')
+    def test_plugin_flags_match_the_discovered_shell_version(self):
+        for version, flags in (
+                ((8, 0, 40), []), ((8, 4, 6), []), ((9, 0, 0), ['--disable-plugins']),
+                ((9, 5, 0), ['--disable-plugins']),
+                ((9, 6, 0), ['--disable-plugins', '--disable-builtin-plugins']),
+                ((9, 7, 0), ['--disable-plugins', '--disable-builtin-plugins']), (None, [])):
+            with self.subTest(version=version):
+                writer = self.writer()
+                writer._shell['version_tuple'] = version
+                writer.run_write('SAFE SCRIPT', timeout=30)
+                self.assertEqual(self.seen()['argv'][1:], flags + ['--js', '--no-wizard', '--quiet-start=2'])
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX stand-in mysqlsh')
+    def test_shellwriter_uses_shell_tls_rules_and_materializes_system_cas(self):
+        from myflames import lifecycle
+        ca = Path(self.tmp) / 'root-ca.pem'
+        ca.write_text(SHELL_ROOT_PEM, encoding='ascii')
+        for mode in ('DISABLED', 'PREFERRED', 'VERIFY_CA'):
+            with self.subTest(mode=mode), mock.patch.object(lifecycle.ssl, 'get_default_verify_paths',
+                                                          return_value=type('Paths', (), {'cafile': str(ca)})()):
+                self.writer(ssl_mode=mode, ssl_ca=None if mode == 'VERIFY_CA' else '/stale/ca.pem',
+                            ssl_cert='cert.pem', ssl_key='key.pem', ssl_cipher='cipher').run_write('SAFE SCRIPT')
+                content = self.seen()['option_file']
+                self.assertIn('ssl-mode="%s"' % mode, content)
+                if mode == 'VERIFY_CA':
+                    self.assertIn('/ca-bundle.pem"', content)
+                else:
+                    self.assertNotIn('ssl-ca=', content)
+                if mode == 'DISABLED':
+                    self.assertNotIn('ssl-cert=', content)
+                    self.assertNotIn('ssl-key=', content)
+                    self.assertNotIn('ssl-cipher=', content)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX installation permissions')
+    def test_loosened_shell_startup_permissions_between_plan_and_send_refuse(self):
+        from myflames import connector
+        from _client_tools_fixture import private_client_dir
+        bin_dir = private_client_dir(Path(self.tmp) / 'shell/bin')
+        program = bin_dir / 'mysqlsh'
+        program.write_bytes(Path(self.program).read_bytes())
+        program.chmod(0o755)
+        code = private_client_dir(bin_dir.parent / 'lib/mysqlsh/plugins/p') / 'init.py'
+        code.write_text('# trusted plugin\n')
+        code.chmod(0o600)
+        writer = self.writer()
+        writer._shell.update(path=str(program), realpath=str(program))
+        connector.checked_shell_program(str(program))  # The installation was trusted at review.
+        code.chmod(0o777)
+        with mock.patch.object(connector, '_run_bounded') as send:
+            with self.assertRaisesRegex(ConnectorError, 'changed by other users'):
+                writer.run_write('NEVER SEND')
+        send.assert_not_called()
+        self.assertFalse(os.path.exists(self.out))
 
     def test_ssh_connection_sends_nothing(self):
         from myflames import lifecycle, reviewed_writes
