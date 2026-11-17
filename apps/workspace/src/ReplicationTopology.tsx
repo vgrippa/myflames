@@ -26,7 +26,7 @@ import type { Selection } from "./kit";
 import "./cluster.css";
 import "./readyset.css";
 import "./replication-topology.css";
-import { TopologyControls, ServerGlyph } from "./TopologyPresentation";
+import { ServerGlyph } from "./TopologyPresentation";
 import { UpstreamTopologyTiers } from "./UpstreamTopologyTiers";
 
 export interface ReplicationTopologyProps {
@@ -113,8 +113,6 @@ export function ReplicationTopology({
   compact = false,
   current = true,
 }: ReplicationTopologyProps) {
-  const [motion, setMotion] = useState(true);
-  const [depth, setDepth] = useState(true);
   const [filterText, setFilterText] = useState("");
   const detailPrefix = useId();
   const [hovered, setHovered] = useState<string | null>(null);
@@ -154,7 +152,7 @@ export function ReplicationTopology({
   };
 
   return (
-    <div data-motion={motion && current ? "on" : "off"} data-depth={depth ? "on" : "off"} className={`replication-topology-container${compact ? " is-compact" : ""}`}>
+    <div data-motion={current ? "on" : "off"} className={`replication-topology-container${compact ? " is-compact" : ""}`}>
       <div className="topology-toolbar">
         <span className="topology-count">
           {running} of {report.channels.length} {report.channels.length === 1 ? "channel" : "channels"} running
@@ -175,7 +173,6 @@ export function ReplicationTopology({
             </button>
           )}
         </label>
-        <TopologyControls motion={motion} depth={depth} onMotion={() => setMotion(!motion)} onDepth={() => setDepth(!depth)} />
       </div>
 
       <UpstreamTopologyTiers

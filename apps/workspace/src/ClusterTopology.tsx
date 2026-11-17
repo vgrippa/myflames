@@ -15,7 +15,7 @@
 // each replica cluster (broken for an invalidated one), the other clusters'
 // instances as the shared metadata lists them (their state is read on them,
 // so none is drawn), and the channel's state when this member runs it.
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { Profile } from "./api";
 import { moveRowFocus, type Selection, type Tone } from "./kit";
 import { engineName } from "./OpsShared";
@@ -26,7 +26,7 @@ import {
 } from "./clusterApi";
 import "./cluster.css";
 import "./readyset.css";
-import { TopologyControls, ServerGlyph } from "./TopologyPresentation";
+import { ServerGlyph } from "./TopologyPresentation";
 import { UpstreamTopologyTiers } from "./UpstreamTopologyTiers";
 
 const ROLE_WORD: Record<string, string> = { PRIMARY: "Primary", SECONDARY: "Secondary", READ_REPLICA: "Read replica" };
@@ -322,8 +322,6 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
   profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
   onOpenReadyset?: () => void; onOpenProxySql?: () => void;
 }) {
-  const [motion, setMotion] = useState(true);
-  const [depth, setDepth] = useState(true);
   const line = groupLine(report);
   const routers = report.kind === "innodb_cluster" ? report.routers : [];
   const group = report.members.filter((m) => !isReadReplica(m));
@@ -332,8 +330,7 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
   const noun = memberNoun(report);
   const current = marker.word === "This connection";
   return (
-    <figure data-motion={motion && current ? "on" : "off"} data-depth={depth ? "on" : "off"} className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
-      <div className="topology-presentation-bar"><TopologyControls motion={motion} depth={depth} onMotion={() => setMotion(!motion)} onDepth={() => setDepth(!depth)} /></div>
+    <figure data-motion={current ? "on" : "off"} className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
       <UpstreamTopologyTiers
         tiers={report.topology_tiers}
         onSwitchConnection={current ? onSwitchConnection : undefined}
