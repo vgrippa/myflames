@@ -1258,7 +1258,9 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
   const refreshed = stamp(value.refreshedAt);
   const ran = stamp(value.lastRunAt);
   const knownNumber = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
-  return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
+  const hasFacts = !!(lead || value.engineVersion || value.connectionState || value.sessionState || value.transaction
+    || ran || knownNumber(value.durationMs) || knownNumber(value.rows) || value.refreshing || refreshed);
+  return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={hasFacts ? 0 : undefined}>
     <div className="window-statusbar-facts">
       {lead}
       {value.engineVersion && <span data-status="engine" title={value.engineVersion}>{value.engineVersion}</span>}

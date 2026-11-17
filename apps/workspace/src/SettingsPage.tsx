@@ -201,6 +201,7 @@ function AppearanceSettings() {
 export function SettingsPage({
   logo,
   section,
+  focusRequest,
   onSection,
   onBack,
   ready,
@@ -212,6 +213,8 @@ export function SettingsPage({
 }: {
   logo: string;
   section: SettingsSection;
+  /** A shell entry focuses the heading even when this section is already open. */
+  focusRequest: number;
   onSection: (section: SettingsSection) => void;
   /** Esc returns to where the user was (the shell's Back). */
   onBack: () => void;
@@ -246,10 +249,10 @@ export function SettingsPage({
   const aboutButton = useRef<HTMLButtonElement>(null);
   const clientButton = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // A section change moves focus to the section's heading.
+  // A section change or another shell entry moves focus to the heading.
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
-  }, [section]);
+  }, [section, focusRequest]);
   // Esc returns to where the user was; an open dialog keeps its keys.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

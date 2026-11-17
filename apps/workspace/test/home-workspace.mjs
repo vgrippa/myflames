@@ -32,6 +32,8 @@ try {
   await page.waitForSelector(".brand-version");
   const version = await page.$eval(".brand-version", el => el.textContent);
   assert.match(version, /\d+\.\d+\.\d+|development/, "the brand names the installed version");
+  assert.equal(await page.$eval(".window-statusbar", el => el.textContent.trim()), "", "Home has no view facts");
+  assert.equal(await page.$eval(".window-statusbar", el => el.tabIndex), -1, "the empty Home footer is not a tab stop");
   // The version control opens Settings > Updates and news: status, Check for
   // updates and View releases live there now, not in the status bar.
   await page.click(".brand-version");
@@ -39,7 +41,10 @@ try {
   await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".settings-update-status")?.textContent || ""));
   assert.match(await page.$eval(".settings-update-status", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
   assert.equal(await page.$eval(".settings-update-status a", el => el.href), "https://github.com/vgrippa/myflames/releases");
-  assert.equal(await page.$(".window-statusbar-updates"), null, "no update block in the status bar");
+  const footerText = await page.$eval(".window-statusbar", el => el.textContent);
+  assert.equal(footerText.includes(version), false, "no installed version text in the status bar");
+  assert.doesNotMatch(footerText, /myflames|Check for updates|View releases/);
+  assert.equal(await page.$eval(".window-statusbar", el => el.tabIndex), -1, "the empty Settings footer is not a tab stop");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".settings-page"));
   assert.equal(h.state.other.some(item => item.path === "/api/app/update/check"), false, "no update check without a click");

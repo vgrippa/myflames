@@ -559,6 +559,10 @@ try {
   assert.match(updatesText, /myflames \d+\.\d+\.\d+/, "the section names the installed version");
   assert.match(updatesText, /Check for updates/);
   assert.equal(await page.$eval(".settings-update-status a", (e) => e.textContent), "View releases");
+  await page.focus(".brand-version");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.id === "settings-section-title");
+  assert.equal(await page.$eval(".window-statusbar", (e) => e.tabIndex), -1, "the empty Settings footer is not a tab stop");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".settings-page"));
 
@@ -601,7 +605,10 @@ try {
     const facts = await page.$$eval(".window-statusbar [data-status]", els => els.map(e => e.textContent).join(" "));
     assert.doesNotMatch(facts, /unknown|not checked|not refreshed/i, "unknown view facts are hidden");
     assert.match(await text(".brand-version"), /\d+\.\d+\.\d+/, "the brand shows the app version");
-    assert.equal(await page.$(".window-statusbar-updates"), null, "the status bar keeps only the view's facts");
+    const footerText = await text(".window-statusbar");
+    assert.equal(footerText.includes(version), false, "the status bar holds no installed app version");
+    assert.doesNotMatch(footerText, /myflames|Check for updates|View releases/, "the status bar keeps only the view's facts");
+    assert.equal(await page.$eval(".window-statusbar", (e) => e.tabIndex), 0, "a footer with view facts remains a tab stop");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
   }
   for (const label of ["Plans", "Learn", "Investigations", "Home"]) {

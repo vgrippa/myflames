@@ -8,6 +8,8 @@ import { appVersion, time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { UpdateBadge } from "./UpdateBadge";
+import { useMinuteClock } from "./UpdateCheck";
+import { updatePhase, updatePhaseLabel, useUpdateStatus } from "./updateStatus";
 import { applySidebarWidth, clampSidebarWidth, setUiPreference, SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, useUiPreferences } from "./uiPreferences";
 import type { SaveStatus } from "./session";
 
@@ -30,6 +32,26 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "investigations", label: "Investigations", icon: "investigation" },
   { key: "learn", label: "Learn", icon: "learn" },
 ];
+
+/** When the wide sidebar is hidden, its toggle carries the update alert.
+ * The narrow icon rail already keeps the badge visible on the logo. */
+export function SidebarToggle({ expanded, narrow, onToggle }: {
+  expanded: boolean;
+  narrow: boolean;
+  onToggle: () => void;
+}) {
+  const status = useUpdateStatus();
+  const now = useMinuteClock();
+  const phase = !expanded && !narrow ? updatePhase(status, now) : null;
+  const label = `${expanded ? "Hide sidebar" : "Show sidebar"}${phase ? `. ${updatePhaseLabel(status, phase)}` : ""}`;
+  return (
+    <button id="window-sidebar-toggle" type="button" className="icon-button"
+      aria-label={label} title={label} aria-expanded={expanded} aria-controls="workspace-sidebar"
+      data-update-phase={phase || undefined} onClick={onToggle}>
+      <Icon name="browser" />
+    </button>
+  );
+}
 
 export function statusText(status: SaveStatus) {
   switch (status.kind) {
@@ -208,7 +230,7 @@ export function Sidebar({
             type="button"
             className="brand-version"
             aria-label={`myflames ${version}: Updates and news settings`}
-            title="Updates and news settings"
+            title={`myflames ${version}: Updates and news settings`}
             onClick={() => {
               setDrawerOpen(false);
               onOpenUpdates();

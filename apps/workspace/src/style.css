@@ -5091,10 +5091,12 @@ kbd {
 /* Brand */
 .brand-group {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
 }
+.brand-group > .brand { flex: none; white-space: nowrap; }
 .brand-name {
   font-weight: 600;
 }
@@ -5102,7 +5104,11 @@ kbd {
    Settings > Updates and news. Hidden on the icon rail, where the brand's
    tooltip names the version. */
 .brand-version {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border: 0;
   background: none;
   padding: 0 var(--space-1);
@@ -5116,6 +5122,20 @@ kbd {
 .brand-version:hover { color: var(--ink-secondary); background: var(--surface-hover); }
 .brand-version:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .brand-version:focus:not(:focus-visible) { outline: none; }
+/* A hidden wide sidebar leaves its alert on the control that shows it. */
+#window-sidebar-toggle { position: relative; }
+#window-sidebar-toggle[data-update-phase]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+#window-sidebar-toggle[data-update-phase="ready"]::after { background: var(--ok); }
 /* The update badge beside the brand (UpdateBadge.tsx): a newer version in
    accent, its download as a progress ring, ready to install in green. On the
    icon rail it becomes a dot on the logo's corner; Settings lists it too. */

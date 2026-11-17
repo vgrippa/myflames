@@ -71,6 +71,12 @@ async function shoot(name) {
     await page.setViewport({ width, height: width === 720 ? 520 : 900 });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${name} fits ${width}`);
+    const row = await page.$eval(updates, (e) => {
+      const r = e.getBoundingClientRect();
+      return { fits: e.scrollWidth <= e.clientWidth, left: r.left, right: r.right };
+    });
+    assert.ok(row.fits && row.left >= 0 && row.right <= width,
+      `${name}: the Settings update row fits at ${width}: ${JSON.stringify(row)}`);
     // On the 720 px icon rail the version text is not drawn; the brand's
     // tooltip still names the version.
     assert.equal(await page.evaluate(() => (document.querySelector(".brand-version")?.getClientRects().length || 0) > 0),
@@ -95,6 +101,8 @@ try {
   assert.equal(await page.$eval(".brand-version", (e) => e.textContent), metaVersion, "the version beside the brand");
   assert.equal(await page.$eval(".brand-version", (e) => e.getAttribute("aria-label")),
     `myflames ${metaVersion}: Updates and news settings`);
+  assert.equal(await page.$eval(".brand-version", (e) => e.title),
+    `myflames ${metaVersion}: Updates and news settings`, "the version tooltip retains its full text");
   await openUpdates();
   await page.waitForSelector(".settings-page .update-auto-toggle input:not([disabled])");
   await page.click(".settings-page .update-auto-toggle");
