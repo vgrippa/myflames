@@ -251,12 +251,15 @@ export function authenticate(): Promise<string> {
       catch { /* This tab still works when browser storage is unavailable. */ }
       return result.token;
     });
-    // A network failure (a reset connection under load, a server still coming
-    // up) never delivered the request: retry twice with the same secret, and
-    // leave the promise uncached so a later call tries again. A refusal (an
+    // Retry only a failure that produced no HTTP response (fetch rejects with
+    // TypeError: the server was still starting, restarting, or reset the
+    // connection before reading the request), so the one-time launch secret
+    // is never resent to a server that already answered. Once any response
+    // arrived, the secret is spent either way. The promise stays uncached
+    // after such a failure so a later call tries again; a refusal (an
     // ApiError) is final and stays cached, failing every call the same way.
-    let pending: Promise<string>;
-    pending = (async () => {
+    let unanswered = false;
+    const pending: Promise<string> = (async () => {
       let lastError: unknown;
       for (let tries = 0; tries < 3; tries++) {
         try {
@@ -267,10 +270,15 @@ export function authenticate(): Promise<string> {
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
-      if (authentication === pending) authentication = null;
+      unanswered = true;
       throw lastError;
     })();
     authentication = pending;
+    // Leave the promise uncached when every attempt failed without an answer,
+    // so a later call tries again.
+    pending.catch(() => {
+      if (unanswered && authentication === pending) authentication = null;
+    });
   }
   return authentication;
 }

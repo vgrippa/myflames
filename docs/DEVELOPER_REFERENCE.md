@@ -1640,7 +1640,15 @@ old pair and requires its new launch URL. If browser storage is unavailable,
 the authenticated current tab still works; a reload requires a fresh launch.
 There is no CORS access. Responses use no-store and no-referrer policies.
 
-The server admits at most 32 request workers. Socket reads have a 15-second timeout. Bodies also have a total 15-second
+The server admits at most 32 request workers and listens with a backlog of 128
+to absorb bursts of parallel connections. When every worker is busy, it sends
+a nonblocking 503 answer and half-closes the socket's write side. Up to eight
+separate daemon threads drain remaining request bytes off the accept loop,
+each for at most two seconds and 8 MiB, so ordinary clients read the 503
+without a connection reset. A full drain pool or a send failure closes the
+socket immediately; exceeding a drain limit can also cause a reset. Slow
+refused clients cannot delay new accepts or consume request-worker slots.
+Socket reads have a 15-second timeout. Bodies also have a total 15-second
 read deadline, so trickling body bytes cannot extend that deadline. The usual body limit is
 12 MiB; session save permits 65 MiB for its bounded 64 MiB stored payload.
 Account requests have an additional 256 KiB encoded-data budget.

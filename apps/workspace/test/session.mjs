@@ -62,15 +62,11 @@ async function stop() {
 }
 
 let browser;
-let diagPage = null;
-let diagErrors = null;
 try {
   let url = await start();
   browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
-  diagPage = page;
-  diagErrors = errors;
   const dialogs = [];
   const watch = (p) => {
     p.on("pageerror", (e) => errors.push(String(e)));
@@ -78,9 +74,6 @@ try {
       dialogs.push(d.type());
       d.accept();
     });
-    p.__bad = [];
-    p.on("response", (r) => { if (r.status() >= 400) p.__bad.push(`${r.status()} ${r.url()}`); });
-    p.on("requestfailed", (r) => p.__bad.push(`FAILED ${r.url()} ${r.failure()?.errorText || ""}`));
   };
   watch(page);
   const client = await page.createCDPSession();
@@ -314,17 +307,7 @@ try {
     await p.keyboard.press("Escape");
     await p.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
     await place(p, "Query editor");
-    try {
-      await p.waitForSelector(".query-lab");
-    } catch (e) {
-      const diag = await p.evaluate(() => ({
-        viewStatus: document.querySelector(".view-status")?.textContent || "",
-        mainChildren: [...(document.querySelector("main")?.children || [])].map((c) => `${c.tagName}.${c.className}`).slice(0, 12),
-        labHost: !![...document.querySelectorAll("main div")].find((d) => d.querySelector(".view-status")),
-      })).catch((err) => `evaluate failed: ${err}`);
-      console.error("QUERY-LAB TIMEOUT diag:", JSON.stringify(diag), "pageErrors:", JSON.stringify(errors), "badResponses:", JSON.stringify(p.__bad || []));
-      throw e;
-    }
+    await p.waitForSelector(".query-lab");
     assert.deepEqual(
       await p.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
       ["Query 1", "Orders by customer"],
@@ -560,20 +543,6 @@ try {
 
   assert.deepEqual(errors, []);
   console.log("Session restore checks passed. " + directory);
-} catch (e) {
-  // Temporary diagnostics for the intermittent post-restart waits.
-  try {
-    const d = await diagPage.evaluate(() => ({
-      readyState: document.readyState,
-      rootChildren: document.getElementById("root")?.childElementCount,
-      sessionStatus: document.querySelector(".session-status")?.dataset.state ?? null,
-      bodyText: (document.body?.innerText || "").slice(0, 300),
-    }));
-    console.error("DIAG:", JSON.stringify(d), "pageErrors:", JSON.stringify(diagErrors), "badResponses:", JSON.stringify(diagPage.__bad || []));
-  } catch (inner) {
-    console.error("DIAG failed:", String(inner), "badResponses:", JSON.stringify(diagPage?.__bad || []));
-  }
-  throw e;
 } finally {
   if (browser) await browser.close();
   await stop();

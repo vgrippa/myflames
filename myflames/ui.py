@@ -2291,6 +2291,15 @@ def api_response(path, payload, workspace=None):
 class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
+    # Refused sockets have their own small pool: slow bodies must not occupy
+    # request workers or block the single accept loop while they are drained.
+    MAX_REFUSAL_DRAINS = 8
+    REFUSAL_DRAIN_SECONDS = 2.0
+    REFUSAL_DRAIN_BYTES = 8 * 1024 * 1024
+    #: Listen backlog: the socketserver default of 5 drops burst connections
+    #: (a browser fires many chunk and API requests at once) while the
+    #: workers are busy, which the browser sees as a network error.
+    request_queue_size = 128
 
     def server_bind(self):
         # HTTPServer.server_bind names the server with socket.getfqdn(host), a
@@ -2350,6 +2359,7 @@ class WorkspaceServer(ThreadingHTTPServer):
         self.bootstrap_deadline = time.monotonic() + 30 * 60
         self.bootstrap_lock = threading.Lock()
         self._worker_slots = threading.BoundedSemaphore(self.MAX_REQUEST_WORKERS)
+        self._refusal_drain_slots = threading.BoundedSemaphore(self.MAX_REFUSAL_DRAINS)
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
@@ -2364,19 +2374,59 @@ class WorkspaceServer(ThreadingHTTPServer):
         # ThreadingHTTPServer otherwise creates an unbounded number of threads
         # before the handler can reject an unauthenticated slow client.
         if not self._worker_slots.acquire(blocking=False):
-            try:
-                request.settimeout(1)
-                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            except OSError:
-                pass
-            finally:
-                self.shutdown_request(request)
+            self._refuse_request(request)
             return
         try:
             super().process_request(request, client_address)
         except BaseException:
             self._worker_slots.release()
             raise
+
+    def _refuse_request(self, request):
+        try:
+            # This runs on the accept loop. Even sending the small response
+            # must not wait for a client that is not reading its socket.
+            request.settimeout(0)
+            request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            self.shutdown_request(request)
+            return
+        if not self._refusal_drain_slots.acquire(blocking=False):
+            # Extreme overload: retain the accept loop's availability even if
+            # unread request bytes make this immediate close reset the socket.
+            self.shutdown_request(request)
+            return
+        try:
+            threading.Thread(target=self._drain_refused_request, args=(request,),
+                             name="myflames-refusal-drain", daemon=True).start()
+        except BaseException:
+            self._refusal_drain_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def _drain_refused_request(self, request):
+        # Draining after the half-close lets an in-flight body finish without
+        # replacing the 503 with a reset. Bound both time and discarded bytes.
+        deadline = time.monotonic() + self.REFUSAL_DRAIN_SECONDS
+        remaining_bytes = self.REFUSAL_DRAIN_BYTES
+        try:
+            while remaining_bytes > 0:
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    break
+                request.settimeout(remaining_time)
+                chunk = request.recv(min(65536, remaining_bytes))
+                if not chunk:
+                    break
+                remaining_bytes -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            try:
+                self.shutdown_request(request)
+            finally:
+                self._refusal_drain_slots.release()
 
     def process_request_thread(self, request, client_address):
         try:

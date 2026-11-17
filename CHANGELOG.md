@@ -23,5 +23,6 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed Save investigation becoming unavailable when Plans could not load, a delayed notebook taking focus from another dialog, and files dropped into Plans being ignored while it loaded. A chart that cannot load now leaves the rest of Plans available.
 - Fixed an issue where long version labels could push the update badge outside the sidebar. Update alerts remain visible when the sidebar is hidden, and screen readers announce a new update and when it is ready.
 - Fixed an issue where choosing the version while **Updates and news** was already open did not move keyboard focus to its heading. Empty status bars are skipped by Tab.
+- Fixed an issue where the workspace could fail to load a view or the Query editor under load, leaving the page stuck on Loading. The local server now queues connection bursts instead of refusing them, and a busy server answers with a proper "try again" response the workspace retries.
 - Fixed an issue where the table data editor's review button read **Review 1 changes** for a single change.
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
