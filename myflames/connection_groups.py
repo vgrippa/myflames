@@ -13,7 +13,7 @@ import unicodedata
 
 
 IDENTITY_FIELDS = ('server_uuid', 'gr_group_name', 'cluster_kind', 'cluster_name',
-                   'cluster_id', 'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid')
+                   'cluster_id', 'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid', 'wsrep_node_uuid')
 CLUSTER_IDENTITY_FIELDS = tuple(key for key in IDENTITY_FIELDS if key != 'server_uuid')
 GROUP_MAX_LEN = 80
 GROUP_MAX_MEMBERS = 16
@@ -289,6 +289,7 @@ def identity_from_report(report, extra=None):
         identity['gr_group_name'] = cluster.get('uuid')
     if kind in ('galera', 'pxc'):
         identity['wsrep_cluster_uuid'] = cluster.get('uuid')
+        identity['wsrep_node_uuid'] = (report.get('galera') or {}).get('gcomm_uuid')
     for key in IDENTITY_FIELDS:
         if (extra or {}).get(key):
             identity[key] = extra[key]

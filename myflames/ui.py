@@ -168,7 +168,9 @@ def _discover_response(path, payload, workspace=None):
                     from .cluster import attach_topology_tiers, read_status, with_actions
                     report = read_status(conn, _identity=identity)
                     attach_topology_tiers(conn, report, **t_args)
-                    report = with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)))
+                    report = with_actions(report, ssh=bool(getattr(conn, "ssh_host", None)),
+                                          group_profiles=profiles, current_profile=current,
+                                          group_name=(payload.get("connection") or {}).get("group_name") if current else None)
                 elif path == "/api/live/proxysql":
                     from .proxysql import read_status
                     report = read_status(conn, **t_args)
@@ -1336,7 +1338,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
 _ACTION_KINDS = {"/api/live/cluster/plan": "cluster", "/api/live/cluster/action": "cluster",
                  "/api/live/proxysql/plan": "proxysql", "/api/live/proxysql/action": "proxysql",
                  "/api/live/readyset/plan": "readyset", "/api/live/readyset/action": "readyset"}
-_ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action", "/api/live/readyset/action")
+_ACTION_WRITE_PATHS = ("/api/live/cluster/action",
+                       "/api/live/proxysql/action", "/api/live/readyset/action")
 _ACTION_PATHS = tuple(_ACTION_KINDS)
 _WRITE_PATHS = _WRITE_PATHS + _ACTION_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
@@ -1898,12 +1901,13 @@ def _action_module(kind):
     return module
 
 
-def _action_plan(kind, module, conn, payload):
+def _action_plan(kind, module, conn, payload, target=None):
     """A plan from a fresh read of *conn* for the request's inputs."""
     if kind == "cluster":
         report = module.read_status(conn)
         action = payload.get("action")
-        return module.plan_action(report, action, payload.get("member_key"), module.action_checks(conn, report, action))
+        return module.plan_action(report, action, payload.get("member_key"), module.action_checks(conn, report, action),
+                                  target=target)
     if kind == "readyset":
         report = module.read_status(conn, schema=payload.get("schema") or "readyset")
         return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"), conn=conn)
@@ -1918,13 +1922,15 @@ def _action_target(payload, connection, kind, store):
     connection: the request must name ``group_name``, and the active member
     and the target must both be current members of that group (consent is the
     store, read at every call). ProxySQL and Readyset actions take no target.
-    Returns the target's stored profile, or None when no target is named.
+    An omitted target on a Group connection means its active saved member.
+    Returns the target's stored profile, or None outside Group routing.
     """
-    target_profile_id = payload.get("target_profile_id")
-    if target_profile_id is None:
+    explicit = "target_profile_id" in payload
+    if not explicit and (kind != "cluster" or connection.get("group_name") is None):
         return None
     if kind != "cluster":
         raise ValueError("A target server is only accepted for cluster actions.")
+    target_profile_id = payload.get("target_profile_id") if explicit else connection.get("profile_id")
     if not isinstance(target_profile_id, str) or not 0 < len(target_profile_id) <= 200:
         raise ValueError("Invalid target_profile_id.")
     group_name = connection.get("group_name")
@@ -1937,12 +1943,36 @@ def _action_target(payload, connection, kind, store):
             group = None
     if not group:
         raise ValueError("Acting on another member requires the connection group it belongs to.")
-    active = _request_profile(connection, store)
+    from .connection_groups import request_profiles
+    _, active = request_profiles(store, connection)
     target = store.get("profile", target_profile_id)
     if (not isinstance(active, dict) or (active.get("group") or "") != group or
             not isinstance(target, dict) or (target.get("group") or "") != group):
         raise ValueError("The target server is not in the active connection group.")
+    if not target.get("remember_password"):
+        raise ValueError("The target server has no saved password. Save its password before reviewing a cluster action.")
     return target
+
+
+def _action_target_connection(profile, connection):
+    """Only stored endpoint fields and this target's own secret may be used."""
+    from .connection_groups import validate_group
+    from .workspace_store import ENDPOINT_FIELDS
+    value = {k: profile.get(k) for k in ENDPOINT_FIELDS if profile.get(k) not in (None, "")}
+    value.update(profile_id=profile["id"], group_name=validate_group(connection["group_name"]))
+    if connection.get("read_only") is True:
+        value["read_only"] = True
+    return value
+
+
+def _action_target_binding(profile, connection):
+    """Rebuilt without credentials, including before apply's password lookup."""
+    from .workspace_store import ENDPOINT_FIELDS, endpoint_value
+    value = _action_target_connection(profile, connection)
+    saved_identity = profile.get("topology_identity") or {}
+    return {"profile_id": profile["id"], "profile_name": profile.get("name") or profile["id"],
+            "endpoint": {k: endpoint_value(profile, k) for k in ENDPOINT_FIELDS}, "group_name": value["group_name"],
+            "server_identity": {k: saved_identity[k] for k in ("server_uuid", "wsrep_node_uuid") if saved_identity.get(k)}}
 
 
 def _action_response(path, payload, workspace):
@@ -1960,14 +1990,59 @@ def _action_response(path, payload, workspace):
     connection = payload.get("connection")
     plain = connection if isinstance(connection, dict) else {}
     target_profile = _action_target(payload, plain, kind, workspace.store)
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
-                                     store=workspace.store, target_profile=target_profile)
+    routed = target_profile is not None
+    route = _action_target_connection(target_profile, plain) if routed else plain
+    binding = _action_target_binding(target_profile, plain) if routed else None
+    safety = dbops.connection_safety(target_profile if routed else _request_profile(connection, workspace.store), route,
+                                     store=workspace.store)
     identity = dbops.connection_identity(plain, safety)
+
+    def current_target():
+        if not routed:
+            return None
+        current = _action_target(payload, plain, kind, workspace.store)
+        fresh_binding = _action_target_binding(current, plain)
+        if fresh_binding != binding:
+            raise reviewed_writes.Refusal("The target saved connection changed after the review, so nothing was sent. "
+                                          "Review the action again.", "changed")
+        now = dbops.connection_safety(current, route, store=workspace.store)
+        if dbops.connection_identity(plain, now) != identity:
+            raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
+                                          "sent. Review the change again.", "policy_changed")
+        return fresh_binding
+
+    def open_options():
+        # Validation precedes the lookup, and runs again after the secret store
+        # returns. Per-login consent also covers each subprocess in read_status.
+        current_target()
+        filled = _with_saved_password(dict(payload, connection=route), workspace)
+        options = connection_options(filled.get("connection"))
+        current_target()
+        if routed and not options.get("password"):
+            raise ValueError("The target server's saved password is unavailable.")
+        return options
+
+    def guarded_connection(options):
+        conn = MySQLConnection(**options)
+        if routed:
+            conn._login_guard = current_target
+            conn._group_login_started = False
+        return conn
+
     if path.endswith("/plan"):
-        options = connection_options(connection)
+        options = open_options()
         try:
-            with MySQLConnection(**options) as conn:
-                plan = _action_plan(kind, module, conn, payload)
+            with guarded_connection(options) as conn:
+                plan = _action_plan(kind, module, conn, payload, target=binding)
+            if routed:
+                current_target()
+                live_identity = plan["expect"]["target"]["server_identity"]
+                workspace.store.record_topology_identity(target_profile["id"],
+                    {k: live_identity.get(k) for k in ("server_uuid", "wsrep_node_uuid")}, expected=target_profile)
+                # Persist the actual node identity before issuing the token, so
+                # apply can rebuild the whole binding before looking up a secret.
+                binding = dict(binding, server_identity=live_identity)
+                current_target()
         except (ValueError, ConnectorError) as exc:
             _reraise_redacted(exc, options.get("password"))
         decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
@@ -1983,11 +2058,17 @@ def _action_response(path, payload, workspace):
     decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
                             safety.get("profile_name"))
     audit = dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
-                             connection={k: plain.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}, safety=safety,
-                             password=plain.get("password") if isinstance(plain.get("password"), str) else None,
+                             connection={k: route.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}, safety=safety,
+                             password=route.get("password") if isinstance(route.get("password"), str) else None,
                              policy=dbops.policy_summary(decision))
     out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
     out["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text")}
+    expect = reviewed.get("expect")
+    if not isinstance(expect, dict):
+        raise ValueError("The reviewed plan is not valid. Review the action again; nothing was sent.")
+    if kind == "cluster" and expect.get("target") != binding:
+        return reviewed_writes.refused(out, "The target saved connection changed after the review, so nothing was sent. "
+                                      "Review the action again.", "changed", audit, reviewed.get("expect"), progress)
     blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
     if blocked:
         return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
@@ -2003,8 +2084,9 @@ def _action_response(path, payload, workspace):
     def before_send():
         # The saved policy is read again right before sending: a profile made
         # Read-only (or changed) while the target was read sends nothing.
-        now = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
-                                      store=workspace.store, target_profile=target_profile)
+        current_target()
+        now = dbops.connection_safety(_action_target(payload, plain, kind, workspace.store) if routed else
+                                      _request_profile(connection, workspace.store), route, store=workspace.store)
         if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
                 reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
                 confirmed=True):
@@ -2013,13 +2095,13 @@ def _action_response(path, payload, workspace):
         consume()
     password = audit.password
     try:
-        filled = _with_saved_password(payload, workspace)
-        options = connection_options(filled.get("connection"))
+        options = open_options()
         password = audit.password = options.get("password")
         audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
-        with MySQLConnection(**options) as conn:
+        with guarded_connection(options) as conn:
+            extra = {"target": current_target} if routed else {}
             result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
-                                           progress=progress)
+                                           progress=progress, **extra)
         result["policy"] = out["policy"]
         return result
     except KeyboardInterrupt as exc:
@@ -2331,7 +2413,7 @@ def api_response(path, payload, workspace=None):
             if operation == "delete": return workspace.store.delete(kind, payload.get("id"))
         if path == "/api/live/start" and "session_tab" in payload:
             return _session_capture_response(payload, workspace)
-        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS:
+        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS:
             payload = _with_saved_password(payload, workspace)
         if path == "/api/live/start": return workspace.jobs.start(payload)
         if path in ("/api/live/status", "/api/live/cancel"):

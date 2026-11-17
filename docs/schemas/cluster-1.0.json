@@ -1409,8 +1409,11 @@
             "self",
             "member_name"
           ],
-          "description": "Execution target. Node SQL runs on the selected member; UDFs and MySQL Shell run through the connected server. No saved-connection routing.",
+          "description": "Execution target. In a Group connection, profile_id names the selected member's saved connection, matched by node identity. An address never selects a route.",
           "properties": {
+            "profile_id": {
+              "type": ["string", "null"]
+            },
             "self": {
               "type": "boolean"
             },

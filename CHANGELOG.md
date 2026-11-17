@@ -16,4 +16,6 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Cluster actions in a Group connection can use the selected member's own saved login through `/api/live/cluster/action`. Reviews name that saved server and bind its endpoint, group and node identity; changing the target after review sends nothing.
+
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
