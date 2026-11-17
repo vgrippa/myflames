@@ -4,6 +4,8 @@ Task guides for the Replication, Cluster, ProxySQL and Readyset places. Reads in
 
 - [Skip a failing replication transaction](howto-topology.md#skip-a-failing-replication-transaction)
 - [Switch the primary or mode of a cluster](howto-topology.md#switch-the-primary-or-mode-of-a-cluster)
+- [Run a cluster action on another member](howto-topology.md#run-a-cluster-action-on-another-member)
+- [Give an account a missing privilege for a cluster action](howto-topology.md#give-an-account-a-missing-privilege-for-a-cluster-action)
 - [Take a ProxySQL backend out of traffic](howto-topology.md#take-a-proxysql-backend-out-of-traffic)
 - [Create a Readyset cache for a query](howto-topology.md#create-a-readyset-cache-for-a-query)
 
@@ -27,16 +29,57 @@ Good to know:
 
 Use this for a planned switchover before maintenance, or to change between single-primary and multi-primary.
 
-1. Open **Cluster** in the sidebar. **Topology** shows the members and their states; **Members** (**Nodes** on Galera and Percona XtraDB Cluster) lists each one; **Routers** appears for InnoDB Cluster.
-2. Select an ONLINE secondary member and click **Make primary…** in the inspector; check the statement and confirm. The current primary becomes a read-only secondary once its running transactions finish.
-3. To change the mode on the connected member, use **Switch the group to multi-primary…** or **Switch the group to single-primary…** on Group Replication, or **Switch the cluster to multi-primary…** / **Switch the cluster to single-primary…** on InnoDB Cluster, and type the cluster name to confirm.
+1. Open **Cluster** in the sidebar. **Topology** shows the members and their states; **Members** (**Nodes** on Galera and Percona XtraDB Cluster) lists each one; **Routers** appears for InnoDB Cluster. Below the summary line, a sentence says which server this connection reaches (`You are connected to <member>…`), and that server is marked **This connection** on its card, in the table and in its inspector.
+2. To move the primary to another server, select an `ONLINE` secondary member on **Topology** or in **Members** to open its inspector, click **Make primary…**, check the statement or MySQL Shell call in the sheet, and click **Make `<member>` primary**. The current primary becomes a read-only secondary once its running transactions finish.
+3. To change the mode of the cluster or run an InnoDB ClusterSet change, scroll to **Changes · the whole cluster** on the **Cluster** overview below the tab content, click **Switch to multi-primary…** or **Switch to single-primary…** (or in a ClusterSet, **Make `<cluster>` the primary cluster…**, **Fail over to this cluster…** or **Rejoin `<cluster>` to the ClusterSet…**), type the cluster or member name to confirm, and click **Switch to multi-primary** or **Switch to single-primary**.
 
-What you see: the sheet shows the exact statement or MySQL Shell call and checks the cluster again before sending; the topology then shows the new primary or mode.
+What you see: every action for the cluster kind stays visible on the overview under **Changes · the whole cluster** or in each member's or node's inspector (**Make primary…**, **Stop Group Replication…**, **Start Group Replication…** and **Rejoin to the cluster…**, or on MariaDB Galera **Desync this node…**, **Resync this node…** and **Bootstrap a Primary component…**). Any action that cannot run now stays visible and disabled with the reason and the fix in plain words under it. After a confirmed change runs, the **What changed** table shows the state before and after, explaining in plain words why any value was not reported instead of saying "Not readable".
 
 Good to know:
 
-- InnoDB Cluster changes run through MySQL Shell installed on this computer (use **Get MySQL Shell** in **Settings** > **Client tools** > **Client tools…** if needed; see [Get MySQL Shell](howto-server.md#get-mysql-shell)) and are not offered over an SSH connection, because MySQL Shell connects to the other members directly.
-- On MariaDB Galera there is no primary to switch; a node's inspector offers **Desync this node…** and **Resync this node…** to take it out of flow control for a backup and back in, and a member listed as MISSING in an InnoDB Cluster offers **Rejoin to the cluster…**.
+- InnoDB Cluster mode switches, member rejoin (**Rejoin to the cluster…**) and ClusterSet changes (**Make primary cluster…**, **Fail over to this cluster…** and **Rejoin cluster to the ClusterSet…**) run through MySQL Shell installed on this computer (use **Get MySQL Shell** in **Settings** > **Client tools** > **Client tools…** if needed; see [Get MySQL Shell](howto-server.md#get-mysql-shell)) and stay disabled over an SSH connection, because MySQL Shell connects to the other members directly outside the tunnel.
+- Mode switches are refused inside an InnoDB ClusterSet, on an InnoDB Cluster unless every member is `ONLINE`, on a read replica, or for **Switch to multi-primary…** while `group_replication_preemptive_garbage_collection` is `ON`. On MariaDB Galera there is no primary to switch; a node's inspector offers **Desync this node…**, **Resync this node…** and **Bootstrap a Primary component…**.
+
+Related: [Run a cluster action on another member](howto-topology.md#run-a-cluster-action-on-another-member), [Cluster](server.md#cluster) and [Reviewed changes](safety.md#reviewed-changes).
+
+## Run a cluster action on another member
+
+Use this when you want to stop or start Group Replication, desync or resync a Galera node, or run another member action on a server other than the one you first connected to.
+
+1. Open **Cluster** in the sidebar and select the other member or node on **Topology** or in **Members** (**Nodes** on Galera) to open its inspector.
+2. When a **Group connection** is open (see [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server)), the line under the summary says `Each member's actions run through its own saved connection in <group>.`. Click the action in the member's inspector (such as **Stop Group Replication…**, **Start Group Replication…**, **Desync this node…** or **Resync this node…**). If the member was matched only by its `host:port` address, a note under the button says `Review checks that <connection> (<host:port>) is this member.`; on a remote MariaDB Galera node, **Desync this node…** and **Resync this node…** note `Review checks wsrep_desync and the state on this node's own connection.`.
+3. In the review sheet, verify **Target** and **Runs on** (which name the member's saved connection `<connection> (<host:port>)`), **Server UUID** or **Galera node UUID**, and **Listed in the cluster as**. Type the saved connection's name if the action asks for confirmation, then confirm.
+4. When you are using a single connection instead of a **Group connection**, local member actions on other servers stay disabled because they run on the server they change (`<Action> runs on the server/node it changes, <member>; this connection is to <current>.`). When a saved connection on this computer matches that member's address, click **Use `<connection>`** under the disabled action in the inspector (or on the member's card in **Topology**) to switch to that server and run the action there.
+
+What you see: in a **Group connection**, clicking the action logs in to that member's saved connection in the group, verifies that its live `server_uuid` (or `wsrep_gcomm_uuid` on Galera) matches the selected member and that the member is local to that session, and opens the review sheet bound to that saved connection. Without a **Group connection**, **Use `<connection>`** switches the active connection to that server and reloads **Cluster** from it.
+
+Good to know:
+
+- In a **Group connection**, **Rejoin to the cluster…** on a `MISSING`, `OFFLINE` or `ERROR` InnoDB Cluster member is the exception: it runs through the active `ONLINE` member with quorum (using MySQL Shell) and names the missing member in **Instance**, so it does not need a saved connection for the missing server.
+- A member action in a **Group connection** stays disabled when no saved connection in the group can run it safely: if no saved connection in the group matches the member, it says `Add a saved connection for <member> to this group.` and offers **Edit group…**; if unconfirmed connections exist in the group, it asks you to open the one that reaches that member on its own and view **Cluster** once to confirm it; if the matching connection has no saved password, it asks you to save its password first; and if two saved connections in the group reach the same member (for example a direct connection and a MySQL Router or ProxySQL connection), it names both and offers **Use `<connection>`**.
+- If the member's saved connection reaches a different server when planning starts, or if the connection leaves the group before you confirm, myflames refuses the action with nothing sent.
+
+Related: [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server), [Edit a connection group](howto-connections.md#edit-a-connection-group) and [Cluster](server.md#cluster).
+
+## Give an account a missing privilege for a cluster action
+
+Use this when a cluster action is disabled because the connected account (or the target member's saved connection in a group) lacks a required MySQL or MariaDB privilege.
+
+1. Open **Cluster** in the sidebar and find the disabled action under **Changes · the whole cluster** on the overview or in the selected member's inspector.
+2. Read the reason under the disabled button: it names the missing privilege (for example `Needs GROUP_REPLICATION_ADMIN or SUPER.` on MySQL or `Needs SUPER.` on MariaDB Galera) and says `Run the statement below as an administrator, then Refresh.`.
+3. Click **Copy** beside the `GRANT` statement box under the reason to copy the exact `GRANT` built for that session's `CURRENT_USER()` account.
+4. Grant the privilege as an administrator on that server: either switch to an administrator connection and run the copied `GRANT` in **Query editor** (or grant the privilege in **Server** > **Users and roles** under **Grants** and click **Review changes**), or run it in another SQL client.
+5. Return to **Cluster** on the original connection and click **Refresh** in the toolbar.
+
+What you see: after **Refresh**, myflames re-reads `SHOW GRANTS` for the account that runs the action; once the required privileges are present, the action button becomes enabled so you can click it to review and confirm the change.
+
+Good to know:
+
+- myflames never runs the suggested `GRANT` statement as part of a cluster action. For InnoDB Cluster mode switches and replica-cluster switchover through MySQL Shell, the suggestion includes both the global privileges and the `mysql` and `mysql_innodb_cluster_metadata*` schema privileges with `WITH GRANT OPTION`, escaping `_` and `%` in schema names when `partial_revokes` is `OFF`.
+- When `SHOW GRANTS` or `CURRENT_USER()` could not be read or verified, myflames does not disable an otherwise eligible action. Instead, it shows `Privileges could not be read; the server refuses the change if one is missing.` under the action (and in the review sheet's warnings), and the server itself enforces the privilege check when the statement runs.
+- For MySQL Shell actions whose privileges MySQL Shell checks only at runtime (**Rejoin to the cluster…**, **Make `<cluster>` the primary cluster…**, **Fail over to this cluster…** and **Rejoin `<cluster>` to the ClusterSet…**), the action notes `MySQL Shell checks the privileges it needs when it runs.`. If a schema-scoped `GRANT` needs wildcard escaping and `partial_revokes` could not be read in the session, myflames omits the `GRANT` box and asks you to **Refresh** and try again.
+
+Related: [Create a database user and edit its grants](howto-server.md#create-a-database-user-and-edit-its-grants), [Users and roles](server.md#users-and-roles) and [Cluster](server.md#cluster).
 
 ## Take a ProxySQL backend out of traffic
 

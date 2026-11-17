@@ -3,6 +3,8 @@
 Task guides for saved connections, connection groups and moving files over SSH. A saved connection is logged in to only when it is the connection in use or is in the same connection group as the connection in use; the group is your consent.
 
 - [Group saved connections for topology reads](howto-connections.md#group-saved-connections-for-topology-reads)
+- [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server)
+- [Edit a connection group](howto-connections.md#edit-a-connection-group)
 - [Move files between your computer and a server](howto-connections.md#move-files-between-your-computer-and-a-server)
 - [Import saved connections from MySQL Workbench or DBeaver](howto-connections.md#import-saved-connections-from-mysql-workbench-or-dbeaver)
 
@@ -24,6 +26,45 @@ Good to know:
 - You can also set or change a connection's group directly: open **Home**, select the connection, edit its **Group** field and click **Save connection**.
 
 Related: [Connection groups and topology reads](safety.md#connection-groups-and-topology-consent).
+
+## Open a Group connection and work on any server
+
+Use this when your saved connections belong to one cluster or replication group and you want to open the group once, then pick which server each view or query tab works on.
+
+1. Open the **Connection in use** picker in the top bar.
+2. Under **Group connections**, click the group you want to open (each row shows its server count and write-safety tags).
+3. Open a single-server place such as **Server**, **Workload**, **Tuning**, **Database diagram** or **Query editor**.
+4. In the **Server:** picker in the view header or the **Query editor** tab bar, keep the default server (it starts on the primary or replication source, or the first member when none is marked primary or source) or choose another member of the group.
+5. In **Query editor**, click **+** (**New query tab**) to open a tab bound to the member chosen in **Server:**; each tab shows ` · <connection>` after its name and keeps running on that server even if you later change **Server:** for new tabs.
+
+What you see: the top bar and window status bar show `Group connection <group> · <N> servers` under the strictest write safety of the group's members, and every single-server view header shows **Server:** alongside the member it reads (`<connection> · <host>:<port> · <ROLE>` when the role is known). **Server** views and **Query editor** keep their own **Server:** choice while the group stays open.
+
+Good to know:
+
+- The strictest write safety wins across the group: if any member in the group is **Production**, the whole **Group connection** is **Production** and asks for confirmation before every change, even when you work on a **Development** member. The group is **Development** only when every member is **Development**. A member with **Read-only** turned on still refuses every change on that server, and the group row shows **Read-only** when every member is read-only.
+- Only saved connections that belong to the group appear in **Server:**. Other servers seen in the cluster or replication topology are never listed or logged in to until you save them and add them to the group.
+- A **Group connection** lives in memory for the current window. If you switch to a single connection or reopen the app (which restores the active member as a plain connection), a **Query editor** tab that was bound to a group member shows `This tab ran on <member>, which is not open now.` and refuses **Run**, **Run all**, **Explain** and **Run analysis** until you open the **Group connection** again or click **Use this connection** to run the tab on the connection in use.
+
+Related: [Edit a connection group](howto-connections.md#edit-a-connection-group), [Connection groups](server.md#connection-groups) and [Connection groups and topology consent](safety.md#connection-groups-and-topology-consent).
+
+## Edit a connection group
+
+Use this to rename a connection group, add or remove saved connections, or delete the group without deleting its saved connections.
+
+1. Open the group editor from any of three places: click **Edit group…** beside the group under **Group connections** in the **Connection in use** picker, click **Edit group…** in the window status bar while a **Group connection** is open, or open **Home** and click **Edit group…** beside the group under **Group connections** above the **Connections** table.
+2. In **Edit group `<group>`**, edit **Group name** if you want to rename the group.
+3. Check or uncheck saved connections in the list to add or remove members (a connection that belongs to another group notes `Moves it from group <other>`), then click **Save group**. To add topology suggestions with the matching servers pre-ticked and their evidence shown, open **Replication**, **Cluster**, **ProxySQL** or **Readyset**, click **Review…** in the connection group bar above **Topology**, and click **Add `<N>` to `<group>`**.
+4. To remove the group itself, click **Delete group…** at the bottom of **Edit group `<group>`**, then click **Delete group** in **Delete group `<group>`?**.
+
+What you see: saving updates the group at once across the picker, **Home** and any open **Group connection**. Deleting the group removes only the group; its saved connections and their saved passwords stay on this computer, and if the group was open, its active member stays in use as a plain connection.
+
+Good to know:
+
+- A group must contain between 1 and 16 saved connections: unchecking every connection (`A group needs at least one saved connection.`), checking more than 16 (`A group can contain at most 16 saved connections. Uncheck <N> to save.`), or leaving **Group name** empty keeps **Save group** disabled, and a name already used by another group is refused.
+- When you remove a member that **Server**, **Workload**, **Tuning** or **Database diagram** was viewing, those open views move to the group's primary or source and show `<member> is not in this group any more; its views moved to <primary>.` in the header. If you remove the active member of the **Group connection**, the **Group connection** moves to the remaining primary or first member.
+- In **Query editor**, a tab bound to a removed member does not switch servers on its own: it shows `<member> is not in this group any more. Pick a server for this tab to run it.` and refuses **Run**, **Run all**, **Explain** and **Run analysis** until you choose a remaining member in **Pick a server…** (if the tab already had an open session, **Stop** and **Roll back** still work so you can release an open transaction).
+
+Related: [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server), [Group saved connections for topology reads](howto-connections.md#group-saved-connections-for-topology-reads) and [Connection groups and topology consent](safety.md#connection-groups-and-topology-consent).
 
 ## Move files between your computer and a server
 
