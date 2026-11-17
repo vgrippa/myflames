@@ -935,13 +935,18 @@ def _read_record(path, max_bytes=16384):
         return json.load(handle)
 
 
-def installed_bin_dir(workspace_directory=None):
-    """Return the current pinned install's bin folder, locally and without exec."""
-    return _installed_bin_dir(workspace_directory, cache=False)
+def installed_bin_dir(workspace_directory=None, cache=False):
+    """Return the current pinned install's bin folder, locally and without exec.
+
+    cache=True is for read-only inventory polling only; it reuses the
+    connector's five-second trust walk while pointer and metadata are still
+    read afresh. Installs and launches always pass the default.
+    """
+    return _installed_bin_dir(workspace_directory, cache=cache)
 
 
 def _installed_bin_dir(workspace_directory, cache=False):
-    """Only status polling may cache trust; metadata is always read afresh."""
+    """Only read-only polling may cache trust; metadata is always read afresh."""
     try:
         key = host_platform()
         if key is None:
@@ -1051,8 +1056,9 @@ def cancel(job_id):
 def shutdown(timeout):
     """Request cancellation and give the worker at most timeout seconds to end.
 
-    A blocked network read or filesystem cleanup may outlive this wait. The
-    next installer holding the OS lock removes any stale staging/retire trees.
+    Like cancel, expiring the job's watchdog ends a blocked network read;
+    filesystem cleanup may still outlive this wait. The next installer holding
+    the OS lock removes any stale staging/retire trees.
     """
     deadline = time.monotonic() + max(0.0, timeout)
     with _LOCK:
@@ -1061,6 +1067,8 @@ def shutdown(timeout):
             return
         if job.state in _ACTIVE:
             job.cancel_event.set()
+            if job.watchdog:
+                job.watchdog._expire()
         thread = job.thread
     # Cleanup needs _LOCK too. Never hold it while waiting for the worker.
     if thread is not None and thread is not threading.current_thread():

@@ -312,8 +312,11 @@ cached results. Workspace startup warms discovery on a daemon thread without
 blocking the window. `mysqlpump` is presence-only, with null version and
 version tuple; it is deprecated, never probed, selected or marked used. Shell
 copies are listed separately: the verified managed copy first, then other
-copies newest first. Every discovery reads `managed_shell.installed_bin_dir()`
-afresh, so installing after an earlier inventory read needs no cache expiry.
+copies newest first. Every discovery re-reads the managed install's pointer
+and metadata through `managed_shell.installed_bin_dir()`, so installing after
+an earlier inventory read needs no cache expiry; its tree trust walk reuses
+the five-second Shell cache only for `cache_shell_trust` reads, never on
+refresh.
 Only that validated published bin folder is added, and only for `mysqlsh`;
 discovery never searches the tools folder for staging or retired copies.
 
@@ -4636,10 +4639,12 @@ desktop sets it). No connection, saved password or SQL is involved, and the
 reply contains nothing outside the tools folder. `WorkspaceServer.server_close`
 first runs `LifecycleJobs.shutdown()` to stop tool process groups, then calls
 `managed_shell.shutdown(timeout=1.0)` before the remaining session cleanup.
-The public helper sets the active job's cancel event and waits at most the
-given timeout for its worker, outside the job lock; `ui.py` reads no installer
-private state. An interrupted cleanup may leave staging or retire trees; the
-next install's existing lock-protected `_clean_stale` removes them. Tests:
+The public helper sets the active job's cancel event and expires its watchdog
+under the job lock (closing download sockets, as `cancel` does), then waits at
+most the given timeout for its worker outside that lock; `ui.py` reads no
+installer private state. An interrupted cleanup may leave staging, retire or
+download-part trees; the next install's existing lock-protected `_clean_stale`
+removes them. Tests:
 `test/test_ui_http.py` (`TestManagedShellHTTP`), including a stale cancel id
 that must not stop the running job.
 One process-wide `InstallJob` reports `downloading | verifying | installing |
@@ -4688,8 +4693,9 @@ resolve inside the private `mysqlsh/` directory, and carry a matching
 `installed_bin_dir()` to add this managed copy, labels its origin `managed` /
 `Downloaded by myflames`, and prefers it to other Shell copies of any version.
 It reads the pointer on every inventory request; cached discovery/probe results
-cannot hide a newly installed copy. Every launch still rechecks through
-`connector.checked_shell_program`. An invalid pointer reports
+cannot hide a newly installed copy. Only inventory reads that opt into the
+trust cache (`cache_shell_trust`) reuse its five-second tree walk. Every launch
+still rechecks through `connector.checked_shell_program`. An invalid pointer reports
 not installed and is never probed or preferred. An install returns `done`
 without downloading only after this same validation.
 

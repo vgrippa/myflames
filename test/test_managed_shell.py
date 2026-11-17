@@ -11,6 +11,7 @@ import json
 import ntpath
 import os
 from pathlib import Path
+import socket
 import ssl
 import stat
 import struct
@@ -828,6 +829,43 @@ class ManagedShellTests(unittest.TestCase):
             self.join()
         self.network.assert_not_called()
 
+    def test_shutdown_expires_the_watchdog_so_a_blocked_socket_read_ends(self):
+        entry = dict(self.configure(), version=self.lock['version'])
+        job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
+        shell._JOB = job
+        watchdog = shell.tls.Watchdog(time.monotonic() + 600)
+        self.addCleanup(watchdog.stop)
+        job.update(watchdog=watchdog)
+        left, right = socket.socketpair()
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        registered, ended = threading.Event(), threading.Event()
+
+        def worker():
+            watchdog.watch(left)
+            registered.set()
+            try:
+                left.recv(1)  # Ends only when the watchdog shuts the socket.
+            except OSError:
+                pass
+            job.update(state='cancelled', finished=time.monotonic())
+            ended.set()
+
+        job.thread = threading.Thread(target=worker)
+        job.thread.start()
+        try:
+            self.assertTrue(registered.wait(2))
+            started = time.monotonic()
+            shell.shutdown(timeout=1)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertTrue(ended.is_set())
+            self.assertFalse(job.thread.is_alive())
+            self.assertTrue(watchdog.expired)
+        finally:
+            job.cancel_event.set()
+            self.join()
+        self.network.assert_not_called()
+
     def test_shutdown_wait_is_bounded_even_if_worker_cannot_finish(self):
         entry = dict(self.configure(), version=self.lock['version'])
         job = shell.InstallJob('darwin-arm64', entry, str(self.directory))
@@ -986,6 +1024,37 @@ class ManagedShellTests(unittest.TestCase):
             self.assertEqual(shell.start_install()['state'], 'done')
             self.assertEqual(walk.call_count, 1, 'Already installed requires a fresh trust walk')
         self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
+
+    @unittest.skipIf(os.name == 'nt', 'Synthetic macOS installation uses mysqlsh without .exe')
+    def test_cached_inventory_reads_walk_the_install_once_and_launch_rechecks(self):
+        from myflames import client_tools
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        binary = str(Path(shell.installed_bin_dir()) / 'mysqlsh')
+        with shell.connector._SHELL_TRUST_LOCK:
+            shell.connector._SHELL_TRUST_CACHE.clear()
+        with patch.object(shell.connector, '_check_shell_tree_trust',
+                          wraps=shell.connector._check_shell_tree_trust) as walk, \
+                patch.object(client_tools, 'probe', return_value={
+                    'available': True, 'version': 'mysqlsh 9.7.0', 'version_tuple': [9, 7, 0],
+                    'engine': 'mysql'}):
+            for unused in range(2):
+                found = client_tools.discover(path='', common_dirs=(), bundled=False,
+                                              cache_shell_trust=True)
+                self.assertEqual([s['path'] for s in found['shells']], [binary])
+            self.assertEqual(walk.call_count, 1, 'Cached inventory reads share one trust walk')
+            refresh = client_tools.discover(path='', common_dirs=(), bundled=False,
+                                            cache_shell_trust=True, refresh=True)
+            self.assertEqual([s['path'] for s in refresh['shells']], [binary])
+            self.assertGreater(walk.call_count, 1, 'Refresh walks the tree afresh')
+        # A version-probe launch always checks the whole tree without the cache.
+        with patch.object(shell.connector, '_check_shell_tree_trust',
+                          wraps=shell.connector._check_shell_tree_trust) as walk, \
+                patch.object(client_tools.subprocess, 'run') as run:
+            run.return_value = Mock(stdout=b'mysqlsh 9.7.0\n', returncode=0)
+            self.assertTrue(client_tools.probe('mysqlsh', binary)['available'])
+            self.assertEqual(walk.call_count, 1)
+            self.assertEqual(run.call_count, 1)
 
     def test_stale_files_and_links_cleaned_only_inside_private_folder(self):
         self.configure()

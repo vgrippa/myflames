@@ -131,7 +131,9 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
     folders = []
     # Only the validated published pointer can introduce a managed Shell.
     # Staging and retired trees also live under tools and must never be scanned.
-    managed = managed_shell.installed_bin_dir()
+    # The pointer and metadata are re-read on every call; only the tree trust
+    # walk follows the inventory cache. Refresh and launches walk afresh.
+    managed = managed_shell.installed_bin_dir(cache=cache_shell_trust)
     if managed:
         folders.append((managed, 'managed'))
     for folder in (os.environ.get('PATH', '') if path is None else path).split(os.pathsep):

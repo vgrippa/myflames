@@ -423,6 +423,15 @@ class DiscoveryTests(unittest.TestCase):
             self.assertGreaterEqual(checked.call_count, 3)
             self.assertEqual(checked.call_args, mock.call(str(binary)))
 
+    def test_managed_inventory_listing_uses_the_trust_cache_only_for_cached_reads(self):
+        from myflames import managed_shell
+        binary = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=str(binary.parent)) as installed:
+            ct.snapshot(path='', common_dirs=(), bundled=False)
+            self.assertEqual(installed.call_args, mock.call(cache=False))
+            ct.snapshot(path='', common_dirs=(), bundled=False, cache_shell_trust=True)
+            self.assertEqual(installed.call_args, mock.call(cache=True))
+
     def test_shell_startup_tree_abuse_is_skipped_without_any_version_probe(self):
         from myflames import cluster_shell, lifecycle
         system = self.root / 'etc-mysql'
