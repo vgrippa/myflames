@@ -8,6 +8,7 @@ from email.message import Message
 import hashlib
 import io
 import json
+import ntpath
 import os
 from pathlib import Path
 import ssl
@@ -26,6 +27,13 @@ import zipfile
 from myflames import managed_shell as shell
 
 _REAL_CHECK_BINARY = shell._check_binary
+
+# Measured Oracle 9.7.0 archive roots, independent of the installer's checks.
+REAL_ARCHIVE_ROOTS = {
+    'darwin-arm64': 'mysql-shell-9.7.0-macos15-arm64',
+    'darwin-x64': 'mysql-shell-9.7.0-macos15-x86-64bit',
+    'win32-x64': 'mysql-shell-9.7.0-windows-x86-64bit',
+}
 
 
 class Response(io.BytesIO):
@@ -46,16 +54,39 @@ class Response(io.BytesIO):
 
 
 def archive_bytes(key, root, extras=(), omit=()):
+    """Small representatives of the measured layouts, not full vendor payloads."""
     zipped = key == 'win32-x64'
-    binary = 'bin/mysqlsh.exe' if zipped else 'bin/mysqlsh'
-    license_file = 'share/mysqlsh/LICENSE.txt' if zipped else 'share/mysqlsh/LICENSE'
     # kind, relative name, data/target, optional mode
     entries = [('dir', '', b''), ('dir', 'bin', b''), ('dir', 'lib', b''),
-               ('dir', 'lib/mysqlsh', b''), ('dir', 'share', b''),
-               ('dir', 'share/mysqlsh', b''), ('file', binary, b'program', 0o755),
-               ('file', license_file, b'license'),
-               ('file', 'lib/mysqlsh/libssl.3.dylib', b'library')]
-    entries = [e for e in entries if e[1] not in omit] + list(extras)
+               ('dir', 'lib/mysqlsh', b''), ('dir', 'libexec', b''),
+               ('dir', 'libexec/mysqlsh', b''), ('dir', 'share', b''),
+               ('dir', 'share/mysqlsh', b'')]
+    if zipped:
+        entries += [('file', 'LICENSE.txt', b'license'), ('file', 'README.txt', b'readme'),
+                    ('file', 'bin/mysqlsh.exe', b'program', 0o755),
+                    ('file', 'bin/python313.dll', b'library'),
+                    ('file', 'bin/python3.dll', b'library'),
+                    ('file', 'bin/mysql-secret-store-windows-credential.exe', b'helper', 0o755),
+                    ('dir', 'bin/sasl2', b''), ('dir', 'lib/Python3.13', b''),
+                    ('dir', 'lib/mysql', b'')]
+    else:
+        entries += [('file', 'bin/mysqlsh', b'program', 0o755),
+                    ('file', 'bin/mysql-secret-store-login-path', b'helper', 0o755),
+                    ('file', 'bin/mysql-secret-store-keychain', b'helper', 0o755),
+                    ('file', 'libexec/mysqlsh/mysqlbinlog', b'helper', 0o755),
+                    ('file', 'share/mysqlsh/LICENSE', b'license'),
+                    ('dir', 'lib/mysqlsh/plugins', b''),
+                    ('dir', 'lib/mysqlsh/ossl-modules', b''),
+                    ('file', 'lib/mysqlsh/libssl.3.dylib', b'library'),
+                    # Forward sibling chains must work in the default fixture,
+                    # including when both links precede the regular target.
+                    ('sym', 'lib/mysqlsh/libfido2.dylib', 'libfido2.1.dylib'),
+                    ('sym', 'lib/mysqlsh/libfido2.1.dylib', 'libfido2.1.15.0.dylib'),
+                    ('file', 'lib/mysqlsh/libfido2.1.15.0.dylib', b'library')]
+    # Omitting a directory removes its subtree too, so extraction cannot
+    # implicitly recreate a supposedly missing required directory.
+    entries = [e for e in entries if not any(
+        e[1] == name or e[1].startswith(name + '/') for name in omit)] + list(extras)
     stream = io.BytesIO()
     if zipped:
         with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as contents:
@@ -88,6 +119,92 @@ def archive_bytes(key, root, extras=(), omit=()):
     return stream.getvalue()
 
 
+class ArchiveLayoutTests(unittest.TestCase):
+    """Exercise the unpatched verifier, extractor and structure gate together."""
+
+    def setUp(self):
+        self.lock = shell.load_lock()
+
+    def unpack(self, key, omit=(), extras=()):
+        temp = tempfile.TemporaryDirectory(prefix='myflames-shell-layout-')
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        entry = dict(self.lock['archives'][key])
+        self.assertEqual(entry['root'], REAL_ARCHIVE_ROOTS[key])
+        body = archive_bytes(key, REAL_ARCHIVE_ROOTS[key], extras=extras, omit=omit)
+        entry['size'] = len(body)
+        entry['sha256'] = hashlib.sha256(body).hexdigest()
+        archive = root / 'archive.part'
+        archive.write_bytes(body)
+        archive.chmod(0o600)
+        stage = root / 'stage'
+        stage.mkdir(mode=0o700)
+        job = shell.InstallJob(key, entry, str(root))
+        with shell.open_verified(str(archive), entry, job) as handle:
+            shell._extract(handle, str(stage), entry, key, job)
+        return stage
+
+    def test_each_measured_platform_layout_passes_structure(self):
+        for key in REAL_ARCHIVE_ROOTS:
+            with self.subTest(platform=key):
+                stage = self.unpack(key)
+                binary = 'mysqlsh.exe' if key == 'win32-x64' else 'mysqlsh'
+                self.assertEqual(shell._structure(str(stage), key), str(stage / 'bin' / binary))
+                top_level = {'bin', 'lib', 'libexec', 'share'}
+                if key == 'win32-x64':
+                    top_level.update(('LICENSE.txt', 'README.txt'))
+                    for relative in ('bin/sasl2', 'lib/Python3.13', 'lib/mysql',
+                                     'lib/mysqlsh', 'libexec/mysqlsh', 'share/mysqlsh'):
+                        self.assertTrue((stage / relative).is_dir(), relative)
+                    self.assertFalse((stage / 'share/mysqlsh/LICENSE.txt').exists())
+                    self.assertFalse(any(path.is_symlink() for path in stage.rglob('*')))
+                else:
+                    self.assertEqual((stage / 'lib/mysqlsh/libfido2.dylib').read_bytes(), b'library')
+                    self.assertTrue((stage / 'lib/mysqlsh/libfido2.dylib').is_symlink())
+                    self.assertTrue((stage / 'lib/mysqlsh/libfido2.1.dylib').is_symlink())
+                    self.assertTrue((stage / 'share/mysqlsh/LICENSE').is_file())
+                self.assertEqual({path.name for path in stage.iterdir()}, top_level)
+
+    def test_each_layout_refuses_each_missing_required_item(self):
+        for key in REAL_ARCHIVE_ROOTS:
+            binary = 'bin/mysqlsh.exe' if key == 'win32-x64' else 'bin/mysqlsh'
+            license_file = 'LICENSE.txt' if key == 'win32-x64' else 'share/mysqlsh/LICENSE'
+            for missing in ('bin', binary, 'lib/mysqlsh', 'share/mysqlsh', license_file):
+                with self.subTest(platform=key, missing=missing):
+                    stage = self.unpack(key, omit=(missing,))
+                    self.assertFalse((stage / missing).exists())
+                    with self.assertRaisesRegex(shell.Refused, 'missing required program files'):
+                        shell._structure(str(stage), key)
+
+    def test_windows_license_in_macos_location_does_not_replace_root_license(self):
+        stage = self.unpack('win32-x64', omit=('LICENSE.txt',),
+                            extras=[('file', 'share/mysqlsh/LICENSE.txt', b'license')])
+        with self.assertRaisesRegex(shell.Refused, 'missing required program files'):
+            shell._structure(str(stage), 'win32-x64')
+
+    def test_fixtures_preserve_zip_directory_slashes_and_tar_forward_links(self):
+        for key, root in REAL_ARCHIVE_ROOTS.items():
+            with self.subTest(platform=key):
+                body = io.BytesIO(archive_bytes(key, root))
+                if key == 'win32-x64':
+                    with zipfile.ZipFile(body) as archive:
+                        directories = [member for member in archive.infolist() if member.is_dir()]
+                        self.assertTrue(directories)
+                        self.assertTrue(all(member.filename.endswith('/') for member in directories))
+                        self.assertIn(root + '/lib/Python3.13/', archive.namelist())
+                        self.assertIn(root + '/LICENSE.txt', archive.namelist())
+                else:
+                    with tarfile.open(fileobj=body, mode='r:gz') as archive:
+                        names = archive.getnames()
+                        first = archive.getmember(root + '/lib/mysqlsh/libfido2.dylib')
+                        second = archive.getmember(root + '/lib/mysqlsh/' + first.linkname)
+                        target = root + '/lib/mysqlsh/' + second.linkname
+                        self.assertTrue(first.issym())
+                        self.assertTrue(second.issym())
+                        self.assertLess(names.index(first.name), names.index(second.name))
+                        self.assertLess(names.index(second.name), names.index(target))
+
+
 class ManagedShellTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='myflames-shell-test-')
@@ -101,6 +218,7 @@ class ManagedShellTests(unittest.TestCase):
         self.start_patch(patch.dict(os.environ, {'MYFLAMES_TOOLS_DIR': str(self.tools),
             'MYFLAMES_DESKTOP_DATA': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}))
         self.start_patch(patch.object(shell, '_JOB', None))
+        self.start_patch(patch.object(shell.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')))
         self.start_patch(patch.object(shell, 'host_platform', return_value='darwin-arm64'))
         self.start_patch(patch.object(shell, 'load_lock', side_effect=lambda: shell.validate_lock(copy.deepcopy(self.lock))))
         self.start_patch(patch.object(shell.tls, 'https_context', return_value=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)))
@@ -180,9 +298,26 @@ class ManagedShellTests(unittest.TestCase):
         self.assertEqual(self.finish()['state'], 'done')
         target = Path(shell.installed_bin_dir()).parent
         self.assertEqual((target / 'bin/mysqlsh.exe').read_bytes(), b'program')
-        self.assertTrue((target / 'share/mysqlsh/LICENSE.txt').is_file())
+        self.assertTrue((target / 'LICENSE.txt').is_file())
+        self.assertTrue((target / 'README.txt').is_file())
+        self.assertTrue((target / 'lib/Python3.13').is_dir())
+        self.assertFalse((target / 'share/mysqlsh/LICENSE.txt').exists())
         self.probe.assert_called_once()
         self.exec.assert_not_called()
+
+    def test_forward_sibling_chain_is_valid_after_every_link_exists(self):
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        target = Path(shell.installed_bin_dir()).parent
+        self.assertEqual((target / 'lib/mysqlsh/libfido2.dylib').read_bytes(), b'library')
+
+    def test_zip_directory_trailing_slash_strips_exactly_one_separator(self):
+        self.configure('win32-x64', extras=[('dir', 'lib/mysqlsh/extra', b''),
+                                          ('file', 'lib/mysqlsh/extra/data', b'data')])
+        self.assertEqual(self.finish()['state'], 'done')
+        with self.assertRaises(shell.Refused):
+            shell._member_path(self.lock['archives']['win32-x64']['root'] + '/lib//',
+                               self.lock['archives']['win32-x64']['root'], True)
 
     def test_wrong_hash_before_archive_reader_or_staging(self):
         for key in ('darwin-arm64', 'win32-x64'):
@@ -237,7 +372,7 @@ class ManagedShellTests(unittest.TestCase):
                   [('sym', 'lib/sub', '..'), ('sym', 'lib/sub/out', '../../outside')],
                   [('hard', 'lib/x.dylib', 'lib/mysqlsh/libssl.3.dylib')],
                   [('sym', 'lib/mysqlsh/non-sibling', '../mysqlsh/libssl.3.dylib')],
-                  [('sym', 'lib/mysqlsh/first', 'second'), ('sym', 'lib/mysqlsh/second', 'libssl.3.dylib')],
+                  [('sym', 'lib/mysqlsh/first', 'second'), ('sym', 'lib/mysqlsh/second', 'first')],
                   [('sym', 'lib/mysqlsh/dangling', 'missing')],
                   [('sym', 'lib/mysqlsh/nul', '')],
                   [('fifo', 'lib/fifo', b'')] ]
@@ -247,7 +382,7 @@ class ManagedShellTests(unittest.TestCase):
                 self.assert_refused()
 
     def test_zip_symlink(self):
-        self.configure('win32-x64', [('sym', 'lib/mysqlsh/evil', 'libssl.3.dylib')])
+        self.configure('win32-x64', [('sym', 'bin/evil.dll', 'python313.dll')])
         self.assert_refused()
 
     def test_private_tools_and_mysqlsh_before_network(self):
@@ -290,6 +425,21 @@ class ManagedShellTests(unittest.TestCase):
             self.network.assert_not_called()
         finally:
             self.root.chmod(0o700)
+
+    def test_foreign_owned_tools_refused_before_transport_is_built(self):
+        self.configure()
+        original = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if str(path) == str(self.tools):
+                values = list(info)
+                values[4] = os.geteuid() + 1
+                return os.stat_result(values)
+            return info
+        with patch.object(shell.os, 'lstat', side_effect=lstat):
+            self.assert_refused()
+        self.network.assert_not_called()
 
     def test_windows_custom_data_guard_before_network(self):
         self.configure('win32-x64')
@@ -401,12 +551,9 @@ class ManagedShellTests(unittest.TestCase):
         self.probe.assert_not_called()
         self.exec.assert_not_called()
 
-    def test_windows_runtime_is_copied_only_from_checked_bundle(self):
-        self.configure('win32-x64')
-        bundle = self.root / 'bundle'
-        bundle.mkdir()
-        program = bundle / 'mysql.exe'
-        program.write_bytes(b'client')
+    def runtime_bundle(self):
+        bundle = self.root / 'bundle' / 'bin'
+        bundle.mkdir(parents=True)
         header = bytearray(128)
         header[:2] = b'MZ'
         struct.pack_into('<I', header, 60, 64)
@@ -415,13 +562,42 @@ class ManagedShellTests(unittest.TestCase):
         struct.pack_into('<H', header, 88, 0x20b)
         for name in shell.VC_RUNTIME:
             (bundle / name).write_bytes(header)
-        with patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': str(bundle)}), patch.object(shell.connector, 'checked_program', return_value=str(program.resolve())) as checked:
+        manifest = {'schema_version': 'mysql-client-manifest-1.0', 'files': [
+            {'path': 'bin/' + name, 'sha256': hashlib.sha256(header).hexdigest()}
+            for name in shell.VC_RUNTIME]}
+        (bundle.parent / 'manifest.json').write_text(json.dumps(manifest))
+        return bundle, header
+
+    def test_windows_runtime_is_copied_only_from_checked_bundle(self):
+        self.configure('win32-x64')
+        bundle, header = self.runtime_bundle()
+        with patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': str(bundle)}):
             self.assertEqual(self.finish()['state'], 'done')
-            checked.assert_called_once_with(str(program), bundled=True)
         target = Path(shell.installed_bin_dir())
         for name in shell.VC_RUNTIME:
             self.assertEqual((target / name).read_bytes(), header)
         self.exec.assert_not_called()
+
+    def test_windows_runtime_digest_mismatch_fails_without_copy_or_probe(self):
+        self.configure('win32-x64')
+        bundle, header = self.runtime_bundle()
+        (bundle / shell.VC_RUNTIME[-1]).write_bytes(header + b'planted code')
+        with patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': str(bundle)}), \
+                patch.object(shell.shutil, 'copyfileobj') as copy_file:
+            result = self.assert_refused()
+        self.assertIn('Visual C++ Redistributable', result['error'])
+        copy_file.assert_not_called()
+
+    def test_windows_runtime_link_outside_bundle_is_never_copied(self):
+        self.configure('win32-x64')
+        bundle, header = self.runtime_bundle()
+        source = bundle / shell.VC_RUNTIME[0]
+        source.unlink()
+        outside = self.root / 'outside.dll'
+        outside.write_bytes(header)  # Even the pinned digest cannot authorize this path.
+        source.symlink_to(outside)
+        with patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': str(bundle)}):
+            self.assertIn('Visual C++ Redistributable', self.assert_refused()['error'])
 
     def test_untrusted_windows_runtime_fails_before_probe(self):
         self.configure('win32-x64')
@@ -432,6 +608,30 @@ class ManagedShellTests(unittest.TestCase):
     def test_conflicting_duplicate_paths(self):
         self.configure(extras=[('file', 'bin/mysqlsh', b'evil')])
         self.assert_refused()
+
+    def test_case_and_unicode_aliases_refuse_and_remove_stage(self):
+        for key, extras in (
+                ('darwin-arm64', [('file', 'lib/A', b'a'), ('sym', 'lib/a', 'A')]),
+                ('win32-x64', [('file', 'bin/X.dll', b'a'), ('file', 'bin/x.dll', b'b')]),
+                ('darwin-arm64', [('file', 'lib/\u00e9', b'a'), ('file', 'lib/e\u0301', b'b')])):
+            with self.subTest(key=key, extras=extras):
+                self.configure(key, extras=extras)
+                self.assert_refused()
+
+    def test_filesystem_eexist_never_merges_files_or_links(self):
+        # Simulate filesystem aliases not detected by Unicode/case folding.
+        self.configure(extras=[('file', 'lib/twin', b'evil')])
+        original = os.open
+
+        def open_file(path, *args, **kwargs):
+            if str(path).endswith('/lib/twin'):
+                raise FileExistsError('filesystem alias')
+            return original(path, *args, **kwargs)
+        with patch.object(shell.os, 'open', side_effect=open_file):
+            self.assertIn('conflicting', self.assert_refused()['error'])
+        self.configure(extras=[('sym', 'lib/mysqlsh/alias', 'libssl.3.dylib')])
+        with patch.object(shell.os, 'symlink', side_effect=FileExistsError('filesystem alias')):
+            self.assertIn('conflicting', self.assert_refused()['error'])
 
     def test_missing_structure(self):
         self.configure(omit=('share/mysqlsh/LICENSE',))
@@ -473,6 +673,18 @@ class ManagedShellTests(unittest.TestCase):
         self.exec.assert_not_called()
         self.assertEqual(list(self.directory.iterdir()), [])
 
+    def test_cancel_requires_exact_active_job_id_and_stale_id_cannot_stop_new_job(self):
+        entry = self.configure()
+        older = shell.InstallJob('darwin-arm64', dict(entry, version=self.lock['version']), str(self.directory))
+        newer = shell.InstallJob('darwin-arm64', older.entry, str(self.directory))
+        shell._JOB = newer
+        for bad_id in (None, '', older.id, 123):
+            with self.subTest(job_id=bad_id), self.assertRaises(shell.Refused):
+                shell.cancel(bad_id)
+            self.assertFalse(newer.cancel_event.is_set())
+        shell.cancel(newer.id)
+        self.assertTrue(newer.cancel_event.is_set())
+
     def test_deadline_closes_transport_and_cleans(self):
         self.configure()
         with patch.object(shell, 'DOWNLOAD_DEADLINE', -1):
@@ -491,6 +703,67 @@ class ManagedShellTests(unittest.TestCase):
         self.network.assert_not_called()
         self.probe.assert_not_called()
         self.exec.assert_not_called()
+
+    def test_invalid_pointer_or_record_never_probed_or_preferred(self):
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        target = Path(shell.installed_bin_dir()).parent
+        pointer_path = self.directory / 'installed.json'
+        record_path = target / 'myflames-shell.json'
+        pointer = pointer_path.read_bytes()
+        record = record_path.read_bytes()
+        self.probe.reset_mock()
+        self.network.reset_mock()
+        for invalid in ('escape', 'wrong_hash', 'missing_record', 'outside_folder', 'untrusted_code'):
+            with self.subTest(invalid=invalid):
+                pointer_path.write_bytes(pointer)
+                record_path.write_bytes(record)
+                outside = self.root / 'outside-install'
+                if invalid == 'escape':
+                    value = json.loads(pointer)
+                    value['folder'] = '../../tmp/x'
+                    pointer_path.write_text(json.dumps(value))
+                elif invalid == 'wrong_hash':
+                    value = json.loads(record)
+                    value['sha256'] = '0' * 64
+                    record_path.write_text(json.dumps(value))
+                elif invalid == 'missing_record':
+                    record_path.unlink()
+                elif invalid == 'outside_folder':
+                    target.rename(outside)
+                    target.symlink_to(outside, target_is_directory=True)
+                else:
+                    (target / 'lib/mysqlsh/libssl.3.dylib').chmod(0o777)
+                try:
+                    self.assertIsNone(shell.installed_bin_dir())
+                    self.assertIsNone(shell.status()['installed'])
+                    self.probe.assert_not_called()
+                    self.network.assert_not_called()
+                    self.exec.assert_not_called()
+                finally:
+                    if invalid == 'outside_folder':
+                        target.unlink()
+                        outside.rename(target)
+                    (target / 'lib/mysqlsh/libssl.3.dylib').chmod(0o644)
+
+    def test_lock_bump_does_not_report_old_install_as_done(self):
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        self.configure(extras=[('file', 'newfile', b'new version')])
+        self.assertIsNone(shell.installed_bin_dir())
+        self.assertEqual(self.finish()['state'], 'done')
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_status_polling_caches_walk_but_install_idempotency_checks_fresh(self):
+        self.configure()
+        self.assertEqual(self.finish()['state'], 'done')
+        with patch.object(shell.connector, '_check_shell_tree_trust',
+                          wraps=shell.connector._check_shell_tree_trust) as walk:
+            shell.status()
+            shell.status()
+            self.assertEqual(walk.call_count, 0, 'finish already populated the status cache')
+            self.assertEqual(shell.start_install()['state'], 'done')
+            self.assertEqual(walk.call_count, 1, 'Already installed requires a fresh trust walk')
 
     def test_stale_files_and_links_cleaned_only_inside_private_folder(self):
         self.configure()
@@ -583,6 +856,50 @@ class ManagedShellTests(unittest.TestCase):
         self.assertEqual(handler.parent.open.call_args[1]['timeout'], 15)
 
 
+class WindowsToolsDirectoryTests(unittest.TestCase):
+    """Exercise Windows folder policy without a Windows filesystem or sockets."""
+    def setUp(self):
+        self.directory = r'C:\Users\tester\AppData\Local\myflames\tools'
+        self.windows = Mock(wraps=os)
+        self.windows.name = 'nt'
+        self.windows.path = Mock(wraps=ntpath)
+        self.windows.path.realpath.side_effect = ntpath.normpath
+        self.windows.path.lexists.return_value = True
+        self.windows.environ = {'MYFLAMES_TOOLS_DIR': self.directory,
+                                'USERPROFILE': r'C:\Users\tester'}
+        self.info = os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows.lstat.return_value = self.info
+
+    def test_windows_plain_directory_does_not_use_executable_name_trust_check(self):
+        with patch.object(shell, 'os', self.windows), patch.object(shell.sys, 'platform', 'win32'), \
+                patch.object(shell.connector, '_check_client_trust', side_effect=AssertionError('Not an executable')):
+            self.assertEqual(shell._directories(), ntpath.join(self.directory, 'mysqlsh'))
+
+    def test_windows_location_links_and_custom_data_refuse_before_network(self):
+        reparse = type('Reparse', (), {'st_mode': stat.S_IFDIR | 0o700,
+                                      'st_file_attributes': 0x400})()
+        for cause in ('outside', 'unc', 'junction', 'symlink', 'custom_data'):
+            self.windows.environ = {'MYFLAMES_TOOLS_DIR': self.directory,
+                                    'USERPROFILE': r'C:\Users\tester'}
+            self.windows.lstat.return_value = self.info
+            if cause == 'outside':
+                self.windows.environ['MYFLAMES_TOOLS_DIR'] = r'D:\outside\tools'
+            elif cause == 'unc':
+                self.windows.environ['MYFLAMES_TOOLS_DIR'] = r'\\server\share\tools'
+            elif cause == 'junction':
+                self.windows.lstat.return_value = reparse
+            elif cause == 'symlink':
+                self.windows.lstat.return_value = os.stat_result((stat.S_IFLNK | 0o700, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+            else:
+                self.windows.environ['MYFLAMES_DESKTOP_DATA'] = r'C:\custom'
+            with self.subTest(cause=cause), patch.object(shell, 'os', self.windows), \
+                    patch.object(shell.sys, 'platform', 'win32'), patch.object(shell, 'host_platform', return_value='win32-x64'), \
+                    patch.object(shell, '_JOB', None), patch.object(shell.urllib.request, 'build_opener') as network:
+                with self.assertRaises(shell.Refused):
+                    shell.start_install()
+                network.assert_not_called()
+
+
 class ProbeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='myflames-shell-probe-test-')
@@ -620,6 +937,7 @@ class ProbeTests(unittest.TestCase):
         for name in ('MYSQL_PWD', 'PYTHONPATH', 'DYLD_INSERT_LIBRARIES'):
             self.assertNotIn(name, options['env'])
         self.assertEqual(options['env']['MYSQLSH_USER_CONFIG_HOME'], options['env']['HOME'])
+        self.assertEqual(options['env']['OPENSSL_CONF'], os.devnull)
         self.assertFalse(Path(options['env']['HOME']).exists(), 'Probe home is removed')
 
     def test_probe_failure_never_exposes_child_text(self):
@@ -669,6 +987,9 @@ class LockAndBinaryTests(unittest.TestCase):
                 lock[field] = value
                 with self.assertRaises(shell.Refused):
                     shell.validate_lock(lock)
+
+    def test_archive_entry_field_validation(self):
+        original = shell.load_lock()
         bad_entries = [('size', True), ('size', 0), ('size', shell.MAX_SHELL_ARCHIVE_BYTES + 1),
                        ('sha256', 'A' * 64), ('sha256', 'a' * 63), ('md5', '0' * 31),
                        ('root', '../escape'), ('root', '/root'), ('root', 'mysql-shell-9.7.0-macos15-x86-64bit'),
@@ -683,6 +1004,18 @@ class LockAndBinaryTests(unittest.TestCase):
                 lock['archives']['darwin-arm64'][field] = value
                 with self.assertRaises(shell.Refused):
                     shell.validate_lock(lock)
+
+    def test_license_and_download_links_must_stay_on_allowed_https_hosts(self):
+        original = shell.load_lock()
+        for field in ('license_url', 'downloads_url'):
+            for url in ('http://dev.mysql.com/downloads/shell/', 'https://evil.example/',
+                        'https://user@www.mysql.com/', 'https://www.mysql.com.evil/',
+                        'https://dev.mysql.com:443/downloads/shell/', '//dev.mysql.com/downloads/shell/'):
+                with self.subTest(field=field, url=url):
+                    lock = copy.deepcopy(original)
+                    lock[field] = url
+                    with self.assertRaises(shell.Refused):
+                        shell.validate_lock(lock)
 
     def test_host_mapping(self):
         for system, machine, expected in [('darwin', 'arm64', 'darwin-arm64'), ('darwin', 'x86_64', 'darwin-x64'),

@@ -3731,6 +3731,51 @@ class ShellTLSOptionsTests(unittest.TestCase):
                     self.assertIn('ssl-ca="/saved/ca.pem"', content)
                 self.assertNotIn('protocol=', content)
                 self.assertFalse((path.parent / 'ca-bundle.pem').exists())
+                self.assertEqual(env['OPENSSL_CONF'], os.devnull)
+
+    def test_stale_ca_capath_and_revocation_options_never_reach_nonverifying_shell(self):
+        for mode in ('DISABLED', 'PREFERRED', 'REQUIRED'):
+            options = dict(host='h', ssl_mode=mode, ssl_ca='/old/ca.pem', ssl_capath='/old/certs',
+                           ssl_crl='/old/crl.pem', ssl_crlpath='/old/crls')
+            with self.subTest(mode=mode), lc._credential_file(options, self.tool, True) as (argv, env):
+                text = Path(argv[1].split('=', 1)[1]).read_text()
+                self.assertIn('ssl-mode="%s"' % mode, text)
+                for name in ('ca', 'capath', 'crl', 'crlpath'):
+                    self.assertNotIn('ssl-' + name + '=', text)
+
+    def test_windows_roots_produce_private_pem_bundle_and_filter_non_server_trust(self):
+        der = lc.ssl.PEM_cert_to_DER_cert(self.pem)
+        roots = [(der, 'x509_asn', True), (der, 'x509_asn', {'1.3.6.1.5.5.7.3.1'}),
+                 (der, 'x509_asn', {'1.3.6.1.5.5.7.3.3'}), (b'not a certificate', 'pkcs_7_asn', True)]
+        with mock.patch.object(lc.sys, 'platform', 'win32'), \
+                mock.patch.object(lc.ssl, 'enum_certificates', return_value=roots, create=True) as enum:
+            with lc._credentials({'host': 'h', 'ssl_mode': 'VERIFY_CA'}, self.tool) as (argv, env):
+                bundle = Path(argv[1].split('=', 1)[1]).parent / 'ca-bundle.pem'
+                pem = bundle.read_text(encoding='ascii')
+                self.assertEqual(pem.count('-----BEGIN CERTIFICATE-----'), 2)
+                if os.name == 'posix':
+                    self.assertEqual(stat.S_IMODE(bundle.stat().st_mode), 0o600)
+            enum.assert_called_once_with('ROOT')
+            self.assertFalse(bundle.exists())
+
+    def test_empty_or_unreadable_windows_root_store_refuses_before_launch(self):
+        for result in ([], OSError('private store error')):
+            with self.subTest(result=result), mock.patch.object(lc.sys, 'platform', 'win32'), \
+                    mock.patch.object(lc.ssl, 'enum_certificates', create=True) as enum, \
+                    mock.patch.object(lc.subprocess, 'Popen') as spawn:
+                if isinstance(result, OSError):
+                    enum.side_effect = result
+                else:
+                    enum.return_value = result
+                job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+                with self.assertRaisesRegex(ConnectorError, 'no system root CA bundle.*nothing was sent'):
+                    lc._invoke(job, self.tool, {'host': 'h', 'ssl_mode': 'VERIFY_CA'}, [])
+                spawn.assert_not_called()
+
+    def test_openssl_configuration_is_disabled_even_when_inherited_is_hostile(self):
+        with mock.patch.dict(os.environ, {'OPENSSL_CONF': '/untrusted/openssl.cnf'}):
+            self.assertEqual(lc._clean_env(str(self.root), shell=True)['OPENSSL_CONF'], os.devnull)
+            self.assertNotIn('OPENSSL_CONF', lc._clean_env(str(self.root)))
 
     def test_verify_ca_system_bundle_is_nonempty_private_and_removed_after_use(self):
         with lc._credentials(dict(host='h', ssl_mode='VERIFY_CA'), self.tool) as (argv, env):
@@ -3836,6 +3881,33 @@ class ClientToolTrustTests(unittest.TestCase):
                     self.assertEqual(stderr, '')
             self.assertEqual(lc._shell_plugin_flags({'version': 'mysqlsh Ver 9.6.0'}),
                              ['--disable-plugins', '--disable-builtin-plugins'])
+
+    def test_direct_shell_process_also_overrides_hostile_openssl_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqlsh'
+            binary.write_text('#!' + sys.executable + '\nimport os\nprint(os.environ["OPENSSL_CONF"])\n')
+            binary.chmod(0o700)
+            job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+            with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                stdout, stderr = job.process_tool([str(binary)], dict(os.environ, OPENSSL_CONF='/hostile'))
+            self.assertEqual(stdout.strip(), os.devnull)
+
+    def test_upgrade_cli_integration_keeps_shell_plugin_flags_before_separator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqlsh'
+            binary.write_text('#!' + sys.executable + '\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
+            binary.chmod(0o700)
+            job = lc.LifecycleJob('upgrade_check', lambda j: None, {'host': 'h'})
+            tool = dict(name='mysqlsh', path=str(binary), version_tuple=[9, 7, 0], engine='mysql')
+            args = ['--js', '--', 'util', 'check-for-server-upgrade', '--target-version=9.7.0']
+            with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, args)
+            argv = json.loads(stdout)
+            for flag in ('--disable-plugins', '--disable-builtin-plugins'):
+                self.assertLess(argv.index(flag), argv.index('--'))
+            self.assertEqual(argv[argv.index('--') + 1:], args[2:])
 
     def test_invoke_rechecks_path_and_target_and_runs_realpath(self):
         with tempfile.TemporaryDirectory() as directory:

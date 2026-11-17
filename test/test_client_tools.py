@@ -440,6 +440,74 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(report['skipped']), 1)
         probe.assert_not_called()
 
+    def test_linked_startup_file_oserror_and_budget_all_skip_before_probe(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        share = private_client_dir(shell.parent.parent / 'share')
+        target = private_client_dir(self.root / 'linked-startup')
+        code = target / 'mysqlshrc.js'
+        code.write_text('/* code loaded through a top-level link */')
+        (share / 'mysqlsh').symlink_to(target, target_is_directory=True)
+        code.chmod(0o777)
+        with mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('Other users can change', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+        code.chmod(0o600)
+        with mock.patch.object(ct.connector.os, 'scandir', side_effect=PermissionError('private detail')), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('could not be checked safely', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+        # The full 40,001-entry boundary is also exercised by connector's
+        # real filesystem test. Lower the same bound here to check inventory.
+        with mock.patch.object(ct.connector, 'MAX_SHELL_TRUST_ENTRIES', 1), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('too many files', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+
+    def test_cached_inventory_never_lets_untrusted_shell_start_a_version_probe(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        directory = private_client_dir(shell.parent.parent / 'lib/mysqlsh')
+        code = directory / 'plugin.py'
+        code.write_text('/* trusted */')
+        code.chmod(0o600)
+        self.discover(shell.parent, cache_shell_trust=True)
+        code.chmod(0o777)
+        with mock.patch.object(ct.subprocess, 'run') as run:
+            report = self.discover(shell.parent, cache_shell_trust=True, refresh=True)
+            self.assertFalse(report['shells'])
+            run.assert_not_called()
+            # Direct probes also recheck, independently of discovery caching.
+            self.assertFalse(ct.probe('mysqlsh', str(shell), refresh=True)['available'])
+            run.assert_not_called()
+
+    def test_find_shell_polling_reuses_walk_and_refresh_rechecks(self):
+        from myflames import cluster_shell, lifecycle
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        with mock.patch.dict(os.environ, {'PATH': str(shell.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.connector, '_check_shell_tree_trust',
+                                  wraps=ct.connector._check_shell_tree_trust) as walk:
+            self.assertIsNotNone(cluster_shell.find_shell())
+            initial = walk.call_count
+            self.assertGreater(initial, 0)
+            self.assertIsNotNone(cluster_shell.find_shell())
+            self.assertEqual(walk.call_count, initial)
+            self.assertIsNotNone(cluster_shell.find_shell(refresh=True))
+            self.assertGreater(walk.call_count, initial)
+
+    def test_actual_shell_version_probe_disables_openssl_configuration(self):
+        shell = self.make(self.root, 'mysqlsh', version='9.7.0')
+        with mock.patch.dict(os.environ, {'OPENSSL_CONF': '/hostile/openssl.cnf'}), \
+                mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
+            self.assertTrue(ct.probe('mysqlsh', str(shell))['available'])
+        self.assertEqual(run.call_args[1]['env']['OPENSSL_CONF'], os.devnull)
+
     def test_inventory_copies_keep_banners_metadata_and_failed_probes(self):
         mysql = self.make(self.root / 'first', banner='mysql Ver 8.4.13 for test')
         failed = self.make(self.root / 'second', 'mysqldump', banner='unknown', exit_code=2)

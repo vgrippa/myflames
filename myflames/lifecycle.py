@@ -189,12 +189,14 @@ def shell_version_message(tool, server_version, gap):
                                    'refuses it' if gap == 'major' else 'may fail on it'))
 
 
-def _clean_env(home):
+def _clean_env(home, shell=False):
     # Allowlist rather than deleting MYSQL_PWD alone: no AWS, vault, API, or
     # arbitrary application secrets are inherited by external lifecycle tools.
     result = {key: os.environ[key] for key in ('PATH', 'SYSTEMROOT', 'WINDIR',
               'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TEMP', 'TMP') if key in os.environ}
     result.update(HOME=home, USERPROFILE=home, MYSQLSH_USER_CONFIG_HOME=home)
+    if shell:
+        result['OPENSSL_CONF'] = os.devnull
     return result
 
 
@@ -465,7 +467,7 @@ def _credential_file(options, tool, shell):
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
-                    if key in MySQLConnection._SSL_KEYS:
+                    if key in MySQLConnection._SSL_KEYS or (shell and key in ('ssl_capath', 'ssl_crl', 'ssl_crlpath')):
                         continue
                     text = str(value).replace('\\', '\\\\').replace('"', '\\"')
                     for char, escaped in (('\n', '\\n'), ('\r', '\\r'), ('\t', '\\t'), ('\b', '\\b')):
@@ -476,10 +478,20 @@ def _credential_file(options, tool, shell):
                                client_tls_options(options, tool.get('engine')))
                 for line in tls_options:
                     handle.write(line + '\n')
-            yield [tool['path'], '--defaults-file=' + path], _clean_env(home)
+            yield [tool['path'], '--defaults-file=' + path], _clean_env(home, shell=shell)
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+
+def _windows_shell_roots():
+    """Only Windows ROOT certificates trusted for TLS server authentication."""
+    try:
+        roots = ssl.enum_certificates('ROOT')
+        return ''.join(ssl.DER_cert_to_PEM_cert(cert) for cert, encoding, trust in roots
+                       if encoding == 'x509_asn' and (trust is True or '1.3.6.1.5.5.7.3.1' in trust))
+    except (AttributeError, OSError, ValueError, TypeError, ssl.SSLError):
+        return ''
 
 
 def _shell_tls_options(options, home):
@@ -506,14 +518,15 @@ def _shell_tls_options(options, home):
     elif mode == 'VERIFY_CA':
         message = ('MySQL Shell cannot verify certificate authorities because no system root CA bundle '
                    'could be assembled. Set a CA file for this connection; nothing was sent.')
-        pem = ''
-        cafile = ssl.get_default_verify_paths().cafile
-        try:
-            if cafile and stat.S_ISREG(os.stat(cafile).st_mode):
-                with open(cafile, 'r', encoding='ascii') as handle:
-                    pem = handle.read()
-        except (OSError, UnicodeError):
-            pass
+        pem = _windows_shell_roots() if sys.platform == 'win32' else ''
+        if sys.platform != 'win32':
+            cafile = ssl.get_default_verify_paths().cafile
+            try:
+                if cafile and stat.S_ISREG(os.stat(cafile).st_mode):
+                    with open(cafile, 'r', encoding='ascii') as handle:
+                        pem = handle.read()
+            except (OSError, UnicodeError):
+                pass
         if not pem and sys.platform == 'darwin':
             from . import tls
             pem = tls._system_roots()
@@ -1100,13 +1113,15 @@ class LifecycleJob(object):
             bundle = bundled_client_dir()
             if os.path.basename(argv[0]).lower() in ('mysqlsh', 'mysqlsh.exe'):
                 binary = checked_shell_program(argv[0])
+                child_env = dict(env, OPENSSL_CONF=os.devnull)
             else:
                 binary = checked_program(argv[0], bundled=bool(bundle and _same_dir(
                     os.path.dirname(os.path.realpath(argv[0])), bundle)))
+                child_env = env
             command = [binary] + list(argv[1:])
             return subprocess.Popen(command, stdin=input_file if input_file else subprocess.PIPE,
                                     stdout=output_file if output_file else subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
+                                    stderr=subprocess.PIPE, env=child_env, start_new_session=os.name == 'posix')
         # The tool has its own process group: record it for shutdown.
         groups = self.groups if os.name == 'posix' else None
         proc, recorded = groups.start(spawn) if groups is not None else (spawn(), True)

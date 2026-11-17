@@ -943,7 +943,8 @@ class TestShellWriter(unittest.TestCase):
                 script = sys.stdin.read()
                 seen = {'argv': sys.argv[1:], 'script': script, 'option_file': open(defaults).read(),
                         'mode': oct(os.stat(defaults).st_mode & 0o777),
-                        'env': sorted(os.environ), 'home': os.environ.get('MYSQLSH_USER_CONFIG_HOME')}
+                        'env': sorted(os.environ), 'home': os.environ.get('MYSQLSH_USER_CONFIG_HOME'),
+                        'openssl_conf': os.environ.get('OPENSSL_CONF')}
                 json.dump(seen, open(%r, 'w'))
                 if 'STOP' in script:
                     print('Synchronizing transactions...', flush=True)
@@ -983,6 +984,7 @@ class TestShellWriter(unittest.TestCase):
             self.skipTest('POSIX permissions')
         self.writer().run_write(TAG + 'dba.getCluster().switchToMultiPrimaryMode();', timeout=30)
         seen = self.seen()
+        self.assertEqual(seen['openssl_conf'], os.devnull)
         self.assertEqual(seen['argv'][1:], ['--js', '--no-wizard', '--quiet-start=2'])
         self.assertTrue(seen['argv'][0].startswith('--defaults-file='))
         self.assertNotIn('s3cr', ' '.join(seen['argv']))

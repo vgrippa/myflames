@@ -1201,13 +1201,73 @@ class TestShellProgramTrust(unittest.TestCase):
                     finally:
                         os.chmod(writable, 0o700)
 
-    def test_tree_links_are_not_walked_and_broken_links_fail_closed(self):
+    def test_tree_link_cycles_terminate_and_broken_links_fail_closed(self):
         code = self.make('lib/mysqlsh/code.py')
         os.symlink('../mysqlsh', os.path.join(os.path.dirname(code), 'cycle'))
         self.assertEqual(connector.checked_shell_program(self.program), self.program)
         os.symlink('missing', os.path.join(os.path.dirname(code), 'broken'))
         with self.assertRaises(connector.ClientMissingError):
             connector.checked_shell_program(self.program)
+
+    def test_top_level_link_target_is_walked_not_just_its_directory(self):
+        link = self.make('share/mysqlsh', directory=True)
+        os.rmdir(link)
+        target = os.path.join(self.root, 'linked-startup')
+        private_client_dir(target)
+        code = os.path.join(target, 'mysqlshrc.js')
+        with open(code, 'w') as handle:
+            handle.write('/* planted startup code */')
+        os.chmod(code, 0o777)
+        os.symlink(target, link)
+        with self.assertRaisesRegex(connector.ClientMissingError, 'changed by other users'):
+            connector.checked_shell_program(self.program)
+        os.chmod(code, 0o600)
+        self.assertEqual(connector.checked_shell_program(self.program), self.program)
+
+    def test_walk_oserrors_fail_closed_with_plain_reason(self):
+        directory = self.make('share/mysqlsh', directory=True)
+        original_scan, original_stat = os.scandir, os.lstat
+        for operation in ('scan', 'stat'):
+            def scan(path):
+                if path == directory:
+                    raise PermissionError('private filesystem detail')
+                return original_scan(path)
+
+            def lstat(path):
+                if path == directory:
+                    raise PermissionError('private filesystem detail')
+                return original_stat(path)
+
+            with self.subTest(operation=operation), \
+                    mock.patch.object(connector.os, 'scandir', side_effect=scan if operation == 'scan' else original_scan), \
+                    mock.patch.object(connector.os, 'lstat', side_effect=lstat if operation == 'stat' else original_stat):
+                with self.assertRaisesRegex(connector.ClientMissingError, 'startup files could not be checked safely'):
+                    connector.checked_shell_program(self.program)
+
+    def test_discovery_cache_is_bounded_by_prefix_mtime_and_never_authorizes_launch(self):
+        code = self.make('lib/mysqlsh/plugin.py')
+        with mock.patch.object(connector, '_check_shell_tree_trust', wraps=connector._check_shell_tree_trust) as walk:
+            connector.checked_shell_program(self.program, cache=True)
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 1)
+            info = os.stat(self.prefix)
+            os.utime(self.prefix, (info.st_atime, info.st_mtime + 1))
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 2)
+            # chmod of a nested file need not change prefix mtime. Actual
+            # launches always bypass cached discovery and catch this change.
+            os.chmod(code, 0o777)
+            with self.assertRaises(connector.ClientMissingError):
+                connector.checked_shell_program(self.program)
+            self.assertEqual(walk.call_count, 3)
+
+    def test_discovery_cache_expires_even_without_prefix_change(self):
+        with mock.patch.object(connector, '_check_shell_tree_trust', wraps=connector._check_shell_tree_trust) as walk, \
+                mock.patch.object(connector.time, 'monotonic', return_value=1) as now:
+            connector.checked_shell_program(self.program, cache=True)
+            now.return_value = 1 + connector._SHELL_TRUST_CACHE_SECONDS
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 2)
 
     def test_tree_budget_accepts_real_install_size_and_refuses_over_40000(self):
         directory = self.make('lib/mysqlsh/python-packages', directory=True)
@@ -1219,6 +1279,13 @@ class TestShellProgramTrust(unittest.TestCase):
                 self.assertEqual(connector.checked_shell_program(self.program), self.program)
         with self.assertRaisesRegex(connector.ClientMissingError, 'too many files'):
             connector.checked_shell_program(self.program)
+        from myflames import client_tools
+        with mock.patch.object(client_tools.subprocess, 'run') as probe:
+            report = client_tools.discover(path=self.bin, common_dirs=(), bundled=False)
+            self.assertFalse(report['shells'])
+            self.assertEqual(len(report['skipped']), 1)
+            self.assertIn('too many files', report['skipped'][0]['reason'])
+            probe.assert_not_called()
 
     def test_shell_never_gets_the_bundled_client_exemption(self):
         with mock.patch.object(connector, 'checked_program', return_value=self.program) as checked:
@@ -1411,6 +1478,91 @@ class TestWindowsClientTrust(unittest.TestCase):
         self.windows_os.path.realpath.side_effect = lambda value: r'D:\untrusted' if value == python else value
         with self.assertRaisesRegex(ValueError, 'outside'):
             connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_shell_tree_checks_windows_bin_dlls_and_sasl_descendants(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        bin_dir = ntpath.dirname(program)
+        sasl = ntpath.join(bin_dir, 'sasl2')
+        dlls = [ntpath.join(bin_dir, name) for name in ('python313.dll', 'python3.dll')]
+        plugin = ntpath.join(sasl, 'test-auth.dll')
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        regular = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.side_effect = lambda path: regular if path in dlls + [program, plugin] else directory
+
+        def scan(path):
+            children = ([program] + dlls + [sasl] if path == bin_dir else
+                        [plugin] if path == sasl else [])
+            entries = [type('Entry', (), {'name': ntpath.basename(child), 'path': child})()
+                       for child in children]
+            context = mock.MagicMock()
+            context.__enter__.return_value = iter(entries)
+            return context
+
+        self.windows_os.scandir.side_effect = scan
+        connector._check_shell_tree_trust(program)
+        for path in dlls + [sasl, plugin]:
+            self.assertIn(mock.call(path), self.windows_os.lstat.call_args_list)
+            for target in (r'D:\untrusted', r'\\server\share\code'):
+                self.windows_os.path.realpath.side_effect = lambda value: target if value == path else value
+                with self.subTest(path=path, target=target), self.assertRaisesRegex(ValueError, 'local|outside'):
+                    connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_shell_tree_walks_windows_python_home_descendants(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        lib = ntpath.join(ntpath.dirname(ntpath.dirname(program)), 'lib')
+        python = ntpath.join(lib, 'Python3.13')
+        package = ntpath.join(python, 'test_package')
+        module = ntpath.join(package, '__init__.py')
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        regular = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.side_effect = lambda path: regular if path == module else directory
+        self.windows_os.path.isdir.return_value = True
+
+        def scan(path):
+            children = {lib: [python], python: [package], package: [module]}.get(path, [])
+            entries = [type('Entry', (), {'name': ntpath.basename(child), 'path': child})()
+                       for child in children]
+            context = mock.MagicMock()
+            context.__enter__.return_value = iter(entries)
+            return context
+
+        self.windows_os.scandir.side_effect = scan
+        connector._check_shell_tree_trust(program)
+        self.assertIn(mock.call(module), self.windows_os.lstat.call_args_list)
+        self.windows_os.path.realpath.side_effect = lambda value: r'D:\untrusted' if value == module else value
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_windows_junction_target_is_walked_and_escape_refuses(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        subtree = r'C:\Program Files\MySQL Shell\share\mysqlsh'
+        target = r'C:\Program Files\ShellStartup'
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        junction = type('Junction', (), {'st_mode': stat.S_IFDIR | 0o755,
+                                        'st_file_attributes': 0x400})()
+        self.windows_os.lstat.side_effect = lambda path: junction if path == subtree else directory
+        self.windows_os.path.realpath.side_effect = lambda path: target if path == subtree else path
+        scan = mock.MagicMock()
+        scan.__enter__.side_effect = lambda: iter(())
+        self.windows_os.scandir.return_value = scan
+        connector._check_shell_tree_trust(program)
+        self.assertIn(mock.call(target), self.windows_os.scandir.call_args_list)
+        self.windows_os.path.realpath.side_effect = lambda path: r'C:\Users\tester\outside' if path == subtree else path
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            connector._check_shell_tree_trust(program)
+        from myflames import client_tools
+        self.windows_os.path.isfile.side_effect = lambda path: ntpath.basename(path) == 'mysqlsh.exe'
+        self.windows_os.access.return_value = True
+        self.windows_os.stat.return_value = os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        with mock.patch.object(client_tools, 'os', self.windows_os), mock.patch.object(client_tools, 'probe') as probe:
+            report = client_tools.discover(path=ntpath.dirname(program), common_dirs=(), bundled=False)
+            self.assertFalse(report['shells'])
+            self.assertEqual(len(report['skipped']), 1)
+            self.assertIn('outside', report['skipped'][0]['reason'])
+            probe.assert_not_called()
         self.run.assert_not_called()
 
     def test_windows_process_group_and_taskkill_argument_list(self):

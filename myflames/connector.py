@@ -25,6 +25,7 @@ to a mode-0600 temp file, point the client at it, and unlink it afterwards
 single source of truth.
 """
 from contextlib import contextmanager
+import collections
 import ntpath
 import os
 import re
@@ -405,6 +406,9 @@ def _client_auth_error(stderr, binary, used=None):
 
 _MACOS_ADMIN_GID = 80
 MAX_SHELL_TRUST_ENTRIES = 40000
+_SHELL_TRUST_CACHE = collections.OrderedDict()
+_SHELL_TRUST_LOCK = threading.Lock()
+_SHELL_TRUST_CACHE_SECONDS = 5.0
 # Tests substitute a private tree; never change the machine's global config.
 MYSQLSH_SYSTEM_CONFIG_DIR = '/etc/mysql'
 
@@ -502,7 +506,7 @@ def checked_program(path, realpath=None, bundled=False):
 
 
 def _check_shell_tree_trust(real):
-    """Check Shell's startup code and libraries, without following tree links.
+    """Check Shell's startup code and libraries, including linked subtrees.
 
     The executable's ancestors alone do not protect Shell's rc scripts,
     plugins, Python packages or authentication libraries. Bound every lstat
@@ -586,22 +590,36 @@ def _check_shell_tree_trust(real):
         pending = [(path, first)]
         while pending:
             current, info = pending.pop()
-            # lstat never follows a symlink. Windows junctions are directories
-            # with a reparse attribute, so do not descend into those either.
-            if (info is None or not stat.S_ISDIR(info.st_mode) or
-                    getattr(info, 'st_file_attributes', 0) & 0x400):
+            if info is None:
                 continue
+            # DirEntry.is_symlink misses Windows junctions. Resolve both kinds
+            # of link, validate the target, and walk it, including at the root.
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                current = os.path.realpath(current)
+                info = check_node(current)
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            identity = os.path.normcase(os.path.realpath(current))
+            if identity in visited:
+                continue  # Safe sibling cycles and shared targets are walked once.
+            visited.add(identity)
             with os.scandir(current) as entries:
                 for entry in entries:
                     child = check_node(entry.path)
-                    if (stat.S_ISDIR(child.st_mode) and
-                            not getattr(child, 'st_file_attributes', 0) & 0x400):
+                    if (stat.S_ISDIR(child.st_mode) or stat.S_ISLNK(child.st_mode) or
+                            getattr(child, 'st_file_attributes', 0) & 0x400):
                         pending.append((entry.path, child))
 
+    visited = set()
     bin_dir = os.path.dirname(real)
     prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else None
     try:
-        check_node(bin_dir)
+        if os.name == 'nt':
+            # Oracle's zip loads DLLs beside mysqlsh.exe (including Python)
+            # and authentication modules from bin/sasl2, outside lib/.
+            walk(bin_dir)
+        else:
+            check_node(bin_dir)
         for suffix in ('js', 'py'):
             check_node(os.path.join(bin_dir, 'mysqlshrc.' + suffix), optional=True)
         if prefix:
@@ -626,12 +644,67 @@ def _check_shell_tree_trust(real):
         raise ValueError('MySQL Shell startup files could not be checked safely.') from exc
 
 
-def checked_shell_program(path, realpath=None):
-    """Check every Shell installation, including bundled copies, before use."""
+def _shell_trust_cache_key(real):
+    """Cheap invalidation for discovery only. Execution always walks afresh.
+
+    A prefix mtime cannot detect chmod of a descendant. Keep cached inventory
+    brief, also fingerprint startup roots, and never use it to authorize exec.
+    """
+    bin_dir = os.path.dirname(real)
+    prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else bin_dir
+    paths = [prefix, bin_dir, os.path.join(prefix, 'share'), os.path.join(prefix, 'lib'),
+             os.path.join(prefix, 'libexec'), os.path.join(prefix, 'share', 'mysqlsh'),
+             os.path.join(prefix, 'lib', 'mysqlsh'), os.path.join(prefix, 'lib', 'mysql'),
+             os.path.join(prefix, 'libexec', 'mysqlsh')]
+    if os.name != 'nt':
+        paths.extend([MYSQLSH_SYSTEM_CONFIG_DIR, os.path.join(MYSQLSH_SYSTEM_CONFIG_DIR, 'mysqlsh')])
+    signature = []
+    for current in paths:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            signature.append(None)
+            continue
+        signature.append((os.path.realpath(current), info.st_dev, info.st_ino,
+                          info.st_mtime, info.st_ctime, info.st_mode, info.st_uid, info.st_gid))
+    return (real, tuple(signature), tuple(os.environ.get(key) for key in (
+        'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA',
+        'MYFLAMES_USER_PROFILE', 'USERPROFILE')))
+
+
+def checked_shell_program(path, realpath=None, cache=False):
+    """Check every Shell, with an optional short cache for read-only inventory.
+
+    Every execution caller uses the default fresh walk. Version probes also
+    recheck immediately before spawning, even after cached discovery.
+    """
     real = checked_program(path, realpath, bundled=False)
     try:
+        key = _shell_trust_cache_key(real) if cache else None
+        if key is not None:
+            with _SHELL_TRUST_LOCK:
+                checked_at = _SHELL_TRUST_CACHE.get(key)
+                if checked_at is not None and time.monotonic() - checked_at < _SHELL_TRUST_CACHE_SECONDS:
+                    _SHELL_TRUST_CACHE.move_to_end(key)
+                    return real
         _check_shell_tree_trust(real)
-    except (OSError, ValueError) as exc:
+        if key is not None and _shell_trust_cache_key(real) == key:
+            with _SHELL_TRUST_LOCK:
+                _SHELL_TRUST_CACHE[key] = time.monotonic()
+                _SHELL_TRUST_CACHE.move_to_end(key)
+                while len(_SHELL_TRUST_CACHE) > 64:
+                    _SHELL_TRUST_CACHE.popitem(last=False)
+    except OSError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
+        raise ClientMissingError('MySQL Shell startup files could not be checked safely.') from exc
+    except ValueError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
         raise ClientMissingError(str(exc)) from exc
     return real
 

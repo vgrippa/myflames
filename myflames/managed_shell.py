@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import unicodedata
 import zipfile
 
 from . import connector, tls
@@ -445,7 +446,7 @@ def _parents(stage, parts):
 
 
 def _extract(handle, stage, entry, key, job):
-    """Write only regular files/dirs, then non-chained sibling links, last."""
+    """Write regular files/dirs, create sibling links, then validate all targets."""
     stage = os.path.realpath(stage)
     seen = set()
     links = []
@@ -464,7 +465,7 @@ def _extract(handle, stage, entry, key, job):
             relative = '/'.join(parts)
             # Case-fold on every host: the tarballs also install onto commonly
             # case-insensitive APFS volumes. No archive entry may alias another.
-            identity = relative.casefold()
+            identity = unicodedata.normalize('NFC', relative).casefold()
             if identity in seen:
                 raise Refused('The MySQL Shell archive contains conflicting file paths.')
             seen.add(identity)
@@ -481,7 +482,7 @@ def _extract(handle, stage, entry, key, job):
             destination = os.path.join(stage, *parts)
             if symlink:
                 target = member.linkname
-                # Correction C3: a plain sibling name, never a path or chain.
+                # Only a bare sibling name. Oracle uses forward sibling chains.
                 if (not target or '/' in target or '\\' in target or ':' in target
                         or target in ('.', '..') or target.endswith(('.', ' '))
                         or _RESERVED.match(target) or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in target)):
@@ -497,7 +498,11 @@ def _extract(handle, stage, entry, key, job):
                 raise Refused('The MySQL Shell archive expands beyond the allowed size.')
             source = archive.open(member) if zipped else archive.extractfile(member)
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
-            fd = os.open(destination, flags, 0o600)
+            try:
+                fd = os.open(destination, flags, 0o600)
+            except FileExistsError:
+                source.close()
+                raise Refused('The MySQL Shell archive contains conflicting file paths.') from None
             with source, os.fdopen(fd, 'wb') as output:
                 written = 0
                 while True:
@@ -513,29 +518,39 @@ def _extract(handle, stage, entry, key, job):
                 if written != size:
                     raise Refused('The MySQL Shell archive contains an incomplete file.')
             os.chmod(destination, 0o755 if (mode & 0o111 or relative == 'bin/mysqlsh.exe') else 0o644)
-        # Check every link before creating any, so even safe-looking chains
-        # cannot use a previously created link as their target or parent.
+        # Files first, then ALL links. A forward chain is valid only once its
+        # final sibling exists. Parents always remain real directories.
         for parts, target in links:
             job.check_cancel()
             folder = _parents(stage, parts[:-1])
             destination = os.path.join(folder, parts[-1])
-            sibling = os.path.join(folder, target)
-            if (os.path.lexists(destination) or not os.path.lexists(sibling)
-                    or _is_link(os.lstat(sibling))
-                    or not (stat.S_ISREG(os.lstat(sibling).st_mode) or stat.S_ISDIR(os.lstat(sibling).st_mode))
-                    or os.path.commonpath((stage, os.path.realpath(sibling))) != stage):
-                raise Refused('The MySQL Shell archive contains an unsafe symbolic link.')
+            try:
+                os.symlink(target, destination)
+            except FileExistsError:
+                raise Refused('The MySQL Shell archive contains conflicting file paths.') from None
         for parts, target in links:
             job.check_cancel()
-            os.symlink(target, os.path.join(stage, *parts))
+            destination = os.path.join(stage, *parts)
+            resolved = os.path.realpath(destination)
+            try:
+                info = os.stat(destination)  # Also rejects dangling and cyclic chains.
+            except OSError:
+                raise Refused('The MySQL Shell archive contains an unsafe symbolic link.') from None
+            if (os.path.commonpath((stage, resolved)) != stage or
+                    not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))):
+                raise Refused('The MySQL Shell archive contains an unsafe symbolic link.')
 
 
 def _structure(stage, key):
     binary = os.path.join(stage, 'bin', 'mysqlsh.exe' if key == 'win32-x64' else 'mysqlsh')
+    # Oracle puts the Windows license beside bin/, but the macOS license
+    # inside share/mysqlsh/. Keep these platform layouts distinct.
+    license_file = (os.path.join(stage, 'LICENSE.txt') if key == 'win32-x64' else
+                    os.path.join(stage, 'share', 'mysqlsh', 'LICENSE'))
     required = [(os.path.join(stage, 'bin'), True), (binary, False),
                 (os.path.join(stage, 'lib', 'mysqlsh'), True),
                 (os.path.join(stage, 'share', 'mysqlsh'), True),
-                (os.path.join(stage, 'share', 'mysqlsh', 'LICENSE.txt' if key == 'win32-x64' else 'LICENSE'), False)]
+                (license_file, False)]
     for path, directory in required:
         try:
             info = os.lstat(path)
@@ -548,17 +563,23 @@ def _structure(stage, key):
 
 def _check_pe(path):
     with open(path, 'rb') as handle:
-        header = handle.read(64)
-        if len(header) < 64 or header[:2] != b'MZ':
-            raise Refused('The MySQL Shell program is not a Windows x64 program.')
-        offset = struct.unpack_from('<I', header, 60)[0]
-        if offset < 64 or offset > os.fstat(handle.fileno()).st_size - 26:
-            raise Refused('The MySQL Shell program is not a Windows x64 program.')
-        handle.seek(offset)
-        pe = handle.read(26)
-        if (pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 4)[0] != 0x8664
-                or struct.unpack_from('<H', pe, 24)[0] != 0x20b):
-            raise Refused('The MySQL Shell program is not a Windows x64 program.')
+        _check_pe_handle(handle)
+
+
+def _check_pe_handle(handle):
+    """Inspect the same descriptor that will be hashed and copied."""
+    handle.seek(0)
+    header = handle.read(64)
+    if len(header) < 64 or header[:2] != b'MZ':
+        raise Refused('The MySQL Shell program is not a Windows x64 program.')
+    offset = struct.unpack_from('<I', header, 60)[0]
+    if offset < 64 or offset > os.fstat(handle.fileno()).st_size - 26:
+        raise Refused('The MySQL Shell program is not a Windows x64 program.')
+    handle.seek(offset)
+    pe = handle.read(26)
+    if (len(pe) != 26 or pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 4)[0] != 0x8664
+            or struct.unpack_from('<H', pe, 24)[0] != 0x20b):
+        raise Refused('The MySQL Shell program is not a Windows x64 program.')
 
 
 def _check_binary(binary, key):
@@ -581,26 +602,48 @@ def _check_binary(binary, key):
 def _copy_windows_runtime(binary, key):
     if key != 'win32-x64':
         return
-    bundle = os.environ.get('MYFLAMES_BUNDLED_CLIENT_DIR')
+    bundle = connector.bundled_client_dir()
     if not bundle:
         return  # A dev machine may have the system redistributable already.
     try:
-        if not os.path.isabs(bundle):
+        bundle = os.path.realpath(bundle)
+        # The client packager records paths relative to the bundle root; the
+        # desktop supplies its bin folder. Never trust a DLL merely by name.
+        manifest = _read_record(os.path.join(os.path.dirname(bundle), 'manifest.json'), max_bytes=1024 * 1024)
+        if not isinstance(manifest, dict) or manifest.get('schema_version') != 'mysql-client-manifest-1.0':
             raise ValueError()
-        checked = connector.checked_program(os.path.join(bundle, 'mysql.exe'), bundled=True)
-        if os.path.normcase(os.path.dirname(checked)) != os.path.normcase(os.path.realpath(bundle)):
+        files = manifest.get('files')
+        if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
             raise ValueError()
-        for name in VC_RUNTIME:
-            destination = os.path.join(os.path.dirname(binary), name)
-            if os.path.exists(destination):
-                continue
-            source = os.path.join(bundle, name)
-            if _is_link(os.lstat(source)):
-                raise ValueError()
-            with open(source, 'rb') as handle:
+        with contextlib.ExitStack() as stack:
+            verified = []
+            for name in VC_RUNTIME:
+                destination = os.path.join(os.path.dirname(binary), name)
+                if os.path.lexists(destination):
+                    continue  # A pinned archive may already carry the runtime.
+                records = [item for item in files if item.get('path') == 'bin/' + name]
+                if (len(records) != 1 or not isinstance(records[0].get('sha256'), str) or
+                        not re.fullmatch(r'[0-9a-f]{64}', records[0]['sha256'])):
+                    raise ValueError()
+                source = os.path.join(bundle, name)
+                resolved = os.path.realpath(source)
+                if (os.path.commonpath((bundle, resolved)) != bundle or _is_link(os.lstat(source))):
+                    raise ValueError()
+                flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+                handle = stack.enter_context(os.fdopen(os.open(source, flags), 'rb'))
                 if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                     raise ValueError()
-                _check_pe(source)
+                _check_pe_handle(handle)
+                handle.seek(0)
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(CHUNK), b''):
+                    digest.update(chunk)
+                if digest.hexdigest() != records[0]['sha256']:
+                    raise ValueError()
+                handle.seek(0)
+                verified.append((handle, destination))
+            # Verify every source before writing the first DLL.
+            for handle, destination in verified:
                 fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o644)
                 with os.fdopen(fd, 'wb') as output:
                     shutil.copyfileobj(handle, output, CHUNK)
@@ -632,11 +675,11 @@ def _probe_version(binary, entry, job):
     from .lifecycle import _clean_env
     job.check_cancel()
     try:
-        binary = connector.checked_program(binary)
+        binary = connector.checked_shell_program(binary)
     except connector.ConnectorError:
         raise Refused('The MySQL Shell program folder is not trusted.') from None
     with tempfile.TemporaryDirectory(prefix='.mysqlsh-probe-', dir=job.directory) as home:
-        env = _clean_env(home)
+        env = _clean_env(home, shell=True)
         env['LC_ALL'] = 'C'
         options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         proc = subprocess.Popen([binary, '--no-defaults', '--version'], stdin=subprocess.DEVNULL,
@@ -749,6 +792,7 @@ def _install(job):
     try:
         directory = job.directory
         # Recheck at worker entry, before cleanup and before opening the network.
+        _windows_guard(os.path.dirname(directory))
         _trusted_directory(os.path.dirname(directory))
         _trusted_directory(directory)
         job.check_cancel()
@@ -786,14 +830,14 @@ def _install(job):
         _remove(stage)
 
 
-def _read_record(path):
+def _read_record(path, max_bytes=16384):
     if _is_link(os.lstat(path)):
         raise ValueError()
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
     fd = os.open(path, flags)
     with os.fdopen(fd, 'r', encoding='utf-8') as handle:
         info = os.fstat(handle.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_size > 16384
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes
                 or (os.name != 'nt' and (info.st_uid != os.geteuid() or info.st_mode & 0o022))):
             raise ValueError()
         return json.load(handle)
@@ -801,6 +845,11 @@ def _read_record(path):
 
 def installed_bin_dir(workspace_directory=None):
     """Return the current pinned install's bin folder, locally and without exec."""
+    return _installed_bin_dir(workspace_directory, cache=False)
+
+
+def _installed_bin_dir(workspace_directory, cache=False):
+    """Only status polling may cache trust; metadata is always read afresh."""
     try:
         key = host_platform()
         if key is None:
@@ -816,13 +865,17 @@ def installed_bin_dir(workspace_directory=None):
         if record != expected:
             return None
         target = os.path.join(directory, folder)
+        parent_real, target_real = os.path.realpath(directory), os.path.realpath(target)
+        if (target_real == parent_real or os.path.commonpath((parent_real, target_real)) != parent_real):
+            return None
         _trusted_directory(target)
         if _read_record(os.path.join(target, 'myflames-shell.json')) != expected:
             return None
         binary = _structure(target, key)
         _check_binary(binary, key)
+        connector.checked_shell_program(binary, cache=cache)  # Metadata never grants an exemption.
         return os.path.dirname(binary)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, connector.ConnectorError):
         return None
 
 
@@ -842,7 +895,7 @@ def status(workspace_directory=None):
         reason = str(exc)
     except OSError:
         reason = 'The MySQL Shell tools folder is unavailable.'
-    bin_dir = installed_bin_dir(workspace_directory) if reason is None else None
+    bin_dir = _installed_bin_dir(workspace_directory, cache=True) if reason is None else None
     with _LOCK:
         snapshot = _JOB.snapshot() if _JOB else None
     return {'schema_version': 'managed-shell-status-1.0', 'supported': reason is None,
@@ -878,11 +931,11 @@ def start_install(workspace_directory=None):
         return job.snapshot()
 
 
-def cancel(job_id=None):
+def cancel(job_id):
     """Request cleanup and close download sockets immediately. Done stays done."""
     with _LOCK:
         job = _JOB
-        if job and job_id is not None and job.id != job_id:
+        if not isinstance(job_id, str) or not job_id or (job and job.id != job_id):
             raise Refused('That MySQL Shell download is no longer active.')
         if job and job.state in _ACTIVE:
             job.cancel_event.set()

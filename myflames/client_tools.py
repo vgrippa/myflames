@@ -86,9 +86,13 @@ def probe(name, binary, refresh=False, job=None):
     try:
         try:
             with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
+                if name == 'mysqlsh':
+                    # Inventory may reuse a trust walk; every actual launch,
+                    # including --version, must check the whole tree afresh.
+                    binary = connector.checked_shell_program(binary)
                 child = subprocess.run([os.path.abspath(binary), '--version'],
                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       timeout=8, env=lifecycle._clean_env(home))
+                                       timeout=8, env=lifecycle._clean_env(home, shell=name == 'mysqlsh'))
             banner = child.stdout.decode('utf-8', 'replace').strip()[:4096]
             # Preserve lifecycle's historical tuple semantics here. Discovery
             # derives its distribution version from this cached banner instead.
@@ -98,8 +102,8 @@ def probe(name, binary, refresh=False, job=None):
                           available=child.returncode == 0 and version != (0, 0, 0))
             if not result['available']:
                 result['error'] = 'Version probe failed or returned an unrecognized version.'
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            result['error'] = type(exc).__name__
+        except (OSError, subprocess.TimeoutExpired, connector.ClientMissingError) as exc:
+            result['error'] = str(exc) if isinstance(exc, connector.ClientMissingError) else type(exc).__name__
         with _PROBE_LOCK:
             if (result['available'] and _banner_version(result['version'], name) != (0, 0, 0)
                     and key is not None and _probe_key(name, binary) == key):
@@ -116,7 +120,7 @@ def probe(name, binary, refresh=False, job=None):
             flight['done'].set()
 
 
-def snapshot(path=None, common_dirs=None, bundled=None):
+def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False):
     """Return stat-only candidates [{name,path,realpath,identity,found_in,
     bundled,order,source}]. Trusted aliases share one entry, preferring MariaDB
     names. Refused spellings remain separate with trust_error for reporting.
@@ -151,7 +155,7 @@ def snapshot(path=None, common_dirs=None, bundled=None):
             order += 1
             try:
                 if name == 'mysqlsh':
-                    connector.checked_shell_program(binary, real)
+                    connector.checked_shell_program(binary, real, cache=cache_shell_trust)
                 else:
                     connector.checked_program(binary, real, candidate['bundled'] and source == 'bundled')
             except connector.ClientMissingError as exc:
@@ -214,7 +218,7 @@ def _has_auth_plugins(folder):
     return False
 
 
-def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None):
+def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False):
     """Return {installations: [...], shells: [...], skipped: [...]}.
 
     At most 32 version-probe requests per call, including cached requests.
@@ -224,7 +228,8 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
     groups, shells, skipped = {}, [], []
     copies = []
     probes = 0
-    for candidate in snapshot(path, common_dirs, bundled):
+    cache_shell_trust = cache_shell_trust and not refresh
+    for candidate in snapshot(path, common_dirs, bundled, cache_shell_trust=cache_shell_trust):
         if job:
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']
@@ -238,7 +243,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
             if candidate.get('trust_error'):
                 raise connector.ClientMissingError(candidate['trust_error'])
             if name == 'mysqlsh':
-                connector.checked_shell_program(binary, candidate['realpath'])
+                connector.checked_shell_program(binary, candidate['realpath'], cache=cache_shell_trust)
             else:
                 connector.checked_program(binary, candidate['realpath'], candidate['bundled'])
         except connector.ClientMissingError as exc:

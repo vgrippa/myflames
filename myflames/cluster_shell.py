@@ -58,7 +58,7 @@ def find_shell(refresh=False):
     probes as every other client myflames runs."""
     from . import client_tools
     try:
-        shells = client_tools.discover(refresh=refresh).get("shells") or []
+        shells = client_tools.discover(refresh=refresh, cache_shell_trust=not refresh).get("shells") or []
     except Exception:  # noqa: BLE001 - no Shell found is the answer, never a failed read
         return None
     for shell in shells:
