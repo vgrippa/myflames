@@ -76,12 +76,15 @@ export function memberFlow(report: ClusterReport, m: ClusterMember): string {
   return `Queue ${count(mt.transactions_in_queue)} · applier ${count(mt.applier_queue)}`;
 }
 
-/** A saved connection whose host and port match a non-connected member. */
-export function matchingProfile(m: ClusterMember, profiles?: Profile[]): Profile | undefined {
+/** A saved connection whose host and port match a non-connected member. On a
+ * Group connection (*groupName*) only the group's own members are suggested:
+ * another saved connection at the same address is outside the group's consent. */
+export function matchingProfile(m: ClusterMember, profiles?: Profile[], groupName?: string): Profile | undefined {
   if (m.local || !m.host || !profiles?.length) return undefined;
   const host = m.host.trim().toLowerCase();
   const port = m.port || 3306;
-  return profiles.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
+  const candidates = groupName ? profiles.filter((p) => (p.group || "").trim() === groupName) : profiles;
+  return candidates.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
 }
 
 /** On a Group connection, an action's reason names the saved login to use.
@@ -327,10 +330,12 @@ function MemberCard({ report, m, selection, marker, hasUse = false }: {
   );
 }
 
-export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection, onOpenReadyset, onOpenProxySql }: {
+export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection, onOpenReadyset, onOpenProxySql, groupName }: {
   report: ClusterReport; selection?: Selection; marker?: LocalMarker;
   profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
   onOpenReadyset?: () => void; onOpenProxySql?: () => void;
+  /** A Group connection: a card's Use suggestion names only the group's members. */
+  groupName?: string;
 }) {
   const line = groupLine(report);
   const routers = report.kind === "innodb_cluster" ? report.routers : [];
@@ -354,7 +359,7 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
         <div className="cluster-group">
           <ul className="cluster-members" aria-label={`${noun}s`}>
             {group.map((m) => {
-              const match = !m.local && onSwitchConnection ? matchingProfile(m, profiles) : undefined;
+              const match = !m.local && onSwitchConnection ? matchingProfile(m, profiles, groupName) : undefined;
               return (
                 <li key={m.key} className={`cluster-node${memberDetached(m) ? " is-detached" : ""}`}>
                   <MemberCard report={report} m={m} selection={selection} marker={marker} hasUse={!!match} />

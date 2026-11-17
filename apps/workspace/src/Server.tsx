@@ -87,6 +87,7 @@ import { serverKind, type ServerKind, type SlowState } from "./session";
 import {
   connectionKey,
   connectionLabel,
+  keyProfileId,
   lastViewRead,
   latestGeneration,
   nextGeneration,
@@ -424,10 +425,24 @@ export function Server({
   /** Maintenance's open task section, restored with the workspace. */
   const [maintenanceSection, setMaintenanceSection] = useState<MaintenanceSection>(initial?.maintenance_section || "tools");
   const activeKey = connectionKey(connection);
+  const topologyKey = connectionKey(topologyConnection);
   const [localReplicationLoops, setLocalReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const effectiveLoops = propReplicationLoops !== undefined ? propReplicationLoops : localReplicationLoops;
-  const loopsHere = effectiveLoops?.key === activeKey ? effectiveLoops.report : [];
+  // A skip loop runs on the connection the Replication place holds; on a
+  // Group connection that is the group connection (its active member), while
+  // the Server: control may show another member. The loop stays visible,
+  // named by the server it runs on, whichever member the place shows.
+  const loopsBound = effectiveLoops && (effectiveLoops.key === activeKey || effectiveLoops.key === topologyKey)
+    ? effectiveLoops : null;
+  const loopsHere = loopsBound?.report || [];
   const loopActiveNow = loopsHere.some(loopActive);
+  /** The server a shown loop runs on, when it is not the member on screen. */
+  const loopServer = loopsBound && loopsBound.key !== activeKey
+    ? (() => {
+        const member = groupServer?.group.members.find((m) => m.profile_id === keyProfileId(loopsBound.key));
+        return member ? groupMemberLabel(member) : loopsBound.label;
+      })()
+    : "";
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
@@ -1435,24 +1450,34 @@ export function Server({
   const common = { connection, disabled: disabled || !!analysisPhase, onBack };
   // A persistent status area: an active skip loop or a running maintenance
   // job stays reachable from any view, so Stop and Cancel are never lost
-  // while the work runs. Loops listed here belong to the connection in use;
-  // stopping one is cancellation of an authorized action, so it stays
-  // enabled during capture, policy loading and on a read-only connection.
+  // while the work runs. Loops listed here belong to the connection in use
+  // (on a Group connection, to the member the Replication place runs on,
+  // whichever member the Server: control shows); stopping one is
+  // cancellation of an authorized action, so it stays enabled during
+  // capture, policy loading and on a read-only connection.
   const [loopStopping, setLoopStopping] = useState("");
   const loopStoppingRef = useRef(new Set<string>());
   async function stopLoopNow(loop: SkipLoop) {
     const id = loop.job_id;
-    const c = latestConnection.current;
-    if (!id || loopStoppingRef.current.has(id) || connectionKey(c) !== activeKey) return;
+    const bound = effectiveLoops;
+    if (!id || !bound || loopStoppingRef.current.has(id)) return;
+    // Stop goes to the connection the loop runs on (its bound key): the
+    // member on screen, or the group connection while the Server: control
+    // shows another member.
+    const c = bound.key === connectionKey(latestConnection.current)
+      ? latestConnection.current
+      : bound.key === connectionKey(latestTopologyConnection.current)
+        ? latestTopologyConnection.current
+        : null;
+    if (!c) return;
     loopStoppingRef.current.add(id);
     setLoopStopping(id);
     try {
       await stopSkipLoop(c, id);
-      // The read rebinds loops to the connection in use; after a switch the
-      // view's own poll reconciles when you switch back.
+      // The read rebinds loops to the connection they run on; after a switch
+      // the view's own poll reconciles when you switch back.
       const answer = await readSkipLoops(c);
-      if (connectionKey(latestConnection.current) === activeKey)
-        setReplicationLoops({ key: activeKey, label: connectionLabel(c), report: answer.loops });
+      setReplicationLoops({ key: bound.key, label: connectionLabel(c), report: answer.loops });
     } catch {
       // The view shows loop status errors; the persistent banner stays quiet.
     } finally {
@@ -1852,7 +1877,7 @@ export function Server({
                 </p>
               )}
               {loopsHere.some((l) => loopActive(l)) && (
-                <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
+                <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} server={loopServer} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
               )}
               {kind !== "maintenance" && jobsHere.length > 0 && (
                 <div className="ops-loop" role="status">

@@ -76,15 +76,18 @@ function time(iso: Json | undefined) {
  * the last one, and Stop while it runs. Used in this view and in Server's
  * persistent status area. Stop cancels a loop the person already authorized,
  * so it never goes through the write policy or a second prompt. */
-export function ReplicationLoopBanner({ loops, disabled, stopping, onStop }: {
+export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server }: {
   loops: SkipLoop[]; disabled?: boolean; stopping?: string; onStop: (loop: SkipLoop) => void;
+  /** Names the server the loops run on, when it is not the member on screen
+   * (a Group connection's Server: control showing another member). */
+  server?: string;
 }) {
   return <>{loops.map(loop => <ReplicationLoopRow key={loop.job_id || loop.channel} loop={loop}
-    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} />)}</>;
+    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server} />)}</>;
 }
 
-function ReplicationLoopRow({ loop, disabled, stopping, onStop }: {
-  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void;
+function ReplicationLoopRow({ loop, disabled, stopping, onStop, server }: {
+  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string;
 }) {
   const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
   const active = loopActive(loop);
@@ -102,6 +105,7 @@ function ReplicationLoopRow({ loop, disabled, stopping, onStop }: {
       role="status" data-loop={loop.state}>
       <div className="ops-loop-copy">
         <strong>{loop.message}</strong>
+        {server && <span className="ops-last">on {server}</span>}
         {active && loop.receiver_guard === "off" && <span className="ops-last" title={loop.receiver_guard_reason || loop.receiver_guard_note}>Reconnect detection off</span>}
         {last && <span className="ops-last">
           Last skip: {factText(last.gtid || last.exec_pos)}

@@ -64,6 +64,7 @@ import {
   type QueryTab,
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
+import { unavailableMemberConnection } from "./queryConnection";
 import { GroupServerPicker } from "./GroupServerPicker";
 import { Icon } from "./components";
 import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, Select, StatusPill, useFocusScope, useWindowStatus, type Tone, ContextMenu } from "./kit";
@@ -1532,11 +1533,7 @@ export const QueryLab = forwardRef<
     const bound = t.member && group && memberConnection ? memberConnection(t.member) : null;
     // Keep an unavailable binding disconnected even if a future caller misses
     // its UI guard. Port 0 is refused before any login, as in a cleared picker.
-    if (t.member && !bound) return {
-      profile_id: t.member, name: t.member_name || t.member, host: "", port: 0,
-      user: "", database: "", ssl_mode: "", ssl_ca: "", password: "",
-      type: "production", read_only: true,
-    };
+    if (t.member && !bound) return unavailableMemberConnection(t.member, t.member_name);
     const base = bound || connection;
     const measurement = runtimeRef.current[t.id]?.measureBefore;
     // A measurement runs in its statement's schema; otherwise the tab's chosen
@@ -2642,7 +2639,7 @@ export const QueryLab = forwardRef<
       : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
     : rt.probed && !session ? "No session" : undefined;
   useWindowStatus(`query:${statusKey}:${tab.id}`, {
-    connectionState: connectionLabel(tabConnection),
+    connectionState: tabConnection.host ? connectionLabel(tabConnection) : "No connection",
     engineVersion: statusSession?.server_version ? `${statusSession.server_product || (statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server")} ${statusSession.server_version}` : undefined,
     sessionState: sessionText ? `${sessionText}${fileDirty ? " · Edited" : ""}` : fileDirty ? "Edited" : undefined,
     // The transaction state is in the editor toolbar, and the rows and time

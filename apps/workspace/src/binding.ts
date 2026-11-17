@@ -87,6 +87,17 @@ export function endpointKey(key: string): string {
   }
 }
 
+/** The saved-connection id a connectionKey() text was built with (""
+ * for an unsaved connection or an unreadable key). */
+export function keyProfileId(key: string): string {
+  try {
+    const parts: unknown = JSON.parse(key);
+    return Array.isArray(parts) && typeof parts[0] === "string" ? parts[0] : "";
+  } catch {
+    return "";
+  }
+}
+
 /** "Production (app@db1:3306)", or "app@db1:3306" without a name; a
  * connection through SSH adds "via bastion". A Group connection (group_name)
  * shows its group label ("Group connection mf-ic · 3 servers") as its name. */

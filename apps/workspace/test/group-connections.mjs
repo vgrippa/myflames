@@ -14,7 +14,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { load, open, pause } from "./perf-harness.mjs";
-import { chooseConnection, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseConnection, closeAccountSheet, layoutMatrix, openAccountSheet, openConnectionPicker } from "./chrome-helpers.mjs";
+import { connectionAction } from "./connection-helpers.mjs";
 
 import { setEditorText } from "./editor-helpers.mjs";
 
@@ -46,8 +47,17 @@ const deleteCalls = [];
 const healthCalls = [], healthRequests = [];
 let expectedActivePassword = "";
 const editorRuns = [];
+const editorOpens = [];
+let endedStatusMember = "";
+let profileListReads = 0;
+let holdGroupOpen = false;
+let releaseGroupOpen = null;
 const variableApplies = [], captureStarts = [], replicationCalls = [], catalogCalls = [];
 const readinessCalls = [];
+const loopStatusReads = [], loopStops = [], testCalls = [];
+/** The loops this myflames holds, by endpoint (host:port:user), like SkipLoopRegistry. */
+const loopRegistry = new Map();
+const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
 let exerciseEditor = false;
 let connectDelay = 0;
 // When set, the /api/connect mock makes this member active even when the
@@ -67,6 +77,8 @@ const editorSessions = new Map();
 const configFixture = await load("parameters-mysql.json");
 const variableFixture = await load("variable-mysql-8.4-global.json");
 const replicationFixture = await load("replication-mysql-8.4-healthy.json");
+const loopRunning = await load("replication-loop-running.json");
+const loopStopped = await load("replication-loop-stopped.json");
 
 function editorSession(body) {
   if (!editorSessions.has(body.tab_id)) editorSessions.set(body.tab_id, 100 + editorSessions.size);
@@ -158,6 +170,13 @@ function clusterReport(connection) {
       action.why_not = "db-2 and another saved connection both reach this member.";
       action.fix = "Connect to db-2 to act on this member, or keep only one of them in the group.";
     }
+    // A reason that names a saved connection outside the group: no Use link.
+    if (ambiguousRoutes && i === 2) for (const action of m.actions) {
+      action.enabled = false;
+      action.target = { ...target, profile_id: null };
+      action.why_not = "db-3 and another saved connection both reach this member.";
+      action.fix = "Connect to solo-db to act on this member, or keep only one of them in the group.";
+    }
   });
   const local = report.members.find((m) => m.local);
   report.local = local.key;
@@ -203,14 +222,14 @@ function groupList() {
 }
 
 const h = await open("/api/unused-group-connections", "group-connections", {
-  "/api/profiles/list": () => ({
-    status: 200,
-    body: {
+  "/api/profiles/list": () => {
+    profileListReads++;
+    return { status: 200, body: {
       items: profiles,
       secret_store: { backend: "vault", label: "myflames encrypted vault", available: true },
-    },
-  }),
-  "/api/connect": (body) => {
+    } };
+  },
+  "/api/connect": (body, request) => {
     connectCalls.push(body);
     const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
     const members = profiles.filter((p) => (p.group || "") === name);
@@ -224,7 +243,7 @@ const h = await open("/api/unused-group-connections", "group-connections", {
     if (!active) active = primary || members[0];
     if (connectActiveMember) active = members.find((m) => m.id === connectActiveMember) || active;
     const type = members.some((m) => m.type !== "development") ? "production" : "development";
-    return {
+    const response = {
       status: 200,
       delay: connectDelay,
       body: {
@@ -253,6 +272,15 @@ const h = await open("/api/unused-group-connections", "group-connections", {
         },
       },
     };
+    // Hold the already-built reply while a profile refresh changes its active
+    // member's settings. This exercises openGroup's post-await profile lookup
+    // without depending on the speed of either browser or network.
+    if (holdGroupOpen) {
+      releaseGroupOpen = () => request.respond({ status: response.status,
+        contentType: "application/json", body: JSON.stringify(response.body) });
+      return null;
+    }
+    return response;
   },
   "/api/profiles/groups/save": (body) => {
     saveCalls.push(body);
@@ -305,7 +333,15 @@ const h = await open("/api/unused-group-connections", "group-connections", {
   },
   "/api/editor/status": (body) => {
     noGroupMeta(body, "Editor status");
+    if (body.connection.profile_id === endedStatusMember) return { status: 200, body: {
+      status: "session_ended", session: { ...editorSession(body), ended: true, state: "ended", ended_reason: "idle_timeout" }, run: null,
+    } };
     return { status: 200, body: { status: "none", session: null, run: null } };
+  },
+  "/api/editor/open": (body) => {
+    noGroupMeta(body, "Editor open");
+    editorOpens.push(body);
+    return { status: 200, body: { status: "complete", session: editorSession(body), run: null } };
   },
   "/api/editor/close": (body) => {
     noGroupMeta(body, "Editor close");
@@ -347,6 +383,28 @@ const h = await open("/api/unused-group-connections", "group-connections", {
     noGroupMeta(body, "Replication");
     replicationCalls.push(body);
     return { status: 200, body: replicationFixture };
+  },
+  // Loop status reads no database: it lists the loops this myflames holds for
+  // the connection's endpoint. Stop cancels a loop already authorized, so it
+  // stays enabled; it must go to the connection the loop runs on.
+  "/api/live/replication/skip-loop/status": (body) => {
+    noGroupMeta(body, "Skip loop status");
+    loopStatusReads.push(body);
+    return { status: 200, body: { schema_version: "replication-skip-loop-1.0", loops: loopRegistry.get(loopEndpoint(body.connection)) || [] } };
+  },
+  "/api/live/replication/skip-loop/stop": (body) => {
+    assert.equal(body.connection.password, "", "Skip loop stop never carries another member's typed password");
+    noGroupMeta(body, "Skip loop stop");
+    loopStops.push(body);
+    loopRegistry.set(loopEndpoint(body.connection), [clone(loopStopped)]);
+    return { status: 200, body: clone(loopStopped) };
+  },
+  // Test connection from the form: the connection fields only, never the
+  // saved profile's group metadata.
+  "/api/connection/test": (body) => {
+    noGroupMeta(body, "Test connection");
+    testCalls.push(body);
+    return { status: 200, body: { version: "8.4.3", schemas: ["shop"], databases: ["shop"], databases_truncated: false } };
   },
   "/api/live/start": (body) => {
     noGroupMeta(body, "Capture start");
@@ -393,6 +451,38 @@ const waitFor = async (check, message) => {
 };
 const pillText = () => page.$eval(".window-toolbar .connection-pill", (e) => e.textContent.replace(/\s+/g, " ").trim());
 const statusText = () => page.$eval(".window-statusbar", (e) => e.textContent.replace(/\s+/g, " ").trim());
+// Use the public return-to-window path to see edits from another window.
+// Advance only the saved-list throttle, not the privilege refresh TTL. The app
+// throttles reloads to once a second measured from the last reload's own
+// (possibly shifted) Date.now(), so each call must advance past the previous
+// shift: a fixed offset would leave the throttle's clock behind.
+let focusReturnOffset = 0;
+const refreshProfileList = async () => {
+  const before = profileListReads;
+  focusReturnOffset += 2_000;
+  const offset = focusReturnOffset;
+  await page.evaluate((shift) => {
+    const now = Date.now;
+    Date.now = () => now() + shift;
+    try { window.dispatchEvent(new Event("focus")); } finally { Date.now = now; }
+  }, offset);
+  await waitFor(() => profileListReads > before, "returning to the window did not refresh saved connections");
+};
+const assertNoTabConnection = async () => {
+  await page.waitForFunction(() => document.querySelector(".window-statusbar")?.textContent.includes("No connection"));
+  const text = await statusText();
+  assert.doesNotMatch(text, /Group connection|10\.0\.0\./, "an orphaned tab's status never borrows the window's server");
+  const before = h.state.privilegeReads.length;
+  await openConnectionPicker(page);
+  assert.equal(await page.$(".picker-panel .picker-account"), null, "no account from the window's connection is shown for an orphaned tab");
+  assert.match(await page.$eval(".picker-panel .picker-note", (e) => e.textContent), /This tab has no open connection\. Account and privileges are unavailable\./);
+  await openAccountSheet(page);
+  assert.match(await page.$eval("dialog.account-sheet .sheet-lead", (e) => e.textContent), /No connection in use/);
+  assert.doesNotMatch(await page.$eval("dialog.account-sheet", (e) => e.textContent), /Connected as/);
+  assert.equal(await page.$("dialog.account-sheet .sheet-actions button:not(.primary)"), null, "there is no privilege refresh for an unavailable member");
+  assert.equal(h.state.privilegeReads.length, before, "opening account details never reads privileges through a fallback connection");
+  await closeAccountSheet(page);
+};
 const sheet = "dialog.group-editor-sheet[open]";
 const setName = (value) => page.evaluate((sel, v) => {
   const input = document.querySelector(`${sel} input[aria-label="Group name"]`);
@@ -479,6 +569,13 @@ try {
   await page.click('.server-view[data-view="health"] .group-server-segmented button[data-value="p-ic-1"]');
   await page.waitForFunction(() => document.querySelector('.server-view[data-view="health"] .view-server-name')?.textContent.includes("cluster-ic-1"));
   assert.equal(await headerName(), "cluster-ic-1 · 10.0.0.11:3306 · SECONDARY", "the header follows the chosen member");
+  await openConnectionPicker(page);
+  assert.match(await page.$eval(".picker-panel .picker-note", (e) => e.textContent), /Account and privileges shown for cluster-ic-1\./,
+    "the picker names the member whose grants it shows, rather than the window's active member");
+  await openAccountSheet(page);
+  assert.equal(await page.$eval("dialog.account-sheet .sheet-lead", (e) => e.textContent), "cluster-ic-1",
+    "the account sheet names Server's selected member");
+  await closeAccountSheet(page);
   const sinceSwitch = healthCalls.length;
   // The previous member's report stays, greyed, until an explicit Refresh:
   // that read is the login to the chosen member.
@@ -593,6 +690,7 @@ try {
     /cluster-ic-2 is not in this group any more\. Pick a server for this tab to run it\./);
   assert.ok(await page.$(".query-tab-member.is-gone"), "the tab's member is marked gone");
   assert.match(await page.$eval(".query-tab-member.is-gone", (e) => e.textContent), /cluster-ic-2/);
+  await assertNoTabConnection();
   const runsBeforeRefusal = editorRuns.length;
   await page.click('.editor-toolbar [data-action="run"]');
   await page.waitForFunction(() => document.body.textContent.includes("Pick a server for this tab"));
@@ -617,6 +715,25 @@ try {
   await layoutMatrix(page, h.shots, "group-connections-editor", { frame: sheet });
   await page.setViewport({ width: 1440, height: 900 });
 
+  // --- Test connection from the form sends the connection fields only: the
+  // saved profile's group metadata never leaves the list (noGroupMeta in the
+  // mock asserts group and group_generation are absent).
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  await connectionAction(page, "cluster-ic-2", "Edit");
+  await page.waitForSelector(".connection-panel", { visible: true });
+  const beforeTest = testCalls.length;
+  await page.evaluate(() => [...document.querySelectorAll(".connection-panel button")]
+    .find((b) => b.textContent.trim() === "Test connection").click());
+  await waitFor(() => testCalls.length > beforeTest, "Test connection was not sent");
+  assert.equal(testCalls.at(-1).connection.profile_id, "p-ic-2");
+  assert.equal(testCalls.at(-1).connection.host, "10.0.0.12");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#connection-form-title"));
+  // Back to the group editor for the delete below.
+  await page.click('.group-connections-section[data-testid="home-group-connections"] button[aria-label="Edit group mf-icx"]');
+  await page.waitForSelector(sheet, { visible: true });
+
   // --- Delete the group: its saved connections stay.
   await page.click(`${sheet} .group-editor-delete`);
   await page.waitForSelector("dialog.group-editor-sheet[open] .sheet-buttons button.danger-solid", { visible: true });
@@ -637,6 +754,10 @@ try {
   await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
   await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("cluster-ic-1"));
   assert.ok(!(await page.$(".window-statusbar .statusbar-group-edit")), "no Edit group… without a Group connection");
+  await h.server();
+  await h.view("health");
+  assert.equal(await page.$('.server-view[data-view="health"] .group-server-picker'), null, "deleting a group clears its member picker");
+  assert.equal(await page.$('.server-view[data-view="health"] .group-server-note'), null, "deleting a group clears its removed-member notice");
 
   // --- Cluster member actions use the catalog's saved route. ---------------
   // Start a fresh Group connection with db-1 active and db-3 not yet in the
@@ -685,6 +806,16 @@ try {
   const identity = await page.$eval(`${clusterView} .cluster-identity`, (e) => e.textContent);
   assert.match(identity, /Each member's actions run through its own saved connection in mf-ic\./);
   assert.doesNotMatch(identity, /act on this server only/);
+  // A card's Use suggestion names only the group's own members: db-2's
+  // topology address belongs to solo-db, outside the group, and db-3 is not
+  // in the group yet, so neither card suggests a switch.
+  const cardUse = (key) => page.$$eval(`${clusterView} .cluster-node`, (nodes, k) => {
+    const node = nodes.find((n) => n.querySelector(`.cluster-card[data-row-key="${k}"]`));
+    const button = node ? node.querySelector(".cluster-use-node") : null;
+    return button ? button.textContent.trim() : null;
+  }, key);
+  assert.equal(await cardUse(db2Key), null, "db-2's address matches solo-db, which is outside the group");
+  assert.equal(await cardUse(db3Key), null, "db-3 is not in the group yet");
   await layoutMatrix(page, h.shots, "group-cluster-actions", { frame: clusterView });
   await page.setViewport({ width: 1440, height: 900 });
 
@@ -739,6 +870,8 @@ try {
   assert.equal(clusterCalls.at(-1).connection.name, "Group connection mf-ic · 3 servers");
   assert.deepEqual(connectCalls.at(-1), { group_name: "mf-ic", active_member_profile_id: "p-ic-1" });
   assert.equal(await page.$(".view-inspector .cluster-edit-group"), null, "the fresh catalog has a saved route for db-3");
+  assert.equal(await cardUse(db3Key), "Use db-3", "in the group, db-3's card suggests its own saved connection");
+  assert.equal(await cardUse(db2Key), null, "db-2's card still does not suggest solo-db, outside the group");
   const suggestedStop = await page.$$eval(".view-inspector .review-actions > button", (buttons) => {
     const button = buttons.find((b) => b.textContent.trim() === "Stop Group Replication…");
     const note = document.getElementById(button.getAttribute("aria-describedby"));
@@ -760,6 +893,9 @@ try {
   await h.refresh();
   await page.waitForFunction((sel) => document.querySelector(`${sel} .cluster-identity`)?.textContent.includes("Stop and Start act on this server only."), {}, clusterView);
   assert.doesNotMatch(await page.$eval(`${clusterView} .cluster-identity`, (e) => e.textContent), /Each member's actions/);
+  // Without a Group connection the address match across saved connections
+  // stays: db-2's card suggests solo-db, whose address the topology reports.
+  assert.equal(await cardUse(db2Key), "Use solo-db", "a single connection keeps the address match across saved connections");
   await h.select(`${clusterView} .cluster-card[data-row-key="${db1Key}"]`);
   await clickStop();
   await page.waitForSelector(review, { visible: true });
@@ -793,6 +929,57 @@ try {
     if (await page.$(select)) await page.select(select, id);
     else await page.click(`${scope} .group-server-segmented button[data-value="${id}"]`);
   };
+
+  // Current saved profiles decide group safety without reopening the group.
+  // Read-only remains the shown member's flag, not the active member's flag.
+  const beforeSafetyEdits = profiles.map((p) => ({ ...p }));
+  await openGroup("mf-ic");
+  await h.server(); await h.view("health");
+  await chooseServer("p-ic-3");
+  const opensBeforeSafetyRefresh = connectCalls.length;
+  for (const profile of profiles.filter((p) => p.group === "mf-ic")) profile.type = "development";
+  profiles.find((p) => p.id === "p-ic-1").read_only = true;
+  await refreshProfileList();
+  await page.waitForFunction(() => {
+    const pill = document.querySelector(".window-toolbar .connection-pill")?.textContent || "";
+    return pill.includes("Development") && pill.includes("Read-only");
+  });
+  await page.waitForFunction(() => {
+    const status = document.querySelector(".window-statusbar")?.textContent || "";
+    return status.includes("Development") && !status.includes("Read-only");
+  });
+  const beforeFreshMemberRead = healthRequests.length;
+  await h.refresh();
+  await waitFor(() => healthRequests.length > beforeFreshMemberRead, "the member did not read with the current group safety");
+  assert.equal(healthRequests.at(-1).connection.profile_id, "p-ic-3");
+  assert.equal(healthRequests.at(-1).connection.type, "development", "memberRequest uses the current strictest type");
+  assert.equal(healthRequests.at(-1).connection.read_only, false, "a read-only active member does not relabel the writable member");
+  await chooseServer("p-ic-1");
+  await page.waitForFunction(() => document.querySelector(".window-statusbar")?.textContent.includes("Read-only"));
+  const beforeFreshActiveRead = healthRequests.length;
+  await h.refresh();
+  await waitFor(() => healthRequests.length > beforeFreshActiveRead, "the active member did not read with its current policy");
+  assert.equal(healthRequests.at(-1).connection.read_only, true, "the active member's read-only flag follows profile edits");
+  profiles.find((p) => p.id === "p-ic-3").read_only = true;
+  await refreshProfileList();
+  await chooseServer("p-ic-3");
+  await page.waitForFunction(() => document.querySelector(".window-statusbar")?.textContent.includes("Read-only"));
+
+  // Include a newly grouped Production profile even though it was not in the
+  // snapshot returned by the earlier group open.
+  Object.assign(profiles.find((p) => p.id === "p-solo"), { type: "production", group: "mf-ic" });
+  await refreshProfileList();
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Production"));
+  const beforeStricterRead = healthRequests.length;
+  await h.refresh();
+  await waitFor(() => healthRequests.length > beforeStricterRead, "the member did not adopt the stricter current group type");
+  assert.equal(healthRequests.at(-1).connection.type, "production", "a newly grouped Production member updates the strictest type");
+  assert.equal(healthRequests.at(-1).connection.read_only, true, "a non-active member's read-only flag follows profile edits");
+  assert.equal(connectCalls.length, opensBeforeSafetyRefresh, "profile edits do not reopen or probe the group");
+  for (const original of beforeSafetyEdits) Object.assign(profiles.find((p) => p.id === original.id), original);
+  await refreshProfileList();
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Read-only"));
+
   profiles.find((p) => p.id === "p-ic-1").read_only = true;
   await openGroup("mf-ic");
   await h.server();
@@ -861,15 +1048,69 @@ try {
   const useText = await page.$$eval('.view-inspector .cluster-action-why .cluster-use-node', (buttons) => buttons.map((b) => b.textContent.trim()));
   assert.ok(useText.length > 0);
   assert.ok(useText.every((text) => text === "Use db-2"), "action links name the route from the reason, never solo-db's matching address");
+  // A reason naming a saved connection outside the group offers no Use link;
+  // Edit group… stays, the route being the group's to fix.
+  await h.select(`${clusterView} .cluster-card[data-row-key="${db3Key}"]`);
+  assert.match(await page.$eval(".view-inspector", (e) => e.textContent), /Connect to solo-db to act on this member/);
+  assert.equal(await page.$$eval(".view-inspector .cluster-action-why .cluster-use-node", (b) => b.length), 0,
+    "solo-db is not a member of mf-ic: no Use link names it");
+  assert.ok(await page.$(".view-inspector .cluster-edit-group"), "Edit group… stays offered for the unrouted member");
   ambiguousRoutes = false;
+
+  // --- A skip loop running on the active member keeps its banner, named by
+  // the server it runs on, whichever member the Server: control shows; Stop
+  // from the banner goes to the loop's own connection.
+  loopRegistry.set("10.0.0.11:3306:dba", [clone(loopRunning)]);
+  assert.ok(await page.$('.main-nav button[data-place="replication"] .nav-marker'),
+    "the sidebar badge names the window connection's report before any loop");
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="replication"] .ops-loop')]
+    .some((e) => e.offsetParent && e.dataset.loop === "running"));
+  await h.server();
+  await h.view("health");
+  await chooseServer("p-ic-1");
+  await page.waitForSelector(".server-content > .ops-loop[data-loop=running]", { visible: true });
+  assert.equal(await page.$eval(".server-content > .ops-loop", (e) =>
+    [...e.querySelectorAll(".ops-last")].some((s) => s.textContent.startsWith("on "))), false,
+    "on the loop's own member the banner names no other server");
+  await chooseServer("p-ic-2");
+  await page.waitForFunction(() => [...document.querySelectorAll(".server-content > .ops-loop .ops-last")]
+    .some((e) => e.textContent === "on db-1 · 10.0.0.11:3306 · PRIMARY"));
+  assert.ok(await page.$('.main-nav button[data-place="replication"] .nav-marker'),
+    "the sidebar badge stays while Server shows another member");
+  const beforeStop = loopStops.length;
+  await page.click(".server-content > .ops-loop button");
+  await waitFor(() => loopStops.length > beforeStop, "Stop from the banner was not sent");
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-ic-1", "Stop goes to the member the loop runs on, not the member on screen");
+  assert.equal(loopStops.at(-1).connection.group_name, "mf-ic");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.0.11");
+  await page.waitForFunction(() => !document.querySelector(".server-content > .ops-loop[data-loop=running]"));
 
   // Member-bound SQL writes confirm on db-3 even after the picker moves.
   await page.click('.main-nav button[data-place="query"]');
   await chooseServer("p-ic-3", ".editor-connection");
+  endedStatusMember = "p-ic-3";
   await page.click(".query-tab-add");
   await page.waitForFunction(() => document.querySelector('.query-tab [aria-selected="true"] .query-tab-label')?.textContent.includes("db-3"));
   const boundTabId = await page.$eval('.query-tab [aria-selected="true"]', (e) => e.id);
+  await page.waitForSelector('.editor-banner[data-banner="ended"]', { visible: true });
+  endedStatusMember = "";
+  const beforeReconnectReads = h.state.privilegeReads.length;
+  const beforeReconnectOpens = editorOpens.length;
+  await page.click('.editor-banner[data-banner="ended"] button');
+  await waitFor(() => editorOpens.length > beforeReconnectOpens, "the member tab did not reconnect");
+  await waitFor(() => h.state.privilegeReads.length > beforeReconnectReads, "reconnecting a member tab did not refresh its privileges");
+  assert.equal(editorOpens.at(-1).connection.profile_id, "p-ic-3");
+  assert.ok(h.state.privilegeReads.slice(beforeReconnectReads).every((call) => call.connection.profile_id === "p-ic-3"),
+    "a successful member reconnect refreshes that tab's grants, even though the window is on db-1");
+  await page.waitForFunction(() => !document.querySelector('.editor-banner[data-banner="ended"]'));
   await chooseServer("p-ic-2", ".editor-connection");
+  await openConnectionPicker(page);
+  assert.match(await page.$eval(".picker-panel .picker-note", (e) => e.textContent), /Account and privileges shown for db-3\./,
+    "the picker identifies the tab's bound member, independent of both Server: and the window connection");
+  await openAccountSheet(page);
+  assert.equal(await page.$eval("dialog.account-sheet .sheet-lead", (e) => e.textContent), "db-3");
+  await closeAccountSheet(page);
   await setEditorText(page, "UPDATE shop.t SET n = 2 WHERE id = 1");
   const beforeWrite = editorRuns.length;
   await page.click('.editor-toolbar [data-action="run"]');
@@ -918,6 +1159,7 @@ try {
   await page.waitForSelector(".group-member-note", { visible: true });
   assert.match(await page.$eval(".group-member-note", (e) => e.textContent), /This tab ran on db-3, which is not open now\./);
   assert.match(await page.$eval('.query-tab [aria-selected="true"] .query-tab-member', (e) => e.textContent), /db-3/);
+  await assertNoTabConnection();
   await page.click('.editor-toolbar [data-action="run"]');
   assert.equal(editorRuns.length, beforeRestore, "a restored member tab without its group never falls back to the active connection");
   await openGroup("mf-ic");
@@ -1020,6 +1262,38 @@ try {
   assert.doesNotMatch(await pillText(), /Group connection/);
   assert.match(await pillText(), /db-2/);
   connectDelay = 0;
+
+  // A group probe may finish after another window refreshes the selected
+  // member's endpoint. The open must use the current profile, not the render
+  // closure or the older endpoint in the held connect reply.
+  holdGroupOpen = true;
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-ic"]');
+  await waitFor(() => !!releaseGroupOpen, "the group open was not held");
+  const editedDuringOpen = profiles.find((p) => p.id === "p-ic-1");
+  const beforeOpenEdit = { ...editedDuringOpen };
+  Object.assign(editedDuringOpen, { name: "db-1-current", host: "10.0.0.51", user: "current-dba", database: "current_shop" });
+  await refreshProfileList();
+  // The Open click closed the picker; re-open it to see the refreshed list.
+  await openConnectionPicker(page);
+  await page.waitForFunction(() => [...document.querySelectorAll('.picker-panel select[aria-label="Connection"] option')]
+    .some((option) => option.value === "p-ic-1" && option.textContent.includes("db-1-current")));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .picker-panel"));
+  holdGroupOpen = false;
+  await releaseGroupOpen();
+  releaseGroupOpen = null;
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .picker-target")?.textContent.includes("current-dba@10.0.0.51:3306"));
+  await h.server(); await h.view("health");
+  await chooseServer("p-ic-1");
+  const beforeCurrentEndpointRead = healthRequests.length;
+  await h.refresh();
+  await waitFor(() => healthRequests.length > beforeCurrentEndpointRead, "the group did not read through the profile refreshed during its probe");
+  assert.equal(healthRequests.at(-1).connection.host, "10.0.0.51");
+  assert.equal(healthRequests.at(-1).connection.user, "current-dba");
+  assert.equal(healthRequests.at(-1).connection.database, "current_shop");
+  Object.assign(editedDuringOpen, beforeOpenEdit);
+  await chooseConnection(page, "p-ic-2");
 
   // The group editor explains its limit, and Delete confirmation retains focus.
   profiles.push(...Array.from({ length: 12 }, (_, i) => ({ ...base, id: `p-limit-${i}`, name: `limit-${i}`, host: `10.1.0.${i + 1}`, type: "development", group: "" })));

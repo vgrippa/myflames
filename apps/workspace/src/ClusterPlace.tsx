@@ -524,7 +524,8 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
               />
               <ClusterTopology report={report} selection={selection} marker={marker}
                 profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
-                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined} />
+                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined}
+                groupName={!stale ? connection.group_name : undefined} />
             </>
           ) : shownTab === "members" ? (
             <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
@@ -542,7 +543,9 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
               <span className="cluster-row-label">Changes · the whole cluster</span>
               <ActionGroup list={report.actions || []} label="Changes for the cluster" blocked={changeBlock}
                 planning={actions.planning} busy={actions.busy} onStart={start} report={report}
-                profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection} />
+                profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection}
+                groupName={connection.group_name}
+                onEditGroup={stale ? undefined : onEditGroup} />
             </section>
           )}
         </>}

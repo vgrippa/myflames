@@ -489,7 +489,12 @@ export const SCENARIOS = [
   // ---- Home --------------------------------------------------------------------------
   {
     name: "home-test-connection", label: "Test connection (form)", paths: ["/api/connection/test"],
-    setup: async ({ page }) => { await goPlace(page, "home"); await click(page, "Add connection"); await pause(300); },
+    setup: async ({ page }) => {
+      await goPlace(page, "home"); await click(page, "Add connection"); await pause(300);
+      // The form is taller than the window: scroll the buttons above the
+      // window status bar, which otherwise covers the click point.
+      await (await named("Test connection", ".connection-panel")(page)).evaluate((e) => e.scrollIntoView({ block: "nearest" }));
+    },
     target: named("Test connection", ".connection-panel"),
     ok: async ({ page }) => waitText(page, ".connection-panel .connections-status", /Connected · 8\.4\.11/),
     error: async ({ page }) => waitText(page, ".connection-panel [role=alert]", /Simulated failure/),
@@ -504,6 +509,8 @@ export const SCENARIOS = [
     setup: async ({ page }) => {
       await goPlace(page, "home"); await click(page, "Add connection"); await pause(300);
       await typeInto(page, ".connection-panel .connection-fields input", "Feedback server");
+      // As in home-test-connection: scroll the buttons above the status bar.
+      await (await named("Save connection", ".connection-panel")(page)).evaluate((e) => e.scrollIntoView({ block: "nearest" }));
     },
     target: named("Save connection", ".connection-panel"),
     respondOk: () => ({ id: "p-new", name: "Feedback server", host: "127.0.0.1", port: 3306, user: "", type: "production", has_saved_password: false }),

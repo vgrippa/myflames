@@ -491,9 +491,12 @@ export function Connections({
   // the server fills the password for that one request from the secret store.
   const savedPassword = !!profile?.has_saved_password;
   const usingSaved = savedPassword && !draft.password;
+  // Requests are built from the connection fields only: the form's group is
+  // stored metadata (the user's consent), never sent to a server endpoint.
+  const { group: _formGroup, ...formFields } = tidy(draft);
   const formConnection: Connection = editingId
-    ? { ...tidy(draft), profile_id: editingId }
-    : tidy(draft);
+    ? { ...formFields, profile_id: editingId }
+    : formFields;
   const hostProblem = hostHasSpace(draft.host || "") ? "A host name or IP address cannot contain spaces." : "";
   const portProblem = Number.isInteger(draft.port) && draft.port >= 1 && draft.port <= 65535 ? "" : "Enter a port from 1 to 65535.";
   const trimmedName = (draft.name || "").trim();
