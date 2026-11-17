@@ -311,7 +311,14 @@ failure; child processes run outside the cache lock. `refresh=True` bypasses
 cached results. Workspace startup warms discovery on a daemon thread without
 blocking the window. `mysqlpump` is presence-only, with null version and
 version tuple; it is deprecated, never probed, selected or marked used. Shell
-copies are listed separately, newest first.
+copies are listed separately: the verified managed copy first, then other
+copies newest first. Every discovery re-reads the managed install's pointer
+and metadata through `managed_shell.installed_bin_dir()`, so installing after
+an earlier inventory read needs no cache expiry; its tree trust walk reuses
+the five-second Shell cache only for `cache_shell_trust` reads, never on
+refresh.
+Only that validated published bin folder is added, and only for `mysqlsh`;
+discovery never searches the tools folder for staging or retired copies.
 
 `select` is pure. For each supported role it considers the server's own engine,
 using that program's version even in a mixed-version folder. Automatic ranks
@@ -330,8 +337,10 @@ Roles are `client` (queries), `dump`, `load` (SQL restores and CLONE), `backup`
 `mariadb-dump`, accepting its own `mysql` and `mysqldump` compatibility names.
 Load uses the client in the selected dump installation; if it has no client,
 load is missing. Without a selected dump, an own-engine query client can supply
-load. MySQL Shell uses the newest discovered Shell independently of the Settings
-choice and is selected only for a known MySQL server. Auxiliary programs such
+load. MySQL Shell prefers the verified managed copy over PATH copies of any
+version, otherwise the newest discovered Shell, independently of the Settings
+choice; it is selected only for a known MySQL server. The managed origin is
+`managed`, labeled `Downloaded by myflames`. Auxiliary programs such
 as `mariadb-upgrade` use the same series ranking through `select_program`.
 An unknown or unrecognized server gets only a query client: installed before
 bundled, then mysql before mariadb, then discovery order. If a known server has
@@ -445,7 +454,8 @@ leaving the active choice intact. Both return `client-tools-1.0`:
   `origin`, `origin_label`, `bundled`, `has_auth_plugins`, `programs` keyed by
   name with `{path, realpath, version}` (no mysqlpump), and `chosen_for[]`.
   Order is engine, descending version, then discovery order/key.
-- `shells[]`: `{path, realpath, version, origin, origin_label}`, newest first;
+- `shells[]`: `{path, realpath, version, origin, origin_label}`, managed first,
+  then other copies newest first;
   `skipped[]`: `{path, reason}`; `choice`: mysql and mariadb objects with
   `{path, installation, error}` (null where absent).
 - With a connection only: `server` `{engine, version, product}` or null,
@@ -4611,10 +4621,127 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 
 ### Server lifecycle: upgrade-check, dump, restore, clone
 
+#### MySQL Shell on demand (backend)
+
+`managed_shell.py` exposes local-only `status(workspace_directory=None)`,
+`start_install(workspace_directory=None)`, `cancel(job_id)`, `shutdown(timeout)` and
+`installed_bin_dir(workspace_directory=None)`, wired to the workspace through
+three authenticated POST endpoints in `ui.py` (`_MANAGED_SHELL_PATHS`,
+`_shell_response`): `POST /api/client/shell/status` and
+`POST /api/client/shell/install` accept exactly `{}`, and
+`POST /api/client/shell/cancel` accepts only `id` (the running job's id, a
+string of at most 64 characters); any other key or type is a 400 before
+`managed_shell` is called. All three answer with the `managed-shell-status-1.0`
+payload of `managed_shell.status` (install starts or rejoins the single flight
+first; a `Refused` is a 400 with its plain sentence). The workspace directory
+argument is the workspace store's folder (`MYFLAMES_TOOLS_DIR` wins when the
+desktop sets it). No connection, saved password or SQL is involved, and the
+reply contains nothing outside the tools folder. `WorkspaceServer.server_close`
+first runs `LifecycleJobs.shutdown()` to stop tool process groups, then calls
+`managed_shell.shutdown(timeout=1.0)` before the remaining session cleanup.
+The public helper sets the active job's cancel event and expires its watchdog
+under the job lock (closing download sockets, as `cancel` does), then waits at
+most the given timeout for its worker outside that lock; `ui.py` reads no
+installer private state. An interrupted cleanup may leave staging, retire or
+download-part trees; the next install's existing lock-protected `_clean_stale`
+removes them. Tests:
+`test/test_ui_http.py` (`TestManagedShellHTTP`), including a stale cancel id
+that must not stop the running job.
+One process-wide `InstallJob` reports `downloading | verifying | installing |
+done | failed | cancelled`, received/total bytes, elapsed seconds, a plain
+error and a boolean `cleaning` on every snapshot. `cleaning` is true exactly
+while a cancelled or failed job's worker thread remains alive removing files.
+Repeated starts reuse the active flight; while `cleaning` is true,
+`start_install` returns that same snapshot unchanged, with no new job or error.
+Once cleanup ends a new start can create a new job. Cancellation closes download
+sockets and stops/reaps the probe. Cancel with no job refuses with
+`No MySQL Shell download is running.` (HTTP 400); otherwise it requires the
+current job's exact id, and a stale id cannot cancel a newer download.
+An exclusive OS lock on `mysqlsh/.install.lock` covers validation, stale cleanup,
+download, probe, publish and failure/cancel cleanup. A second backend refuses
+before cleaning or contacting the network. The private regular lock file holds
+the owner's PID while the job runs and is removed when the job ends (on Windows
+`O_TEMPORARY` removes it at the final close); the kernel releases the lock on
+close or process exit, so a stale file left by a dead process is recovered: a
+new install locks it and rechecks the inode before any work, never following a
+link.
+
+The packaged `mysql-shell.lock.json` (`mysql-shell-lock-1.0`) records product,
+version, license/links, Oracle's signing fingerprint and `archives` entries for
+`darwin-arm64`, `darwin-x64`, `win32-x64`: version, CDN URL, compressed size,
+MD5, SHA-256 and root. `scripts/pin-mysql-shell.py VERSION OUTPUT_FOLDER`
+verifies published size/MD5 and the pinned PGP signature before computing
+SHA-256. It prints JSON; only `--write` replaces the lock. macOS codesign
+coverage is informational because the pinned tarballs are ad hoc signed.
+
+Storage is `MYFLAMES_TOOLS_DIR`, otherwise `<workspace store folder>/tools`.
+Its private `mysqlsh/` contains `.mysqlsh-download-*.part`, `.mysqlsh-stage-*`,
+versioned `mysqlsh-<version>-<platform>/` installs with `myflames-shell.json`,
+and the atomic `installed.json` pointer. Only the lock holder cleans stale
+download, stage, manifest, `.mysqlsh-probe-*` and `.retire-<32 hex digits>` entries,
+without following links. Desktop creates tools with mode 0700 or tightens an
+existing user-owned plain directory to 0700. Other storage errors never prevent
+app startup: the tools path is still passed to the backend, whose `status()`
+reports the private-folder refusal and whose installer refuses before network
+use. Windows refuses custom `MYFLAMES_DESKTOP_DATA`, reparse points in the tools
+path and locations outside the user profile roots. An unusable environment root
+is skipped so a different clean user-profile root can still authorize the path.
+The pointer is data: its folder must exactly match the pinned version/platform,
+resolve inside the private `mysqlsh/` directory, and carry a matching
+`myflames-shell.json` version and SHA-256. The executable and startup tree pass
+`checked_shell_program` without a bundled exemption. Discovery uses only
+`installed_bin_dir()` to add this managed copy, labels its origin `managed` /
+`Downloaded by myflames`, and prefers it to other Shell copies of any version.
+It reads the pointer on every inventory request; cached discovery/probe results
+cannot hide a newly installed copy. Only inventory reads that opt into the
+trust cache (`cache_shell_trust`) reuse its five-second tree walk. Every launch
+still rechecks through `connector.checked_shell_program`. An invalid pointer reports
+not installed and is never probed or preferred. An install returns `done`
+without downloading only after this same validation.
+
+Checks run in order: validate every lock field and host; check private,
+user-owned tools directories and trusted ancestors before writes/network;
+require 1.3 GB free; download with no ambient proxy, a TLS watchdog, CDN-only
+HTTPS redirects closed unread, a 15-second socket timeout, a 900-second
+deadline and declared/running/final size checks; verify SHA-256 on the exact
+open descriptor before parsing; extract confined files/directories, then
+sibling-only macOS symlinks, then check every resolved target after all links
+exist (forward sibling chains are allowed); check required structure and
+Mach-O cputype or PE32+ x64 headers; copy Windows VC++ DLLs only from regular
+files confined to the bundled client's real bin folder, with PE32+ x64 headers
+and SHA-256 matching the bundle's `manifest.json`; run an isolated, bounded
+`--no-defaults --disable-plugins --disable-builtin-plugins --version`
+probe; atomically publish the directory and pointer with rollback.
+Limits: 250 MiB compressed, 40,000 entries, 1.5 GiB expanded, depth 32.
+Traversal, absolute paths, device names, special files, hard links and Windows
+symlinks are refused; unsafe mode bits are stripped. Failure/cancel removes
+partial files and preserves a previous install. Zip directory entries lose
+exactly one trailing slash before segment validation. Case and Unicode aliases
+and filesystem `EEXIST` at file or symlink creation refuse the whole stage.
+Implicit ancestors use the same NFC and casefold identities as explicit entries;
+an exact-spelling implicit directory may be declared once later in the archive.
+The Settings > Client tools dialog shows the MySQL Shell section
+(`ManagedShell` in `apps/workspace/src/ClientTools.tsx`, helpers `shellStatus`
+/ `shellInstall` / `shellCancel` in `api.ts`): with no usable MySQL Shell on
+this computer it offers **Get MySQL Shell** with the download and installed
+sizes, the license and Oracle downloads links; a found Shell older than the
+pinned version says so and names it on the button; an unsupported platform
+offers only the Oracle downloads link. While the job runs, a 500 ms status poll
+drives a determinate download bar (after 10 s without progress it says it is
+still waiting for cdn.mysql.com), then the checksum and install lines, and
+**Stop** (armed after 600 ms, focus returns to the button); the outcome is the
+ready, stopped or plain failure line with **Try again**. A finished install
+re-reads the client tools so the managed copy shows under Found on this
+computer. Browser coverage: `apps/workspace/test/client-tools.mjs` (mocked
+endpoints; 1440 and 720 px, light and dark).
+Tests: `test_managed_shell.py`,
+`test_pin_mysql_shell.py`, desktop `backend.test.cjs`.
+
 Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle skill), CLI `myflames/lifecycle_cli.py`, endpoints in `ui.py` (`_lifecycle_*`). Tests: `test/test_lifecycle.py` (fake tool executables that record argv, env and option-file mode, strict replays of live recordings, a "regressions found on live servers" section) and `test/test_lifecycle_cli.py` (CLI exit codes, confirmations, audit, endpoints); fixtures and what was and was not verified live: `test/fixtures/lifecycle/PROVENANCE.txt`.
 
 - `python3 -m myflames upgrade-check --target-version X.Y.Z [--no-shell] [--config-path PATH] [--fail-on error|warning] [--json] [-o PATH] [-q]` (`upgrade-check-1.0`): `lifecycle.upgrade_check`. MySQL Shell (`mysqlsh --defaults-file=<0600> --js -- util check-for-server-upgrade --target-version=... --output-format=JSON`) when installed and the pair is in range (server older than the Shell, target at most the Shell's major.minor; otherwise exit 2 with a `--no-shell` hint); `parse_upgrade_json` reads `errorCount`/`warningCount`/`noticeCount` and `checksPerformed` (the Shell exits 0 with errors). `--no-shell` or no Shell: `_native_upgrade` (`partial: true`, `limitations[]`), every check version gated as source < change <= target: `removed_variables` from `performance_schema.variables_info` excluding COMPILED, DYNAMIC and PERSISTED (error: an unknown option in an option file or on the command line stops mysqld; `my_getopt.cc`), `removed_persisted_variables` (warning: logged and ignored at startup; `persisted_variable.cc`), on 5.7 the running values (warning); `reserved_identifiers` over schema, table, view, column, routine, trigger and event names with `reserved_words(source, target, source_reserved)` from `RESERVED_SINCE` minus the source's own `information_schema.KEYWORDS` (parity test against KEYWORDS read live on 8.0.46, 8.4.11, 9.7.2); `partition_engines` (5.7 sources only, joins TABLES for ENGINE); `utf8mb3` and `zero_date_defaults` in user schemas (notice from 8.0 sources, warning from 5.7); `native_password_users` (`'user'@'host'`, warning for 8.4, error for 9.x). MariaDB: `method: mariadb_upgrade_guidance`, never invokes the Shell; a target below 10 (a MySQL number) or older than the server is refused. Dump with MySQL Shell refuses when the Shell's major is older than the server's and warns for an older minor (`shell_version_gap`, mysql-shell `dumper.cc:5311-5334`); failed tool output is reduced to one line by `tool_error_line` with colour codes stripped. Counts are affected objects per severity; `--fail-on` exits 1. Read-only: endpoint `POST /api/lifecycle/upgrade-check` (`connection`, `target_version`, `prefer_shell`). HTTP `config_path` is rejected before connecting, also on `/api/lifecycle/prepare`; only the CLI accepts `--config-path`.
-- Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). TLS uses the actual tool engine's mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
+- Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). Classic tools use the actual tool engine's TLS mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
+- MySQL Shell trust and TLS: MySQL Shell uses `lifecycle._shell_tls_options`: DISABLED writes only ssl-mode; PREFERRED and REQUIRED omit stale ssl-ca, capath, crl and crlpath (Shell rejects them in those modes); VERIFY_CA keeps an explicit CA or writes a validated system-root PEM bundle as `ca-bundle.pem` (0600 in the 0700 temporary directory), refusing before launch when no bundle can be assembled. System roots come from Python's regular default CA file, or the trusted macOS Keychain roots when that file is unavailable; Windows uses `ssl.enum_certificates("ROOT")`, selecting X.509 certificates trusted for TLS server authentication. An empty or unreadable Windows root store refuses before launch. REQUIRED and VERIFY_IDENTITY remain supported for the single-session upgrade check, dump and restore. Shell discovery and launch use `connector.checked_shell_program` without a bundled exemption: the executable and its ancestors, bin and rc scripts, installation share/lib/libexec startup trees, and POSIX `/etc/mysql/mysqlsh` with its rc scripts must be trusted. The recursive check validates symlink owners and resolved targets and walks linked directories, including a linked top-level subtree, without revisiting directory cycles. Windows reparse points, including junctions, count as links. Any walk error or more than 40,000 lstat calls fails closed. Read-only Shell discovery can reuse successful walks for up to five seconds, keyed by the executable realpath and prefix/startup-root metadata (including prefix st_mtime); refresh and every actual launch, including a version probe, require a fresh walk. Descendant changes need not update prefix mtime, so cached inventory never authorizes execution. Windows resolves Shell folders and bundled Python inside the executable's same allowed local root, refusing UNC paths and escaping junctions. An untrusted Shell is listed in skipped and is never version-probed. Shell launches add `--disable-plugins` from 9.0.0 and `--disable-builtin-plugins` from 9.6.0, using the discovered version; unknown and older versions get no unsupported flags. Plugin flags precede the `--` separator in upgrade checks. Every Shell process, including version probes, sets `OPENSSL_CONF=os.devnull` so an ambient OpenSSL configuration is not loaded.
 - Tool release metadata: `tool_updates.enrich_tools`, invoked by `detect_tools(check_updates=True)` only after explicit UI detection/refresh. Each tool adds `download_url` and `update {status, latest_version, checked_at, source_url, message}`. Status is `not_checked`, `available`, `current`, `unknown`, `not_installed` or `deprecated`; current means no newer verified release in the checked series, not a compatibility or support guarantee. MySQL GA download headings and the MariaDB stable-series REST API supply versions. Fixed HTTPS endpoints only, no redirects or ambient proxies, 1 MiB response cap, 5 s socket timeout, 12 s caller budget, at most 8 in-flight workers and 64 cache keys; success TTL 1 hour, failure TTL 1 minute. Unsupported distributions/prereleases, mismatched series, malformed/future metadata and failed checks stay unknown. CLI discovery and lifecycle preflights do not request network checks.
 - `POST /api/lifecycle/choose-directory` accepts an empty object through the normal authenticated API. It opens the server host's folder dialog, with a 120 s deadline and one dialog at a time; no client-supplied script or path is executed. Cancel preserves the form path. The selected directory still undergoes normal preflight and empty-directory validation. Native folder selection accepts no command or path input and does not start a backup.
 - Dump folder facts: authenticated `POST /api/lifecycle/dump-info {directory}` accepts only `directory` and needs no connection or saved password. It is registered beside `choose-directory`, with the same authentication, CSRF header and request limits. It returns `{schema_version: "lifecycle-dump-info-1.0", tool: {name, version}, engine, scope: {schemas, tables}, structure_only, remap_allowed: true | false | null, remap_reason}`; `tool.version` is capped at 64 characters. Tool names are `mysqldump`, `mariadb-dump` or `mysqlsh`; engines are `mysql` or `mariadb`. Old manifests without `options.structure_only` report false. `dump_info` and `prepare_restore` share `_restore_input` (absolute/expanded real directory path, completed manifest validation and safe relative file records) and `_restore_sql_scan` with `_restore_remap`. A folder pick stays cheap: `dump_info` reads the manifest without checksumming every file (`verify=False`). For single-schema picked-table SQL dumps, it checks the opened `dump.sql` descriptor is a regular file and its size matches the manifest before reading; scans at most `DUMP_INFO_SCAN_BYTES` (16 MiB) and checks SHA-256. When the manifest record exceeds that cap, it skips the scan and returns `remap_allowed: null` with `remap_reason: "This dump is large; whether it can load into another database is decided when you review the restore."` A size mismatch refuses before any SQL read. Manifests, scanned SQL and preflight files are opened without following links or blocking on FIFOs, and must be regular files before reading. `prepare_restore` verifies every file, including its descriptor size before reading, and the restore file, directory and byte budgets before any restore; it stays the authority and retains its own scan limits. Files named outside the folder are refused by both. Whole-database SQL dumps report that they create their own databases; single-schema picked-table SQL dumps within the folder-pick scan budget scan `dump.sql` for CREATE DATABASE, CREATE SCHEMA, USE and qualified references; single-schema Shell table dumps allow remapping. Missing or unreadable folders/manifests, missing or unreadable scanned SQL, special files and invalid metadata raise `lifecycle.Refused`, using HTTP 400 `{error}` with an actionable sentence. Extra payload keys raise `ValueError` through the same HTTP 400 envelope. No tool, server connection or restore is started. These facts let Restore decide whether to offer a new database when the folder is picked. When reported, remap eligibility is independent of the proposed target name: a qualified reference to another database still refuses even if it spells that proposed name, so scanned folder facts and preflight cannot disagree. Restore preflight still reloads the folder and refuses unsupported remapping; jobs retain fresh validation and reviewed-write checks. Tests: `test/test_lifecycle.py` (folder facts/preflight agreement, SQL and Shell scopes, invalid metadata, traversal, symlinks, FIFO and directory refusal, missing SQL, checksum tampering, scan cap and size checks before reads), `test/test_lifecycle_cli.py` (route registration), `test/test_ui_http.py` (HTTP refusal, payload keys and authentication).
@@ -4765,14 +4892,23 @@ runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
 startup script or saved credential takes part. A socket connection passes
 through that socket. MySQL Shell changes are not offered over an SSH connection,
 because MySQL Shell connects to the other members directly with this connection's
-user and password; the place says so in its notes. MySQL Shell's member sessions
-take the user, password and CA files but not the profile's ssl-mode. The time limit is 600 s.
+user and password; the place says so in its notes. ShellWriter rechecks the Shell startup
+tree immediately before launch and uses the lifecycle Shell TLS option builder and
+version-gated plugin lockdown flags described above. MySQL Shell's AdminAPI member
+sessions copy CA files but can drop the profile's ssl-mode. ShellWriter therefore
+refuses VERIFY_IDENTITY (member host names are not verified) and REQUIRED (member
+sessions can fall back to PREFERRED), before creating credentials or sending anything.
+VERIFY_CA always passes a CA file, including a private system-root bundle when no
+explicit CA was saved, so member sessions retain CA verification. The time limit is 600 s.
 
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
 reviewed-write result is failed with nothing sent. A statement exception maps
 to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
-number, or 0 when neither is present. Since one AdminAPI call can fail after
+number, or 0 when neither is present. For a statement exception, only the line
+containing the first `at STDIN:<n>` or its immediately preceding physical line can
+supply the error number and message; earlier echoed text cannot supply the code.
+Since one AdminAPI call can fail after
 some steps ran, `verify_on_error` reads the cluster again and reports partial
 when the before/after comparison shows a visible change. A timeout or Shell
 exit without an error message leaves the outcome unknown and is never retried

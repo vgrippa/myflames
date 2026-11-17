@@ -1,0 +1,35 @@
+{
+  "schema_version": "mysql-shell-lock-1.0",
+  "product": "MySQL Shell",
+  "version": "9.7.0",
+  "license": "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
+  "license_url": "https://www.mysql.com/about/legal/licensing/oem/",
+  "downloads_url": "https://dev.mysql.com/downloads/shell/9.7.html",
+  "signing_key": "BCA43417C3B485DD128EC6D4B7B3B788A8D3785C",
+  "archives": {
+    "darwin-arm64": {
+      "version": "9.7.0",
+      "url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-9.7.0-macos15-arm64.tar.gz",
+      "size": 157547585,
+      "md5": "8354cb5e54435ab52b72296f4a9e82cb",
+      "sha256": "b6d9a02904045417ddba92ae42b27b360080b94831196785a811d7cba32f202b",
+      "root": "mysql-shell-9.7.0-macos15-arm64"
+    },
+    "darwin-x64": {
+      "version": "9.7.0",
+      "url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-9.7.0-macos15-x86-64bit.tar.gz",
+      "size": 158574987,
+      "md5": "60583881b05f8b8c7020cc85ff41ad46",
+      "sha256": "bace0a655e9a4e932b5a29f181abbb3193a3fa362f7a63eb76531dadc0fbef8b",
+      "root": "mysql-shell-9.7.0-macos15-x86-64bit"
+    },
+    "win32-x64": {
+      "version": "9.7.0",
+      "url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-9.7.0-windows-x86-64bit.zip",
+      "size": 200100890,
+      "md5": "4a02ff4d042eb3cc0504e13b76d89e9b",
+      "sha256": "1362c31da0123b916fd9dc9bce2b862835e89addf7a72b851bea584e9b1eeb3f",
+      "root": "mysql-shell-9.7.0-windows-x86-64bit"
+    }
+  }
+}

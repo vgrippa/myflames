@@ -58,7 +58,7 @@ def find_shell(refresh=False):
     probes as every other client myflames runs."""
     from . import client_tools
     try:
-        shells = client_tools.discover(refresh=refresh).get("shells") or []
+        shells = client_tools.discover(refresh=refresh, cache_shell_trust=not refresh).get("shells") or []
     except Exception:  # noqa: BLE001 - no Shell found is the answer, never a failed read
         return None
     for shell in shells:
@@ -82,20 +82,25 @@ def _connection(conn):
 def error_text(stderr, stdout=""):
     """The error line reviewed_writes reads, from MySQL Shell's output."""
     text = _ANSI.sub("", "%s\n%s" % (stderr or "", stdout or ""))
-    lines = [" ".join(raw.split()) for raw in text.splitlines()]
-    lines = [line for line in lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
+    raw_lines = [" ".join(raw.split()) for raw in text.splitlines()]
+    lines = [line for line in raw_lines if line and not re.match(r"(?:NOTE|WARNING|INFO):", line, re.I)]
     if not lines:
         return None
-    where = next((int(m.group(1)) for m in map(_STDIN_LINE.search, lines) if m), None)
-    shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, lines) if m), None)
-    mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, lines) if m), None)
+    located = next(((i, _STDIN_LINE.search(line)) for i, line in enumerate(raw_lines)
+                    if _STDIN_LINE.search(line)), None)
+    where = int(located[1].group(1)) if located is not None else None
+    # Only the exception at the first STDIN location can identify a failed
+    # statement. Earlier output may echo server-controlled text and numbers.
+    candidates = lines if located is None else raw_lines[max(0, located[0] - 1):located[0] + 1][::-1]
+    shell_code = next((int(m.group(1)) for m in map(_SHELL_CODE.search, candidates) if m), None)
+    mysql_code = next((int(m.group(1)) for m in map(_MYSQL_CODE.search, candidates) if m), None)
     if where is None and shell_code is None and mysql_code is None:
         return None
     # The numbered exception is more specific than preceding progress or ERROR lines.
-    message = next((line for line in lines if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
+    message = next((line for line in candidates if _SHELL_CODE.search(line) or _MYSQL_CODE.search(line)), None)
     if message is None:
-        message = next((line for line in lines if re.search(r"^ERROR:|Error|error|\(\w+Error\)", line)), None)
-    message = message if message is not None else lines[0]
+        message = next((line for line in candidates if re.search(r"^ERROR:|Error|error|\(\w+Error\)", line)), None)
+    message = message if message is not None else candidates[0]
     # A wrapped exception can carry several numbers; its final cause wins.
     message_codes = [match for pattern in (_SHELL_CODE, _MYSQL_CODE) for match in pattern.finditer(message)]
     code = (int(max(message_codes, key=lambda match: match.start()).group(1)) if message_codes else
@@ -117,6 +122,15 @@ class ShellWriter(object):
             raise ConnectorError("MySQL Shell changes are not run over an SSH connection: MySQL Shell would "
                                  "connect to the other members directly, outside the tunnel, with this connection's "
                                  "user and password; nothing was sent.")
+        mode = (getattr(conn, 'ssl_mode', None) or 'PREFERRED').upper()
+        if mode == 'VERIFY_IDENTITY':
+            raise ConnectorError('MySQL Shell changes are not offered when TLS mode is VERIFY_IDENTITY: '
+                                 'MySQL Shell checks the certificate authority on its sessions to other members, '
+                                 'not their host names. Use VERIFY_CA, or run the change in MySQL Shell.')
+        if mode == 'REQUIRED':
+            raise ConnectorError('MySQL Shell changes are not offered when TLS mode is REQUIRED without CA '
+                                 'verification: MySQL Shell falls back to PREFERRED on its sessions to other '
+                                 'members. Use VERIFY_CA, or run the change in MySQL Shell.')
         self._conn = conn
         self._shell = dict(shell or {})
         if not self._shell.get("path"):
@@ -128,18 +142,17 @@ class ShellWriter(object):
     def argv(self, defaults):
         """The MySQL Shell command line after the option file: JavaScript, no
         prompts (--no-wizard), nothing printed at start."""
-        return defaults + ["--js", "--no-wizard", "--quiet-start=2"]
+        from .lifecycle import _shell_plugin_flags
+        return defaults + _shell_plugin_flags(self._shell) + ["--js", "--no-wizard", "--quiet-start=2"]
 
     def run_write(self, script, extra_flags=None, timeout=None):
         from . import dbops, lifecycle
-        from .connector import _run_bounded, _same_dir, bundled_client_dir, checked_program
+        from .connector import _run_bounded, checked_shell_program
         password = getattr(self._conn, "password", None)
         tool = {"name": "mysqlsh", "path": self._shell["path"], "engine": "mysql"}
         try:
             with lifecycle._credentials(_connection(self._conn), tool) as (argv, env):
-                bundle = bundled_client_dir()
-                argv[0] = checked_program(self._shell["path"], self._shell.get("realpath"), bundled=bool(
-                    bundle and _same_dir(os.path.dirname(os.path.realpath(self._shell["path"])), bundle)))
+                argv[0] = checked_shell_program(self._shell["path"], self._shell.get("realpath"))
                 proc = _run_bounded(self.argv(argv), timeout or 120, input=(script or "").encode("utf-8"),
                                     env=env, kill_tree=True)
         except subprocess.TimeoutExpired:
