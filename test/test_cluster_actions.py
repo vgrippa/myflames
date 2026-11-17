@@ -154,7 +154,8 @@ class TestOffered(Home):
     def test_old_mysql_offers_no_group_change(self):
         report = F.report('ic-8.4-healthy')
         report['server_version'] = '8.0.12'
-        self.assertEqual([a for x in report['members'] for a in m.available_actions(report, x['key']) if a['enabled']], [])
+        self.assertEqual([a['id'] for x in report['members'] for a in m.available_actions(report, x['key'])
+                          if a['enabled']], ['stop_member'], 'START/STOP predate the topology UDFs')
 
     def test_workspace_reports_match_the_schema(self):
         from pathlib import Path
@@ -259,20 +260,6 @@ class TestPlans(Home):
 class Endpoints(Home):
     def setUp(self):
         super().setUp()
-        # These recordings predate server_id in the reviewed Galera identity.
-        # Supply explicit synthetic review evidence without editing the reader.
-        read_status = m.read_status
-        def with_guard_identity(*args, **kwargs):
-            report = copy.deepcopy(read_status(*args, **kwargs))
-            if report.get('engine') == 'mariadb':
-                report['server'].setdefault('server_id', '1')
-                node_name = (report.get('galera') or {}).get('node_name')
-                if node_name:
-                    report['server'].setdefault('wsrep_node_name', node_name)
-            return report
-        patcher = mock.patch.object(m, 'read_status', side_effect=with_guard_identity)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         from myflames.workspace_store import WorkspaceStore
         self.workspace = type('Workspace', (), {'store': WorkspaceStore(os.path.join(self.tmp.name, 'ws.sqlite3'))})()
         self.connection = {'host': '127.0.0.1', 'port': 34101, 'user': 'mf_admin', 'password': 'pw-secret'}

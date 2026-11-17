@@ -180,7 +180,7 @@ class TestActionCatalog(unittest.TestCase):
                     self.assertEqual((action['missing_privileges'], action['grant_sql'],
                                       action['privileges_unreadable']), ([], None, False))
                     if action['enabled']:
-                        self.assertIsNone(action['why_not'])
+                        self.assertIn(action['why_not'], (None, m._SHELL_RUNTIME_PRIVILEGES))
                         self.assertIsNone(action['fix'])
                         plan = m.plan_action(report, action['id'], action['member_key'], {'shell': self.SHELL})
                         self.assertEqual(action['kind'], reviewed_writes.worst_kind(plan['statements'])['kind'])
@@ -310,7 +310,8 @@ class TestActionCatalog(unittest.TestCase):
         actions = self.actions(report)
         for aid in self.CLUSTERSET:
             self.assertIn(aid, actions)
-            self.assertEqual(actions[aid]['why_not'], 'This cluster is not part of an InnoDB ClusterSet.')
+            self.assertEqual(actions[aid]['why_not'], 'This cluster is not part of an InnoDB ClusterSet. ' +
+                             m._SHELL_RUNTIME_PRIVILEGES)
             self.assert_refused(report, actions[aid])
         report = F.report('ic-8.4-clusterset-primary')
         report['clusterset']['clusters'] = [c for c in report['clusterset']['clusters'] if c['local']]

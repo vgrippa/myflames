@@ -88,6 +88,16 @@ CLUSTERSET_SQL = ("/*myflames:cluster*/ SELECT m.clusterset_id, m.cluster_id, m.
                   "m.invalidated, s.domain_name FROM mysql_innodb_cluster_metadata.v2_cs_members m JOIN "
                   "mysql_innodb_cluster_metadata.v2_cs_clustersets s ON s.clusterset_id = m.clusterset_id")
 
+# Synthetic catalog inputs, not part of the historical live captures. Keep
+# their admin behavior explicit while privilege-denial tests supply their own
+# grants. ALL expands only static privileges, so dynamic grants are separate.
+ADMIN_GRANTS = [
+    "GRANT ALL PRIVILEGES ON *.* TO `mf_admin`@`localhost` WITH GRANT OPTION",
+    "GRANT CLONE_ADMIN, CONNECTION_ADMIN, GROUP_REPLICATION_ADMIN, PERSIST_RO_VARIABLES_ADMIN, "
+    "REPLICATION_APPLIER, REPLICATION_SLAVE_ADMIN, ROLE_ADMIN, SYSTEM_VARIABLES_ADMIN, "
+    "TRANSACTION_GTID_TAG ON *.* TO `mf_admin`@`localhost` WITH GRANT OPTION",
+]
+
 
 def _with_clusterset_answer(calls):
     if any(c[0] == CLUSTERSET_SQL for c in calls) or \
@@ -111,9 +121,16 @@ def recorded(name, edit=None):
         "'%s'" % n for n in sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES)))
     calls = [[preflight_sql if c[0].startswith("/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE") else c[0]] + c[1:]
              for c in data["calls"]]
+    if "mariadb" in _version(data).lower():
+        # Older captures omit server_id. Supply a marked synthetic read value
+        # without altering their public report or the archived recording.
+        calls = [[c[0], set_pairs(c[1], {"server_id": "1"})] + c[2:]
+                 if c[0] == preflight_sql else c for c in calls]
     calls = _with_clusterset_answer(calls) + [
         [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
-        [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, '']]
+        [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, ''],
+        ["/*myflames:cluster*/ SELECT USER(), CURRENT_USER() LIMIT 1", batch([["mf_admin@client", "mf_admin@localhost"]])],
+        ["/*myflames:cluster*/ SHOW GRANTS", batch([[line] for line in ADMIN_GRANTS])]]
     return ReplayConn(calls, edit=edit, version=_version(data)), data
 
 
@@ -352,7 +369,7 @@ SERVER_UUIDS = ["11111111-1111-11f0-8a00-0242ac130002", "22222222-2222-11f0-8a00
 
 def _mariadb_vars(**extra):
     out = {"version": "11.8.9-MariaDB-ubu2404-log", "version_comment": "mariadb.org binary distribution",
-           "performance_schema": "OFF", "hostname": "galera-1", "port": "3306", "wsrep_on": "OFF",
+           "performance_schema": "OFF", "hostname": "galera-1", "port": "3306", "server_id": "1", "wsrep_on": "OFF",
            "wsrep_provider": "none", "wsrep_cluster_name": "my_wsrep_cluster", "wsrep_cluster_address": "",
            "wsrep_node_name": "galera-1", "wsrep_node_address": "", "wsrep_node_incoming_address": "AUTO",
            "wsrep_desync": "OFF"}
@@ -627,6 +644,10 @@ class ScenarioConn(object):
 
     def _answer(self, body):
         sc = self.scenario
+        if body == "SELECT USER(), CURRENT_USER() LIMIT 1":
+            return batch([["mf_admin@client", "mf_admin@localhost"]])
+        if body == "SHOW GRANTS":
+            return batch([[line] for line in ADMIN_GRANTS])
         if body.startswith("SHOW GLOBAL VARIABLES WHERE Variable_name IN"):
             names = [n.strip().strip("'") for n in body.split("(", 1)[1].rstrip(")").split(",")]
             return batch([[n, sc["variables"][n]] for n in names if n in sc["variables"]])

@@ -239,7 +239,7 @@ GALERA_VARIABLES = (
 #: Variables read with the standard preflight. A name the server does not
 #: have is simply absent from the answer (SHOW GLOBAL VARIABLES WHERE ... IN).
 EXTRA_VARIABLES = GALERA_VARIABLES + (
-    "report_port", "server_uuid",
+    "report_port", "server_uuid", "server_id", "partial_revokes",
     "group_replication_group_name", "group_replication_single_primary_mode", "group_replication_local_address",
     "group_replication_group_seeds", "group_replication_bootstrap_group",
     "group_replication_preemptive_garbage_collection",
@@ -708,7 +708,7 @@ def read_status(conn, _identity=None):
                 _finish(report)
                 return report
         raise
-    report = _base(server)
+    report = _ActionReport(_base(server), conn, server.variables)
     report["statements"].append("SHOW GLOBAL VARIABLES")
     wsrep_on = _on(server.var("wsrep_on"))
     if is_galera_node(server.variables):
@@ -2074,7 +2074,32 @@ GR_UDF_MIN = (8, 0, 13)
 #: primary's transactions), so a send waits longer than a read.
 ACTION_TIMEOUT = 120
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_GR_PRIVILEGE = "SUPER or GROUP_REPLICATION_ADMIN"
+_GR_PRIVILEGE = "GROUP_REPLICATION_ADMIN or SUPER"
+
+
+class _ActionReport(dict):
+    """Request-local catalog inputs, never fields in the public JSON report.
+
+    Plain status/CLI reads do not need grants. Keep the originating connection
+    only for a lazy catalog read, shared by every member and overview action.
+    MariaDB's additional reviewed identity comes from the same preflight as
+    hostname/port and the wsrep variables, without changing cluster-1.0.
+    """
+    def __init__(self, report, conn, variables):
+        super().__init__(report)
+        self._action_conn = conn
+        self._action_grants = None
+        self._partial_revokes = _on(variables.get("partial_revokes")) is True
+        self._galera_identity = ({"server_id": _number(variables.get("server_id")),
+                                  "wsrep_node_name": _text(variables.get("wsrep_node_name"))}
+                                 if report.get("engine") == "mariadb" else {})
+
+    def action_grants(self):
+        from . import dbops
+        if self._action_grants is None:
+            self._action_grants = _grant_model(self, dbops.read_grants(self._action_conn, CLUSTER_TAG),
+                                              self._partial_revokes)
+        return self._action_grants
 
 
 def _version_of(report):
@@ -2149,6 +2174,140 @@ _SHELL_SSH_NOTE = ("MySQL Shell changes are not offered over an SSH connection: 
                    "members directly, outside the tunnel, with this connection's user and password. Run them in "
                    "MySQL Shell from a host that reaches the members.")
 
+# One engine table maps action id and execution route to versioned requirements.
+# Each requirement is a tuple of acceptable alternatives, least privilege first.
+# MySQL: udf_utils.cc:35-87 and sql_parse.cc START/STOP_GROUP_REPLICATION;
+# Shell: accounts.cc:122-175,244-324, Topology_configuration_command::prepare.
+# A Shell topology entry uses the full list below, never a SUPER substitute.
+MYSQL_ACTION_PRIVILEGES = {
+    "switchover": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                   "mysqlsh": "shell_admin"},
+    "switch_to_single_primary": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                                 "mysqlsh": "shell_admin"},
+    "switch_to_multi_primary": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                                "mysqlsh": "shell_admin"},
+    "start_member": {"sql": ((GR_MIN_VERSION, (("SUPER",),)),
+                              ((8, 0, 0), (("GROUP_REPLICATION_ADMIN", "SUPER"),)))},
+    "stop_member": {"sql": ((GR_MIN_VERSION, (("SUPER",),)),
+                             ((8, 0, 0), (("GROUP_REPLICATION_ADMIN", "SUPER"),)))},
+    # These AdminAPI methods have no ensure_user_privileges call (review B5).
+    "rejoin_instance": {"mysqlsh": "shell_runtime"},
+    "set_primary_cluster": {"mysqlsh": "shell_runtime"},
+    "force_primary_cluster": {"mysqlsh": "shell_runtime"},
+    "rejoin_cluster": {"mysqlsh": "shell_runtime"},
+}
+MYSQL_SHELL_GLOBAL_PRIVILEGES = (
+    ((0, 0, 0), ("RELOAD", "SHUTDOWN", "PROCESS", "FILE", "SELECT", "REPLICATION SLAVE",
+                 "REPLICATION CLIENT", "CREATE USER")),
+    ((8, 0, 0), ("SYSTEM_VARIABLES_ADMIN", "PERSIST_RO_VARIABLES_ADMIN", "REPLICATION_SLAVE_ADMIN",
+                 "GROUP_REPLICATION_ADMIN", "ROLE_ADMIN", "CONNECTION_ADMIN")),
+    ((8, 0, 17), ("EXECUTE", "CLONE_ADMIN")),
+    ((8, 0, 18), ("REPLICATION_APPLIER",)),
+    ((8, 3, 0), ("TRANSACTION_GTID_TAG",)),
+)
+MYSQL_SHELL_SCHEMA_PRIVILEGES = (
+    ("mysql", ("DELETE", "INSERT", "UPDATE")),
+) + tuple((schema, ("ALTER", "ALTER ROUTINE", "CREATE", "CREATE ROUTINE", "CREATE TEMPORARY TABLES",
+                    "CREATE VIEW", "DELETE", "DROP", "EVENT", "EXECUTE", "INDEX", "INSERT", "LOCK TABLES",
+                    "REFERENCES", "SHOW VIEW", "TRIGGER", "UPDATE"))
+          for schema in (METADATA_SCHEMA, METADATA_SCHEMA + "_bkp", METADATA_SCHEMA + "_previous"))
+
+# MariaDB: sys_vars.cc Sys_wsrep_desync / Sys_wsrep_provider_options and
+# set_var.cc on_check_access_global -> privilege.h SUPER_ACL (review D1/E1).
+# Resolve through the existing variable-specific dbops table, not a new rule.
+MARIADB_ACTION_PRIVILEGES = {"desync_node": "wsrep_desync", "resync_node": "wsrep_desync",
+                             "bootstrap_pc": "wsrep_provider_options"}
+_PRIVILEGES_UNREADABLE = ("Privileges could not be read; the server refuses the change if one is missing.")
+_SHELL_RUNTIME_PRIVILEGES = "MySQL Shell checks the privileges it needs when it runs."
+_GRANT_FIX = "Run the statement below as an administrator, then Refresh."
+
+
+def _grant_model(report, grants, partial_revokes=False):
+    """Normalize dbops.read_grants or an existing privileges model once.
+
+    An absent, failed, empty or unparsed read is unknown, never a denial.
+    CURRENT_USER(), not the login name or a role's grantee, names the GRANT.
+    """
+    from . import privileges
+    if not isinstance(grants, dict) or not grants.get("checked", True):
+        return None
+    if "global" in grants and "dynamic" in grants:
+        model = dict(grants)
+    else:
+        model = privileges.parse_grants(grants.get("grants"), report.get("engine"), report.get("server_version"),
+                                         partial_revokes=partial_revokes)
+        model["account"] = grants.get("account")
+    if not model.get("grants") or model.get("unparsed") or not model.get("fresh_session", True):
+        return None
+    account = model.get("account")
+    if not isinstance(account, str) or "@" not in account:
+        return None
+    try:
+        privileges.quote_account(*account.rsplit("@", 1))
+    except ValueError:
+        return None
+    model.update(engine=report.get("engine"), version=report.get("server_version"))
+    return model
+
+
+def _catalog_grants(report, checks):
+    if "grants" in checks:
+        return _grant_model(report, checks["grants"], getattr(report, "_partial_revokes", False))
+    return report.action_grants() if isinstance(report, _ActionReport) else None
+
+
+def _privilege_requirements(report, action):
+    """(requirements, Shell-runtime-only). Specs retain scope/grant option.
+
+    Alternatives stay tuples internally; the catalog displays each privilege
+    together with its scope and WITH GRANT OPTION when those are required.
+    """
+    from . import dbops
+    base, _ = _action_name(action["id"])
+    version = _version_of(report)
+    if report.get("engine") == "mariadb":
+        variable = MARIADB_ACTION_PRIVILEGES.get(base)
+        if not variable:
+            return [], False
+        need = dbops.required_privileges("set_global", "mariadb", version, variable)
+        # Both wsrep variables have a single-privilege alternative today.
+        # Preserve the existing helper's alternatives without parsing grants.
+        alternatives = tuple(a[0] for a in need["any_of"])
+        return [(alternatives, None, False)], False
+    rules = MYSQL_ACTION_PRIVILEGES.get(base, {}).get(action["via"], ())
+    if rules == "shell_runtime":
+        return [], True
+    if rules == "shell_admin":
+        names = sorted(p for since, names in MYSQL_SHELL_GLOBAL_PRIVILEGES if version >= since for p in names)
+        return ([((p,), None, True) for p in names] +
+                [((p,), schema, True) for schema, names in MYSQL_SHELL_SCHEMA_PRIVILEGES for p in names]), False
+    requirements = ()
+    for since, needed in rules:
+        if version >= since:
+            requirements = needed
+    return [(alternatives, None, False) for alternatives in requirements], False
+
+
+def _privilege_label(privilege, database, grantable):
+    from .privileges import quote_identifier
+    return (privilege + (" ON %s.*" % quote_identifier(database) if database else "") +
+            (" WITH GRANT OPTION" if grantable else ""))
+
+
+def _grant_sql(missing, account):
+    """Advisory text only. No statement built here enters the write plan."""
+    from .privileges import quote_account, quote_identifier
+    account = quote_account(*account.rsplit("@", 1))
+    grouped = {}
+    for alternatives, database, grantable in missing:
+        names = grouped.setdefault((database, grantable), [])
+        if alternatives[0] not in names:
+            names.append(alternatives[0])
+    return "\n".join("GRANT %s ON %s TO %s%s;" %
+                     (", ".join(names), "%s.*" % quote_identifier(database) if database else "*.*", account,
+                      " WITH GRANT OPTION" if grantable else "")
+                     for (database, grantable), names in grouped.items())
+
 
 class ActionUnavailable(ValueError):
     """A catalog refusal, already worded for the user (including its fix)."""
@@ -2200,10 +2359,15 @@ def _tool_issue(report, action, checks):
         if tuple(shell["version_tuple"]) < minimum:
             return "This action needs MySQL Shell %s or later." % version, fix
     if report.get("kind") in ("group_replication", "innodb_cluster"):
-        usable, why = _gr_usable(report)
-        if not usable:
-            return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
         base, _ = _action_name(action["id"])
+        if base in ("start_member", "stop_member"):
+            if report.get("engine") != "mysql" or _version_of(report) < GR_MIN_VERSION:
+                return ("Needs MySQL 5.7.17 or later.",
+                        "Use a MySQL Group Replication member running MySQL 5.7.17 or later.")
+        else:
+            usable, why = _gr_usable(report)
+            if not usable:
+                return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
         if base in ("switchover", "switch_to_multi_primary", "switch_to_single_primary"):
             # Shell's shared Topology_configuration_command::prepare checks
             # every group member, but a MISSING metadata row is not a member
@@ -2377,8 +2541,42 @@ def _overview_issue(report, action):
 
 
 def _action_privileges(report, action, checks):
-    """Single hook for the next slice's privilege checks; no grants are guessed."""
+    """Always evaluate privileges; only override eligibility when it passed.
+
+    Shell's up-front validation requires affirmative scope/grant-option
+    evidence, including for schema privileges and partially revoked grants.
+    Other actions have only global requirements. Parsing and effective role /
+    partial-revoke semantics remain entirely in privileges.py.
+    """
+    from . import privileges
     action.update(missing_privileges=[], grant_sql=None, privileges_unreadable=False)
+    requirements, shell_runtime = _privilege_requirements(report, action)
+    note = _SHELL_RUNTIME_PRIVILEGES if shell_runtime else None
+    if not requirements:
+        if note:
+            action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
+        return action
+    model = _catalog_grants(report, checks)
+    if model is None:
+        action["privileges_unreadable"] = True
+        note = " ".join(n for n in (_PRIVILEGES_UNREADABLE, note) if n)
+    else:
+        missing = []
+        for alternatives, database, grantable in requirements:
+            held = [privileges.has(model, p, level="database" if database else "global", database=database,
+                                   grantable=grantable) for p in alternatives]
+            if True not in held:
+                missing.append((alternatives, database, grantable))
+        action["missing_privileges"] = [[_privilege_label(p, database, grantable) for p in alternatives]
+                                         for alternatives, database, grantable in missing]
+        if missing:
+            action["grant_sql"] = _grant_sql(missing, model["account"])
+            if action["enabled"]:
+                action.update(enabled=False,
+                              why_not="Needs " + "; and ".join(" or ".join(a) for a in action["missing_privileges"]) + ".",
+                              fix=_GRANT_FIX)
+    if note:
+        action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
     return action
 
 
@@ -2392,8 +2590,7 @@ def _evaluate_action(report, aid, label, danger, description, scope, checks, mem
     """
     local = _local_member(report)
     target = member if aid in _LOCAL_ACTIONS else local
-    via = ("mysqlsh" if _via_shell(report, aid) else "udf" if aid in
-           ("switchover", "switch_to_multi_primary", "switch_to_single_primary") else "sql")
+    via = _action_via(report, aid)
     # All these SQL/AdminAPI changes have dbops' risky classification. danger
     # remains the existing presentation hint, independently of write policy.
     action = {"schema_version": ACTION_SCHEMA_VERSION, "id": aid, "label": label, "scope": scope,
@@ -2557,9 +2754,16 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
 
 
 def action_checks(conn, report, action):
-    """Extra reads one action needs at plan and send time (a dict): the
-    bootstrap flag for a start, and MySQL Shell for an InnoDB Cluster."""
-    out = {}
+    """Read this action's privileges on the sending connection, never from a
+    cached catalog. Also check the bootstrap flag and MySQL Shell as needed."""
+    from . import dbops
+    requirements, _ = _privilege_requirements(report, {"id": action, "via": _action_via(report, action)})
+    # An explicit unknown prevents sibling catalog entries from triggering a
+    # lazy grants read when the selected action leaves validation to Shell.
+    out = {"grants": None}
+    if requirements:
+        out["grants"] = _grant_model(report, dbops.read_grants(conn, CLUSTER_TAG),
+                                     getattr(report, "_partial_revokes", False))
     if (report or {}).get("kind") == "innodb_cluster" and _via_shell(report, action):
         from .cluster_shell import find_shell
         out["shell"] = find_shell()
@@ -2575,8 +2779,10 @@ def action_checks(conn, report, action):
 
 
 def _server_identity(report):
+    server = dict(report.get("server") or {})
+    server.update(getattr(report, "_galera_identity", {}))
     return {"engine": report.get("engine"), "server_version": report.get("server_version"),
-            "server": dict(report.get("server") or {}), "kind": report.get("kind")}
+            "server": server, "kind": report.get("kind")}
 
 
 def _connected_text(report, local):
@@ -2605,7 +2811,8 @@ def plan_action(report, action, member_key=None, checks=None):
     if selected is None:
         raise ValueError("That change is not offered for this member now. Refresh and try again.")
     if not selected["enabled"]:
-        raise ActionUnavailable(selected["why_not"] + " " + selected["fix"])
+        raise ActionUnavailable(" ".join(text for text in
+                                        (selected["why_not"], selected["fix"], selected["grant_sql"]) if text))
     if selected["scope"] == "overview":
         member_key = local["key"]
     checks = checks or {}
@@ -2634,7 +2841,8 @@ def plan_action(report, action, member_key=None, checks=None):
         _plan_shell(report, plan, action, member, local, expect)
     elif kind in ("innodb_cluster", "group_replication"):
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
-        plan["facts"].append(["Privilege", "Needs %s" % _GR_PRIVILEGE])
+        plan["facts"].append(["Privilege", "Needs %s" %
+                              ("SUPER" if _version_of(report) < (8, 0, 0) else _GR_PRIVILEGE)])
         _plan_group(report, plan, action, member, local, checks, expect)
     else:
         galera = report.get("galera") or {}
@@ -2643,6 +2851,8 @@ def plan_action(report, action, member_key=None, checks=None):
         plan["facts"].append(["Privilege", "Needs SUPER"])
         _plan_galera(report, plan, action, member, expect)
     plan["expect"] = expect
+    if selected["why_not"]:
+        plan["warnings"].append(selected["why_not"])
     plan["statements"] = [CLUSTER_ACTION_TAG + s for s in plan["statements"]]
     plan["timeout_s"] = SHELL_TIMEOUT if plan.get("via") == "mysqlsh" else ACTION_TIMEOUT
     plan["checks"] = _checks(action, member, local)
@@ -2811,6 +3021,12 @@ def _plan_group(report, plan, action, member, local, checks, expect):
         plan["typed_guard"] = local.get("name") if local else None
         plan["undo"] = ("SELECT group_replication_switch_to_single_primary_mode();" if multi else
                         "SELECT group_replication_switch_to_multi_primary_mode();")
+
+
+def _action_via(report, action):
+    base, _ = _action_name(action)
+    return ("mysqlsh" if _via_shell(report, action) else "udf" if base in
+            ("switchover", "switch_to_multi_primary", "switch_to_single_primary") else "sql")
 
 
 def _via_shell(report, action):

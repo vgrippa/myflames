@@ -4613,12 +4613,14 @@ privileges_unreadable` (`docs/schemas/cluster-1.0.json#/$defs/action`). `scope` 
 `cluster_name` identifies a ClusterSet target (null when there is none).
 `via` is `sql`, `udf` or `mysqlsh`. `kind` uses `dbops.KINDS`; these global
 SQL and AdminAPI changes are `risky`, independently of the existing `danger`
-presentation hint. Enabled actions have null `why_not` and `fix`. Disabled
-actions have a short plain reason and a fix, selected by the first failing
+presentation hint. Enabled actions have null `fix`; `why_not` may carry an
+informational privilege warning. Disabled actions have a short plain reason
+and a fix, selected by the first failing
 check: target connection, tool/version, readable report, then topology and
-member state. Privilege evaluation has one hook (`_action_privileges`); this
-slice emits placeholders `missing_privileges: []`, `grant_sql: null`,
-`privileges_unreadable: false` and makes no privilege claim.
+member state, then missing privileges when those earlier checks passed.
+Privilege evaluation has one hook (`_action_privileges`) and still fills
+`missing_privileges`, `grant_sql` and `privileges_unreadable` when an earlier
+check disabled the action; that earlier reason and fix keep precedence.
 
 `target` is `{self: boolean, member_name: string | null}`. Local-node SQL must
 run on the selected member; another member stays disabled with both server
@@ -4629,11 +4631,146 @@ through saved connections.
 
 `POST /api/live/cluster/plan` reads the server again and evaluates the same
 catalog. `plan_action` raises `ActionUnavailable` for a disabled entry with
-exactly `why_not + " " + fix`; the HTTP response is 400 with that exact error
-text and no review token. Unknown ids retain the existing refusal. Overview
+the non-empty `why_not`, `fix` and `grant_sql` joined by single spaces; newlines
+inside `grant_sql` are preserved. The HTTP response is 400 with that exact
+error text and no review token. Unknown ids retain the existing refusal. Overview
 plans may omit `member_key`; the plan binds the connected member. Execution
 still rechecks the reviewed statements and expectations against fresh state
 (`action_checks`, `plan_action`, `execute_action`, `reviewed_writes.execute`).
+
+##### Privileges per action
+
+`MYSQL_ACTION_PRIVILEGES`, `MARIADB_ACTION_PRIVILEGES` and the two
+`MYSQL_SHELL_*_PRIVILEGES` tables are the requirements source. Each inner
+`missing_privileges` list contains acceptable alternatives, least privilege
+first; each inner list is a separate requirement. SQL and UDF requirements are global
+(`ON *.*`). Shell topology requirements also retain schema scope and
+`WITH GRANT OPTION`. `SUPER` alone never substitutes for Shell's full list.
+
+The file:line references below identify the implementation in this checkout.
+The recorded upstream evidence in `cluster.py` identifies MySQL 9.7 trunk
+`sql/sql_parse.cc:3560–3564,3653–3657` for START/STOP and
+`plugin/group_replication/src/udf/udf_utils.cc:35–102` for UDF access;
+MySQL Shell `modules/adminapi/common/accounts.cc:122–175,244–324` for its
+administrator list and
+`modules/adminapi/cluster/topology_configuration_command.cc:231–245` for
+topology preparation. MariaDB's `sql/sys_vars.cc` definitions
+`Sys_wsrep_desync` / `Sys_wsrep_provider_options` use
+`sql/set_var.cc` `on_check_access_global` and `sql/privilege.h` `SUPER_ACL`;
+these two variables keep `SUPER`, including on versions that split other
+administrative privileges. Those upstream references are the source review
+recorded with the tables, separate from fixture or live-test evidence.
+
+| Action and route | Engine / version | Required privileges | Source file:line |
+| --- | --- | --- | --- |
+| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2189` |
+| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2191` |
+| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2190` |
+| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2192` |
+| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
+| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
+| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2187` |
+| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
+| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.14+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2188` |
+| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.27+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
+| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
+| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
+| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2196` |
+| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.27+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2197` |
+| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2218`; `myflames/dbops.py:1508` |
+| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2218`; `myflames/dbops.py:1508` |
+| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2219`; `myflames/dbops.py:1508` |
+| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:2672` (MySQL kinds); `myflames/cluster.py:2681` (MariaDB-only Galera branch) |
+
+For the three Shell topology actions, the global list is cumulative by
+**server** version, with `WITH GRANT OPTION` for every required privilege:
+
+| Server version | Global privileges added | Source file:line |
+| --- | --- | --- |
+| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:2200`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:2202`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:2204`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:2205`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:2206`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+
+The schema requirements below also need grant option. A global grant can
+satisfy a schema requirement when `privileges.has` proves its scope and grant
+option, respecting partial revokes. Dynamic grant option is per privilege;
+a separate static `GRANT OPTION` does not supply it.
+
+| Schema | Privileges | Source file:line |
+| --- | --- | --- |
+| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:2209`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:2210`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+
+##### Grant reads, suggestions and refusals
+
+Status reads keep a request-local `_ActionReport`: `read_status` itself does
+not read grants, and CLI/MCP reports expose neither grants nor the connection.
+Building the workspace catalog lazily reads `dbops.read_grants` for actions
+with a local requirement list and shares the parsed model across the request.
+At plan and send time, `action_checks` reads fresh privileges on the
+connection that will send the change, even if the report has cached catalog
+grants. It never borrows another member's or saved connection's grants.
+Runtime-only Shell actions skip this read, including while `plan_action`
+evaluates sibling catalog entries. Their informational `why_not` is
+"MySQL Shell checks the privileges it needs when it runs." Shell remains
+responsible for its member logins and the privileges needed by each step.
+
+`dbops.read_grants` reads tagged `SELECT USER(), CURRENT_USER() LIMIT 1` and
+plain `SHOW GRANTS`. The shared `privileges.parse_grants` / `privileges.has`
+model handles effective login-time roles and partial revokes; Cluster adds no
+grant parser. For an action with a local requirement list, a failed, empty,
+unparsed or non-fresh grant model, or an absent or invalid `CURRENT_USER()`
+account, is unknown: `privileges_unreadable: true`,
+`missing_privileges: []`, `grant_sql: null`. It does not disable an otherwise
+eligible action. It appends exactly "Privileges could not be read; the server
+refuses the change if one is missing." to `why_not`, and an enabled plan keeps
+that sentence in `warnings`. Earlier topology or target refusals remain.
+
+When a readable model cannot satisfy a requirement, `missing_privileges`
+names each missing alternative with its required scope and grant option.
+An otherwise eligible entry becomes disabled with `why_not` equal to
+`"Needs " + "; and ".join(" or ".join(row) for row in missing_privileges) + "."`
+and `fix` exactly "Run the statement below as an administrator, then Refresh."
+An earlier refusal keeps its own reason and fix, while still carrying the
+missing privileges and GRANT text.
+
+`grant_sql` is advisory SQL for an administrator. It selects the first,
+least-privilege alternative from each missing requirement, deduplicates names
+and groups them by scope and grant option. The grantee is the account returned
+by `CURRENT_USER()`, split at the final `@` and quoted by `quote_account`
+(backticks doubled inside each identifier), never `USER()`, a profile's user
+name or a role's grantee. For example:
+
+```sql
+GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;
+```
+
+For Shell topology checks on MySQL 8.4 with only USAGE, the full suggestion
+includes the global line and all four schema lines, each with grant option:
+
+```sql
+GRANT CLONE_ADMIN, CONNECTION_ADMIN, CREATE USER, EXECUTE, FILE, GROUP_REPLICATION_ADMIN, PERSIST_RO_VARIABLES_ADMIN, PROCESS, RELOAD, REPLICATION CLIENT, REPLICATION SLAVE, REPLICATION_APPLIER, REPLICATION_SLAVE_ADMIN, ROLE_ADMIN, SELECT, SHUTDOWN, SYSTEM_VARIABLES_ADMIN, TRANSACTION_GTID_TAG ON *.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT DELETE, INSERT, UPDATE ON `mysql`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata_bkp`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata_previous`.* TO `monitor`@`%` WITH GRANT OPTION;
+```
+
+Only missing groups appear in an actual suggestion. GRANT text never enters
+the action's reviewed statements or executes through the Cluster action.
+A privilege refusal from `/api/live/cluster/plan`, for example, is HTTP 400
+with exactly:
+
+```text
+Needs GROUP_REPLICATION_ADMIN or SUPER. Run the statement below as an administrator, then Refresh. GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;
+```
+
+It issues no review token and sends no write, regardless of a caller-supplied
+`enabled`, `missing_privileges` or `grant_sql` value.
+
+##### State and execution
 
 The enabled-state rules below apply to catalog entries; failure disables the
 entry instead of hiding it. Sources and line references are in the "reviewed
@@ -4743,7 +4880,12 @@ but disabled on an ERROR member because the plugin still runs.
 and connected member (key, UUID, name, role, state), component, quorum,
 topology, group members and states, `wsrep_desync`, `wsrep_on`, local state,
 `wsrep_last_committed` for bootstrap, and `bootstrap_group` for start. State
-drift refuses the reviewed operation before sending. Endpoints:
+drift refuses the reviewed operation before sending. MariaDB Galera also
+binds the freshly read `server_id`, `hostname`, `port` and `wsrep_node_name`:
+the preflight retains the extra identity on `_ActionReport`, outside the
+public `cluster-1.0` server object. Before a Galera write, a same-session
+`session_guard` compares all four global values; a mismatch refuses before
+the reviewed action statement runs. Endpoints:
 `POST /api/live/cluster/plan` (`action`, `member_key` for member actions;
 `_CONNECTION_PATHS`, saved password like the views; returns an enabled plan
 with `policy` and `review_token`) and `POST /api/live/cluster/action`
@@ -4755,7 +4897,10 @@ described above; `myflames cluster` and `cluster_status` do not carry it.
 Tests: `test/test_cluster.py` (complete catalogs, eligibility, versions,
 optional variables and identical refusals), `test/test_cluster_actions.py`
 and `test/test_cluster_shell.py` (plans, statements, typed names, review-token
-and audit guards, drift before sending, unknown outcomes), and
+and audit guards, fresh grants on the sending connection, runtime-only Shell
+actions without grant reads, drift before sending, unknown outcomes),
+`test/test_cluster_privileges.py` (versioned requirements, GRANT text, scope,
+grant option, unreadable grants and the Galera identity guard), and
 `test/test_ui_http.py` (exact disabled-action HTTP 400 text, no review token,
 and a fresh read that supersedes the displayed catalog).
 

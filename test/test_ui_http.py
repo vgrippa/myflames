@@ -142,6 +142,38 @@ class TestWriteHTTP(unittest.TestCase):
             self.assertEqual((status, response), (400, {'error': disabled['why_not'] + ' ' + disabled['fix']}))
             issue.assert_not_called()
 
+    def test_privilege_disabled_cluster_plan_returns_400_with_grant_and_no_token(self):
+        from test_cluster_privileges import GrantsClient as BaseGrantsClient
+
+        class GrantsClient(BaseGrantsClient):
+            # Special methods must be on the fake itself; __getattr__ cannot
+            # forward a context manager while retaining its grant overrides.
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+
+        conn = GrantsClient()
+        tokens = ui._review_tokens(self.server)
+        before = dict(tokens.entries)
+        expected = ('Needs GROUP_REPLICATION_ADMIN or SUPER. '
+                    'Run the statement below as an administrator, then Refresh. '
+                    'GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;')
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                mock.patch.object(conn, 'close', wraps=conn.close) as close, \
+                mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+            status, response = self.post('/api/live/cluster/plan', {
+                'connection': self.connection, 'action': 'switch_to_multi_primary',
+                'enabled': True, 'missing_privileges': [], 'grant_sql': 'GRANT SUPER ON *.* TO attacker;'})
+        self.assertEqual((status, response), (400, {'error': expected}))
+        self.assertNotIn('review_token', response)
+        issue.assert_not_called()
+        self.assertEqual(dict(tokens.entries), before)
+        self.assertEqual(conn.writes, [])
+        close.assert_called_once_with()
+        self.assertEqual(conn.reads.count(cluster.CLUSTER_TAG + 'SHOW GRANTS'), 1)
+
     def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
         self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)
         self.assertNotIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)

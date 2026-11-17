@@ -443,16 +443,65 @@ class TestPlans(unittest.TestCase):
 
     def test_action_checks_records_ssh_only_for_shell_actions(self):
         report = F.report('ic-8.4-healthy')
+        grants = {'checked': True, 'account': 'mf_admin@localhost', 'grants': F.ADMIN_GRANTS}
+        expected_grants = m._grant_model(report, grants)
         with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
             for host in (None, '', 'bastion.example'):
                 conn = type('Conn', (), {'ssh_host': host})()
-                self.assertEqual(m.action_checks(conn, report, 'switch_to_multi_primary'),
-                                 dict(CHECKS, ssh=bool(host)))
-                self.assertEqual(m.action_checks(conn, report, 'switchover'), {})
-            self.assertEqual(m.action_checks(object(), report, 'switch_to_multi_primary'), dict(CHECKS, ssh=False))
+                with mock.patch.object(dbops, 'read_grants', return_value=grants) as read_grants:
+                    self.assertEqual(m.action_checks(conn, report, 'switch_to_multi_primary'),
+                                     dict(CHECKS, ssh=bool(host), grants=expected_grants))
+                    read_grants.assert_called_once_with(conn, m.CLUSTER_TAG)
+                    read_grants.reset_mock()
+                    self.assertEqual(m.action_checks(conn, report, 'switchover'), {'grants': expected_grants})
+                    read_grants.assert_called_once_with(conn, m.CLUSTER_TAG)
+            with mock.patch.object(dbops, 'read_grants', return_value=grants):
+                self.assertEqual(m.action_checks(object(), report, 'switch_to_multi_primary'),
+                                 dict(CHECKS, ssh=False, grants=expected_grants))
             replica = F.report('ic-8.4-clusterset-replica')
             conn = type('Conn', (), {'ssh_host': 'bastion.example'})()
-            self.assertEqual(m.action_checks(conn, replica, 'switchover'), dict(CHECKS, ssh=True))
+            with mock.patch.object(dbops, 'read_grants', return_value=grants):
+                self.assertEqual(m.action_checks(conn, replica, 'switchover'),
+                                 dict(CHECKS, ssh=True, grants=expected_grants))
+
+    def test_action_checks_reads_fresh_grants_on_the_sending_connection(self):
+        from test_cluster_privileges import GrantsClient, statement
+        source = GrantsClient(grants=[statement(['GROUP_REPLICATION_ADMIN'])])
+        report = m.with_actions(m.read_status(source))
+        self.assertTrue(next(a for a in report['actions'] if a['id'] == 'switch_to_multi_primary')['enabled'])
+        sender = GrantsClient(account='sender@%')
+        checks = m.action_checks(sender, report, 'switch_to_multi_primary')
+        with self.assertRaises(m.ActionUnavailable) as raised:
+            m.plan_action(report, 'switch_to_multi_primary', checks=checks)
+        self.assertEqual(str(raised.exception),
+                         'Needs GROUP_REPLICATION_ADMIN or SUPER. '
+                         'Run the statement below as an administrator, then Refresh. '
+                         'GRANT GROUP_REPLICATION_ADMIN ON *.* TO `sender`@`%`;')
+        sender.grants = [statement(['GROUP_REPLICATION_ADMIN'])]
+        checks = m.action_checks(sender, report, 'switch_to_multi_primary')
+        self.assertEqual(m.plan_action(report, 'switch_to_multi_primary', checks=checks)['statements'],
+                         [TAG + 'SELECT group_replication_switch_to_multi_primary_mode();'])
+        self.assertEqual(source.reads.count(m.CLUSTER_TAG + 'SHOW GRANTS'), 1)
+        self.assertEqual(sender.reads.count(m.CLUSTER_TAG + 'SHOW GRANTS'), 2)
+
+    def test_runtime_only_shell_actions_do_not_read_grants(self):
+        cases = (('ic-8.4-member-offline', 'rejoin_instance'),
+                 ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
+                 ('ic-8.4-clusterset-replica', 'force_primary_cluster'),
+                 ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster'))
+        for scenario, aid in cases:
+            with self.subTest(action=aid):
+                conn = F.conn(scenario)
+                report = m.read_status(conn)
+                target = missing(report)['key'] if aid == 'rejoin_instance' else None
+                with mock.patch.object(dbops, 'read_grants', side_effect=AssertionError('no grants read needed')), \
+                        mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
+                    checks = m.action_checks(conn, report, aid)
+                    self.assertEqual(checks, dict(CHECKS, ssh=False, grants=None))
+                    plan = m.plan_action(report, aid, target, checks)
+                    self.assertEqual(plan['via'], 'mysqlsh')
+                    self.assertIn('MySQL Shell checks the privileges it needs when it runs.', plan['warnings'])
+                    self.assertFalse(any('Privileges could not be read' in warning for warning in plan['warnings']))
 
     def test_clusterset_plans(self):
         primary = F.report('ic-8.4-clusterset-primary')
