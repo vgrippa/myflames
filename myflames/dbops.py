@@ -1061,14 +1061,18 @@ _TARGET_ERROR = re.compile(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?ERROR\
                            r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):", re.M)
 TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one you reviewed. Nothing was sent. "
                             "Refresh and review again.")
+# Both clients keep their delimiter in a 16-byte buffer. None of these
+# candidates contains whitespace, quoting or a client backslash command.
+_TARGET_DELIMITERS = ("$$", "//", "__mf_end_1__", "__mf_end_2__")
 
 
 def target_session_guard(engine, identity):
     """One SQL line bound only to a previously reviewed server identity.
 
     A scalar subquery returns NULL on a match and two rows on a mismatch
-    (ERROR 1242). Send it FIRST, in the write's own batch client, without
-    --force or reconnect. Missing or unsafe identity values fail closed.
+    (ERROR 1242). Use target_guarded_script to send it in the SAME query
+    packet as each write, without --force or reconnect. Missing or unsafe
+    identity values fail closed.
     Like READ_ONLY_SESSION_GUARD, the returned list is review/audit metadata.
     """
     from .collectors import _sql_string
@@ -1114,16 +1118,58 @@ def target_session_guard(engine, identity):
     return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
 
 
-def target_guard_failed(exc):
-    """Refusal details for script line 1, or None when its outcome is unknown.
+def target_guarded_script(guard, statements):
+    """Return (client input, packet start lines) for reviewed SQL.
 
-    A transport error at that line still has an unknown outcome. Only a
-    server answer proves the batch stopped before the reviewed statements.
-    Error 1242 is the SQL guard's deliberate mismatch; a different server
-    error means the check could not run, not that another server answered.
-    Existing boolean callers can still test the returned details directly.
+    DELIMITER is a client command, even in --binary-mode. Each delimited
+    buffer becomes one COM_QUERY containing the identity check followed by
+    its statement. The server stops that packet at its first error; batch
+    mode stops before sending the next packet. Keep the reviewed SQL intact,
+    including newlines and any internal password-mode setup statements.
+    Audit/review metadata remains the original guard plus statements.
+    """
+    statements = list(statements)
+    if len(guard) != 1 or not guard[0].endswith(";") or not statements or \
+            not all(isinstance(s, str) and s.strip() for s in statements):
+        raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
+    delimiter = next((d for d in _TARGET_DELIMITERS
+                      if all(d not in s for s in list(guard) + statements)), None)
+    if delimiter is None:
+        raise ValueError("No safe SQL packet delimiter is available for these statements. Nothing was sent. "
+                         "Review statements without all of the reserved delimiters.")
+    parts, starts, line = ["DELIMITER " + delimiter + "\n"], [], 2
+    for statement in statements:
+        starts.append(line)
+        # A fresh line keeps a trailing -- or # comment from swallowing the
+        # delimiter and merging this packet with the next one.
+        packet = guard[0] + " " + statement + "\n" + delimiter + "\n"
+        parts.append(packet)
+        line += packet.count("\n")
+    return "".join(parts), tuple(starts)
+
+
+def target_guard_failed(exc, packet_lines=None):
+    """Refusal details for a guard error, or None without definite evidence.
+
+    With packet_lines, 1242 at a packet start proves that its statement and
+    all later ones were not executed; statement_index counts earlier ones.
+    Other packet errors belong to normal statement error handling. Without
+    a packet map, preserve the first-line contract used by MySQL Shell.
+    Transport failures never prove a guard refusal.
     """
     match = _TARGET_ERROR.search(str(exc))
+    if packet_lines is not None:
+        # A packet's start line identifies the reviewed statement, not the
+        # substatement within it. Only the guard's deliberate 1242 proves an
+        # identity mismatch; other errors use normal statement error mapping.
+        if not match or int(match.group(1)) != 1242 or int(match.group(2)) not in packet_lines:
+            return None
+        index = packet_lines.index(int(match.group(2)))
+        message = TARGET_IDENTITY_MISMATCH if index == 0 else (
+            "The server answering this connection is not the one you reviewed. %s ran; "
+            "this statement and the remaining statements were not sent. Refresh and review again."
+            % ("The first statement" if index == 1 else "The first %d statements" % index))
+        return {"outcome": "identity_mismatch", "message": message, "statement_index": index}
     if not match or int(match.group(2)) != 1 or 2000 <= int(match.group(1)) <= 2999:
         return None
     if int(match.group(1)) == 1242:
@@ -1136,14 +1182,29 @@ def target_guard_failed(exc):
                        % message.rstrip(".")}
 
 
-def shift_guard_error(exc):
-    """Remove the guard's one-line offset from numbered client errors only."""
+def shift_guard_error(exc, packet_lines=None):
+    """Map packet start lines to 1-based statement indices.
+
+    Without a packet map, keep the one-line prefix contract used by Shell.
+    An unrecognized packet line maps to zero so it cannot falsely identify
+    a completed statement. Never rewrite a line quoted in the SQL echo.
+    """
     from .connector import ConnectorError
 
     def shift(match):
-        return match.group(0)[:match.start(2) - match.start()] + str(max(1, int(match.group(2)) - 1)) + ":"
+        line = int(match.group(2))
+        mapped = (packet_lines.index(line) + 1 if line in packet_lines else 0) \
+            if packet_lines is not None else max(1, line - 1)
+        return match.group(0)[:match.start(2) - match.start()] + str(mapped) + ":"
 
-    return ConnectorError(_TARGET_ERROR.sub(shift, str(exc)))
+    text = str(exc)
+    if packet_lines is not None:
+        match = _TARGET_ERROR.search(text)
+        if match:
+            # MariaDB echoes the whole packet before the error. That echo
+            # can contain passwords, or misleading statement/line text.
+            text = text[match.start():]
+    return ConnectorError(_TARGET_ERROR.sub(shift, text))
 
 
 def normalize_type(value):

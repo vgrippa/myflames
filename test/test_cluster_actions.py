@@ -297,7 +297,7 @@ class Endpoints(Home):
         plan = self.plan(conn, 'desync_node', local(report)['key'])
         result = self.send(conn, plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(conn.writes, ['\n'.join(plan['session_guard'] + ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])])
+        self.assertEqual(conn.writes, [dbops.target_guarded_script(plan['session_guard'], plan['statements'])[0]])
         (record,) = self.audit()
         self.assertEqual((record['operation'], record['status'], record['connection']['engine']),
                          ('cluster_action', 'ok', 'mariadb'))

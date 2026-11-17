@@ -1,7 +1,7 @@
 """Synthetic identity supplements for recordings made before the target guard.
 
-Keep recorded writes unchanged. The adapter accepts the new prefix, records
-its full input, and shifts the old client's diagnostics by its added line.
+Keep recorded writes unchanged. The adapter unwraps guarded query packets,
+records their full input, and maps recorded errors to packet start lines.
 The supplements below are fake evidence, never claims about the live capture.
 """
 import re
@@ -11,6 +11,43 @@ from myflames.connector import ConnectorError
 
 UUID = '11111111-2222-3333-4444-555555555555'
 PREFIX = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE "
+
+
+def guarded_packets(sql):
+    """Split the client's custom delimiter, which occurs nowhere in SQL.
+
+    This is a fake transport, not the production script builder. Checking
+    every buffer's guard catches an unguarded packet in replay fixtures too.
+    """
+    header, body = sql.split('\n', 1)
+    assert header.startswith('DELIMITER '), sql
+    delimiter = header[len('DELIMITER '):]
+    chunks = body.split(delimiter + '\n')
+    assert chunks[-1] == '', sql
+    out, line = [], 2
+    for chunk in chunks[:-1]:
+        assert chunk.startswith(PREFIX), chunk
+        guard, separator, statement = chunk.partition('; ')
+        assert separator and guard.endswith(')'), chunk
+        assert chunk.endswith('\n'), chunk
+        out.append((guard + ';', statement[:-1], line))
+        line += chunk.count('\n') + 1
+    return out
+
+
+def recorded_body(sql):
+    packets = guarded_packets(sql)
+    statements = [p[1] for p in packets]
+    return statements[0] if len(statements) == 1 else ';\n'.join(statements) + ';'
+
+
+def packet_error(exc, sql):
+    """Put an old fixture's statement-index diagnostic on its packet."""
+    starts = [p[2] for p in guarded_packets(sql)]
+    def shift(match):
+        index = int(match.group(1)) - 1
+        return 'at line %d' % (starts[index] if 0 <= index < len(starts) else 0)
+    return ConnectorError(re.sub(r'\bat line (\d+)\b', shift, str(exc)))
 
 
 def supplement(calls):
@@ -42,16 +79,12 @@ class ReplayConn(RecordedReplayConn):
         super(ReplayConn, self).__init__(supplement(calls), *args, **kwargs)
 
     def run_write(self, sql, extra_flags=None, timeout=None):
-        assert sql.startswith(PREFIX), 'write is missing the target guard: ' + sql
-        guard, body = sql.split('\n', 1)
-        assert guard.endswith(');'), guard
+        body = recorded_body(sql)
         start = len(self.calls)
         try:
             return self.run(body, extra_flags=extra_flags, timeout=timeout)
         except ConnectorError as exc:
-            # The original recording has no guard line.
-            raise ConnectorError(re.sub(r'\bat line (\d+)\b',
-                                        lambda m: 'at line %d' % (int(m.group(1)) + 1), str(exc))) from None
+            raise packet_error(exc, sql) from None
         finally:
             if len(self.calls) > start:
                 self.calls[-1] = (sql, list(extra_flags or []))

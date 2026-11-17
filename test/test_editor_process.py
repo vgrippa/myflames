@@ -153,9 +153,9 @@ class EditorProcessTests(unittest.TestCase):
     def assert_control_kill(self, session, since):
         expected = ed.TAG + "KILL QUERY %d" % session.connection_id
         guard = dbops.target_session_guard(session.engine, session.server_identity)
-        expected_batch = "\n".join(guard + [expected])
-        kills = (self.state / "kills.log").read_text(encoding="utf-8").splitlines()
-        self.assertIn(expected, kills)
+        expected_batch = dbops.target_guarded_script(guard, [expected])[0]
+        kills = (self.state / "kills.log").read_text(encoding="utf-8")
+        self.assertIn(expected_batch, kills)
         controls = [p for p in self.children[since:] if "-e" in p.args]
         self.assertTrue(controls, "KILL QUERY did not use a second client process")
         for control in controls:

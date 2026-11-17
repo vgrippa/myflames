@@ -25,6 +25,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- A change confirmed through a proxy or router now reaches only the server that was reviewed, even when the proxy routes statements separately.
 - In a Group connection, **Users and roles**, Kill, Variables and replication skips re-check group membership and the group's strictest write policy at every login. A removed member or a changed policy refuses the earlier review, including when a password was typed. Every review expires if the group is deleted and recreated, even with the same name and members.
 - Opening a Group connection re-checks both the active member and each probed member before every login. Removing either member, changing its saved address or recreating the group prevents later logins under the old consent. A stored server identity can no longer be overwritten by an older in-flight or cached probe.
 - Query editor Stop and Close confirm the server on the connection sending `KILL QUERY` before interrupting a statement. If the server cannot be confirmed, no KILL is sent. A tab whose member left its group can still roll back, stop and close its existing session to release locks, while new statements stay refused.

@@ -1608,6 +1608,13 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     statement = fresh["statement"]
     try:
         guard = dbops.target_session_guard(expect["engine"], expect["server_identity"])
+        body = TAG + statement
+        if mode == "session":
+            # The readback must stay with this SET, in its guarded packet.
+            body = _script([statement, "SELECT '%safter'" % _MARK,
+                            _nullable_read(name, session=True) if v.get("nullable") else
+                            "SHOW SESSION VARIABLES WHERE Variable_name = %s" % _quote_name(name)])
+        script, packet_lines = dbops.target_guarded_script(guard, [body])
     except ValueError as exc:
         return _unsent(fresh, audit, "refused", "identity_unavailable", str(exc), expect, verified)
     result = _result(fresh, None, None, statement=statement, verified=verified)
@@ -1620,18 +1627,15 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     try:
         if mode == "session":
             # One client call, so the read sees the same session.
-            session_text = conn.run_write("\n".join(guard) + "\n" + _script([statement, "SELECT '%safter'" % _MARK,
-                                             _nullable_read(name, session=True) if v.get("nullable") else
-                                             "SHOW SESSION VARIABLES WHERE Variable_name = %s" % _quote_name(name)]),
-                                    extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            session_text = conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
         else:
-            conn.run_write("\n".join(guard + [TAG + statement]), extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
-        guard_failure = dbops.target_guard_failed(exc)
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
         if guard_failure:
             password = getattr(conn, "password", None) or getattr(audit, "password", None)
             result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
@@ -1640,7 +1644,8 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
                 audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
                                message=result["message"])
             return result
-        exc = dbops.shift_guard_error(exc)
+        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
+                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
         code = dbops.error_code(str(exc))
         if code is None or code >= 2000 or dbops.may_have_run(exc):
             # A client error (connection refused or lost, a time limit): no server answer to map.

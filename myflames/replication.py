@@ -2474,10 +2474,10 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     result["verified"] = verified
     try:
         session_guard = dbops.target_session_guard(report["engine"], expect.get("server_identity"))
+        script, packet_lines = dbops.target_guarded_script(session_guard, _tagged(plan["statements"]))
     except ValueError as exc:
         return _unsent(result, audit, "refused", "identity_unavailable", str(exc), expect, verified)
     result["session_guard"] = session_guard
-    script = "\n".join(session_guard) + "\n" + _script(plan["statements"])
     if audit is not None:
         try:
             result["audit_id"] = audit.attempt(session_guard + _tagged(plan["statements"]), target=expect, verified=verified)
@@ -2532,18 +2532,25 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
-        guard_failure = dbops.target_guard_failed(exc)
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
         if guard_failure:
             password = getattr(conn, "password", None) or getattr(audit, "password", None)
-            result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
+            index = guard_failure["statement_index"]
+            result.update(status="failed" if index else "refused", outcome=guard_failure["outcome"],
+                          sent=True if index else [],
                           stop_reason=guard_failure["outcome"],
                           message=dbops.redact(guard_failure["message"], password))
-            send_state["sent"] = False
+            send_state["sent"] = bool(index)
+            if index:
+                result["residual_state"] = _residual_state(dbops.shift_guard_error(exc, packet_lines), plan, None)
+                result["message"] += " " + result["residual_state"]["message"]
             if audit is not None:
-                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
-                               message=result["message"])
+                audit.complete("error" if index else "refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                               message=result["message"],
+                               after={"residual_state": result["residual_state"]} if index else None)
             return result
-        exc = dbops.shift_guard_error(exc)
+        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
+                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
         if _fatal(exc):
             unknown = dbops.may_have_run(exc)
             message = ("Could not skip the transaction: %s.%s" % (

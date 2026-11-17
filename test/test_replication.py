@@ -153,12 +153,11 @@ class NoConn(object):
 def _write_mock():
     conn = mock.Mock(spec=NoConn)
     def send(sql, **kwargs):
-        assert sql.startswith('SET @myflames_target = '), sql
+        from _reviewed_replay import recorded_body, packet_error
         try:
-            return conn.run(sql.split('\n', 1)[1], **kwargs)
+            return conn.run(recorded_body(sql), **kwargs)
         except ConnectorError as exc:
-            raise ConnectorError(re.sub(r'\bat line (\d+)\b',
-                                        lambda m: 'at line %d' % (int(m.group(1)) + 1), str(exc))) from None
+            raise packet_error(exc, sql) from None
     conn.run_write.side_effect = send
     return conn
 
@@ -201,7 +200,7 @@ def channel(report, name=''):
 
 
 def sent_scripts(conn):
-    return [(sql, flags) for sql, flags in conn.calls if sql.startswith('SET @myflames_target = ')]
+    return [(sql, flags) for sql, flags in conn.calls if sql.startswith('DELIMITER ')]
 
 
 def xml_edit(field, old, new, sql_word='STATUS'):
@@ -816,8 +815,9 @@ class TestSkipOne(ReplicationCase):
                 scripts = sent_scripts(conn)
                 self.assertEqual(len(scripts), 1)
                 script, flags = scripts[0]
-                self.assertEqual(script, '\n'.join(plan['session_guard']) + '\n' +
-                                 ';\n'.join(rp.SKIP_TAG + s for s in plan['statements']) + ';')
+                from _reviewed_replay import guarded_packets
+                self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
+                                 [(plan['session_guard'][0], rp.SKIP_TAG + s) for s in plan['statements']])
                 self.assertEqual(flags, list(dbops.WRITE_CLIENT_FLAGS))
                 if method == 'empty_gtid_transaction':
                     self.assertTrue(result['after']['gtid_executed_has_skipped'])

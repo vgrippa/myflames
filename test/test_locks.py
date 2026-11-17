@@ -80,9 +80,8 @@ class FakeConn(object):
         try:
             return self.run(sql, extra_flags=extra_flags, timeout=timeout)
         except ConnectorError as exc:
-            # Recorded failures name the KILL without its new guard line.
-            raise ConnectorError(re.sub(r'\bat line (\d+)\b',
-                                        lambda m: 'at line %d' % (int(m.group(1)) + 1), str(exc))) from None
+            from _reviewed_replay import packet_error
+            raise packet_error(exc, sql) from None
 
     def server_version(self):
         return self.version
@@ -2254,7 +2253,8 @@ class KillScenario(object):
         return ''
 
     def kills(self):
-        return [sql.split('\n', 1)[-1] for sql, _ in self.conn.calls if KILL_TAG in sql]
+        from _reviewed_replay import recorded_body
+        return [recorded_body(sql) for sql, _ in self.conn.calls if KILL_TAG in sql]
 
 
 class TestKillSession(LockCase):
@@ -2265,8 +2265,10 @@ class TestKillSession(LockCase):
         for sql, flags in scenario.conn.calls:
             self.assertIn('--comments', flags, sql)
             if KILL_TAG in sql:
-                self.assertTrue(sql.startswith('SET @myflames_target = '), sql)
-                self.assertRegex(sql.split('\n', 1)[1][len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
+                from _reviewed_replay import guarded_packets
+                packets = guarded_packets(sql)
+                self.assertEqual(len(packets), 1)
+                self.assertRegex(packets[0][1][len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
             else:
                 self.assert_read_statement(sql)
         self.assertLessEqual(len(scenario.kills()), 1, 'never more than one KILL')

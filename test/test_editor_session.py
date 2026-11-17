@@ -1053,16 +1053,18 @@ class ProcessTests(unittest.TestCase):
             '"connection_id": str(self.conn_id),',
             '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
             '"server_uuid": "11111111-2222-3333-4444-555555555555",')
-        # Model batch abort on a first-line identity guard, before any KILL.
+        # Model batch abort on the first guarded packet, before any KILL.
         # The persistent editor stays on its original server; only the helper
         # can be routed elsewhere by this synthetic test control.
         client = client.replace('def one_shot(sql):\n', '''def one_shot(sql):
     with open(os.path.join(STATE, "helper-batches.log"), "a") as handle:
         handle.write(repr(sql) + "\\n")
-    first = sql.split("\\n", 1)[0]
-    if first.startswith("SET @myflames_target = ") and os.environ.get("FAKE_HELPER_MISMATCH") == "1":
-        sys.stderr.write("ERROR 1242 (21000) at line 1: Subquery returns more than 1 row\\n")
+    if sql.startswith("DELIMITER ") and "SET @myflames_target = " in sql and os.environ.get("FAKE_HELPER_MISMATCH") == "1":
+        sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\\n")
         return 1
+    if sql.startswith("DELIMITER "):
+        header, body = sql.split("\\n", 1)
+        sql = body.replace(header.split(" ", 1)[1], "")
 ''')
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')

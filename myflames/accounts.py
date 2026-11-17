@@ -1552,19 +1552,47 @@ def _safe_error(exc, passwords):
 def _run_stdin(conn, sql, passwords=()):
     """Send one account statement (or a password script) on stdin, with the
     write flags; errors come back without secrets."""
+    passwords = tuple(passwords) + (getattr(conn, 'password', None),)
+    first, separator, statement = sql.partition('\n')
+    packet_lines = None
+    script = sql.rstrip().rstrip(';') + ';\n'
+    if separator and first.startswith('SET @myflames_target = '):
+        # apply supplies the derived guard on the first line. The client
+        # must receive the mode-setting reply before scanning a password
+        # literal: it parses quotes with SERVER_STATUS_NO_BACKSLASH_ESCAPES
+        # (MySQL client/mysql.cc:2785-2787; MariaDB client/mysql.cc:2677-2679).
+        # Stage only the fixed session-mode wrapper. The account change and
+        # its restoration share the final guarded packet, so no later guard
+        # can refuse after that account change already ran.
+        bodies = [statement]
+        parts = statement.split('\n', 2)
+        modes = tuple("SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), '%s');" % mode
+                      for mode in ('NO_BACKSLASH_ESCAPES', 'ORACLE'))
+        if len(parts) == 3 and parts[0] == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;' and \
+                parts[1] in modes and parts[2].endswith(';\nSET SESSION sql_mode = @myflames_accounts_sql_mode'):
+            bodies = [parts[0] + '\n' + parts[1], parts[2]]
+        try:
+            script, packet_lines = dbops.target_guarded_script([first], bodies)
+        except ValueError as exc:
+            refusal = ConnectorError(str(exc))
+            refusal.identity_outcome = 'identity_unavailable'
+            refusal.server_error_code = None
+            raise refusal from None
     try:
-        return conn.run_stdin(sql.rstrip().rstrip(';') + ';\n', extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+        return conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except ConnectorError as exc:
         # Inspect the original client error before safe-error redaction drops
         # the line number (or MariaDB echoes SQL containing a credential).
-        guard_failure = dbops.target_guard_failed(exc)
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
         if guard_failure:
-            refusal = ConnectorError(privileges.redact(guard_failure['message'],
-                                                       tuple(passwords) + (getattr(conn, 'password', None),)))
+            # Only disposable session setup can precede this invocation's
+            # account change. A guard refusal therefore sent no account SQL.
+            refusal = ConnectorError(privileges.redact(dbops.TARGET_IDENTITY_MISMATCH if packet_lines is not None
+                                                       else guard_failure['message'], passwords))
             refusal.identity_outcome = guard_failure['outcome']
             refusal.server_error_code = dbops.error_code(str(exc))
             raise refusal from None
-        exc = dbops.shift_guard_error(exc)
+        exc = dbops.shift_guard_error(exc, packet_lines)
         code, message = _safe_error(exc, passwords)
         if dbops.may_have_run(exc):
             raise ConnectorError('Account statement timed out; outcome unknown. ' + message) from None

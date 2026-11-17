@@ -1,4 +1,4 @@
-"""Same-client identity binding: real policy/audit code, fake write clients.
+"""Same-packet identity binding: real policy/audit code, fake write clients.
 
 No lab coverage is claimed here. The tests inspect the entire client input
 and simulate mysql/MariaDB batch diagnostics, including MariaDB's SQL echo.
@@ -14,6 +14,7 @@ from myflames import accounts, cluster, dbops, locks, privileges, replication, r
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames.connection_groups import ProfileReadError
 from myflames.workspace_store import WorkspaceStore
+from _reviewed_replay import guarded_packets
 
 UUID = '11111111-2222-3333-4444-555555555555'
 MYSQL = {'server_uuid': UUID}
@@ -22,7 +23,7 @@ MYSQL_GUARD = ("SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT
                "WHERE @@global.server_uuid <> '11111111-2222-3333-4444-555555555555');")
 MARIA_GUARD = ("SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g "
                "WHERE @@global.server_id <> 42 OR @@global.hostname <> 'test-server' OR @@global.port <> 3306);")
-MISMATCH = 'ERROR 1242 (21000) at line 1: Subquery returns more than 1 row'
+MISMATCH = 'ERROR 1242 (21000) at line 2: Subquery returns more than 1 row'
 
 
 class Writer(object):
@@ -69,7 +70,7 @@ class GuardTests(unittest.TestCase):
         record = self.records()[0]
         self.assertEqual((record['status'], record['outcome'], record['error_code']),
                          ('refused', 'identity_mismatch', 1242))
-        self.assertEqual(record['statements'][0], writer.writes[0].split('\n', 1)[0])
+        self.assertEqual(record['statements'][0], guarded_packets(writer.writes[0])[0][0])
 
     def test_mysql_family_and_mariadb_prefixes_are_exact(self):
         for engine, identity, expected in [('mysql', MYSQL, MYSQL_GUARD), ('percona', MYSQL, MYSQL_GUARD),
@@ -122,7 +123,8 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(details['session_guard'], [MYSQL_GUARD])
         writer = Writer()
         out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
-        self.assertEqual(writer.writes, ['\n'.join([MYSQL_GUARD] + plan['statements'])])
+        self.assertEqual([(g, stmt) for g, stmt, _ in guarded_packets(writer.writes[0])],
+                         [(MYSQL_GUARD, stmt) for stmt in plan['statements']])
         self.assertEqual(out['sent'], plan['statements'])
         self.assertEqual(self.records()[0]['statements'], [MYSQL_GUARD] + plan['statements'])
 
@@ -167,14 +169,14 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual(writer.writes, [])
                 after.assert_not_called()
 
-    def test_error_at_line_three_names_second_user_statement(self):
+    def test_packet_start_line_names_second_user_statement(self):
         plan = self.plan()
-        writer = Writer('mysql client exited 1: ERROR 1227 (42000) at line 3: denied')
+        writer = Writer('mysql client exited 1: ERROR 1227 (42000) at line 4: denied')
         out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual((out['status'], out['states'], out['sent']),
                          ('partial', ['done', 'failed'], plan['statements'][:1]))
         self.assertIn(plan['statements'][1], out['message'])
-        self.assertEqual(str(dbops.shift_guard_error(ConnectorError(writer.error))),
+        self.assertEqual(str(dbops.shift_guard_error(ConnectorError(writer.error), (2, 4))),
                          'mysql client exited 1: ERROR 1227 (42000) at line 2: denied')
 
     def test_guard_transport_error_stays_unknown(self):
@@ -228,24 +230,24 @@ class GuardTests(unittest.TestCase):
                     self.assertEqual((record['status'], record['outcome']),
                                      ('error', 'partial') if expected == 'partial' else ('unknown', 'no_reply'))
 
-    def test_guard_read_errors_are_unavailable_instead_of_mismatches(self):
+    def test_non_mismatch_packet_errors_are_statement_failures(self):
         for code, message in [(1142, "SELECT command denied to user 'monitor' for table 'global_status'"),
                               (1146, "Table 'performance_schema.global_status' doesn't exist")]:
             with self.subTest(code=code):
                 plan = self.plan()
-                error = 'ERROR %d (42000) at line 1: %s' % (code, message)
+                error = 'ERROR %d (42000) at line 2: %s' % (code, message)
                 after = mock.Mock()
                 out = reviewed_writes.execute(Writer(error), plan, lambda: copy.deepcopy(plan), 'test',
                                                audit=self.audit(), read_after=after)
-                self.assertEqual((out['status'], out['outcome'], out['sent']),
-                                 ('refused', 'identity_unavailable', []))
-                self.assertEqual(out['states'], ['not_sent', 'not_sent'])
-                self.assertIn('The identity check could not run: ' + message, out['message'])
+                self.assertEqual((out['status'], out['sent']), ('failed', []))
+                self.assertNotIn('outcome', out)
+                self.assertEqual(out['states'], ['failed', 'not_run'])
+                self.assertIn(message, out['message'])
                 self.assertNotIn('not the one you reviewed', out['message'])
                 after.assert_not_called()
                 record = next(r for r in self.records() if r['id'] == out['audit_id'])
                 self.assertEqual((record['status'], record['outcome'], record['error_code']),
-                                 ('refused', 'identity_unavailable', code))
+                                 ('error', 'refused_by_server', code))
 
     def test_galera_null_reviewed_node_identity_is_unavailable_before_sending(self):
         for engine, identity in [('mysql', MYSQL), ('pxc', MYSQL), ('mariadb', MARIA)]:
@@ -261,16 +263,17 @@ class GuardTests(unittest.TestCase):
                 self.assertNotIn('enable performance_schema', out['message'])
                 after.assert_not_called()
 
-    def test_guard_unavailable_diagnostic_redacts_password_and_ignores_sql_echo(self):
+    def test_packet_error_redacts_password_and_ignores_sql_echo(self):
         plan = self.plan()
         secret = 'fixture-guard-secret'
         error = ("mysql client exited 1: --------------\nALTER USER app IDENTIFIED BY '%s';\n--------------\n"
-                 "ERROR 1142 (42000) at line 1: SELECT denied for '%s'" % (secret, secret))
+                 "ERROR 1142 (42000) at line 2: SELECT denied for '%s'" % (secret, secret))
         writer = Writer(error)
         writer.password = secret
         out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
-        self.assertEqual((out['status'], out['outcome']), ('refused', 'identity_unavailable'))
-        self.assertIn('The identity check could not run: SELECT denied', out['message'])
+        self.assertEqual(out['status'], 'failed')
+        self.assertNotIn('outcome', out)
+        self.assertIn('SELECT denied', out['message'])
         self.assertNotIn(secret, repr(out))
         self.assertNotIn('ALTER USER', out['message'])
         self.assertNotIn(secret, repr(self.records()))
@@ -282,7 +285,7 @@ class GuardTests(unittest.TestCase):
                 mock.patch.object(conn, '_run_client', return_value=reply) as client:
             out = reviewed_writes.execute(conn, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'identity_mismatch', []))
-        self.assertEqual(client.call_args[1]['input'], '\n'.join([MYSQL_GUARD] + plan['statements']).encode('utf-8'))
+        self.assertEqual(client.call_args[1]['input'], dbops.target_guarded_script([MYSQL_GUARD], plan['statements'])[0].encode('utf-8'))
         argv = client.call_args[0][0]
         self.assertIn('--skip-reconnect', argv)
         self.assertNotIn('--force', argv)
@@ -340,19 +343,19 @@ class GuardTests(unittest.TestCase):
                 with mock.patch.object(variables, 'read_variable', return_value=value):
                     out = variables.apply_change(writer, plan, plan['expect'], confirmed=True, audit=self.audit())
                 self.assert_mismatch(out, writer)
-                self.assertEqual(writer.writes[0].split('\n', 1)[0], plan['session_guard'][0])
+                self.assertEqual(guarded_packets(writer.writes[0])[0][0], plan['session_guard'][0])
 
-    def test_variables_unavailable_guard_reports_reason_without_reading_after(self):
+    def test_variables_packet_error_is_denied_without_reading_after(self):
         from test_variables import mysql_variable, mariadb_variable
         for value in (mysql_variable('max_connections'), mariadb_variable('max_connections')):
             with self.subTest(engine=value['engine']):
                 plan = variables.build_plan(value, '200', 'global')
-                writer = Writer('ERROR 1142 (42000) at line 1: SELECT denied for fixture-secret')
+                writer = Writer('ERROR 1142 (42000) at line 2: SELECT denied for fixture-secret')
                 writer.password = 'fixture-secret'
                 with mock.patch.object(variables, 'read_variable', return_value=value), \
                         mock.patch.object(variables, '_after') as after:
                     out = variables.apply_change(writer, plan, plan['expect'], confirmed=True, audit=self.audit())
-                self.assert_unavailable(out, writer, 1142)
+                self.assert_packet_error(out, writer, 1142, 'denied')
                 after.assert_not_called()
 
     def test_accounts_guard_each_engine_and_refuse_swapped_server(self):
@@ -366,26 +369,26 @@ class GuardTests(unittest.TestCase):
                     plan = accounts.plan_lock(conn, 'app')
                     out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
                 self.assert_mismatch(out, writer)
-                self.assertEqual(writer.writes[0].split('\n', 1)[0], expected)
+                self.assertEqual(guarded_packets(writer.writes[0])[0][0], expected)
 
-    def test_accounts_guard_refusal_keeps_the_actual_server_error_code(self):
+    def test_accounts_packet_refusal_keeps_the_actual_server_error_code(self):
         from test_accounts import FakeConn, actor
         conn = FakeConn()
-        writer = Writer('ERROR 1193 (HY000) at line 1: Unknown system variable')
+        writer = Writer('ERROR 1193 (HY000) at line 2: Unknown system variable')
         conn.run_stdin = writer.run_stdin
         with mock.patch.object(privileges, 'read_privileges', return_value=actor()):
             plan = accounts.plan_lock(conn, 'app')
             out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
-        self.assert_unavailable(out, writer, 1193, 'Unknown system variable')
+        self.assert_packet_error(out, writer, 1193, 'refused_by_server')
 
-    def test_accounts_unavailable_guard_redacts_echo_and_credentials_and_never_reads_after(self):
+    def test_accounts_packet_error_redacts_echo_and_credentials_before_normal_readback(self):
         from test_accounts import FakeConn, actor
         for engine in ('mysql', 'mariadb'):
             with self.subTest(engine=engine):
                 conn, calls_at_send = FakeConn(engine), []
                 conn.password = 'fixture-secret'
                 error = ("mysql client exited 1: --------------\nALTER USER app IDENTIFIED BY 'new-secret';\n"
-                         "--------------\nERROR 1142 (42000) at line 1: SELECT denied for fixture-secret and new-secret")
+                         "--------------\nERROR 1142 (42000) at line 2: SELECT denied for fixture-secret and new-secret")
                 writer = Writer(error)
                 def send(sql, **kwargs):
                     calls_at_send.extend(conn.calls)
@@ -394,8 +397,8 @@ class GuardTests(unittest.TestCase):
                 with mock.patch.object(privileges, 'read_privileges', return_value=actor(engine)):
                     plan = accounts.plan_password(conn, 'app', password='new-secret')
                     out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
-                self.assert_unavailable(out, writer, 1142)
-                self.assertEqual(conn.calls, calls_at_send)
+                self.assert_packet_error(out, writer, 1142, 'denied')
+                self.assertGreater(len(conn.calls), len(calls_at_send))
                 self.assertNotIn('new-secret', repr(out))
                 self.assertNotIn('new-secret', repr(self.records()))
                 self.assertNotIn('ALTER USER', out['message'])
@@ -403,7 +406,7 @@ class GuardTests(unittest.TestCase):
     def test_accounts_guard_each_invocation_and_keep_earlier_successes(self):
         from test_accounts import FakeConn, actor
         for error, outcome in ((MISMATCH, 'identity_mismatch'),
-                               ('ERROR 1142 (42000) at line 1: SELECT denied', 'identity_unavailable')):
+                               ('ERROR 1142 (42000) at line 2: SELECT denied', 'denied')):
             with self.subTest(outcome=outcome):
                 conn, writes = FakeConn('mariadb', exists=False), []
                 def send(sql, **kwargs):
@@ -415,19 +418,18 @@ class GuardTests(unittest.TestCase):
                 with mock.patch.object(privileges, 'read_privileges', return_value=actor('mariadb')):
                     plan = accounts.plan_create(conn, 'app', password='fixture-secret')
                     out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
-                self.assertEqual((out['status'], out['outcome'], len(out['sent']), len(writes)),
-                                 ('partial', outcome, 1, 2))
-                self.assertTrue(all(sql.startswith(MARIA_GUARD + '\n') for sql in writes))
-                self.assertEqual([row['status'] for row in out['statements']], ['ok', 'not_sent', 'not_sent'])
+                self.assertEqual((out['status'], len(out['sent']), len(writes)), ('partial', 1, 2))
+                if outcome == 'identity_mismatch':
+                    self.assertEqual(out['outcome'], outcome)
+                self.assertTrue(all(guarded_packets(sql)[0][0] == MARIA_GUARD for sql in writes))
+                self.assertEqual([row['status'] for row in out['statements']], ['ok', 'not_sent' if outcome == 'identity_mismatch' else 'denied', 'not_sent'])
                 records = [r for r in self.records() if r['id'] in out['audit_ids']]
-                self.assertEqual(sorted(row['status'] for row in records), ['ok', 'refused'])
-                refused = next(r for r in records if r['status'] == 'refused')
+                self.assertEqual(sorted(row['status'] for row in records), ['ok', 'refused'] if outcome == 'identity_mismatch' else ['error', 'ok'])
+                refused = next(r for r in records if r['status'] != 'ok')
                 self.assertEqual(refused['outcome'], outcome)
                 self.assertNotIn('Nothing was sent', out['message'])
-                self.assertIn('Earlier statements ran', out['message'])
-                if outcome == 'identity_unavailable':
-                    self.assertIn('The identity check could not run: SELECT denied', out['message'])
-                    self.assertNotIn('not the one you reviewed', out['message'])
+                if outcome == 'identity_mismatch':
+                    self.assertIn('Earlier statements ran', out['message'])
 
     def test_replication_single_and_loop_guard_each_engine(self):
         from test_replication import status
@@ -442,7 +444,7 @@ class GuardTests(unittest.TestCase):
                                       return_value=privileges.parse_grants([], checked=False)):
                 out = replication.skip_one(writer, channel, plan['identity'], confirmed=True, audit=self.audit())
                 self.assert_mismatch(out, writer)
-                self.assertEqual(writer.writes[0].split('\n', 1)[0], plan['session_guard'][0])
+                self.assertEqual(guarded_packets(writer.writes[0])[0][0], plan['session_guard'][0])
                 writer.writes[:] = []
                 clock = FakeTime()
                 loop = replication.SkipLoop(writer, channel, [1062], 1, audit_factory=self.audit,
@@ -452,14 +454,14 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual((final['skips_done'], len(writer.writes)), (0, 1))
                 self.assertIn('not the one you reviewed', final['message'])
 
-    def test_replication_unavailable_guard_reports_reason_without_reading_after(self):
+    def test_replication_packet_error_reports_denial_and_reads_after(self):
         from test_replication import status
         for name in ('mysql-8.4-gtid-error', 'mariadb-11.4-error'):
             with self.subTest(server=name):
                 report, _ = status(name)
                 channel = report['channels'][0]['name']
                 plan = replication.plan_skip(report, channel)
-                writer = Writer('ERROR 1142 (42000) at line 1: SELECT denied for fixture-secret')
+                writer = Writer('ERROR 1142 (42000) at line 2: SELECT denied for fixture-secret')
                 writer.password = 'fixture-secret'
                 reads_at_send = []
                 original_write = writer.run_write
@@ -472,10 +474,10 @@ class GuardTests(unittest.TestCase):
                     writer.run_write = send
                     out = replication.skip_one(writer, channel, plan['identity'], confirmed=True,
                                                audit=self.audit())
-                self.assert_unavailable(out, writer, 1142)
-                self.assertEqual(out['stop_reason'], 'identity_unavailable')
+                self.assert_packet_error(out, writer, 1142, 'denied')
+                self.assertNotIn('stop_reason', out)
                 self.assertTrue(reads_at_send)
-                self.assertEqual(reads.call_args_list, reads_at_send)
+                self.assertGreater(len(reads.call_args_list), len(reads_at_send))
 
     def test_locks_and_sessions_share_the_guarded_kill_sender(self):
         from test_locks import KillScenario, VERSION_SQL, bound_kill_expect, batch
@@ -488,42 +490,31 @@ class GuardTests(unittest.TestCase):
             scenario.conn.run_write = writer.run_write
             out = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True, audit=self.audit(), settle_s=0)
             self.assert_mismatch(out, writer)
-            self.assertEqual(writer.writes[0].split('\n', 1)[0],
+            self.assertEqual(guarded_packets(writer.writes[0])[0][0],
                              dbops.target_session_guard(engine, expect['server_identity'])[0])
             self.assertEqual(locks.format_kill(out).strip(), dbops.TARGET_IDENTITY_MISMATCH)
 
-    def test_locks_unavailable_guard_reports_reason_without_reading_after(self):
-        from test_locks import KillScenario, VERSION_SQL, bound_kill_expect, batch
-        for engine in ('mysql', 'mariadb'):
-            with self.subTest(engine=engine):
-                scenario = KillScenario()
-                if engine == 'mariadb':
-                    scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
-                expect = bound_kill_expect(scenario.conn)
-                writer = Writer('ERROR 1142 (42000) at line 1: SELECT denied for fixture-secret')
-                scenario.conn.password = 'fixture-secret'
-                scenario.conn.run_write = writer.run_write
-                with mock.patch.object(locks, '_after_view') as after:
-                    out = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True,
-                                             audit=self.audit(), settle_s=0)
-                self.assert_unavailable(out, writer, 1142)
-                self.assertEqual(locks.format_kill(out).strip(), out['message'])
-                self.assertFalse(scenario.killed)
-                after.assert_not_called()
+    def test_locks_non_mismatch_packet_error_uses_existing_failure_contract(self):
+        from test_locks import KillScenario, bound_kill_expect
+        scenario = KillScenario()
+        expect = bound_kill_expect(scenario.conn)
+        scenario.conn.run_write = Writer('ERROR 1142 (42000) at line 2: SELECT denied').run_write
+        with self.assertRaisesRegex(ValueError, 'Could not end connection'):
+            locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True,
+                               audit=self.audit(), settle_s=0)
+        self.assertFalse(scenario.killed)
+        self.assertEqual((self.records()[0]['status'], self.records()[0]['error_code']), ('error', 1142))
 
-    def assert_unavailable(self, out, writer, code, reason='SELECT denied for [redacted]'):
-        self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'identity_unavailable', []))
-        self.assertIn('The identity check could not run: ' + reason, out['message'])
-        self.assertIn('Nothing was sent. Refresh and review again.', out['message'])
+    def assert_packet_error(self, out, writer, code, status):
+        self.assertEqual(out['status'], status)
+        self.assertNotIn(out.get('outcome'), ('identity_mismatch', 'identity_unavailable'))
+        self.assertEqual(out['sent'], True if 'channel' in out else [])
         self.assertNotIn('not the one you reviewed', out['message'])
         self.assertNotIn('fixture-secret', repr(out))
         self.assertEqual(len(writer.writes), 1)
-        records = self.records()
         audit_id = out.get('audit_id') or out['audit_ids'][-1]
-        record = next(r for r in records if r['id'] == audit_id)
-        self.assertEqual((record['status'], record['outcome'], record['error_code']),
-                         ('refused', 'identity_unavailable', code))
-        self.assertEqual(record['message'], out['message'])
+        record = next(r for r in self.records() if r['id'] == audit_id)
+        self.assertEqual((record['status'], record['outcome'], record['error_code']), ('error', status, code))
         self.assertNotIn('fixture-secret', repr(record))
 
     def test_cluster_sql_and_udf_refuse_swapped_server(self):
@@ -536,7 +527,7 @@ class GuardTests(unittest.TestCase):
             with mock.patch.object(cluster, 'read_status', return_value=report):
                 out = cluster.execute_action(writer, plan, audit=self.audit(), typed=plan.get('typed_guard'))
             self.assert_mismatch(out, writer)
-            self.assertIn(report['server']['server_uuid'], writer.writes[0].split('\n', 1)[0])
+            self.assertIn(report['server']['server_uuid'], guarded_packets(writer.writes[0])[0][0])
 
     def test_cluster_missing_reviewed_mariadb_id_is_refused(self):
         # An older reviewed plan without server_id must be refused, never
@@ -567,7 +558,7 @@ class GuardTests(unittest.TestCase):
         with mock.patch.object(cluster, 'read_status', return_value=report):
             out = cluster.execute_action(writer, plan, audit=self.audit())
         self.assert_mismatch(out, writer)
-        line = writer.writes[0].split('\n', 1)[0]
+        line = guarded_packets(writer.writes[0])[0][0]
         self.assertIn("@@global.hostname <> 'mf-galera-1'", line)
         self.assertIn('@@global.server_id <> 1', line)
         self.assertIn('@@global.port <> 3306', line)

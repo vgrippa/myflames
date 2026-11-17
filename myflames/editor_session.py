@@ -1269,11 +1269,13 @@ class EditorSession(EditorInsights):
         """Guard the helper's own login before it can kill this tab's id.
 
         A successful probe on another connection cannot authorize a KILL
-        behind a router. Batch mode and no reconnect stop at the guard error.
+        behind a router. Guard and KILL share a query packet; batch mode and
+        no reconnect stop at the guard error.
         """
         from . import dbops
         try:
             guard = dbops.target_session_guard(self.engine, getattr(self, "_kill_identity", None))
+            script, packet_lines = dbops.target_guarded_script(guard, [TAG + "KILL QUERY %d" % connection_id])
         except ValueError:
             raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
         try:
@@ -1284,12 +1286,12 @@ class EditorSession(EditorInsights):
                 control._login_guard = login_guard
                 control._group_login_started = False
             with control:
-                control.run("\n".join(guard + [TAG + "KILL QUERY %d" % connection_id]),
+                control.run(script,
                             extra_flags=list(_write_flags()) + ["--skip-reconnect"], timeout=KILL_TIMEOUT)
         except ConnectorError as exc:
-            if dbops.target_guard_failed(exc):
+            if dbops.target_guard_failed(exc, packet_lines):
                 raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
-            raise
+            raise dbops.shift_guard_error(exc, packet_lines) from None
 
     # -- state ----------------------------------------------------------------------------
 

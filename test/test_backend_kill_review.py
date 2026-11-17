@@ -12,6 +12,7 @@ from myflames.connector import ConnectorError
 from myflames.review_tokens import ReviewTokens
 from myflames.workspace_store import WorkspaceStore
 from test_locks import batch, KillScenario, bound_kill_expect, K_TARGET
+from _reviewed_replay import recorded_body
 
 GR_COMMAND = 'Group Replicatio'  # COMMAND is VARCHAR(16) in MySQL's process-list tables.
 GR_FULL_COMMAND = 'Group Replication Data Stream subscription'
@@ -34,8 +35,7 @@ class BatchConnection(object):
         pass
 
     def run_write(self, sql, extra_flags=None, timeout=None):
-        assert sql.startswith('SET @myflames_target = '), sql
-        return self.run(sql, extra_flags=extra_flags)
+        return self.run(recorded_body(sql), extra_flags=extra_flags)
 
     def run(self, sql, extra_flags=None):
         self.calls.append(sql)

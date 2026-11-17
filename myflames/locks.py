@@ -3058,6 +3058,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     try:
         session_guard = dbops.target_session_guard(engine, bound_expect.get("server_identity"))
+        script, packet_lines = dbops.target_guarded_script(session_guard, [KILL_TAG + statement])
     except ValueError as exc:
         return refuse(str(exc), "identity_unavailable")
     result = {"schema_version": KILL_SCHEMA_VERSION, "engine": engine, "server_version": version,
@@ -3099,13 +3100,13 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     from .dbops import WRITE_CLIENT_FLAGS, may_have_run
     try:
         # --binary-mode: the client runs no backslash command of its own.
-        conn.run_write("\n".join(session_guard + [KILL_TAG + statement]), extra_flags=list(WRITE_CLIENT_FLAGS))
+        conn.run_write(script, extra_flags=list(WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt as exc:
         if audit is not None:
             audit.fail(exc)
         raise
     except ConnectorError as exc:
-        guard_failure = dbops.target_guard_failed(exc)
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
         if guard_failure:
             password = getattr(conn, "password", None) or getattr(audit, "password", None)
             result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
@@ -3114,7 +3115,8 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
                 audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
                                message=result["message"])
             return result
-        exc = dbops.shift_guard_error(exc)
+        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
+                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
         try:
             result["status"], result["message"] = _kill_error(engine, exc, connection_id, _ver)
         except ValueError as failure:

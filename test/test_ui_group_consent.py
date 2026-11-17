@@ -293,6 +293,7 @@ class RemainingWriteConsentTests(groups.GroupCase):
         session = editor.EditorSession('helper', identity, options)
         session.engine = 'mysql'
         session.server_identity = {'server_uuid': '11111111-2222-3333-4444-555555555555'}
+        session._kill_identity = dict(session.server_identity)
         session._conn = connector.MySQLConnection(**options)
         session._conn._login_guard = full['_login_guard']
         self.addCleanup(session._conn.close)

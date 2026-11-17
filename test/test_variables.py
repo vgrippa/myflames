@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from _perf_replay import FakeFactory, ReplayConn, fixture, run_cli  # noqa: E402
-from _reviewed_replay import ReplayConn
+from _reviewed_replay import ReplayConn, recorded_body
 from myflames import dbops, variables as V  # noqa: E402
 
 TAG = V.TAG
@@ -626,8 +626,8 @@ class TestApply(unittest.TestCase):
         return dbops.audit_report(self.store)['records']
 
     def sent(self, conn):
-        return [(sql.split('\n', 1)[1], flags) for sql, flags in conn.calls
-                if sql.startswith('SET @myflames_target = ')]
+        return [(recorded_body(sql), flags) for sql, flags in conn.calls
+                if sql.startswith('DELIMITER ')]
 
     def test_global_on_both_engines(self):
         for server in ('mysql-8.4', 'mariadb-11.4'):

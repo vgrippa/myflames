@@ -12,6 +12,7 @@ from unittest import mock
 import _cluster_fixtures as F
 from _perf_replay import batch
 from _grants_fixtures import grants_batch
+from _reviewed_replay import guarded_packets
 from myflames import cluster as m, dbops, privileges, reviewed_writes
 from myflames.connector import ConnectorError
 
@@ -98,9 +99,9 @@ class GrantsClient(object):
     def run_write(self, sql, extra_flags=None, timeout=None):
         self.batches.append(sql)
         if self.guard_mismatch:
-            # Emulate the server refusing the guard before reading line 2.
-            raise ConnectorError('ERROR 1242 (21000) at line 1: Subquery returns more than 1 row')
-        self.writes.extend(sql.split('\n')[1:])
+            # Emulate refusal of the guard within the first query packet.
+            raise ConnectorError('ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+        self.writes.extend(s for _, s, _ in guarded_packets(sql))
         return ''
 
     def __getattr__(self, name):
@@ -483,7 +484,8 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
         self.assertEqual(plan['session_guard'], [guard])
         result = m.execute_action(conn, plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(conn.batches, [guard + '\n/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(conn.batches[0])],
+                         [(guard, '/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;')])
         self.assertEqual(conn.writes, ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])
 
     def test_same_session_mismatch_refuses_before_any_action_is_executed(self):
@@ -507,18 +509,19 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
 
         def swapped_write(sql, **kwargs):
             conn.batches.append(sql)
-            match = re.search(r"VARIABLE_NAME = 'wsrep_gcomm_uuid'\) <=> '([^']+)'", sql.splitlines()[0])
+            packets = guarded_packets(sql)
+            match = re.search(r"VARIABLE_NAME = 'wsrep_gcomm_uuid'\) <=> '([^']+)'", packets[0][0])
             self.assertIsNotNone(match)
             if match.group(1) != other_uuid:
-                raise ConnectorError('ERROR 1242 (21000) at line 1: Subquery returns more than 1 row')
-            conn.writes.extend(sql.splitlines()[1:])
+                raise ConnectorError('ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+            conn.writes.extend(s for _, s, _ in packets)
             return ''
 
         conn.run_write = swapped_write
         result = m.execute_action(conn, plan)
         self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', 'identity_mismatch', []))
         self.assertEqual(conn.writes, [])
-        self.assertIn(own_uuid, conn.batches[0].splitlines()[0])
+        self.assertIn(own_uuid, guarded_packets(conn.batches[0])[0][0])
 
     def test_changed_identity_in_fresh_read_sends_no_batch(self):
         for key, value in (('server_id', '232'), ('hostname', 'another-host'), ('port', '4307'),

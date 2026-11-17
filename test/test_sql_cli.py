@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 from _client_tools_fixture import private_client_dir
+from _reviewed_replay import guarded_packets
 
 from myflames import cli, dbops, editor_session as editor, sql_cli
 from myflames.workspace_store import WorkspaceStore
@@ -426,7 +427,7 @@ class SQLTests(unittest.TestCase):
                     'KILL QUERY ' in args[args.index('-e') + 1]]
         self.assertEqual(len(controls), 1)
         args = controls[0]
-        guard, kill = args[args.index('-e') + 1].splitlines()
+        ((guard, kill, _),) = guarded_packets(args[args.index('-e') + 1])
         self.assertEqual(guard, dbops.target_session_guard('mysql', {
             'server_uuid': '11111111-2222-3333-4444-555555555555'})[0])
         self.assertTrue(kill.startswith(editor.TAG + 'KILL QUERY '))

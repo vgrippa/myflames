@@ -19,6 +19,7 @@ from myflames import cluster, connection_groups, dbops, reviewed_writes, secret_
 from myflames.connector import ConnectorError
 from myflames.workspace_store import ENDPOINT_FIELDS, WorkspaceStore
 from test_cluster_actions import Writes
+from _reviewed_replay import guarded_packets
 
 
 class MemberClient(Writes):
@@ -121,9 +122,10 @@ class GroupActionTests(unittest.TestCase):
         self.assertEqual([c['password'] for c in self.opened], ['secret-db-2', 'secret-db-2'])
         self.assertEqual(self.clients['db-1'].writes, [])
         (script,) = self.clients['db-2'].writes
-        self.assertEqual(script.splitlines(), plan['session_guard'] + plan['statements'])
-        self.assertIn(F.SERVER_UUIDS[1], script.splitlines()[0])
-        self.assertNotIn(F.SERVER_UUIDS[0], script.splitlines()[0])
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
+                         [(plan['session_guard'][0], s) for s in plan['statements']])
+        self.assertIn(F.SERVER_UUIDS[1], guarded_packets(script)[0][0])
+        self.assertNotIn(F.SERVER_UUIDS[0], guarded_packets(script)[0][0])
         (record,) = self.records()
         self.assertEqual((record['connection']['profile_id'], record['connection']['profile_name'],
                           record['connection']['host']), ('prof-db-2', 'prod-db-2', 'db-2'))
@@ -183,10 +185,10 @@ class GroupActionTests(unittest.TestCase):
 
     def test_f2_last_login_flip_is_refused_by_the_reviewed_uuid_guard(self):
         plan = self.plan()
-        self.clients['db-2'].fail = ConnectorError('ERROR 1242 (21000) at line 1: Subquery returns more than 1 row')
+        self.clients['db-2'].fail = ConnectorError('ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
         result = self.apply(plan)
         self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', 'identity_mismatch', []))
-        self.assertIn(F.SERVER_UUIDS[1], self.clients['db-2'].writes[0].splitlines()[0])
+        self.assertIn(F.SERVER_UUIDS[1], guarded_packets(self.clients['db-2'].writes[0])[0][0])
         self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
 
     def test_f2_member_local_flag_does_not_replace_own_server_uuid(self):
@@ -213,7 +215,8 @@ class GroupActionTests(unittest.TestCase):
         with mock.patch.object(self.store, 'record_topology_identity', wraps=self.store.record_topology_identity) as record:
             plan = self.plan(target_profile_id=action['target']['profile_id'])
         record.assert_called_once_with(self.target['id'], {'server_uuid': F.SERVER_UUIDS[1]},
-                                       expected=before)
+                                       expected=before, observation=mock.ANY)
+        self.assertIsNotNone(record.call_args[1]['observation'])
         self.assertEqual(self.store.get('profile', self.target['id'])['topology_identity']['server_uuid'],
                          F.SERVER_UUIDS[1])
         self.assertEqual(len(ui._review_tokens(self.workspace).entries), 1)
@@ -224,9 +227,10 @@ class GroupActionTests(unittest.TestCase):
         self.assertEqual(self.clients['db-1'].writes, [])
         self.assertEqual(self.clients['db-3'].writes, [])
         (script,) = self.clients['db-2'].writes
-        self.assertIn(F.SERVER_UUIDS[1], script.splitlines()[0])
-        self.assertNotIn(F.SERVER_UUIDS[0], script.splitlines()[0])
-        self.assertEqual(script.splitlines(), plan['session_guard'] + plan['statements'])
+        self.assertIn(F.SERVER_UUIDS[1], guarded_packets(script)[0][0])
+        self.assertNotIn(F.SERVER_UUIDS[0], guarded_packets(script)[0][0])
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
+                         [(plan['session_guard'][0], s) for s in plan['statements']])
 
     def test_address_suggestions_use_topology_endpoint_normalization_and_loopback_scope(self):
         report = cluster.read_status(self.clients['db-1'])
@@ -857,7 +861,7 @@ class GroupActionTests(unittest.TestCase):
         self.store.record_topology_identity(self.target['id'], {'server_uuid': F.SERVER_UUIDS[1]})
         result = self.apply(plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertIn('@@global.wsrep_node_name', client.writes[0].splitlines()[0])
+        self.assertIn('@@global.wsrep_node_name', guarded_packets(client.writes[0])[0][0])
         self.assertEqual(self.records()[0]['connection']['profile_name'], 'prod-db-2')
 
     def test_galera_local_flag_and_node_name_do_not_replace_wsrep_uuid(self):

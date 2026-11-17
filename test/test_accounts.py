@@ -1114,10 +1114,10 @@ class AccountsTest(unittest.TestCase):
             self.assertNotIn(generated, json.dumps(self.store.audit_records()))
             self.assertIsNone(plan._generated)
 
-    def test_mariadb_generated_create_password_survives_a_later_identity_refusal(self):
+    def test_mariadb_generated_create_password_survives_a_later_packet_refusal(self):
         # Use the real planner, executor, guard classification and redaction.
         # Only the SQL connection's server answers are synthetic.
-        for code, outcome in ((1242, 'identity_mismatch'), (1142, 'identity_unavailable')):
+        for code, outcome in ((1242, 'identity_mismatch'), (1142, 'denied')):
             for refused_index in (0, 1, 2):
                 with self.subTest(code=code, refused_index=refused_index):
                     self.conn = FakeConn('mariadb', exists=False)
@@ -1128,7 +1128,7 @@ class AccountsTest(unittest.TestCase):
                     def execute(sql, extra_flags=None, timeout=None):
                         calls.append(sql)
                         if len(calls) - 1 == refused_index:
-                            raise ConnectorError('mysql client exited 1: ERROR %d (42000) at line 1: '
+                            raise ConnectorError('mysql client exited 1: ERROR %d (42000) at line 2: '
                                                  'The identity check refused this login' % code)
                         if len(calls) == 1:
                             self.conn.exists, self.conn.locked = True, True
@@ -1140,10 +1140,12 @@ class AccountsTest(unittest.TestCase):
                     self.conn.run_stdin = execute
                     result = self.apply(plan)
                     self.assertEqual(len(calls), refused_index + 1)
-                    self.assertEqual(result['status'], 'refused' if refused_index == 0 else 'partial')
-                    self.assertEqual(result['outcome'], outcome)
+                    self.assertEqual(result['status'], ('refused' if code == 1242 else 'denied')
+                                     if refused_index == 0 else 'partial')
+                    self.assertEqual(result.get('outcome'), outcome if code == 1242 else None)
                     self.assertEqual([s['status'] for s in result['statements']],
-                                     ['ok'] * refused_index + ['not_sent'] * (3 - refused_index))
+                                     ['ok'] * refused_index + ['not_sent' if code == 1242 else 'denied'] +
+                                     ['not_sent'] * (2 - refused_index))
                     if refused_index == 2:
                         self.assertEqual(result['generated_password'], generated)
                     else:

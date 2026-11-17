@@ -12,8 +12,8 @@ The workspace issues a review token bound to that whole plan
 fresh read, refuses with "nothing was sent" when the statements or the
 ``expect`` identity differ from the reviewed plan, checks the typed guard,
 consumes the token (``before_send``), writes the pending audit record, and
-sends every statement as one unit, after the reviewed server identity guard:
-one client invocation with the statements on standard input
+sends each statement in one query packet with its reviewed server identity
+guard, repeated for every packet: one client invocation on standard input
 (``MySQLConnection.run_write``: ``--comments``,
 ``--binary-mode``, no reconnect; batch mode stops at the first error, so a
 later statement never runs after a failed one). It never retries.
@@ -55,7 +55,8 @@ import time
 from .connector import ConnectorError
 
 #: "ERROR 1045 (28000) at line 2: ..." from the mysql client in batch mode:
-#: the input line of the statement that failed (one statement per line here).
+#: the packet's input start line; SQL packet maps translate it to a statement
+#: index before the common error handler. Shell retains its prefix offset.
 _AT_LINE = re.compile(r"\bat line (\d+)\b")
 _ERROR = re.compile(r"ERROR\s+(\d+)")
 
@@ -291,7 +292,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
-    from .dbops import may_have_run, target_guard_failed, shift_guard_error
+    from .dbops import may_have_run, target_guard_failed, shift_guard_error, target_guarded_script
     from .connection_groups import ProfileReadError
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
@@ -308,6 +309,14 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         out["session_guard"] = session_guard(reviewed)
     except ValueError as exc:
         return refused(out, str(exc), "identity_unavailable", audit, expect, progress)
+    statements = out["statements"]
+    packet_lines = None
+    script = "\n".join(out["session_guard"] + statements)
+    if out["session_guard"] and fresh.get("via") != "mysqlsh":
+        try:
+            script, packet_lines = target_guarded_script(out["session_guard"], statements)
+        except ValueError as exc:
+            return refused(out, str(exc), "review", audit, expect, progress)
     guard = fresh.get("typed_guard")
     if guard and typed != guard:
         return refused(out, "Type %s exactly to confirm. Nothing was sent." % guard, "typed_guard", audit, expect,
@@ -317,7 +326,6 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             before_send()
         except ValueError as exc:
             return refused(out, str(exc), getattr(exc, "outcome", "review"), audit, expect, progress)
-    statements = out["statements"]
     if audit is not None:
         try:
             out["audit_id"] = audit.attempt(out["session_guard"] + statements, target=expect, verified=fresh.get("verified"))
@@ -326,7 +334,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     _set(progress, "sending", ["sent"] * len(statements))
     try:
-        conn.run_write("\n".join(out["session_guard"] + statements), timeout=timeout)
+        conn.run_write(script, timeout=timeout)
     except KeyboardInterrupt as exc:
         _set(progress, "finished", ["unknown"] * len(statements), "unknown")
         if audit is not None:
@@ -346,17 +354,20 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     except ConnectorError as exc:
         from .dbops import redact
         pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
-        guard_failure = target_guard_failed(exc) if out["session_guard"] else None
+        guard_failure = target_guard_failed(exc, packet_lines) if out["session_guard"] else None
         if guard_failure:
-            out.update(status="refused", outcome=guard_failure["outcome"],
+            index = guard_failure.get("statement_index", 0)
+            out.update(status="partial" if index else "refused", outcome=guard_failure["outcome"],
                        message=redact(guard_failure["message"], pw),
-                       not_sent=list(statements), states=["not_sent"] * len(statements))
-            _set(progress, "finished", out["states"], "refused")
+                       sent=statements[:index], not_sent=statements[index:],
+                       states=["done"] * index + ["not_sent"] * (len(statements) - index))
+            _set(progress, "finished", out["states"], out["status"])
             if audit is not None:
-                audit.complete("refused", outcome=out["outcome"], error=redact(str(exc), pw), message=out["message"])
+                audit.complete("error" if index else "refused", outcome=out["outcome"],
+                               error=redact(str(exc), pw), message=out["message"])
             return out
         if out["session_guard"]:
-            exc = shift_guard_error(exc)
+            exc = shift_guard_error(exc, packet_lines)
         text = redact(str(exc), pw)
         out["error"] = redact(server_message(text), pw)
         code, line = error_number(text), failed_line(text)

@@ -77,7 +77,10 @@ class LiveCLIRegressions(unittest.TestCase):
                                                 assume_yes=True, quiet=True, audit=audit)
                 self.assertEqual((code, result['status']), (0, 'changed'))
                 statement = V.TAG + 'SET GLOBAL long_query_time = 10'
-                self.assertIn(mock.call("\n".join(dbops.target_session_guard(variable["engine"], variable["server_identity"])) + "\n" + statement, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)), conn.run_write.call_args_list)
+                script, _ = dbops.target_guarded_script(
+                    dbops.target_session_guard(variable['engine'], variable['server_identity']), [statement])
+                self.assertIn(mock.call(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
+                              conn.run_write.call_args_list)
                 self.assertEqual(store.audit_records()[0]['statements'],
                                  dbops.target_session_guard(variable['engine'], variable['server_identity']) + [statement])
                 self.assertEqual(result['plan']['config_line'], 'long_query_time = 10')

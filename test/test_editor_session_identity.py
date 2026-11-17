@@ -96,7 +96,7 @@ class EditorIdentityTests(unittest.TestCase):
         self.rewrite_client(lambda text: text.replace('def one_shot(sql):\n', '''def one_shot(sql):
     actual_uuid = os.environ.get("FAKE_GCOMM_UUID", %r)
     if "wsrep_gcomm_uuid" in sql and actual_uuid not in sql:
-        sys.stderr.write("ERROR 1242 (21000) at line 1: Subquery returns more than 1 row\\n")
+        sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\\n")
         return 1
 ''' % node_uuid))
         result = self.run_sql('SELECT 7')
