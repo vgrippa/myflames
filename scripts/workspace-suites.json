@@ -1192,6 +1192,12 @@
       "timeout": 180,
       "reason": "no npm script; topology presentation regression over real-server recordings via perf-harness; header: no production connections are opened."
     },
+    "topology-contrast-unit.mjs": {
+      "kind": "suite",
+      "script": "test:theme-contrast",
+      "timeout": 180,
+      "reason": "Measures topology card and bus label contrast, including hover and selection, from the production CSS with node:test and postcss; no browser or server (shares theme-contrast-unit.mjs helpers)."
+    },
     "topology-groups.mjs": {
       "kind": "suite",
       "script": "test:topology-groups",

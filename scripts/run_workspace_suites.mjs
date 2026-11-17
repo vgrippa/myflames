@@ -141,7 +141,9 @@ async function inventory(options) {
   const missing = Object.keys(manifest.entries).filter((name) => !names.has(name)).sort();
   if (unlisted.length || missing.length) {
     throw new UsageError(`INVENTORY MISMATCH\nUnlisted test entries:\n  ${unlisted.join('\n  ') || '(none)'}\n`
-      + `Missing test entries:\n  ${missing.join('\n  ') || '(none)'}`);
+      + `Missing test entries:\n  ${missing.join('\n  ') || '(none)'}\n`
+      + 'Every entry of apps/workspace/test needs one in scripts/workspace-suites.json (kind, script, timeout, '
+      + 'reason; "safety" for write-safety suites); see docs/DEVELOPER_REFERENCE.md, "Test runner and CI".');
   }
   const files = new Map(entries.map((entry) => [entry.name, entry]));
   for (const [file, entry] of Object.entries(manifest.entries)) {
