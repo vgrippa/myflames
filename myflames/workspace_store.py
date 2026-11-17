@@ -819,6 +819,18 @@ class WorkspaceStore:
                     requested['type'] = 'production'
                 value.update(_safety_fields(requested, existing or {}))
                 value['group'] = group if group is not None else (existing or {}).get('group', '')
+                if value['group']:
+                    # Joining a group takes the id the group already has; a
+                    # group with no current member starts a new generation.
+                    generation = None
+                    if existing and value['group'] == (existing.get('group') or '') and \
+                            existing.get('group_generation'):
+                        generation = existing['group_generation']
+                    if generation is None:
+                        generation = self._group_generation(conn, value['group'])
+                    value['group_generation'] = generation or uuid.uuid4().hex
+                else:
+                    value.pop('group_generation', None)
                 if existing and _same_endpoint(value, existing) and 'topology_identity' in existing:
                     value['topology_identity'] = existing['topology_identity']
                 updated = _now()
@@ -843,6 +855,21 @@ class WorkspaceStore:
         """(kind, payload dict) of one record inside an open transaction, or (None, None)."""
         row = conn.execute('SELECT kind, payload FROM records WHERE id=?', (key,)).fetchone()
         return (row[0], json.loads(row[1])) if row else (None, None)
+
+    def _group_generation(self, conn, name):
+        """The generation the current members of group *name* share, or None.
+
+        Read inside the caller's write transaction so a concurrent membership
+        change cannot pair a new member with a dead group's id.
+        """
+        for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+            try:
+                value = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(value, dict) and value.get('group') == name and value.get('group_generation'):
+                return value['group_generation']
+        return None
 
     def _profile(self, key, include_updated=False):
         """A stored profile with its ``secret_ref``, or None. Never creates the database.
@@ -887,6 +914,8 @@ class WorkspaceStore:
                 value = {field: existing[field] for field in PROFILE_FIELDS if field in existing}
                 value.update(_safety_fields(existing, existing))
                 value['group'] = existing.get('group', '')
+                if existing.get('group_generation'):
+                    value['group_generation'] = existing['group_generation']
                 if 'topology_identity' in existing:
                     value['topology_identity'] = existing['topology_identity']
                 value.update(remember_password=False, secret_backend='')
@@ -920,8 +949,26 @@ class WorkspaceStore:
                 if kind != 'profile':
                     raise ValueError('Unknown saved connection ID: %s' % key)
                 rows.append((key, value))
+            # The group keeps its generation while it has members; a group
+            # whose members all left (or were deleted) is gone, and assigning
+            # the name again starts a new generation, so a review made for the
+            # old group can never match the new one.
+            generation = None
+            if group:
+                for key, value in rows:
+                    if value.get('group') == group and value.get('group_generation'):
+                        generation = value['group_generation']
+                        break
+            if group and generation is None:
+                generation = self._group_generation(conn, group)
+            if group and generation is None:
+                generation = uuid.uuid4().hex
             for key, value in rows:
                 value['group'] = group
+                if generation:
+                    value['group_generation'] = generation
+                else:
+                    value.pop('group_generation', None)
                 conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                              (_now(), json.dumps(value, allow_nan=False), key))
             conn.execute('COMMIT')
@@ -974,17 +1021,29 @@ class WorkspaceStore:
                 if existing_in_name and not (existing_in_name & id_set):
                     raise ValueError('A connection group named %r already exists.' % name)
                 clear_groups = {name}
+            # The group keeps the generation its staying members carry (a
+            # rename keeps it too); a group created fresh, or one whose name
+            # outlived it, gets a new random id so an old review cannot match.
+            generation = None
+            for key, value in target_rows:
+                if value.get('group') in clear_groups and value.get('group_generation'):
+                    generation = value['group_generation']
+                    break
+            if generation is None:
+                generation = uuid.uuid4().hex
             now = _now()
             updated_ids = []
             for key, value in target_rows:
-                if value.get('group') != name:
+                if value.get('group') != name or value.get('group_generation') != generation:
                     value['group'] = name
+                    value['group_generation'] = generation
                     conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                                  (now, json.dumps(value, allow_nan=False), key))
                 updated_ids.append(key)
             for key, value in all_profiles:
                 if key not in id_set and value.get('group') in clear_groups:
                     value['group'] = ''
+                    value.pop('group_generation', None)
                     conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                                  (now, json.dumps(value, allow_nan=False), key))
                     updated_ids.append(key)
@@ -1017,6 +1076,7 @@ class WorkspaceStore:
                         continue
                     if isinstance(value, dict) and value.get('group') == name:
                         value['group'] = ''
+                        value.pop('group_generation', None)
                         conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                                      (now, json.dumps(value, allow_nan=False), key))
                         cleared_ids.append(key)
@@ -1999,15 +2059,18 @@ class WorkspaceStore:
         value = clean
         if not profile_id:
             return value
-        if value.get('password'):
-            return value
         # One read: the endpoint and the secret reference come from the same
-        # committed record.
-        profile = self._profile(profile_id)
-        if profile is None:
-            raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
+        # committed record. A group request checks membership with it too, also
+        # when the request types the password: consent is the store, read now.
+        profile = None
+        if group_name is not None or not value.get('password'):
+            profile = self._profile(profile_id)
+            if profile is None:
+                raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
         if group_name is not None and (not group_name or profile.get('group') != group_name):
             raise ValueError('This saved connection is outside the current connection group.')
+        if value.get('password'):
+            return value
         if not profile.get('remember_password'):
             return value
         from . import secret_store
@@ -2243,6 +2306,8 @@ def _present(kind, record):
         from .secret_store import backend_label
         record.pop('secret_ref', None)
         record.setdefault('group', '')
+        if not record['group']:
+            record.pop('group_generation', None)
         record.setdefault('remember_password', False)
         record.setdefault('secret_backend', '')
         record['has_saved_password'] = bool(record['remember_password'])

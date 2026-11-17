@@ -649,3 +649,23 @@ class TestWorkspaceStore(unittest.TestCase):
             self.assertTrue(prof['has_saved_password'])
             filled = self.store.connection_with_saved_password({'profile_id': pid, 'host': host, 'port': 3306, 'user': 'dba'})
             self.assertEqual(filled['password'], pw)
+
+    def test_typed_password_still_checks_group_membership(self):
+        # A request that types the password is checked against the group too:
+        # consent is the store, not the credential's origin.
+        self.store.save('profile', {'name': 'db-1', 'host': 'db1.example', 'user': 'dba', 'group': 'G'}, 'p1',
+                        password='pw-1', remember=True)
+        request = {'profile_id': 'p1', 'host': 'db1.example', 'port': 3306, 'user': 'dba', 'group_name': 'G'}
+        filled = self.store.connection_with_saved_password(dict(request, password='typed-pw'))
+        self.assertEqual(filled['password'], 'typed-pw')
+        self.assertEqual(self.store.connection_with_saved_password(dict(request))['password'], 'pw-1')
+        # A member that left the group is refused with or without a typed
+        # password, and so is a deleted profile.
+        self.store.assign_profile_group(['p1'], 'H')
+        for value in (dict(request, password='typed-pw'), dict(request)):
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(value)
+        self.store.delete('profile', 'p1')
+        for value in (dict(request, password='typed-pw'), dict(request)):
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(value)

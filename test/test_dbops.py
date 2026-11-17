@@ -1021,6 +1021,37 @@ class TestPrivileges(unittest.TestCase):
                 self.assertIn('changed while reading grants', result['error'])
                 conn.run.assert_called_once()
 
+    def test_grants_optional_variables_across_lifecycle_engines(self):
+        from _grants_fixtures import UUID
+        from _perf_replay import batch
+        grant = 'GRANT SELECT ON *.* TO `operator`@`%`'
+        cases = [('5.7.44', None), ('8.0.15', None), ('8.0.16', False), ('8.4.11', True), ('9.7.2', False)]
+        cases += [(version + '-MariaDB', None) for version in
+                  ('10.11.16', '11.0.6', '11.1.6', '11.2.6', '11.3.2', '11.4.13', '11.8.9')]
+        for version, partial in cases:
+            with self.subTest(version=version):
+                # Handwritten result sets, independent of grants_batch: SHOW
+                # filters absent variables out rather than raising error 1193.
+                variables = [] if 'MariaDB' in version else [['server_uuid', UUID]]
+                if partial is not None:
+                    variables.insert(0, ['partial_revokes', 'ON' if partial else 'OFF'])
+                identity = ['operator@client', 'operator@%', version, '73', '1', 'fixture-db', '3306']
+                result_sets = ([['myflames_grants_begin'] + identity], variables, [],
+                               [['myflames_grants_rows']], [[grant]],
+                               [['myflames_grants_end'] + identity], variables, [], [['myflames_grants_done']])
+                conn = mock.Mock()
+                conn.run.return_value = ''.join(batch(rows) for rows in result_sets)
+                result = dbops.read_grants(conn)
+                self.assertTrue(result['checked'], result)
+                self.assertEqual((result['user'], result['account'], result['grants']),
+                                 ('operator', 'operator@%', [grant]))
+                self.assertIs(result['partial_revokes'], partial)
+                conn.run.assert_called_once()
+                sql = conn.run.call_args[0][0]
+                self.assertNotRegex(sql, r'@@(?:global\.)?partial_revokes')
+                self.assertEqual(sql.count("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+                                           "('server_uuid', 'partial_revokes')"), 2)
+
     def test_grants_partial_revokes_and_missing_identity_are_explicit(self):
         from _grants_fixtures import grants_batch
         for value, expected in [('ON', True), ('1', True), ('OFF', False), ('0', False),

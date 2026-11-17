@@ -37,6 +37,7 @@ import time
 import uuid
 
 from . import dbops, privileges
+from .connection_groups import ProfileReadError
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import Reader, literal
 from .server_info import detect_flavor
@@ -1569,7 +1570,7 @@ def _run_stdin(conn, sql, passwords=()):
 
 
 def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surface='ui',
-          connection=None, profile=None, safety=None):
+          connection=None, profile=None, safety=None, before_send=None):
     """Apply an intact plan after the write policy and fresh re-reads.
 
     ``store`` implements the WorkspaceStore audit methods; every attempt,
@@ -1577,8 +1578,11 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     gate before opening *conn* (the endpoint and CLI do); this is a second
     enforcement point. ``safety`` is the caller's connection safety when it
     already computed one (the workspace passes the group connection's
-    effective safety); otherwise it is judged here. Returns
-    ``account-change-1.0``.
+    effective safety); otherwise it is judged here. ``before_send`` (the
+    workspace passes it on a Group connection) returns a refusal message when
+    group consent or the strictest write policy no longer holds, and is asked
+    again right before the first statement; the connection's login guard
+    re-checks it before every client. Returns ``account-change-1.0``.
     """
     if not isinstance(plan, Plan) or plan._consumed or _json(dict(plan)) != plan._seal:
         raise ValueError('Use an intact account plan built by myflames.')
@@ -1655,6 +1659,11 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     hint = privileges.can(actor, plan['action'], **plan._context)
     if hint['allowed'] is False:
         return refuse('denied', hint['reason'] + ' Nothing was sent.')
+    if before_send is not None:
+        message = before_send()
+        if message:
+            out['outcome'] = 'changed'
+            return refuse('refused', message)
     out['before'] = before
     generated = plan._generated
     try:
@@ -1665,6 +1674,15 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
             out['audit_ids'].append(audit_id)
             try:
                 result = _run_stdin(conn, '\n'.join(session_guard) + '\n' + sql, plan._passwords)
+            except ProfileReadError as exc:
+                # Group consent or the write policy ended after the review.
+                message = str(exc)
+                audit.complete('refused', outcome='changed', message=message)
+                out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
+                out.update(status='refused' if i == 0 else 'partial', outcome='changed',
+                           message=message if i == 0 else
+                           message + ' Earlier statements ran; the remaining statements were not sent.')
+                break
             except (ConnectorError, KeyboardInterrupt) as exc:
                 if getattr(exc, 'identity_mismatch', False):
                     audit.complete('refused', outcome='identity_mismatch', error=exc.server_error_code,

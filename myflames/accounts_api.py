@@ -310,6 +310,25 @@ def _build(conn, request, secrets, connection, profile, change_set_id=None, safe
                                 safety=safety, **options)
 
 
+def _group_login_guard(store, connection):
+    """Per-login consent for a Group connection, re-read from the store.
+
+    The member and the request's active profile must still be current members
+    of the group at every login, not just when the request was validated.
+    """
+    from . import connection_groups
+    if not isinstance(connection, dict) or connection.get('group_name') is None:
+        return None
+
+    def guard():
+        _profiles, current = connection_groups.request_profiles(store, connection)
+        if current is None:
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group.')
+
+    return guard
+
+
 def response(path, payload, workspace, with_saved_password, request_profile):
     """Answer one Users and roles path. *with_saved_password* and
     *request_profile* are ui.py's helpers (saved password, profile lookup)."""
@@ -325,7 +344,11 @@ def response(path, payload, workspace, with_saved_password, request_profile):
     options = connection_options(filled.get('connection'))
     options['query_timeout'] = 30
     try:
-        with MySQLConnection(**options) as conn:
+        conn = MySQLConnection(**options)
+        guard = _group_login_guard(workspace.store, payload.get('connection'))
+        if guard is not None:
+            conn._login_guard = guard
+        with conn:
             if path == PRIVILEGES_PATH:
                 return privileges.read_privileges(conn)
             if path == '/api/accounts/scope-objects':
@@ -410,12 +433,58 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                                  outcome='read_only' if blocked[0] == 'refused' else blocked[0],
                                  message=blocked[1], target={'change_set_id': plan_id, 'request': request})
         return _unsent(request, blocked[0], blocked[1], audit_id)
+
+    from . import connection_groups
+    grouped = isinstance(connection, dict) and connection.get('group_name') is not None
+
+    def current_consent():
+        """Membership and the strictest policy, re-read at each login and send.
+
+        A member removed from the group, or made Read-only, after the review
+        (or after the password lookup) receives nothing.
+        """
+        if not grouped:
+            return
+        _profiles, current = connection_groups.request_profiles(store, connection)
+        if current is None:
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group; nothing was sent.')
+        now = dbops.connection_safety(current, connection, store=store)
+        if dbops.connection_identity(connection, now) != identity:
+            raise connection_groups.ProfileReadError(
+                "The connection's write policy changed after the review; nothing was sent. "
+                'Review the change again.')
+
+    def before_send():
+        try:
+            current_consent()
+        except connection_groups.ProfileReadError as exc:
+            return str(exc)
+        return None
+
+    def changed(message):
+        audit = dbops.AuditTrail(store, 'accounts.' + request['operation'], 'ui', connection=plain,
+                                 safety=safety, policy=dbops.policy_summary(decision))
+        audit_id = audit.outcome(reviewed or [request['operation']], 'refused', outcome='changed',
+                                 message=message, target={'change_set_id': plan_id, 'request': request})
+        result = _unsent(request, 'refused', message, audit_id)
+        result.update(change_set_id=plan_id,
+                      statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
+                                  for i, s in enumerate(reviewed or [])])
+        return result
+
     # Claim atomically before opening a connection: overlapping requests can
     # never send the same reviewed change twice. Policy refusals remain retryable.
     entry = _recall(plan_id, identity, workspace, consume=True)
-    filled = with_saved_password(payload)
-    options = connection_options(filled.get('connection'))
-    options['query_timeout'] = 30
+    try:
+        current_consent()
+        filled = with_saved_password(payload)
+        options = connection_options(filled.get('connection'))
+        options['query_timeout'] = 30
+        # The secret store can wait (the vault lock): consent is from now.
+        current_consent()
+    except connection_groups.ProfileReadError as exc:
+        return changed(str(exc))
     all_secrets = [options.get('password')] + list(secrets.values())
 
     def stale(current, message):
@@ -433,7 +502,13 @@ def _apply(payload, workspace, with_saved_password, request_profile):
         return result
 
     try:
-        with MySQLConnection(**options) as conn:
+        conn = MySQLConnection(**options)
+        if grouped:
+            # Every login of this apply (the fresh reads and each statement's
+            # client) re-checks consent and the group's strictest policy.
+            conn._login_guard = current_consent
+            conn._group_login_started = False
+        with conn:
             # Existence and direct-grant checks in plan_change can fail after
             # drift. Compare first so those cases are audited stale refusals,
             # rather than unaudited input errors. The client cannot replace the
@@ -455,7 +530,10 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                 return stale(plan, 'The statements would differ from the ones you reviewed; nothing was sent.')
             result = accounts.apply(conn, plan, expect, confirmed=True, typed_name=typed_name,
                                     store=_ApplyAuditStore(store),
-                                    surface='ui', connection=connection, profile=profile, safety=safety)
+                                    surface='ui', connection=connection, profile=profile, safety=safety,
+                                    before_send=before_send if grouped else None)
+    except connection_groups.ProfileReadError as exc:
+        return changed(str(exc))
     except (ValueError, ConnectorError) as exc:
         _reraise(exc, all_secrets)
     if result['status'] == 'needs_typed_name':

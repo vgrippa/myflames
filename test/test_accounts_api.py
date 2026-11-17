@@ -474,6 +474,73 @@ class AccountsApiTest(unittest.TestCase):
         self.assertNotIn('conn-secret', str(cm.exception))
         self.assertNotIn('acct-secret', str(cm.exception))
 
+    def grouped_connection(self):
+        store = self.workspace.store
+        store.save('profile', {'name': 'g1', 'host': '127.0.0.1', 'port': 3306, 'user': 'admin',
+                               'type': 'development'}, 'g1')
+        store.assign_profile_group(['g1'], 'G')
+        return dict(CONNECTION, profile_id='g1', group_name='G')
+
+    def test_group_apply_rechecks_membership_after_the_password_lookup(self):
+        connection = self.grouped_connection()
+        plan = self.call('/api/accounts/plan', connection=connection, operation='create', user='t_api', host='%',
+                         password='x-pw')
+        self.opened = []
+        original = self.workspace.store.connection_with_saved_password
+
+        def lookup(value):
+            filled = original(value)
+            # The member leaves the group while the secret store answers.
+            self.workspace.store.assign_profile_group(['g1'], '')
+            return filled
+        with mock.patch.object(self.workspace.store, 'connection_with_saved_password', side_effect=lookup):
+            result = self.call('/api/accounts/apply', connection=connection, plan_id=plan['plan_id'],
+                               expect=plan['expect'], confirmed=True, password='x-pw')
+        self.assertEqual(result['status'], 'refused')
+        self.assertIn('connection group', result['message'])
+        self.assertEqual([s['status'] for s in result['statements']], ['not_sent'] * len(plan['statements']))
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.conn.stdin, [])
+        record = self.workspace.store.audit_records()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_group_apply_rechecks_the_strictest_policy_after_the_password_lookup(self):
+        connection = self.grouped_connection()
+        plan = self.call('/api/accounts/plan', connection=connection, operation='create', user='t_api', host='%',
+                         password='x-pw')
+        self.opened = []
+        original = self.workspace.store.connection_with_saved_password
+
+        def lookup(value):
+            filled = original(value)
+            # The member becomes Read-only while the secret store answers.
+            self.workspace.store.set_profile_safety('g1', read_only=True)
+            return filled
+        with mock.patch.object(self.workspace.store, 'connection_with_saved_password', side_effect=lookup):
+            result = self.call('/api/accounts/apply', connection=connection, plan_id=plan['plan_id'],
+                               expect=plan['expect'], confirmed=True, password='x-pw')
+        self.assertEqual(result['status'], 'refused')
+        self.assertIn('write policy changed', result['message'])
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.conn.stdin, [])
+        record = self.workspace.store.audit_records()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_group_apply_installs_a_per_login_consent_guard(self):
+        from myflames.connection_groups import ProfileReadError
+        self.conn = FakeConn(name='t_api')
+        connection = self.grouped_connection()
+        plan = self.call('/api/accounts/plan', connection=connection, operation='lock', user='t_api', host='%')
+        result = self.call('/api/accounts/apply', connection=connection, plan_id=plan['plan_id'],
+                           expect=plan['expect'], confirmed=True)
+        self.assertEqual(result['status'], 'applied')
+        guard = getattr(self.conn, '_login_guard', None)
+        self.assertIsNotNone(guard, 'a grouped apply re-checks consent at every login')
+        guard()
+        self.workspace.store.assign_profile_group(['g1'], '')
+        with self.assertRaises(ProfileReadError):
+            guard()
+
 
 if __name__ == '__main__':
     unittest.main()

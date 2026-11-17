@@ -1580,8 +1580,12 @@ and retain their own protocol contracts.
 
 Group Cluster reviews also bind `expect.target`: the target's saved
 `profile_id`, `profile_name`, every stored endpoint field (host, port, user,
-TLS mode and CA, SSH host, user and port), node `server_identity`, and
-`group_name`. The server builds this object, persists the identity observed
+TLS mode and CA, SSH host, user and port), node `server_identity`,
+`group_name`, and the group's `group_generation` (a random id stored on each
+member: fresh when a group is created, kept on rename and as members join or
+leave, cleared when the group is deleted, so a group deleted and recreated
+with the same name and members never matches a review made for the old one).
+The server builds this object, persists the identity observed
 while planning, and rebuilds the object from the current store before any
 password lookup on apply. A changed endpoint, identity, profile, name or
 group refuses the review with nothing sent. Only the node identity key selected
@@ -1774,7 +1778,10 @@ Local `audit purge` has its separate confirmation contract.
   identity through `finish_read`, with `expected=profile`: MySQL's
   `server_uuid` from that probe's `SHOW GLOBAL VARIABLES`, or Galera/PXC's
   `wsrep_node_uuid` from `SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'` on the
-  same connection. A peer's membership table, reported address, ProxySQL or
+  same connection. Only a probe that ran during this read (including one this
+  read waited on) supplies that evidence: a cached probe's data still answers
+  topology questions but records no identity, so it cannot overwrite a newer
+  identity a direct read stored. A peer's membership table, reported address, ProxySQL or
   Readyset backend UUID never supplies this evidence. `GroupScope` keeps the
   endpoint snapshot and identity as private attributes of its read outcome;
   they are not fields in the serialized report. Before persisting them,
@@ -1812,7 +1819,12 @@ Local `audit purge` has its separate confirmation contract.
   profile, and clears `group = ""` on profiles that were in the group and are
   not listed. `delete_connection_group(name)` clears `group = ""` on its members
   in one transaction while keeping every saved connection and its saved password
-  intact. Both return `groups` (`connection_groups.list_groups(profiles)`) and
+  intact. Every member also carries the group's `group_generation` (a random
+  id): `save_connection_group` keeps the generation staying members carry (a
+  rename keeps it) and starts a fresh one for a group with no current members,
+  `assign_profile_group` reuses the group's current generation or starts one,
+  profile saves keep or adopt it, `forget_password` keeps it, and leaving or
+  deleting the group clears it (`_present` drops it when `group` is empty). Both return `groups` (`connection_groups.list_groups(profiles)`) and
   `profiles` (`store.list("profile")`, never a password or `secret_ref`).
   The workspace opens a group as one **Group connection** from the connection
   picker (`main.tsx` `openGroup`, `api.openConnectionGroup` with
@@ -1878,7 +1890,13 @@ Local `audit purge` has its separate confirmation contract.
   open tab session. A removed member refuses with
   `This saved connection is outside the current connection group.` before
   any statement or password lookup, as a fresh saved login does. A typed
-  password cannot bypass that check.
+  password cannot bypass that check. Status, Rollback, Stop and Close on a
+  tab's existing session are the one exception (`_connection_facts`
+  `allow_group_revoked`, with `_owned_session`'s endpoint ownership
+  unchanged): they send no new user statements, so a member removed from the
+  group can still release an open transaction's locks, and Stop's KILL then
+  uses the session's own authenticated run options when the password lookup
+  is refused. Run, Open, Commit, Preview and Use keep the strict refusal.
 
   `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
   allowlist) opens a connection group as one Group connection:
@@ -1902,7 +1920,10 @@ Local `audit purge` has its separate confirmation contract.
   (`_CONNECT_PROBE_CONCURRENCY`) and never more logins than the group has
   members (`_CONNECT_PROBE_BUDGET`, 16). Every member login fills that
   member's own saved password through `connection_with_saved_password` (which
-  re-checks group membership), and the reply never contains a secret; a
+  re-checks group membership), and every member connection carries a
+  `conn._login_guard` that re-reads membership from the store before each
+  client invocation, so a member removed while discovery runs gets no later
+  login; the reply never contains a secret; a
   member that cannot be read is `reachable: false`. Member names and
   endpoints never come from topology evidence: a stored topology label cannot
   rename a member (F10).
@@ -2686,7 +2707,11 @@ planner, write gate and session engine from the CLI.
   ROW_COUNT() and SHOW WARNINGS in the next run describe them. `/commit` and
   `/rollback` send tagged COMMIT and ROLLBACK; `/close` with an open or
   unknown transaction answers `transaction_open` or `transaction_unknown`
-  unless `discard: true`. A statement that commits implicitly (DDL except
+  unless `discard: true`. A member that left its connection group still gets
+  Status, Rollback, Stop and Close on the tab's existing session (endpoint
+  ownership unchanged, never new statements), so its locks are never
+  stranded; Run, Open, Commit, Preview and Use keep the strict refusal
+  (Profiles, "Connection groups"). A statement that commits implicitly (DDL except
   CREATE/DROP TEMPORARY TABLE, GRANT/REVOKE, LOCK/UNLOCK TABLES, START
   TRANSACTION, BEGIN, SET autocommit = 1, ANALYZE/OPTIMIZE/REPAIR/CHECK TABLE,
   FLUSH, RESET, replication statements; `implicit_commit`) while a transaction
@@ -5295,7 +5320,7 @@ Backend `myflames/privileges.py` (the one SHOW GRANTS parser, `has`, `requiremen
 - `myflames accounts show ACCOUNT [--role]` and `POST /api/accounts/read {connection, user, host, role?}` (`account-1.0`: `name, host, role, engine, version, exists, grants[], partial_revokes, model, roles[], default_roles[], attributes {locked, expired, plugins, limits, password_options}, role_grants[], effective_model, dangerous[], protected, system, warnings, fingerprint`): SHOW GRANTS FOR (1141 means `exists: false`), SHOW CREATE USER (MySQL 8.0.17+ with `print_identified_with_as_hex = ON` in the same call, every row joined because MariaDB prints a second `ALTER USER ... PASSWORD EXPIRE INTERVAL` row; parsed into attributes and discarded), MySQL default roles from its `DEFAULT ROLE` clause, MariaDB from `SET DEFAULT ROLE`, and SHOW GRANTS FOR every role reached (at most 256). `fingerprint` is SHA-256 over the credential-free grants (order ignored), roles, default roles and attributes: the plan's `expect`.
   CLI account show/grant commands diagnose a missing MariaDB user that matches a role and suggest `--role`; `show --json` adds `role_hint` to its missing-account result. Denied role reads do not assert that a role exists. MySQL roles share the account namespace and need no extra probe. Regression coverage: `test/test_accounts_cli.py`.
 - `POST /api/accounts/plan {connection, operation, user, host, role?, ...}` (`account-plan-1.0`): reads only. `operation` create, drop, rename (`new_user` or `new_name`, `new_host`), lock, unlock, expire, password (`password` or `random_password`, MySQL `current_password` for REPLACE), grant and revoke (`privileges[]`, `level` global|database|table|column|routine|proxy, `database`, `table`, `columns[]`, `routine`, `kind`, `pattern`, `proxy {name, host}`, `grant_option`), roles (`mode` grant|revoke|default, `roles[] {name, host}`, `admin_option`, `special` ALL|NONE), options (`limits`, `expire`, `password_options`). `password` is accepted only for create and password and never echoed. Response: `schema_version, plan_id (= change_set_id), operation, request (the non-secret request), name, host, role, engine, version, account, action, before (account-1.0), expect, connection_identity, actor, actor_server, statements[] (passwords as '[redacted]'), warnings[], guards {blocked[], typed_name, self_lockout, protected, after_management}, privileges (the can() answer for the actor), effects {sessions[], definers[], warnings[]} (drop, rename), dependencies[] (granted roles), generates_password, classification, policy {action, tone, title, text, connection_type, read_only}, status ready|blocked`. Plans live on the workspace server as `_account_plans` (request and redacted statements only, no secret; 30 minutes, 200 at most per server, single use). Non-server callers of the plan helpers use a separate fallback store. Apply claims the plan atomically before opening a connection; a missing typed name restores it with its original expiry. Policy refusals leave it usable.
-- `POST /api/accounts/apply {connection, plan_id, expect, confirmed, typed_name?, password?, current_password?}` (`account-change-1.0`, in `ui._WRITE_PATHS`): `dbops.gate` on the connection's policy first (account changes are risky: a read-only connection refuses and nothing is opened, Production and Development need `confirmed: true`; the refusal is audited and returned with `audit_id`), then the saved password, then a fresh account fingerprint is compared with both `expect` and the reviewed fingerprint before rebuilding the plan. A dropped or newly created account, or revoked privileges that invalidate planning, returns `status: stale` with audit `status: refused, outcome: stale`. Drift during a failed rebuild is checked again; unchanged invalid input remains an error. Rebuilt statements must equal the reviewed ones; `accounts.apply` then re-checks the connection identity, server version and identity, actor (`read_privileges`), every granted role's fingerprint, the account against `expect`, the rename destination, the guards and the privilege answer, and sends each statement with `connector.run_stdin` (stdin, `dbops.WRITE_CLIENT_FLAGS`, `--skip-reconnect`, empty temporary HOME, allowlisted environment), stopping at the first error. Response: `schema_version, change_set_id, operation, account, status, message, statements[] {index, statement, status ok|denied|refused_by_server|interrupted|unknown|not_sent, error, message}, before, after, diff {added[], removed[], levels, attributes_before/after, defaults_before/after, exists_before/after}, warnings[], audit_ids[], generated_password (once, MySQL RANDOM PASSWORD or the MariaDB generated one)`. Statuses: `applied`, `partial` (a later statement failed; a MariaDB create that stopped at SET PASSWORD leaves the account locked), `refused`, `needs_confirmation`, `needs_typed_name` (the plan stays usable), `stale`, `denied`, `refused_by_server`, `interrupted`, `unknown`. One `AuditTrail` record per statement (operation `accounts.<operation>`, `target.change_set_id`); refusals one finished record; a cancelled sheet calls `/api/audit/declined`. Server text is kept only for errors that never quote the statement (`accounts._SAFE_ERROR_TEXT`), redacted; others by number.
+- `POST /api/accounts/apply {connection, plan_id, expect, confirmed, typed_name?, password?, current_password?}` (`account-change-1.0`, in `ui._WRITE_PATHS`): `dbops.gate` on the connection's policy first (account changes are risky: a read-only connection refuses and nothing is opened, Production and Development need `confirmed: true`; the refusal is audited and returned with `audit_id`), then the saved password, then a fresh account fingerprint is compared with both `expect` and the reviewed fingerprint before rebuilding the plan. On a Group connection, consent and the group's strictest policy are re-read from the store right before the password lookup, right after it, at every client login (`conn._login_guard`, raising `ProfileReadError`), and right before the first statement (`accounts.apply`'s `before_send`): a member removed from the group or made Read-only in between gets an audited `refused` with outcome `changed` and nothing sent; a refusal after an earlier accepted statement reports `partial`. A typed password does not skip the membership check (`connection_with_saved_password` checks it before returning). A dropped or newly created account, or revoked privileges that invalidate planning, returns `status: stale` with audit `status: refused, outcome: stale`. Drift during a failed rebuild is checked again; unchanged invalid input remains an error. Rebuilt statements must equal the reviewed ones; `accounts.apply` then re-checks the connection identity, server version and identity, actor (`read_privileges`), every granted role's fingerprint, the account against `expect`, the rename destination, the guards and the privilege answer, and sends each statement with `connector.run_stdin` (stdin, `dbops.WRITE_CLIENT_FLAGS`, `--skip-reconnect`, empty temporary HOME, allowlisted environment), stopping at the first error. Response: `schema_version, change_set_id, operation, account, status, message, statements[] {index, statement, status ok|denied|refused_by_server|interrupted|unknown|not_sent, error, message}, before, after, diff {added[], removed[], levels, attributes_before/after, defaults_before/after, exists_before/after}, warnings[], audit_ids[], generated_password (once, MySQL RANDOM PASSWORD or the MariaDB generated one)`. Statuses: `applied`, `partial` (a later statement failed; a MariaDB create that stopped at SET PASSWORD leaves the account locked), `refused`, `needs_confirmation`, `needs_typed_name` (the plan stays usable), `stale`, `denied`, `refused_by_server`, `interrupted`, `unknown`. One `AuditTrail` record per statement (operation `accounts.<operation>`, `target.change_set_id`); refusals one finished record; a cancelled sheet calls `/api/audit/declined`. Server text is kept only for errors that never quote the statement (`accounts._SAFE_ERROR_TEXT`), redacted; others by number.
 - Workspace batch review (`Accounts.tsx`, `accountsApi.ts`): compact compatible edits into groups and plan every group sequentially, retaining errors beside their group. One sheet lists every exact statement, warning and guard; an error or blocked plan disables Apply until fixed or removed. Typed-name fields are deduplicated by account. Apply re-plans each group immediately before its one-shot apply, using that fresh plan's `plan_id` and `expect`; it re-checks the connection before planning and sending. New statements, warnings or typed/self-lockout guards stop the batch for another review. Stop at the first refusal, partial result, failure or lost response; show every group's applied/failed/not-sent status, then refresh the list, selected account and privilege model. Earlier groups are not rolled back. Cancel, Escape and removal each post one declined audit per planned group; backend apply retains per-statement audit records. Browser suite `accounts.mjs` and its `--unit` adapter tests cover batch ordering, fresh fingerprints, per-group errors, cancel audits and stopping.
 
 - Statements (one account, one level, one role per statement; tag `/*myflames:accounts*/`): names backquoted with doubled backquotes (MariaDB roles without host, `PUBLIC` bare); database grants escape `_`, `%` and `\` unless `pattern` (MySQL with `partial_revokes` ON matches literally and refuses patterns); privileges from the allowlist per engine, version and level (MySQL dynamic names from `SHOW PRIVILEGES`); passwords are doubled-quote literals inside the statement's own `NO_BACKSLASH_ESCAPES` session (`_with_password_mode`, restored after; verified live with a password ending in a backslash on all five servers with the mysql 8.0 client), NUL and line breaks refused. MySQL: `CREATE USER a IDENTIFIED BY 'x' | RANDOM PASSWORD [ACCOUNT LOCK]`, `ALTER USER a IDENTIFIED BY ... [REPLACE 'current']` (binary log: the hash, checked live). MariaDB New user: `CREATE USER a ACCOUNT LOCK`, `SET PASSWORD FOR a = PASSWORD('x')` (binary log: the hash), `ALTER USER a ACCOUNT UNLOCK`; with an active `PASSWORD VALIDATION` plugin (`information_schema.PLUGINS`) the first step is `CREATE USER a IDENTIFIED BY '<32-character random>' ACCOUNT LOCK` because the plugin refuses an empty password with 1819 (live on 10.11 and 11.4 with simple_password_check: the binary log shows only the temporary password, the typed one is validated by SET PASSWORD, a weak one leaves the account locked). Every MariaDB password plan warns that only the binary log is protected (the general and slow logs keep the typed text, checked live). Default roles: MySQL `ALTER USER a DEFAULT ROLE ...`, MariaDB `SET DEFAULT ROLE r FOR a` (one role or NONE).

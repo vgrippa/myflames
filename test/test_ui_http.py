@@ -172,7 +172,7 @@ class TestWriteHTTP(unittest.TestCase):
         self.assertEqual(dict(tokens.entries), before)
         self.assertEqual(conn.writes, [])
         close.assert_called_once_with()
-        self.assertEqual(conn.reads.count(cluster.CLUSTER_TAG + 'SHOW GRANTS'), 1)
+        self.assertEqual(conn.reads.count(dbops._grants_read_sql(cluster.CLUSTER_TAG)), 1)
 
     def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
         self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)

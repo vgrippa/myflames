@@ -89,6 +89,38 @@ class TestGroupStore(GroupCase):
         # A new write uses the same authenticated POST allowlist and dispatcher.
         self.assertIn('"/api/profiles/group"', inspect.getsource(ui))
 
+    def test_group_generation_turns_over_on_recreate_and_binds_reviews(self):
+        self.save('one')
+        self.save('two')
+        self.store.save_connection_group('G', ['one', 'two'])
+        first = {p['id']: p.get('group_generation') for p in self.store.list('profile')}
+        self.assertTrue(first['one'])
+        self.assertEqual(first['one'], first['two'])
+        connection = dict(self.request(self.store.get('profile', 'one')), group_name='G')
+        before = ui._action_target_binding(self.store.get('profile', 'one'), connection)
+        # A rename keeps the generation: the group is the same consent object.
+        self.store.save_connection_group('H', ['one', 'two'], previous_name='G')
+        self.assertEqual(self.store.get('profile', 'one')['group_generation'], first['one'])
+        # A new member takes the group's id; leaving clears it; forgetting the
+        # password keeps it.
+        self.save('three')
+        self.store.assign_profile_group(['three'], 'H')
+        self.assertEqual(self.store.get('profile', 'three')['group_generation'], first['one'])
+        self.store.forget_password('three')
+        self.assertEqual(self.store.get('profile', 'three')['group_generation'], first['one'])
+        self.store.assign_profile_group(['three'], '')
+        self.assertNotIn('group_generation', self.store.get('profile', 'three'))
+        # Delete and recreate with the same name and members: a new generation,
+        # so a review made for the old group never matches the new one.
+        self.store.delete_connection_group('H')
+        for profile in self.store.list('profile'):
+            self.assertNotIn('group_generation', profile)
+        self.store.save_connection_group('G', ['one', 'two'])
+        after = ui._action_target_binding(self.store.get('profile', 'one'), connection)
+        self.assertTrue(after['group_generation'])
+        self.assertNotEqual(after['group_generation'], before['group_generation'])
+        self.assertNotEqual(after, before)
+
     def test_group_changes_preserve_password_binding_and_legacy_defaults(self):
         saved = self.save('one')
         raw = self.store._profile('one')
@@ -563,6 +595,20 @@ class TestPeerIdentityRecording(GroupCase):
         self.assertEqual(self.opened[-1], self.profiles[0]['host'])
         self.assertCountEqual(self.opened, [p['host'] for p in self.profiles] + [self.profiles[0]['host']])
         self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_cached_probe_never_overwrites_a_newer_stored_identity(self):
+        self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[1])
+        # A direct read then records that the endpoint now reaches another
+        # server; the probe cache still keys on the unchanged settings.
+        self.store.record_topology_identity('db-2', {'server_uuid': CF.SERVER_UUIDS[0]},
+                                            expected=self.store._profile('db-2'))
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        self.read()
+        self.assertEqual(len(tl._probe_attempts), 2, 'the second read reuses the cached probes')
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0],
+                         'a cached probe must not overwrite the newer identity')
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
 
     def test_cluster_member_endpoints_need_no_probe_and_offer_identity_check_on_review(self):
         self.profiles = [self.store.save('profile', dict(p, host='db-%d' % (i + 1)), p['id'],
@@ -1592,6 +1638,49 @@ class TestGroupConnect(GroupCase):
         _FakeMemberConn.reset(uuids=self.UUIDS)
         self.connect({'group_name': 'G'}, self.workspace)
         self.assertEqual(len(_FakeMemberConn.logins), 1)
+
+    def test_member_removed_during_discovery_gets_no_later_login(self):
+        self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        store, contacts, made = self.store, [], []
+
+        class GuardedFake(_FakeMemberConn):
+            def __init__(self, **options):
+                super(GuardedFake, self).__init__(**options)
+                made.append(self)
+
+            def _contact(self):
+                guard = getattr(self, '_login_guard', None)
+                if guard is not None:
+                    guard()
+                contacts.append(self.host)
+
+            def server_version(self):
+                self._contact()
+                if self.host == 'dev-a.example':
+                    # The active member's own read removes the other member.
+                    store.assign_profile_group(['prod-b'], '')
+                return super(GuardedFake, self).server_version()
+
+            def server_version_comment(self):
+                self._contact()
+                return super(GuardedFake, self).server_version_comment()
+
+            def query_rows(self, sql):
+                self._contact()
+                return super(GuardedFake, self).query_rows(sql)
+
+        with mock.patch.object(connector, 'MySQLConnection', GuardedFake):
+            reply = ui.api_response('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'dev-a',
+                                                     'probe_members': True}, self.workspace)
+        self.assertTrue(made)
+        self.assertTrue(all(callable(getattr(conn, '_login_guard', None)) for conn in made),
+                        'every member connection carries the per-login guard')
+        by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+        self.assertIs(by_id['prod-b']['reachable'], False)
+        self.assertIs(by_id['dev-a']['reachable'], True)
+        self.assertNotIn('prod-b.example', contacts, 'no client invocation reaches a removed member')
+        self.assertNotIn('prod-b.example', _FakeMemberConn.logins)
 
     def test_topology_labels_never_rename_a_member(self):
         victim = self.save('dev-a', group='G', name='dev-a-name', type='development')

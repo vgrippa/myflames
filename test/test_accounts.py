@@ -995,6 +995,43 @@ class AccountsTest(unittest.TestCase):
             self.assertEqual(self.apply(plan)['status'], 'refused')
         self.assertEqual(self.conn.stdin, [])
 
+    def test_before_send_refusal_is_audited_and_sends_nothing(self):
+        plan = self.plan('lock')
+        result = self.apply(plan, before_send=lambda: 'The connection group changed; nothing was sent.')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertIn('connection group', result['message'])
+        self.assertEqual(self.conn.stdin, [])
+        self.assertEqual([s['status'] for s in result['statements']], ['not_sent'])
+        (record,) = self.store.audit_records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_before_send_ok_applies(self):
+        plan = self.plan('lock')
+        result = self.apply(plan, before_send=lambda: None)
+        self.assertEqual(result['status'], 'applied')
+
+    def test_consent_loss_mid_apply_stops_at_the_next_statement(self):
+        from myflames.connection_groups import ProfileReadError
+        self.conn = FakeConn('mariadb', exists=False)
+        plan = self.plan('create', password='s3cret')
+        calls = []
+
+        def execute(sql, extra_flags=None, timeout=None):
+            calls.append(sql)
+            if len(calls) == 1:
+                self.conn.exists = True
+                return ''
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        self.conn.run_stdin = execute
+        result = self.apply(plan)
+        self.assertEqual(len(calls), 2, 'the second statement is refused at the client boundary')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertEqual([s['status'] for s in result['statements']], ['ok', 'not_sent', 'not_sent'])
+        outcomes = [r['outcome'] for r in self.store.audit_records()]
+        self.assertEqual(sorted(outcomes), ['changed', 'sent'])
+
     def test_apply_success_diff_audit_single_use(self):
         plan = self.plan('grant', privileges=['PROCESS'])
 

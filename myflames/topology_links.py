@@ -581,6 +581,7 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
 
     for profile in usable:
         name = _profile_name(profile)
+        fresh = False
         while True:
             try:
                 entry, owner, pending = _claim_probe(profile, open_profile, reads, remaining)
@@ -599,6 +600,7 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
             if owner:
                 reads[0] += 1
                 _fill_probe(entry, entry["key"], entry["connect"], profile, remaining)
+                fresh = True
                 break
             if not pending:
                 break
@@ -614,10 +616,13 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
                     record_read(open_profile, profile, 'not_reached', entry['problem'])
                 entry = None
                 break
+            # A probe this request waited on ran now; a plain cache hit may be
+            # older than the stored identity it would overwrite.
+            fresh = True
         if entry and entry.get("data"):
             data = entry["data"]
             identity = None
-            if data.get("kind") == "database":
+            if fresh and data.get("kind") == "database":
                 field = "wsrep_node_uuid" if data.get("cluster_kind") in ("galera", "pxc") else "server_uuid"
                 identity = {field: data.get(field)}
             record_read(open_profile, profile, "read", identity=identity)

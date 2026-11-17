@@ -1494,7 +1494,10 @@ def _connect_response(payload, workspace):
     for the active member and for the other members only when the request
     asks (``probe_members: true``): at most _CONNECT_PROBE_CONCURRENCY logins
     at a time, within _CONNECT_PROBE_BUDGET in total. Every login uses the
-    member's own saved password; the reply never contains a secret.
+    member's own saved password; the reply never contains a secret. Every
+    member connection also carries a per-login guard (``conn._login_guard``)
+    that re-reads membership from the store, so a member removed from the
+    group while discovery runs gets no later client invocation.
     """
     from . import connection_groups, dbops
     from .live import connection_options
@@ -1530,8 +1533,20 @@ def _connect_response(payload, workspace):
         filled = store.connection_with_saved_password(value)
         options = connection_options(filled)
         password = options.get("password")
+
+        def login_guard():
+            # Consent is the store at every login: a member removed from the
+            # group while discovery runs gets no later client invocation.
+            current = store.get("profile", profile["id"])
+            if not isinstance(current, dict) or (current.get("group") or "") != group_name:
+                raise connection_groups.ProfileReadError(
+                    "This saved connection is outside the current connection group.")
+
         try:
-            with MySQLConnection(**options) as conn:
+            conn = MySQLConnection(**options)
+            conn._login_guard = login_guard
+            conn._group_login_started = False
+            with conn:
                 return _connection_test_report(conn, options, password), \
                     _member_live_facts(conn) if with_facts else None
         except (ValueError, ConnectorError) as exc:
@@ -1983,6 +1998,7 @@ def _action_target_binding(profile, connection, cluster_kind=None):
     saved_identity = profile.get("topology_identity") or {}
     return {"profile_id": profile["id"], "profile_name": profile.get("name") or profile["id"],
             "endpoint": {k: endpoint_value(profile, k) for k in ENDPOINT_FIELDS}, "group_name": value["group_name"],
+            "group_generation": profile.get("group_generation") or "",
             "server_identity": {k: saved_identity[k] for k in target_server_identity({"kind": cluster_kind})
                                 if saved_identity.get(k)}}
 

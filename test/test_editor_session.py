@@ -1703,6 +1703,29 @@ class ProcessTests(unittest.TestCase):
         # Cleanup does not require the revoked group route.
         self.connection.pop("group_name")
 
+    def test_group_removal_allows_rollback_stop_status_and_close_on_existing_session(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.run_sql("START TRANSACTION")
+        session = self.registry.get("tab1")
+        self.assertTrue(session.in_transaction)
+        self.store.assign_profile_group([profile["id"]], "")
+        # Cleanup reaches the tab's own session despite the lost membership.
+        status = self.call("/api/editor/status")
+        self.assertIsNotNone(status["session"])
+        stopped = self.call("/api/editor/stop")
+        self.assertFalse(stopped["stopped"])
+        self.assertIn("Nothing is running", stopped["message"])
+        self.assertEqual(self.call("/api/editor/rollback")["status"], "complete")
+        self.assertTrue(self.logged("tab1", "ROLLBACK"))
+        # A new statement on the removed member is still refused before sending.
+        with self.assertRaisesRegex(ValueError, "outside the current connection group"):
+            self.run_sql("SELECT 5")
+        self.assertFalse(self.logged("tab1", "SELECT 5"))
+        self.assertTrue(self.call("/api/editor/close")["closed"])
+        self.assertIsNone(self.registry.get("tab1"))
+
     def test_gate_2_row_limit_never_kills_a_call(self):
         result = self.run_sql("CALL rows_then_write()", limit=100, wait=0)
         self.assertEqual(result["status"], "running")

@@ -18,6 +18,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 - **Cluster** now shows InnoDB ClusterSet topology when connected to an InnoDB Cluster read replica, reading the replica's replicated metadata copy and noting that it may be behind the primary cluster. After a Cluster action runs, the before-and-after table states why any value was not reported in plain words instead of saying "Not readable".
 
+### Security fixes
+
+- In a Group connection, **Users and roles** changes re-check group membership and the group's strictest write policy at every login and right before sending, so a member removed from the group or made Read-only after the review receives nothing; a typed password no longer skips the membership check. Opening a Group connection installs the same per-login check on its member probes. A group deleted and recreated with the same name and members no longer matches an earlier Cluster review. A stored server identity can no longer be overwritten by an older cached probe. A query editor tab whose member left the group can still roll back, stop and close its existing session, so an open transaction does not keep its locks; new statements stay refused.
+
 ### Bug fixes
 
 - Rejoining a missing InnoDB Cluster member in a Group connection now uses the active ONLINE member with quorum. Desync and Resync for another Galera node both stay available for review, which checks that node's own state.

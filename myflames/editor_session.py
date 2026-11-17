@@ -2387,8 +2387,14 @@ def _registry(workspace):
     return registry
 
 
-def _connection_facts(payload, store):
-    """(options without password, identity key, safety, display name) for the request's connection."""
+def _connection_facts(payload, store, allow_group_revoked=False):
+    """(options without password, identity key, safety, display name) for the request's connection.
+
+    With *allow_group_revoked* (Status, Rollback, Stop and Close: cleanup on
+    the tab's existing session, never new statements), lost group membership
+    does not raise here; session ownership (:func:`_owned_session`) still
+    decides, and the safety falls back to the profile's own (no group
+    effective type), so it is never looser than the group's strictest."""
     from . import dbops
     from .live import connection_options
     connection = payload.get("connection")
@@ -2402,12 +2408,16 @@ def _connection_facts(payload, store):
         if not isinstance(profile_id, str) or len(profile_id) > 200:
             raise ValueError("Invalid connection field: profile_id")
         profile = store.get("profile", profile_id)
+    revoked = False
     if connection.get("group_name") is not None:
         from .connection_groups import validate_group
         group = validate_group(connection["group_name"])
         if not group or not isinstance(profile, dict) or profile.get("group") != group:
-            raise ValueError("This saved connection is outside the current connection group.")
-    safety = dbops.connection_safety(profile, connection, store=store)
+            if not allow_group_revoked:
+                raise ValueError("This saved connection is outside the current connection group.")
+            revoked = True
+    safety = (dbops.connection_safety(profile, connection) if revoked
+              else dbops.connection_safety(profile, connection, store=store))
     keyed = dict(options)
     keyed["profile_id"] = profile_id or None
     identity = dbops.connection_identity(keyed, safety)
@@ -3527,7 +3537,7 @@ def _action_api(payload, workspace, action):
     store = workspace.store
     registry = _registry(workspace)
     tab_id = _tab_id(payload)
-    options, identity, safety, name = _connection_facts(payload, store)
+    options, identity, safety, name = _connection_facts(payload, store, allow_group_revoked=action == "ROLLBACK")
     lookup = _owned_session if action == "ROLLBACK" else _session_for
     session = lookup(registry, tab_id, identity)
     if session is None:
@@ -3815,9 +3825,11 @@ def api_response(path, payload, workspace, fill_password=None):
     if path in ("/api/editor/status", "/api/editor/close"):
         # Unknown tabs and tabs owned by another connection have the same
         # answer. Even ended sessions retain results belonging to their owner.
+        # A member that left its group keeps Status and Close: both only read
+        # or end the tab's existing session, so its locks are never stranded.
         session = None
         if isinstance(payload.get("connection"), dict):
-            options, identity, safety, name = _connection_facts(payload, store)
+            options, identity, safety, name = _connection_facts(payload, store, allow_group_revoked=True)
             try:
                 session = _owned_session(registry, tab_id, identity)
             except EditorError as exc:
@@ -3846,16 +3858,24 @@ def api_response(path, payload, workspace, fill_password=None):
         session.end("closed", SESSION_ENDED_TEXT)
         registry.remove(tab_id, session)
         return {"closed": True, "session": session.status()}
-    options, identity, safety, name = _connection_facts(payload, store)
+    options, identity, safety, name = _connection_facts(payload, store,
+                                                        allow_group_revoked=path == "/api/editor/stop")
     if path == "/api/editor/stop":
         session = _owned_session(registry, tab_id, identity)
         if session is None:
             return {"stopped": False, "message": "This tab has no session.", "session": None}
-        filled = fill_password(payload)
-        from .live import connection_options
-        full = connection_options(filled.get("connection"))
+        try:
+            filled = fill_password(payload)
+            from .live import connection_options
+            full = connection_options(filled.get("connection"))
+        except ValueError:
+            # Membership can be gone by now; the KILL (or force-end) is
+            # cleanup of the tab's existing session, so it uses that
+            # session's own authenticated run options instead.
+            run = session.run
+            full = dict(run.options) if run is not None else None
         result = session.stop(full, force=payload.get("force") is True)
-        if full.get("password") and result.get("message"):
+        if full and full.get("password") and result.get("message"):
             result["message"] = result["message"].replace(full["password"], "[redacted]")
         result["session"] = session.status()
         return result
