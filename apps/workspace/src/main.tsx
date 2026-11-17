@@ -2142,6 +2142,9 @@ function App() {
     // Query editor actions on the current tab (QueryLabHandle).
     { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
     { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
+    { id: "query-find", label: "Find", group: "Query editor", icon: "search", keywords: "find search text sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("find")); } },
+    { id: "query-replace", label: "Find and replace", group: "Query editor", icon: "replace", keywords: "find replace search text sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("replace")); } },
+    { id: "query-go-to-line", label: "Go to line", group: "Query editor", icon: "query", keywords: "go to line jump sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("goToLine")); } },
     { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
   ];
 

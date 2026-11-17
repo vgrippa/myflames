@@ -44,6 +44,7 @@ Any tool can play the roles in `.claude/agents/README.md` (mysql-correctness-rev
 
 ## Visualization & UI Standards
 
+- Every action a keyboard shortcut runs also has a visible control (a button or a menu item) that shows the shortcut.
 - HTML demos and SVGs share one design language (system fonts, consistent Join vs Scan palettes); `docs/demos/` keeps high contrast and responsive layouts. Use viz-specialist when changing renderers (`output_*.py`) or charts.
 - Never remove, unwrap or alter top-level layout wrappers (`.workspace`, `.topbar-stack` in `main.tsx`) when changing a child component or toolbar; check sticky headers, scroll containers, breakpoints and the sidebar before calling UI work done.
 - Phone charts keep readable text in a scrollable region; test chart scale and page overflow.

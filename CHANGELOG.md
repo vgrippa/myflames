@@ -9,7 +9,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Improvements
 
 - The Cluster, Replication, ProxySQL and Readyset topologies have a new three-dimensional look: the diagram sits on a lit stage, servers float above it, and the group's line lights up only when every member is healthy. The Depth and Pause motion buttons are gone; motion still stops with your system's reduced motion setting, and each place's ⓘ explains what it means.
+- The Query editor toolbar has **Find** and **Find and replace** buttons, and an **Editing actions** menu lists every editing command with its shortcut, including **Toggle Tab moving focus**.
 
 ### Bug fixes
 
+- Fixed an issue where the table data editor's review button read **Review 1 changes** for a single change.
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.

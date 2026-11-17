@@ -393,6 +393,9 @@ Taken in 3.3.3:
   Whole word and Regular expression, up to 1,000 highlighted marks and 100,000
   counted nonempty matches while replacements remain literal text. Regex search
   runs in a worker with a 250 ms budget; Replace all uses one editor replacement.
+  Toolbar Find buttons and Editing actions expose commands with their shortcuts,
+  including Toggle Tab moving focus. The menu closes when focus leaves or a
+  palette command opens an editor field.
 - Open and save `.sql` and `.txt` files in the Query editor (`⌘O`, `⌘S`,
   `⇧⌘S`) through native file dialogs with an unsaved-changes prompt before
   closing. Save refuses symbolic-link targets and changed folders; an appended

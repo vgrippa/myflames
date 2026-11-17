@@ -327,7 +327,7 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     <div className="table-data-actions">
       <button className="button" disabled={!editable || changed >= 20} onClick={() => setInserts(rows => [...rows, { id: `new-${crypto.randomUUID()}`, values: {} }])}>Add row</button>
       <ActionButton primary busy={step === 'prepare'} busyLabel="Preparing review…" disabled={step !== 'prepare' && (!editable || !changed)}
-        onClick={() => void prepare()}>{`Review ${changed || ''} changes`}</ActionButton>
+        onClick={() => void prepare()}>{changed ? `Review ${changed} change${changed === 1 ? '' : 's'}` : 'Review changes'}</ActionButton>
       <button className="button" disabled={!changed || busy || running || unknown} onClick={resetDrafts}>Discard changes</button>
       <button className="button" disabled={!!changed || busy || running || mismatch || unknown} onClick={() => void load(page?.offset || 0)}>Reload rows</button>
     </div>

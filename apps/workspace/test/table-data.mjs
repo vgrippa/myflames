@@ -53,18 +53,18 @@ try {
  await chooseConnection(page,original);
  await page.waitForFunction(()=>!document.querySelector('.table-data-actions .primary').disabled);
 
- await h.button('Review 1 changes','.table-data-panel ');
+ await h.button('Review 1 change','.table-data-panel ');
  await page.waitForSelector('.confirm-sheet');
  assert.match(await h.text('.confirm-sheet'),/LOCK TABLES.*WRITE/s);
  assert.match(await h.text('.confirm-sheet'),/blocks other sessions/);
  assert.equal(prepared.changes[0].values.name.value,'Bob');
  await h.button('Cancel','.confirm-sheet '); assert.equal(applyCount,0);
- await h.button('Review 1 changes','.table-data-panel '); await h.button('Apply changes','.confirm-sheet ');
+ await h.button('Review 1 change','.table-data-panel '); await h.button('Apply changes','.confirm-sheet ');
  await page.waitForFunction(()=>document.querySelector('.table-data-panel [role=status]')?.textContent.includes('Changes committed'));
  assert.equal(applyCount,1);assert.equal(maxConcurrent,1,'status requests do not overlap');
  await h.button('Reload rows','.table-data-panel ');
  await page.locator('input[aria-label="name for first"]').fill('Another');
- mode='unknown';await h.button('Review 1 changes','.table-data-panel ');await h.button('Apply changes','.confirm-sheet ');
+ mode='unknown';await h.button('Review 1 change','.table-data-panel ');await h.button('Apply changes','.confirm-sheet ');
  await page.waitForFunction(()=>document.querySelector('.table-data-panel [role=status]')?.textContent.includes('unknown'));
  await h.button('Close table','.table-data-panel ');await page.waitForSelector('.confirm-sheet');
  assert.match(await h.text('.confirm-sheet'),/may have committed/);assert.doesNotMatch(await h.text('.confirm-sheet'),/not been applied/);
@@ -72,7 +72,7 @@ try {
  assert.equal(applyCount,2,'unknown outcome never replays writes');
  await openGrid();mode='lost';
  await page.locator('input[aria-label="name for first"]').fill('Lost reply');
- await h.button('Review 1 changes','.table-data-panel ');await h.button('Apply changes','.confirm-sheet ');
+ await h.button('Review 1 change','.table-data-panel ');await h.button('Apply changes','.confirm-sheet ');
  await page.waitForFunction(()=>document.querySelector('.table-data-panel .error')?.textContent.includes('Could not verify'));
  assert.ok(await page.locator('.table-data-panel button ::-p-text(Check status)').wait(),'status retry remains available without an outcome');
  await h.button('Close table','.table-data-panel ');await h.button('Close and inspect separately','.confirm-sheet ');

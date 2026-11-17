@@ -35,6 +35,8 @@ export type SqlEditorHandle = {
   revealInPage(): void;
   openFind(mode: "find" | "replace"): void;
   openGoToLine(): void;
+  /** Runs an enabled keymap command at the current selection, taking focus first. */
+  runCommand(id: string): boolean;
 };
 export type SqlEditorProps = {
   docId: string;

@@ -140,6 +140,8 @@ async function sweep(state) {
         const where = `(${state}, ${width} px, ${scheme}, schema browser ${pane ? "open" : "closed"}, ${scope ? "two statements" : "one statement"})`;
         const m = await noOverlap(where);
         const names = m.labels.map((l) => l.name);
+        for (const name of ["Find", "Find and replace", "Format SQL", "Editing actions"])
+          assert.ok(names.includes(name), `${name} stays in the toolbar ${where}`);
         assert.ok(names.some((n) => n.startsWith("Run analysis needs")), `the note is on screen ${where}`);
         // The note is never cut short to share a row: where its sentence fits
         // one full toolbar row it shows whole (on the next row if need be),

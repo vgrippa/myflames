@@ -40,6 +40,10 @@ import "./kit.css";
 // Only the innermost open surface owns keyboard navigation. A drawer may
 // contain Settings, and a popover may be opened from a confirmation sheet.
 const focusScopes: HTMLElement[] = [];
+/** Each open scope's opener, so a scope whose opener was removed from the DOM
+ * (a menu that closed on blur while the palette held focus) can return focus
+ * to the opener of the scope that contained it. */
+const scopeOpeners = new WeakMap<HTMLElement, HTMLElement | null>();
 const FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]';
 /** The items a menu's arrow keys move between: actions and the choices
  * that apply to them (an Export menu's "Hide literal values"). */
@@ -64,6 +68,7 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     const dialog = root instanceof HTMLDialogElement ? root : null;
     if (dialog && !dialog.open) dialog.showModal();
     focusScopes.push(root);
+    scopeOpeners.set(root, opener);
     // aria-disabled actions remain focusable so their restriction can be read.
     const visible = (el: HTMLElement) => !el.matches(':disabled') &&
       !el.closest('[hidden], [inert], [aria-hidden="true"]') && !!el.getClientRects().length &&
@@ -119,7 +124,17 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
       const restore = wasTop && (root.contains(focused) || focused === document.body || !focused?.isConnected);
       if (dialog?.open) dialog.close();
       // Do not steal focus from an action that deliberately opened a new surface.
-      if (restore && opener?.isConnected && visible(opener)) opener.focus({ preventScroll: true });
+      if (!restore || !opener) return;
+      // An opener removed with its surface (a menu that closed on blur) still
+      // knows its scope: walk the detached subtree to the nearest scope root
+      // and use that scope's opener instead, bounded against cycles.
+      let target: HTMLElement | null = opener;
+      for (let depth = 0; target && !target.isConnected && depth < 8; depth++) {
+        let scope: HTMLElement | null = target.parentElement;
+        while (scope && !scopeOpeners.has(scope)) scope = scope.parentElement;
+        target = scope ? scopeOpeners.get(scope) ?? null : null;
+      }
+      if (target?.isConnected && visible(target)) target.focus({ preventScroll: true });
     };
   }, [ref, options.open]);
 }
@@ -1596,7 +1611,7 @@ export type TableContextAction =
   | { divider: true };
 
 /** Row and cell actions share measured placement, dismissal and keyboard focus. */
-export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
+export function ContextMenu({ x, y, label, header, opener, actions, onClose, className = "", portal = false, closeOnBlur = false }: {
   x: number;
   y: number;
   label: string;
@@ -1604,6 +1619,11 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
   opener: HTMLElement | null;
   actions: TableContextAction[];
   onClose: () => void;
+  className?: string;
+  /** Escape a toolbar's stacking context without changing other menus. */
+  portal?: boolean;
+  /** Dismiss when another control or surface takes keyboard focus. */
+  closeOnBlur?: boolean;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ left: 8, top: 8, visibility: "hidden" });
@@ -1644,7 +1664,8 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
     };
   }, [open, x, y, actions]);
   if (!open) return null;
-  return <div ref={panel} className="context-menu" role="menu" aria-label={label} tabIndex={-1}
+  const menu = <div ref={panel} className={`context-menu ${className}`.trim()} role="menu" aria-label={label} tabIndex={-1}
+    onBlur={closeOnBlur ? event => { if (!event.currentTarget.contains(event.relatedTarget)) onClose(); } : undefined}
     style={{ ...style, minWidth: "min(220px, calc(100vw - 16px))", maxWidth: "min(380px, calc(100vw - 16px))" }}>
     {header && <div className="context-menu-header">{header}</div>}
     {items.map((action, index) => {
@@ -1660,6 +1681,7 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
       </button>;
     })}
   </div>;
+  return portal ? createPortal(menu, document.body) : menu;
 }
 
 /** Marks *marker* with data-more-left / data-more-right while *scroller* has
