@@ -1461,8 +1461,9 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the command palette and the shared kit (about 477 KB after
-splitting the Plans screen and Learn, 1.1 MB before the original split). Other places and views load their own chunk the
+connections, the command palette, the investigation notebook and the shared
+kit (about 480 KB after splitting the Plans screen and Learn, 1.1 MB before
+the original split). Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1473,16 +1474,21 @@ workspace did not load." with Reload):
   before it mounts wait in `withLab`), Query digest, Server (with Workload,
   Tuning and Database diagram),
   Replication, Cluster, Investigations, the Audit log, Plans and Learn.
-  `PlanScreen.tsx` holds Explore, Compare and the investigation notebook;
-  the shell keeps their state, imports, exports, session restore and navigation.
-  Opening the notebook from Investigations loads the same chunk. PlanScreen
-  renders PlanChart and ContextPanel on its first paint, so its loader fetches
-  all three chunks together, and a session restored on Plans or Compare
-  preloads them at startup instead of waiting for the idle queue. If the
-  PlanScreen chunk cannot be read, `lazyComponent`'s `onFailed` tells the
-  shell, which closes an open notebook request so the failure stays visible
-  and Save investigation collapses. Learn mounts on its first visit and stays
-  mounted afterward in a hidden container, like the other lazy places, so its
+  `PlanScreen.tsx` holds Explore and Compare; the shell keeps their state,
+  imports, exports, session restore, navigation and the investigation notebook.
+  The notebook opens immediately from Plans or Investigations, even if a Plans
+  or chart chunk is delayed or fails. It has no pending chunk request: changing
+  places or opening another shell dialog closes it, and it cannot open over an
+  existing modal. Save investigation's `aria-expanded` reflects the mounted
+  sheet. The shell accepts file drops across empty Plans while PlanScreen is
+  loading, using the same import handler after it mounts. PlanScreen renders
+  PlanChart and ContextPanel on its first paint, so its loader starts all three
+  chunks together but resolves on PlanScreen alone. Chart preload rejections
+  are caught; their own lazy boundaries show the failure and Reload inside the
+  chart/inspector areas. A failed PlanScreen keeps its failure and Reload visible
+  while Plans is open, independent of the notebook. A session restored on Plans
+  or Compare starts these loads at startup instead of waiting for the idle queue.
+  Learn mounts on its first visit and stays mounted afterward in a hidden container, like the other lazy places, so its
   lesson survives a trip to another place and its chunk's loading or failure
   text shows only while Learn is open; a session reset starts it over. Once the first screen
   is up, `preloadWhenIdle` loads Server, Replication, Cluster and the other
@@ -1534,12 +1540,19 @@ Rules for code that splits:
   also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
   `PlanScreen.tsx`,
   that the committed build has exactly one stylesheet, and that the entry
-  chunk stays under 500,000 bytes (477,216 bytes after extracting Plans and
-  Learn from a 503,371-byte entry). It also requires Plans and Learn chunks
-  and checks that their view text stays out of the entry. Home, the sidebar
-  and the shell stay eager; a place or view belongs in a lazy chunk. The chart
-  runtime has its own
-  80 KB budget (`test_chart_data.py`).
+  chunk stays under 500,000 bytes (479,634 bytes after extracting Plans and
+  Learn from master ef74ba2d's committed 508,046-byte entry). The source guard
+  covers all dynamic imports, including PlanChart and ContextPanel preloads
+  beside PlanScreen, and rejects static value and side-effect imports while
+  allowing erased type imports. It also requires Plans and Learn chunks and
+  checks that their view text stays out of the entry. Home, the sidebar, the
+  notebook and the shell stay eager; a place or view belongs in a lazy chunk.
+  The chart runtime has its own 80 KB budget (`test_chart_data.py`).
+- `test/investigation.mjs` (`npm run test:investigation`) intercepts Plans,
+  chart and context chunk requests to delay or reject them. It covers persistent
+  failure/Reload, repeated notebook opening from Plans and Investigations,
+  independent screen loading, modal focus ownership, navigation cancellation
+  and importing a file dropped before the empty Plans component mounts.
 
 Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
 their rows change. `useStableRows` (`kit.tsx`) keeps the previous array while

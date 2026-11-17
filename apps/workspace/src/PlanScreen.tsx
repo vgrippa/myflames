@@ -1,10 +1,10 @@
 // Plans presentation loads on demand. The shell owns all state and actions,
 // including imports, session restore and navigation, so loading this view
 // cannot reset a selection or replace a handler queued before it mounted.
-import { useMemo, useRef, useState, type Dispatch, type MutableRefObject, type ReactNode, type RefObject, type SetStateAction, type SyntheticEvent } from "react";
-import { digestSource, download, number, time, type Bundle, type Comparison, type Operator, type Plan, type View } from "./api";
+import { useMemo, useState, type Dispatch, type MutableRefObject, type ReactNode, type RefObject, type SetStateAction, type SyntheticEvent } from "react";
+import { digestSource, number, time, type Comparison, type Operator, type Plan, type View } from "./api";
 import { Icon } from "./components";
-import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopovers, Disclosure, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
+import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopovers, Disclosure, NotesButton, Popover, Segmented, Select } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import { engineName, metrics, views } from "./planDisplay";
 import { lazyComponent } from "./lazy";
@@ -22,7 +22,7 @@ export async function preloadPlanViews() {
 
 type PlanScreenProps = {
   ready: boolean;
-  mode: "inspect" | "compare" | "library";
+  mode: "inspect" | "compare";
   active: Plan | undefined;
   openPlan: (id: string) => void;
   plans: (Plan & { origin?: "sample" })[];
@@ -33,14 +33,11 @@ type PlanScreenProps = {
   setHideLiterals: Dispatch<SetStateAction<boolean>>;
   exporting: boolean;
   exportHtml: () => void;
-  importFile: (f?: File) => Promise<void>;
   sampleAction: ReturnType<typeof useAction>;
   busy: boolean;
   openSample: () => void;
   exportAction: ReturnType<typeof useAction>;
   exportRetry: MutableRefObject<(() => void) | null>;
-  notebookOpen: boolean;
-  saveAction: ReturnType<typeof useAction>;
   planHeaderTools: RefObject<HTMLDivElement>;
   exclusivePanel: (e: SyntheticEvent<HTMLElement>) => void;
   setNotice: Dispatch<SetStateAction<string>>;
@@ -69,22 +66,7 @@ type PlanScreenProps = {
   search: string;
   setSearch: Dispatch<SetStateAction<string>>;
   selectOperator: (id: string) => void;
-  error: string;
-  setNotebookOpen: Dispatch<SetStateAction<boolean>>;
-  save: () => Promise<boolean>;
-  makeBundle: () => Bundle;
-  name: string;
-  setName: Dispatch<SetStateAction<string>>;
-  setDirty: Dispatch<SetStateAction<boolean>>;
-  setPlans: Dispatch<SetStateAction<(Plan & { origin?: "sample"; })[]>>;
-  activeId: string;
-  baseline: string;
-  setBaseline: Dispatch<SetStateAction<string>>;
   setBeforeId: Dispatch<SetStateAction<string>>;
-  tags: string;
-  setTags: Dispatch<SetStateAction<string>>;
-  notes: string;
-  setNotes: Dispatch<SetStateAction<string>>;
   beforeId: string;
   afterId: string;
   setAfterId: Dispatch<SetStateAction<string>>;
@@ -101,15 +83,14 @@ type PlanScreenProps = {
 
 export function PlanScreen({
   ready, mode, active, openPlan, plans, openImport, setMode, exportJson,
-  hideLiterals, setHideLiterals, exporting, exportHtml, importFile, sampleAction,
-  busy, openSample, exportAction, exportRetry, notebookOpen, saveAction,
+  hideLiterals, setHideLiterals, exporting, exportHtml, sampleAction,
+  busy, openSample, exportAction, exportRetry,
   planHeaderTools, exclusivePanel, setNotice, setError, misestimateNotShown,
   misestimateNote, view, metric, focusId, collapsed, selectedId, chartSelect, statsIds,
   setFocusId, setCollapsed, setStatsIds, metricsTarget, reveal, setMisestimateNotShown, setMisestimateNote,
   setView, setMetric, setLesson, setReturnToPlan, setMetricsTarget,
-  search, setSearch, selectOperator, error, setNotebookOpen, save, makeBundle, name,
-  setName, setDirty, setPlans, activeId, baseline, setBaseline, setBeforeId, tags,
-  setTags, notes, setNotes, beforeId, afterId, setAfterId, comparison, loading,
+  search, setSearch, selectOperator, setBeforeId,
+  beforeId, afterId, setAfterId, comparison, loading,
   before, after, pair, compareSelect, setPair, setSelectedId, setReveal,
 }: PlanScreenProps) {
   const activeSource = digestSource(active?.capture);
@@ -211,11 +192,6 @@ export function PlanScreen({
         <section
           className="plans-empty"
           aria-labelledby="plans-empty-title"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            importFile(e.dataTransfer.files[0]);
-          }}
         >
           <Icon name="plan" size={22} />
           <h1 id="plans-empty-title">No plan is open</h1>
@@ -231,7 +207,6 @@ export function PlanScreen({
       )}
       {(mode === "inspect" || mode === "compare") && <ActionStatus className="plan-export-status" state={exportAction}
         onRetry={() => exportRetry.current?.()} onStop={exportAction.cancel} stopLabel="Stop waiting" />}
-      {!notebookOpen && <ActionStatus state={saveAction} />}
       {mode === "inspect" && active && (
         <>
           <div className="plan-screen">
@@ -441,100 +416,6 @@ export function PlanScreen({
           </div>
         </>
       )}
-      {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare" || mode === "library") && (
-        <NotebookSheet
-          open={notebookOpen}
-          busy={saveAction.pending}
-          error={notebookOpen ? error : ""}
-          action={saveAction}
-          onClose={() => setNotebookOpen(false)}
-          onSave={async () => { if (await save()) setNotebookOpen(false); }}
-          onExport={() =>
-            download(
-              JSON.stringify(makeBundle(), null, 2),
-              `${name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`,
-              "application/json",
-            )
-          }
-        >
-            <section className="investigation-notes" aria-label="Investigation notebook">
-              <div className="notebook-grid">
-                <label className="field">
-                  Investigation name
-                  <input
-                    value={name}
-                    onChange={(e) => {
-                      setName(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-                {active && (
-                  <label className="field">
-                    Plan name
-                    <input
-                      value={active.name}
-                      onChange={(e) => {
-                        setPlans((ps) =>
-                          ps.map((p) =>
-                            p.id === activeId
-                              ? { ...p, name: e.target.value }
-                              : p,
-                          ),
-                        );
-                        setDirty(true);
-                      }}
-                    />
-                  </label>
-                )}
-                <label className="field">
-                  Baseline
-                  <select
-                    value={baseline}
-                    onChange={(e) => {
-                      setBaseline(e.target.value);
-                      setBeforeId(e.target.value);
-                      setDirty(true);
-                    }}
-                  >
-                    {plans.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Tags
-                  <input
-                    placeholder="payments, index-review"
-                    value={tags}
-                    onChange={(e) => {
-                      setTags(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-              </div>
-              <label className="field">
-                Notes and conclusions
-                <textarea
-                  placeholder="What changed? What did the evidence show?"
-                  value={notes}
-                  onChange={(e) => {
-                    setNotes(e.target.value);
-                    setDirty(true);
-                  }}
-                />
-              </label>
-              <p className="hint">
-                Save keeps the open plans, these notes and tags on this
-                computer. Credentials are excluded. Edits here are kept in the
-                workspace even if you close this sheet without saving.
-              </p>
-            </section>
-        </NotebookSheet>
-      )}
       {mode === "compare" && (
         <section className="compare-screen">
           {/* One header row: the title, the two plans, and the exports;
@@ -687,39 +568,6 @@ export function PlanScreen({
   );
 }
 
-/** Save investigation: the notebook (name, plan name, baseline, tags and
- * notes) in a sheet over the plan, saved with Save. Its fields edit the
- * workspace directly, so Close keeps them as unsaved changes. */
-function NotebookSheet({ open, busy, error, action, onClose, onSave, onExport, children }: {
-  open: boolean; busy: boolean; error: string; action: ReturnType<typeof useAction>; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useFocusScope(dialog, { open, onClose });
-  return (
-    <dialog
-      ref={dialog}
-      className="notebook-sheet"
-      tabIndex={-1}
-      aria-labelledby="notebook-title"
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-    >
-      <div className="dialog-heading">
-        <h2 id="notebook-title">Save investigation</h2>
-      </div>
-      {error && <div className="error" role="alert">{error}</div>}
-      <fieldset disabled={busy}>{children}</fieldset>
-      <ActionStatus state={action} slowText="No reply yet. Close keeps the save running; its outcome appears in the window." />
-      <div className="dialog-actions sheet-actions">
-        <button type="button" className="text-button notebook-export" onClick={onExport}>Export investigation bundle</button>
-        <button type="button" className="button" onClick={onClose}>Close</button>
-        <ActionButton primary busy={busy} busyLabel="Saving…" onClick={onSave}>Save</ActionButton>
-      </div>
-    </dialog>
-  );
-}
 /** A single export home for both Plans modes (the shared Export pull-down). */
 function PlanExports({ label, onJson, onHtml, exporting = false, hideLiterals, onHideLiterals }: {
   label: string; onJson: () => void; onHtml: () => void; exporting?: boolean;

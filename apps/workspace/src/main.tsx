@@ -58,7 +58,7 @@ import {
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
 import type { SettingsSection } from "./SettingsPage";
-import { ActionStatus, useAction, ColumnStoreContext, Popover, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
+import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import {
   defaultLab,
   loadSession,
@@ -104,15 +104,15 @@ const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 // command palette), not a place in the sidebar's navigation.
 const SettingsPage = lazyComponent(() => import("./SettingsPage").then((m) => m.SettingsPage));
 const Teach = lazyComponent(() => import("./Teach").then((m) => m.Teach));
-// PlanScreen renders PlanChart and ContextPanel on its first paint, so their
-// chunks load together with it instead of starting after it renders. The
-// investigation notebook sheet lives in this chunk: a failed read tells the
-// shell, which closes an open notebook so the failure stays visible.
-const PLAN_SCREEN_FAILED = "myflames-plan-screen-failed";
-const PlanScreen = lazyComponent(
-  () => Promise.all([import("./PlanScreen"), import("./PlanChart"), import("./ContextPanel")]).then(([screen]) => screen.PlanScreen),
-  () => window.dispatchEvent(new Event(PLAN_SCREEN_FAILED)),
-);
+// Start the screen and its chart chunks together, but only the screen gates
+// the place. A stale chart must fail inside its own boundary, not hide the
+// empty state or prevent other Plans controls from opening.
+const PlanScreen = lazyComponent(() => {
+  const screen = import("./PlanScreen");
+  void import("./PlanChart").catch(() => {});
+  void import("./ContextPanel").catch(() => {});
+  return screen.then((m) => m.PlanScreen);
+});
 type PlanExportSnapshot =
   | ({ kind: "plan"; name: string } & PlanReportRequest)
   | { kind: "compare"; before: string; after: string; hide_literals: boolean; name: string };
@@ -273,16 +273,8 @@ function App() {
   const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
   useEffect(() => {
     if (mode === "inspect" || mode === "compare") setPlansView(mode);
-    if (mode !== "inspect" && mode !== "compare" && mode !== "library") setNotebookOpen(false);
+    setNotebookOpen(false);
   }, [mode]);
-  // The notebook sheet lives in PlanScreen's chunk. If that chunk cannot be
-  // read (lazy.tsx) the sheet never mounts: close the request so the failure
-  // is visible and Save investigation does not stay expanded.
-  useEffect(() => {
-    const close = () => setNotebookOpen(false);
-    window.addEventListener(PLAN_SCREEN_FAILED, close);
-    return () => window.removeEventListener(PLAN_SCREEN_FAILED, close);
-  }, []);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
   const [selectedId, setSelectedId] = useState("");
@@ -1814,8 +1806,15 @@ function App() {
     [capture],
   );
   const openImport = () => {
+    setNotebookOpen(false);
     setError("");
     setImportOpen(true);
+  };
+  const openNotebook = () => {
+    if (!ready || !plans.length || document.querySelector("dialog[open]")) return;
+    setError("");
+    saveAction.reset();
+    setNotebookOpen(true);
   };
   const openSample = () => {
     if (busy) return;
@@ -2072,6 +2071,13 @@ function App() {
     { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
   ];
 
+  const anotherDialogOpen = importOpen || confirmFresh || accountOpen || commandPaletteOpen;
+  const notebookVisible = notebookOpen && !anotherDialogOpen && ready && plans.length > 0 &&
+    (mode === "inspect" || mode === "compare" || mode === "library");
+  useEffect(() => {
+    if (anotherDialogOpen) setNotebookOpen(false);
+  }, [anotherDialogOpen]);
+
   return (
     <ConnectionInUseProvider connection={request} connected={ready && safety.known && !!request.host}>
     <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={ready && safety.known && !!request.host}>
@@ -2164,7 +2170,7 @@ function App() {
                 {(dirty || savedId) && <span className={`save-state${dirty ? " unsaved" : ""}`}>
                   {dirty ? "Unsaved changes" : "Investigation saved"}
                 </span>}
-                <button className="button small window-save" disabled={busy || saveAction.pending} onClick={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
+                <button className="button small window-save" disabled={busy || saveAction.pending} onClick={openNotebook} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookVisible}>
                   <Icon name="investigation" /><span>Save investigation</span>
                 </button>
               </>
@@ -2198,6 +2204,16 @@ function App() {
         </div>
         <main
           id="main"
+          style={mode === "inspect" && !active ? { minHeight: "calc(100dvh - var(--topbar-height) - var(--statusbar-h))" } : undefined}
+          onDragOver={(e) => {
+            if (ready && mode === "inspect" && !active) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if (ready && mode === "inspect" && !active) {
+              e.preventDefault();
+              void importFile(e.dataTransfer.files[0]);
+            }
+          }}
           className={
             mode === "inspect" ||
             mode === "compare" ||
@@ -2221,7 +2237,7 @@ function App() {
               : undefined
           }
         >
-          {error && !importOpen && !notebookOpen && (
+          {error && !importOpen && !notebookVisible && (
             <div role="alert" className="error">
               {error}
               <button
@@ -2549,7 +2565,7 @@ function App() {
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
-            onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} initialSelectedId={selectedInvestigationId} />}
+            onSaveInvestigation={openNotebook} savedRevision={savedRevision} initialSelectedId={selectedInvestigationId} />}
           {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           {ready && mode === "settings" && (
             <SettingsPage
@@ -2586,23 +2602,23 @@ function App() {
               />
             </div>
           )}
-          {(mode === "inspect" || mode === "compare" || (mode === "library" && notebookOpen)) ? (
+          {(mode === "inspect" || mode === "compare") && (
             <PlanScreen
               {...{
                   ready, mode, active, openPlan, plans, openImport, setMode, exportJson,
-                  hideLiterals, setHideLiterals, exporting, exportHtml, importFile, sampleAction,
-                  busy, openSample, exportAction, exportRetry, notebookOpen, saveAction,
+                  hideLiterals, setHideLiterals, exporting, exportHtml, sampleAction,
+                  busy, openSample, exportAction, exportRetry,
                   planHeaderTools, exclusivePanel, setNotice, setError, misestimateNotShown,
                   misestimateNote, view, metric, focusId, collapsed, selectedId, chartSelect, statsIds,
                   setFocusId, setCollapsed, setStatsIds, metricsTarget, reveal, setMisestimateNotShown, setMisestimateNote,
                   setView, setMetric, setLesson, setReturnToPlan, setMetricsTarget,
-                  search, setSearch, selectOperator, error, setNotebookOpen, save, makeBundle, name,
-                  setName, setDirty, setPlans, activeId, baseline, setBaseline, setBeforeId, tags,
-                  setTags, notes, setNotes, beforeId, afterId, setAfterId, comparison, loading,
+                  search, setSearch, selectOperator, setBeforeId,
+                  beforeId, afterId, setAfterId, comparison, loading,
                   before, after, pair, compareSelect, setPair, setSelectedId, setReveal,
               }}
             />
-          ) : !notebookOpen && <ActionStatus state={saveAction} />}
+          )}
+          {!notebookVisible && <ActionStatus state={saveAction} />}
         </main>
         {ready && <WindowStatusBar scope={statusScope} lead={safetyStatus}
           fallback={plansStatus ? {
@@ -2620,6 +2636,100 @@ function App() {
           e.target.value = "";
         }}
       />
+      {notebookVisible && (
+        <NotebookSheet
+          open={notebookOpen}
+          busy={saveAction.pending}
+          error={notebookOpen ? error : ""}
+          action={saveAction}
+          onClose={() => setNotebookOpen(false)}
+          onSave={async () => { if (await save()) setNotebookOpen(false); }}
+          onExport={() =>
+            download(
+              JSON.stringify(makeBundle(), null, 2),
+              `${name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`,
+              "application/json",
+            )
+          }
+        >
+            <section className="investigation-notes" aria-label="Investigation notebook">
+              <div className="notebook-grid">
+                <label className="field">
+                  Investigation name
+                  <input
+                    value={name}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      setDirty(true);
+                    }}
+                  />
+                </label>
+                {active && (
+                  <label className="field">
+                    Plan name
+                    <input
+                      value={active.name}
+                      onChange={(e) => {
+                        setPlans((ps) =>
+                          ps.map((p) =>
+                            p.id === activeId
+                              ? { ...p, name: e.target.value }
+                              : p,
+                          ),
+                        );
+                        setDirty(true);
+                      }}
+                    />
+                  </label>
+                )}
+                <label className="field">
+                  Baseline
+                  <select
+                    value={baseline}
+                    onChange={(e) => {
+                      setBaseline(e.target.value);
+                      setBeforeId(e.target.value);
+                      setDirty(true);
+                    }}
+                  >
+                    {plans.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  Tags
+                  <input
+                    placeholder="payments, index-review"
+                    value={tags}
+                    onChange={(e) => {
+                      setTags(e.target.value);
+                      setDirty(true);
+                    }}
+                  />
+                </label>
+              </div>
+              <label className="field">
+                Notes and conclusions
+                <textarea
+                  placeholder="What changed? What did the evidence show?"
+                  value={notes}
+                  onChange={(e) => {
+                    setNotes(e.target.value);
+                    setDirty(true);
+                  }}
+                />
+              </label>
+              <p className="hint">
+                Save keeps the open plans, these notes and tags on this
+                computer. Credentials are excluded. Edits here are kept in the
+                workspace even if you close this sheet without saving.
+              </p>
+            </section>
+        </NotebookSheet>
+      )}
       {importOpen && (
         <ImportDialog
           busy={busy}
@@ -2680,6 +2790,39 @@ function openWorkspace() {
 window.addEventListener("hashchange", openWorkspace);
 openWorkspace();
 
+/** Save investigation: the notebook (name, plan name, baseline, tags and
+ * notes) in a sheet over the plan, saved with Save. Its fields edit the
+ * workspace directly, so Close keeps them as unsaved changes. */
+function NotebookSheet({ open, busy, error, action, onClose, onSave, onExport, children }: {
+  open: boolean; busy: boolean; error: string; action: ReturnType<typeof useAction>; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useFocusScope(dialog, { open, onClose });
+  return (
+    <dialog
+      ref={dialog}
+      className="notebook-sheet"
+      tabIndex={-1}
+      aria-labelledby="notebook-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      <div className="dialog-heading">
+        <h2 id="notebook-title">Save investigation</h2>
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      <fieldset disabled={busy}>{children}</fieldset>
+      <ActionStatus state={action} slowText="No reply yet. Close keeps the save running; its outcome appears in the window." />
+      <div className="dialog-actions sheet-actions">
+        <button type="button" className="text-button notebook-export" onClick={onExport}>Export investigation bundle</button>
+        <button type="button" className="button" onClick={onClose}>Close</button>
+        <ActionButton primary busy={busy} busyLabel="Saving…" onClick={onSave}>Save</ActionButton>
+      </div>
+    </dialog>
+  );
+}
 /** A deliberate workspace action, available even when nothing was restored. */
 function FreshWorkspaceSheet({ backupAvailable, onClose, onStart }: {
   backupAvailable: boolean; onClose: () => void; onStart: (backup: boolean) => void;
