@@ -352,7 +352,7 @@ def fixture_connection(tool, maria=False):
         if view == "replication":
             # The replication tests' loader adds the skip-counter variables the
             # recordings predate; use it so both suites replay the same reads.
-            from _perf_replay import ReplayConn
+            from _reviewed_replay import ReplayConn
             from test_replication import fixture as replication_fixture
             data = replication_fixture(view, server)
             conn = ReplayConn(data["calls"], clock=clock)
@@ -613,7 +613,7 @@ class TestServerReadTools(unittest.TestCase):
             resolve.assert_not_called()
 
     def test_read_adapter_refuses_writes_and_converts_transaction_clock(self):
-        from _perf_replay import ReplayConn
+        from _reviewed_replay import ReplayConn
         conn = ReplayConn([])
         reader = mcp._ReadConnection(conn)
         for sql in ("KILL 1", "SET GLOBAL x=1", "SET SESSION x=1", "CREATE TABLE t(a int)",

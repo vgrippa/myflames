@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeFactory, FakeTime, ReplayConn, fixture as recorded_fixture, run_cli
+from _reviewed_replay import ReplayConn
 from myflames import dbops, replication as rp, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
@@ -60,6 +61,12 @@ def fixture(view, name):
     explicitly synthetic refusal, so those channels show "Version unknown".
     """
     data = recorded_fixture(view, name)
+    # Explicit synthetic receiver identity: the original capture predates it.
+    report = data.get('report')
+    if isinstance(report, dict):
+        report['server_identity'] = ({'server_id': '1', 'hostname': 'fixture-db', 'port': '3306'}
+                                     if report.get('engine') == 'mariadb' else
+                                     {'server_uuid': '11111111-2222-3333-4444-555555555555'})
     calls, block = [], []
     for original in data['calls']:
         call = list(original)
@@ -130,6 +137,9 @@ class NoConn(object):
     def run(self, sql, extra_flags=None, timeout=None):
         raise AssertionError('no SQL may be sent: ' + sql)
 
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        raise AssertionError('no SQL may be sent: ' + sql)
+
     def close(self):
         pass
 
@@ -138,6 +148,19 @@ class NoConn(object):
 
     def __exit__(self, *exc):
         pass
+
+
+def _write_mock():
+    conn = mock.Mock(spec=NoConn)
+    def send(sql, **kwargs):
+        assert sql.startswith('SET @myflames_target = '), sql
+        try:
+            return conn.run(sql.split('\n', 1)[1], **kwargs)
+        except ConnectorError as exc:
+            raise ConnectorError(re.sub(r'\bat line (\d+)\b',
+                                        lambda m: 'at line %d' % (int(m.group(1)) + 1), str(exc))) from None
+    conn.run_write.side_effect = send
+    return conn
 
 
 class StrictReplay(ReplayConn):
@@ -178,7 +201,7 @@ def channel(report, name=''):
 
 
 def sent_scripts(conn):
-    return [(sql, flags) for sql, flags in conn.calls if sql.startswith(rp.SKIP_TAG)]
+    return [(sql, flags) for sql, flags in conn.calls if sql.startswith('SET @myflames_target = ')]
 
 
 def xml_edit(field, old, new, sql_word='STATUS'):
@@ -793,7 +816,8 @@ class TestSkipOne(ReplicationCase):
                 scripts = sent_scripts(conn)
                 self.assertEqual(len(scripts), 1)
                 script, flags = scripts[0]
-                self.assertEqual(script, ';\n'.join(rp.SKIP_TAG + s for s in plan['statements']) + ';')
+                self.assertEqual(script, '\n'.join(plan['session_guard']) + '\n' +
+                                 ';\n'.join(rp.SKIP_TAG + s for s in plan['statements']) + ';')
                 self.assertEqual(flags, list(dbops.WRITE_CLIENT_FLAGS))
                 if method == 'empty_gtid_transaction':
                     self.assertTrue(result['after']['gtid_executed_has_skipped'])
@@ -806,7 +830,7 @@ class TestSkipOne(ReplicationCase):
                 records = self.records()
                 self.assertEqual([(r['status'], r['outcome'], r['operation']) for r in records],
                                  [('ok', 'skipped', rp.OPERATION_SKIP)])
-                self.assertEqual(records[0]['statements'], [rp.SKIP_TAG + s for s in plan['statements']])
+                self.assertEqual(records[0]['statements'], plan['session_guard'] + [rp.SKIP_TAG + s for s in plan['statements']])
                 self.assertEqual(records[0]['target']['last_sql_errno'], 1062)
                 self.assertNotIn('hunter2', json.dumps(records))
 
@@ -974,7 +998,7 @@ def fake_report(errno=0, running='No', gtid=U + ':1', uptime=100, source='src', 
          'worker': {}}
     return {'schema_version': rp.SCHEMA_VERSION, 'engine': 'mysql', 'server_version': '8.4.11', 'available': True,
             'replica': True, 'uptime_s': uptime, 'global_skip_counter': 0, 'gtid': {'mode': mode}, 'settings': {}, 'channels': [c],
-            'notes': []}
+            'notes': [], 'server_identity': {'server_uuid': U}}
 
 
 class LoopHarness(object):
@@ -1675,7 +1699,7 @@ class TestReviewGateRegressions(ReplicationCase):
 
     @staticmethod
     def connection():
-        conn = mock.Mock(spec=NoConn)
+        conn = _write_mock()
         conn.run.return_value = ''
         return conn
 
@@ -2025,6 +2049,7 @@ class TestReviewGateSurfaces(ReplicationCase):
     @staticmethod
     def connection():
         conn = mock.MagicMock(spec=NoConn)
+        conn.run_write.side_effect = lambda sql, **kwargs: conn.run(sql, **kwargs)
         conn.__enter__.return_value = conn
         conn.run.return_value = ''
         return conn
@@ -2233,7 +2258,7 @@ class TestReceiverGuardFallback(ReplicationCase):
                     with self.subTest(engine=fixture_name, enabled=enabled, problem=str(problem)):
                         report, _ = status(fixture_name)
                         report['capabilities']['performance_schema'] = True
-                        conn = mock.Mock(spec=NoConn)
+                        conn = _write_mock()
                         conn.run.return_value = self.stage_row(instrument, enabled='YES' if enabled else 'NO')
                         if problem:
                             conn.run.side_effect = problem
@@ -2260,7 +2285,7 @@ class TestReceiverGuardFallback(ReplicationCase):
                         self.assertIn('events_stages_summary_by_thread_by_event_name', conn.run.call_args[0][0])
 
     def test_start_connection_failure_has_a_real_reason_and_closes_without_worker(self):
-        conn = mock.Mock(spec=NoConn)
+        conn = _write_mock()
         loop = rp.SkipLoop(conn, '', [1062], 1, close_conn=True)
         with mock.patch.object(rp, 'read_status', side_effect=ConnectorError('Connection timed out')), \
                 mock.patch.object(rp.threading, 'Thread') as thread:
@@ -2279,7 +2304,7 @@ class TestReceiverGuardFallback(ReplicationCase):
         # used the engine's default of Performance Schema off.
         report['capabilities']['performance_schema'] = not ps_off
         name = report['channels'][0]['name']
-        conn = mock.Mock(spec=NoConn)
+        conn = _write_mock()
         answers = iter(rows)
 
         def run(sql, **kwargs):
@@ -2417,7 +2442,7 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
     def test_receiver_reader_requires_enabled_stable_covered_threads(self):
         for event in ('stage/sql/Checking source version', 'stage/sql/Checking master version'):
             row = ['7', 'YES', 'Waiting for source to send event', event, '2', 'YES', 'YES', 'YES']
-            conn = mock.Mock(spec=NoConn)
+            conn = _write_mock()
             conn.run.return_value = '\t'.join(row) + '\n'
             self.assertEqual(REAL_RECEIVER_READER(conn, fake_report(1062)), (('7', event, 2),))
             self.assertIn('events_stages_summary_by_thread_by_event_name', conn.run.call_args[0][0])
@@ -2454,7 +2479,7 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
                         after['global_skip_counter'] = 1
                     else:
                         channel(after, name)['position']['skip_counter'] = 1
-                conn = mock.Mock(spec=NoConn)
+                conn = _write_mock()
                 conn.run.side_effect = ConnectorError('ERROR 1227 (42000) at line %d: START denied' % error_line)
                 with mock.patch.object(rp, 'read_status', side_effect=lambda _c: after if conn.run.called else report):
                     result = rp.skip_one(conn, name, plan['identity'], audit=self.audit(), confirmed=True, settle_s=0)
@@ -2469,7 +2494,7 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
 
     def test_unexpected_post_send_exception_never_audits_unsent(self):
         report = fake_report(1062)
-        conn = mock.Mock(spec=NoConn)
+        conn = _write_mock()
         with mock.patch.object(rp, 'read_status', return_value=report), \
                 mock.patch.object(rp, '_read_after', side_effect=RuntimeError('verification parser failed')):
             with self.assertRaisesRegex(RuntimeError, 'verification parser'):
@@ -2479,7 +2504,7 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
 
     def test_counter_consumption_without_progress_stops_with_attention(self):
         report, _ = status('mysql-8.4-filepos-error')
-        clock, conn = FakeTime(), mock.Mock(spec=NoConn)
+        clock, conn = FakeTime(), _write_mock()
         loop = rp.SkipLoop(conn, '', [1062], 1, clock=clock.monotonic, sleep=clock.sleep, settle_s=0)
         with mock.patch.object(rp, 'read_status', return_value=report):
             final = loop.run()
@@ -2504,7 +2529,7 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
             def __exit__(self, *exc):
                 real_lock.release()
 
-        first, second = mock.Mock(spec=NoConn), mock.Mock(spec=NoConn)
+        first, second = _write_mock(), _write_mock()
         plans, results, errors = [], [], []
         for conn, name in ((first, ''), (second, 'other')):
             conn.report = json.loads(json.dumps(report))
@@ -2595,7 +2620,7 @@ with open(path, 'a+b') as handle:
         initial = privileges.parse_grants(['GRANT SUPER ON *.* TO operator@localhost'])
         revoked = privileges.parse_grants(['GRANT SESSION_VARIABLES_ADMIN ON *.* TO operator@localhost'])
         current = [initial]
-        report, conn = fake_report(1062), mock.Mock(spec=NoConn)
+        report, conn = fake_report(1062), _write_mock()
         audit = self.audit()
         original = audit.attempt
 

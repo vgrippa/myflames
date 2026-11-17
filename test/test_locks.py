@@ -76,6 +76,14 @@ class FakeConn(object):
                 return result(sql) if callable(result) else result
         raise AssertionError('unexpected SQL: ' + sql)
 
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        try:
+            return self.run(sql, extra_flags=extra_flags, timeout=timeout)
+        except ConnectorError as exc:
+            # Recorded failures name the KILL without its new guard line.
+            raise ConnectorError(re.sub(r'\bat line (\d+)\b',
+                                        lambda m: 'at line %d' % (int(m.group(1)) + 1), str(exc))) from None
+
     def server_version(self):
         return self.version
 
@@ -156,8 +164,8 @@ def fake(version, ps_on=True, **answers):
                        ('mli', NO_MLI), ('target_last', []), ('trx_scope', []), ('survived_trx', [])):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
-                 ('SELECT @@server_uuid', batch([['server-uuid-1']])),
-                 ('SELECT @@server_id, @@hostname, @@version', batch([['1', 'server-one', '11.4.13-MariaDB']]))]
+                 ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])),
+                 ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306']]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -504,8 +512,8 @@ class TestTransactionTimeZone(unittest.TestCase):
 class TestVersions(LockCase):
     def test_report_captures_server_identity_once_for_both_engines(self):
         for conn, expected in (
-                (empty_mysql(), {'server_uuid': 'server-uuid-1'}),
-                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'})):
+                (empty_mysql(), {'server_uuid': '11111111-2222-3333-4444-555555555555'}),
+                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
             with self.subTest(expected=expected):
                 self.assertEqual(self.report(conn, identity=True)['server_identity'], expected)
                 self.assertEqual(sum('SELECT @@server_' in sql for sql, _ in conn.calls), 1)
@@ -1619,7 +1627,7 @@ class TestLocksAPI(LockCase):
         for needle, error in failures:
             with self.subTest(error=error):
                 responses = [] if needle == '@@version' else [(VERSION_SQL, batch([['8.4.6', 1]]))]
-                conn = FakeConn('8.4.6', responses + [('SELECT @@server_uuid', batch([['server-uuid-1']])), (needle, error)])
+                conn = FakeConn('8.4.6', responses + [('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])), (needle, error)])
                 with mock.patch('myflames.connector.MySQLConnection', FakeFactory(conn)):
                     with self.assertRaises((ValueError, ConnectorError)) as caught:
                         ui.api_response('/api/live/locks', {'connection': self.connection()}, workspace=object())
@@ -2195,8 +2203,8 @@ def bound_kill_expect(conn, expect=None, connection=None, safety=None):
     if connection is None:
         connection = {key: getattr(conn, key, None) for key in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')}
     version = conn.responses[0][1]
-    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'}
-                if 'MariaDB' in version else {'server_uuid': 'server-uuid-1'})
+    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'}
+                if 'MariaDB' in version else {'server_uuid': '11111111-2222-3333-4444-555555555555'})
     return dict(K_EXPECT if expect is None else expect,
                 connection_identity=dbops.connection_identity(connection, safety), server_identity=identity)
 
@@ -2246,7 +2254,7 @@ class KillScenario(object):
         return ''
 
     def kills(self):
-        return [sql for sql, _ in self.conn.calls if sql.startswith(KILL_TAG)]
+        return [sql.split('\n', 1)[-1] for sql, _ in self.conn.calls if KILL_TAG in sql]
 
 
 class TestKillSession(LockCase):
@@ -2256,8 +2264,9 @@ class TestKillSession(LockCase):
         json.dumps(result, allow_nan=False)
         for sql, flags in scenario.conn.calls:
             self.assertIn('--comments', flags, sql)
-            if sql.startswith(KILL_TAG):
-                self.assertRegex(sql[len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
+            if KILL_TAG in sql:
+                self.assertTrue(sql.startswith('SET @myflames_target = '), sql)
+                self.assertRegex(sql.split('\n', 1)[1][len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
             else:
                 self.assert_read_statement(sql)
         self.assertLessEqual(len(scenario.kills()), 1, 'never more than one KILL')
@@ -2776,7 +2785,7 @@ class TestKillAudit(LockCase):
             original_run = conn.run
 
             def run(sql, extra_flags=None, timeout=None):
-                if sql.startswith(KILL_TAG):
+                if KILL_TAG in sql:
                     seen.append([(r['status'], r['outcome_unknown']) for r in self.records()])
                 return original_run(sql, extra_flags, timeout)
             conn.run = run
@@ -2793,7 +2802,7 @@ class TestKillAudit(LockCase):
         self.assertEqual(result['audit_id'], record['id'])
         self.assertEqual((record['status'], record['outcome'], record['surface'], record['operation']),
                          ('ok', 'killed', 'cli', 'kill'))
-        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+        self.assertEqual(record['statements'], result['session_guard'] + [KILL_TAG + 'KILL CONNECTION 41'])
         self.assertEqual(record['target'], dict(bound_kill_expect(scenario.conn), connection_id=41, mode='connection'))
         self.assertEqual(record['verified'], ['connection', 'server identity', 'user', 'host', 'not this session', 'server thread', 'transaction'])
         self.assertEqual(record['policy'], {'action': 'confirm', 'kind': 'risky', 'category': 'kill',
@@ -2882,7 +2891,7 @@ class TestKillAudit(LockCase):
     def test_kill_is_sent_with_binary_mode(self):
         scenario = KillScenario()
         self.cli(scenario, '--kill', '41', '--yes')
-        [flags] = [f for sql, f in scenario.conn.calls if sql.startswith(KILL_TAG)]
+        [flags] = [f for sql, f in scenario.conn.calls if KILL_TAG in sql]
         self.assertEqual(flags, ['--comments', '--binary-mode'])
 
     def test_a_timeout_or_lost_connection_on_the_kill_is_outcome_unknown(self):
@@ -3046,7 +3055,7 @@ class TestKillAudit(LockCase):
                                     confirmed=True, audit=self.trail(), settle_s=0)
         self.assertEqual((result['status'], scenario.kills()), ('killed', [KILL_TAG + 'KILL CONNECTION 41']))
         self.assertEqual(self.records()[0]['target']['server_identity'],
-                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'})
+                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})
 
     def test_cli_missing_server_identity_is_refused_and_audited_before_prompt(self):
         scenario = KillScenario()
@@ -3110,7 +3119,7 @@ class TestKillAudit(LockCase):
         reads = []
         def identity(sql):
             reads.append(sql)
-            return batch([['server-uuid-1' if len(reads) <= 2 else 'replacement-server']])
+            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else 'replacement-server']])
         scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
                                    for p, value in scenario.conn.responses]
         code, out, err = self.cli(scenario, '--kill', '41', stdin=FakeStdin('yes\n'))

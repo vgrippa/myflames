@@ -1472,6 +1472,12 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
               'classification': {'kind': 'risky', 'category': 'account'},
               'policy': {k: decision.get(k) for k in ('action', 'tone', 'title', 'text', 'connection_type', 'read_only')},
               'status': 'blocked' if guards['blocked'] or hint['allowed'] is False else 'ready'}
+    try:
+        public['session_guard'] = dbops.target_session_guard(engine, public['actor_server'])
+    except ValueError as exc:
+        public['session_guard'] = []
+        public['guards']['blocked'].append(str(exc))
+        public['status'] = 'blocked'
     plan = Plan(public, statements, passwords)
     plan._options = {k: copy.deepcopy(v) for k, v in options.items() if k not in ('password', 'current_password')}
     plan._context = context
@@ -1546,6 +1552,14 @@ def _run_stdin(conn, sql, passwords=()):
     try:
         return conn.run_stdin(sql.rstrip().rstrip(';') + ';\n', extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except ConnectorError as exc:
+        # Inspect the original client error before safe-error redaction drops
+        # the line number (or MariaDB echoes SQL containing a credential).
+        if dbops.target_guard_failed(exc):
+            mismatch = ConnectorError(dbops.TARGET_IDENTITY_MISMATCH)
+            mismatch.identity_mismatch = True
+            mismatch.server_error_code = dbops.error_code(str(exc))
+            raise mismatch from None
+        exc = dbops.shift_guard_error(exc)
         code, message = _safe_error(exc, passwords)
         if dbops.may_have_run(exc):
             raise ConnectorError('Account statement timed out; outcome unknown. ' + message) from None
@@ -1571,7 +1585,8 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                             safety['read_only'], safety.get('profile_name'))
     out = {'schema_version': CHANGE_SCHEMA, 'change_set_id': plan['change_set_id'], 'operation': plan['operation'],
            'account': plan['account'], 'status': 'refused', 'message': '', 'statements': [],
-           'before': plan['before'], 'after': {}, 'diff': {}, 'warnings': [], 'audit_ids': []}
+           'before': plan['before'], 'after': {}, 'diff': {}, 'warnings': [], 'audit_ids': [], 'sent': [],
+           'session_guard': list(plan.get('session_guard') or [])}
 
     def trail():
         audit = dbops.AuditTrail(store, 'accounts.' + plan['operation'], surface, connection, safety,
@@ -1585,14 +1600,20 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                    statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
                                for i, s in enumerate(plan['statements'])])
         audit = trail()
-        out['audit_ids'].append(audit.outcome(list(plan['statements']), 'declined' if status in (
-            'declined', 'needs_confirmation', 'needs_typed_name') else 'refused', outcome=status, message=message,
+        out['audit_ids'].append(audit.outcome(out['session_guard'] + list(plan['statements']), 'declined' if status in (
+            'declined', 'needs_confirmation', 'needs_typed_name') else 'refused',
+            outcome=out.get('outcome') or status, message=message,
             target=target))
         plan._consumed = True
         return out
     gated = dbops.gate(decision, confirmed)
     if gated:
         return refuse(gated[0], gated[1])
+    try:
+        session_guard = dbops.target_session_guard(plan['engine'], plan['actor_server'])
+    except ValueError as exc:
+        out['outcome'] = 'identity_unavailable'
+        return refuse('refused', str(exc))
     if dbops.connection_identity(connection, safety) != plan['connection_identity'] or expect != plan['expect']:
         return refuse('stale', 'The connection or the account changed since the review; nothing was sent.')
     if not _same_sql_connection(conn, plan._connection):
@@ -1634,12 +1655,21 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     try:
         for i, (sql, display) in enumerate(zip(plan._statements, plan['statements'])):
             audit = trail()
-            audit_id = audit.attempt([display], target=target,
+            audit_id = audit.attempt(session_guard + [display], target=target,
                                      verified=['policy', 'connection', 'server', 'actor', 'account', 'guards'])
             out['audit_ids'].append(audit_id)
             try:
-                result = _run_stdin(conn, sql, plan._passwords)
+                result = _run_stdin(conn, '\n'.join(session_guard) + '\n' + sql, plan._passwords)
             except (ConnectorError, KeyboardInterrupt) as exc:
+                if getattr(exc, 'identity_mismatch', False):
+                    audit.complete('refused', outcome='identity_mismatch', error=exc.server_error_code,
+                                   message=dbops.TARGET_IDENTITY_MISMATCH)
+                    out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
+                    out.update(status='refused' if i == 0 else 'partial', outcome='identity_mismatch',
+                               message=dbops.TARGET_IDENTITY_MISMATCH if i == 0 else
+                               'The server changed before the next statement. Earlier statements ran; '
+                               'the remaining statements were not sent. Refresh and review again.')
+                    break
                 code = dbops.error_code(str(exc))
                 if isinstance(exc, KeyboardInterrupt) or dbops.may_have_run(exc):
                     status = 'unknown'
@@ -1667,6 +1697,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                     if rows and len(rows[0]) >= 3:
                         generated = rows[0][2]
                 audit.complete('ok', outcome='sent')
+                out['sent'].append(display)
                 out['statements'].append({'index': i, 'statement': display, 'status': 'ok'})
         else:
             out.update(status='applied', message='The server accepted every statement; the effect below is a '
@@ -1682,6 +1713,8 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     if out['status'] == 'partial' and plan['operation'] == 'create' and engine == 'mariadb':
         out['warnings'].append('The account was created but stays locked: set a password that the server accepts, '
                                'then unlock it, or drop it.')
+    if out.get('outcome') == 'identity_mismatch':
+        return out
     try:
         renamed = plan['operation'] == 'rename' and out['status'] == 'applied'
         name = plan._options.get('new_name', plan['name']) if renamed else plan['name']

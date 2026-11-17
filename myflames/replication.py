@@ -207,7 +207,8 @@ LOOP_HISTORY = 20
 EXTRA_VARIABLES = ("enforce_gtid_consistency", "gtid_current_pos", "gtid_domain_id", "gtid_mode",
                    "gtid_slave_pos", "gtid_strict_mode", "read_only", "replica_parallel_workers",
                    "replica_preserve_commit_order", "slave_parallel_threads", "slave_parallel_workers",
-                   "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter")
+                   "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter",
+                   "server_uuid", "server_id", "hostname", "port", "wsrep_node_name")
 
 _PS_HEARTBEAT_SQL = ("SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM "
                      "performance_schema.replication_connection_configuration")
@@ -524,6 +525,10 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
         "notes": [],
         "summary": _summary(),
     }
+    # Keep the report's established schema: settings already holds the
+    # server's global variables, and the skip plan copies this review evidence.
+    report["settings"]["server_identity"] = {key: server.variables.get(key) for key in
+        (("server_id", "hostname", "port") if server.engine == "mariadb" else ("server_uuid",))}
     try:
         rows = reader.named(show_sql)
     except ConnectorError as exc:
@@ -534,6 +539,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             report["message"] = _privilege_message(server, exc)
             return report
         raise ValueError("Could not read replication status: " + reason(exc))
+    if server.engine == "mariadb" and server.variables.get("wsrep_node_name"):
+        report["settings"]["server_identity"]["wsrep_node_name"] = server.variables["wsrep_node_name"]
     # Group Replication's own channels (group_replication_applier and
     # group_replication_recovery, reserved names in M/sql/rpl_msr.cc:38-39)
     # are the group's, not asynchronous replication. SHOW REPLICA STATUS walks
@@ -1895,6 +1902,7 @@ def plan_skip(report, channel):
         "statements": [],
         "identity": {
             "channel": found["name"], "method": None,
+            "server_identity": dict(report.get("server_identity") or (report.get("settings") or {}).get("server_identity") or {}),
             "last_sql_errno": error["errno"], "last_sql_error": error.get("message"),
             "last_sql_error_timestamp": error.get("timestamp"), "gtid": gtid,
             "position": {k: position.get(k) for k in ("relay_log_file", "relay_log_pos", "exec_file", "exec_pos")},
@@ -1937,6 +1945,12 @@ def plan_skip(report, channel):
         plan["message"] = ("The global skip counter is armed or unreadable. Nothing is planned: inspect "
                            "@@GLOBAL.sql_replica_skip_counter and resolve it manually before any START.")
     plan["identity"]["method"] = plan["method"]
+    try:
+        plan["session_guard"] = dbops.target_session_guard(engine, plan["identity"]["server_identity"])
+    except ValueError as exc:
+        plan["session_guard"] = []
+        plan["available"] = False
+        plan["message"] = str(exc)
     return plan
 
 
@@ -2064,7 +2078,7 @@ def check_expect(expect):
     message = ("Send the complete identity you confirmed: channel, method, failure fields, source, and a "
                "validated GTID or complete relay and applied file-and-position identity.")
     required = ("channel", "method", "last_sql_errno", "last_sql_error", "last_sql_error_timestamp",
-                "gtid", "position", "source")
+                "gtid", "position", "source", "server_identity")
     if not isinstance(expect, dict) or any(k not in expect for k in required):
         raise ValueError(message)
     if not isinstance(expect["channel"], str) or len(expect["channel"]) > 256:
@@ -2105,7 +2119,9 @@ def check_expect(expect):
         raise ValueError(message)
     if not valid_gtid and not all(position[k] is not None and position[k] != "" for k in pkeys):
         raise ValueError(message)
-    return {k: dict(expect[k]) if k in ("position", "source") else expect[k] for k in required}
+    if not isinstance(expect["server_identity"], dict):
+        raise ValueError(message)
+    return {k: dict(expect[k]) if k in ("position", "source", "server_identity") else expect[k] for k in required}
 
 
 def verify_identity(channel, plan, expect):
@@ -2121,6 +2137,7 @@ def verify_identity(channel, plan, expect):
             verified.append(label)
     if channel["sql"]["running"] == "Yes":
         diffs.append("the applier is running again")
+    compare("the server identity", current.get("server_identity"), expect.get("server_identity"))
     compare("the skip method", current["method"], expect.get("method"))
     compare("the error number", current["last_sql_errno"], expect["last_sql_errno"])
     compare("the error message", current["last_sql_error"], expect.get("last_sql_error"))
@@ -2371,10 +2388,15 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     if problem:
         return _unsent(result, audit, "refused", "identity", problem, expect, verified)
     result["verified"] = verified
-    script = _script(plan["statements"])
+    try:
+        session_guard = dbops.target_session_guard(report["engine"], expect.get("server_identity"))
+    except ValueError as exc:
+        return _unsent(result, audit, "refused", "identity_unavailable", str(exc), expect, verified)
+    result["session_guard"] = session_guard
+    script = "\n".join(session_guard) + "\n" + _script(plan["statements"])
     if audit is not None:
         try:
-            result["audit_id"] = audit.attempt(_tagged(plan["statements"]), target=expect, verified=verified)
+            result["audit_id"] = audit.attempt(session_guard + _tagged(plan["statements"]), target=expect, verified=verified)
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     # Privilege checks cover the WHOLE script, including START after COMMIT/SET.
@@ -2415,12 +2437,20 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
             return _unsent(result, audit, "refused", blocked, STOP_REASONS[blocked][0], expect)
         result["sent"] = send_state["sent"] = True
     try:
-        conn.run(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+        conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
+        if dbops.target_guard_failed(exc):
+            result.update(status="refused", outcome="identity_mismatch", sent=[], stop_reason="identity_mismatch",
+                          message=dbops.TARGET_IDENTITY_MISMATCH)
+            send_state["sent"] = False
+            if audit is not None:
+                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=result["message"])
+            return result
+        exc = dbops.shift_guard_error(exc)
         if _fatal(exc):
             unknown = dbops.may_have_run(exc)
             message = ("Could not skip the transaction: %s.%s" % (
@@ -2911,6 +2941,7 @@ class SkipLoop(object):
         baseline = {"source": dict(channel.get("source") or {}), "gtid_mode": (report.get("gtid") or {}).get("mode"),
                     "agat": channel.get("agat"), "engine": report.get("engine"),
                     "settings": dict(report.get("settings") or {}),
+                    "server_identity": dict(report.get("server_identity") or (report.get("settings") or {}).get("server_identity") or {}),
                     "using_gtid": (channel.get("position") or {}).get("using_gtid"),
                     "parallel_mode": (channel.get("position") or {}).get("parallel_mode")}
         if self._baseline is None:

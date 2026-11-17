@@ -33,13 +33,17 @@ class BatchConnection(object):
     def __exit__(self, *args):
         pass
 
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        assert sql.startswith('SET @myflames_target = '), sql
+        return self.run(sql, extra_flags=extra_flags)
+
     def run(self, sql, extra_flags=None):
         self.calls.append(sql)
         if 'SELECT @@version, @@performance_schema' in sql:
             return '8.4.6\t1\n'
         if 'SELECT @@server_uuid' in sql:
-            return 'server-1\n'
-        if sql.startswith(locks.KILL_TAG):
+            return '11111111-2222-3333-4444-555555555555\n'
+        if locks.KILL_TAG in sql:
             self.killed.add(int(sql.rsplit(' ', 1)[1]))
             return ''
         if 'information_schema.INNODB_TRX' in sql:
@@ -54,7 +58,7 @@ class BatchConnection(object):
                 return ''
             return batch([[cid + 100, cid, 'other' if cid == self.changed else 'app', 'localhost',
                            None, GR_COMMAND if cid == self.protected else 'Query', 3, None, 'SELECT 1', 999] +
-                          (['server-2' if cid == self.server_changed else 'server-1'] if '@@server_uuid' in sql else [])])
+                          (['server-2' if cid == self.server_changed else '11111111-2222-3333-4444-555555555555'] if '@@server_uuid' in sql else [])])
         raise AssertionError(sql)
 
 
@@ -75,7 +79,7 @@ class TestBulkKillReview(unittest.TestCase):
         identity = ui._review_identity(self.connection, self.workspace)
         body = {'connection': self.connection, 'confirmed': True, 'targets': [
             {'connection_id': cid, 'expect': {'user': 'app', 'host': 'localhost', 'ps_thread_id': cid + 100,
-             'connection_identity': identity, 'server_identity': {'server_uuid': 'server-1'}}}
+             'connection_identity': identity, 'server_identity': {'server_uuid': '11111111-2222-3333-4444-555555555555'}}}
             for cid in range(1, count + 1)]}
         body.update(changes)
         body['review_token'] = ui._bulk_kill_prepare(body, self.workspace)['review_token']
@@ -177,7 +181,7 @@ class TestBulkKillReview(unittest.TestCase):
 
         def change_policy(sql, extra_flags=None):
             answer = run(sql, extra_flags)
-            if sql.startswith(locks.KILL_TAG):
+            if locks.KILL_TAG in sql:
                 self.store.save('profile', dict(self.connection, name='review', type='development', read_only=True),
                                 key=saved['id'])
             return answer
@@ -222,12 +226,12 @@ class TestBulkKillReview(unittest.TestCase):
         body = self.payload(2, mode='query')
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
             result = ui._bulk_kill_response(body, self.workspace)
-            sends = [sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)]
+            sends = [sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql]
             self.assertEqual(sends, [locks.KILL_TAG + 'KILL QUERY 1', locks.KILL_TAG + 'KILL QUERY 2'])
             # A failed verification never makes a consumed review reusable.
             with self.assertRaisesRegex(ValueError, 'review expired'):
                 ui._bulk_kill_response(body, self.workspace)
-            self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)], sends)
+            self.assertEqual([sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql], sends)
         self.assertEqual(result['killed'], 2)  # Existing count means accepted sends.
         records = {record['id']: record for record in self.records()}
         for row in result['results']:
@@ -250,7 +254,7 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(record['status'], 'ok')
         self.assertIsNone(record['after'])
         self.assertTrue(record['message'].startswith('Sent; could not verify'), record['message'])
-        self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)],
+        self.assertEqual([sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql],
                          [locks.KILL_TAG + 'KILL QUERY 1'])
 
     def test_single_kill_unavailable_after_read_does_not_claim_completion(self):

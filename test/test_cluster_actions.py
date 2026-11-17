@@ -76,6 +76,7 @@ class Home(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
 
+
 class TestOffered(Home):
     def test_galera_desync_resync_and_bootstrap(self):
         healthy = F.report('galera-11.8-healthy')
@@ -258,6 +259,20 @@ class TestPlans(Home):
 class Endpoints(Home):
     def setUp(self):
         super().setUp()
+        # These recordings predate server_id in the reviewed Galera identity.
+        # Supply explicit synthetic review evidence without editing the reader.
+        read_status = m.read_status
+        def with_guard_identity(*args, **kwargs):
+            report = copy.deepcopy(read_status(*args, **kwargs))
+            if report.get('engine') == 'mariadb':
+                report['server'].setdefault('server_id', '1')
+                node_name = (report.get('galera') or {}).get('node_name')
+                if node_name:
+                    report['server'].setdefault('wsrep_node_name', node_name)
+            return report
+        patcher = mock.patch.object(m, 'read_status', side_effect=with_guard_identity)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         from myflames.workspace_store import WorkspaceStore
         self.workspace = type('Workspace', (), {'store': WorkspaceStore(os.path.join(self.tmp.name, 'ws.sqlite3'))})()
         self.connection = {'host': '127.0.0.1', 'port': 34101, 'user': 'mf_admin', 'password': 'pw-secret'}
@@ -295,7 +310,7 @@ class Endpoints(Home):
         plan = self.plan(conn, 'desync_node', local(report)['key'])
         result = self.send(conn, plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(conn.writes, ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])
+        self.assertEqual(conn.writes, ['\n'.join(plan['session_guard'] + ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])])
         (record,) = self.audit()
         self.assertEqual((record['operation'], record['status'], record['connection']['engine']),
                          ('cluster_action', 'ok', 'mariadb'))
@@ -381,7 +396,7 @@ class Endpoints(Home):
         report = F.report('ic-8.4-healthy')
         target = next(x for x in report['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
         conn = Writes(F.conn('ic-8.4-healthy'), fail=ConnectorError(
-            "mysql client exited 1: ERROR 3910 (HY000) at line 1: The function 'group_replication_set_as_primary' "
+            "mysql client exited 1: ERROR 3910 (HY000) at line 2: The function 'group_replication_set_as_primary' "
             "failed. There is a replica channel running in the group's current primary member."))
         result = self.send(conn, self.plan(conn, 'switchover', target['key']))
         self.assertEqual(result['status'], 'failed')

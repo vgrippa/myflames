@@ -12,8 +12,9 @@ The workspace issues a review token bound to that whole plan
 fresh read, refuses with "nothing was sent" when the statements or the
 ``expect`` identity differ from the reviewed plan, checks the typed guard,
 consumes the token (``before_send``), writes the pending audit record, and
-sends every statement as one unit: one client invocation with the statements
-on standard input (``MySQLConnection.run_write``: ``--comments``,
+sends every statement as one unit, after the reviewed server identity guard:
+one client invocation with the statements on standard input
+(``MySQLConnection.run_write``: ``--comments``,
 ``--binary-mode``, no reconnect; batch mode stops at the first error, so a
 later statement never runs after a failed one). It never retries.
 
@@ -208,7 +209,27 @@ def review_details(plan):
     """What a review token binds: the plan as reviewed, without its token and
     the policy text (the connection identity already carries type and
     read-only, so a policy change voids the token)."""
+    # The HTTP plan response uses this same object. Publish the automatically
+    # derived prefix for review, and bind it with the rest of the plan. Never
+    # accept a caller-supplied guard instead of deriving it from expect.
+    guard = session_guard(plan)
+    if guard:
+        plan["session_guard"] = guard
     return {key: value for key, value in plan.items() if key not in ("review_token", "policy")}
+
+
+def session_guard(plan):
+    """SQL targets use a same-client guard; Admin/Shell protocols do not.
+
+    Shell guards are a separate contract: SQL must never become JavaScript.
+    ProxySQL Admin and Readyset do not expose these server identity variables.
+    """
+    from .dbops import target_session_guard
+    expect = plan.get("expect") or {}
+    if plan.get("via") == "mysqlsh" or expect.get("engine") not in (
+            "mysql", "percona", "percona_server", "pxc", "mariadb"):
+        return []
+    return target_session_guard(expect["engine"], expect.get("server_identity") or expect.get("server"))
 
 
 def check_reviewed(plan):
@@ -236,11 +257,12 @@ def result(schema_version, plan):
 
 def refused(out, message, outcome, audit=None, target=None, progress=None):
     out["status"], out["message"] = "refused", message
+    out["outcome"] = outcome
     out["not_sent"] = list(out["statements"])
     out["states"] = ["not_sent"] * len(out["statements"])
     _set(progress, "finished", out["states"], "refused")
     if audit is not None:
-        out["audit_id"] = audit.outcome(out["statements"], "refused", outcome=outcome, message=message,
+        out["audit_id"] = audit.outcome(list(out.get("session_guard") or []) + out["statements"], "refused", outcome=outcome, message=message,
                                         target=target)
     return out
 
@@ -261,7 +283,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
-    from .dbops import may_have_run
+    from .dbops import may_have_run, target_guard_failed, shift_guard_error, TARGET_IDENTITY_MISMATCH
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
     _set(progress, "checking")
@@ -269,9 +291,14 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         fresh = plan_fresh()
     except ValueError as exc:
         return refused(out, "%s Nothing was sent." % str(exc).rstrip(), "changed", audit, expect, progress)
-    if fresh.get("statements") != reviewed.get("statements") or fresh.get("expect") != expect:
+    if fresh.get("statements") != reviewed.get("statements") or fresh.get("expect") != expect \
+            or fresh.get("via") != reviewed.get("via"):
         return refused(out, "The target changed after you reviewed it, so nothing was sent. Review the action "
                             "again.", "changed", audit, expect, progress)
+    try:
+        out["session_guard"] = session_guard(reviewed)
+    except ValueError as exc:
+        return refused(out, str(exc), "identity_unavailable", audit, expect, progress)
     guard = fresh.get("typed_guard")
     if guard and typed != guard:
         return refused(out, "Type %s exactly to confirm. Nothing was sent." % guard, "typed_guard", audit, expect,
@@ -284,13 +311,13 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     statements = out["statements"]
     if audit is not None:
         try:
-            out["audit_id"] = audit.attempt(statements, target=expect, verified=fresh.get("verified"))
+            out["audit_id"] = audit.attempt(out["session_guard"] + statements, target=expect, verified=fresh.get("verified"))
         except Exception as exc:
             _set(progress, "finished", ["not_sent"] * len(statements), "refused")
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     _set(progress, "sending", ["sent"] * len(statements))
     try:
-        conn.run_write("\n".join(statements), timeout=timeout)
+        conn.run_write("\n".join(out["session_guard"] + statements), timeout=timeout)
     except KeyboardInterrupt as exc:
         _set(progress, "finished", ["unknown"] * len(statements), "unknown")
         if audit is not None:
@@ -298,6 +325,15 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         raise
     except ConnectorError as exc:
         from .dbops import redact
+        if out["session_guard"] and target_guard_failed(exc):
+            out.update(status="refused", outcome="identity_mismatch", message=TARGET_IDENTITY_MISMATCH,
+                       not_sent=list(statements), states=["not_sent"] * len(statements))
+            _set(progress, "finished", out["states"], "refused")
+            if audit is not None:
+                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=out["message"])
+            return out
+        if out["session_guard"]:
+            exc = shift_guard_error(exc)
         pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
         text = redact(str(exc), pw)
         out["error"] = redact(server_message(text), pw)

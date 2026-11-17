@@ -918,7 +918,7 @@ class Endpoints(Home):
         conn = F.conn('ic-8.4-healthy')
         plan = self.plan(conn, 'switchover', target['key'])
         with mock.patch.object(conn, 'run_write', create=True,
-                               side_effect=ConnectorError('ERROR 3910 at line 1: replica channel running')):
+                               side_effect=ConnectorError('ERROR 3910 at line 2: replica channel running')):
             result = self.send(conn, plan)
         self.assertEqual((result['status'], result['message']),
                          ('failed', 'The server refused %s: replica channel running. Nothing changed.'

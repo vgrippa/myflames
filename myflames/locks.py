@@ -508,7 +508,7 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
     r.identity = conn_identity(conn, engine, version)
     # Bind a later Kill confirmation to the server that supplied this report.
     # Only the workspace asks (identity=True); the CLI Kill path re-reads it.
-    keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
+    keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     r.server_identity = {}
     if identity:
         try:
@@ -2701,7 +2701,7 @@ def read_target(conn, engine, ps_on, connection_id, server_identity=False):
     exactly. ``trx_checked`` is False when INNODB_TRX was not readable (PROCESS).
     """
     rows = None
-    identity_keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
+    identity_keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     for source_ps in ((True, False) if ps_on else (False,)):
         sql = _session_sql(engine, source_ps, "{ID} = %d" % connection_id, " LIMIT 1")
         extra = ", CONNECTION_ID()"
@@ -2965,7 +2965,7 @@ def refused_result(connection_id, mode, message, status="refused", engine=None, 
 def _kill_context(conn):
     """Read the server and its identity once for a single request or batch."""
     server = _server(conn)
-    keys = ("server_id", "hostname", "version") if server[0] == "mariadb" else ("server_uuid",)
+    keys = ("server_id", "hostname", "version", "port") if server[0] == "mariadb" else ("server_uuid",)
     rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
     identity = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
     return server, identity if all(identity.get(key) for key in keys) else {}
@@ -3037,11 +3037,12 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     seen = _confirmed(expect, connection_id, mode)
     for key in ("connection_identity", "server_identity"):
         seen[key] = bound_expect.get(key)
+    session_guard = []
 
     def refuse(message, outcome="identity", status="refused"):
         result = refused_result(connection_id, mode, message, status=status)
         if audit is not None:
-            result["audit_id"] = audit.outcome([KILL_TAG + statement], "refused", outcome=outcome,
+            result["audit_id"] = audit.outcome(session_guard + [KILL_TAG + statement], "refused", outcome=outcome,
                                                message=message, target=seen)
         return result
 
@@ -3055,9 +3056,14 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         audit.server(engine, version)
     if not identity or bound_expect.get("server_identity") != identity:
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
+    try:
+        session_guard = dbops.target_session_guard(engine, bound_expect.get("server_identity"))
+    except ValueError as exc:
+        return refuse(str(exc), "identity_unavailable")
     result = {"schema_version": KILL_SCHEMA_VERSION, "engine": engine, "server_version": version,
               "connection_id": connection_id, "mode": mode, "statement": None, "status": None,
-              "message": None, "verified": [], "target": None, "after": None}
+              "message": None, "verified": [], "target": None, "after": None,
+              "sent": [], "session_guard": session_guard}
     confirmed_target = seen
     target, own = read_target(conn, engine, ps_on, connection_id,
                              server_identity=_batch_context is not None)
@@ -3087,18 +3093,25 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             return refuse(refusal, "policy")
     if audit is not None:
         try:
-            result["audit_id"] = audit.attempt([KILL_TAG + statement], target=confirmed_target, verified=verified)
+            result["audit_id"] = audit.attempt(session_guard + [KILL_TAG + statement], target=confirmed_target, verified=verified)
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     from .dbops import WRITE_CLIENT_FLAGS, may_have_run
     try:
         # --binary-mode: the client runs no backslash command of its own.
-        conn.run(KILL_TAG + statement, extra_flags=list(WRITE_CLIENT_FLAGS))
+        conn.run_write("\n".join(session_guard + [KILL_TAG + statement]), extra_flags=list(WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt as exc:
         if audit is not None:
             audit.fail(exc)
         raise
     except ConnectorError as exc:
+        if dbops.target_guard_failed(exc):
+            result.update(status="refused", outcome="identity_mismatch", sent=[],
+                          message=dbops.TARGET_IDENTITY_MISMATCH)
+            if audit is not None:
+                audit.complete("refused", outcome="identity_mismatch", error=str(exc), message=result["message"])
+            return result
+        exc = dbops.shift_guard_error(exc)
         try:
             result["status"], result["message"] = _kill_error(engine, exc, connection_id, _ver)
         except ValueError as failure:
@@ -3113,6 +3126,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             audit.complete("error", outcome=result["status"], error=str(exc), message=result["message"])
         return result
     result["status"] = "killed"
+    result["sent"] = [statement]
     if _defer_after:
         # The batch owner completes the pending audit after its shared snapshot.
         result["message"] = _kill_message(mode, connection_id, target, None)
@@ -3312,7 +3326,7 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
                              "Nothing was sent." % connection_id)
         return unsent("refused", "identity")
     seen["connection_identity"] = dbops.connection_identity(connection, safety)
-    keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
+    keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
     seen["server_identity"] = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
     if not all(seen["server_identity"].get(key) for key in keys):
@@ -3354,7 +3368,7 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
 def format_kill(result):
     """Human text for a kill-1.0 result."""
     out = [result["message"] or result["status"]]
-    for item in result.get("outcome") or []:
+    for item in (result.get("outcome") if isinstance(result.get("outcome"), list) else []):
         what = ("The %s on connection %d" % (item["ddl"], item["connection_id"]) if item["ddl"]
                 else "Connection %d" % item["connection_id"])
         if not item["waiting"]:

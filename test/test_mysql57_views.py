@@ -25,11 +25,18 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeTime, assert_read_only, deny_blocker_read, fixture, replay
+from _reviewed_replay import ReplayConn
 from myflames import (cluster, config_review, ddl_progress, discover, error_log, health, indexes, innodb_status,
                       locks, param_compare, parameters, perf_common, ps_instruments, replication, schema_health,
                       server_checks, sessions, variables, watch)
 from myflames.connector import ConnectorError
 from myflames.perf_common import Server
+
+recorded_replay = replay
+
+def replay(*args, **kwargs):
+    conn, data = recorded_replay(*args, **kwargs)
+    return ReplayConn(data['calls'], clock=conn.clock, error=conn.error, edit=conn.edit, version=conn.version), data
 
 SERVER = 'mysql-5.7'
 HERE = os.path.dirname(os.path.abspath(__file__))

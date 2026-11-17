@@ -467,7 +467,7 @@ class TestReadConsent(GroupCase):
 
     def test_replica_status_survives_missing_policy_store_without_a_write_token(self):
         from test_replication import fixture
-        from _perf_replay import ReplayConn
+        from _reviewed_replay import ReplayConn
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run

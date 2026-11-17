@@ -32,7 +32,7 @@ def actor(engine='mysql', account='admin@localhost', grants=None, variables=None
         'GRANT SYSTEM_USER, ROLE_ADMIN, CONNECTION_ADMIN ON *.* TO admin@localhost WITH GRANT OPTION']
     report = p.parse_grants(grants, engine, MARIADB_VERSION if engine == 'mariadb' else MYSQL_VERSION)
     report.update(account=account, current_roles=list(roles),
-                  variables=variables if variables is not None else {'server_id': '42', 'hostname': 'test-server'})
+                  variables=variables if variables is not None else {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'server_uuid': '11111111-2222-3333-4444-555555555555'})
     return report
 
 
@@ -1036,7 +1036,7 @@ class AccountsTest(unittest.TestCase):
         self.conn = FakeConn('mysql')
         plan = self.plan('drop')
         self.conn.run_stdin = mock.Mock(side_effect=ConnectorError(
-            "mysql client exited 1: ERROR 4006 (HY000) at line 1: Operation DROP USER failed for 'app'@'%' as it is "
+            "mysql client exited 1: ERROR 4006 (HY000) at line 2: Operation DROP USER failed for 'app'@'%' as it is "
             "referenced as a definer account in a view."))
         result = self.apply(plan)
         self.assertEqual(result['status'], 'refused_by_server')

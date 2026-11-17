@@ -1054,6 +1054,73 @@ def classify(sql, backslash_escapes=None, key_columns=None):
 #: guard cannot be lifted on a read-only connection.
 READ_ONLY_SESSION_GUARD = ("SET SESSION TRANSACTION READ ONLY",)
 
+# The same UUID grammar used for reviewed Cluster and replication actions.
+_TARGET_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_TARGET_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,255}")
+_TARGET_ERROR = re.compile(r"^(?:mysql client exited \d+:\s*)?ERROR\s+(\d+)"
+                           r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):", re.M)
+TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one you reviewed. Nothing was sent. "
+                            "Refresh and review again.")
+
+
+def target_session_guard(engine, identity):
+    """One SQL line bound only to a previously reviewed server identity.
+
+    A scalar subquery returns NULL on a match and two rows on a mismatch
+    (ERROR 1242). Send it FIRST, in the write's own batch client, without
+    --force or reconnect. Missing or unsafe identity values fail closed.
+    Like READ_ONLY_SESSION_GUARD, the returned list is review/audit metadata.
+    """
+    from .collectors import _sql_string
+    identity = identity if isinstance(identity, dict) else {}
+    if engine in ("mysql", "percona", "percona_server", "pxc"):
+        uuid = identity.get("server_uuid")
+        if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
+            raise ValueError("The reviewed server UUID is missing or invalid. Nothing was sent. Refresh and review again.")
+        different = "@@global.server_uuid <> %s" % _sql_string(uuid)
+    elif engine == "mariadb":
+        values = {}
+        for key, maximum in (("server_id", 4294967295), ("port", 65535)):
+            value = identity.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, str)) or \
+                    len(str(value)) > 10 or not re.fullmatch(r"[0-9]+", str(value)) or not 0 <= int(value) <= maximum:
+                raise ValueError("The reviewed server %s is missing or invalid. Nothing was sent. Refresh and review again."
+                                 % key)
+            values[key] = int(value)
+        names = ["hostname"] + (["wsrep_node_name"] if "wsrep_node_name" in identity else [])
+        for key in names:
+            value = identity.get(key)
+            if not isinstance(value, str) or not _TARGET_NAME.fullmatch(value):
+                raise ValueError("The reviewed server %s is missing or invalid. Nothing was sent. Refresh and review again."
+                                 % key)
+            values[key] = value
+        different = " OR ".join("@@global.%s <> %s" % (key, str(values[key]) if key in ("server_id", "port")
+                                                      else _sql_string(values[key]))
+                                for key in ["server_id", "hostname", "port"] + names[1:])
+    else:
+        raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
+    return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
+
+
+def target_guard_failed(exc):
+    """A server refusal of script line 1, even after MariaDB's SQL echo.
+
+    A transport error at that line still has an unknown outcome. Only a
+    server answer proves the batch stopped before the reviewed statements.
+    """
+    match = _TARGET_ERROR.search(str(exc))
+    return bool(match and int(match.group(2)) == 1 and not 2000 <= int(match.group(1)) <= 2999)
+
+
+def shift_guard_error(exc):
+    """Remove the guard's one-line offset from numbered client errors only."""
+    from .connector import ConnectorError
+
+    def shift(match):
+        return match.group(0)[:match.start(2) - match.start()] + str(max(1, int(match.group(2)) - 1)) + ":"
+
+    return ConnectorError(_TARGET_ERROR.sub(shift, str(exc)))
+
 
 def normalize_type(value):
     """A connection type: 'production' or 'development'. Anything else is an error."""
