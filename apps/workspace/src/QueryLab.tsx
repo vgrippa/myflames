@@ -66,15 +66,15 @@ import {
 import { connectionKey, connectionLabel } from "./binding";
 import { GroupServerPicker } from "./GroupServerPicker";
 import { Icon } from "./components";
-import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, Select, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, Select, StatusPill, useFocusScope, useWindowStatus, type Tone, ContextMenu } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type SqlEditorHandle } from "./editor/SqlEditor";
 import { normalizeEol, normalizedOffset } from "./editor/types";
-import { EDITOR_SHORTCUTS } from "./editor/keymap";
+import { EDITOR_ACTIONS, EDITOR_SHORTCUTS, editorActionShortcuts } from "./editor/keymap";
 import type { Range } from "./editor/types";
 import { createsTemporaryTable } from "./editor/problems";
-import { useEditorSettings } from "./editorSettings";
+import { EDITOR_SETTING_LABELS, useEditorSettings } from "./editorSettings";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
 import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
@@ -119,6 +119,13 @@ function editorKeyText(name: string): string {
     mod === "mod" ? (MAC ? "⌘" : "Ctrl+") : mod === "ctrl" ? (MAC ? "⌃" : "Ctrl+") : mod === "alt" ? (MAC ? "⌥" : "Alt+") : MAC ? "⇧" : "Shift+");
   return `${mods.join("")}${key}`;
 }
+/** ARIA uses named modifiers and '+' separators, rather than display glyphs. */
+function editorAriaKeys(name: string): string {
+  return name.split("-").map(key => key === "Mod" ? (MAC ? "Meta" : "Control")
+    : key === "Ctrl" ? "Control" : key.length === 1 ? key.toUpperCase() : key).join("+");
+}
+const FIND_KEYS = editorActionShortcuts("find").map(editorKeyText).join(", ");
+const REPLACE_KEYS = editorActionShortcuts("replace").map(editorKeyText).join(", ");
 /** How long the statement that runs stays highlighted in the editor. */
 const FLASH_MS = 1600;
 /** Below this width the schema browser and history open as sheets. */
@@ -168,6 +175,8 @@ export type QueryLabHandle = {
   renameTab: () => void;
   /** Format the selection, or the whole tab (the palette's Format SQL). */
   formatSql: () => void;
+  /** Show the editor and dispatch one of its keymap commands (the palette). */
+  runEditorCommand: (id: string) => void;
   /** Save the current tab's SQL as a saved query (the palette's Save query…). */
   saveQuery: () => void;
   /** Reveal an object in the schema browser (the palette's object search):
@@ -435,7 +444,11 @@ function EditorSplitButton({ action, label, open, onOpen, children }: {
       const width = Math.min(320, window.innerWidth - 16);
       const maxHeight = Math.max(0, window.innerHeight - 16);
       const height = Math.min(panel.current?.offsetHeight || 0, maxHeight);
-      const below = b.bottom + 4;
+      // A wrapped toolbar has rows below the button: open under the whole
+      // toolbar, never over the next row's controls.
+      const toolbar = button.current?.closest(".editor-toolbar")?.getBoundingClientRect();
+      const anchor = toolbar && toolbar.bottom > b.bottom + 1 ? toolbar.bottom : b.bottom;
+      const below = anchor + 4;
       const top = below + height <= window.innerHeight - 8
         ? below : Math.max(8, b.top - height - 4);
       setPosition({ width, maxHeight, left: Math.max(8, Math.min(b.left, window.innerWidth - width - 8)), top });
@@ -724,6 +737,8 @@ export const QueryLab = forwardRef<
   const captureName = useRef("");
   const tabList = useRef<HTMLDivElement>(null);
   const editor = useRef<SqlEditorHandle>(null);
+  const [editingMenu, setEditingMenu] = useState<{ x: number; y: number; opener: HTMLButtonElement } | null>(null);
+  useEffect(() => { setEditingMenu(null); }, [tab.id, onScreen, tableData]);
   const parametersField = useRef<HTMLTextAreaElement>(null);
   const [parametersOpen, setParametersOpen] = useState(false);
   /** The tab whose parameter form is open (a digest that needs values). */
@@ -984,7 +999,12 @@ export const QueryLab = forwardRef<
     // area must be visible to take focus and keep the browser's undo.
     // Hidden behind table data, nothing changes.
     formatSql: () => {
+      setEditingMenu(null);
       whenShown(() => void formatSql());
+    },
+    runEditorCommand: (id: string) => {
+      setEditingMenu(null);
+      whenShown(() => editor.current?.runCommand(id));
     },
     saveQuery: () => startSaveQuery(tab.id),
     revealInSchemaBrowser: (schema: string, table: string | null) => {
@@ -3162,6 +3182,22 @@ export const QueryLab = forwardRef<
               </div>
               <div className="toolbar-group format-tools">
                 <IconButton
+                  icon="search"
+                  label="Find"
+                  title={`Find (${FIND_KEYS})`}
+                  aria-keyshortcuts={editorActionShortcuts("find").map(editorAriaKeys).join(" ")}
+                  data-action="find"
+                  onClick={() => editor.current?.openFind("find")}
+                />
+                <IconButton
+                  icon="replace"
+                  label="Find and replace"
+                  title={`Find and replace (${REPLACE_KEYS})`}
+                  aria-keyshortcuts={editorActionShortcuts("replace").map(editorAriaKeys).join(" ")}
+                  data-action="replace"
+                  onClick={() => editor.current?.openFind("replace")}
+                />
+                <IconButton
                   icon="format"
                   label="Format SQL"
                   title={`Format SQL: ${selecting ? "the selection" : "the whole tab"} (${FORMAT_KEYS}). Changes only spaces, line breaks and keyword case; nothing runs.`}
@@ -3172,6 +3208,33 @@ export const QueryLab = forwardRef<
                   data-action="format"
                   onClick={() => void formatSql()}
                 />
+                <IconButton
+                  icon="more"
+                  label="Editing actions"
+                  aria-haspopup="menu"
+                  aria-expanded={!!editingMenu}
+                  data-action="editing-actions"
+                  onPointerDown={event => {
+                    if (editingMenu) {
+                      // Keep menu focus until the click toggles it closed.
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }
+                  }}
+                  onClick={event => {
+                    const opener = event.currentTarget, rect = opener.getBoundingClientRect();
+                    setEditingMenu(previous => previous ? null : { x: rect.left, y: rect.bottom + 4, opener });
+                  }}
+                />
+                {editingMenu && <ContextMenu {...editingMenu} portal closeOnBlur label="Editing actions" className="editor-editing-menu"
+                  onClose={() => setEditingMenu(null)} actions={EDITOR_ACTIONS.map(row => ({
+                    label: row.label,
+                    shortcut: editorActionShortcuts(row.id).map(editorKeyText).join(", "),
+                    disabled: !!row.setting && !editorSettings[row.setting],
+                    hint: row.setting && !editorSettings[row.setting]
+                      ? `Turn on ${EDITOR_SETTING_LABELS[row.setting]} in Settings > Query editor` : undefined,
+                    onClick: () => { editor.current?.runCommand(row.id); },
+                  }))} />}
               </div>
               <div className="toolbar-group pane-toggles">
                 <IconButton

@@ -1677,11 +1677,45 @@ _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/
 _SETTINGS_PATHS = ('/api/settings/editor', '/api/settings/ui')
 # Application client selection is separate from saved connection credentials.
 _CLIENT_PATHS = ('/api/client/tools', '/api/client/tools/choose')
+#: Managed MySQL Shell downloads (managed_shell.py, answered by
+#: _shell_response): status is read-only and never touches the network,
+#: install starts the one process-wide flight (idempotent while it runs),
+#: cancel must name the running job's id. No connection, no saved password,
+#: no SQL; every reply is managed_shell's own status payload.
+_MANAGED_SHELL_PATHS = ('/api/client/shell/status', '/api/client/shell/install',
+                        '/api/client/shell/cancel')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
 
 
 class _ClientChoiceError(ValueError):
     """A plain, user-facing refusal from the client tools chooser."""
+
+
+class _ManagedShellError(ValueError):
+    """A plain, user-facing refusal from the managed MySQL Shell download."""
+
+
+def _shell_response(path, payload, workspace):
+    from . import managed_shell
+    if workspace is None:
+        raise ValueError("This operation requires a running workspace.")
+    # The workspace store's folder is the fallback root of the tools folder.
+    directory = os.fspath(workspace.store.path.parent)
+    try:
+        if path == '/api/client/shell/cancel':
+            if set(payload) - {'id'}:
+                raise ValueError("Unexpected MySQL Shell field.")
+            job_id = payload.get('id')
+            if not isinstance(job_id, str) or not 0 < len(job_id) <= 64:
+                raise ValueError("Name the running MySQL Shell download to stop.")
+            managed_shell.cancel(job_id)
+        elif payload:
+            raise ValueError("Unexpected MySQL Shell field.")
+        elif path == '/api/client/shell/install':
+            managed_shell.start_install(directory)
+    except managed_shell.Refused as exc:
+        raise _ManagedShellError(str(exc)) from None
+    return managed_shell.status(directory)
 
 
 def _client_settings_response(path, payload, workspace):
@@ -2448,6 +2482,8 @@ def api_response(path, payload, workspace=None):
         return hosts_response()
     if path in _CLIENT_PATHS:
         return _client_settings_response(path, payload, workspace)
+    if path in _MANAGED_SHELL_PATHS:
+        return _shell_response(path, payload, workspace)
     if path == "/api/app/update/check":
         from . import app_update
         result = app_update.check_for_updates(force=payload.get("force") is True)
@@ -2705,6 +2741,15 @@ def api_response(path, payload, workspace=None):
 class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
+    # Refused sockets have their own small pool: slow bodies must not occupy
+    # request workers or block the single accept loop while they are drained.
+    MAX_REFUSAL_DRAINS = 8
+    REFUSAL_DRAIN_SECONDS = 2.0
+    REFUSAL_DRAIN_BYTES = 8 * 1024 * 1024
+    #: Listen backlog: the socketserver default of 5 drops burst connections
+    #: (a browser fires many chunk and API requests at once) while the
+    #: workers are busy, which the browser sees as a network error.
+    request_queue_size = 128
 
     def server_bind(self):
         # HTTPServer.server_bind names the server with socket.getfqdn(host), a
@@ -2764,6 +2809,7 @@ class WorkspaceServer(ThreadingHTTPServer):
         self.bootstrap_deadline = time.monotonic() + 30 * 60
         self.bootstrap_lock = threading.Lock()
         self._worker_slots = threading.BoundedSemaphore(self.MAX_REQUEST_WORKERS)
+        self._refusal_drain_slots = threading.BoundedSemaphore(self.MAX_REFUSAL_DRAINS)
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
@@ -2778,19 +2824,59 @@ class WorkspaceServer(ThreadingHTTPServer):
         # ThreadingHTTPServer otherwise creates an unbounded number of threads
         # before the handler can reject an unauthenticated slow client.
         if not self._worker_slots.acquire(blocking=False):
-            try:
-                request.settimeout(1)
-                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            except OSError:
-                pass
-            finally:
-                self.shutdown_request(request)
+            self._refuse_request(request)
             return
         try:
             super().process_request(request, client_address)
         except BaseException:
             self._worker_slots.release()
             raise
+
+    def _refuse_request(self, request):
+        try:
+            # This runs on the accept loop. Even sending the small response
+            # must not wait for a client that is not reading its socket.
+            request.settimeout(0)
+            request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            self.shutdown_request(request)
+            return
+        if not self._refusal_drain_slots.acquire(blocking=False):
+            # Extreme overload: retain the accept loop's availability even if
+            # unread request bytes make this immediate close reset the socket.
+            self.shutdown_request(request)
+            return
+        try:
+            threading.Thread(target=self._drain_refused_request, args=(request,),
+                             name="myflames-refusal-drain", daemon=True).start()
+        except BaseException:
+            self._refusal_drain_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def _drain_refused_request(self, request):
+        # Draining after the half-close lets an in-flight body finish without
+        # replacing the 503 with a reset. Bound both time and discarded bytes.
+        deadline = time.monotonic() + self.REFUSAL_DRAIN_SECONDS
+        remaining_bytes = self.REFUSAL_DRAIN_BYTES
+        try:
+            while remaining_bytes > 0:
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    break
+                request.settimeout(remaining_time)
+                chunk = request.recv(min(65536, remaining_bytes))
+                if not chunk:
+                    break
+                remaining_bytes -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            try:
+                self.shutdown_request(request)
+            finally:
+                self._refusal_drain_slots.release()
 
     def process_request_thread(self, request, client_address):
         try:
@@ -2814,6 +2900,10 @@ class WorkspaceServer(ThreadingHTTPServer):
             lifecycle = getattr(self, "lifecycle", None)
             if lifecycle is not None:
                 lifecycle.shutdown()
+            # Stop tool process groups before giving the optional downloader
+            # a bounded cleanup window within the desktop supervisor's grace.
+            from . import managed_shell
+            managed_shell.shutdown(timeout=1.0)
             registry = getattr(self, "replication_loops", None)
             if registry is not None:
                 registry.stop_all(wait=True)
@@ -2961,7 +3051,7 @@ def request_error_text(exc, prefix=True):
     text = str(exc)
     # Catalog refusals already contain the exact disabled-button reason and
     # fix. Keep their text intact through the HTTP 400 boundary.
-    if isinstance(exc, (_ClientChoiceError, ActionUnavailable)):
+    if isinstance(exc, (_ClientChoiceError, ActionUnavailable, _ManagedShellError)):
         return text
     plain = connection_error_text(text)
     if plain:
@@ -3100,7 +3190,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         name = path[len("/assets/"):] if path.startswith("/assets/") else ""
         if name and "/" not in name and "\\" not in name and name not in (".", ".."):
             asset = ASSET_DIR / "assets" / name
-            types = {".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml"}
+            types = {".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2"}
             if asset.is_file() and asset.suffix in types:
                 self._send(200, asset.read_bytes(), types[asset.suffix] + "; charset=utf-8")
                 return
@@ -3224,7 +3314,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
-                + _CLIENT_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
+                + _CLIENT_PATHS + _MANAGED_SHELL_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
                 + _BASELINE_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",

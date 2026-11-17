@@ -69,6 +69,20 @@ apps/workspace/src/charts/flamegraph.ts) are original implementations written
 from a functional specification. The repository's earlier history, and
 myflames releases up to and including 2.3.0, remain available under CDDL 1.0.
 
+Bundled fonts
+-------------
+The workspace ships two fonts (apps/workspace/src/fonts, built into
+myflames/ui_assets), both licensed under the SIL Open Font License 1.1:
+
+Inter 4.1 (https://github.com/rsms/inter), the InterVariable.woff2 variable
+font, Copyright (c) 2016 The Inter Project Authors. Its license text is
+apps/workspace/src/fonts/Inter-LICENSE.txt.
+
+JetBrains Mono 2.304 (https://github.com/JetBrains/JetBrainsMono), the
+JetBrainsMono-Regular, JetBrainsMono-Italic and JetBrainsMono-Bold fonts,
+Copyright 2020 The JetBrains Mono Project Authors. Its license text is
+apps/workspace/src/fonts/JetBrainsMono-OFL.txt.
+
 Adapted editor palettes
 -----------------------
 The following palettes are adapted for workspace contrast. Fire, Digital Rain

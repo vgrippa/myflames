@@ -1,7 +1,7 @@
-// Check for updates: the status line and button in the window footer and
-// in About myflames. GitHub is asked when the button is clicked and by the
-// automatic check (updateStatus.ts); the last check (kept in the workspace
-// store) is shown with its local time.
+// Check for updates: the status line and button in the Settings page's
+// Updates and news section and in About myflames. GitHub is asked when the
+// button is clicked and by the automatic check (updateStatus.ts); the last
+// check (kept in the workspace store) is shown with its local time.
 import { useEffect, useRef, useState } from "react";
 import {
   checkForUpdates, checkedWhen, loadUpdateStatus, openUpdateDialog, updateStatusText, useUpdateStatus,

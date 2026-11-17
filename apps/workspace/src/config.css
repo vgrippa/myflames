@@ -38,7 +38,7 @@
 }
 .variable-facts code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .variable-modes {
   display: grid;
@@ -128,8 +128,8 @@
   border-radius: var(--radius-md);
   background: var(--surface-subtle);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -1,0 +1,47 @@
+{
+  "schema_version": "fonts-lock-1.0",
+  "fonts": [
+    {
+      "name": "Inter",
+      "version": "4.1",
+      "source": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
+      "zip_sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
+      "license": "SIL Open Font License 1.1",
+      "files": [
+        {
+          "path": "InterVariable.woff2",
+          "sha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"
+        },
+        {
+          "path": "Inter-LICENSE.txt",
+          "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+        }
+      ]
+    },
+    {
+      "name": "JetBrains Mono",
+      "version": "2.304",
+      "source": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+      "zip_sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf",
+      "license": "SIL Open Font License 1.1",
+      "files": [
+        {
+          "path": "JetBrainsMono-Regular.woff2",
+          "sha256": "a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2"
+        },
+        {
+          "path": "JetBrainsMono-Italic.woff2",
+          "sha256": "cb6a1b246318ed3885d7dffa14a2609297fe80e9b8e500bea33b52fa312a36a4"
+        },
+        {
+          "path": "JetBrainsMono-Bold.woff2",
+          "sha256": "c503cc5ec5f8b2c7666b7ecda1adf44bd45f2e6579b2eba0fc292150416588a2"
+        },
+        {
+          "path": "JetBrainsMono-OFL.txt",
+          "sha256": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad"
+        }
+      ]
+    }
+  ]
+}

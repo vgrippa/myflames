@@ -266,6 +266,57 @@ class TestWorkspaceStore(unittest.TestCase):
                 self.assertEqual(self.store.ui_preferences()['diagram_zoom_speed'], 100)
                 self.store.set_ui_preferences({'diagram_zoom_speed': before['diagram_zoom_speed']})
 
+    def test_ui_font_and_text_size_preferences_are_persisted_and_strict(self):
+        self.assertEqual(self.store.ui_preferences()['ui_font'], 'system')
+        self.assertEqual(self.store.ui_preferences()['ui_text_size'], 13)
+        self.assertEqual(self.store.ui_preferences()['code_font'], 'system')
+        self.assertEqual(self.store.ui_preferences()['code_text_size'], 13)
+        for font in workspace_store.UI_FONT_IDS:
+            with self.subTest(font=font):
+                self.assertEqual(self.store.set_ui_preferences({'ui_font': font})['ui_font'], font)
+        for font in workspace_store.UI_CODE_FONT_IDS:
+            with self.subTest(font=font):
+                self.assertEqual(self.store.set_ui_preferences({'code_font': font})['code_font'], font)
+        for size in (workspace_store.UI_TEXT_SIZE_MIN, 13, workspace_store.UI_TEXT_SIZE_MAX):
+            self.store.set_ui_preferences({'ui_text_size': size})
+            self.assertEqual(WorkspaceStore(self.path).ui_preferences()['ui_text_size'], size)
+        for size in (workspace_store.UI_CODE_TEXT_SIZE_MIN, 13, workspace_store.UI_CODE_TEXT_SIZE_MAX):
+            self.store.set_ui_preferences({'code_text_size': size})
+            self.assertEqual(WorkspaceStore(self.path).ui_preferences()['code_text_size'], size)
+        before = self.store.ui_preferences()
+        # A font id is never free text: CSS, quotes and unknown ids are
+        # refused, and sizes outside the range or not integers are refused.
+        bad_fonts = ('inter; } body { display: none', '"inter"', "'inter", 'Inter', 'inter\', sans-serif',
+                     'unknown-font', '', 'system-ui', None, 13, True, [], {})
+        bad_sizes = (0, 11, 17, 100, 13.0, True, False, '13', '13px', None, [], {})
+        bad_code_sizes = (0, 10, 21, 100, 13.5, True, '13', None, [], {})
+        for value in bad_fonts:
+            with self.subTest(key='ui_font', value=value), self.assertRaises(ValueError):
+                self.store.set_ui_preferences({'theme': 'fire', 'ui_font': value})
+            with self.subTest(key='code_font', value=value), self.assertRaises(ValueError):
+                self.store.set_ui_preferences({'theme': 'fire', 'code_font': value})
+        for value in bad_sizes:
+            with self.subTest(key='ui_text_size', value=value), self.assertRaises(ValueError):
+                self.store.set_ui_preferences({'theme': 'fire', 'ui_text_size': value})
+        for value in bad_code_sizes:
+            with self.subTest(key='code_text_size', value=value), self.assertRaises(ValueError):
+                self.store.set_ui_preferences({'theme': 'fire', 'code_text_size': value})
+        self.assertEqual(self.store.ui_preferences(), before)
+        # A code font id is not an interface font id, and the other way round.
+        with self.assertRaises(ValueError):
+            self.store.set_ui_preferences({'ui_font': 'jetbrains-mono'})
+        with self.assertRaises(ValueError):
+            self.store.set_ui_preferences({'code_font': 'inter'})
+        self.assertEqual(self.store.ui_preferences(), before)
+        # Invalid persisted JSON also falls back to the defaults.
+        for key, value in (('ui_font', 'inter; } body { display: none'), ('code_font', 'comic-sans'),
+                           ('ui_text_size', 99), ('code_text_size', 7)):
+            with contextlib.closing(self.store._connect()) as conn, conn:
+                conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', ('ui.' + key, json.dumps(value)))
+            self.assertEqual(self.store.ui_preferences()[key], workspace_store.UI_PREFERENCE_DEFAULTS[key])
+            with contextlib.closing(self.store._connect()) as conn, conn:
+                conn.execute('DELETE FROM settings WHERE key = ?', ('ui.' + key,))
+
     def test_ui_preferences_ignore_malformed_and_unknown_rows(self):
         self.store.set_ui_preferences({'theme': 'dark', 'health_auto_production': 60})
         with contextlib.closing(self.store._connect()) as conn, conn:

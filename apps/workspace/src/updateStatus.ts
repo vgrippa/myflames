@@ -1,5 +1,5 @@
-// Application updates, shared by the badge beside the logo, Home's version
-// footer, About myflames and the Software update dialog. GitHub is asked by
+// Application updates, shared by the badge beside the logo, Settings >
+// Updates and news, About myflames and the Software update dialog. GitHub is asked by
 // checkForUpdates: from a click, or from the automatic check (at start and
 // once a day) while "Check for updates automatically" is on. Update downloads
 // the release's update file through the backend (checked against its
@@ -310,7 +310,7 @@ export function updatePhaseLabel(s: UpdateState, phase: UpdatePhase): string {
     const percent = stagingPercent(s.staging);
     return percent === null ? `Downloading ${name}…` : `Downloading ${name}: ${percent}%`;
   }
-  return `${name} is available`;
+  return `Update available: ${name}`;
 }
 
 const sameDay = (a: Date, b: Date) =>

@@ -115,8 +115,13 @@ try {
   }
   async function open(p, address) {
     await p.goto(address, { waitUntil: "networkidle0" });
+    // The element must exist and be past "loading": without the element the
+    // predicate was vacuously true while the page had not booted at all.
     await p.waitForFunction(
-      () => document.querySelector(".session-status")?.dataset.state !== "loading",
+      () => {
+        const el = document.querySelector(".session-status");
+        return !!el && el.dataset.state !== "loading";
+      },
     );
   }
   async function chart(p) {
@@ -331,6 +336,9 @@ try {
     await p.waitForSelector(".server-view[data-view=sessions]", { visible: true });
     assert.equal(await currentView(p), "sessions");
     await place(p, "Home");
+    // Home mounts on the first visit after a reload: wait for the row the
+    // next read asserts on.
+    await p.waitForSelector(".connection-row.is-active [data-col=name] strong");
     const unsavedName = await p.$eval(".connection-row.is-active [data-col=name] strong", el => el.textContent);
     await connectionAction(p, unsavedName, "Save");
     await p.waitForSelector(".connection-panel");
@@ -419,6 +427,9 @@ try {
   assert.equal((await page.$$('.home-start button ::-p-text(Explore sample plan)')).length, 1);
   assert.equal(await page.$('.topbar [aria-label="New query tab"]'), null);
   await place(page, "Query editor");
+  // First opening since the reload: the editor chunk loads and mounts here,
+  // so wait for the restored tab list before reading it.
+  await page.waitForSelector(".query-lab .query-tabs [role=tab][id^=query-tab-]");
   assert.deepEqual(
     await page.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
     ["Query 1"],
@@ -504,6 +515,9 @@ try {
   // ran before the editor's state reached the workspace).
   dialogs.length = 0;
   await place(page, "Query editor");
+  // The kept editor comes back on screen asynchronously; focusing it while it
+  // is still hidden is a no-op and the typed text would go nowhere.
+  await page.waitForSelector(".query-lab .sql-editor", { visible: true });
   await page.evaluate(() => {
     const original = MessagePort.prototype.postMessage;
     MessagePort.prototype.postMessage = function (...args) {

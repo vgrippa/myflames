@@ -328,10 +328,25 @@
 .editor-toolbar .pane-toggles {
   gap: 0;
 }
-/* Format SQL: an editing tool, set apart from the run and capture groups. */
+/* Editing tools are set apart from the run and capture groups. */
 .editor-toolbar .format-tools {
   padding-left: var(--space-2);
   border-left: 1px solid var(--line);
+}
+/* Long command labels, alternate keys and disabled reasons wrap inside the
+   menu's viewport cap, including the shared Ctrl+G explanation off Mac. */
+.editor-editing-menu [role="menuitem"] {
+  align-items: flex-start;
+  white-space: normal;
+}
+.editor-editing-menu [role="menuitem"] > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.editor-editing-menu .context-menu-shortcut {
+  flex: none;
+  max-width: 48%;
+  text-align: right;
 }
 .icon-button[aria-pressed="true"] {
   background: var(--accent-soft);
@@ -562,7 +577,7 @@
   width: 100%;
   min-height: 72px;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 
 /* The splitter between the editor and the results. */
@@ -838,7 +853,7 @@
   display: block;
   margin-top: 2px;
   color: var(--ink-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1096,7 +1111,7 @@
 }
 .history-sql {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1119,6 +1134,13 @@
 .context-menu {
   position: fixed;
   z-index: 30;
+}
+/* The Editing actions menu renders in a body portal: it must paint above
+   every editor layer (CodeMirror's own panels and gutters stack above 30). */
+.context-menu.editor-editing-menu {
+  z-index: 1000;
+}
+.context-menu {
   display: flex;
   flex-direction: column;
   min-width: 200px;
@@ -1186,7 +1208,7 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

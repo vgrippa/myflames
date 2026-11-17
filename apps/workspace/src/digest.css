@@ -87,7 +87,7 @@
 }
 .tab-source code,
 .plan-source code {
-  font-size: 0.95em;
+  font-size: calc(var(--text-code-sm) * 0.95);
 }
 @media (max-width: 650px) {
   .batch-controls {

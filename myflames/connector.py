@@ -25,6 +25,7 @@ to a mode-0600 temp file, point the client at it, and unlink it afterwards
 single source of truth.
 """
 from contextlib import contextmanager
+import collections
 import ntpath
 import os
 import re
@@ -404,9 +405,15 @@ def _client_auth_error(stderr, binary, used=None):
 
 
 _MACOS_ADMIN_GID = 80
+MAX_SHELL_TRUST_ENTRIES = 40000
+_SHELL_TRUST_CACHE = collections.OrderedDict()
+_SHELL_TRUST_LOCK = threading.Lock()
+_SHELL_TRUST_CACHE_SECONDS = 5.0
+# Tests substitute a private tree; never change the machine's global config.
+MYSQLSH_SYSTEM_CONFIG_DIR = '/etc/mysql'
 
 
-def _check_client_trust(path):
+def _check_client_trust(path, _lstat=None):
     """Refuse chosen clients whose file or containing folders are untrusted."""
     message = "The database client or a folder above it can be changed by other users."
     if os.name == 'nt':
@@ -450,7 +457,7 @@ def _check_client_trust(path):
         for current in (path, os.path.realpath(path)):
             while current and current not in seen:
                 seen.add(current)
-                info = os.lstat(current)
+                info = (_lstat or os.lstat)(current)
                 if info.st_uid not in (0, os.geteuid()):
                     raise ValueError(message)
                 # Symlink modes do not govern replacement; their owner and
@@ -494,6 +501,207 @@ def checked_program(path, realpath=None, bundled=False):
         if not os.path.isfile(real) or not os.access(real, os.X_OK):
             raise ValueError('The database client is not executable.')
     except (OSError, ValueError) as exc:
+        raise ClientMissingError(str(exc)) from exc
+    return real
+
+
+def _check_shell_tree_trust(real):
+    """Check Shell's startup code and libraries, including linked subtrees.
+
+    The executable's ancestors alone do not protect Shell's rc scripts,
+    plugins, Python packages or authentication libraries. Bound every lstat
+    in this additional check, including the ancestors of symlink targets.
+    """
+    message = 'MySQL Shell or a folder it loads can be changed by other users.'
+    remaining = [MAX_SHELL_TRUST_ENTRIES]
+
+    def lstat(path):
+        if remaining[0] <= 0:
+            raise ValueError('MySQL Shell has too many files to check safely (limit %d).' %
+                             MAX_SHELL_TRUST_ENTRIES)
+        remaining[0] -= 1
+        return os.lstat(path)
+
+    windows_root = None
+    if os.name == 'nt':
+        normalized = ntpath.normcase(ntpath.normpath(real))
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+                    'LOCALAPPDATA', 'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
+            root = os.environ.get(key)
+            if (not root or not ntpath.isabs(root) or root.replace('/', '\\').startswith('\\\\')):
+                continue
+            root = os.path.realpath(root)
+            if root.replace('/', '\\').startswith('\\\\'):
+                continue
+            root = ntpath.normcase(ntpath.normpath(root))
+            try:
+                if ntpath.commonpath((root, normalized)) == root:
+                    windows_root = root
+                    break
+            except ValueError:
+                pass
+        if windows_root is None:
+            raise ValueError('Choose MySQL Shell in Program Files or your user profile.')
+
+    def check_node(path, optional=False):
+        try:
+            info = lstat(path)
+        except FileNotFoundError:
+            if optional:
+                return None
+            raise
+        if os.name == 'nt':
+            # A junction or reparse point must stay in the executable's own
+            # allowed root, even if another allowed root would accept it.
+            if path.replace('/', '\\').startswith('\\\\'):
+                raise ValueError('MySQL Shell folders must be local.')
+            resolved = os.path.realpath(path)
+            if resolved.replace('/', '\\').startswith('\\\\'):
+                raise ValueError('MySQL Shell folders must be local.')
+            resolved = ntpath.normcase(ntpath.normpath(resolved))
+            try:
+                inside = ntpath.commonpath((windows_root, resolved)) == windows_root
+            except ValueError:
+                inside = False
+            if not inside:
+                raise ValueError('A MySQL Shell folder resolves outside its trusted installation root.')
+        else:
+            if info.st_uid not in (0, os.geteuid()):
+                raise ValueError(message)
+            if stat.S_ISLNK(info.st_mode):
+                target = os.path.realpath(path)
+                _check_client_trust(target, _lstat=lstat)
+                # Sticky directories are allowed only as ancestors, never
+                # as a directory from which Shell itself loads code.
+                target_info = lstat(target)
+                admin_only = (sys.platform == 'darwin' and target_info.st_gid == _MACOS_ADMIN_GID and
+                              not target_info.st_mode & 0o002)
+                if target_info.st_mode & 0o022 and not admin_only:
+                    raise ValueError(message)
+            elif info.st_mode & 0o022:
+                admin_only = (sys.platform == 'darwin' and info.st_gid == _MACOS_ADMIN_GID and
+                              not info.st_mode & 0o002)
+                if not admin_only:
+                    raise ValueError(message)
+        return info
+
+    def walk(path):
+        first = check_node(path, optional=True)
+        pending = [(path, first)]
+        while pending:
+            current, info = pending.pop()
+            if info is None:
+                continue
+            # DirEntry.is_symlink misses Windows junctions. Resolve both kinds
+            # of link, validate the target, and walk it, including at the root.
+            if stat.S_ISLNK(info.st_mode) or (getattr(info, 'st_file_attributes', 0) or 0) & 0x400:
+                current = os.path.realpath(current)
+                info = check_node(current)
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            identity = os.path.normcase(os.path.realpath(current))
+            if identity in visited:
+                continue  # Safe sibling cycles and shared targets are walked once.
+            visited.add(identity)
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    child = check_node(entry.path)
+                    if (stat.S_ISDIR(child.st_mode) or stat.S_ISLNK(child.st_mode) or
+                            (getattr(child, 'st_file_attributes', 0) or 0) & 0x400):
+                        pending.append((entry.path, child))
+
+    visited = set()
+    bin_dir = os.path.dirname(real)
+    prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else None
+    try:
+        # macOS also executes credential-store helpers beside mysqlsh.
+        # Windows loads DLLs (including Python) and bin/sasl2 modules here.
+        walk(bin_dir)
+        for suffix in ('js', 'py'):
+            check_node(os.path.join(bin_dir, 'mysqlshrc.' + suffix), optional=True)
+        if prefix:
+            check_node(prefix)
+            for name in ('share', 'lib', 'libexec'):
+                check_node(os.path.join(prefix, name), optional=True)
+            for relative in (('share', 'mysqlsh'), ('lib', 'mysqlsh'),
+                             ('lib', 'mysql'), ('libexec', 'mysqlsh')):
+                walk(os.path.join(prefix, *relative))
+            if os.name == 'nt' and os.path.isdir(os.path.join(prefix, 'lib')):
+                with os.scandir(os.path.join(prefix, 'lib')) as entries:
+                    for entry in entries:
+                        if entry.name.lower().startswith('python'):
+                            walk(entry.path)
+        if os.name != 'nt':
+            check_node(MYSQLSH_SYSTEM_CONFIG_DIR, optional=True)
+            config = os.path.join(MYSQLSH_SYSTEM_CONFIG_DIR, 'mysqlsh')
+            check_node(config, optional=True)
+            for suffix in ('js', 'py'):
+                check_node(os.path.join(config, 'mysqlshrc.' + suffix), optional=True)
+    except OSError as exc:
+        raise ValueError('MySQL Shell startup files could not be checked safely.') from exc
+
+
+def _shell_trust_cache_key(real):
+    """Cheap invalidation for discovery only. Execution always walks afresh.
+
+    A prefix mtime cannot detect chmod of a descendant. Keep cached inventory
+    brief, also fingerprint startup roots, and never use it to authorize exec.
+    """
+    bin_dir = os.path.dirname(real)
+    prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else bin_dir
+    paths = [prefix, bin_dir, os.path.join(prefix, 'share'), os.path.join(prefix, 'lib'),
+             os.path.join(prefix, 'libexec'), os.path.join(prefix, 'share', 'mysqlsh'),
+             os.path.join(prefix, 'lib', 'mysqlsh'), os.path.join(prefix, 'lib', 'mysql'),
+             os.path.join(prefix, 'libexec', 'mysqlsh')]
+    if os.name != 'nt':
+        paths.extend([MYSQLSH_SYSTEM_CONFIG_DIR, os.path.join(MYSQLSH_SYSTEM_CONFIG_DIR, 'mysqlsh')])
+    signature = []
+    for current in paths:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            signature.append(None)
+            continue
+        signature.append((os.path.realpath(current), info.st_dev, info.st_ino,
+                          info.st_mtime, info.st_ctime, info.st_mode, info.st_uid, info.st_gid))
+    return (real, tuple(signature), tuple(os.environ.get(key) for key in (
+        'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA',
+        'MYFLAMES_USER_PROFILE', 'USERPROFILE')))
+
+
+def checked_shell_program(path, realpath=None, cache=False):
+    """Check every Shell, with an optional short cache for read-only inventory.
+
+    Every execution caller uses the default fresh walk. Version probes also
+    recheck immediately before spawning, even after cached discovery.
+    """
+    real = checked_program(path, realpath, bundled=False)
+    try:
+        key = _shell_trust_cache_key(real) if cache else None
+        if key is not None:
+            with _SHELL_TRUST_LOCK:
+                checked_at = _SHELL_TRUST_CACHE.get(key)
+                if checked_at is not None and time.monotonic() - checked_at < _SHELL_TRUST_CACHE_SECONDS:
+                    _SHELL_TRUST_CACHE.move_to_end(key)
+                    return real
+        _check_shell_tree_trust(real)
+        if key is not None and _shell_trust_cache_key(real) == key:
+            with _SHELL_TRUST_LOCK:
+                _SHELL_TRUST_CACHE[key] = time.monotonic()
+                _SHELL_TRUST_CACHE.move_to_end(key)
+                while len(_SHELL_TRUST_CACHE) > 64:
+                    _SHELL_TRUST_CACHE.popitem(last=False)
+    except OSError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
+        raise ClientMissingError('MySQL Shell startup files could not be checked safely.') from exc
+    except ValueError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
         raise ClientMissingError(str(exc)) from exc
     return real
 

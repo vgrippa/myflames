@@ -46,6 +46,7 @@ import re
 import shlex
 import shutil
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -188,12 +189,14 @@ def shell_version_message(tool, server_version, gap):
                                    'refuses it' if gap == 'major' else 'may fail on it'))
 
 
-def _clean_env(home):
+def _clean_env(home, shell=False):
     # Allowlist rather than deleting MYSQL_PWD alone: no AWS, vault, API, or
     # arbitrary application secrets are inherited by external lifecycle tools.
     result = {key: os.environ[key] for key in ('PATH', 'SYSTEMROOT', 'WINDIR',
               'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TEMP', 'TMP') if key in os.environ}
     result.update(HOME=home, USERPROFILE=home, MYSQLSH_USER_CONFIG_HOME=home)
+    if shell:
+        result['OPENSSL_CONF'] = os.devnull
     return result
 
 
@@ -450,6 +453,7 @@ def _credentials(connection, tool):
 @contextlib.contextmanager
 def _credential_file(options, tool, shell):
     with tempfile.TemporaryDirectory(prefix='myflames-lifecycle-') as home:
+        os.chmod(home, 0o700)
         path = os.path.join(home, 'connection.cnf')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
@@ -463,19 +467,105 @@ def _credential_file(options, tool, shell):
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
-                    if key in MySQLConnection._SSL_KEYS:
+                    if key in MySQLConnection._SSL_KEYS or (shell and key in ('ssl_capath', 'ssl_crl', 'ssl_crlpath')):
                         continue
                     text = str(value).replace('\\', '\\\\').replace('"', '\\"')
                     for char, escaped in (('\n', '\\n'), ('\r', '\\r'), ('\t', '\\t'), ('\b', '\\b')):
                         text = text.replace(char, escaped)
                     handle.write('%s="%s"\n' % (key.replace('_', '-'), text))
                 from .connector import client_tls_options
-                for line in client_tls_options(options, tool.get('engine')):
+                tls_options = (_shell_tls_options(options, home) if shell else
+                               client_tls_options(options, tool.get('engine')))
+                for line in tls_options:
                     handle.write(line + '\n')
-            yield [tool['path'], '--defaults-file=' + path], _clean_env(home)
+            yield [tool['path'], '--defaults-file=' + path], _clean_env(home, shell=shell)
         finally:
             if os.path.exists(path):
                 os.unlink(path)
+
+
+def _windows_shell_roots():
+    """Only Windows ROOT certificates trusted for TLS server authentication."""
+    try:
+        roots = ssl.enum_certificates('ROOT')
+        return ''.join(ssl.DER_cert_to_PEM_cert(cert) for cert, encoding, trust in roots
+                       if encoding == 'x509_asn' and (trust is True or '1.3.6.1.5.5.7.3.1' in trust))
+    except (AttributeError, OSError, ValueError, TypeError, ssl.SSLError):
+        return ''
+
+
+def _shell_tls_options(options, home):
+    """Shell's TLS validation differs from the classic client's option rules.
+
+    An explicit CA also survives AdminAPI's member-session option copy, where
+    ssl-mode is lost. Materialize system roots for VERIFY_CA for that reason.
+    Single-session lifecycle tools keep REQUIRED and VERIFY_IDENTITY intact.
+    """
+    from .connector import client_tls_options
+    mode = (options.get('ssl_mode') or 'PREFERRED').upper()
+    if mode not in ('DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
+        raise ValueError('Invalid TLS mode.')
+    selected = {'ssl_mode': mode}
+    if mode == 'DISABLED':
+        return client_tls_options(selected, 'mysql')
+    for key in ('ssl_cert', 'ssl_key', 'ssl_cipher'):
+        if options.get(key):
+            selected[key] = options[key]
+    # Shell rejects ssl-ca with DISABLED, PREFERRED and REQUIRED, even when
+    # a profile merely retained an old CA path after its TLS mode changed.
+    if mode in ('VERIFY_CA', 'VERIFY_IDENTITY') and options.get('ssl_ca'):
+        selected['ssl_ca'] = options['ssl_ca']
+    elif mode == 'VERIFY_CA':
+        message = ('MySQL Shell cannot verify certificate authorities because no system root CA bundle '
+                   'could be assembled. Set a CA file for this connection; nothing was sent.')
+        pem = _windows_shell_roots() if sys.platform == 'win32' else ''
+        if sys.platform != 'win32':
+            cafile = ssl.get_default_verify_paths().cafile
+            try:
+                if cafile and stat.S_ISREG(os.stat(cafile).st_mode):
+                    with open(cafile, 'r', encoding='ascii') as handle:
+                        pem = handle.read()
+            except (OSError, UnicodeError):
+                pass
+        if not pem and sys.platform == 'darwin':
+            from . import tls
+            pem = tls._system_roots()
+        try:
+            if not pem.strip():
+                raise ValueError('No root certificates.')
+            # A nonempty file is not necessarily a PEM CA bundle. Validate it
+            # before giving Shell a path that could weaken member sessions.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.load_verify_locations(cadata=pem)
+            if not context.get_ca_certs(binary_form=True):
+                raise ValueError('No root certificates.')
+        except (ValueError, ssl.SSLError):
+            raise ConnectorError(message) from None
+        ca_path = os.path.join(home, 'ca-bundle.pem')
+        try:
+            fd = os.open(ca_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, 'w', encoding='ascii') as handle:
+                handle.write(pem)
+        except (OSError, UnicodeError):
+            raise ConnectorError(message) from None
+        selected['ssl_ca'] = ca_path
+    return client_tls_options(selected, 'mysql')
+
+
+def _shell_plugin_flags(tool):
+    """Only pass lockdown options supported by the discovered Shell version."""
+    version = tool.get('version_tuple')
+    if not version:
+        version = version_tuple(tool.get('version') or '')
+    if (not isinstance(version, (tuple, list)) or len(version) < 3 or
+            any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in version)):
+        return []
+    flags = []
+    if tuple(version) >= (9, 0, 0):
+        flags.append('--disable-plugins')
+    if tuple(version) >= (9, 6, 0):
+        flags.append('--disable-builtin-plugins')
+    return flags
 
 
 class LifecycleConnection(MySQLConnection):
@@ -1019,14 +1109,19 @@ class LifecycleJob(object):
         """
         self.check_cancel()
         def spawn():
-            from .connector import checked_program, bundled_client_dir, _same_dir
+            from .connector import checked_program, checked_shell_program, bundled_client_dir, _same_dir
             bundle = bundled_client_dir()
-            binary = checked_program(argv[0], bundled=bool(bundle and _same_dir(
-                os.path.dirname(os.path.realpath(argv[0])), bundle)))
+            if os.path.basename(argv[0]).lower() in ('mysqlsh', 'mysqlsh.exe'):
+                binary = checked_shell_program(argv[0])
+                child_env = dict(env, OPENSSL_CONF=os.devnull)
+            else:
+                binary = checked_program(argv[0], bundled=bool(bundle and _same_dir(
+                    os.path.dirname(os.path.realpath(argv[0])), bundle)))
+                child_env = env
             command = [binary] + list(argv[1:])
             return subprocess.Popen(command, stdin=input_file if input_file else subprocess.PIPE,
                                     stdout=output_file if output_file else subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
+                                    stderr=subprocess.PIPE, env=child_env, start_new_session=os.name == 'posix')
         # The tool has its own process group: record it for shutdown.
         groups = self.groups if os.name == 'posix' else None
         proc, recorded = groups.start(spawn) if groups is not None else (spawn(), True)
@@ -1157,10 +1252,15 @@ class LifecycleJob(object):
 def _invoke(job, tool, connection, args, script=None, **kwargs):
     _check_profile_policy(job)
     with _credentials(connection, tool) as (argv, env):
-        from .connector import checked_program, bundled_client_dir, _same_dir
+        from .connector import checked_program, checked_shell_program, bundled_client_dir, _same_dir
         bundle = bundled_client_dir()
-        argv[0] = checked_program(tool['path'], tool.get('realpath'), bundled=bool(
-            bundle and _same_dir(os.path.dirname(os.path.realpath(tool['path'])), bundle)))
+        if (tool.get('name') == 'mysqlsh' or
+                os.path.basename(tool['path']).lower() in ('mysqlsh', 'mysqlsh.exe')):
+            argv[0] = checked_shell_program(tool['path'], tool.get('realpath'))
+            argv += _shell_plugin_flags(tool)
+        else:
+            argv[0] = checked_program(tool['path'], tool.get('realpath'), bundled=bool(
+                bundle and _same_dir(os.path.dirname(os.path.realpath(tool['path'])), bundle)))
         return job.process_tool(argv + args, env, input_data=script, **kwargs)
 
 

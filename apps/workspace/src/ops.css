@@ -123,7 +123,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   padding: var(--space-2);
   background: var(--surface-pane);
   border: 1px solid var(--line);
@@ -310,8 +310,8 @@
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

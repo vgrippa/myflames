@@ -124,7 +124,7 @@
   margin-top: var(--space-1);
 }
 .audit-json {
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   overflow-wrap: anywhere;
 }
 .audit-subhead {
