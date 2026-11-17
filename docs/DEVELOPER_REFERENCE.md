@@ -6328,6 +6328,7 @@ per tag and never cancels.
   Event values enter the script through `env`, with only validated numeric
   run IDs and attempt numbers used to select the run, so fork PR branch
   names and titles cannot become shell code.
+  Fork pull requests are retried by hand.
 - `docs-sync.yml` (Docs and release sync): pull requests to master, release
   publication, and manual runs with a required `tag` input; the release job
   alone gets `contents: write`. The pull-request job fails user-facing
