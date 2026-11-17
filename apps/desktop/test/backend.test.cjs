@@ -586,7 +586,7 @@ test('main.cjs names the real profile for the backend (a chosen client may live 
 });
 
 
-test('main creates private tools and refuses links or shared existing folders', () => {
+test('main prepares private tools without blocking startup on an unusable folder', () => {
   const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
   const source = main.slice(main.indexOf('function prepareToolsDirectory('), main.indexOf('const toolsDirectory ='));
@@ -600,16 +600,46 @@ test('main creates private tools and refuses links or shared existing folders', 
     if (process.platform !== 'win32') {
       assert.equal(fs.statSync(tools).mode & 0o777, 0o700);
       fs.chmodSync(tools, 0o755);
-      assert.throws(() => prepare(root), /private/);
-      fs.chmodSync(tools, 0o700);
+      assert.equal(prepare(root), tools);
+      assert.equal(fs.statSync(tools).mode & 0o777, 0o700);
       fs.rmdirSync(tools);
       const target = fs.mkdtempSync(path.join(root, 'target-'));
+      fs.chmodSync(target, 0o755);
       fs.symlinkSync(target, tools);
-      assert.throws(() => prepare(root), /real private folder/);
+      assert.equal(prepare(root), tools);
       assert.ok(fs.lstatSync(tools).isSymbolicLink());
+      assert.equal(fs.statSync(target).mode & 0o777, 0o755, 'a link target is never chmodded');
+      fs.unlinkSync(tools);
+      fs.writeFileSync(tools, 'keep');
+      assert.equal(prepare(root), tools);
+      assert.equal(fs.readFileSync(tools, 'utf8'), 'keep');
     }
     assert.match(main, /env\.MYFLAMES_TOOLS_DIR = toolsDirectory;/);
     assert.match(main, /process\.platform === 'win32' && process\.env\.MYFLAMES_DESKTOP_DATA/);
     assert.match(main, /env\.MYFLAMES_DESKTOP_DATA = dataDirectory;/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('optional tools storage errors and foreign ownership never throw at startup', () => {
+  const vm = require('node:vm');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  const source = main.slice(main.indexOf('function prepareToolsDirectory('), main.indexOf('const toolsDirectory ='));
+  for (const cause of ['lstat', 'mkdir', 'chmod', 'owner']) {
+    const calls = [];
+    const denied = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    const fileSystem = {
+      lstatSync: () => {
+        if (cause === 'lstat') denied();
+        if (cause === 'mkdir') throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return { isSymbolicLink: () => false, isDirectory: () => true, uid: cause === 'owner' ? 1001 : 1000 };
+      },
+      mkdirSync: () => { calls.push('mkdir'); denied(); },
+      chmodSync: () => { calls.push('chmod'); denied(); },
+    };
+    const prepare = vm.runInNewContext(source + '\nprepareToolsDirectory', {
+      fs: fileSystem, path, process: { platform: 'darwin', geteuid: () => 1000 },
+    });
+    assert.equal(prepare('/data'), path.join('/data', 'tools'), cause);
+    assert.deepEqual(calls, cause === 'mkdir' ? ['mkdir'] : cause === 'chmod' ? ['chmod'] : [], cause);
+  }
 });

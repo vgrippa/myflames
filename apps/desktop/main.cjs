@@ -23,19 +23,20 @@ fs.mkdirSync(updatesDirectory, { recursive: true, mode: 0o700 });
 // mkdir leaves an existing folder's mode alone; updater.checkFolder refuses
 // one that is shared, owned by someone else or a link.
 try { if (!fs.lstatSync(updatesDirectory).isSymbolicLink()) fs.chmodSync(updatesDirectory, 0o700); } catch { /* checked before use */ }
-// Managed tools are executable code: never follow a tools link, including
-// when mkdir would otherwise accept a symlink to an existing directory.
+// Managed tools are optional: storage problems must not prevent app startup.
+// Never follow a tools link or chmod a folder owned by another user. The
+// backend checks the path again and reports the reason before any download.
 function prepareToolsDirectory(dataDirectory) {
   const directory = path.join(dataDirectory, 'tools');
   try {
     const info = fs.lstatSync(directory);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('The tools folder must be a real private folder.');
-    if (process.platform !== 'win32' && (info.uid !== process.geteuid() || (info.mode & 0o077))) {
-      throw new Error('The tools folder must be private to your user account.');
+    if (!info.isSymbolicLink() && info.isDirectory() && process.platform !== 'win32' && info.uid === process.geteuid()) {
+      fs.chmodSync(directory, 0o700);
     }
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    fs.mkdirSync(directory, { mode: 0o700 });
+    if (error.code === 'ENOENT') {
+      try { fs.mkdirSync(directory, { mode: 0o700 }); } catch { /* checked by the backend before use */ }
+    }
   }
   return directory;
 }

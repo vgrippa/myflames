@@ -1142,7 +1142,8 @@ class TestShellProgramTrust(unittest.TestCase):
         for relative, directory in (
                 ('share/mysqlsh', True), ('share/mysqlsh/mysqlshrc.js', False),
                 ('share/mysqlsh/mysqlshrc.py', False), ('bin/mysqlshrc.js', False),
-                ('bin/mysqlshrc.py', False), ('lib/mysqlsh/plugins/p/init.py', False),
+                ('bin/mysqlshrc.py', False), ('bin/mysql-secret-store-keychain', False),
+                ('bin/mysql-secret-store-login-path', False), ('lib/mysqlsh/plugins/p/init.py', False),
                 ('lib/mysqlsh/python-packages/p/code.py', False), ('lib/mysql/plugins/auth.so', False),
                 ('libexec/mysqlsh/helper', False), ('share', True), ('lib', True), ('libexec', True)):
             path = self.make(relative, directory)
@@ -1154,6 +1155,14 @@ class TestShellProgramTrust(unittest.TestCase):
                         connector.checked_shell_program(self.program)
                 finally:
                     os.chmod(path, 0o700)
+
+    def test_bin_credential_helper_link_target_is_checked_before_each_launch(self):
+        target = self.make('helper-target')
+        os.symlink('../helper-target', os.path.join(self.bin, 'mysql-secret-store-keychain'))
+        self.assertEqual(connector.checked_shell_program(self.program, cache=True), self.program)
+        os.chmod(target, 0o777)
+        with self.assertRaisesRegex(connector.ClientMissingError, 'changed by other users'):
+            connector.checked_shell_program(self.program)
 
     def test_global_config_and_both_rc_languages_are_checked(self):
         for relative in ('', 'mysqlsh', 'mysqlsh/mysqlshrc.js', 'mysqlsh/mysqlshrc.py'):

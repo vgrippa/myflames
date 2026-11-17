@@ -52,7 +52,8 @@ _JOB = None
 _NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 _VERSION = re.compile(r'^[0-9]+\.[0-9]+\.[0-9]+$')
 _RESERVED = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)', re.I)
-_TEMP = re.compile(r'^\.mysqlsh-(?:download|stage|manifest)-[A-Za-z0-9_]+(?:\.part)?$')
+_TEMP = re.compile(r'^(?:\.mysqlsh-(?:download|stage|manifest|probe)-[A-Za-z0-9_]+(?:\.part)?|\.retire-[0-9a-f]{32})$')
+_INSTALL_LOCK = '.install.lock'
 
 
 class Refused(ValueError):
@@ -163,7 +164,10 @@ def _windows_guard(directory):
         root = os.environ.get(key)
         if not root or not ntpath.isabs(root) or root.replace('/', '\\').startswith('\\\\'):
             continue
-        _windows_no_reparse_ancestors(root)
+        try:
+            _windows_no_reparse_ancestors(root)
+        except (Refused, OSError):
+            continue  # An unusable environment root must not veto a clean one.
         root = ntpath.normcase(os.path.realpath(root))
         try:
             if ntpath.commonpath((resolved, root)) == root:
@@ -226,12 +230,12 @@ def _directories(workspace_directory=None, create=False):
     tools = _tools_directory(workspace_directory)
     _windows_guard(tools)  # Before realpath, mkdir or network.
     parent = os.path.join(tools, 'mysqlsh')
-    _check_existing_ancestors(tools)
     # Inspect both before creating or cleaning anything; never chmod an
     # untrusted existing directory into apparent trust.
     for directory in (tools, parent):
         if os.path.lexists(directory):
             _trusted_directory(directory)
+    _check_existing_ancestors(tools)
     if create:
         missing = []
         current = tools
@@ -262,13 +266,86 @@ def _remove(path):
 
 
 def _clean_stale(directory):
+    # Only the install worker holding .install.lock may clean these entries.
     for name in os.listdir(directory):
         if _TEMP.fullmatch(name):
             _remove(os.path.join(directory, name))
 
 
+def _acquire_install_lock(directory):
+    """Hold a kernel lock until close, including cleanup and atomic publish.
+
+    A finishing job removes its file. Recheck the pathname after locking so
+    a process that opened the old inode cannot install alongside its successor.
+    Kernel locks expire on process exit, so a stale file can be reused safely.
+    """
+    path = os.path.join(directory, _INSTALL_LOCK)
+    message = 'The MySQL Shell install lock must be a private regular file.'
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+    if os.name == 'nt':
+        # The CRT shares delete access and deletes on the final close. Closing
+        # then unlinking on Windows would race a new owner of the same file.
+        flags |= os.O_TEMPORARY
+    for unused in range(8):
+        if os.path.lexists(path) and _is_link(os.lstat(path)):
+            raise Refused(message)
+        handle = os.fdopen(os.open(path, flags, 0o600), 'r+b')
+        try:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink > 1
+                    or (os.name != 'nt' and (info.st_uid != os.geteuid() or info.st_mode & 0o077))):
+                raise Refused(message)
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise Refused('A MySQL Shell installation is already running in another myflames process. Try again when it finishes.') from None
+            try:
+                current = os.lstat(path)
+            except FileNotFoundError:
+                continue  # Its previous owner removed it before we locked it.
+            if not os.path.samestat(info, current):
+                continue  # Retry against the replacement, never the old inode.
+            if _is_link(current) or info.st_nlink != 1:
+                raise Refused(message)
+            handle.write(('%d\n' % os.getpid()).encode('ascii'))
+            handle.truncate()
+            handle.flush()
+            result, handle = handle, None
+            return result
+        finally:
+            if handle is not None:
+                handle.close()
+    raise Refused('The MySQL Shell install folder could not be locked.')
+
+
+def _release_install_lock(job):
+    """Remove only our lock after all install artifacts have been cleaned."""
+    handle, job.install_lock = job.install_lock, None
+    if handle is None:
+        return
+    try:
+        if os.name != 'nt':
+            path = os.path.join(job.directory, _INSTALL_LOCK)
+            try:
+                current = os.lstat(path)
+            except FileNotFoundError:
+                return
+            if os.path.samestat(os.fstat(handle.fileno()), current):
+                # No install work follows this unlink. A waiter must recheck
+                # its inode before doing any work on the newly unlocked file.
+                os.unlink(path)
+    finally:
+        # On Windows O_TEMPORARY removes the file without an unlock/unlink gap.
+        handle.close()
+
+
 class InstallJob:
-    """One process-wide flight. Mutations and snapshots share _LOCK."""
+    """One process-wide flight, with an OS lock for the shared install folder."""
     def __init__(self, key, entry, directory):
         self.id = uuid.uuid4().hex
         self.platform = key
@@ -283,6 +360,7 @@ class InstallJob:
         self.cancel_event = threading.Event()
         self.watchdog = None
         self.thread = None
+        self.install_lock = None
 
     def snapshot(self):
         with _LOCK:
@@ -433,9 +511,14 @@ def _member_path(name, root, zip_name=False):
     return parts[1:]
 
 
-def _parents(stage, parts):
+def _parents(stage, parts, seen):
     current = stage
-    for part in parts:
+    for depth, part in enumerate(parts, 1):
+        relative = '/'.join(parts[:depth])
+        identity = unicodedata.normalize('NFC', relative).casefold()
+        if identity in seen and seen[identity] != relative:
+            raise Refused('The MySQL Shell archive contains conflicting file paths.')
+        seen[identity] = relative  # Implicit ancestors share the same namespace.
         current = os.path.join(current, part)
         if not os.path.lexists(current):
             os.mkdir(current, 0o755)
@@ -448,7 +531,7 @@ def _parents(stage, parts):
 def _extract(handle, stage, entry, key, job):
     """Write regular files/dirs, create sibling links, then validate all targets."""
     stage = os.path.realpath(stage)
-    seen = set()
+    seen, explicit = {}, set()
     links = []
     count, total = 0, 0
     archive = zipfile.ZipFile(handle) if key == 'win32-x64' else tarfile.open(fileobj=handle, mode='r:gz')
@@ -463,14 +546,16 @@ def _extract(handle, stage, entry, key, job):
             name = member.orig_filename if zipped else member.name
             parts = _member_path(name, entry['root'], zipped)
             relative = '/'.join(parts)
+            directory = member.is_dir() if zipped else member.isdir()
             # Case-fold on every host: the tarballs also install onto commonly
             # case-insensitive APFS volumes. No archive entry may alias another.
             identity = unicodedata.normalize('NFC', relative).casefold()
-            if identity in seen:
+            if (identity in explicit or (identity in seen and
+                    (seen[identity] != relative or not directory))):
                 raise Refused('The MySQL Shell archive contains conflicting file paths.')
-            seen.add(identity)
+            seen[identity] = relative
+            explicit.add(identity)
             mode = (member.external_attr >> 16) if zipped else member.mode
-            directory = member.is_dir() if zipped else member.isdir()
             symlink = stat.S_ISLNK(mode) if zipped else member.issym()
             regular = stat.S_IFMT(mode) in (0, stat.S_IFREG) if zipped else member.isfile()
             if zipped and (symlink or member.flag_bits & 1):
@@ -480,6 +565,7 @@ def _extract(handle, stage, entry, key, job):
             if not parts:
                 continue
             destination = os.path.join(stage, *parts)
+            _parents(stage, parts[:-1], seen)
             if symlink:
                 target = member.linkname
                 # Only a bare sibling name. Oracle uses forward sibling chains.
@@ -489,9 +575,8 @@ def _extract(handle, stage, entry, key, job):
                     raise Refused('The MySQL Shell archive contains an unsafe symbolic link.')
                 links.append((parts, target))
                 continue
-            _parents(stage, parts[:-1])
             if directory:
-                _parents(stage, parts)
+                _parents(stage, parts, seen)
                 continue
             size = member.file_size if zipped else member.size
             if size < 0 or total + size > MAX_EXTRACTED_BYTES:
@@ -522,7 +607,7 @@ def _extract(handle, stage, entry, key, job):
         # final sibling exists. Parents always remain real directories.
         for parts, target in links:
             job.check_cancel()
-            folder = _parents(stage, parts[:-1])
+            folder = _parents(stage, parts[:-1], seen)
             destination = os.path.join(folder, parts[-1])
             try:
                 os.symlink(target, destination)
@@ -682,7 +767,7 @@ def _probe_version(binary, entry, job):
         env = _clean_env(home, shell=True)
         env['LC_ALL'] = 'C'
         options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
-        proc = subprocess.Popen([binary, '--no-defaults', '--version'], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([binary, '--no-defaults', '--disable-plugins', '--disable-builtin-plugins', '--version'], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=home, **options)
         buffers = [bytearray(), bytearray()]
         overflow = threading.Event()
@@ -796,6 +881,8 @@ def _install(job):
         _trusted_directory(os.path.dirname(directory))
         _trusted_directory(directory)
         job.check_cancel()
+        if job.install_lock is None:
+            raise Refused('The MySQL Shell install folder could not be locked.')
         _clean_stale(directory)
         if shutil.disk_usage(directory).free < MIN_FREE_BYTES:
             raise Refused('MySQL Shell needs at least 1.3 GB of free disk space in the tools folder.')
@@ -826,8 +913,11 @@ def _install(job):
                 job.error = None if job.state == 'cancelled' else _error_text(exc)
                 job.finished = time.monotonic()
     finally:
-        _remove(partial)
-        _remove(stage)
+        try:
+            _remove(partial)
+            _remove(stage)
+        finally:
+            _release_install_lock(job)
 
 
 def _read_record(path, max_bytes=16384):
@@ -886,7 +976,7 @@ def status(workspace_directory=None):
     pinned = None
     try:
         lock = load_lock()
-        _windows_guard(_tools_directory(workspace_directory))
+        _directories(workspace_directory)  # Surface storage refusals without writes.
         if key:
             entry = lock['archives'][key]
             pinned = {name: lock[name] for name in ('license', 'license_url', 'downloads_url')}
@@ -922,12 +1012,22 @@ def start_install(workspace_directory=None):
         except OSError:
             raise Refused('The MySQL Shell tools folder could not be created or read.') from None
         job = InstallJob(key, entry, directory)
+        try:
+            job.install_lock = _acquire_install_lock(directory)
+        except OSError:
+            raise Refused('The MySQL Shell install folder could not be locked.') from None
         _JOB = job
-        if installed_bin_dir(workspace_directory):
-            job.state, job.finished = 'done', time.monotonic()
-            return job.snapshot()
-        job.thread = threading.Thread(target=_install, args=(job,), name='myflames-mysqlsh-install', daemon=True)
-        job.thread.start()
+        try:
+            if installed_bin_dir(workspace_directory):
+                job.state, job.finished = 'done', time.monotonic()
+                _release_install_lock(job)
+                return job.snapshot()
+            job.thread = threading.Thread(target=_install, args=(job,), name='myflames-mysqlsh-install', daemon=True)
+            job.thread.start()
+        except BaseException:
+            _release_install_lock(job)
+            _JOB = None
+            raise
         return job.snapshot()
 
 

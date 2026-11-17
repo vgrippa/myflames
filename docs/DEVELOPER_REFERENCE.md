@@ -4622,6 +4622,11 @@ error. Repeated starts reuse the active flight. Cancellation closes download
 sockets and stops/reaps the probe; shutdown callers cancel and join its thread.
 Cancel requires the current job's exact id; a missing or stale id cannot cancel
 a newer download.
+An exclusive OS lock on `mysqlsh/.install.lock` covers validation, stale cleanup,
+download, probe, publish and failure/cancel cleanup. A second backend refuses
+before cleaning or contacting the network. The private regular lock file holds
+the owner's PID and stays in place to avoid inode replacement races; the kernel
+releases its lock on close or process exit, including a crash.
 
 The packaged `mysql-shell.lock.json` (`mysql-shell-lock-1.0`) records product,
 version, license/links, Oracle's signing fingerprint and `archives` entries for
@@ -4634,9 +4639,15 @@ coverage is informational because the pinned tarballs are ad hoc signed.
 Storage is `MYFLAMES_TOOLS_DIR`, otherwise `<workspace store folder>/tools`.
 Its private `mysqlsh/` contains `.mysqlsh-download-*.part`, `.mysqlsh-stage-*`,
 versioned `mysqlsh-<version>-<platform>/` installs with `myflames-shell.json`,
-and the atomic `installed.json` pointer. Desktop supplies a real 0700 tools
-folder. Windows refuses custom `MYFLAMES_DESKTOP_DATA`, reparse points and
-locations outside the user profile roots.
+and the atomic `installed.json` pointer. Only the lock holder cleans stale
+download, stage, manifest, `.mysqlsh-probe-*` and `.retire-<32 hex digits>` entries,
+without following links. Desktop creates tools with mode 0700 or tightens an
+existing user-owned plain directory to 0700. Other storage errors never prevent
+app startup: the tools path is still passed to the backend, whose `status()`
+reports the private-folder refusal and whose installer refuses before network
+use. Windows refuses custom `MYFLAMES_DESKTOP_DATA`, reparse points in the tools
+path and locations outside the user profile roots. An unusable environment root
+is skipped so a different clean user-profile root can still authorize the path.
 The pointer is data: its folder must exactly match the pinned version/platform,
 resolve inside the private `mysqlsh/` directory, and carry a matching
 `myflames-shell.json` version and SHA-256. The executable and startup tree pass
@@ -4654,7 +4665,8 @@ sibling-only macOS symlinks, then check every resolved target after all links
 exist (forward sibling chains are allowed); check required structure and
 Mach-O cputype or PE32+ x64 headers; copy Windows VC++ DLLs only from regular
 files confined to the bundled client's real bin folder, with PE32+ x64 headers
-and SHA-256 matching the bundle's `manifest.json`; run an isolated, bounded `--no-defaults --version`
+and SHA-256 matching the bundle's `manifest.json`; run an isolated, bounded
+`--no-defaults --disable-plugins --disable-builtin-plugins --version`
 probe; atomically publish the directory and pointer with rollback.
 Limits: 250 MiB compressed, 40,000 entries, 1.5 GiB expanded, depth 32.
 Traversal, absolute paths, device names, special files, hard links and Windows
@@ -4662,6 +4674,8 @@ symlinks are refused; unsafe mode bits are stripped. Failure/cancel removes
 partial files and preserves a previous install. Zip directory entries lose
 exactly one trailing slash before segment validation. Case and Unicode aliases
 and filesystem `EEXIST` at file or symlink creation refuse the whole stage.
+Implicit ancestors use the same NFC and casefold identities as explicit entries;
+an exact-spelling implicit directory may be declared once later in the archive.
 Tests: `test_managed_shell.py`,
 `test_pin_mysql_shell.py`, desktop `backend.test.cjs`.
 

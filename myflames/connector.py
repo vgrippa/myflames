@@ -614,12 +614,9 @@ def _check_shell_tree_trust(real):
     bin_dir = os.path.dirname(real)
     prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else None
     try:
-        if os.name == 'nt':
-            # Oracle's zip loads DLLs beside mysqlsh.exe (including Python)
-            # and authentication modules from bin/sasl2, outside lib/.
-            walk(bin_dir)
-        else:
-            check_node(bin_dir)
+        # macOS also executes credential-store helpers beside mysqlsh.
+        # Windows loads DLLs (including Python) and bin/sasl2 modules here.
+        walk(bin_dir)
         for suffix in ('js', 'py'):
             check_node(os.path.join(bin_dir, 'mysqlshrc.' + suffix), optional=True)
         if prefix:

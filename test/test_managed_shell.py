@@ -14,6 +14,8 @@ from pathlib import Path
 import ssl
 import stat
 import struct
+import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -270,6 +272,7 @@ class ManagedShellTests(unittest.TestCase):
         self.assertFalse((self.directory / 'installed.json').exists())
         self.assertFalse(any(self.directory.glob('mysqlsh-*')))
         self.assertFalse(any(self.directory.glob('.mysqlsh-*')))
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
         return shell._JOB.snapshot() if shell._JOB else None
 
     def test_tar_happy_path_and_sibling_symlink(self):
@@ -284,6 +287,7 @@ class ManagedShellTests(unittest.TestCase):
         self.assertEqual((self.directory / 'installed.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((target / 'myflames-shell.json').read_text())['sha256'], self.lock['archives']['darwin-arm64']['sha256'])
         self.assertFalse(any(self.directory.glob('.mysqlsh-*')))
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
         self.probe.assert_called_once()
         self.exec.assert_not_called()
         self.assertEqual(shell.start_install()['state'], 'done')
@@ -393,6 +397,9 @@ class ManagedShellTests(unittest.TestCase):
                     which.mkdir(mode=0o700, exist_ok=True)
                     which.chmod(mode)
                     try:
+                        report = shell.status()
+                        self.assertIsNone(report['installed'])
+                        self.assertIn('private to your user account', report['unsupported_reason'])
                         self.assert_refused()
                         self.network.assert_not_called()
                     finally:
@@ -410,6 +417,9 @@ class ManagedShellTests(unittest.TestCase):
                     which.rmdir()
                 which.symlink_to(target, target_is_directory=True)
                 try:
+                    report = shell.status()
+                    self.assertIsNone(report['installed'])
+                    self.assertIn('real private folder, not a link', report['unsupported_reason'])
                     self.assert_refused()
                     self.network.assert_not_called()
                     self.assertEqual(list(target.iterdir()), [])
@@ -618,6 +628,26 @@ class ManagedShellTests(unittest.TestCase):
                 self.configure(key, extras=extras)
                 self.assert_refused()
 
+    def test_implicit_ancestor_aliases_refuse_and_remove_stage(self):
+        for key in ('darwin-arm64', 'win32-x64'):
+            for first, alias in (('Foo', 'foo'), ('\u00e9', 'e\u0301')):
+                for explicit_directory in (False, True):
+                    extras = [('file', 'lib/' + first + '/a', b'a')]
+                    if explicit_directory:
+                        extras.append(('dir', 'lib/' + alias, b''))
+                    extras.append(('file', 'lib/' + alias + '/b', b'b'))
+                    with self.subTest(key=key, first=first, explicit=explicit_directory):
+                        self.configure(key, extras=extras)
+                        self.assertIn('conflicting file paths', self.assert_refused()['error'])
+
+    def test_implicit_directory_can_be_declared_later_with_the_same_spelling(self):
+        self.configure(extras=[('file', 'lib/Foo/a', b'a'), ('dir', 'lib/Foo', b''),
+                               ('file', 'lib/Foo/b', b'b')])
+        self.assertEqual(self.finish()['state'], 'done')
+        target = Path(shell.installed_bin_dir()).parent
+        self.assertEqual((target / 'lib/Foo/a').read_bytes(), b'a')
+        self.assertEqual((target / 'lib/Foo/b').read_bytes(), b'b')
+
     def test_filesystem_eexist_never_merges_files_or_links(self):
         # Simulate filesystem aliases not detected by Unicode/case folding.
         self.configure(extras=[('file', 'lib/twin', b'evil')])
@@ -672,6 +702,48 @@ class ManagedShellTests(unittest.TestCase):
         self.probe.assert_not_called()
         self.exec.assert_not_called()
         self.assertEqual(list(self.directory.iterdir()), [])
+        with shell._acquire_install_lock(str(self.directory)):
+            pass  # Cancellation released the kernel lock after cleanup.
+
+    def test_lock_is_held_through_publish_and_released_after_failure(self):
+        self.configure()
+        original = shell._publish
+        entered, release = threading.Event(), threading.Event()
+
+        def publish(stage, job):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Test did not release publish')
+            return original(stage, job)
+        with patch.object(shell, '_publish', side_effect=publish):
+            shell.start_install()
+            try:
+                self.assertTrue(entered.wait(2))
+                with self.assertRaisesRegex(shell.Refused, 'already running'):
+                    shell._acquire_install_lock(str(self.directory))
+            finally:
+                release.set()
+                self.join()
+        self.assertEqual(shell._JOB.state, 'done')
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
+        with shell._acquire_install_lock(str(self.directory)):
+            pass
+        self.configure(body=b'bad archive')
+        self.assertEqual(self.finish()['state'], 'failed')
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
+        with shell._acquire_install_lock(str(self.directory)):
+            pass
+
+    def test_thread_start_failure_releases_install_lock(self):
+        self.configure()
+        with patch.object(shell.threading.Thread, 'start', side_effect=RuntimeError('thread unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'thread unavailable'):
+                shell.start_install()
+        self.assertIsNone(shell._JOB)
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
+        with shell._acquire_install_lock(str(self.directory)):
+            pass
+        self.network.assert_not_called()
 
     def test_cancel_requires_exact_active_job_id_and_stale_id_cannot_stop_new_job(self):
         entry = self.configure()
@@ -764,6 +836,7 @@ class ManagedShellTests(unittest.TestCase):
             self.assertEqual(walk.call_count, 0, 'finish already populated the status cache')
             self.assertEqual(shell.start_install()['state'], 'done')
             self.assertEqual(walk.call_count, 1, 'Already installed requires a fresh trust walk')
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
 
     def test_stale_files_and_links_cleaned_only_inside_private_folder(self):
         self.configure()
@@ -774,11 +847,24 @@ class ManagedShellTests(unittest.TestCase):
         stage = self.directory / '.mysqlsh-stage-abcdefgh'
         stage.mkdir(mode=0o700)
         (stage / 'link').symlink_to(self.root)
+        probe = self.directory / '.mysqlsh-probe-abcdefgh'
+        probe.mkdir(mode=0o700)
+        (probe / 'link').symlink_to(self.root)
+        retired = self.directory / ('.retire-' + 'a' * 32)
+        retired.mkdir(mode=0o700)
+        (retired / 'old-library').write_bytes(b'old')
+        (retired / 'link').symlink_to(self.root)
+        retired_link = self.directory / ('.retire-' + 'b' * 32)
+        retired_link.symlink_to(self.root, target_is_directory=True)
+        probe_link = self.directory / '.mysqlsh-probe-link'
+        probe_link.symlink_to(self.root, target_is_directory=True)
         (self.directory / 'notes.txt').write_text('mine')
         self.assertEqual(self.finish()['state'], 'done')
         self.assertEqual(sentinel.read_bytes(), b'original')
         self.assertEqual((self.directory / 'notes.txt').read_text(), 'mine')
         self.assertFalse(stage.exists())
+        for stale in (probe, retired, retired_link, probe_link):
+            self.assertFalse(os.path.lexists(str(stale)))
 
     def test_previous_install_intact_on_bad_download(self):
         self.configure()
@@ -875,6 +961,25 @@ class WindowsToolsDirectoryTests(unittest.TestCase):
                 patch.object(shell.connector, '_check_client_trust', side_effect=AssertionError('Not an executable')):
             self.assertEqual(shell._directories(), ntpath.join(self.directory, 'mysqlsh'))
 
+    def test_junctioned_environment_root_does_not_veto_clean_user_profile(self):
+        bad_root = r'C:\JunctionLocalAppData'
+        self.windows.environ['LOCALAPPDATA'] = bad_root
+        reparse = type('Reparse', (), {'st_mode': stat.S_IFDIR | 0o700,
+                                      'st_file_attributes': 0x400})()
+        for failure in (reparse, PermissionError('unreadable environment root')):
+            def lstat(path):
+                if ntpath.normcase(path) == ntpath.normcase(bad_root):
+                    if isinstance(failure, OSError):
+                        raise failure
+                    return failure
+                return self.info
+            self.windows.lstat.side_effect = lstat
+            self.windows.path.realpath.reset_mock()
+            with self.subTest(failure=failure), patch.object(shell, 'os', self.windows), \
+                    patch.object(shell.sys, 'platform', 'win32'):
+                self.assertEqual(shell._directories(), ntpath.join(self.directory, 'mysqlsh'))
+            self.assertNotIn(bad_root, [call[0][0] for call in self.windows.path.realpath.call_args_list])
+
     def test_windows_location_links_and_custom_data_refuse_before_network(self):
         reparse = type('Reparse', (), {'st_mode': stat.S_IFDIR | 0o700,
                                       'st_file_attributes': 0x400})()
@@ -898,6 +1003,182 @@ class WindowsToolsDirectoryTests(unittest.TestCase):
                 with self.assertRaises(shell.Refused):
                     shell.start_install()
                 network.assert_not_called()
+
+
+class InstallLockTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='myflames-shell-lock-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.tools = self.root / 'tools'
+        self.tools.mkdir(mode=0o700)
+        self.directory = self.tools / 'mysqlsh'
+        self.directory.mkdir(mode=0o700)
+        environment = patch.dict(os.environ, {'MYFLAMES_TOOLS_DIR': str(self.tools),
+            'MYFLAMES_DESKTOP_DATA': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_other_backend_cannot_clean_live_entries_and_crash_releases_lock(self):
+        # A real separate process owns both the lock and its partial artifacts.
+        # It exits without closing its handle to exercise kernel stale recovery.
+        script = (
+            'import os, pathlib, sys\n'
+            'from myflames import managed_shell as shell\n'
+            'directory = pathlib.Path(sys.argv[1])\n'
+            'handle = shell._acquire_install_lock(str(directory))\n'
+            '(directory / ".mysqlsh-download-live.part").write_bytes(b"live")\n'
+            '(directory / ".mysqlsh-stage-live").mkdir()\n'
+            '(directory / ".ready").write_text("ready")\n'
+            'sys.stdin.read(1)\n'
+            'os._exit(0)\n')
+        process = subprocess.Popen([sys.executable, '-c', script, str(self.directory)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not (self.directory / '.ready').exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.025)
+            self.assertTrue((self.directory / '.ready').exists(), 'Lock holder did not become ready')
+            with patch.object(shell, '_JOB', None), patch.object(shell, 'host_platform', return_value='darwin-arm64'), \
+                    patch.object(shell.urllib.request, 'build_opener') as network, \
+                    patch.object(shell, '_clean_stale', wraps=shell._clean_stale) as clean:
+                with self.assertRaisesRegex(shell.Refused, 'already running in another myflames process'):
+                    shell.start_install()
+                network.assert_not_called()
+                clean.assert_not_called()
+                self.assertIsNone(shell._JOB)
+            self.assertEqual((self.directory / '.mysqlsh-download-live.part').read_bytes(), b'live')
+            self.assertTrue((self.directory / '.mysqlsh-stage-live').is_dir())
+            self.assertEqual((self.directory / shell._INSTALL_LOCK).read_text(), '%d\n' % process.pid)
+        finally:
+            try:
+                stdout, stderr = process.communicate('x', timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+        self.assertEqual(process.returncode, 0, stderr)
+        with patch.object(shell, '_JOB', None), patch.object(shell, 'host_platform', return_value='darwin-arm64'), \
+                patch.object(shell, '_download', side_effect=shell.Refused('Test stops before network.')):
+            shell.start_install()
+            shell._JOB.thread.join(5)
+            self.assertFalse(shell._JOB.thread.is_alive())
+            self.assertEqual(shell._JOB.state, 'failed')
+        self.assertFalse((self.directory / '.mysqlsh-download-live.part').exists())
+        self.assertFalse((self.directory / '.mysqlsh-stage-live').exists())
+        self.assertFalse((self.directory / shell._INSTALL_LOCK).exists())
+        with shell._acquire_install_lock(str(self.directory)) as handle:
+            inode = os.fstat(handle.fileno()).st_ino
+            self.assertEqual((self.directory / shell._INSTALL_LOCK).read_text(), '%d\n' % os.getpid())
+        self.assertEqual((self.directory / shell._INSTALL_LOCK).stat().st_ino, inode)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX unlink and flock race')
+    def test_waiter_retries_if_previous_owner_removed_open_lock(self):
+        import fcntl
+        path = self.directory / shell._INSTALL_LOCK
+        flock = fcntl.flock
+        old_descriptors = []
+
+        def remove_before_recheck(descriptor, operation):
+            flock(descriptor, operation)
+            if not old_descriptors:
+                old_descriptors.append(descriptor)
+                path.unlink()  # Previous owner finished after this open.
+
+        with patch.object(fcntl, 'flock', side_effect=remove_before_recheck):
+            with shell._acquire_install_lock(str(self.directory)) as handle:
+                self.assertEqual(fcntl.flock.call_count, 2)
+                self.assertTrue(os.path.samestat(os.fstat(handle.fileno()), path.stat()))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX unlink and flock race')
+    def test_waiter_cannot_install_with_unlinked_lock_while_successor_owns_path(self):
+        import fcntl
+        path = self.directory / shell._INSTALL_LOCK
+        flock = fcntl.flock
+        successor = []
+        replaced = False
+
+        def replace_before_recheck(descriptor, operation):
+            nonlocal replaced
+            flock(descriptor, operation)
+            if not replaced:
+                replaced = True
+                path.unlink()
+                successor.append(shell._acquire_install_lock(str(self.directory)))
+
+        try:
+            with patch.object(fcntl, 'flock', side_effect=replace_before_recheck):
+                with self.assertRaisesRegex(shell.Refused, 'already running'):
+                    shell._acquire_install_lock(str(self.directory))
+            self.assertEqual(path.read_text(), '%d\n' % os.getpid())
+            with self.assertRaisesRegex(shell.Refused, 'already running'):
+                shell._acquire_install_lock(str(self.directory))
+        finally:
+            for handle in successor:
+                handle.close()
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX unlink and flock race')
+    def test_release_never_removes_a_successors_lock(self):
+        path = self.directory / shell._INSTALL_LOCK
+        original = shell._acquire_install_lock(str(self.directory))
+        job = Mock(directory=str(self.directory), install_lock=original)
+        path.unlink()
+        with shell._acquire_install_lock(str(self.directory)) as successor:
+            shell._release_install_lock(job)
+            self.assertTrue(original.closed)
+            self.assertIsNone(job.install_lock)
+            self.assertTrue(os.path.samestat(os.fstat(successor.fileno()), path.stat()))
+            with self.assertRaisesRegex(shell.Refused, 'already running'):
+                shell._acquire_install_lock(str(self.directory))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions and links')
+    def test_untrusted_lock_is_never_followed_or_truncated(self):
+        path = self.directory / shell._INSTALL_LOCK
+        sentinel = self.root / 'keep'
+        sentinel.write_bytes(b'original')
+        path.symlink_to(sentinel)
+        with self.assertRaisesRegex(shell.Refused, 'private regular file'):
+            shell._acquire_install_lock(str(self.directory))
+        self.assertEqual(sentinel.read_bytes(), b'original')
+        path.unlink()
+        path.write_bytes(b'original')
+        path.chmod(0o644)
+        with self.assertRaisesRegex(shell.Refused, 'private regular file'):
+            shell._acquire_install_lock(str(self.directory))
+        self.assertEqual(path.read_bytes(), b'original')
+        path.chmod(0o600)
+        path.unlink()
+        os.link(str(sentinel), str(path))
+        with self.assertRaisesRegex(shell.Refused, 'private regular file'):
+            shell._acquire_install_lock(str(self.directory))
+        self.assertEqual(sentinel.read_bytes(), b'original')
+
+    def test_windows_lock_uses_nonblocking_first_byte_and_closes_on_contention(self):
+        windows = Mock(wraps=os)
+        windows.name = 'nt'
+        # Mock(wraps=os) wraps functions, but its constants are still Mocks.
+        for name in ('O_RDWR', 'O_CREAT', 'O_NOFOLLOW', 'O_NONBLOCK', 'O_BINARY'):
+            setattr(windows, name, getattr(os, name, 0))
+        temporary_flag = 1 << 29
+        windows.O_TEMPORARY = temporary_flag
+
+        def open_shared(path, flags, mode):
+            self.assertTrue(flags & temporary_flag, 'Windows needs atomic delete on close')
+            return os.open(path, flags & ~temporary_flag, mode)
+        windows.open.side_effect = open_shared
+        runtime = Mock(LK_NBLCK=1)
+        with patch.object(shell, 'os', windows), patch.dict(sys.modules, {'msvcrt': runtime}):
+            handle = shell._acquire_install_lock(str(self.directory))
+            descriptor = handle.fileno()
+            runtime.locking.assert_called_once_with(descriptor, runtime.LK_NBLCK, 1)
+            handle.close()
+            runtime.locking.side_effect = OSError('locked')
+            before = (self.directory / shell._INSTALL_LOCK).read_bytes()
+            with self.assertRaisesRegex(shell.Refused, 'already running'):
+                shell._acquire_install_lock(str(self.directory))
+            descriptor = runtime.locking.call_args[0][0]
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+            self.assertEqual((self.directory / shell._INSTALL_LOCK).read_bytes(), before)
 
 
 class ProbeTests(unittest.TestCase):
@@ -932,7 +1213,8 @@ class ProbeTests(unittest.TestCase):
         with patch.dict(os.environ, {'MYSQL_PWD': 'secret', 'PYTHONPATH': '/evil', 'DYLD_INSERT_LIBRARIES': '/evil'}):
             spawn = self.run_probe(self.process())
         argv = spawn.call_args[0][0]
-        self.assertEqual(argv, [str(self.binary.resolve()), '--no-defaults', '--version'])
+        self.assertEqual(argv, [str(self.binary.resolve()), '--no-defaults', '--disable-plugins',
+                                '--disable-builtin-plugins', '--version'])
         options = spawn.call_args[1]
         for name in ('MYSQL_PWD', 'PYTHONPATH', 'DYLD_INSERT_LIBRARIES'):
             self.assertNotIn(name, options['env'])
