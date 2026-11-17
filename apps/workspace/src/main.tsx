@@ -22,6 +22,7 @@ import {
   type Comparison,
   type GroupConnection,
   type GroupSaveResult,
+  type Connection,
   type Operator,
   type Plan,
   type PlanReportRequest,
@@ -643,6 +644,35 @@ function App() {
     if (groupConnection?.group_name !== name) return;
     setGroupConnection(null);
     setConnectionNote(`Group ${name} was deleted. Its saved connections stay; the active member stays in use as a plain connection.`);
+  }
+  // The member each single-server place works on, by place ("server",
+  // "query"): chosen in the place's Server: control, an explicit open of that
+  // member's saved connection. Absent entries mean the primary or source (the
+  // active member the backend picked). Never saved; a reload starts there.
+  const [memberByPlace, setMemberByPlace] = useState<Record<string, string>>({});
+  // A group edit removed a member a place was on: its views moved to the
+  // primary and this note says so until the next explicit choice.
+  const [memberNote, setMemberNote] = useState("");
+  /** The member's saved connection as a request connection (its profile id,
+   * its own endpoint, the group's strictest safety), with the group name so
+   * the backend re-checks membership at every login. Null for a non-member. */
+  function memberRequest(id: string): Connection | null {
+    const group = groupActiveRef.current;
+    const member = group?.members.find((m) => m.profile_id === id);
+    if (!group || !member) return null;
+    const profile = profiles.find((p) => p.id === id);
+    const fields = profile
+      ? connectionFields(profile)
+      : connectionFields({ name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only });
+    const c = requestConnection({ id, fields, password: "" }, {
+      type: group.effective_safety.type === "development" ? "development" : "production",
+      read_only: group.effective_safety.read_only,
+      endpointMatches: true,
+      known: true,
+    });
+    c.group_name = group.group_name;
+    c.name = `${groupConnectionLabel(group.group_name, group.members.length)} · ${member.profile_name}`;
+    return c;
   }
   function selectOperator(id: string) {
     setStatsIds([]);
@@ -1564,6 +1594,27 @@ function App() {
     groupConnection.members.some((m) => m.profile_id === labState.profile_id)
     ? groupConnection
     : null;
+  const groupActiveRef = useRef(groupActive);
+  groupActiveRef.current = groupActive;
+  // A group edit can remove a member a place was on: that place moves to the
+  // primary or source (the active member the backend picked) and says so.
+  useEffect(() => {
+    if (!groupActive) {
+      setMemberByPlace((prev) => (Object.keys(prev).length ? {} : prev));
+      setMemberNote("");
+      return;
+    }
+    setMemberByPlace((prev) => {
+      const gone = Object.entries(prev).filter(([, id]) => !groupActive.members.some((m) => m.profile_id === id));
+      if (!gone.length) return prev;
+      const next = { ...prev };
+      for (const [place] of gone) delete next[place];
+      const target = groupActive.members.find((m) => m.profile_id === groupActive.active_member_profile_id);
+      const names = gone.map(([, id]) => profiles.find((p) => p.id === id)?.name || id).join(", ");
+      setMemberNote(`${names} ${gone.length === 1 ? "is" : "are"} not in this group any more; its views moved to ${target?.profile_name || groupActive.active_member_profile_id}.`);
+      return next;
+    });
+  }, [groupActive, profiles]);
   // Production, Development or Read-only, as the server will judge the
   // connection in use; part of its identity (binding.ts connectionKey).
   const safety: Safety = groupActive
@@ -1610,6 +1661,27 @@ function App() {
     },
     [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive],
   );
+  // The member each single-server place works on: its own choice while it is
+  // a member, else the primary or source the backend made active. A view's
+  // requests carry that member's profile id and the group name; the
+  // connection's safety stays the group's strictest (memberRequest).
+  const memberOf = (place: string) => {
+    if (!groupActive) return "";
+    const chosen = memberByPlace[place];
+    return chosen && groupActive.members.some((m) => m.profile_id === chosen)
+      ? chosen
+      : groupActive.active_member_profile_id;
+  };
+  const serverMemberId = memberOf("server");
+  const queryMemberId = memberOf("query");
+  const serverRequest = useMemo(
+    () => (groupActive && serverMemberId ? memberRequest(serverMemberId) || request : request),
+    [groupActive, serverMemberId, request, profiles],
+  );
+  const chooseMember = useCallback((place: string, id: string) => {
+    setMemberNote("");
+    setMemberByPlace((current) => (current[place] === id ? current : { ...current, [place]: id }));
+  }, []);
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
   // Navigation history (Back/Forward, the cross-link chip, the palette's
   // Recent views): one entry per settled place or view, in-memory only.
@@ -2523,6 +2595,10 @@ function App() {
                 initial={labInitial}
                 connection={request}
                 picker={null}
+                group={groupActive}
+                groupMember={queryMemberId}
+                onGroupMember={(id) => chooseMember("query", id)}
+                memberConnection={memberRequest}
                 batchRunning={batchRunning}
                 onStateChange={reportEditor}
                 onTabsNow={tabsNow}
@@ -2606,13 +2682,19 @@ function App() {
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
                 picker={null}
-                connection={request}
+                connection={serverRequest}
+                groupServer={groupActive ? {
+                  group: groupActive,
+                  member: serverMemberId,
+                  note: memberNote,
+                  onChoose: (id: string) => chooseMember("server", id),
+                } : null}
                 disabled={labBusy}
                 navigation={serverNavigation}
                 settings={{
                   timeout: labState.timeout,
                   repeat: labState.repeat,
-                  server: `${labState.connection.host}:${labState.connection.port}`,
+                  server: `${serverRequest.host}:${serverRequest.port}`,
                 }}
                 initial={labInitial?.slow}
                 onStateChange={reportSlow}

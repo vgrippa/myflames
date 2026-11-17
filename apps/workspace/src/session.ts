@@ -22,6 +22,13 @@ export type QueryTab = {
    * connectionKey and label, never a password): the tab runs only there
    * until the user explicitly moves it to the connection in use. */
   target?: TabTarget;
+  /** A Group connection's member this tab runs on (its saved connection id):
+   * bound from the place's Server: control when the tab was created, kept
+   * when the control moves. Absent: the connection in use. */
+  member?: string;
+  /** The member's profile name at bind time, so a member the group no longer
+   * has is still named ("not in this group any more"). */
+  member_name?: string;
   /** Parameters (`p1`, …) that replaced the digest's ? and need values. */
   fill?: string[];
   /** The notice shown until those parameters have values. */
@@ -448,6 +455,11 @@ export function normalizeLab(raw: unknown): LabState {
       const target = normalizeTarget(t.target);
       if (target) tab.target = target;
     }
+    if (typeof t.member === "string" && t.member && t.member.length <= 200) {
+      tab.member = t.member;
+      const memberName = text(t.member_name, "", 200);
+      if (memberName) tab.member_name = memberName;
+    }
     const fill = Array.isArray(t.fill)
       ? t.fill
           .filter((n): n is string => typeof n === "string" && /^p\d{1,4}$/.test(n))
@@ -526,6 +538,8 @@ const tabExtras = (t: QueryTab) =>
   JSON.stringify([
     t.source ?? null,
     t.target ?? null,
+    t.member ?? null,
+    t.member_name ?? null,
     t.fill ?? null,
     t.fill_note ?? null,
     t.fill_lists ?? null,

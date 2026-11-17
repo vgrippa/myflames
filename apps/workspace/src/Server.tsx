@@ -30,6 +30,7 @@ import type {
   Connection,
   ConnectionPlan,
   ErrorLogReport,
+  GroupConnection,
   HealthReport,
   IndexesReport,
   InnodbReport,
@@ -57,6 +58,7 @@ import {
   ViewActivityContext,
   ViewBackLabelContext,
   ViewSwitcherContext,
+  ViewServerContext,
   type ViewSwitcherShared,
   useWindowStatus,
   NavMarker,
@@ -94,6 +96,7 @@ import {
   type Bound,
 } from "./binding";
 import { HealthView, emptyHealth, rememberHealth, switchHealthConnection, type HealthMemory } from "./Health";
+import { GroupServerPicker, groupMemberLabel } from "./GroupServerPicker";
 import { ErrorLogView, ERROR_LOG_READ, errorLogBody } from "./ErrorLog";
 import { analysisSource as reportSource } from "./Report";
 import {
@@ -298,6 +301,7 @@ export function Server({
   navigation,
   navCollapsed,
   onToggleNavCollapsed: toggleNavCollapsed,
+  groupServer = null,
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
   replication: propReplication,
@@ -325,6 +329,17 @@ export function Server({
   onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
+  /** A Group connection (one connection group as one connection): the
+   * Server: control and the member's name, address and role, drawn in every
+   * view's header (kit.tsx ViewServerContext). Choosing a member switches
+   * this place to it (an explicit open; the shell re-reads with its
+   * connection). *note* says when a removed member moved the views. */
+  groupServer?: {
+    group: GroupConnection;
+    member: string;
+    note: string;
+    onChoose: (profileId: string) => void;
+  } | null;
   /** The Query editor is capturing: reads and row actions wait. */
   disabled: boolean;
   settings: LabSettings;
@@ -1435,6 +1450,16 @@ export function Server({
   }
   const MAINTENANCE_JOB_LABEL: Record<string, string> = { dump: "Dump", restore: "Restore", clone: "Clone" };
   const jobsHere = maintenanceJobsNow.filter((b) => jobActive(b.report));
+  // A Group connection: every single-server view's header names the member it
+  // reads (name · address · role) beside the Server: control that chooses it.
+  const groupServerMember = groupServer ? groupServer.group.members.find((m) => m.profile_id === groupServer.member) || null : null;
+  const viewServer = groupServer && groupServerMember ? (
+    <span className="group-server" data-member={groupServer.member}>
+      <GroupServerPicker group={groupServer.group} value={groupServer.member} narrow={compact} onChoose={groupServer.onChoose} />
+      <span className="view-server-name">{groupMemberLabel(groupServerMember)}</span>
+      {groupServer.note && <span className="group-server-note" role="status">{groupServer.note}</span>}
+    </span>
+  ) : null;
   const view = (() => {
     switch (kind) {
       case "health":
@@ -1624,6 +1649,7 @@ export function Server({
 
   return (
     <InstrumentsLinkContext.Provider value={openInstruments}>
+      <ViewServerContext.Provider value={viewServer}>
       <InspectorContext.Provider value={inspector}>
         <ColumnStoreContext.Provider value={columnStore}>
         <RefreshAllContext.Provider value={singlePlace ? null : {
@@ -1923,6 +1949,7 @@ export function Server({
         </RefreshAllContext.Provider>
         </ColumnStoreContext.Provider>
       </InspectorContext.Provider>
+      </ViewServerContext.Provider>
     </InstrumentsLinkContext.Provider>
   );
 }

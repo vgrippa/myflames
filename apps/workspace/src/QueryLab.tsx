@@ -37,6 +37,7 @@ import {
   type EditorSession,
   type EditorStop,
   type EditorUseReply,
+  type GroupConnection,
   type Plan,
   type SavedQuery,
   type TopStatement,
@@ -63,8 +64,9 @@ import {
   type QueryTab,
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
+import { GroupServerPicker } from "./GroupServerPicker";
 import { Icon } from "./components";
-import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, Select, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type SqlEditorHandle } from "./editor/SqlEditor";
@@ -518,6 +520,17 @@ export const QueryLab = forwardRef<
     connection: Connection;
     /** The connection picker shown in the header. */
     picker: ReactNode;
+    /** The active Group connection (a connection group opened as one
+     * connection), or null. The editor shows the Server: control; a new tab
+     * binds the member it names and keeps it, a removed member's tab refuses
+     * to run until the user picks a member. */
+    group?: GroupConnection | null;
+    /** The member new tabs bind to (the Server: control's value). */
+    groupMember?: string;
+    onGroupMember?: (profileId: string) => void;
+    /** One member's request connection (its profile id and the group name),
+     * or null for a non-member. */
+    memberConnection?: (profileId: string) => Connection | null;
     /** Explain top N runs on Server: editor runs wait meanwhile. */
     batchRunning: boolean;
     /** Restored session state; the editor starts from defaults without it. */
@@ -546,6 +559,10 @@ export const QueryLab = forwardRef<
     onCapture,
     connection,
     picker,
+    group = null,
+    groupMember = "",
+    onGroupMember,
+    memberConnection,
     batchRunning,
     initial,
     onStateChange,
@@ -992,7 +1009,8 @@ export const QueryLab = forwardRef<
     if (tabPanel.current?.offsetParent && editor.current?.isShown()) action();
     else if (frames > 0) window.requestAnimationFrame(() => whenShown(action, frames - 1));
   }
-  /** A new tab after the others; *focus* puts the cursor in the editor. */
+  /** A new tab after the others; *focus* puts the cursor in the editor. A
+   * Group connection binds it to the member the Server: control names. */
   function addTab(focus = false) {
     const id = crypto.randomUUID();
     setTabs((ts) => [
@@ -1002,6 +1020,7 @@ export const QueryLab = forwardRef<
         name: `Query ${ts.length + 1}`,
         sql: "SELECT 1",
         parameters: "{}",
+        ...(group && groupMember ? { member: groupMember, member_name: memberNameOf(groupMember) || undefined } : {}),
       },
     ]);
     setTabId(id);
@@ -1421,14 +1440,37 @@ export const QueryLab = forwardRef<
     setError("");
     setStatus(`This tab now runs on ${connectionLabel(connection)}.`);
   }
-  /** The connection a run of *t* uses: a Top statements tab runs in the
-   * schema it was recorded in when the connection names none. */
+  /** The member a tab is bound to, as the group names it now (its profile
+   * name at bind time when the group no longer has it). */
+  function memberNameOf(id: string): string {
+    return group?.members.find((m) => m.profile_id === id)?.profile_name || "";
+  }
+  /** Why tab *t* may not run: its member left the group (a group edit while
+   * connected). It runs again once the user picks a member for it. */
+  function groupMemberProblem(t: Tab) {
+    if (!group || !t.member) return "";
+    if (group.members.some((m) => m.profile_id === t.member)) return "";
+    return `${t.member_name || "This tab's server"} is not in this group any more. Pick a server for this tab to run it.`;
+  }
+  /** Move a tab whose member left the group onto another member (an explicit
+   * choice, like Use this connection for a Top statements tab). */
+  function rebindMember(id: string, memberId: string) {
+    if (!group?.members.some((m) => m.profile_id === memberId)) return;
+    changeTab({ member: memberId, member_name: memberNameOf(memberId) }, id);
+    setError("");
+  }
+  /** The connection a run of *t* uses: a tab bound to a group member runs on
+   * that member (the session request carries its profile id and the group
+   * name); a Top statements tab runs in the schema it was recorded in when
+   * the connection names none. */
   function connectionFor(t: Tab): Connection {
+    const bound = t.member && group && memberConnection ? memberConnection(t.member) : null;
+    const base = bound || connection;
     const measurement = runtimeRef.current[t.id]?.measureBefore;
     // A measurement runs in its statement's schema; otherwise the tab's chosen
     // default database wins over the connection's and the source statement's.
-    const database = measurement ? measurement.statement.schema ?? "" : t.database ?? (connection.database || t.source?.schema || "");
-    return database === connection.database ? connection : { ...connection, database };
+    const database = measurement ? measurement.statement.schema ?? "" : t.database ?? (base.database || t.source?.schema || "");
+    return database === base.database ? base : { ...base, database };
   }
   /** Start one capture of *sql* for tab *t* with the lab's settings. */
   async function startCapture(
@@ -1442,7 +1484,7 @@ export const QueryLab = forwardRef<
     // Run analysis and the explicit Explore action share the capture guards.
     if (busy || pendingStart.current || runtimeRef.current[t.id]?.running || runtimeRef.current[t.id]?.operation) return;
     const gate = mode === "explain" ? explainGate : analysisGate;
-    const problem = bindingProblem(t) || sessionProblem(t.id) || gate.disabledReason;
+    const problem = groupMemberProblem(t) || bindingProblem(t) || sessionProblem(t.id) || gate.disabledReason;
     if (problem) {
       setStatus("");
       setError(problem);
@@ -1555,7 +1597,7 @@ export const QueryLab = forwardRef<
   async function capture(mode: string) {
     if (mode === "explain") { runSql(false, undefined, undefined, true); return; }
     if (busy || rt.running || rt.operation || rt.stopping) return;
-    const problem = bindingProblem(tab) || sessionProblem(tab.id) || analysisGate.disabledReason;
+    const problem = groupMemberProblem(tab) || bindingProblem(tab) || sessionProblem(tab.id) || analysisGate.disabledReason;
     if (problem) { setError(problem); return; }
     setError("");
     setStatus("");
@@ -1596,18 +1638,22 @@ export const QueryLab = forwardRef<
 
   // ---- Run SQL in the tab's session -------------------------------------------
 
-  /** The session of the tab is on another connection than the one in use. */
-  const mismatch = !!rt.session && !rt.session.ended && !!rt.sessionKey && rt.sessionKey !== connectionKey(connection);
+  /** The session of the tab is on another connection than the one it runs on
+   * now (the connection in use, or its bound group member). */
+  const tabConnection = connectionFor(tab);
+  const mismatch = !!rt.session && !rt.session.ended && !!rt.sessionKey && rt.sessionKey !== connectionKey(tabConnection);
   const mismatchReason = mismatch && rt.session
-    ? `This tab is still connected to ${sessionName(rt.session)}. Close its session to run on ${connectionShortName(connection)}.`
+    ? `This tab is still connected to ${sessionName(rt.session)}. Close its session to run on ${connectionShortName(tabConnection)}.`
     : "";
   /** Why tab *id* may not run on the connection in use now: its session is
    * on another connection. Every execution path checks it (Run, Run all,
    * Explain, Run analysis, their shortcuts, Load more). */
   function sessionProblem(id: string) {
     const now = runtimeRef.current[id] || blankRuntime();
-    if (now.session && !now.session.ended && now.sessionKey && now.sessionKey !== connectionKey(connectionRef.current))
-      return `This tab is still connected to ${sessionName(now.session)}. Close its session to run on ${connectionShortName(connectionRef.current)}.`;
+    const t = tabsRef.current.find((x) => x.id === id);
+    const expected = t ? connectionFor(t) : connectionRef.current;
+    if (now.session && !now.session.ended && now.sessionKey && now.sessionKey !== connectionKey(expected))
+      return `This tab is still connected to ${sessionName(now.session)}. Close its session to run on ${connectionShortName(expected)}.`;
     return "";
   }
   /** The connection a tab's session operations use (Stop, Commit, Roll
@@ -1649,7 +1695,7 @@ export const QueryLab = forwardRef<
       setError(part.problem);
       return;
     }
-    const problem = bindingProblem(t) || sessionProblem(t.id);
+    const problem = groupMemberProblem(t) || bindingProblem(t) || sessionProblem(t.id);
     if (problem) {
       setError(problem);
       return;
@@ -2318,6 +2364,7 @@ export const QueryLab = forwardRef<
         parameters: "{}",
         ...(indexOrigin ? { source: normalizeSource({ kind: "digest", digest: indexOrigin.statement.digest, schema: indexOrigin.statement.schema }) || undefined,
           target: { ...indexOrigin.target } } : {}),
+        ...(group && groupMember ? { member: groupMember, member_name: memberNameOf(groupMember) || undefined } : {}),
       },
     ]);
     setTabId(id);
@@ -2681,7 +2728,14 @@ export const QueryLab = forwardRef<
                             ?.focus();
                         }}
                       >
-                        <span className="query-tab-label">{t.name}</span>
+                        <span className="query-tab-label">
+                          {t.name}
+                          {group && t.member && (
+                            <span className={`query-tab-member${groupMemberProblem(t) ? " is-gone" : ""}`}>
+                              {" · "}{memberNameOf(t.member) || t.member_name || t.member}
+                            </span>
+                          )}
+                        </span>
                         {runtime[t.id]?.file && runtime[t.id]!.file!.savedSql !== t.sql && (
                           <span aria-hidden="true" title="Edited since the last save">●</span>
                         )}
@@ -2743,7 +2797,12 @@ export const QueryLab = forwardRef<
                     }}
                   />
                 )}
-            <div className="editor-connection">{picker}</div>
+            <div className="editor-connection">
+              {picker}
+              {group && onGroupMember && (
+                <GroupServerPicker group={group} value={groupMember} narrow={narrow} onChoose={onGroupMember} />
+              )}
+            </div>
           </div>
           <div
             ref={tabPanel}
@@ -2776,6 +2835,19 @@ export const QueryLab = forwardRef<
               }
             }}
           >
+            {group && groupMemberProblem(tab) && (
+              <p className="group-member-note" role="note">
+                <Icon name="warning" size={14} />
+                <span>{groupMemberProblem(tab)}</span>
+                <Select
+                  label="Server for this tab"
+                  className="group-member-rebind"
+                  value=""
+                  options={[["", "Pick a server…"] as [string, string], ...group.members.map((m): [string, string] => [m.profile_id, m.profile_name])]}
+                  onChange={(id: string) => { if (id) rebindMember(tab.id, id); }}
+                />
+              </p>
+            )}
             <div className="editor-toolbar" role="toolbar" aria-label="Run and settings">
               <div className="toolbar-group run-actions">
                 <EditorSplitButton
