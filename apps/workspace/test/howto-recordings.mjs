@@ -115,6 +115,17 @@ const CAPTURE = { schema_version: "capture-1.0", raw: PLAN_RAW, query: RUN_SQL, 
   server_version: "8.4.11", captured_at: CLOCK, conditions: "", warnings: [], runs: [], measurements: { count: 0 },
   schema: {}, table_stats: {}, variables: {}, trace: null };
 const ok = (body) => ({ status: 200, body });
+// Run sends the editor's whole text plus the caret; the session runs the one
+// statement at the caret. The mock picks it the same way (the recorded
+// scripts have no procedure bodies).
+const atCursor = (body) => {
+  const full = body.sql || "";
+  if (typeof body.cursor !== "number") return full.trim();
+  let from = 0;
+  for (let i = 0; i < body.cursor && i < full.length; i++) if (full[i] === ";") from = i + 1;
+  const end = full.indexOf(";", body.cursor);
+  return full.slice(from, end < 0 ? full.length : end + 1).trim();
+};
 
 // Edit table data… (guide: edit-table-rows): an editable orders grid; after
 // Apply changes the reloaded page shows the saved value.
@@ -196,6 +207,9 @@ Object.assign(byDigest(digestLater, "2dd7bae4c1"), { count: 93, total_ms: 5.961 
 digestLater.statements.push({ ...byDigest(digestTop, "2dd7bae4c1"), digest: "e".repeat(64),
   digest_text: "SELECT * FROM `audit_log` WHERE `ts` > ?", count: 120, total_ms: 360, avg_ms: 3,
   first_seen: "2026-10-31 10:25:00.000000", last_seen: "2026-10-31 10:28:00.000000", sample_text: null, new: false });
+digestLater.statements.push({ ...byDigest(digestTop, "2f09595d41"), digest: "f".repeat(64),
+  digest_text: "INSERT INTO `audit_log` (`ts`, `actor`, `action`) VALUES (?, ?, ?)", count: 96, total_ms: 288, avg_ms: 3,
+  first_seen: "2026-10-31 10:26:00.000000", last_seen: "2026-10-31 10:28:30.000000", sample_text: null, new: false });
 let digestReport = digestTop;
 const digestBaselines = [];
 let digestClock = Date.UTC(2026, 9, 14, 16, 26);
@@ -265,15 +279,15 @@ const extra = {
   "/api/editor/open": ok({ status: "idle", session: session() }),
   "/api/editor/status": ok({ status: "none", session: null, run: null }),
   "/api/editor/run": (body) => {
-    const sql = (body.sql || "").trim();
+    const sql = atCursor(body);
     if (/^(start transaction|begin);?$/i.test(sql)) {
       txOpen = true;
-      return ok({ status: "complete", session: session(), run: writeRun(body.sql) });
+      return ok({ status: "complete", session: session(), run: writeRun(sql) });
     }
     if (/^(update|insert|replace|delete)\b/i.test(sql))
-      return ok({ status: "complete", session: session(), run: writeRun(body.sql, 1) });
+      return ok({ status: "complete", session: session(), run: writeRun(sql, 1) });
     return ok({ status: "complete", session: session(),
-      run: body.explain_format ? explainRun(body.sql) : editorRun(body.sql) });
+      run: body.explain_format ? explainRun(sql) : editorRun(sql) });
   },
   "/api/editor/rollback": () => {
     txOpen = false;
@@ -860,34 +874,40 @@ const GUIDES = [
     txOpen = false;
     await openEditor(h);
     await setEditorText(page, TX_SQL);
+    await rec.hold(1000);
     let p = await posPoint(page, 1, 5);
     await page.mouse.click(p.x, p.y);
+    await pause(1000);
     await rec.caption("⌘Enter: START TRANSACTION");
     await press(page, "Meta", "Enter");
     await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction open");
-    await rec.hold(900);
+    await rec.caption("Transaction open");
+    await rec.hold(2500);
     p = await posPoint(page, 2, 5);
     await page.mouse.click(p.x, p.y);
+    await pause(1000);
     await rec.caption("⌘Enter: UPDATE");
     await press(page, "Meta", "Enter");
-    await page.waitForFunction(() => /affected/i.test(document.querySelector(".results")?.textContent || ""));
-    await rec.hold(800);
+    await page.waitForFunction(() => /affected/i.test(document.querySelector(".results-pane")?.textContent || ""));
+    await rec.hold(2500);
     p = await posPoint(page, 3, 5);
     await page.mouse.click(p.x, p.y);
+    await pause(1000);
     await rec.caption("⌘Enter: SELECT");
     await press(page, "Meta", "Enter");
     await page.waitForFunction(() => [...document.querySelectorAll(".result-table tbody tr td")]
       .some((td) => td.textContent === "paid"));
-    await rec.hold(800);
+    await rec.hold(2500);
     await rec.caption("click Transaction open");
     await page.click(".editor-transaction-trigger");
     await page.waitForSelector("[data-action=rollback]", { visible: true });
-    await rec.hold(800);
+    await rec.hold(2500);
     await rec.caption("Roll back");
     await page.click("[data-action=rollback]");
     await page.waitForFunction(() => document.querySelector(".statusbar-note")?.textContent === "Rolled back.");
+    await rec.caption("Rolled back.");
+    await rec.hold(2500);
     await rec.caption("");
-    await rec.hold(800);
   }],
   ["explain-plans", async (h, rec) => {
     const { page } = h;
@@ -950,25 +970,30 @@ const GUIDES = [
     await setEditorText(page, "SELECT id FROM orders WHERE id = :id;");
     const p = await posPoint(page, 1, 5);
     await page.mouse.click(p.x, p.y);
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("Run analysis options");
     await page.click('button[aria-label="Run analysis options"]');
     await page.waitForSelector(".editor-options-popover.popover");
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("Parameters and execution conditions");
     await page.click(".editor-parameters summary");
     await page.waitForSelector('textarea[aria-label="Query parameters"]', { visible: true });
+    await rec.hold(1000);
     await rec.caption('type: {"id": 42}');
     await page.click('textarea[aria-label="Query parameters"]');
+    await press(page, "Meta", "a");
     await page.keyboard.type('{"id": 42}', { delay: 80 });
-    await rec.hold(500);
+    await rec.hold(1500);
     await page.keyboard.press("Escape");
+    await pause(1000);
     await rec.caption("click Explain");
     await page.click("[data-action=explain]");
+    if (process.env.HOWTO_DEBUG) { await pause(1500); console.log("NP-DEBUG", JSON.stringify(h.state.other.filter((o) => o.path === "/api/editor/run").map((o) => ({ sql: o.body.sql, ef: o.body.explain_format, params: o.body.parameters }))), JSON.stringify(await page.evaluate(() => ({ alerts: [...document.querySelectorAll("[role=alert], .editor-error, .editor-note")].map((e) => e.textContent), explore: [...document.querySelectorAll("button")].filter((b) => /Explore/.test(b.textContent)).length })))); }
     await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
+    await rec.caption("Explore in the Explain result");
+    await rec.hold(2500);
     await rec.caption("");
-    await rec.hold(900);
   }],
   ["digest-baseline", async (h, rec) => {
     const { page } = h;
@@ -978,47 +1003,51 @@ const GUIDES = [
     await rec.caption("Query digest");
     await page.click('.main-nav button[data-place="digest"]');
     await page.waitForSelector(`${qd} tbody tr[data-row-key]`);
-    await rec.hold(700);
+    await rec.hold(1200);
     await rec.caption("click Refresh");
     await h.refresh();
     await page.waitForFunction((q) => /^30 statement/.test(document.querySelector(`${q} .summary-line .summary-text`)?.textContent || ""), {}, qd);
-    await rec.hold(500);
+    await rec.hold(2500);
     await rec.caption("Refresh options → Save baseline…");
     await page.click(`${qd} button[aria-label="Refresh options"]`);
     await page.waitForSelector(`${qd} [data-action=save-baseline]`, { visible: true });
-    await rec.hold(400);
+    await rec.hold(1000);
     await page.click(`${qd} [data-action=save-baseline]`);
     await page.waitForSelector("dialog.baseline-sheet");
+    await rec.hold(2500);
     await rec.caption("name: Before deploy");
     await page.$eval("dialog.baseline-sheet input", (e) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, "Before deploy");
       e.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await rec.hold(500);
+    await rec.hold(1200);
     await rec.caption("click Save baseline");
     await page.click("dialog.baseline-sheet .sheet-buttons .action-button");
     await page.waitForFunction(() => /Saved the baseline/.test(document.body.textContent));
-    await rec.hold(800);
-    // The reading after the deployment: one digest new, two grown.
+    await rec.hold(2500);
+    // The reading after the deployment: two digests new, two grown.
     digestReport = digestLater;
     await rec.caption("click Refresh");
     await h.refresh();
     await page.waitForFunction((q) => /^32 statement/.test(document.querySelector(`${q} .summary-line .summary-text`)?.textContent || ""), {}, qd);
-    await rec.hold(500);
+    await rec.hold(1500);
     await rec.caption("Refresh options → Compare with baseline…");
     await page.click(`${qd} button[aria-label="Refresh options"]`);
     await page.waitForSelector(`${qd} [data-action=compare-baseline]`, { visible: true });
+    await rec.hold(1000);
     await page.click(`${qd} [data-action=compare-baseline]`);
     await page.waitForSelector("dialog.baseline-sheet .baseline-choices");
+    await rec.hold(2500);
     await rec.caption("choose the baseline");
     await page.click("dialog.baseline-sheet .baseline-choice");
-    await rec.hold(500);
+    await rec.hold(1200);
     await rec.caption("click Compare");
     await page.click("dialog.baseline-sheet .sheet-buttons .action-button");
     await page.waitForSelector(`${qd} [data-baseline-changes]`);
     await page.waitForFunction((q) => /new, 2 grew/.test(document.querySelector(`${q} [data-baseline-summary]`)?.textContent || ""), {}, qd);
+    await rec.caption("Since the baseline");
+    await rec.hold(3500);
     await rec.caption("");
-    await rec.hold(1200);
   }],
   ["compare-plans", async (h, rec) => {
     const { page } = h;
@@ -1151,27 +1180,28 @@ const GUIDES = [
     await page.waitForSelector('select[aria-label="Database"] option[value="shop"]');
     await rec.caption("Database: shop");
     await page.select('select[aria-label="Database"]', "shop");
-    await rec.hold(500);
+    await rec.hold(1000);
     await rec.caption("click Load");
     await page.click('[data-action="refresh"]');
     await page.waitForSelector(".diagram-table");
-    await rec.hold(1000);
+    await rec.hold(2500);
     await rec.caption("find: orders");
     await page.click('[aria-label="Find a table or column"]');
     await page.keyboard.type("orders", { delay: 70 });
-    await rec.hold(600);
+    await rec.hold(1200);
     await rec.caption("click the orders heading");
     await page.click('[data-table-id="orders"]');
     await page.waitForFunction(() => /customer_id → id/.test(document.querySelector(".view-inspector")?.textContent || ""));
-    await rec.hold(1000);
+    await rec.hold(2500);
     await rec.caption("Export → Editable JSON");
+    if (process.env.HOWTO_DEBUG) console.log("DG-DEBUG", await page.evaluate(() => JSON.stringify([...document.querySelectorAll("button")].map((b) => ({ t: b.textContent.trim().slice(0, 30), v: !!b.getClientRects().length, d: b.disabled })).filter((b) => /Export|Import|Load|Diagram|Mermaid/.test(b.t)))));
     await clickButton(page, "Export");
     await page.waitForSelector(".diagram-export-menu");
-    await rec.hold(400);
+    await rec.hold(1200);
     await clickButton(page, "Editable JSON");
     await page.waitForFunction(() => !document.querySelector(".diagram-export-menu"));
     await rec.caption("");
-    await rec.hold(700);
+    await rec.hold(1000);
   }],
   ["schema-compare", async (h, rec) => {
     const { page } = h;
@@ -1296,7 +1326,7 @@ const accountPlanMock = (body) => {
     statements: [`GRANT ${(body.privileges || ["SELECT"]).join(", ")} ON \`${body.database}\`.* TO \`${body.user}\`@\`${body.host}\``],
     warnings: [], guards: { blocked: [], typed_name: `${body.user}@${body.host}` },
     privileges: { state: "allowed", allowed: true, missing: [], reason: "Required privileges are present." },
-    policy: { action: "confirm", text: "" },
+    policy: { action: "confirm", text: "Development: confirm this account change." },
   };
   return ok(latestAccountPlan);
 };
@@ -1433,7 +1463,9 @@ Object.assign(extra, {
   "/api/live/kill/bulk/prepare": bulkPrepare,
   "/api/live/kill/bulk": (body) => bulkReply(body),
   "/api/live/sessions": () => ok({ ...sessionsActive, taken_at: new Date(Date.now() + 1000).toISOString() }),
-  "/api/live/top": topMocks["/api/live/top"],
+  // Query digest reads ask for the server's identity (with_identity), which
+  // baselines require; Top statements reads do not and keep the lab fixture.
+  "/api/live/top": (body) => (body && body.with_identity ? ok(digestReport) : topMocks["/api/live/top"]),
   "/api/live/indexes": ok(indexesReport),
   "/api/live/tables": ok(tablesFragmented),
   "/api/live/table-structure": tableStructure,
@@ -1485,6 +1517,16 @@ async function openPlace(h, place) {
   await h.page.click(`.main-nav button[data-place="${place}"]`);
   await h.page.waitForSelector(`.server-view[data-view="${place}"]`, { visible: true });
 }
+/** A topology place read under the previous connection keeps it ("From …,
+ * refresh to load this server"); Refresh reads it for the connection in use. */
+async function refreshForConnection(h, place) {
+  const before = h.state.seen.length;
+  await h.refresh();
+  for (let i = 0; i < 150 && h.state.seen.length === before; i++) await pause(20);
+  await h.page.waitForFunction((sel) => [...document.querySelectorAll(sel)]
+    .some((v) => v.offsetParent && !v.classList.contains("is-other-connection") && !v.querySelector(".spinner")),
+    { timeout: 15000 }, `.server-view[data-view="${place}"]`);
+}
 
 GUIDES.push(
   // ---- docs/handbook/howto-server.md ----
@@ -1527,17 +1569,22 @@ GUIDES.push(
     const view = '.server-view[data-view="top"]';
     await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
     await rec.caption("");
-    await rec.hold(1300);
+    await rec.hold(2500);
     await rec.caption("select a statement");
     await h.select(`${view} tbody tr[data-row-key]`);
-    await rec.hold(1100);
+    await rec.hold(2500);
+    // The list's toolbar (with Explain top N) shows again after Back.
+    await rec.caption("Back to statements");
+    await clickText(page, `${view} button`, "Back to statements");
+    await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
+    await rec.hold(1000);
     await rec.caption("click Explain top 5");
     await clickText(page, `${view} button`, "Explain top 5");
     await page.waitForFunction(() => /plans added to the open plans/.test(
       [...document.querySelectorAll(".server-view[data-view=\"top\"]")].map((v) => v.textContent).join(" ")), { timeout: 20000 });
     assert.ok(h.state.other.filter((o) => o.path === "/api/live/start").length > 0, "captures started");
     await rec.caption("");
-    await rec.hold(1300);
+    await rec.hold(2500);
   }],
   ["kill-sessions", async (h, rec) => {
     const { page } = h;
@@ -1587,29 +1634,29 @@ GUIDES.push(
     await h.view("indexes");
     const view = '.server-view[data-view="indexes"]';
     await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
-    await rec.hold(700);
+    await rec.hold(1000);
     await rec.caption("filter: Unused");
     await clickText(page, `${view} .segmented button`, "Unused");
     const rows = `${view} [aria-label="Unused indexes"] tbody tr[data-row-key]`;
     await page.waitForSelector(rows, { visible: true });
     await rec.caption("");
-    await rec.hold(1000);
+    await rec.hold(1500);
     await rec.caption("select the index");
     await h.select(rows);
-    await rec.hold(1200);
+    await rec.hold(2500);
     await rec.caption("Set invisible…");
     await page.$eval(`${rows} .row-more`, (b) => { b.focus(); b.click(); });
     await clickText(page, ".row-action-menu [role=menuitem]", "Set invisible…");
     await page.waitForSelector("dialog.confirm-sheet[open]");
     await page.waitForFunction(() => /ALTER TABLE/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1600);
+    await rec.hold(3500);
     await rec.caption("confirm");
     await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
     await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
     await page.waitForFunction(() => /completed/.test(document.querySelector("[data-reviewed-status]")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1200);
+    await rec.hold(2500);
   }],
   ["optimize-table", async (h, rec) => {
     const { page } = h;
@@ -1628,25 +1675,28 @@ GUIDES.push(
     await rec.hold(900);
     await rec.caption("select the table");
     await h.select(row);
-    await rec.hold(900);
+    await rec.hold(1500);
     await rec.caption("Table structure");
     await clickText(page, ".view-inspector button", "Table structure");
     await page.waitForSelector("dialog.text-sheet[open] .table-structure-table", { visible: true });
     await rec.caption("");
-    await rec.hold(1500);
+    await rec.hold(3500);
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector("dialog.text-sheet"));
+    await rec.hold(1000);
     await rec.caption("Optimize table…");
-    await clickText(page, ".view-inspector button", "Optimize table…");
+    await page.$eval(`${row} .row-more`, (b) => { b.focus(); b.click(); });
+    await clickText(page, ".row-action-menu [role=menuitem]", "Optimize table…");
     await page.waitForSelector("dialog.confirm-sheet[open]");
     await page.waitForFunction(() => /OPTIMIZE TABLE/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1600);
+    await rec.hold(3500);
     await rec.caption("confirm");
     await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
     await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
+    await page.waitForFunction(() => /completed/.test(document.querySelector("[data-reviewed-status]")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(2500);
   }],
   ["parameters-compare", async (h, rec) => {
     const { page } = h;
@@ -1658,14 +1708,19 @@ GUIDES.push(
     await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
     await rec.hold(700);
     await rec.caption("Show: Recommendations");
-    await page.select(`${view} select[aria-label="Show"]`, "recommendations");
+    await page.select(`${view} .toolbar-field select`, "recommendations");
     await page.waitForSelector(`${view} tbody tr[data-row-key]`, { visible: true });
     await rec.caption("");
     await rec.hold(900);
     await rec.caption("select a parameter");
     const name = await page.$eval(`${view} tbody tr[data-row-key]`, (tr) => tr.dataset.rowKey);
     await h.select(`${view} tbody tr[data-row-key="${name}"]`);
-    await rec.hold(1100);
+    await rec.hold(1600);
+    // The parameter's detail covers the list; Back returns to it before Edit.
+    await rec.caption("Back");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+    await rec.hold(1000);
     await rec.caption("click Edit");
     await page.click(`${view} [data-action="edit-parameters"]`);
     const input = `${view} #parameter-value-${name}`;
@@ -1680,32 +1735,32 @@ GUIDES.push(
     }
     await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="config"] .toolbar-controls button')]
       .some((b) => b.textContent === "Review and apply (1)"));
-    await rec.hold(700);
+    await rec.hold(1200);
     await rec.caption("Review and apply (1)");
     await clickText(page, `${view} .toolbar-controls button`, "Review and apply (1)");
     await page.waitForSelector("dialog.parameter-batch-sheet[open]");
     await page.waitForFunction(() => /SET (PERSIST|GLOBAL)/.test(document.querySelector("dialog.parameter-batch-sheet")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1700);
+    await rec.hold(2800);
     await rec.caption("confirm");
     await page.click("dialog.parameter-batch-sheet .sheet-actions button:last-of-type");
     await page.waitForFunction(() => !document.querySelector("dialog.parameter-batch-sheet"), { timeout: 10000 });
-    await rec.hold(1000);
+    await rec.hold(1300);
     await rec.caption("Compare tab");
     await page.click("#parameters-views-tab-compare");
     await page.waitForSelector('[data-view="parameters-compare"] select[aria-label="Target"]', { visible: true });
-    await rec.hold(500);
+    await rec.hold(1000);
     await rec.caption("Target: Prod MySQL");
     const target = await page.$eval('[data-view="parameters-compare"] select[aria-label="Target"]', (sel) =>
       [...sel.options].find((o) => /Prod MySQL/.test(o.textContent))?.value);
     assert.ok(target, "Prod MySQL is a compare target");
     await page.select('[data-view="parameters-compare"] select[aria-label="Target"]', target);
-    await rec.hold(500);
+    await rec.hold(1000);
     await rec.caption("click Compare");
     await page.click('[data-view="parameters-compare"] .server-compare-run button');
     await page.waitForSelector('[data-view="parameters-compare"] .comparison-header', { visible: true });
     await rec.caption("");
-    await rec.hold(1500);
+    await rec.hold(2800);
   }],
   ["instruments-preset", async (h, rec) => {
     const { page } = h;
@@ -1719,24 +1774,23 @@ GUIDES.push(
     await rec.hold(1100);
     await rec.caption("Preset: Wait analysis");
     await page.select(`${view} select[aria-label=Preset]`, "waits");
-    await page.waitForSelector(".view-inspector .inspector-title", { visible: true });
-    await rec.hold(900);
+    await rec.hold(1400);
     await rec.caption("Show statements");
     await page.click(`${view} .instr-show-statements`);
     await page.waitForSelector(".view-inspector .perf-sql pre", { visible: true });
     await rec.caption("");
-    await rec.hold(1400);
+    await rec.hold(2600);
     await rec.caption("Apply Wait analysis…");
     await page.click('.view-inspector [data-reviewed-sql="Apply Wait analysis"]');
     await page.waitForSelector("dialog.confirm-sheet[open]");
     await page.waitForFunction(() => /UPDATE performance_schema/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
-    await rec.hold(1500);
+    await rec.hold(2800);
     await rec.caption("confirm");
     await page.click("dialog.confirm-sheet .sheet-actions button:last-child");
     await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"), { timeout: 10000 });
     await page.waitForFunction(() => /completed/.test(document.querySelector("[data-reviewed-status]")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(2000);
   }],
   ["users-grants", async (h, rec) => {
     const { page } = h;
@@ -1751,40 +1805,40 @@ GUIDES.push(
     await rec.caption("select app@%");
     await h.select(`${view} tbody tr[data-row-key]`);
     await page.waitForSelector(".account-matrix", { visible: true });
-    await rec.hold(900);
+    await rec.hold(1400);
     await rec.caption("Grant level: Databases");
     await page.select('select[aria-label="Grant level"]', "database");
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("Add scope");
     await clickText(page, ".view-inspector button", "Add scope");
     await page.waitForSelector('.account-scope-form select[aria-label="Database"]', { visible: true });
     await page.select('.account-scope-form select[aria-label="Database"]', "shop");
-    await rec.hold(300);
+    await rec.hold(1000);
     await clickText(page, ".account-scope-form button", "Use scope");
     await page.waitForSelector(".account-matrix", { visible: true });
-    await rec.hold(500);
+    await rec.hold(1000);
     await rec.caption("tick CREATE ROUTINE");
     await page.$$eval(".account-matrix tbody tr", (rows) => {
       const row = rows.find((r) => (r.querySelector(".account-privilege-name")?.textContent || r.querySelector("th")?.textContent) === "CREATE ROUTINE");
       row?.querySelector("input")?.click();
     });
-    await rec.hold(700);
+    await rec.hold(1200);
     await rec.caption("Review changes");
     await clickText(page, ".view-inspector button", "Review changes");
     await page.waitForSelector(".account-review[open]", { visible: true });
     await page.waitForFunction(() => /GRANT CREATE ROUTINE ON `shop`\.\*/.test(document.querySelector(".account-review")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1300);
+    await rec.hold(3200);
     await rec.caption("type app@% to confirm");
     await page.click(".account-review .account-typed input");
     await page.keyboard.type("app@%", { delay: 90 });
-    await rec.hold(500);
+    await rec.hold(1000);
     await rec.caption("apply");
     await page.click(".account-review .sheet-actions button:last-of-type");
     await page.waitForFunction(() => !document.querySelector(".account-review[open]"), { timeout: 10000 });
     await page.waitForSelector('[aria-label="Account change result"]', { visible: true });
     await rec.caption("");
-    await rec.hold(1200);
+    await rec.hold(2600);
   }],
   // ---- docs/handbook/howto-connections.md ----
   // The group bar is the same in the four topology places; this one uses Cluster.
@@ -1793,6 +1847,10 @@ GUIDES.push(
     await rec.caption("Cluster");
     await openPlace(h, "cluster");
     await useDev(h, rec);
+    await rec.caption("Refresh");
+    await refreshForConnection(h, "cluster");
+    await rec.caption("");
+    await page.waitForSelector('.server-view[data-view="cluster"] .cluster-topology', { visible: true });
     await page.waitForSelector('.server-view[data-view="cluster"] .cluster-topology', { visible: true });
     await page.waitForFunction(() => /No connection group/.test(
       [...document.querySelectorAll(".connection-group-line")].map((e) => e.textContent).join(" ")));
@@ -1801,25 +1859,22 @@ GUIDES.push(
     await rec.caption("Create a group…");
     await clickText(page, ".connection-group-actions button", "Create a group…");
     await page.waitForSelector("dialog.connection-group-sheet[open]", { visible: true });
-    await rec.hold(500);
+    await rec.hold(1300);
     await rec.caption("name the group");
     await page.click(".connection-group-field input");
     await page.keyboard.type("shop-pipeline", { delay: 70 });
-    await rec.hold(400);
-    await rec.caption("tick Prod MySQL");
-    await page.$$eval(".connection-group-item", (items) => {
-      items.find((item) => /Prod MySQL/.test(item.textContent))?.querySelector("input[type=checkbox]")?.click();
-    });
+    // The Create sheet groups the connection in use; ticking other saved
+    // connections is the Review sheet's flow (the bar's Review… state).
     await page.waitForFunction(() => [...document.querySelectorAll("dialog.connection-group-sheet .sheet-actions button")]
-      .some((b) => /Add \d+ to shop-pipeline/.test(b.textContent) && !b.disabled));
-    await rec.hold(800);
+      .some((b) => /Add 1 to shop-pipeline/.test(b.textContent) && !b.disabled));
+    await rec.hold(1400);
     await rec.caption("Add to shop-pipeline");
     await clickText(page, "dialog.connection-group-sheet .sheet-actions button", "Add ");
     await page.waitForFunction(() => !document.querySelector("dialog.connection-group-sheet[open]"), { timeout: 10000 });
     await page.waitForFunction(() => /shop-pipeline/.test(
       [...document.querySelectorAll(".connection-group-line, .connection-group-summary, [data-state]")].map((e) => e.textContent).join(" ")));
     await rec.caption("");
-    await rec.hold(1400);
+    await rec.hold(2600);
   }],
   ["import-connections", async (h, rec) => {
     const { page } = h;
@@ -1847,38 +1902,46 @@ GUIDES.push(
     await rec.caption("Replication");
     await openPlace(h, "replication");
     await useDev(h, rec);
-    const view = '.server-view[data-view="replication"]';
-    await page.waitForSelector(`${view} [data-row-key="channel:"]`, { visible: true });
+    await rec.caption("Refresh");
+    await refreshForConnection(h, "replication");
     await rec.caption("");
+    const view = '.server-view[data-view="replication"]';
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="replication"]')]
+      .some((v) => v.offsetParent && v.querySelector(".summary-line")), { timeout: 15000 });
     await rec.hold(1300);
     await rec.caption("Recovery");
     await clickText(page, '[aria-label="Replication sub-tabs"] button', "Recovery");
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="replication"]')]
+      .some((v) => v.offsetParent && v.querySelector('[data-row-key="channel:"]')));
     await rec.hold(700);
     await rec.caption("select the stopped channel");
     await h.select(`${view} [data-row-key="channel:"]`);
     await page.waitForFunction(() => /1062/.test(document.querySelector(".view-inspector")?.textContent || ""));
-    await rec.hold(1200);
+    await rec.hold(1800);
     await rec.caption("Skip this transaction…");
     await clickText(page, ".view-inspector button", "Skip this transaction");
     await page.waitForSelector("dialog.ops-confirm[open]");
     await page.waitForFunction(() => /GTID|sql_slave_skip/i.test(document.querySelector("dialog.ops-confirm")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1700);
+    await rec.hold(3000);
     await rec.caption("Skip transaction");
     await page.click("dialog.ops-confirm .sheet-actions button:last-of-type");
     await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="replication"] .ops-result')]
       .some((e) => e.dataset.status === "skipped" && e.offsetParent !== null), { timeout: 10000 });
     await rec.caption("");
-    await rec.hold(1400);
+    await rec.hold(2400);
   }],
   ["cluster-primary", async (h, rec) => {
     const { page } = h;
     await rec.caption("Cluster");
     await openPlace(h, "cluster");
     await useDev(h, rec);
-    const view = '.server-view[data-view="cluster"]';
-    await page.waitForSelector(`${view} .cluster-topology`, { visible: true });
+    await rec.caption("Refresh");
+    await refreshForConnection(h, "cluster");
     await rec.caption("");
+    const view = '.server-view[data-view="cluster"]';
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="cluster"]')]
+      .some((v) => v.offsetParent && v.querySelector(".cluster-topology")), { timeout: 15000 });
     await rec.hold(1400);
     await rec.caption("Members");
     await clickText(page, `${view} .segmented button`, "Members");
@@ -1892,24 +1955,27 @@ GUIDES.push(
     await page.waitForSelector("dialog.action-review[open]", { visible: true });
     await page.waitForFunction(() => /group_replication_set_as_primary/.test(document.querySelector("dialog.action-review")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1700);
+    await rec.hold(3000);
     await rec.caption("confirm");
     await page.click("dialog.action-review[open] .sheet-actions button:last-child");
     await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
-    await rec.hold(1200);
+    await rec.hold(2200);
     await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
     await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(1600);
   }],
   ["proxysql-offline", async (h, rec) => {
     const { page } = h;
     await rec.caption("ProxySQL");
     await openPlace(h, "proxysql");
     await useDev(h, rec);
-    const view = '.server-view[data-view="proxysql"]';
-    await page.waitForSelector(`${view} .summary-line`, { visible: true });
+    await rec.caption("Refresh");
+    await refreshForConnection(h, "proxysql");
     await rec.caption("");
+    const view = '.server-view[data-view="proxysql"]';
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="proxysql"]')]
+      .some((v) => v.offsetParent && v.querySelector(".summary-line")), { timeout: 15000 });
     await rec.hold(1200);
     await rec.caption("Servers");
     await clickText(page, `${view} .segmented button`, "Servers");
@@ -1923,24 +1989,27 @@ GUIDES.push(
     await page.waitForSelector("dialog.action-review[open]", { visible: true });
     await page.waitForFunction(() => /OFFLINE_SOFT/.test(document.querySelector("dialog.action-review .ops-pre")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1700);
+    await rec.hold(3000);
     await rec.caption("confirm");
     await page.click("dialog.action-review[open] .sheet-actions button:last-child");
     await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
-    await rec.hold(1300);
+    await rec.hold(2300);
     await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
     await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(1600);
   }],
   ["readyset-cache", async (h, rec) => {
     const { page } = h;
     await rec.caption("Readyset");
     await openPlace(h, "readyset");
     await useDev(h, rec);
-    const view = '.server-view[data-view="readyset"]';
-    await page.waitForSelector(`${view} .summary-line`, { visible: true });
+    await rec.caption("Refresh");
+    await refreshForConnection(h, "readyset");
     await rec.caption("");
+    const view = '.server-view[data-view="readyset"]';
+    await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="readyset"]')]
+      .some((v) => v.offsetParent && v.querySelector(".summary-line")), { timeout: 15000 });
     await rec.hold(1200);
     await rec.caption("Proxied");
     await clickText(page, `${view} .segmented button`, "Proxied");
@@ -1955,21 +2024,21 @@ GUIDES.push(
     // The pre-filled query id runs the support check (EXPLAIN) on its own.
     await page.waitForFunction(() => /Shallow: Supported/.test(document.querySelector("dialog.readyset-create-dialog")?.textContent || ""), { timeout: 10000 });
     await rec.caption("Check support (EXPLAIN)");
-    await rec.hold(1500);
+    await rec.hold(3000);
     await rec.caption("Review CREATE CACHE…");
     await page.click('dialog.readyset-create-dialog .sheet-actions button:last-child');
     await page.waitForSelector("dialog.action-review[open]", { visible: true });
     await page.waitForFunction(() => /CREATE SHALLOW CACHE/.test(document.querySelector("dialog.action-review .ops-pre")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1700);
+    await rec.hold(3000);
     await rec.caption("Create shallow cache");
     await page.click("dialog.action-review[open] .sheet-actions button:last-child");
     await page.waitForSelector("dialog.action-review[open] .action-outcome", { visible: true, timeout: 10000 });
-    await rec.hold(1200);
+    await rec.hold(2200);
     await clickText(page, "dialog.action-review[open] .sheet-actions button", "Close");
     await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(1600);
   }],
 );
 // ============================================================================
