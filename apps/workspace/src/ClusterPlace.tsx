@@ -11,7 +11,7 @@
 // cluster. A report that is not the connection in use's current one (from
 // another connection, or kept after a failed read) is greyed and never marks
 // a member "This connection".
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useId, useMemo, useState, type ReactNode } from "react";
 import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
@@ -23,15 +23,15 @@ import {
   type Column, type InspectorContent, type InspectorShared, type Selection, type Tone,
 } from "./kit";
 import { useOpenRead } from "./viewOnScreen";
-import { engineName, plural } from "./OpsShared";
+import { Commands, engineName, plural } from "./OpsShared";
 import {
-  ageText, blindMember, checkInText, failureText, flowPercent, isGalera, isReadReplica, kindLabel, memberNoun, readCluster,
-  stateWord, utcText, planClusterAction, sendClusterAction,
+  ageText, blindMember, checkInText, failureText, flowPercent, identityText, isGalera, isReadReplica, kindLabel,
+  memberNoun, readCluster, stateWord, utcText, planClusterAction, sendClusterAction,
   type ClusterAction, type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
 } from "./clusterApi";
 import {
-  ClusterMark, ClusterTopology, GLOSSARY, memberAddress, memberEngine, memberEngineFull, memberFlow, memberKey, routerKey,
-  type LocalMarker,
+  ClusterMark, ClusterTopology, GLOSSARY, matchingProfile, memberAddress, memberEngine, memberEngineFull, memberFlow,
+  memberKey, routerKey, type LocalMarker,
 } from "./ClusterTopology";
 import "./cluster.css";
 
@@ -212,6 +212,69 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
   );
 }
 
+/** One action group (cluster-wide on the overview, or a member's on its
+ * page): every action the backend lists, always. A disabled action stays
+ * visible, focusable and muted with aria-disabled, its why_not and fix as
+ * visible text under the group (its accessible description), the GRANT to run
+ * when a privilege is missing, and a Use <connection> link when the fix is to
+ * connect to a member this workspace already knows. Clicking a disabled
+ * action opens nothing. */
+function ActionGroup({ list, label, blocked, planning, busy, onStart, report, profiles, onSwitchConnection }: {
+  list: ClusterAction[];
+  label: string;
+  /** Why every change is blocked regardless of eligibility (a stale report, a read-only connection). */
+  blocked: string;
+  planning: string;
+  busy: boolean;
+  onStart: (a: ClusterAction) => void;
+  report: ClusterReport;
+  profiles?: Profile[];
+  onSwitchConnection?: (id: string) => void;
+}) {
+  const base = useId();
+  return (
+    <div className="review-actions" role="group" aria-label={label}>
+      {list.map((a, i) => {
+        const off = !!blocked || busy || !a.enabled;
+        const reasonId = `${base}-why-${i}`;
+        const hasReason = !a.enabled && !!(a.why_not || a.fix || a.grant_sql || a.privileges_unreadable);
+        const member = !a.target?.self ? report.members.find((m) => m.key === a.member_key) : undefined;
+        const use = !a.enabled && member && onSwitchConnection && /connect to/i.test(a.fix || "")
+          ? matchingProfile(member, profiles) : undefined;
+        return (
+          <Fragment key={a.id}>
+            <button type="button" className={`button${a.danger ? " danger" : ""}`} title={blocked || a.description}
+              aria-disabled={off} aria-describedby={hasReason ? reasonId : undefined}
+              onClick={() => { if (!off) onStart(a); }}>
+              {planning === a.id ? "Reading…" : a.label}
+            </button>
+            {hasReason && (
+              <div className="cluster-action-why" id={reasonId}>
+                {[a.why_not, a.fix].filter(Boolean).length > 0 && <p>{[a.why_not, a.fix].filter(Boolean).join(" ")}</p>}
+                {use && onSwitchConnection && (
+                  <button type="button" className="text-button cluster-use-node" onClick={() => onSwitchConnection(use.id)}>
+                    Use {use.name}
+                  </button>
+                )}
+                {a.grant_sql && (
+                  <>
+                    <Commands text={a.grant_sql} label={`Grant for ${a.label.replace(/[….]+$/, "")}`} />
+                    <p className="hint">Run it as an administrator, then Refresh.</p>
+                  </>
+                )}
+                {a.privileges_unreadable && (
+                  <p className="hint">Privileges could not be read; the server refuses the change if one is missing.</p>
+                )}
+              </div>
+            )}
+          </Fragment>
+        );
+      })}
+      {blocked && <p className="hint">{blocked}</p>}
+    </div>
+  );
+}
+
 function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection }: {
   connection: Connection; disabled: boolean; report: Bound<ClusterReport> | null;
   onReport: (report: Bound<ClusterReport>) => void; failure: ClusterFailure | null; onFailure?: (key: string, message: string) => void;
@@ -257,20 +320,14 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const changeBlock = stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
     : disabled ? "Reads are paused." : policy?.blocked ? policy.blocked
       : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "";
-  function start(a: ClusterAction, m: ClusterMember) {
-    if (changeBlock || actions.busy) return;
-    void actions.review(a.id, (c) => planClusterAction(c, a.id, m.key));
+  function start(a: ClusterAction) {
+    if (changeBlock || actions.busy || !a.enabled) return;
+    void actions.review(a.id, (c) => planClusterAction(c, a.id, a.member_key ?? null));
   }
-  const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length ? (
-    <div className="review-actions" role="group" aria-label={`Changes for ${m.name}`}>
-      {(m.actions || []).map((a) => (
-        <button key={a.id} type="button" className={`button${a.danger ? " danger" : ""}`} title={changeBlock || a.description}
-          aria-disabled={!!changeBlock || actions.busy} onClick={() => start(a, m)}>
-          {actions.planning === a.id ? "Reading…" : a.label}
-        </button>
-      ))}
-      {changeBlock && <p className="hint">{changeBlock}</p>}
-    </div>
+  const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length && report ? (
+    <ActionGroup list={m.actions || []} label={`Changes for ${m.name}`} blocked={changeBlock} planning={actions.planning}
+      busy={actions.busy} onStart={start} report={report} profiles={stale ? undefined : profiles}
+      onSwitchConnection={stale ? undefined : onSwitchConnection} />
   ) : undefined;
   const content: InspectorContent | null = report && chosenMember ? memberInspector(report, chosenMember, stale ? bound?.label || "" : null, memberActions(chosenMember))
     : report && chosenRouter ? routerInspector(chosenRouter, routerKey(chosenRouter, routerIndex)) : null;
@@ -373,6 +430,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           notesTitle="Notes: where the values come from, what this server cannot see, and engine differences">
           {summaryText(report, stale)}
         </SummaryLine>
+        {isCluster && !stale && !!identityText(report) && <p className="cluster-identity">{identityText(report)}</p>}
         {!report.available ? (
           <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
         ) : report.kind === "none" ? (
@@ -432,6 +490,18 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
             routers.length ? (
               <DataTable key="cluster.routers" id="cluster.routers" label="Routers" columns={routerColumns} rows={routers} rowKey={(r) => routerKey(r, routers.indexOf(r))} selection={selection} />
             ) : <EmptyState icon="cluster" title="No routers registered">No MySQL Router is registered for this cluster in the InnoDB Cluster metadata.</EmptyState>
+          )}
+          {/* Every cluster-wide change, always: the mode switches and, in a
+              ClusterSet, the ClusterSet changes, each enabled or with its
+              reason and fix. Below the tab content so the first screen stays
+              the cluster's state. */}
+          {(report.actions || []).length > 0 && (
+            <section className="cluster-actions" aria-label="Cluster changes">
+              <span className="cluster-row-label">Changes · the whole cluster</span>
+              <ActionGroup list={report.actions || []} label="Changes for the cluster" blocked={changeBlock}
+                planning={actions.planning} busy={actions.busy} onStart={start} report={report}
+                profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection} />
+            </section>
           )}
         </>}
       </> : reads.loading ? null : failed ? (

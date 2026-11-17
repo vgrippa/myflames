@@ -1546,7 +1546,11 @@ request supplies no password.
 Kill preparation, single replication skips, and lifecycle plans
 carry a server-issued review token. Its registry holds at most 256 entries for
 300 seconds. Tokens bind the operation, connection identity and policy, and
-reviewed details. Checks happen before saved-password lookup; consumption is
+reviewed details. For a group connection the identity carries the group's
+effective safety (`connection_safety` with the store; see "Write safety and
+audit"), so a Production member joining the group (or leaving it) voids tokens
+and editor session ownership issued before the change. Checks happen before
+saved-password lookup; consumption is
 atomic at the send boundary after fresh state and policy checks. Missing,
 expired, altered, or replayed tokens require a fresh review. Tokens are never
 persisted. Lifecycle jobs re-read saved profile policy before connecting,
@@ -1764,6 +1768,33 @@ Local `audit purge` has its separate confirmation contract.
   in one transaction while keeping every saved connection and its saved password
   intact. Both return `groups` (`connection_groups.list_groups(profiles)`) and
   `profiles` (`store.list("profile")`, never a password or `secret_ref`).
+
+  `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
+  allowlist) opens a connection group as one Group connection:
+  `{group_name, active_member_profile_id?, probe_members?}`. `group_name` is
+  validated with `connection_groups.validate_group`; the group's current
+  members are read from the store. The active member is the request's
+  `active_member_profile_id` when it is a current member, else the member the
+  stored topology identity marks primary or source
+  (`connection_groups.group_primary`: a member whose recorded `server_uuid`
+  another member lists in `source_uuids`), else the first member. The reply is
+  the `/api/connection/test` discovery for the active member
+  (`ui._connection_test_report`) plus `group_connection`: `{group_name,
+  effective_safety {type, read_only}, active_member_profile_id,
+  primary_profile_id, members[]}` with each member's `{profile_id,
+  profile_name, host, port, safety, server_uuid, role, state, reachable}`.
+  Names, hosts, ports and safety come from the store record; the live facts
+  (`server_uuid`, `role`, `state`, `reachable`) are separate fields read for
+  the active member always and for the other members only when the request
+  asks (`probe_members: true`, which the UI sends on an explicit open or
+  Refresh, never on automatic refresh), at most 4 logins at a time
+  (`_CONNECT_PROBE_CONCURRENCY`) and never more logins than the group has
+  members (`_CONNECT_PROBE_BUDGET`, 16). Every member login fills that
+  member's own saved password through `connection_with_saved_password` (which
+  re-checks group membership), and the reply never contains a secret; a
+  member that cannot be read is `reachable: false`. Member names and
+  endpoints never come from topology evidence: a stored topology label cannot
+  rename a member (F10).
 
   Consent rule and `connection_group` report field: a topology or source-version
   read (`Cluster`, `Replication`, `ProxySQL`, `Readyset`, and the CLI
@@ -2194,6 +2225,18 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   while the request keeps its `ENDPOINT_FIELDS` (host, port, user, TLS), else
   production; its read-only flag applies either way. A profile save that
   changes the endpoint without choosing a type makes it production.
+  `connection_safety(profile, connection, store=..., target_profile=...)`
+  computes the group connection's effective safety from the store at every
+  call (`dbops._group_safety` over `connection_groups.group_effective_safety`):
+  when the request names `connection.group_name`, or names a target profile
+  other than the active member, the type is the strictest of the active
+  member, the target and every current member of the group (production >
+  staging > development > local > unset); read-only stays each member's own
+  flag. A group claim the store cannot confirm keeps production. The action,
+  kill, variables-apply and accounts-apply endpoints and
+  `editor_session._connection_facts` (a tab pinned to a member) use it, and it
+  feeds `connection_identity`, so a Production member joining a group voids
+  review tokens and editor session ownership issued before.
   `connection_identity(connection, safety)` is the key reports and
   confirmations bind to, the Python twin of `connectionKey()` in
   `apps/workspace/src/binding.ts`: profile id, host, port, user, TLS mode and

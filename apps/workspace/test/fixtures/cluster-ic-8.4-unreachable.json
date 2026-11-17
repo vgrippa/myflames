@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mysql",
+ "flavor": "mysql",
+ "server_product": "MySQL",
  "server_version": "8.4.11",
  "version_comment": "MySQL Community Server - GPL",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -66,10 +68,100 @@
    "endpoint": "mf-ic-1:3306",
    "actions": [
     {
+     "schema_version": "cluster-action-1.1",
+     "id": "switchover",
+     "label": "Make primary…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "udf",
+     "danger": true,
+     "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+     "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+     "member_name": "mf-ic-1:3306",
+     "member_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "mf-ic-1:3306 is already the primary.",
+     "fix": "Choose an ONLINE secondary.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
      "id": "stop_member",
      "label": "Stop Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
      "danger": true,
-     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+     "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+     "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+     "member_name": "mf-ic-1:3306",
+     "member_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "cluster_name": null,
+     "enabled": true,
+     "why_not": null,
+     "fix": null,
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "start_member",
+     "label": "Start Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": false,
+     "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+     "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+     "member_name": "mf-ic-1:3306",
+     "member_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "This member is not OFFLINE.",
+     "fix": "Stop Group Replication on this member before starting it again.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "rejoin_instance",
+     "label": "Rejoin to the cluster…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "mysqlsh",
+     "danger": true,
+     "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+     "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+     "member_name": "mf-ic-1:3306",
+     "member_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "MySQL Shell was not found on this computer.",
+     "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
     }
    ]
   },
@@ -103,7 +195,104 @@
    "label": "mf-ic-2:3306",
    "in_metadata": true,
    "endpoint": "mf-ic-2:3306",
-   "actions": []
+   "actions": [
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "switchover",
+     "label": "Make primary…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "udf",
+     "danger": true,
+     "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+     "member_key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+     "member_name": "mf-ic-2:3306",
+     "member_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "mf-ic-3:3306 is recovering or unreachable.",
+     "fix": "Restore an ONLINE member with quorum and wait for recovery or connectivity to settle, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+     "member_key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+     "member_name": "mf-ic-2:3306",
+     "member_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "Stop Group Replication runs on the server it stops, mf-ic-2:3306; this connection is to mf-ic-1:3306.",
+     "fix": "Connect to mf-ic-2:3306 to stop it.",
+     "target": {
+      "self": false,
+      "member_name": "mf-ic-2:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "start_member",
+     "label": "Start Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": false,
+     "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+     "member_key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+     "member_name": "mf-ic-2:3306",
+     "member_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "Start Group Replication runs on the server it starts, mf-ic-2:3306; this connection is to mf-ic-1:3306.",
+     "fix": "Connect to mf-ic-2:3306 to start it.",
+     "target": {
+      "self": false,
+      "member_name": "mf-ic-2:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "rejoin_instance",
+     "label": "Rejoin to the cluster…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "mysqlsh",
+     "danger": true,
+     "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+     "member_key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+     "member_name": "mf-ic-2:3306",
+     "member_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "MySQL Shell was not found on this computer.",
+     "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    }
+   ]
   },
   {
    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
@@ -135,7 +324,104 @@
    "label": "mf-ic-3:3306",
    "in_metadata": true,
    "endpoint": "mf-ic-3:3306",
-   "actions": []
+   "actions": [
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "switchover",
+     "label": "Make primary…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "udf",
+     "danger": true,
+     "description": "Makes this member the primary; the current primary becomes a read-only secondary.",
+     "member_key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "member_name": "mf-ic-3:3306",
+     "member_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "mf-ic-3:3306 is not ONLINE.",
+     "fix": "Wait for recovery or rejoin this member, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON).",
+     "member_key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "member_name": "mf-ic-3:3306",
+     "member_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "Stop Group Replication runs on the server it stops, mf-ic-3:3306; this connection is to mf-ic-1:3306.",
+     "fix": "Connect to mf-ic-3:3306 to stop it.",
+     "target": {
+      "self": false,
+      "member_name": "mf-ic-3:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "start_member",
+     "label": "Start Group Replication…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": false,
+     "description": "Joins this member to the group. Recovery may replace its data with a clone.",
+     "member_key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "member_name": "mf-ic-3:3306",
+     "member_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "Start Group Replication runs on the server it starts, mf-ic-3:3306; this connection is to mf-ic-1:3306.",
+     "fix": "Connect to mf-ic-3:3306 to start it.",
+     "target": {
+      "self": false,
+      "member_name": "mf-ic-3:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "rejoin_instance",
+     "label": "Rejoin to the cluster…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "mysqlsh",
+     "danger": true,
+     "description": "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance).",
+     "member_key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "member_name": "mf-ic-3:3306",
+     "member_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "MySQL Shell was not found on this computer.",
+     "fix": "Install MySQL Shell 8.1.0 or later, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "mf-ic-1:3306"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    }
+   ]
   }
  ],
  "galera": null,
@@ -228,5 +514,134 @@
  ],
  "notes": [
   "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+ ],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": "mfcluster"
+ },
+ "actions": [
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "switch_to_single_primary",
+   "label": "Switch to single-primary…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "The group elects one primary; the other members become read-only. MySQL Shell updates auto_increment and the cluster metadata.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.14 or later, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "mf-ic-1:3306"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "switch_to_multi_primary",
+   "label": "Switch to multi-primary…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Every member accepts writes, and the mode is persisted. MySQL Shell updates auto_increment and the cluster metadata.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.14 or later, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "mf-ic-1:3306"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "set_primary_cluster",
+   "label": "Make primary cluster…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "mf-ic-1:3306"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "force_primary_cluster",
+   "label": "Fail over to this cluster…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster (forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "mf-ic-1:3306"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "rejoin_cluster",
+   "label": "Rejoin cluster to the ClusterSet…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "This cluster is not part of an InnoDB ClusterSet.",
+   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "mf-ic-1:3306"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  }
  ]
 }

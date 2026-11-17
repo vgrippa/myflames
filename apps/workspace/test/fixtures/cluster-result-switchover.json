@@ -1,5 +1,5 @@
 {
- "schema_version": "cluster-action-1.0",
+ "schema_version": "cluster-action-1.1",
  "action": "switchover",
  "status": "done",
  "message": "Sent. The primary is now mf-ic-2:3306.",
@@ -54,5 +54,8 @@
  "checks": [
   "Refresh the Cluster place and see which member is PRIMARY now.",
   "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "session_guard": [
+  "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '1062e681-cc92-11f1-83dd-b6daec340a27');"
  ]
 }

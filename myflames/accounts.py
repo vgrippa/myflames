@@ -1164,12 +1164,14 @@ def _request(operation, name, host, role, options):
 
 
 def plan_change(conn, operation, name, host='%', role=False, actor=None, connection=None, profile=None,
-                change_set_id=None, **options):
+                change_set_id=None, safety=None, **options):
     """Build one account change set from a fresh read. Never sends a write.
 
     Dynamic privilege names come from SHOW PRIVILEGES on the server, never
     from the request. ``actor`` (a privileges-1.0 report) may be passed by an
-    internal caller; otherwise it is read.
+    internal caller; otherwise it is read. ``safety`` is the caller's
+    connection safety when it already computed one (the workspace passes the
+    group connection's effective safety); otherwise it is judged here.
     """
     if operation not in OPERATIONS:
         raise ValueError('Unknown account operation: choose one of %s.' % ', '.join(OPERATIONS))
@@ -1450,7 +1452,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
                    own_account=own, roles=options.get('roles', []))
     hint = privileges.can(actor_model if 'account' in actor_model else dict(actor_model, account=actor.get('account')),
                           action, **context)
-    safety = dbops.connection_safety(profile, connection or _connection(conn))
+    safety = safety or dbops.connection_safety(profile, connection or _connection(conn))
     bound = dbops.connection_identity(connection or _connection(conn), safety)
     display = []
     for sql in statements:
@@ -1567,20 +1569,23 @@ def _run_stdin(conn, sql, passwords=()):
 
 
 def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surface='ui',
-          connection=None, profile=None):
+          connection=None, profile=None, safety=None):
     """Apply an intact plan after the write policy and fresh re-reads.
 
     ``store`` implements the WorkspaceStore audit methods; every attempt,
     declined and refused ones included, gets a record. The caller must also
     gate before opening *conn* (the endpoint and CLI do); this is a second
-    enforcement point. Returns ``account-change-1.0``.
+    enforcement point. ``safety`` is the caller's connection safety when it
+    already computed one (the workspace passes the group connection's
+    effective safety); otherwise it is judged here. Returns
+    ``account-change-1.0``.
     """
     if not isinstance(plan, Plan) or plan._consumed or _json(dict(plan)) != plan._seal:
         raise ValueError('Use an intact account plan built by myflames.')
     if store is None:
         raise ValueError('An audit store is required; nothing was sent.')
     connection = connection or _connection(conn)
-    safety = dbops.connection_safety(profile, connection)
+    safety = safety or dbops.connection_safety(profile, connection)
     decision = dbops.decide(dict(plan['classification'], statements=plan['statements']), safety['type'],
                             safety['read_only'], safety.get('profile_name'))
     out = {'schema_version': CHANGE_SCHEMA, 'change_set_id': plan['change_set_id'], 'operation': plan['operation'],

@@ -4,6 +4,7 @@ import html
 import io
 import json
 import os
+import re
 import secrets
 import socket
 import socketserver
@@ -320,7 +321,8 @@ def _review_tokens(workspace):
 
 def _review_identity(connection, workspace):
     from . import dbops
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                     store=workspace.store)
     return dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
 
 
@@ -364,7 +366,8 @@ def _kill_response(payload, workspace):
     connection_id, mode, expect = payload.get("connection_id"), payload.get("mode", "connection"), payload.get("expect")
     _check_kill_args(connection_id, mode, expect)
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                     store=workspace.store)
     statement = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % connection_id
     decision = dbops.decide(dbops.classify(statement), safety["type"], safety["read_only"], safety["profile_name"])
     plain = connection if isinstance(connection, dict) else {}
@@ -444,7 +447,8 @@ def _bulk_kill_response(payload, workspace):
     details = _bulk_kill_review_details(payload)
     targets, mode = details["targets"], details["mode"]
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                     store=workspace.store)
     plain = connection if isinstance(connection, dict) else {}
     decision = dbops.decide(dbops.classify(details["statements"][0]), safety["type"],
                            safety["read_only"], safety["profile_name"])
@@ -470,7 +474,8 @@ def _bulk_kill_response(payload, workspace):
     def current_policy():
         # A batch may outlive a profile edit. This is a local store read, so
         # retaining the send-boundary policy gate costs no client invocation.
-        current = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        current = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                          store=workspace.store)
         if dbops.connection_identity(plain, current) != dbops.connection_identity(plain, safety):
             return "The connection or its write policy changed after confirmation; nothing was sent."
         return None
@@ -995,7 +1000,7 @@ def _replication_audit(workspace, operation, connection, safety, decision):
         # A confirmation authorizes the saved policy at that moment. Loops
         # must see later profile edits even when no browser request arrives.
         profile = _request_profile(plain, workspace.store)
-        current = dbops.connection_safety(profile, plain)
+        current = dbops.connection_safety(profile, plain, store=workspace.store)
         if plain.get("profile_id") and (profile is None or not current["endpoint_matches"]):
             # Deleting or moving a profile must not turn an old confirmation
             # into permission on an unsaved Production connection.
@@ -1049,7 +1054,7 @@ def _replication_skip_response(payload, workspace, safety=None):
         profile = _request_profile(connection, workspace.store)
         if isinstance(connection, dict) and connection.get("profile_id") and profile is None:
             raise ValueError("This saved connection no longer exists. Choose a connection again.")
-        safety = dbops.connection_safety(profile, connection)
+        safety = dbops.connection_safety(profile, connection, store=workspace.store)
         audit.safety = safety
         audit.policy = dbops.policy_summary(dbops.decide("risky", safety["type"], safety["read_only"],
                                                          safety["profile_name"]))
@@ -1099,7 +1104,7 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
         profile = _request_profile(connection, workspace.store)
         if isinstance(connection, dict) and connection.get("profile_id") and profile is None:
             raise ValueError("This saved connection no longer exists. Choose a connection again.")
-        safety = dbops.connection_safety(profile, connection)
+        safety = dbops.connection_safety(profile, connection, store=workspace.store)
         audit.safety = safety
         audit.policy = dbops.policy_summary(dbops.decide("risky", safety["type"], safety["read_only"],
                                                          safety["profile_name"]))
@@ -1362,65 +1367,214 @@ _ACTION_PROGRESS_LOCK = threading.Lock()
 _TEST_DATABASES_LIMIT = 1000
 
 
+def _connection_test_report(conn, options, password):
+    """Server identity plus a bounded database list for one open connection."""
+    from .dbops import redact
+    from .server_info import product_identity
+    from .server_info import is_readyset_comment
+    try:
+        comment = conn.server_version_comment()
+    except ConnectorError as exc:
+        from .reviewed_writes import client_error, error_number
+        code = error_number(str(exc))
+        if code is None or client_error(code) or "Access denied" in str(exc):
+            raise
+        comment = ""
+    if is_readyset_comment(comment):
+        from . import readyset
+        from .topology_links import parse_readyset_version
+        try:
+            rs_rows = readyset.select(conn, "SHOW READYSET VERSION")
+            version = parse_readyset_version(rs_rows) or "Readyset"
+        except ConnectorError:
+            version = "Readyset"
+    else:
+        version = conn.server_version()
+    identity = product_identity(version, comment)
+    databases = []
+    databases_truncated = False
+    databases_error = ""
+    try:
+        rows = conn.query_rows("SHOW DATABASES")
+        names = [row[0] for row in rows if row and row[0]]
+        databases_truncated = len(names) > _TEST_DATABASES_LIMIT
+        databases = names[:_TEST_DATABASES_LIMIT]
+    except (ValueError, ConnectorError) as exc:
+        databases_error = redact(str(exc), password) or "Could not read the database list."
+    result = {
+        "version": version,
+        "engine": identity["engine"],
+        "flavor": identity["flavor"],
+        "product": identity["product"],
+        "schemas": databases,
+        "databases": databases,
+        "databases_truncated": databases_truncated,
+    }
+    if databases_error:
+        result["databases_error"] = databases_error
+    from .ssh_tunnel import through_text
+    through = through_text(options)
+    if through:
+        # "Through SSH host bastion": the test went through the tunnel.
+        result["through_ssh"] = through
+    return result
+
+
 def _test_connection_response(payload):
     """Test a connection and return server identity plus a bounded database list."""
     from .live import connection_options
     from .connector import MySQLConnection
-    from .dbops import redact
-    from .server_info import product_identity
     options = connection_options(payload.get("connection"))
     password = options.get("password")
     try:
         with MySQLConnection(**options) as conn:
-            from .server_info import is_readyset_comment
-            try:
-                comment = conn.server_version_comment()
-            except ConnectorError as exc:
-                from .reviewed_writes import client_error, error_number
-                code = error_number(str(exc))
-                if code is None or client_error(code) or "Access denied" in str(exc):
-                    raise
-                comment = ""
-            if is_readyset_comment(comment):
-                from . import readyset
-                from .topology_links import parse_readyset_version
-                try:
-                    rs_rows = readyset.select(conn, "SHOW READYSET VERSION")
-                    version = parse_readyset_version(rs_rows) or "Readyset"
-                except ConnectorError:
-                    version = "Readyset"
-            else:
-                version = conn.server_version()
-            identity = product_identity(version, comment)
-            databases = []
-            databases_truncated = False
-            databases_error = ""
-            try:
-                rows = conn.query_rows("SHOW DATABASES")
-                names = [row[0] for row in rows if row and row[0]]
-                databases_truncated = len(names) > _TEST_DATABASES_LIMIT
-                databases = names[:_TEST_DATABASES_LIMIT]
-            except (ValueError, ConnectorError) as exc:
-                databases_error = redact(str(exc), password) or "Could not read the database list."
-            result = {
-                "version": version,
-                "engine": identity["engine"],
-                "flavor": identity["flavor"],
-                "product": identity["product"],
-                "schemas": databases,
-                "databases": databases,
-                "databases_truncated": databases_truncated,
-            }
-            if databases_error:
-                result["databases_error"] = databases_error
-            from .ssh_tunnel import through_text
-            through = through_text(options)
-            if through:
-                # "Through SSH host bastion": the test went through the tunnel.
-                result["through_ssh"] = through
-            return result
+            return _connection_test_report(conn, options, password)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, password)
+
+
+#: Group connection probes (POST /api/connect with probe_members: true): at
+#: most this many member logins at a time, and never more logins than the
+#: group has members (capped at connection_groups.GROUP_MAX_MEMBERS). Probing
+#: happens only on an explicit open or Refresh, never on automatic refresh.
+_CONNECT_PROBE_CONCURRENCY = 4
+_CONNECT_PROBE_BUDGET = 16
+_MEMBER_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                          r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _member_live_facts(conn):
+    """Live identity facts of one probed member; None where the server has none.
+
+    server_uuid, role and state are reported as their own fields: they never
+    rename a member (the store's profile name stands) and never decide group
+    membership (the store does).
+    """
+    facts = {"server_uuid": None, "role": None, "state": None}
+    try:
+        rows = conn.query_rows("SELECT @@global.server_uuid")
+    except ConnectorError:
+        rows = None
+    uuid_text = rows[0][0] if rows and rows[0] else None
+    if isinstance(uuid_text, str) and _MEMBER_UUID.fullmatch(uuid_text):
+        facts["server_uuid"] = uuid_text
+        try:
+            rows = conn.query_rows("SELECT MEMBER_ROLE, MEMBER_STATE FROM "
+                                   "performance_schema.replication_group_members "
+                                   "WHERE MEMBER_ID = '%s'" % uuid_text)
+            if rows and rows[0]:
+                facts["role"] = rows[0][0] if isinstance(rows[0][0], str) else None
+                facts["state"] = rows[0][1] if isinstance(rows[0][1], str) else None
+        except ConnectorError:
+            pass
+    return facts
+
+
+def _connect_response(payload, workspace):
+    """Open a connection group as one Group connection (POST /api/connect).
+
+    The group's current members are read from the store (consent is the
+    store, re-read on every request). The active member is the request's
+    ``active_member_profile_id`` when it is a current member, else the member
+    the stored topology identity marks primary or source, else the first
+    member. The reply is the usual connection discovery for the active member
+    plus ``group_connection``: the effective safety (the strictest member
+    type; read-only stays each member's own), the primary member, and one
+    entry per member with its store name and endpoint. Live facts
+    (server_uuid, role, state, reachable) are separate fields, always read
+    for the active member and for the other members only when the request
+    asks (``probe_members: true``): at most _CONNECT_PROBE_CONCURRENCY logins
+    at a time, within _CONNECT_PROBE_BUDGET in total. Every login uses the
+    member's own saved password; the reply never contains a secret.
+    """
+    from . import connection_groups, dbops
+    from .live import connection_options
+    from .connector import MySQLConnection
+    store = workspace.store
+    group_name = connection_groups.validate_group(payload.get("group_name"))
+    if not group_name:
+        raise ValueError("Name the connection group to open.")
+    probe = payload.get("probe_members") is True
+    requested = payload.get("active_member_profile_id")
+    if requested is not None and (not isinstance(requested, str) or not 0 < len(requested) <= 200):
+        raise ValueError("Invalid active_member_profile_id.")
+    profiles = [p for p in store.list("profile")
+                if isinstance(p, dict) and isinstance(p.get("id"), str)]
+    members = [p for p in profiles if (p.get("group") or "") == group_name]
+    if not members:
+        raise ValueError("No saved connection belongs to this connection group.")
+    active = None
+    if requested is not None:
+        active = next((p for p in members if p["id"] == requested), None)
+        if active is None:
+            raise ValueError("That saved connection is not a member of this connection group.")
+    primary = connection_groups.group_primary(members)
+    if active is None:
+        active = primary or members[0]
+
+    def open_member(profile, with_facts):
+        value = {k: profile.get(k) for k in ("host", "port", "user", "database", "ssl_mode", "ssl_ca",
+                                             "ssh_host", "ssh_user", "ssh_port")
+                 if profile.get(k) not in (None, "")}
+        value["profile_id"] = profile["id"]
+        value["group_name"] = group_name
+        filled = store.connection_with_saved_password(value)
+        options = connection_options(filled)
+        password = options.get("password")
+        try:
+            with MySQLConnection(**options) as conn:
+                return _connection_test_report(conn, options, password), \
+                    _member_live_facts(conn) if with_facts else None
+        except (ValueError, ConnectorError) as exc:
+            _reraise_redacted(exc, password)
+
+    discovery, active_facts = open_member(active, True)
+    facts_by_id = {active["id"]: active_facts}
+    reachable = {active["id"]: True}
+    others = [p for p in members if p["id"] != active["id"]]
+    if probe and others:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def probe_one(profile):
+            try:
+                _report, facts = open_member(profile, True)
+                return profile["id"], facts, True
+            except Exception:
+                # A member that cannot be read is reported unreachable; its
+                # error (and any secret in it) leaves this process nowhere.
+                return profile["id"], None, False
+
+        with ThreadPoolExecutor(max_workers=_CONNECT_PROBE_CONCURRENCY) as pool:
+            for pid, facts, ok in pool.map(probe_one, others[:max(0, _CONNECT_PROBE_BUDGET - 1)]):
+                facts_by_id[pid] = facts
+                reachable[pid] = ok
+    entries = []
+    for profile in members:
+        identity = profile.get("topology_identity") or {}
+        facts = facts_by_id.get(profile["id"]) or {}
+        ptype = profile.get("type")
+        entries.append({
+            "profile_id": profile["id"],
+            "profile_name": profile.get("name") or profile["id"],
+            "host": profile.get("host") or "",
+            "port": profile.get("port") or 3306,
+            "safety": {"type": ptype if ptype in dbops.CONNECTION_TYPES else dbops.DEFAULT_CONNECTION_TYPE,
+                       "read_only": bool(profile.get("read_only"))},
+            "server_uuid": facts.get("server_uuid") or identity.get("server_uuid"),
+            "role": facts.get("role"),
+            "state": facts.get("state"),
+            "reachable": reachable.get(profile["id"]),
+        })
+    effective = connection_groups.group_effective_safety(profiles, group_name) or dbops.DEFAULT_CONNECTION_TYPE
+    result = dict(discovery)
+    result["group_connection"] = {
+        "group_name": group_name,
+        "effective_safety": {"type": effective, "read_only": bool(active.get("read_only"))},
+        "active_member_profile_id": active["id"],
+        "primary_profile_id": primary["id"] if primary is not None else None,
+        "members": entries,
+    }
+    return result
 
 
 def _action_progress(workspace):
@@ -1634,7 +1788,7 @@ def _variable_policy(name, mode, connection, store):
     """The connection's safety and write policy for one variable change,
     judged on a statement of the same kind (no connection is opened)."""
     from . import dbops, variables
-    safety = dbops.connection_safety(_request_profile(connection, store), connection)
+    safety = dbops.connection_safety(_request_profile(connection, store), connection, store=store)
     decision = dbops.decide(dbops.classify(variables.representative_statement(name, mode)), safety["type"],
                             safety["read_only"], safety["profile_name"])
     return safety, decision
@@ -1757,6 +1911,40 @@ def _action_plan(kind, module, conn, payload):
     return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"))
 
 
+def _action_target(payload, connection, kind, store):
+    """The group member a cluster action targets, checked against the store.
+
+    A target other than the active member exists only inside a group
+    connection: the request must name ``group_name``, and the active member
+    and the target must both be current members of that group (consent is the
+    store, read at every call). ProxySQL and Readyset actions take no target.
+    Returns the target's stored profile, or None when no target is named.
+    """
+    target_profile_id = payload.get("target_profile_id")
+    if target_profile_id is None:
+        return None
+    if kind != "cluster":
+        raise ValueError("A target server is only accepted for cluster actions.")
+    if not isinstance(target_profile_id, str) or not 0 < len(target_profile_id) <= 200:
+        raise ValueError("Invalid target_profile_id.")
+    group_name = connection.get("group_name")
+    group = None
+    if group_name is not None:
+        from .connection_groups import validate_group
+        try:
+            group = validate_group(group_name) or None
+        except ValueError:
+            group = None
+    if not group:
+        raise ValueError("Acting on another member requires the connection group it belongs to.")
+    active = _request_profile(connection, store)
+    target = store.get("profile", target_profile_id)
+    if (not isinstance(active, dict) or (active.get("group") or "") != group or
+            not isinstance(target, dict) or (target.get("group") or "") != group):
+        raise ValueError("The target server is not in the active connection group.")
+    return target
+
+
 def _action_response(path, payload, workspace):
     """Plan (read, review token) and Action (the write) for the Cluster and
     ProxySQL places. Action refuses before opening any connection on a
@@ -1771,7 +1959,9 @@ def _action_response(path, payload, workspace):
     module = _action_module(kind)
     connection = payload.get("connection")
     plain = connection if isinstance(connection, dict) else {}
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    target_profile = _action_target(payload, plain, kind, workspace.store)
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                     store=workspace.store, target_profile=target_profile)
     identity = dbops.connection_identity(plain, safety)
     if path.endswith("/plan"):
         options = connection_options(connection)
@@ -1813,7 +2003,8 @@ def _action_response(path, payload, workspace):
     def before_send():
         # The saved policy is read again right before sending: a profile made
         # Read-only (or changed) while the target was read sends nothing.
-        now = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        now = dbops.connection_safety(_request_profile(connection, workspace.store), connection,
+                                      store=workspace.store, target_profile=target_profile)
         if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
                 reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
                 confirmed=True):
@@ -1986,6 +2177,11 @@ def api_response(path, payload, workspace=None):
     if path == "/api/connections/import":
         from .connection_import import response
         return response(payload)
+    if path == "/api/connect":
+        # Opening a connection group as one Group connection (F8).
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        return _connect_response(payload, workspace)
     if path == "/api/analysis/prepare-query":
         from .analysis_query import prepare
         return prepare(payload.get("query"))
@@ -2782,6 +2978,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/groups/save", "/api/profiles/groups/delete",
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
+                             "/api/connect",
                              "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
                              "/api/live/running", "/api/live/sessions", "/api/live/sessions/history", "/api/live/ddl-progress",
                              "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",

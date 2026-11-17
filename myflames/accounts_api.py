@@ -303,10 +303,11 @@ def _retry(plan_id, entry, workspace):
                 _compact_plans(plans)
 
 
-def _build(conn, request, secrets, connection, profile, change_set_id=None):
+def _build(conn, request, secrets, connection, profile, change_set_id=None, safety=None):
     options = dict(request['options'], **secrets)
     return accounts.plan_change(conn, request['operation'], request['user'], request['host'], request['role'],
-                                connection=connection, profile=profile, change_set_id=change_set_id, **options)
+                                connection=connection, profile=profile, change_set_id=change_set_id,
+                                safety=safety, **options)
 
 
 def response(path, payload, workspace, with_saved_password, request_profile):
@@ -341,7 +342,8 @@ def response(path, payload, workspace, with_saved_password, request_profile):
                 return accounts.read_account(conn, user, _text(host, 'host', 255, allow_empty=True), role)
             connection = payload.get('connection')
             profile = request_profile(connection, workspace.store)
-            plan = _build(conn, request, secrets, connection, profile)
+            safety = dbops.connection_safety(profile, connection, store=workspace.store)
+            plan = _build(conn, request, secrets, connection, profile, safety=safety)
     except (ValueError, ConnectorError) as exc:
         _reraise(exc, [options.get('password')] + list(secrets.values()))
     public = dict(plan)
@@ -384,7 +386,7 @@ def _apply(payload, workspace, with_saved_password, request_profile):
         raise ValueError('Enter connection settings.')
     store = workspace.store
     profile = request_profile(connection, store)
-    safety = dbops.connection_safety(profile, connection)
+    safety = dbops.connection_safety(profile, connection, store=store)
     identity = dbops.connection_identity(connection, safety)
     entry = _recall(plan_id, identity, workspace)
     request_payload, reviewed = entry['request'], entry['statements']
@@ -440,7 +442,7 @@ def _apply(payload, workspace, with_saved_password, request_profile):
             if expect != entry['expect'] or accounts.fingerprint(current) != expect:
                 return stale(current, 'The account changed since the review; nothing was sent.')
             try:
-                plan = _build(conn, request, secrets, connection, profile, change_set_id=plan_id)
+                plan = _build(conn, request, secrets, connection, profile, change_set_id=plan_id, safety=safety)
             except ValueError:
                 # The target can also change between the check and the rebuild.
                 current = accounts.read_account(conn, request['user'], request['host'], request['role'])
@@ -453,7 +455,7 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                 return stale(plan, 'The statements would differ from the ones you reviewed; nothing was sent.')
             result = accounts.apply(conn, plan, expect, confirmed=True, typed_name=typed_name,
                                     store=_ApplyAuditStore(store),
-                                    surface='ui', connection=connection, profile=profile)
+                                    surface='ui', connection=connection, profile=profile, safety=safety)
     except (ValueError, ConnectorError) as exc:
         _reraise(exc, all_secrets)
     if result['status'] == 'needs_typed_name':

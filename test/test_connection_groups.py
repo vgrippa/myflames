@@ -9,8 +9,10 @@ import inspect
 import json
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -23,7 +25,7 @@ from test_readyset import FakeReadyset
 from test_proxysql import FakeAdmin
 from test_chart_data import validate
 from myflames import cluster, connection_groups as cg, connection_import, proxysql, readyset
-from myflames import connector, mcp_server, replication as rp, topology_links as tl, ui
+from myflames import connector, dbops, editor_session, mcp_server, replication as rp, topology_links as tl, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import ENDPOINT_FIELDS, WorkspaceStore
 
@@ -1204,6 +1206,252 @@ class TestReviewRegressions(GroupCase):
             conn = opener(valid_peer['id'])
             self.assertEqual(len(lookups), 1)
             self.assertEqual(conn.host, valid_peer['host'])
+
+
+class TestGroupEffectiveSafety(GroupCase):
+    """F5: one server-side rule for a group connection's safety type.
+
+    The strictest type of the active member, the target and every current
+    member of the group (production > staging > development > local > unset)
+    is computed from the store at every call; read-only stays per member.
+    """
+
+    def test_strictest_type_ordering(self):
+        self.assertEqual(cg.strictest_type(['local', 'staging', 'development']), 'staging')
+        self.assertEqual(cg.strictest_type(['development', 'production']), 'production')
+        self.assertEqual(cg.strictest_type(['development', None, '']), 'development')
+        self.assertIsNone(cg.strictest_type([None, '', 'bogus']))
+        profiles = [{'id': 'a', 'group': 'G', 'type': 'development'},
+                    {'id': 'b', 'group': 'G', 'type': 'production'},
+                    {'id': 'c', 'group': 'H', 'type': 'staging'},
+                    {'id': 'd', 'group': 'G'}]
+        self.assertEqual(cg.group_effective_safety(profiles, 'G'), 'production')
+        self.assertEqual(cg.group_effective_safety(profiles, 'H'), 'staging')
+        self.assertIsNone(cg.group_effective_safety(profiles, 'missing'))
+
+    def test_editor_tab_pinned_to_a_member_uses_the_group_type(self):
+        dev = self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        payload = {'connection': dict(self.request(dev), group_name='G')}
+        _, identity, safety, _ = editor_session._connection_facts(payload, self.store)
+        self.assertEqual(safety['type'], 'production')
+        self.assertTrue(safety['endpoint_matches'])
+        self.assertFalse(safety['read_only'], 'read-only stays each member\'s own flag')
+        statement = 'INSERT INTO t VALUES (1)'
+        decision = dbops.decide(dbops.classify(statement), safety['type'], safety['read_only'],
+                                safety['profile_name'])
+        self.assertEqual(dbops.gate(decision, confirmed=False)[0], 'needs_confirmation')
+        # Removing the Production member lowers the group back to its members.
+        self.store.assign_profile_group(['prod-b'], '')
+        _, identity_after, safety_after, _ = editor_session._connection_facts(payload, self.store)
+        self.assertEqual(safety_after['type'], 'development')
+        decision = dbops.decide(dbops.classify(statement), safety_after['type'], safety_after['read_only'])
+        self.assertIsNone(dbops.gate(decision, confirmed=False))
+        self.assertNotEqual(identity, identity_after,
+                            'the identity a session or token is bound to follows the group')
+
+    def test_a_production_member_joining_voids_review_tokens(self):
+        dev = self.save('dev-a', group='G', type='development')
+        workspace = types.SimpleNamespace(store=self.store)
+        conn = dict(self.request(dev), group_name='G')
+        details = {'connection_id': 7, 'mode': 'connection', 'expect': {}, 'statements': ['KILL CONNECTION 7']}
+        identity = ui._review_identity(conn, workspace)
+        token = ui._review_tokens(workspace).issue('kill', identity, details)
+        self.save('prod-b', group='G')
+        with self.assertRaises(ValueError):
+            ui._review_tokens(workspace).consumer(token, 'kill', ui._review_identity(conn, workspace), details)
+
+    def test_action_target_requires_and_uses_the_group(self):
+        dev = self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        outsider = self.save('other-c', group='H')
+        workspace = types.SimpleNamespace(store=self.store)
+        conn = self.request(dev)
+        # A target without the group connection is refused before any connection opens.
+        for payload in ({'connection': conn, 'target_profile_id': 'prod-b'},
+                        {'connection': dict(conn, group_name='G'), 'target_profile_id': outsider['id']},
+                        {'connection': dict(conn, group_name='G'), 'target_profile_id': 'missing'}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    ui.api_response('/api/live/cluster/plan', payload, workspace)
+        # A target is a cluster concept only.
+        with self.assertRaises(ValueError):
+            ui.api_response('/api/live/proxysql/plan',
+                            {'connection': dict(conn, group_name='G'), 'target_profile_id': 'prod-b'}, workspace)
+        target = ui._action_target({'target_profile_id': 'prod-b'}, dict(conn, group_name='G'), 'cluster',
+                                   self.store)
+        self.assertEqual(target['id'], 'prod-b')
+        safety = dbops.connection_safety(dev, dict(conn, group_name='G'), store=self.store,
+                                         target_profile=target)
+        self.assertEqual(safety['type'], 'production')
+
+    def test_group_safety_fails_closed(self):
+        dev = self.save('dev-a', group='G', type='development')
+        conn = dict(self.request(dev), group_name='G')
+        with mock.patch.object(self.store, 'list', side_effect=sqlite3.Error('locked')):
+            safety = dbops.connection_safety(dev, conn, store=self.store)
+        self.assertEqual(safety['type'], 'production')
+        bad = dbops.connection_safety(dev, dict(conn, group_name='G\x00'), store=self.store)
+        self.assertEqual(bad['type'], 'production')
+
+
+class _FakeMemberConn(object):
+    """Counts and bounds member logins for /api/connect without a network."""
+    lock = threading.Lock()
+    logins = []
+    active = 0
+    peak = 0
+    uuids = {}
+    fail = frozenset()
+    pause = 0.0
+
+    @classmethod
+    def reset(cls, uuids=None, fail=(), pause=0.0):
+        with cls.lock:
+            cls.logins, cls.active, cls.peak = [], 0, 0
+        cls.uuids, cls.fail, cls.pause = dict(uuids or {}), frozenset(fail), pause
+
+    def __init__(self, **options):
+        self.host = options.get('host')
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.logins.append(self.host)
+
+    def __enter__(self):
+        if self.host in _FakeMemberConn.fail:
+            raise ConnectorError('Access denied for user')
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.active += 1
+            _FakeMemberConn.peak = max(_FakeMemberConn.peak, _FakeMemberConn.active)
+        if _FakeMemberConn.pause:
+            time.sleep(_FakeMemberConn.pause)
+        return self
+
+    def __exit__(self, *args):
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.active -= 1
+        return False
+
+    def server_version_comment(self):
+        return 'MySQL Community Server (GPL)'
+
+    def server_version(self):
+        return '8.0.36'
+
+    def query_rows(self, sql):
+        if sql == 'SHOW DATABASES':
+            return [('app',)]
+        if sql == 'SELECT @@global.server_uuid':
+            uuid = _FakeMemberConn.uuids.get(self.host)
+            return [(uuid,)] if uuid else []
+        if 'replication_group_members' in sql:
+            return [('PRIMARY', 'ONLINE')]
+        return []
+
+
+class TestGroupConnect(GroupCase):
+    """F8/F10: POST /api/connect opens a group as one Group connection."""
+
+    UUIDS = {'dev-a.example': 'aaaaaaaa-0000-4000-8000-000000000001',
+             'prod-b.example': 'bbbbbbbb-0000-4000-8000-000000000002',
+             'replica-c.example': 'cccccccc-0000-4000-8000-000000000003'}
+
+    def connect(self, payload, workspace):
+        with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn):
+            return ui.api_response('/api/connect', payload, workspace)
+
+    def setUp(self):
+        super(TestGroupConnect, self).setUp()
+        _FakeMemberConn.reset(uuids=self.UUIDS)
+        self.workspace = types.SimpleNamespace(store=self.store)
+
+    def test_group_name_validation_and_member_choice(self):
+        self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        for payload in ({}, {'group_name': ''}, {'group_name': 'G\x00'}, {'group_name': 'x' * 81},
+                        {'group_name': 'missing'}, {'group_name': None},
+                        {'group_name': 'G', 'active_member_profile_id': 'x' * 201},
+                        {'group_name': 'G', 'active_member_profile_id': 'missing'}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    self.connect(payload, self.workspace)
+        self.assertEqual(_FakeMemberConn.logins, [], 'a refused request never logs in')
+        reply = self.connect({'group_name': 'G', 'active_member_profile_id': 'prod-b'}, self.workspace)
+        self.assertEqual(reply['group_connection']['active_member_profile_id'], 'prod-b')
+        self.assertEqual(_FakeMemberConn.logins, ['prod-b.example'])
+
+    def test_active_member_defaults_to_the_stored_source_then_the_first(self):
+        self.save('dev-a', group='G', type='development')
+        source = self.save('prod-b', group='G')
+        replica = self.save('replica-c', group='G', type='development')
+        self.store.record_topology_identity(source['id'], {'server_uuid': self.UUIDS['prod-b.example']})
+        self.store.record_topology_identity(replica['id'],
+                                            {'server_uuid': self.UUIDS['replica-c.example'],
+                                             'source_uuids': [self.UUIDS['prod-b.example']]})
+        reply = self.connect({'group_name': 'G'}, self.workspace)
+        group = reply['group_connection']
+        self.assertEqual(group['active_member_profile_id'], 'prod-b')
+        self.assertEqual(group['primary_profile_id'], 'prod-b')
+        # Without probe_members only the active member is logged in to.
+        self.assertEqual(_FakeMemberConn.logins, ['prod-b.example'])
+        self.assertEqual(group['effective_safety'], {'type': 'production', 'read_only': False})
+        by_id = {m['profile_id']: m for m in group['members']}
+        self.assertEqual(set(by_id), {'dev-a', 'prod-b', 'replica-c'})
+        self.assertIs(by_id['prod-b']['reachable'], True)
+        self.assertEqual(by_id['prod-b']['role'], 'PRIMARY')
+        self.assertIsNone(by_id['dev-a']['reachable'])
+        self.assertIsNone(by_id['dev-a']['role'])
+        # The stored identity stands in for the uuid until a probe reads it live.
+        self.assertEqual(by_id['replica-c']['server_uuid'], self.UUIDS['replica-c.example'])
+        # The reply is the usual discovery plus the group block, never a secret.
+        self.assertEqual(reply['engine'], 'mysql')
+        self.assertNotIn('test-password', json.dumps(reply))
+
+    def test_probe_members_is_bounded_and_group_only(self):
+        profiles = [self.save('member-%02d' % i, group='G') for i in range(16)]
+        self.save('outsider', group='H')
+        _FakeMemberConn.reset(uuids=self.UUIDS, pause=0.02, fail=('member-07.example',))
+        reply = self.connect({'group_name': 'G', 'probe_members': True}, self.workspace)
+        with _FakeMemberConn.lock:
+            logins, peak = list(_FakeMemberConn.logins), _FakeMemberConn.peak
+        self.assertEqual(len(logins), 16, 'every member of a 16-member group is probed once')
+        self.assertLessEqual(peak, 4, 'at most 4 member logins at a time')
+        self.assertGreater(peak, 1, 'probes overlap')
+        allowed = {p['id'] + '.example' for p in profiles}
+        self.assertEqual(set(logins), allowed, 'only current members of the group are logged in to')
+        by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+        self.assertIs(by_id['member-07']['reachable'], False)
+        self.assertNotIn('outsider', by_id)
+        # An explicit open without the probe flag touches the active member only.
+        _FakeMemberConn.reset(uuids=self.UUIDS)
+        self.connect({'group_name': 'G'}, self.workspace)
+        self.assertEqual(len(_FakeMemberConn.logins), 1)
+
+    def test_topology_labels_never_rename_a_member(self):
+        victim = self.save('dev-a', group='G', name='dev-a-name', type='development')
+        other = self.save('prod-b', group='G', name='prod-db-2')
+        for label in ('prod-db-2</b>', 'prod-db-2'):
+            with self.subTest(label=label):
+                raw = self.store._profile(victim['id'])
+                raw['topology_identity'] = {'server_uuid': self.UUIDS['dev-a.example'],
+                                            'label': label, 'name': other['name'], 'role': 'PRIMARY</b>'}
+                conn = self.store._connect()
+                try:
+                    with conn:
+                        conn.execute("UPDATE records SET payload=? WHERE id=? AND kind='profile'",
+                                     (json.dumps(raw), victim['id']))
+                finally:
+                    conn.close()
+                reply = self.connect({'group_name': 'G'}, self.workspace)
+                by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+                self.assertEqual(by_id['dev-a']['profile_name'], 'dev-a-name')
+                self.assertEqual(by_id['prod-b']['profile_name'], 'prod-db-2')
+                self.assertEqual(by_id['dev-a']['host'], 'dev-a.example')
+                self.assertNotIn('</b>', json.dumps(reply))
+                self.assertIsNone(reply['group_connection']['primary_profile_id'],
+                                  'an injected role label is not topology evidence')
+                first = reply['group_connection']['members'][0]
+                self.assertEqual(reply['group_connection']['active_member_profile_id'], first['profile_id'],
+                                 'with no primary evidence the active member is the first member')
 
 
 if __name__ == '__main__':

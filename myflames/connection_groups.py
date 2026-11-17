@@ -18,6 +18,50 @@ CLUSTER_IDENTITY_FIELDS = tuple(key for key in IDENTITY_FIELDS if key != 'server
 GROUP_MAX_LEN = 80
 GROUP_MAX_MEMBERS = 16
 
+#: Strictness order of connection types for a group's effective safety:
+#: production first, then staging, development, local; anything else is unset.
+_TYPE_STRICTNESS = {'production': 4, 'staging': 3, 'development': 2, 'local': 1}
+
+
+def strictest_type(types):
+    """The strictest connection type in *types*; None when every value is unset."""
+    best, best_rank = None, 0
+    for value in types or ():
+        rank = _TYPE_STRICTNESS.get(value, 0) if isinstance(value, str) else 0
+        if rank > best_rank:
+            best, best_rank = value, rank
+    return best
+
+
+def group_effective_safety(profiles, group_name):
+    """The strictest connection type across the current members of *group_name*.
+
+    Read-only stays each member's own flag; only the environment type is
+    shared. Member names and endpoints always come from the store record,
+    never from topology evidence.
+    """
+    return strictest_type(profile.get('type') for profile in profiles or ()
+                          if isinstance(profile, dict) and (profile.get('group') or '') == group_name)
+
+
+def group_primary(members):
+    """The member the stored topology identity marks primary or source, or None.
+
+    A member is a replication source when another member's recorded identity
+    lists its server UUID as a source. Topology labels never decide this and
+    never rename a member.
+    """
+    members = [m for m in members or () if isinstance(m, dict)]
+    sources = set()
+    for profile in members:
+        identity = profile.get('topology_identity') or {}
+        sources.update(identity.get('source_uuids') or ())
+    for profile in members:
+        uuid = (profile.get('topology_identity') or {}).get('server_uuid')
+        if uuid and uuid in sources:
+            return profile
+    return None
+
 
 class ProfileReadError(ValueError):
     """An app-built refusal, safe to show without copying database/client text."""

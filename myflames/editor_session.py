@@ -2402,7 +2402,7 @@ def _connection_facts(payload, store):
         if not isinstance(profile_id, str) or len(profile_id) > 200:
             raise ValueError("Invalid connection field: profile_id")
         profile = store.get("profile", profile_id)
-    safety = dbops.connection_safety(profile, connection)
+    safety = dbops.connection_safety(profile, connection, store=store)
     keyed = dict(options)
     keyed["profile_id"] = profile_id or None
     identity = dbops.connection_identity(keyed, safety)

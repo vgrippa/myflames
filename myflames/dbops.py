@@ -1131,7 +1131,7 @@ def normalize_type(value):
     return value.lower()
 
 
-def connection_safety(profile=None, connection=None):
+def connection_safety(profile=None, connection=None, store=None, target_profile=None):
     """The type and read-only flag a write on this connection is judged by.
 
     A request never lowers the protection. An unsaved connection is
@@ -1142,6 +1142,15 @@ def connection_safety(profile=None, connection=None):
     the saved password); otherwise it is ``production``. The profile's
     read-only flag applies either way. Returns ``{"profile_id",
     "profile_name", "type", "read_only", "endpoint_matches"}``.
+
+    With *store* (the workspace store), a request that names a connection
+    group (``connection["group_name"]``) or a *target_profile* other than the
+    active member is judged by the group's effective safety: the strictest
+    type of the active member, the target and every current member of the
+    group (connection_groups.group_effective_safety; production > staging >
+    development > local > unset). Read-only stays the member's own flag. A
+    group the store cannot confirm keeps ``production``: the protection never
+    drops below it.
     """
     connection = connection if isinstance(connection, dict) else {}
     asked_read_only = connection.get("read_only") is True
@@ -1151,10 +1160,57 @@ def connection_safety(profile=None, connection=None):
         matches = _same_endpoint(profile, connection) if connection else True
         if not matches:
             ctype = DEFAULT_CONNECTION_TYPE
-        return {"profile_id": profile.get("id"), "profile_name": profile.get("name"), "type": ctype,
-                "read_only": bool(profile.get("read_only")) or asked_read_only, "endpoint_matches": matches}
-    return {"profile_id": None, "profile_name": None, "type": DEFAULT_CONNECTION_TYPE,
-            "read_only": asked_read_only, "endpoint_matches": False}
+        safety = {"profile_id": profile.get("id"), "profile_name": profile.get("name"), "type": ctype,
+                  "read_only": bool(profile.get("read_only")) or asked_read_only, "endpoint_matches": matches}
+    else:
+        safety = {"profile_id": None, "profile_name": None, "type": DEFAULT_CONNECTION_TYPE,
+                  "read_only": asked_read_only, "endpoint_matches": False}
+    if store is None:
+        return safety
+    return _group_safety(safety, profile, connection, store, target_profile)
+
+
+def _group_safety(safety, profile, connection, store, target_profile=None):
+    """Raise *safety* to the group connection's effective type (never lower it).
+
+    Applies when the request names ``group_name`` or targets a member other
+    than the active one. The group's members are read from the store at every
+    call, so a member joining or leaving changes the policy (and the
+    :func:`connection_identity` built from it) at once.
+    """
+    from .connection_groups import _TYPE_STRICTNESS, group_effective_safety, strictest_type, validate_group
+    group_name = connection.get("group_name")
+    target_id = target_profile.get("id") if isinstance(target_profile, dict) else None
+    active_id = safety.get("profile_id") or connection.get("profile_id")
+    if group_name in (None, "") and (not target_id or target_id == active_id):
+        return safety
+    group = None
+    if group_name not in (None, ""):
+        try:
+            group = validate_group(group_name) or None
+        except ValueError:
+            group = None
+        if group is None:
+            # An unusable group claim cannot lower the protection.
+            return dict(safety, type=DEFAULT_CONNECTION_TYPE)
+    try:
+        profiles = store.list("profile")
+    except Exception:
+        profiles = None
+    if not isinstance(profiles, (list, tuple)):
+        return dict(safety, type=DEFAULT_CONNECTION_TYPE)
+    candidates = [safety["type"]]
+    if group is not None:
+        candidates.append(group_effective_safety(profiles, group))
+    elif isinstance(profile, dict) and isinstance(profile.get("group"), str) and profile.get("group"):
+        candidates.append(group_effective_safety(profiles, profile["group"]))
+    if isinstance(target_profile, dict):
+        target_type = target_profile.get("type")
+        candidates.append(target_type if target_type in CONNECTION_TYPES else DEFAULT_CONNECTION_TYPE)
+    effective = strictest_type(candidates)
+    if effective is not None and _TYPE_STRICTNESS.get(effective, 0) > _TYPE_STRICTNESS.get(safety["type"], 0):
+        return dict(safety, type=effective)
+    return safety
 
 
 def _same_endpoint(profile, connection):

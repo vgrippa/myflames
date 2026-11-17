@@ -1,5 +1,5 @@
 {
- "schema_version": "cluster-action-1.0",
+ "schema_version": "cluster-action-1.1",
  "action": "switchover",
  "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
  "typed_guard": null,
