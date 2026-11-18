@@ -1137,8 +1137,10 @@ class Endpoints(Home):
         target = next(x for x in report['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
         conn = F.conn('ic-8.4-healthy')
         plan = self.plan(conn, 'switchover', target['key'])
-        with mock.patch.object(conn, 'run_write', create=True,
-                               side_effect=ConnectorError('ERROR 3910 at line 2: replica channel running')):
+        from _reviewed_replay import acknowledged_error
+        def refuse(sql, **kwargs):
+            raise acknowledged_error(ConnectorError('ERROR 3910 at line 2: replica channel running'), sql)
+        with mock.patch.object(conn, 'run_write', create=True, side_effect=refuse):
             result = self.send(conn, plan)
         self.assertEqual((result['status'], result['message']),
                          ('failed', 'The server refused %s: replica channel running. Nothing changed.'

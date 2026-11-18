@@ -42,14 +42,14 @@ class BatchConnection(object):
         if 'SELECT @@version, @@performance_schema' in sql:
             return '8.4.6\t1\n'
         if 'SELECT @@server_uuid' in sql:
-            return '11111111-2222-3333-4444-555555555555\n'
+            return '11111111-2222-3333-4444-555555555555\tOFF\tNULL\n'
         if locks.KILL_TAG in sql:
             self.killed.add(int(sql.rsplit(' ', 1)[1]))
             return ''
         if 'information_schema.INNODB_TRX' in sql:
             return ''
         if 'FROM performance_schema.threads' in sql:
-            if ' IN (' in sql:
+            if 'PROCESSLIST_ID IN (' in sql:
                 if self.after_error:
                     raise ConnectorError('ERROR 1142: command denied')
                 return batch([[101, 1, 'app', 'localhost', None, 'Query', 3, None, 'SELECT 1']]) if self.remaining else ''
@@ -58,7 +58,8 @@ class BatchConnection(object):
                 return ''
             return batch([[cid + 100, cid, 'other' if cid == self.changed else 'app', 'localhost',
                            None, GR_COMMAND if cid == self.protected else 'Query', 3, None, 'SELECT 1', 999] +
-                          (['server-2' if cid == self.server_changed else '11111111-2222-3333-4444-555555555555'] if '@@server_uuid' in sql else [])])
+                          (['server-2' if cid == self.server_changed else '11111111-2222-3333-4444-555555555555',
+                            'OFF', None] if '@@server_uuid' in sql else [])])
         raise AssertionError(sql)
 
 
@@ -154,7 +155,7 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual((result['killed'], result['refused']), (4, 1))
         self.assertEqual(sum('SELECT @@server_uuid' in s for s in conn.calls), 1)
         self.assertEqual(sum('SELECT @@version, @@performance_schema' in s for s in conn.calls), 1)
-        self.assertEqual(sum('FROM performance_schema.threads' in s and ' IN (' in s for s in conn.calls), 1)
+        self.assertEqual(sum('FROM performance_schema.threads' in s and 'PROCESSLIST_ID IN (' in s for s in conn.calls), 1)
         self.assertEqual(sum('PROCESSLIST_ID = ' in s for s in conn.calls), 5)
         self.assertEqual(len(conn.calls), 3 + 2 * 5 + 4)
         self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
@@ -162,6 +163,43 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(len(self.records()), 5)
         self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
                                             'rows_locked': None, 'same_trx': None, 'trx_survived': None} for r in self.records() if r['status'] == 'ok'))
+
+    def test_bulk_identity_read_failure_refuses_and_audits_every_target(self):
+        for engine in ('mysql', 'mariadb'):
+            for mode in ('connection', 'query'):
+                with self.subTest(engine=engine, mode=mode):
+                    conn = BatchConnection()
+                    original = conn.run
+                    identity_reads = []
+
+                    def fail_identity(sql, **kwargs):
+                        if 'SELECT @@version, @@performance_schema' in sql and engine == 'mariadb':
+                            return '11.4.13-MariaDB\t1\n'
+                        if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                            identity_reads.append(sql)
+                            raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for test-secret')
+                        return original(sql, **kwargs)
+
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(conn, 'run', side_effect=fail_identity), \
+                            mock.patch.object(conn, 'run_write') as send:
+                        result = ui._bulk_kill_response(self.payload(2, mode=mode), self.workspace)
+                    send.assert_not_called()
+                    self.assertEqual(conn.killed, set())
+                    self.assertEqual(len(identity_reads), 1, 'reuse the failed read without retrying')
+                    self.assertEqual((result['killed'], result['refused'], result['errors']), (0, 2, 0))
+                    records = {record['id']: record for record in self.records()}
+                    for row in result['results']:
+                        self.assertEqual(row['status'], 'refused')
+                        self.assertIsNone(row['after'])
+                        self.assertTrue(row['message'].startswith('The identity check could not run: '))
+                        self.assertIn('SELECT denied for [redacted]', row['message'])
+                        record = records[row['audit_id']]
+                        self.assertEqual((record['status'], record['outcome'], record['message']),
+                                         ('refused', 'identity_unavailable', row['message']))
+                        self.assertEqual(record['statements'],
+                                         [locks.KILL_TAG + 'KILL %s %d' % (mode.upper(), row['connection_id'])])
+                    self.assertNotIn('test-secret', json.dumps(result) + json.dumps(self.records()))
 
     def test_target_read_verifies_server_identity_without_an_extra_client_call(self):
         conn = BatchConnection(server_changed=2)

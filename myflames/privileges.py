@@ -1161,7 +1161,7 @@ def statement_privileges(model, statement, database=None):
 
 
 _VARIABLES = ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles',
-              'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')
+              'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port', 'wsrep_on', 'wsrep_node_name')
 
 
 def _no_current_role(code, text):

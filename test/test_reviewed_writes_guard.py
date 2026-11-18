@@ -5,6 +5,7 @@ and simulate mysql/MariaDB batch diagnostics, including MariaDB's SQL echo.
 """
 import copy
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -29,14 +30,23 @@ MISMATCH = 'ERROR 1242 (21000) at line 2: Subquery returns more than 1 row'
 class Writer(object):
     password = None
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, guard_passed=None):
         self.writes = []
         self.error = error
+        self.guard_passed = guard_passed
 
     def run_write(self, sql, **kwargs):
         self.writes.append(sql)
         if self.error:
-            raise ConnectorError(self.error)
+            error = ConnectorError(self.error)
+            markers = re.findall(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)';", sql)
+            location = re.search(r'\bat line (\d+)\b', self.error)
+            if markers and location:
+                packets = guarded_packets(sql)
+                index = next((i for i, p in enumerate(packets) if p[2] == int(location.group(1))), 0)
+                passed = self.guard_passed if self.guard_passed is not None else dbops.error_code(self.error) != 1242
+                error.guard_markers = tuple(markers[:index + (1 if passed else 0)])
+            raise error
         return ''
 
     run_stdin = run_write
@@ -285,7 +295,8 @@ class GuardTests(unittest.TestCase):
                 mock.patch.object(conn, '_run_client', return_value=reply) as client:
             out = reviewed_writes.execute(conn, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'identity_mismatch', []))
-        self.assertEqual(client.call_args[1]['input'], dbops.target_guarded_script([MYSQL_GUARD], plan['statements'])[0].encode('utf-8'))
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(client.call_args[1]['input'].decode('utf-8'))],
+                         [(MYSQL_GUARD, s) for s in plan['statements']])
         argv = client.call_args[0][0]
         self.assertIn('--skip-reconnect', argv)
         self.assertNotIn('--force', argv)
@@ -412,7 +423,7 @@ class GuardTests(unittest.TestCase):
                 def send(sql, **kwargs):
                     writes.append(sql)
                     if len(writes) == 2:
-                        raise ConnectorError(error)
+                        Writer(error).run_write(sql)
                     return ''
                 conn.run_stdin = send
                 with mock.patch.object(privileges, 'read_privileges', return_value=actor('mariadb')):

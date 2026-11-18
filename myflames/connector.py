@@ -1405,16 +1405,21 @@ class MySQLConnection:
         error. Errors redact the connection password and SQL credential
         clauses before they leave the connector.
         """
-        from .dbops import redact
+        from .dbops import redact, strip_target_guard_markers, target_error_text, target_script_markers
         try:
-            return self._run_write(sql, extra_flags, timeout)
+            return strip_target_guard_markers(self._run_write(sql, extra_flags, timeout), target_script_markers(sql))
         except subprocess.TimeoutExpired:
             raise ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
                 timeout or self.query_timeout)) from None
         except ClientAuthPluginError:
             raise
         except (ConnectorError, OSError) as exc:
-            raise ConnectorError(redact(str(exc), self.password)) from None
+            text = target_error_text(exc) if (sql or "").startswith("DELIMITER ") else str(exc)
+            error = ConnectorError(redact(text, self.password))
+            # Preserve only private guard acknowledgements, never arbitrary
+            # result rows (CREATE USER can return a generated password).
+            error.guard_markers = getattr(exc, "guard_markers", ())
+            raise error from None
 
     def _run_write(self, sql, extra_flags, timeout):
         with self._invocation_defaults() as defaults_path:
@@ -1439,9 +1444,13 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
-            raise ConnectorError(
+            error = ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
+            from .dbops import target_guard_markers, target_script_markers
+            private = set(target_script_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(proc.stdout)) if m in private)
+            raise error
         return _client_text(proc.stdout)
 
     def query_rows(self, sql):

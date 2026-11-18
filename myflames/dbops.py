@@ -1064,6 +1064,66 @@ TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one
 # Both clients keep their delimiter in a 16-byte buffer. None of these
 # candidates contains whitespace, quoting or a client backslash command.
 _TARGET_DELIMITERS = ("$$", "//", "__mf_end_1__", "__mf_end_2__")
+_TARGET_MARKER = re.compile(r"^myflames_guard_ok_[0-9a-f]{32}_[0-9]+$", re.M)
+
+
+def target_guard_markers(text):
+    """Private acknowledgements only, never SQL result rows or credentials."""
+    return tuple(_TARGET_MARKER.findall(text or ""))
+
+
+def target_script_markers(sql):
+    """Only acknowledgements inserted immediately after a packet's guard."""
+    return tuple(re.findall(r"^SET @myflames_target = [^\r\n]*?; SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ",
+                            sql or "", re.M))
+
+
+def strip_target_guard_markers(text, markers=()):
+    # Filter this invocation's nonce, preserving ordinary result rows that
+    # happen to resemble the reserved prefix, including unguarded queries.
+    private = set(markers)
+    return "\n".join(row for row in text.split("\n") if row not in private)
+
+
+def _target_error_match(text):
+    # MariaDB can echo the entire query before its diagnostic. A newline in
+    # a quoted value may itself look like ERROR ... at line ...; only search
+    # after the client's closing echo separator in that case.
+    boundary = text.rfind("\n--------------\n")
+    return _TARGET_ERROR.search(text, boundary + len("\n--------------\n") if boundary >= 0 else 0)
+
+
+def target_error_text(exc):
+    """The diagnostic without echoed SQL or private acknowledgement names."""
+    text = str(exc)
+    match = _target_error_match(text)
+    if match:
+        text = text[match.start():]
+    return re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
+
+
+def target_galera_identity(conn, engine, identity, variables, tag=""):
+    """Add review-time node evidence when wsrep is enabled, failing closed.
+
+    Keep the missing UUID in the identity on a failed read: the guard builder
+    must refuse it, rather than silently falling back to a shared hostname.
+    SHOW GLOBAL VARIABLES supplies wsrep_on without assuming the engine has it.
+    """
+    from .connector import ConnectorError
+    out = dict(identity or {})
+    if engine != "pxc" and str((variables or {}).get("wsrep_on", "")).upper() not in ("ON", "1"):
+        return out
+    out.update(wsrep_on="ON", wsrep_gcomm_uuid=None)
+    table = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
+    try:
+        text = conn.run(tag + "SELECT VARIABLE_VALUE FROM " + table +
+                        " WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'", extra_flags=["--comments"])
+    except ConnectorError:
+        return out
+    rows = text.strip().split("\n")
+    if len(rows) == 1 and _TARGET_UUID.fullmatch(rows[0]):
+        out["wsrep_gcomm_uuid"] = rows[0]
+    return out
 
 
 def target_session_guard(engine, identity):
@@ -1103,10 +1163,10 @@ def target_session_guard(engine, identity):
                                 for key in ["server_id", "hostname", "port"] + names[1:])
     else:
         raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
-    if engine == "pxc" or "wsrep_gcomm_uuid" in identity:
+    if engine == "pxc" or "wsrep_gcomm_uuid" in identity or str(identity.get("wsrep_on", "")).upper() in ("ON", "1"):
         uuid = identity.get("wsrep_gcomm_uuid")
         if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
-            raise ValueError("The reviewed Galera node UUID is missing or invalid. Nothing was sent. "
+            raise ValueError("The identity check could not run: the reviewed Galera node UUID is missing or invalid. Nothing was sent. "
                              "Refresh and review again.")
         # MariaDB 10.11/11.4/11.8 sql/sql_show.cc: GLOBAL_STATUS uses
         # variables_fields_info (VARIABLE_NAME, VARIABLE_VALUE). MySQL/PXC
@@ -1118,53 +1178,120 @@ def target_session_guard(engine, identity):
     return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
 
 
-def target_guarded_script(guard, statements):
+class TargetPacketLines(tuple):
+    """Packet locations plus private acknowledgements and reviewed indices.
+
+    Tuple compatibility keeps the existing SQL and Shell error consumers
+    intact. A tuple of statements explicitly groups trusted, session-dependent
+    units into one packet; a plain string must always be exactly one unit.
+    """
+    def __new__(cls, lines, markers, indices, sizes):
+        out = tuple.__new__(cls, lines)
+        out.markers, out.indices, out.sizes = tuple(markers), tuple(indices), tuple(sizes)
+        return out
+
+
+def target_statement(sql, backslash_escapes=None):
+    """Require one complete unit, with the same boundaries in both modes.
+
+    A known mode is permitted only for internal wrappers that assert that
+    mode before using a literal in this very packet.
+    """
+    readings = (True, False) if backslash_escapes is None else (backslash_escapes,)
+    spans = []
+    for escaping in readings:
+        units = split_statements(sql, backslash_escapes=escaping)
+        if len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != ";":
+            raise ValueError("Each reviewed statement must be one complete SQL statement with closed quotes and comments. "
+                             "Nothing was sent. Review again.")
+        unit = units[0]
+        # split_statements consumes valid DELIMITER commands. They cannot
+        # hide before or after the one unit and change the packet framing.
+        # Only terminal semicolons, whitespace and closed comments may trail
+        # that unit; a leading command is never part of it.
+        pattern = TOKEN if escaping else TOKEN_NO_BACKSLASH
+        tail = pattern.sub(lambda m: " " if m.group().startswith(("/*", "--", "#")) else m.group(),
+                           sql[unit["end"]:])
+        if sql[:unit["start"]].strip() or tail.strip("; \t\r\n"):
+            raise ValueError("The reviewed SQL contains a client command or uncertain boundaries. "
+                             "Nothing was sent. Review again.")
+        spans.append((units[0]["start"], units[0]["end"]))
+    if len(set(spans)) != 1:
+        raise ValueError("The reviewed SQL has ambiguous quote boundaries. Nothing was sent. Review again.")
+    return sql
+
+
+def target_guarded_script(guard, statements, backslash_escapes=None):
     """Return (client input, packet start lines) for reviewed SQL.
 
     DELIMITER is a client command, even in --binary-mode. Each delimited
     buffer becomes one COM_QUERY containing the identity check followed by
     its statement. The server stops that packet at its first error; batch
-    mode stops before sending the next packet. Keep the reviewed SQL intact,
-    including newlines and any internal password-mode setup statements.
+    mode stops before sending the next packet. Strings are single complete
+    statements; internal tuples keep session setup and use in the same packet.
     Audit/review metadata remains the original guard plus statements.
     """
     statements = list(statements)
-    if len(guard) != 1 or not guard[0].endswith(";") or not statements or \
-            not all(isinstance(s, str) and s.strip() for s in statements):
+    if len(guard) != 1 or not isinstance(guard[0], str) or not guard[0].endswith(";") or not statements:
         raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
+    target_statement(guard[0])
+    groups = [s if isinstance(s, tuple) else (s,) for s in statements]
+    if any(not group or any(not isinstance(s, str) or not s.strip() for s in group) for group in groups):
+        raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
+    for group in groups:
+        for statement in group:
+            target_statement(statement, backslash_escapes)
     delimiter = next((d for d in _TARGET_DELIMITERS
-                      if all(d not in s for s in list(guard) + statements)), None)
+                      if all(d not in s for s in list(guard) + [s for group in groups for s in group])), None)
     if delimiter is None:
         raise ValueError("No safe SQL packet delimiter is available for these statements. Nothing was sent. "
                          "Review statements without all of the reserved delimiters.")
-    parts, starts, line = ["DELIMITER " + delimiter + "\n"], [], 2
-    for statement in statements:
+    parts, starts, markers, indices, sizes, line, index = ["DELIMITER " + delimiter + "\n"], [], [], [], [], 2, 0
+    nonce = uuid.uuid4().hex
+    for k, group in enumerate(groups):
         starts.append(line)
+        markers.append("myflames_guard_ok_%s_%d" % (nonce, k))
+        indices.append(index)
+        sizes.append(len(group))
+        index += len(group)
+        # A newline before separators also closes trailing line comments.
+        statement = "\n;\n".join(group) if len(group) > 1 else group[0]
         # A fresh line keeps a trailing -- or # comment from swallowing the
         # delimiter and merging this packet with the next one.
-        packet = guard[0] + " " + statement + "\n" + delimiter + "\n"
+        packet = guard[0] + " SELECT '" + markers[-1] + "'; " + statement + "\n" + delimiter + "\n"
         parts.append(packet)
         line += packet.count("\n")
-    return "".join(parts), tuple(starts)
+    return "".join(parts), TargetPacketLines(starts, markers, indices, sizes)
 
 
 def target_guard_failed(exc, packet_lines=None):
     """Refusal details for a guard error, or None without definite evidence.
 
-    With packet_lines, 1242 at a packet start proves that its statement and
-    all later ones were not executed; statement_index counts earlier ones.
-    Other packet errors belong to normal statement error handling. Without
+    With packet_lines, a server error before that packet's acknowledgement
+    proves its protected statements never ran. A 1242 after acknowledgement
+    belongs to the statement, even though its line names the whole packet.
+    Without
     a packet map, preserve the first-line contract used by MySQL Shell.
     Transport failures never prove a guard refusal.
     """
-    match = _TARGET_ERROR.search(str(exc))
+    match = _target_error_match(str(exc))
     if packet_lines is not None:
-        # A packet's start line identifies the reviewed statement, not the
-        # substatement within it. Only the guard's deliberate 1242 proves an
-        # identity mismatch; other errors use normal statement error mapping.
-        if not match or int(match.group(1)) != 1242 or int(match.group(2)) not in packet_lines:
+        if not match or 2000 <= int(match.group(1)) <= 2999 or int(match.group(2)) not in packet_lines:
             return None
-        index = packet_lines.index(int(match.group(2)))
+        packet = packet_lines.index(int(match.group(2)))
+        markers = getattr(packet_lines, "markers", ())
+        if markers and markers[packet] in getattr(exc, "guard_markers", ()):
+            return None
+        # A legacy tuple has no acknowledgement metadata; retain its old
+        # 1242-only contract for existing first-line/Shell integrations.
+        if not markers and int(match.group(1)) != 1242:
+            return None
+        index = getattr(packet_lines, "indices", range(len(packet_lines)))[packet]
+        if int(match.group(1)) != 1242:
+            reason = redact(target_error_text(str(exc)[match.end():]).strip()).rstrip(".")
+            return {"outcome": "identity_unavailable", "statement_index": index,
+                    "message": "The identity check could not run: %s. %s Refresh and review again." %
+                    (reason, "Nothing was sent." if not index else "Earlier statements ran; this statement and the remaining statements were not sent.")}
         message = TARGET_IDENTITY_MISMATCH if index == 0 else (
             "The server answering this connection is not the one you reviewed. %s ran; "
             "this statement and the remaining statements were not sent. Refresh and review again."
@@ -1176,7 +1303,7 @@ def target_guard_failed(exc, packet_lines=None):
         return {"outcome": "identity_mismatch", "message": TARGET_IDENTITY_MISMATCH}
     # Discard any MariaDB SQL echo before the actual ERROR line. Callers
     # additionally redact their connection password before display/audit.
-    message = redact(str(exc)[match.end():].strip())
+    message = redact(target_error_text(str(exc)[match.end():]).strip())
     return {"outcome": "identity_unavailable",
             "message": "The identity check could not run: %s. Nothing was sent. Refresh and review again."
                        % message.rstrip(".")}
@@ -1193,18 +1320,45 @@ def shift_guard_error(exc, packet_lines=None):
 
     def shift(match):
         line = int(match.group(2))
-        mapped = (packet_lines.index(line) + 1 if line in packet_lines else 0) \
+        mapped = (getattr(packet_lines, "indices", range(len(packet_lines)))[packet_lines.index(line)] + 1
+                  if line in packet_lines else 0) \
             if packet_lines is not None else max(1, line - 1)
         return match.group(0)[:match.start(2) - match.start()] + str(mapped) + ":"
 
     text = str(exc)
     if packet_lines is not None:
-        match = _TARGET_ERROR.search(text)
+        match = _target_error_match(text)
         if match:
             # MariaDB echoes the whole packet before the error. That echo
             # can contain passwords, or misleading statement/line text.
             text = text[match.start():]
-    return ConnectorError(_TARGET_ERROR.sub(shift, text))
+    out = ConnectorError(_TARGET_ERROR.sub(shift, target_error_text(text)))
+    out.guard_markers = getattr(exc, "guard_markers", ())
+    if packet_lines is not None:
+        match = _target_error_match(str(exc))
+        if match and int(match.group(2)) in packet_lines:
+            packet = packet_lines.index(int(match.group(2)))
+            # A server diagnostic locates the packet, not a substatement of
+            # a dependent sequence. Never invent which of those completed.
+            out.guarded_group = getattr(packet_lines, "sizes", (1,) * len(packet_lines))[packet] > 1
+        out.guarded_unknown = not match and not target_not_connected(out)
+    return out
+
+
+def target_not_connected(exc):
+    """Only an initial connection/login failure proves no packet was sent."""
+    return (not getattr(exc, "guard_markers", ()) and not re.search(r"\bat line \d+", str(exc))
+            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005, 2026))
+
+
+def redact_target_error(exc, password=None):
+    """Redact diagnostics without discarding private transport evidence."""
+    from .connector import ConnectorError
+    out = ConnectorError(redact(str(exc), password))
+    for key in ("guard_markers", "guarded_unknown", "guarded_group"):
+        if hasattr(exc, key):
+            setattr(out, key, getattr(exc, key))
+    return out
 
 
 def normalize_type(value):
@@ -2091,7 +2245,8 @@ def may_have_run(exc):
     if isinstance(exc, KeyboardInterrupt):
         return True
     text = str(exc)
-    return "timed out" in text or error_code(text) == 2013 or "Lost connection to" in text
+    return (bool(getattr(exc, "guarded_unknown", False)) or bool(getattr(exc, "guarded_group", False))
+            or "timed out" in text or error_code(text) in (2006, 2013) or "Lost connection to" in text)
 
 
 class AuditTrail(object):

@@ -141,6 +141,11 @@ class CaptureAndStore(unittest.TestCase):
     def test_password_never_stays_in_snapshot_text(self):
         record = R.recording('mysql-8.4', 'before')
         secret = 'hunter-%s' % uuid.uuid4().hex[:6]
+        # This capture predates the optional Galera variable projection.
+        # Match the read before injecting its credential-bearing failure.
+        for call in record['calls']:
+            if "'myflames_who'" in call['sql']:
+                call['sql'] = call['sql'].replace("'hostname', 'port')", "'hostname', 'port', 'wsrep_on', 'wsrep_node_name')")
 
         def edit(method, sql, call):
             if "'myflames_who'" in sql:

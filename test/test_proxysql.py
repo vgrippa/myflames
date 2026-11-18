@@ -1035,9 +1035,18 @@ class TestReviewedWrites(unittest.TestCase):
 
     def test_check_reviewed_rejects_bad_shapes(self):
         for bad in (None, [], {'action': 'x'}, {'action': 'x', 'statements': []},
-                    {'action': 'x', 'statements': ['a\nb']}, {'action': 1, 'statements': ['a']}):
+                    {'action': 'x', 'statements': ['a\nb']}, {'action': 'x', 'statements': ['a\rb']},
+                    {'action': 'x', 'statements': ['UPDATE t SET x=1; DELETE FROM t']},
+                    {'action': 1, 'statements': ['a']}):
             with self.assertRaises(ValueError):
                 reviewed_writes.check_reviewed(bad)
+
+    def test_admin_apply_rejects_multiline_even_with_a_spoofed_sql_engine_or_shell_sender(self):
+        for extra in ({'expect': {'engine': 'mysql'}}, {'via': 'mysqlsh'}):
+            plan = dict(action='x', statements=['UPDATE mysql_servers\nSET weight = 1'], **extra)
+            with self.subTest(extra=extra), self.assertRaises(ValueError), \
+                    mock.patch.object(proxysql, 'read_status', side_effect=AssertionError('unexpected login')):
+                proxysql.execute_action(None, plan)
 
     def test_only_a_numbered_error_decides_failed_or_partial(self):
         class Conn(object):

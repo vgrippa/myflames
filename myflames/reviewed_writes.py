@@ -239,16 +239,30 @@ def session_guard(plan):
     return target_session_guard(expect["engine"], identity)
 
 
-def check_reviewed(plan):
+def check_reviewed(plan, single_line=False):
     """A reviewed plan sent back by the client, validated for shape before it
     is used: never trusted for anything the token does not cover."""
     if not isinstance(plan, dict):
         raise ValueError("Send the reviewed plan with the action.")
     statements = plan.get("statements")
     if not isinstance(plan.get("action"), str) or not isinstance(statements, list) or not statements \
-            or not all(isinstance(s, str) and s and "\n" not in s and "\r" not in s for s in statements) \
+            or not all(isinstance(s, str) and s.strip() for s in statements) \
             or len(statements) > 10:
         raise ValueError("The reviewed plan is not valid. Review the action again; nothing was sent.")
+    if single_line and any("\n" in s or "\r" in s for s in statements):
+        raise ValueError("Each reviewed Admin statement must be on one line. Nothing was sent. Review again.")
+    if plan.get("via") != "mysqlsh":
+        from .dbops import target_statement
+        expect = plan.get("expect")
+        engine = expect.get("engine") if isinstance(expect, dict) else None
+        # SQL identity packets have explicit start-line maps. Admin interfaces
+        # retain their one-input-line-per-statement error contract. A caller
+        # on such an interface must not inherit SQL's multiline exception.
+        admin = engine not in ("mysql", "percona", "percona_server", "pxc", "mariadb")
+        for statement in statements:
+            if admin and ("\n" in statement or "\r" in statement):
+                raise ValueError("Each reviewed Admin statement must be on one line. Nothing was sent. Review again.")
+            target_statement(statement)
     return plan
 
 
@@ -292,7 +306,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
-    from .dbops import may_have_run, target_guard_failed, shift_guard_error, target_guarded_script
+    from .dbops import may_have_run, target_guard_failed, shift_guard_error, target_guarded_script, target_not_connected
     from .connection_groups import ProfileReadError
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
@@ -352,7 +366,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             audit.complete("refused", outcome=outcome, message=out["message"])
         return out
     except ConnectorError as exc:
-        from .dbops import redact
+        from .dbops import redact, target_error_text
         pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
         guard_failure = target_guard_failed(exc, packet_lines) if out["session_guard"] else None
         if guard_failure:
@@ -364,14 +378,15 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             _set(progress, "finished", out["states"], out["status"])
             if audit is not None:
                 audit.complete("error" if index else "refused", outcome=out["outcome"],
-                               error=redact(str(exc), pw), message=out["message"])
+                               error=redact(target_error_text(exc), pw), message=out["message"])
             return out
         if out["session_guard"]:
             exc = shift_guard_error(exc, packet_lines)
         text = redact(str(exc), pw)
         out["error"] = redact(server_message(text), pw)
         code, line = error_number(text), failed_line(text)
-        definite = code is not None and (line is None or (not client_error(code) and 1 <= line <= len(statements)))
+        definite = code is not None and (target_not_connected(exc) if line is None else
+                                        (not client_error(code) and 1 <= line <= len(statements)))
         if may_have_run(exc) or not definite:
             out["status"] = "unknown"
             out["states"] = ["unknown"] * len(statements)

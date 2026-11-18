@@ -1736,7 +1736,9 @@ repeating the guard in each packet. Variables, accounts, replication skips
 builder. The script starts with a client `DELIMITER` command; its delimiter
 must occur nowhere in any statement or guard, or the script is refused before
 sending anything. Packet start lines identify statement indices, including
-multi-line SQL. A deliberate guard error 1242 reports `identity_mismatch`:
+multi-line SQL. A private acknowledgement follows each guard in its packet;
+1242 before that acknowledgement reports `identity_mismatch`, while 1242
+after it belongs to the protected statement:
 that statement and every later one are `not_sent`, while earlier ones are
 `done`. With no earlier statement the result is `refused`; otherwise it keeps
 a partial outcome. No after-read or retry follows a definite mismatch. Other
@@ -2458,24 +2460,35 @@ server state (db-operations skill). Editor run reviews also bind the **On error*
 `dbops.target_session_guard(engine, identity)` returns a `session_guard`
 list for review and audit, like `READ_ONLY_SESSION_GUARD`.
 `dbops.target_guarded_script(guard, statements)` turns it into client input
-and a tuple of packet start lines. Every packet contains the guard followed
-by the reviewed SQL it protects (including any internal session-variable
-readback). A proxy may choose a different backend for the
+and packet start lines with private marker and statement-index metadata.
+Every packet contains the guard, a private `SELECT` acknowledgement, then
+the reviewed SQL it protects (including any internal session-variable
+readback). A proxy may choose a different backend session for the
 next packet, but cannot separate this check from the statement it protects.
 Using the same client invocation alone does not establish this property.
 
 The script begins with `DELIMITER <d>`. The builder tries `$$`, `//`,
 `__mf_end_1__`, then `__mf_end_2__`, choosing the first string absent from the
 entire guard and every statement, including quoted text and comments. If all
-candidates occur, it refuses with nothing sent. Statements retain their
-original text, including newlines and semicolons. Each delimiter is on a fresh
+candidates occur, it refuses with nothing sent. Each string must split into
+exactly one complete SQL unit through `dbops.split_statements`, with closed
+quotes and comments, no client-command issues and identical boundaries under
+both backslash readings. Otherwise it refuses before token consumption or
+transport. Internal tuples explicitly group individually validated units that
+depend on the same session; account password wrappers validate their literal
+under the mode they assert in that packet. `check_reviewed` and the builder
+both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
+ProxySQL Admin, Readyset and plans without a recognized SQL engine keep
+one physical line per statement (CR and LF are refused). ProxySQL apply
+also forces that restriction independently of a caller-supplied engine or sender. Statements retain
+their original text, including newlines and semicolons. Each delimiter is on a fresh
 line so a trailing `--` or `#` comment cannot swallow it. For example:
 
 ```sql
 DELIMITER $$
-SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SET GLOBAL max_connections = 200;
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_0'; SET GLOBAL max_connections = 200;
 $$
-SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SET GLOBAL max_connections = 201;
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_1'; SET GLOBAL max_connections = 201;
 $$
 ```
 
@@ -2493,11 +2506,27 @@ Account password and package-mode wrappers first send their fixed session-mode
 setup in a guarded packet. The client must receive that reply before parsing
 the account change: its quote parser uses the last acknowledged
 `SERVER_STATUS_NO_BACKSLASH_ESCAPES` flag (MySQL `client/mysql.cc:2785–2787`;
-MariaDB `client/mysql.cc:2677–2679`). The account statement and restoration of
-the original mode share the next guarded packet. This preserves passwords
-containing backslashes and quotes. If either guard refuses, this invocation
+MariaDB `client/mysql.cc:2677–2679`). The next guarded packet saves the mode
+of its own destination session, asserts the required mode again, runs the
+account statement and restores that saved mode. It never relies on the
+staging packet's session variables or mode: the proxy may use another session
+on the same server. Only the exact generated password or package wrapper is
+accepted; another account body that changes sql_mode refuses with nothing sent.
+This preserves passwords containing backslashes and quotes. If either guard refuses, this invocation
 sent no account change; only disposable session setup could have run. Earlier
 accepted account statements still retain the existing partial outcome.
+
+Replication uses the same explicit grouping. MySQL sends `SET GTID_NEXT`,
+`BEGIN`, `COMMIT` and `SET GTID_NEXT = 'AUTOMATIC'` in one guarded packet
+(`sql/sys_vars.cc:6549–6554` declares GTID_NEXT session-only). MariaDB sends
+`SET default_master_connection` and its skip-counter assignment in one packet:
+`sql/sys_vars.cc:1481–1484` declares the selector session-local, and
+`:6131–6132` selects the counter's channel from that session variable.
+`START` names its channel explicitly in the next guarded packet. A later
+guard refusal records all earlier completed units. An error inside a grouped
+packet cannot identify which internal unit completed; residual GTID/counter
+evidence remains unknown unless the subsequent read confirms it. Variables'
+`SET SESSION` and its readback also share one guarded packet.
 
 MySQL, Percona Server and PXC use a UUID validated against the existing UUID
 grammar. MariaDB instead compares `@@global.server_id`, `@@global.hostname`
@@ -2511,7 +2540,14 @@ port; replication copies `settings.server_identity` into the skip plan's
 `identity.server_identity`. Cluster SQL plans must include the required values
 in `expect.server`; older MariaDB plans without `server_id` refuse safely.
 
-Galera and PXC Cluster plans also bind `expect.server.wsrep_gcomm_uuid`.
+Every SQL sender captures and binds `wsrep_gcomm_uuid` when the reviewed
+server has `wsrep_on = ON`, including Accounts, Variables, replication and Kill;
+Galera and PXC Cluster plans bind it in `expect.server.wsrep_gcomm_uuid`.
+Accounts' privilege snapshot and the Variables and replication variable reads
+include wsrep_on. Kill projects it and the node UUID in the same SELECT as the
+other identity fields, including each bulk target check. Missing, invalid or
+unreadable node evidence refuses with "The identity check could not run";
+it never falls back to the server's names or id.
 The same guard statement compares this node UUID with the `VARIABLE_VALUE`
 for `VARIABLE_NAME = 'wsrep_gcomm_uuid'` in `information_schema.GLOBAL_STATUS`
 (MariaDB) or `performance_schema.global_status` (MySQL/PXC). The comparison
@@ -2535,8 +2571,20 @@ A mismatch raises server error 1242 before the protected statement executes.
 Both clients report `ERROR <code> (<state>) at line <query_start_line>`:
 MySQL `client/mysql.cc:5463`; MariaDB `client/mysql.cc:5472`, `:5522`.
 That line names the start of the entire packet, not the substatement inside
-it. `dbops.target_guard_failed(exc, packet_lines)` maps a deliberate 1242
-at a known packet start to its zero-based `statement_index`. At packet 1 the
+it. Each packet emits a unique `myflames_guard_ok_<32-hex nonce>_<k>` row
+after the guard and before its protected SQL. The client prints each result
+before reading the next result or error (MySQL `client/mysql.cc:3731–3736`,
+`:3767`; MariaDB `client/mysql.cc:3741`, `:3788`). On a failed invocation the
+connector preserves only these acknowledgement names in `guard_markers`,
+never arbitrary stdout rows that might contain a generated password. It strips
+them from successful output; error diagnostics discard SQL echoes, so markers
+never appear in user results or audit records.
+
+`dbops.target_guard_failed(exc, packet_lines)` maps 1242 at a known packet
+start without that packet's acknowledgement to its zero-based
+`statement_index`. A marker present for packet k proves its guard passed:
+even error 1242 then belongs to the protected SQL. Another server error before
+the marker means `identity_unavailable`, with the server's reason. At packet 1 the
 result is `refused`, outcome `identity_mismatch`, and `sent: []`, with the
 message: "The server answering this connection is not the one you reviewed.
 Nothing was sent. Refresh and review again." At packet k, the earlier k−1
@@ -2547,14 +2595,17 @@ statements completed; statement k and every later statement are `not_sent`.
 GTID/counter contracts when earlier packets ran. No after-read or retry follows
 a definite identity mismatch.
 
-Other server errors in a packet use the existing failure contract of its
-reviewed statement, since the packet's start line alone cannot identify
-whether a guard read or the protected statement caused that error.
+Server errors after acknowledgement use the existing failure contract of the
+reviewed statement. A grouped packet's error location identifies its group,
+so it cannot establish completion of individual internal units.
 `dbops.shift_guard_error(exc, packet_lines)` maps packet start lines to
 1-based statement indices before existing error handling, including for
 multi-line statements. An unrecognized line cannot identify a statement and
-keeps an unknown outcome in `reviewed_writes`. A client transport error also
-keeps its unknown outcome. MariaDB can echo SQL before its ERROR line;
+keeps an unknown outcome in `reviewed_writes`. Client transport errors,
+including line-free 2006 after any packet may have run, also keep an unknown
+outcome. Only a recognized connection or login failure before any acknowledged
+packet and without a query line is `not_connected` with nothing sent.
+MariaDB can echo SQL before its ERROR line;
 packet error mapping discards that echo before displaying the server reason.
 Missing or invalid identity evidence still refuses before sending with outcome
 `identity_unavailable`. Review tokens and audit statements retain their
@@ -2871,7 +2922,9 @@ failure/refusal/decline before sending a statement, including failure to create
 a pre-send audit record. Pre-send failures write a diagnostic to stderr only:
 stdout stays empty, even with either JSON option or `--quiet`, and no output
 file is created. Errors after statement outcomes retain the JSON envelope and
-any preceding results on stdout, including connection loss with exit 2. Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault
+any preceding results on stdout, including connection loss with exit 2. This transport exit code does not
+claim that a write failed to run: a write still outstanding at connection loss
+retains an unknown audit outcome. Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault
 python3 -m unittest discover -s test -p 'test_sql_cli.py' -v` uses the editor's
 fake MySQL/MariaDB clients, not a live server.
 
@@ -2927,14 +2980,46 @@ planner, write gate and session engine from the CLI.
   required identity is unavailable; a missing or changed Galera node UUID
   cannot fall back to the shared id, hostname and port. The KILL binding is
   separate from the write identity. Later write probes include the MySQL UUID.
+  The probe alone never authorizes a write: every non-read Run statement and
+  Commit uses `dbops.target_guarded_script` to send the recorded identity guard
+  and its statement in one `COM_QUERY` packet on the existing tab client.
+  The guard also compares `CONNECTION_ID()` with the recorded backend session
+  id, preserving the tab's transaction context across same-server proxy
+  session switches (MySQL `sql/item_func.cc:1532–1541`; MariaDB
+  `sql/item_func.cc:836–843`).
+  Each write packet repeats the guard, so per-packet proxy routing cannot
+  move a confirmed write to another server. The guard's OK and its exact
+  per-packet acknowledgement result set stay outside user results and their
+  row, result and memory budgets. An ordinary result row resembling the
+  acknowledgement prefix is preserved. The acknowledgement distinguishes an
+  identity failure from the protected statement's own error, including 1242.
+  The stderr end line can arrive before the stdout acknowledgement. On a
+  server error the engine waits up to one second for that reply; if it is
+  still absent, it closes stdin and drains a normal client exit before
+  declaring a guard refusal. This sends no SQL. If the client cannot drain,
+  the session ends with an unknown write outcome.
+  A client-library error or an error without an input line during a guarded
+  write also ends the session with an unknown outcome, even after its client
+  delimiter was read. No state probe or later statement follows it; the
+  delimiter confirms client framing, not whether the write ran.
+  A definite guard mismatch stops even **On error: Continue**,
+  marks that statement and later ones `not_run`, and ends the session without
+  an after-read or retry; earlier completed statements retain their results.
+  Audit finishes `refused` / `identity_mismatch` with no completed statements,
+  or `error` / `identity_mismatch` with their count when earlier statements ran.
+  Ending the client rolls back any open transaction, as for a failed session
+  identity probe. Confirmation text, tokens and audited user SQL stay unchanged.
   Regression tests: `test/test_editor_session_identity.py`.
 - Framing: a random client delimiter is set once (`DELIMITER __mf<hex>_`);
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
   followed by ...` on stderr without contacting the server; N is the line
   myflames wrote it on, so it ends the statement exactly and adds no server
-  statement between user statements (ROW_COUNT(), FOUND_ROWS(), SHOW WARNINGS
-  and GET DIAGNOSTICS keep working within a run). Server errors carry the line
+  statement between user statements. Diagnostic reads following a user write
+  still describe that write; a guarded write that itself reads diagnostics
+  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's SET.
+  MySQL's SET calls `my_ok`, which sets ROW_COUNT to zero
+  (`sql/sql_parse.cc:3833–3852`, `sql/sql_class.cc:3845–3847`). Server errors carry the line
   their statement started on, which attributes them. stdout and stderr are
   separate pipes, each read by its own thread: the MariaDB client writes an
   error before flushing stdout, so a merged stream could misorder them. On
@@ -2947,7 +3032,20 @@ planner, write gate and session engine from the CLI.
   run's closing helper (a tagged status SELECT) closes the last one. Leading
   `--`/`#` comment lines are dropped before sending (the client would send them
   as a statement of their own) and trailing white space is trimmed (the client
-  does that too).
+  does that too). Every packet and each semicolon-separated suffix outside
+  quoted text and comments begins with a private `/*myflames:editor:<token>*/`
+  comment (`secrets.token_hex(16)`, one token per session). Helpers keep their
+  existing public tag after it. `--comments` preserves these comments through
+  both clients (MySQL `client/mysql.cc:1802–1805,2843–2859`; MariaDB
+  `client/mysql.cc:1796–1798,2751–2772`). Only wire text changes: editor SQL,
+  confirmation, result attribution and history keep the user's original SQL.
+  CREATE definitions receive only the outer leading tag; their stored bodies
+  stay unchanged, and the DDL gate already refuses a definition batched with
+  trailing SQL.
+  Statement-history matching removes only this session's leading private tag
+  before applying the existing helper and exact-SQL checks. Guarded packets
+  use the builder's collision-checked delimiter and keep the same bare
+  `delimiter` completion marker with its actual input line number.
 - Planning (`plan_statements`): `dbops.split_statements` with the session's
   backslash reading (`@@sql_mode`, read at start and after every run); a
   statement with `unclosed` or `issues` (client backslash command, also inside
@@ -2980,8 +3078,21 @@ planner, write gate and session engine from the CLI.
   carry no rows. Load more re-runs with a larger limit. Stop
   (`EditorSession.stop`) sends the same KILL for the running user statement;
   Stop, row-limit cancellation and Close use `_send_kill`, which puts the
-  guard derived from the tab's recorded server identity on the first line,
-  followed by `KILL QUERY` on the helper connection. This batch has
+  guard derived from the tab's recorded server identity and `KILL QUERY` in
+  one query packet on the helper connection. The same guard also requires
+  the target connection id's current processlist `INFO` to begin with this
+  session's private token, compared as binary text (not a substring or LIKE
+  match), and excludes the helper's own `CONNECTION_ID()` so its tagged guard
+  cannot authorize killing itself on a reused proxy backend.
+  MySQL 8.0.22+ uses `performance_schema.processlist`; MySQL 5.7 and
+  earlier 8.0 use `information_schema.PROCESSLIST`, as does MariaDB.
+  Engine sources: MySQL `storage/perfschema/table_processlist.cc:61–68,256–257`
+  and `sql/sql_show.cc:5642–5650`; MariaDB
+  `sql/sql_show.cc:3471,3522–3525,10565–10575`. The leading comment remains
+  readable when the rest of INFO is truncated. A missing/hidden row, NULL
+  INFO, another tab's token, a recycled id, disabled instrumentation or a
+  denied/unavailable processlist check cannot authorize KILL; there is no
+  fallback to an identity-only check. This batch has
   `--skip-reconnect` and no `--force`, so a failed identity check cannot reach
   the KILL. A mismatch or an unavailable check reports
   `The server could not be confirmed. No KILL QUERY was sent.` to Stop;
@@ -2992,10 +3103,16 @@ planner, write gate and session engine from the CLI.
   `STOP_GRACE` (15) seconds after a KILL ends the session (`unresponsive`).
   `force: true` ends the session instead. KILLs and new statements are
   serialized (`send_lock`) and a KILL is never sent while a helper runs, so it
-  cannot hit another statement; both servers also clear a KILL QUERY that
-  lands between statements at the next command. `timeout` (seconds) stops a
+  cannot hit a later statement sent by this tab; both servers also clear a
+  KILL QUERY that lands between statements at the next command. `timeout` stops a
   run the same way. The `CONNECTION_ID()` read at start is checked after every
-  run; a different one ends the session. A statement's error text never ends
+  run; a different one ends the session. Processlist verification and KILL
+  remain sequential server statements, not an atomic conditional interrupt:
+  a proxy reassigning that backend to another client after the check can
+  still race KILL. This limit follows from MySQL's separate thread lookup
+  in `sql/sql_parse.cc:6572–6583` and MariaDB's in
+  `sql/sql_parse.cc:9124–9134`; the guard never locks the target thread
+  across those statements. A statement's error text never ends
   the session by itself (server messages quote table data): a lost connection
   (1053, 1927, 2006, 2013, 2055, 4031) ends it when the run's status helper
   fails with one, or when the client exits. stderr: one server error per
@@ -3693,8 +3810,9 @@ planner, write gate and session engine from the CLI.
   row must match a unit's exact sent text uniquely in both directions, else the
   unit reports the statement was not retained unambiguously; duplicate event IDs
   abort attribution. Collection runs after
-  a script and inserts no helper between user statements, so `ROW_COUNT()`,
-  `SHOW WARNINGS` and other intra-script diagnostics are preserved. Consumers
+  a script and inserts no observation helper between user statements; the
+  incoming-diagnostics limit of each write's identity guard still applies
+  (Query editor sessions, Framing). Consumers
   and instrumentation are never enabled automatically; disabled collection
   returns `available: false` with the reason and a link to Server >
   Instruments. Helper reads use the 30 s helper timeout.
@@ -5801,7 +5919,7 @@ A row change refuses while the module has other changes in memory (LOAD would ap
 
 #### Reviewed changes planned from a fresh read (Cluster, ProxySQL and Readyset)
 
-`myflames/reviewed_writes.py` and `apps/workspace/src/ActionReview.tsx`. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or when the client printed an error with no line, before it read any statement (it could not connect or log in; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action` or `cluster_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
+`myflames/reviewed_writes.py` and `apps/workspace/src/ActionReview.tsx`. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 complete statements; MySQL/MariaDB identity packets permit multi-line SQL, while Admin interfaces require single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or for an initial connection/login error without a line or private acknowledgement (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005 or 2026; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action` or `cluster_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
 
 ### Readyset
 

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _reviewed_replay import guarded_packets
 from myflames import accounts_cli, dbops, editor_session, mcp_server, replication, server_checks, sql_cli
 from myflames import variables as V
 from myflames.perf_common import Server
@@ -77,10 +78,12 @@ class LiveCLIRegressions(unittest.TestCase):
                                                 assume_yes=True, quiet=True, audit=audit)
                 self.assertEqual((code, result['status']), (0, 'changed'))
                 statement = V.TAG + 'SET GLOBAL long_query_time = 10'
-                script, _ = dbops.target_guarded_script(
-                    dbops.target_session_guard(variable['engine'], variable['server_identity']), [statement])
-                self.assertIn(mock.call(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
-                              conn.run_write.call_args_list)
+                self.assertEqual(conn.run_write.call_count, 1)
+                sent = conn.run_write.call_args
+                self.assertEqual(sent[1], {'extra_flags': list(dbops.WRITE_CLIENT_FLAGS)})
+                packets = guarded_packets(sent[0][0])
+                self.assertEqual([(guard, body) for guard, body, _ in packets], [
+                    (dbops.target_session_guard(variable['engine'], variable['server_identity'])[0], statement)])
                 self.assertEqual(store.audit_records()[0]['statements'],
                                  dbops.target_session_guard(variable['engine'], variable['server_identity']) + [statement])
                 self.assertEqual(result['plan']['config_line'], 'long_query_time = 10')

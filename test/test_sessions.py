@@ -658,7 +658,8 @@ class TestSessionsKillCLI(unittest.TestCase):
 
         def identity(sql):
             reads.append(sql)
-            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else 'replacement-server']])
+            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else
+                           'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
 
         scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
                                    for p, value in scenario.conn.responses]

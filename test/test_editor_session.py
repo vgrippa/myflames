@@ -40,6 +40,78 @@ from myflames.workspace_store import WorkspaceStore
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "editor"
 FAKE = Path(__file__).resolve().parent / "_fake_mysql_client.py"
 
+
+def packet_client(source):
+    """Teach a disposable fake about private tags and multi-statement packets.
+
+    Keep logical statement logs for the older session assertions, and retain
+    every actual wire packet separately. Routing controls describe synthetic
+    backend answers; classification, guard construction and framing are real.
+    """
+    source = source.replace("import os\n", "import os\nimport json\n", 1)
+    source = source.replace('        self.write("--------------\\n%s\\n--------------\\n\\n" % statement)\n', r'''
+        wire = statement
+        self.write("--------------\n%s\n--------------\n\n" % wire)
+        with open(os.path.join(STATE, "packets.log"), "a") as handle:
+            handle.write(json.dumps([self.conn_id, line, wire]) + "\n")
+        route_path = os.path.join(STATE, "packet-routes.json")
+        routes = json.load(open(route_path)) if os.path.exists(route_path) else []
+        count = getattr(self, "route_count", 0)
+        route = routes[count % len(routes)] if routes else {}
+        if routes:
+            self.route_count = count + 1
+        self.route_uuid = route.get("server_uuid", "11111111-2222-3333-4444-555555555555")
+        self.route_connection_id = route.get("connection_id", self.conn_id)
+        statement = re.sub(r"/\*myflames:editor:[0-9a-f]{32}\*/ ", "", wire)
+        if statement.startswith("SET @myflames_target = "):
+            guard, separator, statement = statement.partition("; ")
+            if not separator:
+                raise AssertionError("guard and write did not share a packet")
+            mismatch = (self.route_uuid not in guard if ENGINE == "mysql" else route.get("mismatch", False))
+            expected_id = re.search(r"CONNECTION_ID\(\) <> (\d+)", guard)
+            mismatch = mismatch or bool(expected_id and int(expected_id.group(1)) != self.route_connection_id)
+            if mismatch:
+                self.error(line, 1242, "21000", "Subquery returns more than 1 row")
+                return
+            self.ok()
+            marker = re.match(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ", statement)
+            if not marker:
+                raise AssertionError("guard acknowledgement missing from packet")
+            self.result(statement[:marker.end() - 2], [marker.group(1)], [[marker.group(1)]])
+            statement = statement[marker.end():]
+''')
+    # Backend session routing is independent of the persistent client id.
+    source = source.replace('"connection_id": str(self.conn_id),',
+                            '"connection_id": str(getattr(self, "route_connection_id", self.conn_id)),')
+    source = source.replace('"server_uuid": "11111111-2222-3333-4444-555555555555",',
+                            '"server_uuid": getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555"),')
+    source = source.replace('                client.run(statement, start_line)\n', r'''
+                active = os.path.join(STATE, "active-%d" % client.conn_id)
+                with open(active, "w") as handle:
+                    handle.write(statement)
+                try:
+                    client.run(statement, start_line)
+                finally:
+                    if os.path.exists(active):
+                        os.remove(active)
+''')
+    source = source.replace('def one_shot(sql):\n', r'''
+def one_shot(sql):
+    if "SET @myflames_target = " in sql:
+        target = re.search(r"WHERE ID = (\d+)", sql)
+        token = re.search(r"= BINARY '(/\*myflames:editor:[0-9a-f]{32}\*/)'", sql)
+        own_id = os.environ.get("FAKE_KILL_CONTROL_ID")
+        if target and own_id == target.group(1) and "AND ID <> CONNECTION_ID()" in sql:
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        active = os.path.join(STATE, "active-%s" % target.group(1)) if target else ""
+        current = open(active).read() if active and os.path.exists(active) else ""
+        if not token or not current.startswith(token.group(1)):
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+''')
+    return source
+
 # Extend only this module's disposable fake binary. The shared client fixture
 # remains unchanged, and all commands still cross the real framed XML pipes.
 PLAN_FAKE = r'''
@@ -511,7 +583,9 @@ class ReplayTests(unittest.TestCase):
         for name in ("mysql-8.4-client-session", "mariadb-11.4-client-session", "mysql-8.4-client-kill"):
             with self.subTest(name=name):
                 session, steps, data = replay_session(name)
-                self.assertEqual(session.proc.stdin.getvalue().decode("utf-8"), data["stdin"])
+                sent = session.proc.stdin.getvalue().decode("utf-8")
+                sent = sent.replace("; " + session.statement_tag, ";").replace(session.statement_tag, "")
+                self.assertEqual(sent, data["stdin"])
 
     def test_session_capture(self):
         for name in ("mysql-8.4-client-session", "mariadb-11.4-client-session"):
@@ -1069,6 +1143,7 @@ class ProcessTests(unittest.TestCase):
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
         client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
+        client = packet_client(client)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(0o755)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
@@ -2231,7 +2306,9 @@ class ProcessTests(unittest.TestCase):
     def test_lost_connection_ends_the_session(self):
         result = self.run_sql("SELECT lose_connection();\nSELECT 2")
         self.assertEqual(result["status"], "session_ended")
-        self.assertEqual([s["status"] for s in result["run"]["statements"]], ["error", "not_run"])
+        self.assertEqual([s["status"] for s in result["run"]["statements"]], ["session_ended", "not_run"])
+        record = next(r for r in self.store.audit_records() if r['id'] == result['run']['audit_id'])
+        self.assertEqual((record['status'], record['outcome']), ('unknown', 'session_ended'))
         self.assertEqual(result["session"]["message"], ed.SESSION_ENDED_TEXT)
         self.assertEqual(self.run_sql("SELECT 1")["status"], "session_ended")
 

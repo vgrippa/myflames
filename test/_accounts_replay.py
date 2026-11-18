@@ -27,6 +27,10 @@ class ReplayConn(object):
     def __init__(self, calls, version):
         self.answers = {}
         for call in calls:
+            # The historical recordings predate optional wsrep variable
+            # discovery. Extend only the requested names, never their output.
+            if "SHOW GLOBAL VARIABLES WHERE Variable_name IN (" in call['sql']:
+                call = dict(call, sql=call['sql'].replace("'hostname', 'port')", "'hostname', 'port', 'wsrep_on', 'wsrep_node_name')"))
             self.answers.setdefault(call['sql'], call)
         self.version = version
         self.sent = []

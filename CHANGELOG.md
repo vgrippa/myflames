@@ -25,7 +25,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- A change confirmed through a proxy or router now reaches only the server that was reviewed, even when the proxy routes statements separately.
+- A change confirmed through a proxy or router now reaches only the server that was reviewed, even when the proxy routes statements or backend sessions separately; on MariaDB Galera the check also tells apart nodes that share a name and server id.
+- Query editor Run and Commit confirm the server in the same packet as each write, and Stop refuses to interrupt a connection id that is no longer running this tab's statement.
 - In a Group connection, **Users and roles**, Kill, Variables and replication skips re-check group membership and the group's strictest write policy at every login. A removed member or a changed policy refuses the earlier review, including when a password was typed. Every review expires if the group is deleted and recreated, even with the same name and members.
 - Opening a Group connection re-checks both the active member and each probed member before every login. Removing either member, changing its saved address or recreating the group prevents later logins under the old consent. A stored server identity can no longer be overwritten by an older in-flight or cached probe.
 - Query editor Stop and Close confirm the server on the connection sending `KILL QUERY` before interrupting a statement. If the server cannot be confirmed, no KILL is sent. A tab whose member left its group can still roll back, stop and close its existing session to release locks, while new statements stay refused.
@@ -33,6 +34,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor results keep their original order and error positions when a write checks the server identity. Private identity replies no longer appear as query results or count toward result limits.
+- A connection lost during a confirmed write is recorded as Outcome unknown. The editor ends that session before any later statement runs.
 - Query editor tabs open when optional server identity variables cannot be read, including MariaDB with custom version strings. If the required identity is unavailable, Stop and Close report that the server could not be confirmed before sending an interrupt.
 - Users and roles returns a generated password when MariaDB accepted it but a later identity check prevented unlocking the new account. The password is shown once and is never recorded in the audit.
 - MySQL Shell exception messages containing text such as `at STDIN:1` no longer supply a false error location. An error without Shell's own call-site line keeps an unknown outcome and still reads the cluster for visible partial changes.

@@ -1468,8 +1468,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
               'engine': engine, 'version': version, 'account': a, 'action': action, 'before': before,
               'expect': before['fingerprint'], 'connection_identity': bound,
               'actor': actor.get('account'),
-              'actor_server': {k: (actor_model.get('variables') or {}).get(k, '') for k in ('server_uuid', 'server_id',
-                                                                                             'hostname', 'port')},
+              'actor_server': _actor_server(conn, engine, actor_model),
               'statements': display, 'warnings': list(dict.fromkeys(warnings)), 'guards': guards, 'privileges': hint,
               'effects': effects, 'dependencies': dependencies, 'generates_password': random_result,
               'classification': {'kind': 'risky', 'category': 'account'},
@@ -1541,6 +1540,8 @@ def _safe_error(exc, passwords):
     text = str(exc)
     code = dbops.error_code(text)
     if dbops.may_have_run(exc):
+        if getattr(exc, 'guarded_group', False) and code is not None and code < 2000:
+            return code, 'The packet failed before its completed statements could be identified (ERROR %s).' % code
         return code, 'The client stopped before the outcome was known (%s).' % (
             'time limit' if 'timed out' in text else 'connection lost')
     if code in _SAFE_ERROR_TEXT:
@@ -1549,37 +1550,67 @@ def _safe_error(exc, passwords):
     return code, 'ERROR %s: the server refused the statement.' % (code or 'unknown')
 
 
+def _actor_server(conn, engine, actor):
+    variables = actor.get('variables') or {}
+    keys = ('server_uuid', 'server_id', 'hostname', 'port')
+    if engine == 'mariadb' and variables.get('wsrep_node_name'):
+        keys += ('wsrep_node_name',)
+    return dbops.target_galera_identity(conn, engine, {k: variables.get(k, '') for k in keys}, variables, TAG)
+
+
 def _run_stdin(conn, sql, passwords=()):
     """Send one account statement (or a password script) on stdin, with the
     write flags; errors come back without secrets."""
     passwords = tuple(passwords) + (getattr(conn, 'password', None),)
     first, separator, statement = sql.partition('\n')
     packet_lines = None
+    known_mode = False
     script = sql.rstrip().rstrip(';') + ';\n'
     if separator and first.startswith('SET @myflames_target = '):
         # apply supplies the derived guard on the first line. The client
         # must receive the mode-setting reply before scanning a password
         # literal: it parses quotes with SERVER_STATUS_NO_BACKSLASH_ESCAPES
         # (MySQL client/mysql.cc:2785-2787; MariaDB client/mysql.cc:2677-2679).
-        # Stage only the fixed session-mode wrapper. The account change and
-        # its restoration share the final guarded packet, so no later guard
-        # can refuse after that account change already ran.
+        # Stage the fixed wrapper for the CLIENT's quote scanner. A proxy can
+        # route the next packet to another session, even on the same server:
+        # save that session's mode and assert the required mode again inside
+        # the account packet, then restore it there. Never depend on a user
+        # variable or SET SESSION from the staging packet for server parsing.
         bodies = [statement]
         parts = statement.split('\n', 2)
         modes = tuple("SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), '%s');" % mode
                       for mode in ('NO_BACKSLASH_ESCAPES', 'ORACLE'))
-        if len(parts) == 3 and parts[0] == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;' and \
-                parts[1] in modes and parts[2].endswith(';\nSET SESSION sql_mode = @myflames_accounts_sql_mode'):
-            bodies = [parts[0] + '\n' + parts[1], parts[2]]
         try:
-            script, packet_lines = dbops.target_guarded_script([first], bodies)
+            restore = 'SET SESSION sql_mode = @myflames_accounts_sql_mode'
+            ending = ';\n' + restore
+            known_mode = (len(parts) == 3 and parts[0] == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;'
+                          and parts[1] in modes and parts[2].endswith(ending))
+            escaping = None
+            if known_mode:
+                account = parts[2][:-len(ending)]
+                # The account body itself cannot smuggle in another mode
+                # change, or additional statements, under this trusted shape.
+                units = dbops.split_statements(account, backslash_escapes=False)
+                if any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
+                       re.match(r'^SET\b', unit['code'], re.I) for unit in units):
+                    raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
+                bodies = [(parts[0], parts[1]), (parts[0], parts[1], account, restore)]
+                # Password literals are generated for this asserted mode;
+                # ORACLE wrappers carry no password and retain both readings.
+                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
+            elif any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
+                     re.match(r'^SET\b', unit['code'], re.I)
+                     for unit in dbops.split_statements(statement, backslash_escapes=False)):
+                raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
+            script, packet_lines = dbops.target_guarded_script([first], bodies, backslash_escapes=escaping)
         except ValueError as exc:
             refusal = ConnectorError(str(exc))
             refusal.identity_outcome = 'identity_unavailable'
             refusal.server_error_code = None
             raise refusal from None
     try:
-        return conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+        return dbops.strip_target_guard_markers(conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
+                                               getattr(packet_lines, 'markers', ()))
     except ConnectorError as exc:
         # Inspect the original client error before safe-error redaction drops
         # the line number (or MariaDB echoes SQL containing a credential).
@@ -1587,15 +1618,27 @@ def _run_stdin(conn, sql, passwords=()):
         if guard_failure:
             # Only disposable session setup can precede this invocation's
             # account change. A guard refusal therefore sent no account SQL.
-            refusal = ConnectorError(privileges.redact(dbops.TARGET_IDENTITY_MISMATCH if packet_lines is not None
-                                                       else guard_failure['message'], passwords))
+            guard_message = guard_failure['message'].replace(
+                'Earlier statements ran; this statement and the remaining statements were not sent.', 'Nothing was sent.')
+            refusal = ConnectorError(privileges.redact(dbops.TARGET_IDENTITY_MISMATCH if packet_lines is not None and
+                                                       guard_failure['outcome'] == 'identity_mismatch'
+                                                       else guard_message, passwords))
             refusal.identity_outcome = guard_failure['outcome']
             refusal.server_error_code = dbops.error_code(str(exc))
             raise refusal from None
+        location = re.search(r'\bat line (\d+)\b', dbops.target_error_text(exc))
+        staging_failed = known_mode and location and int(location.group(1)) == packet_lines[0]
         exc = dbops.shift_guard_error(exc, packet_lines)
+        if staging_failed:
+            # A server error in the disposable client-mode setup precedes
+            # the account packet, so no account change can have run yet.
+            exc.guarded_group = False
         code, message = _safe_error(exc, passwords)
         if dbops.may_have_run(exc):
-            raise ConnectorError('Account statement timed out; outcome unknown. ' + message) from None
+            error = ConnectorError(('Account statement timed out; outcome unknown. ' if 'timed out' in str(exc)
+                                    else 'Account statement outcome unknown. ') + message)
+            error.guarded_unknown = True
+            raise error from None
         raise ConnectorError(message if message.startswith('ERROR') else 'ERROR %s: %s' % (code, message)) from None
 
 
@@ -1663,7 +1706,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     actor = privileges.read_privileges(conn)
     if actor.get('account') != plan['actor'] or not actor.get('checked'):
         return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
-    server = {k: (actor.get('variables') or {}).get(k, '') for k in plan['actor_server']}
+    server = _actor_server(conn, plan['engine'], actor)
     if server != plan['actor_server']:
         return refuse('stale', 'The server identity changed; nothing was sent.')
     for dependency in plan['dependencies']:

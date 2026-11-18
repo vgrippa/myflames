@@ -53,7 +53,8 @@ class Writes(object):
     def run_write(self, sql, extra_flags=None, timeout=None):
         self.writes.append(sql)
         if self.fail is not None:
-            raise self.fail
+            from _reviewed_replay import acknowledged_error
+            raise self.fail if dbops.error_code(str(self.fail)) == 1242 else acknowledged_error(self.fail, sql)
         return ''
 
     def __getattr__(self, name):
@@ -297,7 +298,10 @@ class Endpoints(Home):
         plan = self.plan(conn, 'desync_node', local(report)['key'])
         result = self.send(conn, plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(conn.writes, [dbops.target_guarded_script(plan['session_guard'], plan['statements'])[0]])
+        from _reviewed_replay import guarded_packets
+        self.assertEqual(len(conn.writes), 1)
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(conn.writes[0])],
+                         [(plan['session_guard'][0], s) for s in plan['statements']])
         (record,) = self.audit()
         self.assertEqual((record['operation'], record['status'], record['connection']['engine']),
                          ('cluster_action', 'ok', 'mariadb'))

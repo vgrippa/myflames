@@ -817,7 +817,10 @@ class TestSkipOne(ReplicationCase):
                 script, flags = scripts[0]
                 from _reviewed_replay import guarded_packets
                 self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
-                                 [(plan['session_guard'][0], rp.SKIP_TAG + s) for s in plan['statements']])
+                                 [(plan['session_guard'][0], '\n;\n'.join(s) if isinstance(s, tuple) else s)
+                                  for s in rp._skip_packets(plan)])
+                self.assertEqual([u['text'] for _, body, _ in guarded_packets(script)
+                                  for u in dbops.split_statements(body)], rp._tagged(plan['statements']))
                 self.assertEqual(flags, list(dbops.WRITE_CLIENT_FLAGS))
                 if method == 'empty_gtid_transaction':
                     self.assertTrue(result['after']['gtid_executed_has_skipped'])
@@ -919,7 +922,7 @@ class TestSkipOne(ReplicationCase):
         result = rp.skip_one(conn, '', plan['identity'], audit=self.audit(), confirmed=True, settle_s=0)
         self.assertEqual(result['status'], 'denied')
         self.assertIn('REPLICATION_APPLIER', result['message'])
-        self.assertIn('Nothing ran before it', result['message'])
+        self.assertIn('which of them completed is unknown', result['message'])
         self.assertEqual(result['after']['sql_running'], 'No')
         self.assertEqual([(r['status'], r['outcome'], r['error_code']) for r in self.records()],
                          [('error', 'denied', 1227)])

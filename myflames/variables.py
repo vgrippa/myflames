@@ -461,7 +461,7 @@ def _read(conn, name):
     """Everything known about *name* on this server (not yet the public shape)."""
     name = check_name(name)
     extra = ("version", "version_comment", "persisted_globals_load", "version_compile_os",
-             "server_uuid", "server_id", "hostname", "port", "wsrep_node_name")
+             "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
     if name == "innodb_buffer_pool_size":
         extra += ("innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances", "innodb_buffer_pool_size_max")
     names = ", ".join(_quote_name(n) for n in sorted(set(extra + (name,))))
@@ -485,6 +485,8 @@ def _read(conn, name):
         server_identity["wsrep_node_name"] = global_rows["wsrep_node_name"]
     if not all(server_identity.values()):
         server_identity = None
+    else:
+        server_identity = dbops.target_galera_identity(conn, engine, server_identity, global_rows, TAG)
     if name == "character_set_results":
         rows = parts.get("nullable") or []
         if not rows or len(rows[0]) != 4:
@@ -1611,7 +1613,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         body = TAG + statement
         if mode == "session":
             # The readback must stay with this SET, in its guarded packet.
-            body = _script([statement, "SELECT '%safter'" % _MARK,
+            body = tuple(TAG + s for s in [statement, "SELECT '%safter'" % _MARK,
                             _nullable_read(name, session=True) if v.get("nullable") else
                             "SHOW SESSION VARIABLES WHERE Variable_name = %s" % _quote_name(name)])
         script, packet_lines = dbops.target_guarded_script(guard, [body])
@@ -1627,7 +1629,8 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     try:
         if mode == "session":
             # One client call, so the read sees the same session.
-            session_text = conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            session_text = dbops.strip_target_guard_markers(
+                conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)), packet_lines.markers)
         else:
             conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt:
@@ -1641,11 +1644,11 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
             result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
                           message=dbops.redact(guard_failure["message"], password))
             if audit is not None:
-                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(dbops.target_error_text(exc), password),
                                message=result["message"])
             return result
-        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
-                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
+        exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
+                                       getattr(conn, "password", None) or getattr(audit, "password", None))
         code = dbops.error_code(str(exc))
         if code is None or code >= 2000 or dbops.may_have_run(exc):
             # A client error (connection refused or lost, a time limit): no server answer to map.

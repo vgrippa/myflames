@@ -208,7 +208,7 @@ EXTRA_VARIABLES = ("enforce_gtid_consistency", "gtid_current_pos", "gtid_domain_
                    "gtid_slave_pos", "gtid_strict_mode", "read_only", "replica_parallel_workers",
                    "replica_preserve_commit_order", "slave_parallel_threads", "slave_parallel_workers",
                    "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter",
-                   "server_uuid", "server_id", "hostname", "port", "wsrep_node_name")
+                   "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
 
 _PS_HEARTBEAT_SQL = ("SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM "
                      "performance_schema.replication_connection_configuration")
@@ -541,6 +541,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
         raise ValueError("Could not read replication status: " + reason(exc))
     if server.engine == "mariadb" and server.variables.get("wsrep_node_name"):
         report["settings"]["server_identity"]["wsrep_node_name"] = server.variables["wsrep_node_name"]
+    report["settings"]["server_identity"] = dbops.target_galera_identity(
+        conn, server.engine, report["settings"]["server_identity"], server.variables, REPLICATION_TAG)
     # Group Replication's own channels (group_replication_applier and
     # group_replication_recovery, reserved names in M/sql/rpl_msr.cc:38-39)
     # are the group's, not asynchronous replication. SHOW REPLICA STATUS walks
@@ -2244,6 +2246,18 @@ def _tagged(statements):
     return [SKIP_TAG + s for s in statements]
 
 
+def _skip_packets(plan):
+    """Keep every session setting with all statements that depend on it.
+
+    GTID_NEXT, BEGIN, COMMIT and AUTOMATIC must use one backend session.
+    MariaDB selects the counter's channel through default_master_connection.
+    START names its channel explicitly and can use another guarded packet.
+    """
+    statements = _tagged(plan["statements"])
+    dependent = 4 if plan["method"] == "empty_gtid_transaction" else 2 if plan["engine"] == "mariadb" else 0
+    return [tuple(statements[:dependent])] + statements[dependent:] if dependent else statements
+
+
 def _script(statements):
     """One client call, one statement per line, so the client's "at line N"
     names the statement that failed."""
@@ -2260,7 +2274,9 @@ def _server_error(exc, statements, privileges):
     code = dbops.error_code(str(exc))
     line = _LINE.search(str(exc))
     ran = ""
-    if line and 1 < int(line.group(1)) <= len(statements):
+    if getattr(exc, "guarded_group", False):
+        ran = " The error identifies a packet containing several statements; which of them completed is unknown."
+    elif line and 1 < int(line.group(1)) <= len(statements):
         done = statements[:int(line.group(1)) - 1]
         ran = " These statements ran before it: %s." % "; ".join(done)
     elif line and int(line.group(1)) == 1:
@@ -2474,7 +2490,7 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     result["verified"] = verified
     try:
         session_guard = dbops.target_session_guard(report["engine"], expect.get("server_identity"))
-        script, packet_lines = dbops.target_guarded_script(session_guard, _tagged(plan["statements"]))
+        script, packet_lines = dbops.target_guarded_script(session_guard, _skip_packets(plan))
     except ValueError as exc:
         return _unsent(result, audit, "refused", "identity_unavailable", str(exc), expect, verified)
     result["session_guard"] = session_guard
@@ -2545,12 +2561,12 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
                 result["residual_state"] = _residual_state(dbops.shift_guard_error(exc, packet_lines), plan, None)
                 result["message"] += " " + result["residual_state"]["message"]
             if audit is not None:
-                audit.complete("error" if index else "refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                audit.complete("error" if index else "refused", outcome=result["outcome"], error=dbops.redact(dbops.target_error_text(exc), password),
                                message=result["message"],
                                after={"residual_state": result["residual_state"]} if index else None)
             return result
-        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
-                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
+        exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
+                                       getattr(conn, "password", None) or getattr(audit, "password", None))
         if _fatal(exc):
             unknown = dbops.may_have_run(exc)
             message = ("Could not skip the transaction: %s.%s" % (
@@ -2605,7 +2621,8 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
 def _residual_state(exc, plan, after):
     """Report irreversible partial effects without attempting automatic rollback."""
     line = _LINE.search(str(exc))
-    count = int(line.group(1)) - 1 if line and 1 <= int(line.group(1)) <= len(plan["statements"]) else None
+    count = (int(line.group(1)) - 1 if line and not getattr(exc, "guarded_group", False)
+             and 1 <= int(line.group(1)) <= len(plan["statements"]) else None)
     done = plan["statements"][:count] if count is not None else []
     committed = "COMMIT" in done if count is not None else None
     armed = any(s.startswith("SET GLOBAL") for s in done) if count is not None else None

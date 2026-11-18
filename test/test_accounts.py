@@ -19,6 +19,7 @@ import _accounts_replay as replay  # noqa: E402
 from myflames import accounts as a, dbops, privileges as p  # noqa: E402
 from myflames.connector import ConnectorError, MySQLConnection  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
+from _reviewed_replay import acknowledged_error
 
 MYSQL_VERSION = '8.4.11'
 MARIADB_VERSION = '11.4.13-MariaDB'
@@ -1072,9 +1073,12 @@ class AccountsTest(unittest.TestCase):
     def test_safe_server_messages_are_kept(self):
         self.conn = FakeConn('mysql')
         plan = self.plan('drop')
-        self.conn.run_stdin = mock.Mock(side_effect=ConnectorError(
+        error = ConnectorError(
             "mysql client exited 1: ERROR 4006 (HY000) at line 2: Operation DROP USER failed for 'app'@'%' as it is "
-            "referenced as a definer account in a view."))
+            "referenced as a definer account in a view.")
+        def refuse(sql, **kwargs):
+            raise acknowledged_error(error, sql)
+        self.conn.run_stdin = refuse
         result = self.apply(plan)
         self.assertEqual(result['status'], 'refused_by_server')
         self.assertIn('referenced as a definer', result['message'])
@@ -1128,8 +1132,9 @@ class AccountsTest(unittest.TestCase):
                     def execute(sql, extra_flags=None, timeout=None):
                         calls.append(sql)
                         if len(calls) - 1 == refused_index:
-                            raise ConnectorError('mysql client exited 1: ERROR %d (42000) at line 2: '
-                                                 'The identity check refused this login' % code)
+                            error = ConnectorError('mysql client exited 1: ERROR %d (42000) at line 2: '
+                                                   'The identity check refused this login' % code)
+                            raise acknowledged_error(error, sql) if code != 1242 else error
                         if len(calls) == 1:
                             self.conn.exists, self.conn.locked = True, True
                         elif len(calls) == 2:

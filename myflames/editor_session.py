@@ -23,9 +23,10 @@ are never forwarded) and writes one statement at a time::
 The bare ``delimiter`` line is a client command with no argument: the
 client prints ``ERROR at line N: DELIMITER must be followed by ...`` to
 stderr without contacting the server. N is the line myflames wrote it on,
-so that line marks the end of the statement without any extra server
-statement: ROW_COUNT(), FOUND_ROWS() and the warnings of one statement stay
-intact for the next statement of the same run. Server errors carry the
+so that completion itself adds no server statement. A write's recorded
+identity guard and SQL share one packet; its guard OK is hidden. The guard
+is a SET, so diagnostics read by a guarded write describe that SET; a plain
+diagnostic read following the write still describes the write. Server errors carry the
 line their statement started on (``ERROR 1146 (42S02) at line 12: ...``),
 which names the failed statement exactly.
 
@@ -57,7 +58,9 @@ a full pipe; the result is labeled "stopped after N rows". Load more runs
 the statement again with a larger limit. Stop sends the same KILL QUERY for
 the session's ``CONNECTION_ID()`` (read when the session starts and checked
 after every run); KILL QUERY ends the statement, not the session or its
-transaction. A KILL is never sent while a helper statement runs, and the
+transaction. A KILL also requires that the id's current SQL starts with this
+tab's private random comment, checked in the same packet as KILL. A KILL is
+never sent while a helper statement runs, and the
 next statement is never sent before an issued KILL has returned, so a KILL
 cannot reach another statement (both servers also clear a KILL QUERY that
 arrives between statements when the next command starts).
@@ -79,7 +82,8 @@ with tagged helpers (``/*myflames:editor*/``): MariaDB's
 ``performance_schema.events_transactions_current`` for
 ``PS_CURRENT_THREAD_ID()`` is read, and the state is "unknown" (never "no
 transaction") when that table cannot tell. Commit and Rollback are explicit
-actions. User statements are sent untagged.
+actions. Every statement carries a private per-session leading comment;
+helpers additionally retain their public ``/*myflames:editor*/`` tag.
 
 Safety
 ------
@@ -141,6 +145,10 @@ RESULT_SET_CAP = 128
 #: One row larger than this stops the result set (a single huge value).
 ROW_CHAR_CAP = 4 * 1024 * 1024
 HELPER_TIMEOUT = 30.0
+# Allow the other pipe's reader to consume an acknowledgement before a
+# negative decision. Missing replies require a graceful EOF and full drain;
+# a timeout alone never proves that the guard, rather than user SQL, failed.
+GUARD_REPLY_GRACE = 1.0
 #: Seconds a confirmation token stays valid; each one is used once.
 TOKEN_TTL = 300.0
 #: Seconds a statement may run on after a KILL QUERY before the session is ended.
@@ -434,6 +442,12 @@ class Step(object):
         self.stop_sent = False
         self.unfinished = False     # the client exited before the statement's end line
         self.notes = []
+        self.guarded = False
+        self.guard_pending = False  # until this packet's private acknowledgement
+        self.guard_ok_pending = False
+        self.guard_entry = None
+        self.packet_lines = None
+        self.guard_unresolved = False
 
     @property
     def duration_ms(self):
@@ -522,6 +536,8 @@ class Run(object):
         self.snapshot_cache = None
         self.audit_id = None
         self.history_id = None
+        self.target_guard = None
+        self.guard_failure = None
 
 
 class EditorSession(EditorInsights):
@@ -552,6 +568,7 @@ class EditorSession(EditorInsights):
         self.send_lock = threading.Lock()
         self.proc = None
         self.delimiter = None
+        self.statement_tag = "/*myflames:editor:%s*/ " % secrets.token_hex(16)
         self.lines = 0
         self.state = "starting"
         self.ended = False
@@ -774,19 +791,66 @@ class EditorSession(EditorInsights):
             self.end("client_exited")
             raise ConnectorError(SESSION_ENDED_TEXT)
 
-    def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False):
+    def _tag_statement(self, send):
+        """Tag SQL without changing its quoted text or executable comments.
+
+        Tag suffix statements too: a custom DELIMITER can group several SQL
+        statements, and PROCESSLIST exposes the currently executing suffix.
+        CREATE bodies stay intact: the DDL gate already refuses a definition
+        batched with trailing SQL, and tokens must not enter stored bodies.
+        """
+        from .live import TOKEN, TOKEN_NO_BACKSLASH
+        pattern = TOKEN if self.backslash_escapes else TOKEN_NO_BACKSLASH
+        if re.match(r"\s*CREATE\b", pattern.sub(" ", send), re.I):
+            return self.statement_tag + send
+        # A guard's final semicolon must remain its final character for the
+        # shared packet builder. There is no suffix statement to tag there.
+        terminal = ";" if send.endswith(";") else ""
+        send = send[:-1] if terminal else send
+        pieces, at = [self.statement_tag], 0
+        for match in pattern.finditer(send):
+            pieces.append(send[at:match.start()].replace(";", "; " + self.statement_tag))
+            pieces.append(match.group())
+            at = match.end()
+        pieces.append(send[at:].replace(";", "; " + self.statement_tag))
+        pieces.append(terminal)
+        return "".join(pieces)
+
+    def _guarded_statement(self, guard, send):
+        """Use the shared builder, retaining the tab's persistent transport."""
+        from . import dbops
+        return dbops.target_guarded_script([self._tag_statement(guard[0])], [self._tag_statement(send)])
+
+    def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None):
         """Write one statement; returns its Step. Holds send_lock so a KILL in
         flight is never followed by a new statement."""
         with self.send_lock:
             with self.lock:
                 if self.ended:
                     raise ConnectorError(self.end_message or SESSION_ENDED_TEXT)
-            if self.delimiter in send:
-                self.delimiter = "__mf%s_" % secrets.token_hex(5)
-                self._write("DELIMITER %s\n" % self.delimiter)
+            if guard is not None:
+                script, packet_lines = self._guarded_statement(guard, send)
+                header, body = script.split("\n", 1)
+                self.delimiter = header[len("DELIMITER "):]
+                wire = body[:-(len(self.delimiter) + 2)]
+                self._write(header + "\n")
+            else:
+                wire = self._tag_statement(send)
+                while self.delimiter in wire:
+                    self.delimiter = "__mf%s_" % secrets.token_hex(5)
+                    self._write("DELIMITER %s\n" % self.delimiter)
+                body = wire + "\n" + self.delimiter + "\n"
             first = self.lines + 1
-            marker = first + send.count("\n") + 2
+            marker = first + wire.count("\n") + 2
             step = Step(kind, send, first, marker, unit=unit, limit=limit, results=results)
+            step.echo_lines = wire.count("\n") + 1
+            step.guarded = step.guard_pending = guard is not None
+            step.guard_ok_pending = step.guarded
+            if step.guarded:
+                from .dbops import TargetPacketLines
+                step.packet_lines = TargetPacketLines((first,), packet_lines.markers,
+                                                     (unit,) if unit is not None else packet_lines.indices,
+                                                     packet_lines.sizes)
             step.kill_ok = bool(kill_ok)
             with self.lock:
                 self._osteps.append(step)
@@ -795,8 +859,16 @@ class EditorSession(EditorInsights):
                 if self.run is not None and not self.run.done.is_set():
                     self.run.steps.append(step)
                     self.run.current = step
-            self._write(send + "\n" + self.delimiter + "\ndelimiter\n")
+            self._write(body + "delimiter\n")
             return step
+
+    def _attribute_history(self, run, rows, boundary):
+        # Keep the public helper exclusion and exact user-SQL attribution in
+        # EditorInsights, removing only this session's private leading tag.
+        rows = [dict(row, sql_text=row["sql_text"][len(self.statement_tag):])
+                if isinstance(row.get("sql_text"), str) and row["sql_text"].startswith(self.statement_tag)
+                else row for row in rows]
+        return super(EditorSession, self)._attribute_history(run, rows, boundary)
 
     def _wait(self, predicate, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -954,7 +1026,12 @@ class EditorSession(EditorInsights):
                 self._opos = quote + len(XML_HEAD_END)
                 entry = {"type": "rows", "columns": [], "rows": [], "truncated": False, "stopped": None,
                          "server_rows": None, "warnings": 0, "complete": False}
-                self._append_entry(step, entry)
+                if step.guard_pending:
+                    # The builder's first result set is private transport
+                    # evidence. Keep it outside user results and their budgets.
+                    step.guard_entry = entry
+                else:
+                    self._append_entry(step, entry)
                 self._entry = entry
                 self._info_target = None
                 self._ostate = "xml"
@@ -977,6 +1054,10 @@ class EditorSession(EditorInsights):
                 if result_end is not None and result_end >= 0:
                     self._opos = result_end
                     self._entry["complete"] = True
+                    if self._entry is step.guard_entry:
+                        if self._entry["rows"] != [[step.packet_lines.markers[0]]]:
+                            raise _Protocol("the server identity acknowledgement was not recognized")
+                        step.guard_pending = False
                     self._ostate = "body"
                     continue
                 if row_end is None or result_end is None:
@@ -1018,6 +1099,11 @@ class EditorSession(EditorInsights):
             values.append(None if value is None else xml_unescape(value))
         if at != len(text):
             raise _Protocol("a row was not recognized")
+        if entry is step.guard_entry:
+            if entry["rows"] or values != [step.packet_lines.markers[0]]:
+                raise _Protocol("the server identity acknowledgement was not recognized")
+            entry["rows"].append(values)
+            return
         columns = [] if entry["columns"] else [{"name": name} for name in names]
         # Charge the JSON actually retained, plus conservative allowances for
         # per-column export metadata and row separators. ASCII escaping is the
@@ -1098,6 +1184,9 @@ class EditorSession(EditorInsights):
             return
         match = _OK_LINE.match(line)
         if match:
+            if step.guard_ok_pending:
+                step.guard_ok_pending = False
+                return
             affected = match.group(1)
             entry = {"type": "ok", "affected_rows": int(affected) if affected is not None else None,
                      "warnings": int(match.group(2) or 0), "info": None}
@@ -1266,16 +1355,18 @@ class EditorSession(EditorInsights):
                 return "failed", text
 
     def _send_kill(self, options, connection_id):
-        """Guard the helper's own login before it can kill this tab's id.
+        """Guard the helper's packet before it can kill this tab's statement.
 
         A successful probe on another connection cannot authorize a KILL
-        behind a router. Guard and KILL share a query packet; batch mode and
-        no reconnect stop at the guard error.
+        behind a router. Server identity and target-token ownership are
+        checked in the KILL packet; batch mode and no reconnect stop at a
+        guard error.
         """
         from . import dbops
         try:
             guard = dbops.target_session_guard(self.engine, getattr(self, "_kill_identity", None))
-            script, packet_lines = dbops.target_guarded_script(guard, [TAG + "KILL QUERY %d" % connection_id])
+            guard = self._kill_statement_guard(guard, connection_id)
+            script, packet_lines = self._guarded_statement(guard, TAG + "KILL QUERY %d" % connection_id)
         except ValueError:
             raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
         try:
@@ -1289,9 +1380,56 @@ class EditorSession(EditorInsights):
                 control.run(script,
                             extra_flags=list(_write_flags()) + ["--skip-reconnect"], timeout=KILL_TIMEOUT)
         except ConnectorError as exc:
-            if dbops.target_guard_failed(exc, packet_lines):
+            # A processlist denial, missing table or hidden/absent target
+            # cannot establish ownership either. No retry or weaker fallback.
+            if (dbops.target_guard_failed(exc, packet_lines) or
+                    dbops.error_code(str(exc)) in (1044, 1045, 1054, 1109, 1142, 1146, 1227)):
                 raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
             raise dbops.shift_guard_error(exc, packet_lines) from None
+
+    def _kill_statement_guard(self, guard, connection_id):
+        """Require this tab's currently running SQL, not merely a recycled id.
+
+        MySQL storage/perfschema/table_processlist.cc:61-68,256-257 supplies
+        ID/INFO; sql/sql_show.cc:5642-5650 supplies the pre-8.0.22 fallback.
+        MariaDB sql/sql_show.cc:3471,3522-3525,10565-10575 supplies ID/INFO.
+        The leading token fits even a truncated INFO. Binary comparison
+        avoids case folding or a LIKE wildcard changing the ownership check.
+        """
+        if isinstance(connection_id, bool) or not isinstance(connection_id, int) or connection_id <= 0:
+            raise ValueError("Invalid editor connection id")
+        version = parse_version_tuple(self.server_version or "", leading=True, default=None)
+        table = ("performance_schema.processlist" if self.engine == "mysql" and version is not None and
+                 version >= (8, 0, 22) else "information_schema.PROCESSLIST")
+        # statement_tag is generated locally from token_hex, never SQL input.
+        prefix = self.statement_tag.rstrip()
+        missing = ("NOT EXISTS (SELECT 1 FROM %s WHERE ID = %d AND "
+                   "LEFT(BINARY INFO, %d) = BINARY '%s' AND ID <> CONNECTION_ID())"
+                   % (table, connection_id, len(prefix), prefix))
+        suffix = ");"
+        if not guard[0].endswith(suffix):
+            raise ValueError("Invalid editor target guard")
+        return [guard[0][:-len(suffix)] + " OR " + missing + suffix]
+
+    def _write_session_guard(self):
+        """Bind writes to the recorded server and backend session together.
+
+        A same-server proxy session switch must not move COMMIT or DML out
+        of the tab's transaction. CONNECTION_ID() returns the executing THD's
+        reported id (MySQL sql/item_func.cc:1532-1541; MariaDB :836-843).
+        """
+        from . import dbops
+        identity = dict(self.server_identity or {})
+        value = identity.get("connection_id")
+        if isinstance(value, bool) or not isinstance(value, (str, int)) or not re.fullmatch(r"[0-9]{1,20}", str(value)):
+            raise ValueError("The tab's server session id is missing or invalid. Nothing was sent. Open a new tab.")
+        connection_id = int(value)
+        if not connection_id or connection_id != self.connection_id:
+            raise ValueError("The tab's server session changed. Nothing was sent. Open a new tab.")
+        if "wsrep_gcomm_uuid" in (getattr(self, "_kill_identity", None) or {}):
+            identity["wsrep_gcomm_uuid"] = self._kill_identity["wsrep_gcomm_uuid"]
+        guard = dbops.target_session_guard(self.engine, identity)
+        return [guard[0][:-2] + " OR CONNECTION_ID() <> %d);" % connection_id]
 
     # -- state ----------------------------------------------------------------------------
 
@@ -1596,6 +1734,15 @@ class EditorSession(EditorInsights):
             if run.audit is not None:
                 statements = [u["send"] for u in run.units]
                 self._verify_identity(run.audit, statements)
+                try:
+                    run.target_guard = self._write_session_guard()
+                    # Refuse delimiter collisions before any user unit runs.
+                    for unit in run.units:
+                        if unit.get("kind") != "read":
+                            self._guarded_statement(run.target_guard, unit["send"])
+                except ValueError as exc:
+                    run.audit.outcome(statements, "refused", outcome="identity_unavailable", message=str(exc))
+                    raise EditorError(str(exc), "identity_unavailable") from None
                 if run.alter_context is not None:
                     unit = _alter_unit({"units": run.units})
                     # run_lock is held: a concurrent USE cannot slip between
@@ -1656,6 +1803,53 @@ class EditorSession(EditorInsights):
                 self.end("unresponsive", "The statement did not end after KILL QUERY. " + SESSION_ENDED_TEXT)
                 return
 
+    def _packet_guard_failure(self, step, errors):
+        """Use this packet's acknowledgement, even when stderr arrives first.
+
+        There is no stdout end marker on an error. Without an acknowledgement,
+        close stdin and drain a normal client exit before declaring it absent.
+        This sends no SQL and cannot advance to another reviewed statement.
+        A client that cannot drain keeps an unknown outcome, never a refusal.
+        """
+        from . import dbops
+        if not step.guarded or not errors or not step.marker:
+            return None
+        code = errors[0].get("code")
+        if errors[0].get("line") is None or code is None or 2000 <= code <= 2999:
+            # A client diagnostic or an unlocated error cannot say whether
+            # the protected write ran, even if the client read our delimiter.
+            # End the session and audit it as unknown, independently of the
+            # CLI's exit-2 transport contract. Do not probe or send later SQL.
+            step.guard_unresolved = True
+            self.end("connection_lost", SESSION_ENDED_TEXT)
+            return None
+        if step.guard_pending:
+            self._wait(lambda: not step.guard_pending or self._eof == 2, GUARD_REPLY_GRACE)
+        if step.guard_pending and self._eof < 2:
+            try:
+                with self.send_lock:
+                    self.proc.stdin.close()
+                    self.proc.wait(timeout=2)
+                for reader in self._readers:
+                    reader.join(2)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                step.guard_unresolved = True
+                self.end("protocol", "The server identity reply could not be read. " + SESSION_ENDED_TEXT)
+                return None
+            if self._eof < 2:
+                step.guard_unresolved = True
+                self.end("protocol", "The server identity reply could not be read. " + SESSION_ENDED_TEXT)
+                return None
+        if step.guard_pending and self.proc.poll() not in (0, 1):
+            # A crashed/killed client can lose buffered acknowledgements.
+            # EOF from that process cannot establish a negative reply.
+            step.guard_unresolved = True
+            self.end("client_exited", SESSION_ENDED_TEXT)
+            return None
+        problem = ConnectorError(errors[0]["first_line"])
+        problem.guard_markers = () if step.guard_pending else step.packet_lines.markers
+        return dbops.target_guard_failed(problem, step.packet_lines)
+
     def _execute(self, run):
         timer = None
         try:
@@ -1676,14 +1870,29 @@ class EditorSession(EditorInsights):
                 unit["status"] = "running"
                 kill_ok = run.kind == "run" and unit.get("kind") == "read" and unit.get("single", True)
                 step = self._send(run.kind == "run" and "user" or "action", unit["send"], unit=unit["index"],
-                                  limit=run.limit, kill_ok=kill_ok)
+                                  limit=run.limit, kill_ok=kill_ok,
+                                  guard=run.target_guard if unit.get("kind") != "read" else None)
                 self._wait_step(step)
                 for thread in list(run.kill_threads):
                     thread.join(KILL_TIMEOUT + 5)
                 errors = step.real_errors()
                 interrupted = bool(errors) and all(e.get("code") in INTERRUPTED_CODES for e in errors)
                 unit["duration_ms"] = step.duration_ms
-                if not step.marker:
+                failure = self._packet_guard_failure(step, errors)
+                if failure:
+                    # --force preserves a normal editor session after SQL
+                    # errors, but must never authorize a later packet here.
+                    run.guard_failure = dict(failure, statement_index=unit["index"])
+                    attempted = any(u.get("status") in ("ok", "error", "stopped") for u in run.units)
+                    run.message = (("The server session changed. " +
+                                    ("Earlier statements were sent; this statement and later statements were not sent."
+                                     if attempted else "No requested statements were sent."))
+                                   if failure["outcome"] == "identity_mismatch" else failure["message"])
+                    unit["status"] = "not_run"
+                    run.failed = unit["index"]
+                    self.end(failure["outcome"], run.message + " " + SESSION_ENDED_TEXT)
+                    break
+                elif not step.marker or step.guard_unresolved:
                     unit["status"] = "session_ended"
                 elif interrupted and step.stop_sent:
                     unit["status"] = "stopped"
@@ -1705,7 +1914,7 @@ class EditorSession(EditorInsights):
             for unit in run.units:
                 if unit.get("status") == "pending":
                     unit["status"] = "not_run"
-            if not self.ended:
+            if not self.ended and run.guard_failure is None:
                 if run.kind == "run":
                     self._collect_statement_history(run, history_boundary)
                 # A script can replace a transaction without exposing its
@@ -1732,7 +1941,9 @@ class EditorSession(EditorInsights):
         with self.lock:
             run.finished_at = _now()
             run.duration = time.monotonic() - run.started
-            if self.ended:
+            if run.guard_failure is not None:
+                run.state = "error"
+            elif self.ended:
                 run.state = "session_ended"
                 run.message = run.message or self.end_message or SESSION_ENDED_TEXT
             elif run.failed is not None:
@@ -1751,7 +1962,12 @@ class EditorSession(EditorInsights):
             if run.audit is not None:
                 counts = snapshot["counts"]
                 after = {"statements_run": counts["run"], "in_transaction": self.in_transaction}
-                if any(u.get("status") == "session_ended" for u in run.units):
+                if run.guard_failure is not None:
+                    error = snapshot.get("error") or {}
+                    run.audit.complete("error" if counts["run"] else "refused", outcome=run.guard_failure["outcome"],
+                                       error=error.get("code"), message=run.message,
+                                       rows_affected=counts["affected_rows"], after=after)
+                elif any(u.get("status") == "session_ended" for u in run.units):
                     # The session ended while a statement was out: whether it ran is unknown.
                     run.audit.complete("unknown", outcome="session_ended", message=run.message,
                                        rows_affected=counts["affected_rows"], after=after)
@@ -1837,7 +2053,8 @@ class EditorSession(EditorInsights):
                 item = {"type": "error", "statement": unit["index"], "code": error.get("code"),
                         "sqlstate": error.get("sqlstate"), "message": error.get("message"),
                         "interrupted": interrupted, "duration_ms": step.duration_ms,
-                        "position": error_position(error.get("message"), unit, offsets) if run.kind == "run"
+                        "position": error_position(error.get("message"), unit, offsets) if run.kind == "run" and
+                        not (run.guard_failure and run.guard_failure["statement_index"] == unit["index"])
                         else None}
                 results.append(item)
                 if not interrupted:

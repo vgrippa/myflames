@@ -508,13 +508,12 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
     r.identity = conn_identity(conn, engine, version)
     # Bind a later Kill confirmation to the server that supplied this report.
     # Only the workspace asks (identity=True); the CLI Kill path re-reads it.
-    keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     r.server_identity = {}
     if identity:
         try:
-            rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
-            if rows and len(rows[0]) == len(keys) and all(rows[0]):
-                r.server_identity = dict(zip(keys, rows[0]))
+            keys, projection = _identity_projection(engine)
+            rows = _q(conn, "SELECT " + projection)
+            r.server_identity = _identity_row(keys, rows[0]) if rows else {}
         except ConnectorError:
             r.note("Could not read the server identity; refresh before using Kill.")
     if not deadlock_only:
@@ -2701,12 +2700,12 @@ def read_target(conn, engine, ps_on, connection_id, server_identity=False):
     exactly. ``trx_checked`` is False when INNODB_TRX was not readable (PROCESS).
     """
     rows = None
-    identity_keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
+    identity_keys, identity_projection = _identity_projection(engine)
     for source_ps in ((True, False) if ps_on else (False,)):
         sql = _session_sql(engine, source_ps, "{ID} = %d" % connection_id, " LIMIT 1")
         extra = ", CONNECTION_ID()"
         if server_identity:
-            extra += ", " + ", ".join("@@" + key for key in identity_keys)
+            extra += ", " + identity_projection
         sql = sql.replace(" FROM ", extra + " FROM ", 1)
         try:
             rows = _q(conn, sql)
@@ -2718,7 +2717,7 @@ def read_target(conn, engine, ps_on, connection_id, server_identity=False):
         return None, None
     session = _session_from_row(rows[0][:9])
     if server_identity:
-        session["server_identity"] = dict(zip(identity_keys, rows[0][10:]))
+        session["server_identity"] = _identity_row(identity_keys, rows[0][10:])
     own = _int(rows[0][9]) if len(rows[0]) > 9 else None
     session["trx"], session["trx_checked"] = None, False
     try:
@@ -2962,13 +2961,54 @@ def refused_result(connection_id, mode, message, status="refused", engine=None, 
             "message": message, "verified": [], "target": None, "after": None}
 
 
+def _identity_projection(engine):
+    """Read node identity in the same SELECT as the server's other fields.
+
+    A scalar lookup tolerates standalone servers without wsrep variables.
+    PXC's Performance Schema variable/status tables remain readable with
+    instrumentation disabled (their engine shares are perpetual).
+    """
+    keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
+    variables = "information_schema.GLOBAL_VARIABLES" if engine == "mariadb" else "performance_schema.global_variables"
+    status = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
+    enabled = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_on')" % variables
+    node = ("CASE WHEN %s IN ('ON', '1') THEN (SELECT VARIABLE_VALUE FROM %s "
+            "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') ELSE NULL END" % (enabled, status))
+    expressions = ["@@" + key for key in keys] + ["COALESCE(%s, 'OFF')" % enabled, node]
+    keys += ("wsrep_on", "wsrep_gcomm_uuid")
+    if engine == "mariadb":
+        keys += ("wsrep_node_name",)
+        expressions.append("(SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_VARIABLES "
+                           "WHERE VARIABLE_NAME = 'wsrep_node_name')")
+    return keys, ", ".join(expressions)
+
+
+def _identity_row(keys, row):
+    if len(row) != len(keys):
+        return {}
+    identity = dict(zip(keys, row))
+    if str(identity.get("wsrep_on", "")).upper() not in ("ON", "1"):
+        for key in ("wsrep_on", "wsrep_gcomm_uuid", "wsrep_node_name"):
+            identity.pop(key, None)
+    elif not identity.get("wsrep_node_name"):
+        identity.pop("wsrep_node_name", None)
+    required = ("server_id", "hostname", "version", "port") if "server_id" in identity else ("server_uuid",)
+    return identity if all(identity.get(key) for key in required) else {}
+
+
 def _kill_context(conn):
-    """Read the server and its identity once for a single request or batch."""
+    """Read the server and its identity once for a single request or batch.
+
+    Retain an identity read's ConnectorError in place of the identity so each
+    batch target can refuse and audit it, without another read or a send.
+    """
     server = _server(conn)
-    keys = ("server_id", "hostname", "version", "port") if server[0] == "mariadb" else ("server_uuid",)
-    rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
-    identity = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
-    return server, identity if all(identity.get(key) for key in keys) else {}
+    keys, projection = _identity_projection(server[0])
+    try:
+        rows = _q(conn, "SELECT " + projection)
+    except ConnectorError as exc:
+        return server, exc
+    return server, _identity_row(keys, rows[0]) if rows else {}
 
 
 def _kill_batch_after(conn, context, connection_ids):
@@ -3039,11 +3079,13 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         seen[key] = bound_expect.get(key)
     session_guard = []
 
-    def refuse(message, outcome="identity", status="refused"):
+    def refuse(message, outcome="identity", status="refused", error=None):
         result = refused_result(connection_id, mode, message, status=status)
+        if outcome == "identity_unavailable":
+            result.update(outcome=outcome, sent=[])
         if audit is not None:
             result["audit_id"] = audit.outcome(session_guard + [KILL_TAG + statement], "refused", outcome=outcome,
-                                               message=message, target=seen)
+                                               message=message, error=error, target=seen)
         return result
 
     if blocked:
@@ -3054,6 +3096,11 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     engine, version, _ver, ps_on = context
     if audit is not None:
         audit.server(engine, version)
+    if isinstance(identity, ConnectorError):
+        password = getattr(conn, "password", None) or getattr(audit, "password", None)
+        reason = dbops.redact(dbops.target_error_text(identity), password)
+        return refuse("The identity check could not run: %s. Nothing was sent. Refresh and review again."
+                      % reason.rstrip("."), "identity_unavailable", error=reason)
     if not identity or bound_expect.get("server_identity") != identity:
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     try:
@@ -3112,11 +3159,11 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
                           message=dbops.redact(guard_failure["message"], password))
             if audit is not None:
-                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(str(exc), password),
+                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(dbops.target_error_text(exc), password),
                                message=result["message"])
             return result
-        exc = ConnectorError(dbops.redact(str(dbops.shift_guard_error(exc, packet_lines)),
-                                        getattr(conn, "password", None) or getattr(audit, "password", None)))
+        exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
+                                       getattr(conn, "password", None) or getattr(audit, "password", None))
         try:
             result["status"], result["message"] = _kill_error(engine, exc, connection_id, _ver)
         except ValueError as failure:
@@ -3331,10 +3378,10 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
                              "Nothing was sent." % connection_id)
         return unsent("refused", "identity")
     seen["connection_identity"] = dbops.connection_identity(connection, safety)
-    keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
-    rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
-    seen["server_identity"] = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
-    if not all(seen["server_identity"].get(key) for key in keys):
+    keys, projection = _identity_projection(engine)
+    rows = _q(conn, "SELECT " + projection)
+    seen["server_identity"] = _identity_row(keys, rows[0]) if rows else {}
+    if not seen["server_identity"]:
         result["status"], result["message"] = "refused", "Could not read the server identity; nothing was sent."
         return unsent("refused", "identity")
     lines = describe_target(report, target, connection_id, mode)

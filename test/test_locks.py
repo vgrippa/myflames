@@ -163,8 +163,8 @@ def fake(version, ps_on=True, **answers):
                        ('mli', NO_MLI), ('target_last', []), ('trx_scope', []), ('survived_trx', [])):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
-                 ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])),
-                 ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306']]))]
+                 ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
+                 ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None]]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -3059,6 +3059,43 @@ class TestKillAudit(LockCase):
         self.assertEqual(self.records()[0]['target']['server_identity'],
                          {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})
 
+    def test_identity_read_failure_refuses_and_audits_without_sending(self):
+        for engine in ('mysql', 'mariadb'):
+            for password_source in ('connection', 'audit'):
+                with self.subTest(engine=engine, password_source=password_source):
+                    scenario = KillScenario()
+                    if engine == 'mariadb':
+                        scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
+                    audit = self.trail()
+                    if password_source == 'connection':
+                        scenario.conn.password = PASSWORD
+                    else:
+                        audit.password = PASSWORD
+                    expected = bound_kill_expect(scenario.conn)
+                    original = scenario.conn.run
+
+                    def fail_identity(sql, **kwargs):
+                        if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                            raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for ' + PASSWORD)
+                        return original(sql, **kwargs)
+
+                    with mock.patch.object(scenario.conn, 'run', side_effect=fail_identity), \
+                            mock.patch.object(scenario.conn, 'run_write') as send:
+                        result = locks.kill_session(scenario.conn, 41, expect=expected, confirmed=True,
+                                                    audit=audit, settle_s=0)
+                    send.assert_not_called()
+                    self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                     ('refused', 'identity_unavailable', []))
+                    self.assertIsNone(result['statement'])
+                    self.assertIsNone(result['after'])
+                    self.assertTrue(result['message'].startswith('The identity check could not run: '))
+                    self.assertIn('SELECT denied for [redacted]', result['message'])
+                    record = self.records()[0]
+                    self.assertEqual((record['id'], record['status'], record['outcome'], record['message']),
+                                     (result['audit_id'], 'refused', 'identity_unavailable', result['message']))
+                    self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+                    self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.records()))
+
     def test_cli_missing_server_identity_is_refused_and_audited_before_prompt(self):
         scenario = KillScenario()
         scenario.conn.responses = [(p, '' if p == 'SELECT @@server_uuid' else value)
@@ -3121,7 +3158,8 @@ class TestKillAudit(LockCase):
         reads = []
         def identity(sql):
             reads.append(sql)
-            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else 'replacement-server']])
+            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else
+                           'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
         scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
                                    for p, value in scenario.conn.responses]
         code, out, err = self.cli(scenario, '--kill', '41', stdin=FakeStdin('yes\n'))
