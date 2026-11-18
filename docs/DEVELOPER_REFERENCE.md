@@ -3075,8 +3075,8 @@ planner, write gate and session engine from the CLI.
   connection switch (a request for another identity is refused, so the UI
   closes first), idle timeout (`EditorSessions.reap`, default 30 minutes,
   `idle_minutes` 1 to 1440), and server exit (`WorkspaceServer.server_close`
-  calls `EditorSessions.close`; an `atexit` hook kills leftover clients). Never
-  reconnected: an ended session answers runs with `status: "session_ended"`
+  calls `EditorSessions.close`; an `atexit` hook kills leftover clients). After
+  startup, never reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
 - Identity: after a preliminary session handshake, startup captures connection
@@ -3095,6 +3095,25 @@ planner, write gate and session engine from the CLI.
   State readback is required even when no startup setting needs to change.
   A failed verification refuses startup; an incomplete identity still refuses
   later writes, session-changing statements and KILL.
+  A startup guard refusal through a proxy routing statements to different
+  servers or backend sessions closes and drains that client, then starts one
+  fresh client for the same tab and options. The entire retry is unguarded:
+  identity reads supply display fields only, then startup hardening and its
+  state readbacks must pass before ordinary reads become available. No write,
+  session-change, USE or KILL binding is retained, and no guarded packet is
+  ever sent on that client. A failure on the fresh client fails startup;
+  there is no third attempt. The existing `in_transaction: null` and
+  `transaction_note` status fields explain in the workspace's transaction
+  popover that this connection routes statements to different servers or
+  sessions, so changes, database switching and Stop are unavailable.
+  Lab evidence (`proxysql-trace-e3.txt`, 2026-11-18; ProxySQL on port 36033,
+  covered by `test/live/live_editor_proxysql.py`): the guard's user-variable
+  SET disabled multiplexing and locked the frontend to the writer hostgroup
+  30. A later SELECT routed to reader hostgroup 32 returned ERROR 9006
+  (HY000), "connection is locked to hostgroup 30 but trying to reach
+  hostgroup 32", until that client disconnected. A drain SELECT therefore
+  cannot recover that connection. Regression tests model that per-client
+  lock in `test/test_editor_session_e3.py`.
   A successful read without `server_uuid` identifies MariaDB even when both
   version strings are customized. MySQL uses the UUID; MariaDB uses server id,
   hostname and port, plus `wsrep_gcomm_uuid` from that packet when the Galera
@@ -3127,7 +3146,7 @@ planner, write gate and session engine from the CLI.
   session defaults, not evidence that an already open transaction is read-only
   (MySQL `sql/sys_vars.cc:5094–5121`; MariaDB `sql/sys_vars.cc:4661–4701`).
   A refused ALTER context guard is audited before any lock-wait SET or ALTER.
-  No later helper follows a guard refusal. A failed readback after USE reports
+  No later helper is sent on the refused client. A failed readback after USE reports
   an unknown outcome and ends the session, since the database change was already
   accepted. Tests: `test/test_editor_session_e2.py`.
   The guard also compares `CONNECTION_ID()` with the recorded backend session

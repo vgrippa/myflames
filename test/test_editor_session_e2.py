@@ -124,31 +124,48 @@ class EditorSetupPacketTests(unittest.TestCase):
         # Between binding and the user's SELECT, every setup/state packet is guarded.
         end = next(i for i, p in enumerate(packets) if 'SHOW SESSION VARIABLES' in p) + 1
         self.assertTrue(all('SET @myflames_target = ' in p for p in packets[2:end]))
+        self.assertEqual(sum('--xml' in call[0][0] for call in self.processes.call_args_list), 1)
 
-    def test_routed_startup_setting_stops_before_any_followup(self):
+    def assert_unbound_startup(self):
+        result = self.run_sql('SELECT 7')
+        self.assertEqual(result['status'], 'complete', result)
+        self.assertTrue(result['session']['safe_updates'])
+        self.assertFalse(result['session']['ended'])
+        session = self.registry.get('tab1')
+        self.assertIsNone(session.server_identity)
+        self.assertIsNone(session._kill_identity)
+        packets = [p[2] for p in self.packets()]
+        retry = next(i for i, p in enumerate(packets) if ed.SAFE_UPDATES_ON in p and
+                     'SET @myflames_target = ' not in p)
+        self.assertTrue(any('AS database_name' in p for p in packets[retry:]))
+        self.assertTrue(all('SET @myflames_target = ' not in p for p in packets[retry:]))
+        clients = list(dict.fromkeys(p[0] for p in self.packets()))
+        self.assertEqual(len(clients), 2)
+        self.assertEqual(sum('--xml' in call[0][0] for call in self.processes.call_args_list), 2)
+        first = [p[2] for p in self.packets() if p[0] == clients[0]]
+        second = [p[2] for p in self.packets() if p[0] == clients[1]]
+        self.assertIn('SET @myflames_target = ', first[-1])
+        self.assertIn('CONNECTION_ID()', second[0])
+        self.assertTrue(all('SET @myflames_target = ' not in p for p in second))
+
+    def test_routed_startup_setting_retries_without_a_binding(self):
         self.route_matching('SET SESSION sql_safe_updates = 1')
-        with self.assertRaises(ed.EditorError) as caught:
-            self.run_sql('SELECT 7')
-        self.assertEqual(caught.exception.code, 'identity_mismatch')
-        packets = self.packets()
-        self.assertEqual(len(packets), 3)
-        self.assertIn('SET SESSION sql_safe_updates = 1', packets[-1][2])
-        self.assertNotIn('SELECT 7', (self.state / ('session-%s.log' % packets[0][0])).read_text())
+        self.assert_unbound_startup()
 
-    def test_routed_read_only_setup_stops_before_safe_updates(self):
+    def test_routed_read_only_setup_retries_and_verifies_both_settings(self):
         self.save_profile(read_only=True)
         self.route_matching('SET SESSION TRANSACTION READ ONLY', 'connection_id')
-        with self.assertRaises(ed.EditorError) as caught:
-            self.run_sql('SELECT 7')
-        self.assertEqual(caught.exception.code, 'identity_mismatch')
-        self.assertEqual(len(self.packets()), 3)
+        self.assert_unbound_startup()
+        setup = [p[2] for p in self.packets() if 'SET SESSION TRANSACTION READ ONLY' in p[2]]
+        self.assertEqual(len(setup), 2)
+        self.assertIn('SET @myflames_target = ', setup[0])
+        self.assertNotIn('SET @myflames_target = ', setup[1])
+        verification = next(p[2] for p in self.packets() if 'SHOW SESSION VARIABLES' in p[2])
+        self.assertNotIn('SET @myflames_target = ', verification)
 
-    def test_routed_startup_readback_ends_without_user_sql(self):
+    def test_routed_startup_readback_retries_without_a_binding(self):
         self.route_matching('AS database_name', 'connection_id')
-        with self.assertRaises(ed.EditorError) as caught:
-            self.run_sql('SELECT 7')
-        self.assertEqual(caught.exception.code, 'identity_mismatch')
-        self.assertIn('AS database_name', self.packets()[-1][2])
+        self.assert_unbound_startup()
 
     def test_acknowledged_but_ineffective_hardening_refuses_start(self):
         self.inject_answers('''        if upper == "SET SESSION SQL_SAFE_UPDATES = 1":

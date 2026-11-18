@@ -4,7 +4,9 @@ The workspace's Query editor runs SQL the way Workbench or DBeaver do: every
 tab owns one server session (query-editor skill). myflames has no MySQL
 driver (stdlib only), so a session is one ``mysql`` or ``mariadb`` client
 process with stdin kept open, started on the tab's first run and ended on
-close, connection switch, idle timeout or workspace exit. It is never
+close, connection switch, idle timeout or workspace exit. During startup
+only, a refused identity guard closes the client and retries once on a fresh
+client with no write or KILL binding. An opened session is never
 reconnected silently: when the process or its connection ends, the tab reads
 "Session ended. Session settings were lost and any open transaction was
 rolled back." and starts over only when the user asks.
@@ -196,6 +198,10 @@ class EditorError(ValueError):
     def __init__(self, message, code="invalid"):
         super().__init__(message)
         self.code = code
+
+
+class _StartupGuardRefused(EditorError):
+    """A startup guard refused; its client has exited and both pipes drained."""
 
 
 def _now():
@@ -583,6 +589,16 @@ class EditorSession(EditorInsights):
         self.cond = threading.Condition(self.lock)
         self.run_lock = threading.Lock()
         self.send_lock = threading.Lock()
+        self.ready = threading.Event()
+        self._routed_startup = False
+        self._init_client_state()
+
+    def _init_client_state(self):
+        """Initialize one client, preserving the tab's locks and readiness event.
+
+        Reuse only during startup, after the previous client and both pipe
+        readers have exited. No user statement has been sent at that point.
+        """
         self.proc = None
         self.delimiter = None
         self.statement_tag = "/*myflames:editor:%s*/ " % secrets.token_hex(16)
@@ -596,6 +612,7 @@ class EditorSession(EditorInsights):
         self.server_product = None
         self.connection_id = None
         self.server_identity = None
+        self._kill_identity = None
         self.autocommit = None
         self.in_transaction = None
         self.transaction_source = None
@@ -624,13 +641,33 @@ class EditorSession(EditorInsights):
         self._eof = 0
         self._conn = None
         self._client_home = None
-        self.ready = threading.Event()
 
     # -- starting -------------------------------------------------------------------------
 
     def start(self, options, defer_safe_updates=False):
         """Start the client and read the session's identity. Raises
         ConnectorError (password redacted by the caller) when it cannot."""
+        try:
+            try:
+                self._start_client(options, defer_safe_updates)
+            except _StartupGuardRefused:
+                # ProxySQL can lock a frontend to the guard's hostgroup after
+                # SET @myflames_target. No later read can undo that lock. The
+                # failed attempt has closed its client; start over exactly once.
+                for reader in self._readers:
+                    reader.join(2)
+                if any(reader.is_alive() for reader in self._readers):
+                    raise ConnectorError("The MySQL client's output could not be drained. " + SESSION_ENDED_TEXT)
+                with self.lock:
+                    self._init_client_state()
+                    self._routed_startup = True
+                self._start_client(options, defer_safe_updates)
+        finally:
+            # Other requests must not observe readiness between attempts.
+            self.ready.set()
+
+    def _start_client(self, options, defer_safe_updates):
+        """One startup attempt; a routed retry never acquires a write binding."""
         options = dict(options)
         login_guard = options.pop('_login_guard', None)
         conn = MySQLConnection(**options)
@@ -737,6 +774,11 @@ class EditorSession(EditorInsights):
                     self._kill_identity = kill_identity
                     if self.engine == "mysql":
                         self.server_identity["server_uuid"] = variables.get("server_uuid")
+            if self._routed_startup:
+                # Keep identity fields for display only. Even a complete read
+                # on this fresh client cannot authorize another guarded packet.
+                self.server_identity = None
+                self._kill_identity = None
             from . import client_tools
             client_tools.remember_server(client_tools.endpoint_key(options), self.engine, self.server_version)
             self._apply_state(row)
@@ -746,7 +788,8 @@ class EditorSession(EditorInsights):
             if self.read_only:
                 from . import dbops
                 setup.extend(getattr(dbops, "READ_ONLY_SESSION_GUARD", ("SET SESSION TRANSACTION READ ONLY",)))
-            if not defer_safe_updates and self.safe_updates_wanted != bool(self.safe_updates):
+            if not defer_safe_updates and (self._routed_startup or
+                                           self.safe_updates_wanted != bool(self.safe_updates)):
                 setup.append("SET SESSION sql_safe_updates = %d" % (1 if self.safe_updates_wanted else 0))
             try:
                 guard = self._write_session_guard()
@@ -755,30 +798,7 @@ class EditorSession(EditorInsights):
                 # Apply and verify startup protections without a binding;
                 # later writes, session changes and KILL still require one.
                 guard = None
-            for statement in setup:
-                step = self._helper(TAG + statement, results=0, guard=guard)
-                if not step.marker or self.ended:
-                    raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
-                if step.real_errors():
-                    raise ConnectorError("Could not prepare the session (%s): %s"
-                                         % (statement, step.real_errors()[0].get("message")))
-            if not self.refresh_state(guard=guard):
-                raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
-            if not defer_safe_updates and self.safe_updates != self.safe_updates_wanted:
-                raise ConnectorError("The session's safe-updates setting could not be verified. " +
-                                     SESSION_ENDED_TEXT)
-            if self.read_only:
-                # SHOW supports the old and new names without guessing a
-                # version from a customizable version string. MySQL uses
-                # transaction_read_only; MariaDB 10.11 uses tx_read_only.
-                step = self._helper(TAG + "SHOW SESSION VARIABLES WHERE Variable_name IN "
-                                    "('transaction_read_only', 'tx_read_only')", guard=guard)
-                sets = [entry for entry in step.entries if entry["type"] == "rows"]
-                if (not step.marker or step.real_errors() or len(sets) != 1 or not sets[0]["rows"] or
-                        any(len(row) != 2 or str(row[0]).lower() not in ("transaction_read_only", "tx_read_only") or
-                            str(row[1]).upper() not in ("ON", "1") for row in sets[0]["rows"])):
-                    raise ConnectorError("The session's read-only transaction setting could not be verified. " +
-                                         SESSION_ENDED_TEXT)
+            self._prepare_startup(setup, guard, defer_safe_updates)
             with self.lock:
                 if self.ended:
                     raise ConnectorError(self.end_message or SESSION_ENDED_TEXT)
@@ -789,10 +809,32 @@ class EditorSession(EditorInsights):
             self.end("start_failed", quiet=True)
             raise
         finally:
-            try:
-                credentials.close()
-            finally:
-                self.ready.set()
+            credentials.close()
+
+    def _prepare_startup(self, setup, guard, defer_safe_updates):
+        """Apply and verify the required protections, with or without a binding."""
+        for statement in setup:
+            step = self._helper(TAG + statement, results=0, guard=guard)
+            if not step.marker or self.ended:
+                raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
+            if step.real_errors():
+                raise ConnectorError("Could not prepare the session (%s): %s"
+                                     % (statement, step.real_errors()[0].get("message")))
+        if not self.refresh_state(guard=guard):
+            raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
+        if not defer_safe_updates and self.safe_updates != self.safe_updates_wanted:
+            raise ConnectorError("The session's safe-updates setting could not be verified. " +
+                                 SESSION_ENDED_TEXT)
+        if self.read_only:
+            # SHOW supports both engine names without relying on version text.
+            step = self._helper(TAG + "SHOW SESSION VARIABLES WHERE Variable_name IN "
+                                "('transaction_read_only', 'tx_read_only')", guard=guard)
+            sets = [entry for entry in step.entries if entry["type"] == "rows"]
+            if (not step.marker or step.real_errors() or len(sets) != 1 or not sets[0]["rows"] or
+                    any(len(row) != 2 or str(row[0]).lower() not in ("transaction_read_only", "tx_read_only") or
+                        str(row[1]).upper() not in ("ON", "1") for row in sets[0]["rows"])):
+                raise ConnectorError("The session's read-only transaction setting could not be verified. " +
+                                     SESSION_ENDED_TEXT)
 
     def _helper_problem(self, step):
         errors = step.real_errors()
@@ -973,10 +1015,14 @@ class EditorSession(EditorInsights):
         return step
 
     def _check_helper_guard(self, step):
-        """Never follow a refused internal packet with another helper."""
-        failure = self._packet_guard_failure(step, step.real_errors())
+        """End on refusal, except for the startup fallback to unbound reads."""
+        errors = step.real_errors()
+        startup = self.state == "starting"
+        failure = self._packet_guard_failure(step, errors)
         if failure:
             message = "The server session could not be confirmed. The requested operation was not sent."
+            if startup and failure["outcome"] == "identity_mismatch":
+                raise _StartupGuardRefused(message, failure["outcome"])
             self.end(failure["outcome"], message + " " + SESSION_ENDED_TEXT)
             raise EditorError(message, failure["outcome"])
 
@@ -1653,11 +1699,21 @@ class EditorSession(EditorInsights):
                 self.end("connection_lost", SESSION_ENDED_TEXT)
             return False
         with self.lock:
-            reconnected = self.connection_id is not None and _int(row.get("connection_id")) != self.connection_id
+            reconnected = (not self._routed_startup and self.connection_id is not None and
+                           _int(row.get("connection_id")) != self.connection_id)
             if reconnected:
                 self._mark_ended("reconnected", "The client reconnected to the server. " + SESSION_ENDED_TEXT)
             else:
                 self._apply_state(row)
+                if self._routed_startup:
+                    # A routed read cannot establish the transaction state of
+                    # the tab. The existing unknown-state UI displays this note.
+                    self.in_transaction = None
+                    self.transaction_source = None
+                    self.transaction_note = (
+                        "This connection sends statements to different servers or server sessions, as a proxy can. "
+                        "This tab is available for reads only; changes, database switching and Stop are not "
+                        "available. The transaction state cannot be confirmed.")
         if reconnected:
             self._terminate()
             return False
