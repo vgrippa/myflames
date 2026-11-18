@@ -2481,6 +2481,18 @@ inserts exactly one separator between units. Review and audit text stays
 unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
+Reviewed-packet validation also scans MySQL dollar-quoted bodies: a tag starts only
+at an identifier boundary, contains identifier characters (including digits
+and multibyte characters), and closes only with the identical case-sensitive
+tag. An unterminated body refuses before sending, so it cannot swallow the
+packet delimiter. Quotes, comments and dollar signs inside identifiers do
+not open a body. Source: `mysql-server/client/mysql.cc:2715–2746`,
+`:2953–2974` (the client enables this grammar after its server probe at
+`:1288–1291`).
+The ordinary classifier retains the legacy reading, where dollar tags can
+be identifiers. Reviewed SQL must still pass that reading as one complete
+unit; a body with client-dependent semicolon or quote boundaries refuses.
+This prevents modern dollar syntax from hiding a legacy client's write.
 ProxySQL Admin, Readyset and plans without a recognized SQL engine keep
 one physical line per statement (CR and LF are refused). ProxySQL apply
 also forces that restriction independently of a caller-supplied engine or sender. Statements retain
@@ -2542,13 +2554,39 @@ evidence, never request connection fields. MariaDB reads include the server's
 port; replication copies `settings.server_identity` into the skip plan's
 `identity.server_identity`. Cluster SQL plans must include the required values
 in `expect.server`; older MariaDB plans without `server_id` refuse safely.
+Standalone MariaDB has no server UUID. Two standalone MariaDB servers with
+the same `server_id`, hostname and port cannot be distinguished by this
+guard; configure a different `server_id` for every standalone server.
 
 Every SQL sender captures and binds `wsrep_gcomm_uuid` when the reviewed
-server has `wsrep_on = ON`, including Accounts, Variables, replication and Kill;
+server has a loaded `wsrep_provider` (nonempty and other than `none`), even
+with `wsrep_on = OFF`, or reports `wsrep_on = ON`, including Accounts,
+Variables, replication and Kill;
 Galera and PXC Cluster plans bind it in `expect.server.wsrep_gcomm_uuid`.
-Accounts' privilege snapshot and the Variables and replication variable reads
-include wsrep_on. Kill projects it and the node UUID in the same SELECT as the
-other identity fields, including each bulk target check. Missing, invalid or
+MariaDB's provider-exists condition is separate from wsrep_on in
+`mariadb-server/sql/wsrep_var.cc:103–109`; an unset or `none` provider selects
+normal operation in `sql/wsrep_mysqld.cc:880–890`.
+Accounts' review and apply reads, Variables' value and metadata reads, and
+Replication's status reads use `dbops.TargetEvidenceConnection`. Every read
+packet contains its state statements, a private marker, the server identity
+variables (including provider detection), and the node status. A client
+`DELIMITER` absent from the payload keeps those statements in one COM_QUERY;
+`--skip-reconnect` prevents reconnecting midway. All successful packets in
+that review/recheck must return the same identity. A changed or incomplete
+identity invalidates the entire read, including when an optional reader
+catches the error, and no write may follow. This adds identity/status work to
+each read and may refuse a rotating proxy; it does not make changing server
+state a transactional snapshot. The marker is removed before parsing state,
+including for XML replication status, and never enters review or audit data.
+Kill projects provider detection and the node UUID in the same SELECT as the
+other identity fields and the process row, for single and bulk targets.
+Its MariaDB projection explicitly reads `@@global.server_id`, matching the
+guard: `mariadb-server/sql/sys_vars.cc:3651–3657` makes the unqualified value
+session-scoped, so a proxy's reused session could otherwise override it.
+Its `wsrep_on` identity slot denotes that node identity is required, including
+when a loaded provider has replication switched off. A failed or incomplete
+per-target identity projection is an audited `identity_unavailable` refusal
+with nothing sent. Missing, invalid or
 unreadable node evidence refuses with "The identity check could not run";
 it never falls back to the server's names or id.
 The same guard statement compares this node UUID with the `VARIABLE_VALUE`
@@ -2608,6 +2646,10 @@ keeps an unknown outcome in `reviewed_writes`. Client transport errors,
 including line-free 2006 after any packet may have run, also keep an unknown
 outcome. Only a recognized connection or login failure before any acknowledged
 packet and without a query line is `not_connected` with nothing sent.
+Replication handles an ambiguous line-free client error (including 2050 after
+an acknowledgement) before definite server-error handling: the outcome and
+audit are `unknown`, with GTID/counter progress unverified and no automatic
+after-read or retry.
 MariaDB can echo SQL before its ERROR line;
 packet error mapping discards that echo before displaying the server reason.
 Missing or invalid identity evidence still refuses before sending with outcome

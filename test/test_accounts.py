@@ -37,6 +37,16 @@ def actor(engine='mysql', account='admin@localhost', grants=None, variables=None
     return report
 
 
+
+def plan_with_actor(conn, *args, **kwargs):
+    """Supply actor fixtures at the read boundary, never bypass node rechecks."""
+    supplied = kwargs.pop('actor', None)
+    if supplied is None:
+        return a.plan_change(conn, *args, **kwargs)
+    with mock.patch.object(p, 'read_privileges', return_value=supplied):
+        return a.plan_change(conn, *args, **kwargs)
+
+
 def catalog_replay(conn, server):
     """Add the independent live catalog capture, preserving both recordings."""
     data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text(encoding="utf-8"))
@@ -68,6 +78,14 @@ class FakeConn(object):
         return self.engine == 'mariadb'
 
     def run(self, sql, extra_flags=None, timeout=None):
+        from _reviewed_replay import evidence_body, evidence_output, UUID
+        body, marker = evidence_body(sql)
+        if marker:
+            values = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': self.version}
+            if self.engine == 'mysql':
+                values['server_uuid'] = UUID
+            values.update(getattr(self, 'evidence_values', {}))
+            return evidence_output(self.run(body, extra_flags=['--comments'], timeout=timeout), marker, values)
         self.calls.append((sql, extra_flags))
         assert sql.startswith(a.TAG), sql
         assert extra_flags == ['--comments'], extra_flags
@@ -139,7 +157,7 @@ class AccountsTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def plan(self, op, **kw):
-        return a.plan_change(self.conn, op, self.conn.name, self.conn.account_host, **kw)
+        return plan_with_actor(self.conn, op, self.conn.name, self.conn.account_host, **kw)
 
     def apply(self, plan, **kw):
         return a.apply(self.conn, plan, plan['expect'], store=self.store, confirmed=True, **kw)
@@ -681,7 +699,7 @@ class AccountsTest(unittest.TestCase):
                 # not independently mark this role as protected.
                 self.conn.role_grants[child] = ['GRANT UPDATE ON `mysql`.* TO ' + child]
                 active = actor(engine, roles=[{'name': 'parent', 'host': host}])
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['protected'])
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.assertIsNone(plan['guards']['after_management']['account_options'])
@@ -694,11 +712,11 @@ class AccountsTest(unittest.TestCase):
                 self.conn.role_grants[parent].append('GRANT ' + other + ' TO ' + parent)
                 self.conn.role_grants[other] = ['GRANT USAGE ON *.* TO ' + other,
                                                'GRANT ' + child + ' TO ' + other]
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 # An independent grant, however, preserves administration.
                 self.conn.role_grants[other].append('GRANT UPDATE ON `mysql`.* TO ' + other)
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['self_lockout'])
                 self.assertTrue(plan['guards']['after_management']['account_options'])
                 self.assertEqual(plan['guards']['typed_name'], '')
@@ -709,17 +727,17 @@ class AccountsTest(unittest.TestCase):
                 self.conn.role_grants[child] = ['GRANT USAGE ON *.* TO ' + child,
                                                'GRANT ' + leaf + ' TO ' + child]
                 self.conn.role_grants[leaf] = ['GRANT UPDATE ON `mysql`.* TO ' + leaf]
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.conn.role_grants[other].append('GRANT ' + leaf + ' TO ' + other)
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['self_lockout'])
                 # Dropping the active root cuts off all of those paths.
-                plan = a.plan_change(self.conn, 'drop', 'parent', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'parent', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 # Failure to read the actor cannot prove the role harmless.
                 with mock.patch.object(a, '_revocation_snapshot', return_value=None):
-                    plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                    plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.assertIsNone(plan['guards']['after_management']['account_options'])
 
@@ -753,7 +771,7 @@ class AccountsTest(unittest.TestCase):
                                        roles=[{'name': 'r', 'host': host}] if from_role else [])
                         name = 'r' if from_role else 'admin'
                         target_host = '%' if from_role else 'localhost'
-                        plan = a.plan_change(self.conn, 'revoke', name, target_host, role=from_role,
+                        plan = plan_with_actor(self.conn, 'revoke', name, target_host, role=from_role,
                                              actor=active, privileges=[bypass])
                         self.assertEqual(plan['guards']['self_lockout'], read_only == 'ON')
                         self.assertIs(plan['guards']['after_management']['account_options'], read_only == 'OFF')
@@ -764,7 +782,7 @@ class AccountsTest(unittest.TestCase):
                             self.conn.grants.append('GRANT ' + role + ' TO admin@localhost')
                             self.conn.role_grants[role] = ['GRANT ' + alternate + ' ON *.* TO ' + role]
                             active['current_roles'] = [{'name': 'r', 'host': host}]
-                        plan = a.plan_change(self.conn, 'revoke', name, target_host, role=from_role,
+                        plan = plan_with_actor(self.conn, 'revoke', name, target_host, role=from_role,
                                              actor=active, privileges=[bypass])
                         self.assertFalse(plan['guards']['self_lockout'])
                         self.assertTrue(plan['guards']['after_management']['account_options'])
@@ -815,16 +833,16 @@ class AccountsTest(unittest.TestCase):
             self.conn.role_grants[child] = ['GRANT CREATE USER, UPDATE ON *.* TO ' + child]
             active = actor(engine, roles=[{'name': 'r', 'host': host}])
             # Revoking r's direct CREATE USER preserves its child's grant.
-            plan = a.plan_change(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
+            plan = plan_with_actor(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
             self.assertFalse(plan['guards']['self_lockout'])
             self.assertTrue(plan['guards']['after_management']['create_user'])
             # The only remaining admin path is through the nested child.
             self.conn.role_grants[r][0] = 'GRANT USAGE ON *.* TO ' + r
-            plan = a.plan_change(self.conn, 'revoke', 'child', role=True, actor=active, privileges=['CREATE USER'])
+            plan = plan_with_actor(self.conn, 'revoke', 'child', role=True, actor=active, privileges=['CREATE USER'])
             self.assertTrue(plan['guards']['self_lockout'])
             self.assertIsNone(plan['guards']['after_management']['create_user'])
             # It is equally destructive to remove the child edge from r.
-            plan = a.plan_change(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
+            plan = plan_with_actor(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
                                  roles=[{'name': 'child', 'host': '%'}])
             self.assertTrue(plan['guards']['self_lockout'])
             self.assertIsNone(plan['guards']['after_management']['create_user'])
@@ -834,7 +852,7 @@ class AccountsTest(unittest.TestCase):
             self.conn.role_grants[r].append('GRANT ' + other + ' TO ' + r)
             self.conn.role_grants[other] = ['GRANT USAGE ON *.* TO ' + other,
                                            'GRANT ' + child + ' TO ' + other]
-            plan = a.plan_change(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
+            plan = plan_with_actor(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
                                  roles=[{'name': 'child', 'host': '%'}])
             self.assertFalse(plan['guards']['self_lockout'])
             self.assertTrue(plan['guards']['after_management']['create_user'])
@@ -845,11 +863,11 @@ class AccountsTest(unittest.TestCase):
         public = 'GRANT CREATE USER, UPDATE ON *.* TO PUBLIC'
         self.conn.role_grants['PUBLIC'] = [public]
         active = actor('mariadb', grants=self.conn.grants + [public])
-        plan = a.plan_change(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
         self.assertTrue(plan['guards']['self_lockout'])
         self.assertIsNone(plan['guards']['after_management']['create_user'])
         self.conn.grants.append('GRANT CREATE USER ON *.* TO admin@localhost')
-        plan = a.plan_change(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
         self.assertFalse(plan['guards']['self_lockout'])
         self.assertTrue(plan['guards']['after_management']['create_user'])
         # PUBLIC can also preserve administration when a direct grant is lost.
@@ -864,7 +882,7 @@ class AccountsTest(unittest.TestCase):
         self.conn.role_grants['`r`@`%`'] = ['GRANT CREATE USER ON *.* TO `r`@`%`']
         self.conn.role_grants['`other`@`%`'] = ['GRANT CREATE USER ON *.* TO `other`@`%`']
         active = actor(roles=[{'name': 'r', 'host': '%'}, {'name': 'other', 'host': '%'}])
-        plan = a.plan_change(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
         self.assertFalse(plan['guards']['self_lockout'])
         self.conn.role_grants['`other`@`%`'] = ['GRANT USAGE ON *.* TO `other`@`%`']
         # Protected roles already require their own name, so assert the fresh

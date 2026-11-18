@@ -457,6 +457,7 @@ def _quote_name(name):
     return "'%s'" % name
 
 
+@dbops.target_evidence
 def _read(conn, name):
     """Everything known about *name* on this server (not yet the public shape)."""
     name = check_name(name)
@@ -1573,7 +1574,12 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     if blocked:
         return _unsent(stub, audit, "refused" if blocked[0] == "refused" else "needs_confirmation",
                        "read_only" if blocked[0] == "refused" else "needs_confirmation", blocked[1], expect)
-    v = read_variable(conn, name)
+    try:
+        v = read_variable(conn, name)
+    except ConnectorError as exc:
+        if getattr(exc, "identity_outcome", None):
+            return _unsent(stub, audit, "refused", exc.identity_outcome, str(exc), expect)
+        raise
     if audit is not None:
         audit.server(v["engine"], v["server_version"])
     fresh = build_plan(v, requested, mode)

@@ -147,7 +147,7 @@ class PacketTests(unittest.TestCase):
                   ('_reviewed_replay', '_accounts_replay', 'test_cluster_shell', 'test_ui_group_consent', 'test_cluster_group_actions', 'test_variables',
                    'test_replication', 'test_locks', 'test_cluster_actions', 'test_editor_process',
                    'test_editor_session', 'test_editor_session_identity', 'test_reviewed_writes_guard',
-                   'test_reviewed_writes_packets', 'test_accounts', 'test_cluster_privileges',
+                   'test_reviewed_writes_packets', 'test_reviewed_writes_evidence', 'test_accounts', 'test_cluster_privileges',
                    'test_cli_live_regressions', 'test_sql_cli', 'test_backend_kill_review')]
         for path in paths:
             with self.subTest(file=path.name):
@@ -520,16 +520,13 @@ class PacketTests(unittest.TestCase):
         for engine, identity, table in [('mariadb', MARIA, 'information_schema.GLOBAL_STATUS'),
                                         ('mysql', MYSQL, 'performance_schema.global_status'),
                                         ('pxc', MYSQL, 'performance_schema.global_status')]:
-            for response in (UUID + '\n', '', 'not-a-uuid\n', ConnectorError('ERROR 1142: SELECT denied')):
+            for response in (UUID, '', 'not-a-uuid', None):
                 with self.subTest(engine=engine, response=response):
                     conn = mock.Mock()
-                    if isinstance(response, Exception):
-                        conn.run.side_effect = response
-                    else:
-                        conn.run.return_value = response
-                    captured = dbops.target_galera_identity(conn, engine, identity, {'wsrep_on': 'ON'})
-                    self.assertIn('FROM ' + table, conn.run.call_args[0][0])
-                    if response == UUID + '\n':
+                    captured = dbops.target_galera_identity(conn, engine, identity,
+                                                           {'wsrep_on': 'ON', 'wsrep_gcomm_uuid': response})
+                    conn.run.assert_not_called()
+                    if response == UUID:
                         self.assertEqual(captured['wsrep_gcomm_uuid'], UUID)
                         self.assertIn(table, dbops.target_session_guard(engine, captured)[0])
                     else:
@@ -541,14 +538,13 @@ class PacketTests(unittest.TestCase):
     def test_accounts_capture_galera_node_and_refuse_an_identically_named_peer(self):
         from test_accounts import FakeConn, actor
         conn = FakeConn('mariadb')
-        original = conn.run
-        def read(sql, **kwargs):
-            if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
-                return UUID + '\n'
-            return original(sql, **kwargs)
-        conn.run = read
+        conn.evidence_values = {'wsrep_on': 'ON', 'wsrep_gcomm_uuid': UUID}
         evidence = actor('mariadb', variables=dict(MARIA, wsrep_on='ON', wsrep_node_name='same-name'))
-        with mock.patch.object(privileges, 'read_privileges', return_value=evidence):
+        def read_actor(connection):
+            connection.run(accounts.TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+                           extra_flags=['--comments'])
+            return evidence
+        with mock.patch.object(privileges, 'read_privileges', side_effect=read_actor):
             plan = accounts.plan_lock(conn, 'app')
             self.assertEqual(plan['actor_server']['wsrep_gcomm_uuid'], UUID)
             other = dict(plan['actor_server'], wsrep_gcomm_uuid='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
@@ -572,14 +568,11 @@ class PacketTests(unittest.TestCase):
                             return 'wsrep_on\tON\n' + text
                         return text
                     conn, _ = replay(edit)
-                    original = conn.run
-                    def read(sql, **kwargs):
-                        if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
-                            if not available:
-                                raise ConnectorError('ERROR 1142: SELECT denied')
-                            return UUID + '\n'
-                        return original(sql, **kwargs)
-                    conn.run = read
+                    conn.evidence_values.update(wsrep_on='ON', wsrep_gcomm_uuid=UUID if available else '')
+                    if not available:
+                        with self.assertRaisesRegex(ConnectorError, 'identity check could not run'):
+                            reader(conn)
+                        continue
                     report = reader(conn)
                     identity = (report['server_identity'] if engine == 'variables' else
                                 report['settings']['server_identity'])

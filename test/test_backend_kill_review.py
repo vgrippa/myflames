@@ -140,7 +140,8 @@ class TestBulkKillReview(unittest.TestCase):
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
                 mock.patch('myflames.locks.read_target', side_effect=ConnectorError('read test-secret failed')):
             result = ui._bulk_kill_response(self.payload(1), self.workspace)
-        self.assertEqual(result['errors'], 1)
+        self.assertEqual(result['errors'], 0)
+        self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
         self.assertEqual(conn.killed, set())
         self.assertEqual(len(self.records()), 2)
         self.assertNotIn('test-secret', json.dumps(result))

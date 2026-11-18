@@ -50,6 +50,7 @@ Classification decisions (see docs/DEVELOPER_REFERENCE.md, "Write safety"):
 """
 import csv
 import datetime
+import functools
 import getpass
 import io
 import json
@@ -164,7 +165,7 @@ def _delimiter_argument(sql, at):
 
 # ---- splitting -----------------------------------------------------------------------
 
-def split_statements(sql, backslash_escapes=True, delimiter=";"):
+def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False):
     """Split *sql* into statements like the mysql client.
 
     Returns a list of dicts: ``text`` (the statement as written, without its
@@ -183,6 +184,9 @@ def split_statements(sql, backslash_escapes=True, delimiter=";"):
     reads strings as under sql_mode NO_BACKSLASH_ESCAPES. *delimiter* is the
     delimiter in effect where *sql* starts (a part of a longer script that
     follows a DELIMITER line).
+    *dollar_quotes* enables the MySQL client's newer dollar-body grammar for
+    an additional boundary check. The default retains the legacy reading:
+    MariaDB and older MySQL clients can interpret those tags as identifiers.
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
@@ -240,6 +244,21 @@ def split_statements(sql, backslash_escapes=True, delimiter=";"):
                 i += len(delimiter)
                 continue
             ch = sql[i]
+            # mysql client/mysql.cc:2715-2746, 2953-2974: a dollar quote
+            # starts only at a token boundary, accepts identifier characters
+            # (including digits and multibyte characters), and closes with
+            # the identical tag. Its contents do not interpret SQL escapes.
+            if dollar_quotes and ch == "$" and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] in "_$" or ord(sql[i - 1]) >= 128)):
+                dollar = re.match(r"\$[\w\x80-\U0010ffff]*\$", sql[i:])
+                if dollar:
+                    tag = dollar.group()
+                    end = sql.find(tag, i + len(tag))
+                    state["code"].append("''")
+                    state["pending"] = True
+                    state["unclosed"] = state["unclosed"] or end < 0
+                    pos = n if end < 0 else end + len(tag)
+                    restart = True
+                    break
             if ch == "\\":
                 following = sql[i + 1] if i + 1 < n else ""
                 if following in ("g", "G"):
@@ -1102,27 +1121,155 @@ def target_error_text(exc):
     return re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
 
 
-def target_galera_identity(conn, engine, identity, variables, tag=""):
-    """Add review-time node evidence when wsrep is enabled, failing closed.
+def target_has_galera(variables, engine=None):
+    """Provider existence is independent of this session's wsrep_on.
 
-    Keep the missing UUID in the identity on a failed read: the guard builder
-    must refuse it, rather than silently falling back to a shared hostname.
-    SHOW GLOBAL VARIABLES supplies wsrep_on without assuming the engine has it.
+    MariaDB sql/wsrep_var.cc:107-108 checks a nonempty provider != 'none'.
+    Keep wsrep_on as additional evidence for older/incomplete snapshots.
     """
-    from .connector import ConnectorError
+    variables = variables or {}
+    provider = str(variables.get("wsrep_provider") or "").lower()
+    return (engine == "pxc" or provider not in ("", "none") or
+            str(variables.get("wsrep_on", "")).upper() in ("ON", "1"))
+
+
+_EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version",
+                       "wsrep_on", "wsrep_provider", "wsrep_node_name")
+
+
+class TargetEvidenceConnection(object):
+    """Keep every successful review read on one node, even through a router.
+
+    Each read and its identity suffix are ONE COM_QUERY, using a client
+    delimiter absent from the entire payload. All reads in this scope must
+    agree. No result from another node is ever returned to the caller.
+    Failures are sticky, including when an optional reader catches one.
+    This binds the node, not a transactional snapshot of changing server data.
+    """
+    def __init__(self, conn):
+        self.connection = conn
+        self.variables = None
+        self.problem = None
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def check(self):
+        from .connector import ConnectorError
+        if self.problem:
+            error = ConnectorError(self.problem)
+            error.identity_outcome = "identity_unavailable"
+            raise error
+
+    def run_write(self, *args, **kwargs):
+        self.check()
+        return self.connection.run_write(*args, **kwargs)
+
+    def run_stdin(self, *args, **kwargs):
+        self.check()
+        return self.connection.run_stdin(*args, **kwargs)
+
+    def run(self, sql, extra_flags=None, **kwargs):
+        from .connector import ConnectorError, unescape_mysql
+        from .perf_common import named_rows
+        self.check()
+        marker = "myflames_evidence_" + uuid.uuid4().hex
+        units = split_statements(sql)
+        # These are internal reads, including their fixed session setup.
+        # Reuse the write packet's lexical boundary checks, never concatenate
+        # uncertain or incomplete client input ahead of the identity suffix.
+        bodies = []
+        for unit in units:
+            start, end = _target_statement_span(unit["text"])
+            bodies.append(unit["text"][start:end])
+        if not bodies or any(unit["delimiter"] != ";" or unit["issues"] or unit["unclosed"] for unit in units):
+            raise ConnectorError("The review evidence has uncertain SQL boundaries. Nothing was sent.")
+        body = sql[:units[-1]["end"]] + "\n;\nSELECT '%s';\n" % marker
+        body += "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
+        body += "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'\n"
+        delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
+        if delimiter is None:
+            raise ConnectorError("No safe SQL packet delimiter is available for the review evidence. Nothing was sent.")
+        flags = list(extra_flags or [])
+        if "--skip-reconnect" not in flags:
+            flags.append("--skip-reconnect")
+        text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
+                                   extra_flags=flags, **kwargs)
+        try:
+            if "--xml" in flags:
+                # mysql prints one XML document per result set. Preserve the
+                # original result document exactly for Reader.named().
+                documents = list(re.finditer(r"(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*?"
+                                             r"(?:/>|>[\s\S]*?</resultset>)", text))
+                if len(documents) < 3:
+                    raise ValueError("missing evidence result sets")
+                evidence = documents[-3:]
+                marker_rows = named_rows(evidence[0].group())
+                if len(marker_rows) != 1 or list(marker_rows[0].values()) != [marker]:
+                    raise ValueError("missing evidence marker")
+                values = {}
+                for document in evidence[1:]:
+                    for row in named_rows(document.group()):
+                        row = {key.lower(): value for key, value in row.items()}
+                        values[row["variable_name"].lower()] = row["value"]
+                output = text[:evidence[0].start()].rstrip() + "\n"
+            else:
+                output, separator, tail = text.partition(marker + "\n")
+                if not separator or (output and not output.endswith("\n")):
+                    raise ValueError("missing evidence marker")
+                values = {}
+                for line in tail.splitlines():
+                    key, value = line.split("\t")
+                    values[key.lower()] = unescape_mysql(value)
+            required = ("server_uuid",) if "server_uuid" in values else ("server_id", "hostname", "port", "version")
+            if not all(values.get(key) for key in required):
+                raise ValueError("missing server identity")
+            engine = "mysql" if "server_uuid" in values else "mariadb"
+            identity = {key: values[key] for key in required}
+            target_session_guard(engine, target_galera_identity(None, engine, identity, values))
+            if self.variables is not None and self.variables != values:
+                raise ValueError("the server identity changed between evidence packets")
+            self.variables = values
+        except (ValueError, KeyError, TypeError):
+            self.problem = "The identity check could not run: review evidence did not come from one identified server. Nothing was sent. Refresh and review again."
+            self.check()
+        return output
+
+
+def target_evidence(function):
+    """Bind a complete review/recheck, including nested evidence readers."""
+    @functools.wraps(function)
+    def bound(conn, *args, **kwargs):
+        from .connector import ConnectorError
+        evidence = conn if isinstance(conn, TargetEvidenceConnection) else TargetEvidenceConnection(conn)
+        try:
+            result = function(evidence, *args, **kwargs)
+        except (ConnectorError, ValueError):
+            # Preserve the identity refusal if an inner reader replaced its
+            # diagnostic with a generic grants/metadata error.
+            evidence.check()
+            raise
+        evidence.check()
+        return result
+    return bound
+
+
+def target_galera_identity(conn, engine, identity, variables, tag=""):
+    """Use only node evidence captured in the same packet as the read state."""
     out = dict(identity or {})
-    if engine != "pxc" and str((variables or {}).get("wsrep_on", "")).upper() not in ("ON", "1"):
+    evidence = conn.variables if isinstance(conn, TargetEvidenceConnection) else variables
+    evidence = evidence or {}
+    if isinstance(conn, TargetEvidenceConnection) and conn.variables:
+        keys = ("server_id", "hostname", "port") if engine == "mariadb" else ("server_uuid",)
+        if all(out.get(key) for key in keys) and any(str(out[key]) != str(evidence.get(key, "")) for key in keys):
+            conn.problem = "The identity check could not run: the reviewed state and server identity disagree. Nothing was sent. Refresh and review again."
+            conn.check()
+    if not target_has_galera(evidence, engine):
         return out
-    out.update(wsrep_on="ON", wsrep_gcomm_uuid=None)
-    table = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
-    try:
-        text = conn.run(tag + "SELECT VARIABLE_VALUE FROM " + table +
-                        " WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'", extra_flags=["--comments"])
-    except ConnectorError:
-        return out
-    rows = text.strip().split("\n")
-    if len(rows) == 1 and _TARGET_UUID.fullmatch(rows[0]):
-        out["wsrep_gcomm_uuid"] = rows[0]
+    out.update(wsrep_on=evidence.get("wsrep_on", "OFF"),
+               wsrep_gcomm_uuid=evidence.get("wsrep_gcomm_uuid"))
+    if evidence.get("wsrep_provider"):
+        out["wsrep_provider"] = evidence["wsrep_provider"]
     return out
 
 
@@ -1163,7 +1310,7 @@ def target_session_guard(engine, identity):
                                 for key in ["server_id", "hostname", "port"] + names[1:])
     else:
         raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
-    if engine == "pxc" or "wsrep_gcomm_uuid" in identity or str(identity.get("wsrep_on", "")).upper() in ("ON", "1"):
+    if "wsrep_gcomm_uuid" in identity or target_has_galera(identity, engine):
         uuid = identity.get("wsrep_gcomm_uuid")
         if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
             raise ValueError("The identity check could not run: the reviewed Galera node UUID is missing or invalid. Nothing was sent. "
@@ -1207,7 +1354,9 @@ def _target_statement_span(sql, backslash_escapes=None):
     spans = []
     for escaping in readings:
         units = split_statements(sql, backslash_escapes=escaping)
-        if len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != ";":
+        dollar_units = split_statements(sql, backslash_escapes=escaping, dollar_quotes=True)
+        if (len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != ";" or
+                len(dollar_units) != 1 or dollar_units[0]["unclosed"] or dollar_units[0]["issues"]):
             raise ValueError("Each reviewed statement must be one complete SQL statement with closed quotes and comments. "
                              "Nothing was sent. Review again.")
         unit = units[0]

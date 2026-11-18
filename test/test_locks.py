@@ -124,7 +124,7 @@ class FakeFactory(object):
 PATTERNS = (
     # Kill-time reads come first: the session read appends CONNECTION_ID() and
     # the transaction read filters on one thread, so neither matches below.
-    ('target', ', CONNECTION_ID() FROM '),
+    ('target', ', CONNECTION_ID()'),
     ('target_trx', 'WHERE trx_mysql_thread_id = '),
     ('survived_trx', 'WHERE trx_id = '),
     ('kill', KILL_TAG),
@@ -164,7 +164,7 @@ def fake(version, ps_on=True, **answers):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
                  ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
-                 ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None]]))]
+                 ('SELECT @@global.server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None]]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -515,7 +515,8 @@ class TestVersions(LockCase):
                 (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
             with self.subTest(expected=expected):
                 self.assertEqual(self.report(conn, identity=True)['server_identity'], expected)
-                self.assertEqual(sum('SELECT @@server_' in sql for sql, _ in conn.calls), 1)
+                self.assertEqual(sum('SELECT @@server_' in sql or 'SELECT @@global.server_id' in sql
+                                     for sql, _ in conn.calls), 1)
 
     def test_identity_is_read_only_when_asked(self):
         # The CLI report and the Full analysis report do not need it; only the
@@ -2238,6 +2239,12 @@ class KillScenario(object):
         rows = self.after if self.killed else ([self.target] if self.target else [])
         if isinstance(rows, Exception):
             raise rows
+        if rows and ('@@server_uuid' in sql or '@@global.server_id' in sql):
+            pattern = 'SELECT @@global.server_id, @@hostname, @@version, @@port' if '@@global.server_id' in sql else 'SELECT @@server_uuid'
+            identity = next(value for key, value in self.conn.responses if key == pattern)
+            if isinstance(identity, str):
+                cells = [None if cell == 'NULL' else cell for cell in identity.strip().split('\t')]
+                rows = [list(row) + cells for row in rows]
         return batch(rows)
 
     def read_trx(self, sql):
@@ -2533,8 +2540,11 @@ class TestKillSession(LockCase):
             calls.append(sql)
             if 'performance_schema.threads' in sql:
                 raise denied
-            return batch([] if scenario.killed else [[None] + K_TARGET[1:3] + ['172.17.0.1:5555'] + K_TARGET[4:]])
-        scenario.conn.responses = [(p, target if p == ', CONNECTION_ID() FROM ' else a)
+            row = [None] + K_TARGET[1:3] + ['172.17.0.1:5555'] + K_TARGET[4:]
+            if '@@server_uuid' in sql:
+                row += ['11111111-2222-3333-4444-555555555555', 'OFF', None]
+            return batch([] if scenario.killed else [row])
+        scenario.conn.responses = [(p, target if p == ', CONNECTION_ID()' else a)
                                    for p, a in scenario.conn.responses]
         result, _ = self.kill(scenario, expect={'ps_thread_id': None})
         self.assertEqual(result['status'], 'killed')

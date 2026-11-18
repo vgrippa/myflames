@@ -14,6 +14,34 @@ UUID = '11111111-2222-3333-4444-555555555555'
 PREFIX = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE "
 
 
+def evidence_body(sql):
+    """Unwrap a synthetic read packet without weakening production parsing."""
+    match = re.search(r"\n;\nSELECT '(myflames_evidence_[0-9a-f]{32})';\n", sql)
+    if not sql.startswith('DELIMITER ') or not match:
+        return sql, None
+    header, body = sql.split('\n', 1)
+    delimiter = header[len('DELIMITER '):]
+    assert body.endswith(delimiter + '\n')
+    assert body.count(delimiter) == 1, 'evidence must occupy exactly one packet'
+    return sql[len(header) + 1:match.start()], match.group(1)
+
+
+def evidence_output(output, marker, values, xml=False):
+    """Explicit synthetic identity alongside recorded state, never live proof."""
+    values = {key: value for key, value in values.items()
+              if key in dbops._EVIDENCE_VARIABLES or key == 'wsrep_gcomm_uuid'}
+    if not xml:
+        return output + ('' if not output or output.endswith('\n') else '\n') + marker + '\n' + ''.join(
+            '%s\t%s\n' % (key, value) for key, value in values.items())
+    from xml.sax.saxutils import escape
+    def result(rows):
+        return '<resultset>' + ''.join('<row>' + ''.join('<field name="%s">%s</field>' %
+                    (escape(key), escape(str(value))) for key, value in row) + '</row>' for row in rows) + '</resultset>\n'
+    return output + result([[('marker', marker)]]) + result([
+        [('Variable_name', key), ('Value', value)] for key, value in values.items() if key != 'wsrep_gcomm_uuid']) + result([
+        [('Variable_name', 'wsrep_gcomm_uuid'), ('Value', values['wsrep_gcomm_uuid'])]] if 'wsrep_gcomm_uuid' in values else [])
+
+
 def guarded_packets(sql):
     """Split the client's custom delimiter, which occurs nowhere in SQL.
 
@@ -109,6 +137,24 @@ def supplement(calls):
 class ReplayConn(RecordedReplayConn):
     def __init__(self, calls, *args, **kwargs):
         super(ReplayConn, self).__init__(supplement(calls), *args, **kwargs)
+        self.evidence_values = {'server_id': '1', 'hostname': 'fixture-db', 'port': '3306',
+                                'version': '8.4.11', 'server_uuid': UUID}
+        for sql, answers in self.answers.items():
+            if 'SHOW GLOBAL VARIABLES' in sql:
+                for line in (answers[0] or '').splitlines():
+                    if '\t' in line:
+                        key, value = line.split('\t', 1)
+                        if key in dbops._EVIDENCE_VARIABLES:
+                            self.evidence_values[key] = value
+                if 'MariaDB' in self.evidence_values['version']:
+                    self.evidence_values.pop('server_uuid', None)
+                break
+
+    def run(self, sql, extra_flags=None, timeout=None):
+        body, marker = evidence_body(sql)
+        output = super(ReplayConn, self).run(body, extra_flags=extra_flags, timeout=timeout)
+        return (evidence_output(output, marker, self.evidence_values, '--xml' in (extra_flags or []))
+                if marker else output)
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         body = recorded_body(sql)

@@ -2971,10 +2971,18 @@ def _identity_projection(engine):
     keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     variables = "information_schema.GLOBAL_VARIABLES" if engine == "mariadb" else "performance_schema.global_variables"
     status = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
-    enabled = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_on')" % variables
+    on = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_on')" % variables
+    provider = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_provider')" % variables
+    # This slot means node identity is required, even if wsrep_on is OFF.
+    # MariaDB sql/wsrep_var.cc:107-108: a provider other than none exists.
+    enabled = "CASE WHEN %s IN ('ON', '1') OR LOWER(COALESCE(%s, 'none')) NOT IN ('', 'none') THEN 'ON' ELSE 'OFF' END" % (on, provider)
     node = ("CASE WHEN %s IN ('ON', '1') THEN (SELECT VARIABLE_VALUE FROM %s "
             "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') ELSE NULL END" % (enabled, status))
-    expressions = ["@@" + key for key in keys] + ["COALESCE(%s, 'OFF')" % enabled, node]
+    # MariaDB's server_id is SESSION_VAR (sql/sys_vars.cc:3651-3657).
+    # Compare the same global identity used by the guarded write, never a
+    # proxy backend session's possibly overridden server_id.
+    expressions = [("@@global." if key == "server_id" else "@@") + key for key in keys]
+    expressions += ["COALESCE(%s, 'OFF')" % enabled, node]
     keys += ("wsrep_on", "wsrep_gcomm_uuid")
     if engine == "mariadb":
         keys += ("wsrep_node_name",)
@@ -3113,13 +3121,21 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
               "message": None, "verified": [], "target": None, "after": None,
               "sent": [], "session_guard": session_guard}
     confirmed_target = seen
-    target, own = read_target(conn, engine, ps_on, connection_id,
-                             server_identity=_batch_context is not None)
+    try:
+        target, own = read_target(conn, engine, ps_on, connection_id, server_identity=True)
+    except ConnectorError as exc:
+        password = getattr(conn, "password", None) or getattr(audit, "password", None)
+        reason = dbops.redact(dbops.target_error_text(exc), password)
+        return refuse("The identity check could not run: %s. Nothing was sent. Refresh and review again."
+                      % reason.rstrip("."), "identity_unavailable", error=reason)
     result["target"] = target
     # Each run opens a new client connection. Keep the server check in the
     # existing target SELECT so routing changes cannot reuse another server's
     # matching process id, even though batch metadata is read only once.
-    if _batch_context is not None and target is not None and target.get("server_identity") != identity:
+    if target is not None and not target.get("server_identity"):
+        return refuse("The identity check could not run: the target row has no complete server identity. "
+                      "Nothing was sent. Refresh and review again.", "identity_unavailable")
+    if target is not None and target.get("server_identity") != identity:
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     problem = _kill_problem(target, own, connection_id, mode, expect)
     if problem:

@@ -1164,13 +1164,15 @@ def _request(operation, name, host, role, options):
     return clean
 
 
+@dbops.target_evidence
 def plan_change(conn, operation, name, host='%', role=False, actor=None, connection=None, profile=None,
                 change_set_id=None, safety=None, **options):
     """Build one account change set from a fresh read. Never sends a write.
 
     Dynamic privilege names come from SHOW PRIVILEGES on the server, never
-    from the request. ``actor`` (a privileges-1.0 report) may be passed by an
-    internal caller; otherwise it is read. ``safety`` is the caller's
+    from the request. ``actor`` is retained for internal call compatibility;
+    privileges are always re-read with node evidence before planning.
+    ``safety`` is the caller's
     connection safety when it already computed one (the workspace passes the
     group connection's effective safety); otherwise it is judged here.
     """
@@ -1183,7 +1185,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
     a = _name(name, host, engine, role)
     if role and engine == 'mariadb' and name.upper() == 'PUBLIC' and operation in ('create', 'drop'):
         raise ValueError('PUBLIC is built in and cannot be created or dropped.')
-    actor = actor or privileges.read_privileges(conn)
+    actor = privileges.read_privileges(conn)
     actor_model = actor.get('model') if isinstance(actor.get('model'), dict) else actor
     if not actor_model.get('checked'):
         raise ValueError('The connected account\'s privileges could not be read, so no change can be planned.')
@@ -1700,38 +1702,46 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
         return refuse('stale', 'The connection or the account changed since the review; nothing was sent.')
     if not _same_sql_connection(conn, plan._connection):
         return refuse('stale', 'The SQL connection differs from the reviewed one; nothing was sent.')
-    engine, version = _server(conn)
-    if engine != plan['engine'] or version != plan['version']:
-        return refuse('stale', 'The server version changed; nothing was sent.')
-    actor = privileges.read_privileges(conn)
-    if actor.get('account') != plan['actor'] or not actor.get('checked'):
-        return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
-    server = _actor_server(conn, plan['engine'], actor)
-    if server != plan['actor_server']:
-        return refuse('stale', 'The server identity changed; nothing was sent.')
-    for dependency in plan['dependencies']:
-        current_role = read_account(conn, dependency['name'], dependency['host'] or '%', True, engine, version, include_catalog=False)
-        if fingerprint(current_role) != dependency['fingerprint']:
-            return refuse('stale', 'A role changed since the review; nothing was sent.')
-    before = read_account(conn, plan['name'], plan['host'] or '%', plan['role'], engine, version, include_catalog=False)
-    if fingerprint(before) != expect:
-        return refuse('stale', 'The account\'s grants or attributes changed since the review; nothing was sent.')
-    if plan['operation'] == 'rename':
-        destination = read_account(conn, plan._options['new_name'], plan._options.get('new_host', plan['host']), False,
-                                   engine, version, include_catalog=False)
-        if destination['exists']:
-            return refuse('stale', 'An account with the new name now exists; nothing was sent.')
-    guard_op = 'revoke_roles' if plan['operation'] == 'roles' and plan._options.get('mode') == 'revoke' else \
-        plan['operation']
-    guards = _guards(before, actor, guard_op, plan._context.get('privileges', []),
-                     plan._options.get('level', 'global'), plan._options, conn=conn)
-    if guards['blocked']:
-        return refuse('refused', ' '.join(guards['blocked']) + ' Nothing was sent.')
-    if guards['typed_name'] and typed_name != guards['typed_name']:
-        return refuse('needs_typed_name', 'Type %s to proceed; nothing was sent.' % guards['typed_name'])
-    hint = privileges.can(actor, plan['action'], **plan._context)
-    if hint['allowed'] is False:
-        return refuse('denied', hint['reason'] + ' Nothing was sent.')
+    conn = dbops.TargetEvidenceConnection(conn)
+    try:
+        engine, version = _server(conn)
+        if engine != plan['engine'] or version != plan['version']:
+            return refuse('stale', 'The server version changed; nothing was sent.')
+        actor = privileges.read_privileges(conn)
+        if actor.get('account') != plan['actor'] or not actor.get('checked'):
+            return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
+        server = _actor_server(conn, plan['engine'], actor)
+        if server != plan['actor_server']:
+            return refuse('stale', 'The server identity changed; nothing was sent.')
+        for dependency in plan['dependencies']:
+            current_role = read_account(conn, dependency['name'], dependency['host'] or '%', True, engine, version, include_catalog=False)
+            if fingerprint(current_role) != dependency['fingerprint']:
+                return refuse('stale', 'A role changed since the review; nothing was sent.')
+        before = read_account(conn, plan['name'], plan['host'] or '%', plan['role'], engine, version, include_catalog=False)
+        if fingerprint(before) != expect:
+            return refuse('stale', 'The account\'s grants or attributes changed since the review; nothing was sent.')
+        if plan['operation'] == 'rename':
+            destination = read_account(conn, plan._options['new_name'], plan._options.get('new_host', plan['host']), False,
+                                       engine, version, include_catalog=False)
+            if destination['exists']:
+                return refuse('stale', 'An account with the new name now exists; nothing was sent.')
+        guard_op = 'revoke_roles' if plan['operation'] == 'roles' and plan._options.get('mode') == 'revoke' else \
+            plan['operation']
+        guards = _guards(before, actor, guard_op, plan._context.get('privileges', []),
+                         plan._options.get('level', 'global'), plan._options, conn=conn)
+        if guards['blocked']:
+            return refuse('refused', ' '.join(guards['blocked']) + ' Nothing was sent.')
+        if guards['typed_name'] and typed_name != guards['typed_name']:
+            return refuse('needs_typed_name', 'Type %s to proceed; nothing was sent.' % guards['typed_name'])
+        hint = privileges.can(actor, plan['action'], **plan._context)
+        if hint['allowed'] is False:
+            return refuse('denied', hint['reason'] + ' Nothing was sent.')
+        conn.check()
+    except ConnectorError:
+        if conn.problem:
+            out['outcome'] = 'identity_unavailable'
+            return refuse('refused', conn.problem)
+        raise
     if before_send is not None:
         message = before_send()
         if message:

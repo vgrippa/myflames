@@ -167,7 +167,9 @@ class StrictReplay(ReplayConn):
     a loop test ends with an error instead of polling the last answer forever."""
 
     def run(self, sql, extra_flags=None, timeout=None):
-        if self.seen.get(sql, 0) >= len(self.answers.get(sql, ())):
+        from _reviewed_replay import evidence_body
+        body, _ = evidence_body(sql)
+        if self.seen.get(body, 0) >= len(self.answers.get(body, ())):
             raise AssertionError('no recorded answer left for: ' + sql)
         return ReplayConn.run(self, sql, extra_flags, timeout)
 
@@ -286,7 +288,7 @@ class TestStatusReplays(ReplicationCase):
     def test_status_is_read_by_name_from_xml(self):
         report, conn = status('mysql-8.4-healthy')
         show = [flags for sql, flags in conn.calls if sql.endswith('SHOW REPLICA STATUS')]
-        self.assertEqual(show, [['--comments', '--xml']])
+        self.assertEqual(show, [['--comments', '--xml', '--skip-reconnect']])
         self.assertEqual([c['name'] for c in report['channels']], ['', 'ch80'])
         default, ch80 = report['channels']
         self.assertEqual(default['source']['host'], 'mf-repl-g-src')
@@ -953,7 +955,7 @@ class TestSkipOne(ReplicationCase):
         conn, _ = replay('replication', 'mysql-8.4-gtid-skip', edit=edit)
         with self.assertRaisesRegex(ConnectorError, 'outcome is unknown'):
             rp.skip_one(conn, '', plan['identity'], audit=self.audit(), confirmed=True, settle_s=0)
-        self.assertEqual([(r['status'], r['outcome']) for r in self.records()], [('unknown', 'timeout')])
+        self.assertEqual([(r['status'], r['outcome']) for r in self.records()], [('unknown', 'unknown')])
 
     def test_audit_failure_sends_nothing(self):
         plan = self.confirmed('mysql-8.4-gtid-error', '')
@@ -2246,7 +2248,7 @@ class TestReviewGateSurfaces(ReplicationCase):
         self.assertEqual(code, 2, out + err)
         self.assertEqual(json.loads(out)['stop_reason'], 'connection_lost')
         self.assertEqual(conn.run.call_count, 1)
-        self.assertEqual([(r['status'], r['outcome']) for r in self.records()], [('unknown', 'timeout')])
+        self.assertEqual([(r['status'], r['outcome']) for r in self.records()], [('unknown', 'unknown')])
 
 
 class TestReceiverGuardFallback(ReplicationCase):

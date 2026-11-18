@@ -36,6 +36,17 @@ class ReplayConn(object):
         self.sent = []
 
     def run(self, sql, extra_flags=None, timeout=None):
+        from _reviewed_replay import evidence_body, evidence_output
+        body, marker = evidence_body(sql)
+        if marker:
+            values = {'version': self.version}
+            for call in self.answers.values():
+                for line in call.get('output', '').splitlines():
+                    if '\t' in line:
+                        key, value = line.split('\t', 1)
+                        if key in ('server_id', 'hostname', 'port', 'server_uuid'):
+                            values[key] = value
+            return evidence_output(self.run(body, ['--comments'], timeout), marker, values)
         self.sent.append((sql, extra_flags))
         call = self.answers.get(sql)
         if call is None:

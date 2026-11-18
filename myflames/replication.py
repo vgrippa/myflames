@@ -449,6 +449,7 @@ def _summary():
 
 
 @grouped_read
+@dbops.target_evidence
 def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
                 current_profile_id=None, topology_tiers=False, _identity=None):
     """The ``replication-1.0`` report. Read-only.
@@ -2567,15 +2568,15 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
             return result
         exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
                                        getattr(conn, "password", None) or getattr(audit, "password", None))
-        if _fatal(exc):
-            unknown = dbops.may_have_run(exc)
+        unknown = bool(getattr(exc, "guarded_unknown", False)) or (_fatal(exc) and dbops.may_have_run(exc))
+        if unknown or _fatal(exc):
             message = ("Could not skip the transaction: %s.%s" % (
                 reason(exc), " The statements may have reached the server, so the outcome is unknown; read "
                              "the channel again." if unknown else ""))
             residual = _residual_state(exc, plan, None)
             message += " " + residual["message"]
             if audit is not None:
-                audit.complete("unknown" if unknown else "error", outcome="timeout" if unknown else "error",
+                audit.complete("unknown" if unknown else "error", outcome="unknown" if unknown else "error",
                                error=str(exc), message=message, after={"residual_state": residual})
             raise ConnectorError(message) from exc
         result["status"], result["message"] = _server_error(exc, plan["statements"], plan["privileges"])
