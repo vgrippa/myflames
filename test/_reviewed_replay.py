@@ -42,6 +42,23 @@ def evidence_output(output, marker, values, xml=False):
         [('Variable_name', 'wsrep_gcomm_uuid'), ('Value', values['wsrep_gcomm_uuid'])]] if 'wsrep_gcomm_uuid' in values else [])
 
 
+def answer_evidence(sql, extra_flags, timeout, answer, values):
+    """Answer a review evidence packet the way a real server does.
+
+    *answer* is the fake's plain read handler: it receives the unwrapped
+    client input with the binder's transport-only flags removed. *values* is
+    the fake's identity projection, exactly what its SHOW GLOBAL VARIABLES
+    answer reports, so the binder's cross-checks see one consistent server.
+    Returns None when *sql* is not an evidence packet, so the caller falls
+    through to its plain handling.
+    """
+    body, marker = evidence_body(sql)
+    if marker is None:
+        return None
+    flags = [flag for flag in (extra_flags or []) if flag != '--skip-reconnect']
+    return evidence_output(answer(body, flags, timeout), marker, values, xml='--xml' in flags)
+
+
 def guarded_packets(sql):
     """Split the client's custom delimiter, which occurs nowhere in SQL.
 

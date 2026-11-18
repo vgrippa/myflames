@@ -49,7 +49,7 @@ class GroupConsentTests(groups.GroupCase):
             elif 'input' in options:
                 text = replay.run_write(sql, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
             else:
-                text = replay.run(sql, extra_flags=['--comments'])
+                text = replay.run(sql, extra_flags=['--comments'] + (['--xml'] if '--xml' in argv else []))
             return types.SimpleNamespace(returncode=0, stdout=(text or '').encode(), stderr=b'')
 
         def write(conn, sql, flags, timeout, defaults):

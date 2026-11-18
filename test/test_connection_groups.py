@@ -36,12 +36,12 @@ EMPTY = {'name': '', 'read': [], 'suggestions': [], 'join': [], 'suggested_name'
 class LocalDatabase(FakeProbeConn):
     """Synthetic standalone database answering the existing read-only probes."""
     def __init__(self, **options):
-        super(LocalDatabase, self).__init__('database', hostname='current-db', uuid='uuid-current')
+        super(LocalDatabase, self).__init__('database', hostname='current-db', uuid='cccccccc-1111-2222-3333-444444444444')
         for key in ENDPOINT_FIELDS:
             setattr(self, key, options.get(key))
 
-    def run(self, sql, extra_flags=None, timeout=None):
-        return super(LocalDatabase, self).run(sql.replace(rp.REPLICATION_TAG, ''), extra_flags, timeout)
+    def _answer(self, sql, extra_flags=None, timeout=None):
+        return super(LocalDatabase, self)._answer(sql.replace(rp.REPLICATION_TAG, ''), extra_flags, timeout)
 
 
 class GroupCase(unittest.TestCase):
@@ -527,7 +527,7 @@ class TestReadConsent(GroupCase):
     def test_replication_identity_sink_and_strict_report_schemas(self):
         identity = {}
         report = rp.read_status(LocalDatabase(), topology_tiers=True, _identity=identity)
-        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertEqual(identity['server_uuid'], 'cccccccc-1111-2222-3333-444444444444')
         self.assertNotIn('topology_identity', report)
         for name, report in (('replication', report), ('cluster', CF.report('ic-8.4-healthy')),
                              ('readyset', readyset.read_status(FakeReadyset()))):
@@ -812,7 +812,7 @@ class TestReviewRegressions(GroupCase):
         conn.cfg['gr_group'] = 'configured-but-never-joined'
         identity = {}
         rp.read_status(conn, topology_tiers=True, _identity=identity)
-        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertEqual(identity['server_uuid'], 'cccccccc-1111-2222-3333-444444444444')
         self.assertNotIn('gr_group_name', identity)
 
     def test_proxy_reports_never_store_backend_identity(self):
