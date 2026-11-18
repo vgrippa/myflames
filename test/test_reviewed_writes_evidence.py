@@ -124,8 +124,123 @@ class EvidenceTests(unittest.TestCase):
         stale = actor('mariadb', account='other@localhost')
         plan = accounts.plan_change(conn, 'lock', 'app', actor=stale)
         self.assertEqual(plan['actor'], 'admin@localhost')
-        self.assertIn('myflames_who', conn.packets[0][1])
+        self.assertTrue(any('myflames_who' in packet[1] for packet in conn.packets))
         self.assertEqual(plan['actor_server']['wsrep_gcomm_uuid'], UUID)
+
+    def test_transport_exception_poisoning_survives_an_optional_reader(self):
+        for failure in (ConnectorError('ERROR 1142: identity suffix denied'), RuntimeError('client failed')):
+            _, conn, _ = next(self.readers(other=False))
+            evidence = dbops.TargetEvidenceConnection(conn)
+            sql = accounts.TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'"
+            evidence.run(sql)
+            with mock.patch.object(conn, 'run', side_effect=failure):
+                with self.assertRaises(ConnectorError) as caught:
+                    evidence.run(sql)
+            self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+            for action in (lambda: evidence.run(sql), lambda: evidence.run_write('KILL 41'),
+                           lambda: evidence.run_stdin('ALTER USER app ACCOUNT LOCK')):
+                with self.assertRaises(ConnectorError) as caught:
+                    action()
+                self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+            self.assertEqual(conn.writes, [])
+
+    def test_optional_variable_suffix_failure_cannot_return_a_ready_plan(self):
+        from test_variables import replay
+        reader, _ = replay('mysql-8.4', 'global')
+        original = reader.run
+        def failed_suffix(sql, **kwargs):
+            if 'performance_schema.variables_info' in sql:
+                raise ConnectorError('ERROR 1142: identity suffix denied')
+            return original(sql, **kwargs)
+        with mock.patch.object(reader, 'run', side_effect=failed_suffix):
+            with self.assertRaises(ConnectorError) as caught:
+                variables.plan_change(reader, 'max_connections', '300', 'global', grants=False)
+        self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+
+    def test_interrupted_packet_cannot_be_reused_after_catching_cancellation(self):
+        _, conn, _ = next(self.readers(other=False))
+        evidence = dbops.TargetEvidenceConnection(conn)
+        with mock.patch.object(conn, 'run', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                evidence.run('SELECT 1')
+        with self.assertRaises(ConnectorError) as caught:
+            evidence.run_write('KILL 41')
+        self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+        self.assertEqual(conn.writes, [])
+
+    def test_fresh_wrapper_cannot_substitute_caller_supplied_identity(self):
+        writer = Writer()
+        evidence = dbops.TargetEvidenceConnection(writer)
+        with self.assertRaises(ConnectorError) as caught:
+            dbops.target_galera_identity(evidence, 'mysql', MYSQL, dict(MYSQL, wsrep_on='OFF'))
+        self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+        with self.assertRaises(ConnectorError):
+            evidence.run_write('KILL 41')
+        self.assertEqual(writer.writes, [])
+
+    def test_ambiguous_internal_read_is_a_sticky_identity_refusal(self):
+        writer = Writer()
+        evidence = dbops.TargetEvidenceConnection(writer)
+        with mock.patch.object(writer, 'run', create=True) as read:
+            with self.assertRaises(ConnectorError) as caught:
+                evidence.run(r"SELECT 'it\'s'")
+        read.assert_not_called()
+        self.assertEqual(caught.exception.identity_outcome, 'identity_unavailable')
+        with self.assertRaises(ConnectorError):
+            evidence.run_write('KILL 41')
+        self.assertEqual(writer.writes, [])
+
+    def test_version_helpers_use_bound_metadata_instead_of_transport_caches(self):
+        for maria in (False, True):
+            values = {'version': '11.4.13-MariaDB' if maria else '8.4.11',
+                      'version_comment': 'MariaDB Server' if maria else 'MySQL Community Server',
+                      'server_id': '1', 'hostname': 'one', 'port': '3306'}
+            if not maria:
+                values['server_uuid'] = UUID
+            transport = mock.Mock()
+            transport.server_version.side_effect = AssertionError('unbound version')
+            transport.server_version_comment.side_effect = AssertionError('unbound comment')
+            transport.is_mariadb.side_effect = AssertionError('unbound engine')
+            def read(sql, **kwargs):
+                body, marker = evidence_body(sql)
+                self.assertEqual(body, 'SELECT @@version')
+                self.assertIsNotNone(marker)
+                return evidence_output(values['version'] + '\n', marker, values)
+            transport.run.side_effect = read
+            evidence = dbops.TargetEvidenceConnection(transport)
+            self.assertEqual(evidence.server_version(), values['version'])
+            self.assertEqual(evidence.server_version_comment(), values['version_comment'])
+            self.assertEqual(evidence.is_mariadb(), maria)
+            self.assertEqual(transport.run.call_count, 1)
+
+    def test_kill_transaction_and_xa_packets_refuse_a_different_backend(self):
+        from test_locks import KillScenario, bound_kill_expect
+        for stage in ('information_schema.INNODB_TRX', 'events_statements_current'):
+            for bulk in (False, True):
+                with self.subTest(stage=stage, bulk=bulk):
+                    scenario = KillScenario()
+                    expected = bound_kill_expect(scenario.conn)
+                    context = locks._kill_context(scenario.conn) if bulk else None
+                    original, packets = scenario.conn.run, []
+                    def route(sql, **kwargs):
+                        body, marker = evidence_body(sql)
+                        if marker is None:
+                            return original(sql, **kwargs)
+                        node = dict(MYSQL, version='8.4.6')
+                        if stage in body:
+                            node['server_uuid'] = OTHER_UUID
+                        packets.append((node, body))
+                        return evidence_output(original(body, **kwargs), marker, node)
+                    scenario.conn.run = route
+                    with mock.patch.object(scenario.conn, 'run_write') as send:
+                        result = locks.kill_session(scenario.conn, 41, expect=expected, confirmed=True,
+                                                    audit=self.audit(), settle_s=0, _batch_context=context)
+                    send.assert_not_called()
+                    self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                     ('refused', 'identity_unavailable', []))
+                    self.assertEqual(packets[0][0]['server_uuid'], UUID)
+                    self.assertEqual(packets[-1][0]['server_uuid'], OTHER_UUID)
+                    self.assertIn(stage, packets[-1][1])
 
     def test_account_apply_refuses_and_audits_changed_evidence_before_writing(self):
         _, stable, read = next(self.readers(other=False))
@@ -175,7 +290,7 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(packets[2][0][key], UUID)
                 self.assertIn('CONNECTION_ID()', packets[2][1])
                 self.assertIn('@@global.server_id' if galera else '@@server_uuid', packets[2][1])
-                self.assertEqual(self.records()[0]['outcome'], 'identity')
+                self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
 
     def test_bulk_target_projection_failure_is_audited_and_does_not_send(self):
         from test_locks import KillScenario, bound_kill_expect

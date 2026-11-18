@@ -138,7 +138,7 @@ def _read_sql(sql):
     the session. Starting from UTC also avoids ambiguous local times at a
     daylight-saving transition. Only exact module-owned prefixes are rewritten.
     """
-    from .live import TOKEN
+    from . import dbops
     for tag in ("/*myflames:sessions*/ ", "/*myflames:innodb*/ ", "/*myflames:locks*/ "):
         prefix = tag + "SET SESSION time_zone = 'SYSTEM'; "
         if sql.startswith(prefix):
@@ -149,9 +149,15 @@ def _read_sql(sql):
     # script, so a future module change cannot add SET or a write here.
     if re.search(r"/\*rs\+", sql, re.I):
         raise ValueError("MCP server analysis does not permit Readyset optimizer hints.")
-    statements = [part.strip() for part in TOKEN.sub(" ", sql).split(";") if part.strip()]
-    if not statements or any(not re.match(r"^(SELECT|SHOW)\b", part, re.I) for part in statements):
-        raise ValueError("MCP server analysis permits only SELECT and SHOW statements.")
+    for backslash in (True, False):
+        units = dbops.split_statements(sql, backslash_escapes=backslash)
+        # DELIMITER frames a client packet, not a single server statement.
+        # Its masked code preserves every executable semicolon, including
+        # SQL in executable comments, without splitting quoted data.
+        statements = [part.strip() for unit in units for part in unit["code"].split(";") if part.strip()]
+        if (not statements or any(unit["issues"] or unit["unclosed"] for unit in units) or
+                any(not re.match(r"^(SELECT|SHOW)\b", part, re.I) for part in statements)):
+            raise ValueError("MCP server analysis permits only SELECT and SHOW statements.")
     return sql
 
 

@@ -629,6 +629,21 @@ class TestServerReadTools(unittest.TestCase):
                              "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM'))")
         self.assertEqual(mcp._read_sql("SELECT 'a; SET x=1'; SHOW GRANTS"), "SELECT 'a; SET x=1'; SHOW GRANTS")
 
+    def test_read_adapter_checks_every_statement_inside_delimiter_packets(self):
+        transport = mock.Mock()
+        reader = mcp._ReadConnection(transport)
+        for delimiter in ('$$', '//', '__mf_end_1__'):
+            packet = "DELIMITER %s\nSELECT 'a; DROP TABLE t'; SHOW GLOBAL STATUS%s\n" % (delimiter, delimiter)
+            reader.run(packet)
+            self.assertEqual(transport.run.call_args[0][0], packet)
+            transport.reset_mock()
+            for body in ('SELECT 1; DROP TABLE t', 'SHOW GLOBAL STATUS; SET GLOBAL read_only=0',
+                         'SELECT 1; /*!50000 DELETE FROM t */', 'SELECT 1; /*M! DELETE FROM t */',
+                         'SELECT 1; \\! touch unsafe', "SELECT 'unclosed"):
+                with self.subTest(delimiter=delimiter, body=body), self.assertRaises(ValueError):
+                    reader.run('DELIMITER %s\n%s%s\n' % (delimiter, body, delimiter))
+                transport.run.assert_not_called()
+
     def test_saved_profile_resolution_and_password_redaction(self):
         from _perf_replay import FakeFactory
         from myflames.connector import ConnectorError

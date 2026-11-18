@@ -68,6 +68,21 @@ class FakeConn(object):
         self.ssl_mode = self.ssl_ca = None
 
     def run(self, sql, extra_flags=None, timeout=None):
+        from _reviewed_replay import evidence_body, evidence_output
+        body, marker = evidence_body(sql)
+        if marker:
+            # Synthetic packet metadata follows the same server identity as
+            # the process-row fixture. Preserve plain logical-read logs.
+            maria = 'MariaDB' in self.responses[0][1]
+            pattern = ('SELECT @@global.server_id, @@hostname, @@version, @@port'
+                       if maria else 'SELECT @@server_uuid')
+            raw = next(value for key, value in self.responses if key == pattern)
+            keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name')
+                    if maria else ('server_uuid', 'wsrep_on', 'wsrep_gcomm_uuid'))
+            values = dict(zip(keys, raw.strip().split('\t')))
+            values = {key: value for key, value in values.items() if value != 'NULL'}
+            values.setdefault('version', self.version)
+            return evidence_output(FakeConn.run(self, body, extra_flags=extra_flags, timeout=timeout), marker, values)
         self.calls.append((sql, list(extra_flags or [])))
         for pattern, result in self.responses:
             if pattern in sql:

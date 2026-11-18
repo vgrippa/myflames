@@ -38,6 +38,11 @@ class BatchConnection(object):
         return self.run(recorded_body(sql), extra_flags=extra_flags)
 
     def run(self, sql, extra_flags=None):
+        from _reviewed_replay import evidence_body, evidence_output, UUID
+        body, marker = evidence_body(sql)
+        if marker:
+            return evidence_output(BatchConnection.run(self, body, extra_flags), marker,
+                                   {'server_uuid': UUID, 'version': '8.4.6'})
         self.calls.append(sql)
         if 'SELECT @@version, @@performance_schema' in sql:
             return '8.4.6\t1\n'

@@ -62,6 +62,7 @@ def packet_client(source):
             self.route_count = count + 1
         self.route_uuid = route.get("server_uuid", "11111111-2222-3333-4444-555555555555")
         self.route_connection_id = route.get("connection_id", self.conn_id)
+        self.route_sql_mode = route.get("sql_mode", self.sql_mode)
         statement = re.sub(r"/\*myflames:editor:[0-9a-f]{32}\*/ ", "", wire)
         if statement.startswith("SET @myflames_target = "):
             guard, separator, statement = statement.partition("; ")
@@ -70,6 +71,9 @@ def packet_client(source):
             mismatch = (self.route_uuid not in guard if ENGINE == "mysql" else route.get("mismatch", False))
             expected_id = re.search(r"CONNECTION_ID\(\) <> (\d+)", guard)
             mismatch = mismatch or bool(expected_id and int(expected_id.group(1)) != self.route_connection_id)
+            expected_mode = re.search(r"FIND_IN_SET\('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode\) > 0\) <=> ([01])", guard)
+            no_backslash = "NO_BACKSLASH_ESCAPES" in self.route_sql_mode.upper().split(",")
+            mismatch = mismatch or bool(expected_mode and int(expected_mode.group(1)) != int(no_backslash))
             if mismatch:
                 self.error(line, 1242, "21000", "Subquery returns more than 1 row")
                 return
@@ -93,6 +97,8 @@ def packet_client(source):
                             '"connection_id": str(getattr(self, "route_connection_id", self.conn_id)),')
     source = source.replace('"server_uuid": "11111111-2222-3333-4444-555555555555",',
                             '"server_uuid": getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555"),')
+    source = source.replace('"sql_mode": self.sql_mode,',
+                            '"sql_mode": getattr(self, "route_sql_mode", self.sql_mode),')
     source = source.replace('                client.run(statement, start_line)\n', r'''
                 active = os.path.join(STATE, "active-%d" % client.conn_id)
                 with open(active, "w") as handle:

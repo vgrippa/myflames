@@ -48,6 +48,8 @@ class ReplayConn(object):
                             values[key] = value
             return evidence_output(self.run(body, ['--comments'], timeout), marker, values)
         self.sent.append((sql, extra_flags))
+        if sql == 'SELECT @@version':
+            return self.version + '\n'
         call = self.answers.get(sql)
         if call is None:
             raise AssertionError('unexpected SQL: ' + sql)

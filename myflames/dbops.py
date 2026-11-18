@@ -1133,7 +1133,7 @@ def target_has_galera(variables, engine=None):
             str(variables.get("wsrep_on", "")).upper() in ("ON", "1"))
 
 
-_EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version",
+_EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version", "version_comment",
                        "wsrep_on", "wsrep_provider", "wsrep_node_name")
 
 
@@ -1154,6 +1154,21 @@ class TargetEvidenceConnection(object):
     def __getattr__(self, name):
         return getattr(self.connection, name)
 
+    def server_version(self):
+        """Use this scope's packet metadata, never the transport's cache."""
+        self.check()
+        if self.variables is None:
+            self.run("SELECT @@version", extra_flags=["--comments"])
+        return self.variables.get("version", "")
+
+    def server_version_comment(self):
+        self.server_version()
+        return self.variables.get("version_comment", "")
+
+    def is_mariadb(self):
+        from .server_info import detect_flavor
+        return detect_flavor(self.server_version(), self.server_version_comment()) == "mariadb"
+
     def check(self):
         from .connector import ConnectorError
         if self.problem:
@@ -1173,29 +1188,27 @@ class TargetEvidenceConnection(object):
         from .connector import ConnectorError, unescape_mysql
         from .perf_common import named_rows
         self.check()
-        marker = "myflames_evidence_" + uuid.uuid4().hex
-        units = split_statements(sql)
-        # These are internal reads, including their fixed session setup.
-        # Reuse the write packet's lexical boundary checks, never concatenate
-        # uncertain or incomplete client input ahead of the identity suffix.
-        bodies = []
-        for unit in units:
-            start, end = _target_statement_span(unit["text"])
-            bodies.append(unit["text"][start:end])
-        if not bodies or any(unit["delimiter"] != ";" or unit["issues"] or unit["unclosed"] for unit in units):
-            raise ConnectorError("The review evidence has uncertain SQL boundaries. Nothing was sent.")
-        body = sql[:units[-1]["end"]] + "\n;\nSELECT '%s';\n" % marker
-        body += "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
-        body += "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'\n"
-        delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
-        if delimiter is None:
-            raise ConnectorError("No safe SQL packet delimiter is available for the review evidence. Nothing was sent.")
-        flags = list(extra_flags or [])
-        if "--skip-reconnect" not in flags:
-            flags.append("--skip-reconnect")
-        text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
-                                   extra_flags=flags, **kwargs)
         try:
+            marker = "myflames_evidence_" + uuid.uuid4().hex
+            units = split_statements(sql)
+            # Boundary checks and transport are part of validation too. A
+            # failed suffix must poison the scope even if an optional reader
+            # catches the error and tries to continue with earlier evidence.
+            for unit in units:
+                _target_statement_span(unit["text"])
+            if not units or any(unit["delimiter"] != ";" or unit["issues"] or unit["unclosed"] for unit in units):
+                raise ValueError("uncertain review evidence SQL boundaries")
+            body = sql[:units[-1]["end"]] + "\n;\nSELECT '%s';\n" % marker
+            body += "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
+            body += "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'\n"
+            delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
+            if delimiter is None:
+                raise ValueError("no safe review evidence packet delimiter")
+            flags = list(extra_flags or [])
+            if "--skip-reconnect" not in flags:
+                flags.append("--skip-reconnect")
+            text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
+                                       extra_flags=flags, **kwargs)
             if "--xml" in flags:
                 # mysql prints one XML document per result set. Preserve the
                 # original result document exactly for Reader.named().
@@ -1230,8 +1243,12 @@ class TargetEvidenceConnection(object):
             if self.variables is not None and self.variables != values:
                 raise ValueError("the server identity changed between evidence packets")
             self.variables = values
-        except (ValueError, KeyError, TypeError):
+        except BaseException as exc:
             self.problem = "The identity check could not run: review evidence did not come from one identified server. Nothing was sent. Refresh and review again."
+            # Cancellation must keep its normal control flow, but a caller
+            # that catches it still cannot reuse this incomplete scope.
+            if not isinstance(exc, Exception):
+                raise
             self.check()
         return output
 
@@ -1257,6 +1274,11 @@ def target_evidence(function):
 def target_galera_identity(conn, engine, identity, variables, tag=""):
     """Use only node evidence captured in the same packet as the read state."""
     out = dict(identity or {})
+    if isinstance(conn, TargetEvidenceConnection):
+        conn.check()
+        if conn.variables is None:
+            conn.problem = "The identity check could not run: no server evidence was read. Nothing was sent. Refresh and review again."
+            conn.check()
     evidence = conn.variables if isinstance(conn, TargetEvidenceConnection) else variables
     evidence = evidence or {}
     if isinstance(conn, TargetEvidenceConnection) and conn.variables:
@@ -1373,8 +1395,8 @@ def _target_token_spans(sql, pattern, base=0):
 def _target_statement_span(sql, backslash_escapes=None, delimiter=";"):
     """Require one complete unit, with the same boundaries in both modes.
 
-    A known mode belongs to an internal wrapper that asserts it in this
-    packet, or a persistent editor session that already read its SQL mode.
+    A known mode belongs to an internal wrapper or persistent editor that
+    asserts it in this packet. A previous SQL mode read alone is not enough.
     The editor may pass the delimiter used to validate a compound unit.
     """
     readings = (True, False) if backslash_escapes is None else (backslash_escapes,)

@@ -3122,7 +3122,10 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
               "sent": [], "session_guard": session_guard}
     confirmed_target = seen
     try:
-        target, own = read_target(conn, engine, ps_on, connection_id, server_identity=True)
+        # Bind the target row, transaction and optional XA reads to one
+        # node. A routing change or an unreadable suffix invalidates the
+        # entire recheck, even when an optional reader catches that error.
+        target, own = dbops.target_evidence(read_target)(conn, engine, ps_on, connection_id, server_identity=True)
     except ConnectorError as exc:
         password = getattr(conn, "password", None) or getattr(audit, "password", None)
         reason = dbops.redact(dbops.target_error_text(exc), password)

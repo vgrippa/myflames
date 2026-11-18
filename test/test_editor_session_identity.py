@@ -253,6 +253,43 @@ class EditorIdentityTests(unittest.TestCase):
             self.assertIn(sql, self.session_log(tab))
             self.assertTrue(any(sql in p[2] and 'SET @myflames_target = ' in p[2] for p in self.packets()))
 
+    def test_routed_state_cannot_authorize_a_write_under_another_quote_mode(self):
+        sql = r"DELETE FROM t WHERE id = 1 AND note = 'tail\' OR id = 2 -- '"
+        for index, actual in enumerate(('', 'NO_BACKSLASH_ESCAPES')):
+            tab = 'routed-mode-%d' % index
+            self.route_packets()
+            self.run_sql("SET SESSION sql_mode = '%s'" % actual, tab=tab)
+            session = self.registry.get(tab)
+            other = '' if actual else 'NO_BACKSLASH_ESCAPES'
+            # An unguarded refresh lands on another UUID with the same
+            # connection id and teaches the editor that backend's mode.
+            self.route_packets({'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+                                'connection_id': session.connection_id, 'sql_mode': other})
+            self.assertTrue(session.refresh_state())
+            self.assertEqual(session.sql_mode, other)
+            self.route_packets({'server_uuid': session.server_identity['server_uuid'],
+                                'connection_id': session.connection_id, 'sql_mode': actual})
+            result = self.run_sql(sql, tab=tab)
+            self.assertEqual(result['run']['counts']['run'], 0, result)
+            self.assertEqual(result['run']['statements'][0]['status'], 'not_run', result)
+            packet = next(p[2] for p in reversed(self.packets()) if sql in p[2])
+            self.assertIn("FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode)", packet)
+            self.assertIn('CONNECTION_ID() <> %d' % session.connection_id, packet)
+            self.assertNotIn(sql, self.session_log(tab))
+            audit = next(r for r in self.store.audit_records() if r['id'] == result['run']['audit_id'])
+            self.assertEqual((audit['status'], audit['outcome']), ('refused', 'identity_mismatch'))
+
+    def test_unknown_quote_mode_keeps_two_reading_packet_validation(self):
+        self.run_sql('SELECT 7')
+        session = self.registry.get('tab1')
+        session.sql_mode = None
+        before = len(self.packets())
+        with self.assertRaises(ValueError):
+            session._guarded_statement(session._write_session_guard(), r"SET @note = 'it\'s'")
+        self.assertEqual(len(self.packets()), before)
+        packet, _ = session._guarded_statement(session._write_session_guard(), 'SET @note = 1')
+        self.assertNotIn('@@SESSION.sql_mode', packet)
+
     def test_alter_setup_and_statement_share_one_packet_and_keep_separate_results(self):
         sql = 'ALTER TABLE test.tt ADD COLUMN c INT'
         with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):

@@ -859,9 +859,18 @@ class EditorSession(EditorInsights):
         reviewed server statements. Helpers keep the stricter ';' default.
         """
         from . import dbops
+        backslash = self.backslash_escapes if self.sql_mode is not None else None
+        if backslash is not None:
+            # State refreshes can be routed independently of a write. Bind
+            # the reading used below to this packet's executing session,
+            # even when another backend reports the same connection id.
+            if len(guard) != 1 or not guard[0].endswith(");"):
+                raise ValueError("Invalid editor target guard")
+            mode_check = "(FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode) > 0)"
+            guard = [guard[0][:-2] + " OR NOT (%s <=> %d));" % (mode_check, int(not backslash))]
         tagged = tuple(self._tag_statement(s) for s in send) if isinstance(send, tuple) else self._tag_statement(send)
         return dbops.target_guarded_script([self._tag_statement(guard[0])], [tagged],
-                                          backslash_escapes=self.backslash_escapes if self.sql_mode is not None else None,
+                                          backslash_escapes=backslash,
                                           delimiter=delimiter)
 
     def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None, delimiter=";",

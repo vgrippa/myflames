@@ -87,6 +87,8 @@ class FakeConn(object):
             values.update(getattr(self, 'evidence_values', {}))
             return evidence_output(self.run(body, extra_flags=['--comments'], timeout=timeout), marker, values)
         self.calls.append((sql, extra_flags))
+        if sql == 'SELECT @@version':
+            return self.version + '\n'
         assert sql.startswith(a.TAG), sql
         assert extra_flags == ['--comments'], extra_flags
         body = sql[len(a.TAG):]

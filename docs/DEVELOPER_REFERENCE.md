@@ -2484,7 +2484,13 @@ unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
 The persistent editor passes its known `backslash_escapes` mode and the
-unit's already validated `delimiter` to `target_guarded_script`. This permits
+unit's already validated `delimiter` to `target_guarded_script`. Every such
+packet also asserts that the `NO_BACKSLASH_ESCAPES` flag in the executing
+session's `@@SESSION.sql_mode` matches the reading used for validation,
+using a NULL-safe comparison. A state refresh from a different backend with
+the same connection id cannot authorize a write under another quote mode.
+A mode mismatch refuses before the protected SQL executes. An unknown mode
+keeps the two-reading validation. This permits
 compound CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT and PACKAGE bodies,
 custom-delimiter units and escaped quotes without relaxing the default
 two-reading check for independent reviewed-write senders. The builder still
@@ -2583,12 +2589,25 @@ variables (including provider detection), and the node status. A client
 `--skip-reconnect` prevents reconnecting midway. All successful packets in
 that review/recheck must return the same identity. A changed or incomplete
 identity invalidates the entire read, including when an optional reader
-catches the error, and no write may follow. This adds identity/status work to
+catches the error, and no write may follow. Transport exceptions, incomplete
+packets and ambiguous internal SQL boundaries all set sticky
+`identity_unavailable`; subsequent reads, writes and identity extraction in
+that scope refuse. A fresh wrapper cannot substitute caller-supplied
+variables for unread evidence. Version and flavor helpers read this scope's
+packet metadata, including `version_comment`, through the binder rather than
+the underlying connection's metadata cache. A SQL error that stops the packet
+before its identity suffix also refuses, even when a module normally treats
+that error as optional or as evidence that an object is absent. This adds identity/status work to
 each read and may refuse a rotating proxy; it does not make changing server
 state a transactional snapshot. The marker is removed before parsing state,
 including for XML replication status, and never enters review or audit data.
 Kill projects provider detection and the node UUID in the same SELECT as the
 other identity fields and the process row, for single and bulk targets.
+Its pre-KILL target, InnoDB transaction and prepared-XA rechecks also share
+one evidence scope: each read carries its own same-packet identity suffix,
+and all identities must agree before KILL is sent. A denied transaction or XA
+read that prevents suffix validation refuses the entire recheck, including
+when the optional reader would otherwise ignore the error.
 Its MariaDB projection explicitly reads `@@global.server_id`, matching the
 guard: `mariadb-server/sql/sys_vars.cc:3651–3657` makes the unqualified value
 session-scoped, so a proxy's reused session could otherwise override it.
@@ -7601,7 +7620,7 @@ The additional server tools are read-only. Each requires `profile: str` (a saved
 
 Core projections reuse `report.format_digest` and the compact text formatters in Sessions, Locks, Health, InnoDB, Replication, Cluster and Readyset. Statements retain normalized SQL, counters, coverage, and table-match caveats while omitting sample literals; Privileges retains credential-stripped grants, session scope, roles and grouped decision states. Reports can exceed 500 tokens: their size follows the observations and findings, without a fixed truncation cap. Full preserves the module's schema and evidence (including suggested SQL as data).
 
-`_ReadConnection` checks every submitted statement, allowing only SELECT/SHOW. The Sessions and InnoDB readers normally prefix transaction-age queries with `SET SESSION time_zone = 'SYSTEM'`; this adapter removes those exact module-owned prefixes and converts `NOW()` with `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')` inside the SELECT instead. It rejects any other SET or non-read statement before sending it. The existing five MCP tools are unchanged, including `explain_query`, which executes a query through EXPLAIN ANALYZE.
+`_ReadConnection` checks every submitted statement, allowing only SELECT/SHOW. It uses `dbops.split_statements` under both backslash readings to recognize the client's DELIMITER framing, then checks every server statement inside each packet, including executable comments. This accepts Replication's identity-bound evidence packets without allowing a write to hide after a SELECT in the same packet. Uncertain boundaries, client commands and statements other than SELECT/SHOW refuse before transport. The Sessions and InnoDB readers normally prefix transaction-age queries with `SET SESSION time_zone = 'SYSTEM'`; this adapter removes those exact module-owned prefixes and converts `NOW()` with `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')` inside the SELECT instead. It rejects any other SET or non-read statement before sending it. The existing five MCP tools are unchanged, including `explain_query`, which executes a query through EXPLAIN ANALYZE.
 
 Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault python3 -m unittest discover -s test -p 'test_mcp_server.py' -v`. Replays and module-test fakes cover MySQL and MariaDB, both detail projections, attribution orders, registered tool identities, all submitted SQL, the no-SET adapter, argument validation and password redaction. The transport extra is not required for those tests.
 
