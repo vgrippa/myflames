@@ -4,9 +4,11 @@
 after the suites: it reads the Cluster, Replication and ProxySQL reports from
 the labs and writes them under test/live/expected/, one file per report and
 server version, with volatile fields (UUIDs, timestamps, ports, durations,
-connection ids, log positions and counters) masked. A normal run (`compare`,
-also run as the live_expected suite) masks the same way and fails on a drift
-when the file for the version under test exists; a missing file skips.
+connection ids, log positions and counters) masked and ProxySQL per-query
+workload statistics omitted. A normal run (`compare`, also run as the
+live_expected suite) normalizes the same way and fails on a drift when the file
+for the version under test exists (writing the drift file under
+local/live-evidence/drift/); a missing file skips.
 """
 import json
 import os
@@ -14,9 +16,10 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _lab import Lab, check_lab, conn_for, make_home  # noqa: E402
+from _lab import Lab, REPO, check_lab, conn_for, make_home  # noqa: E402
 
 EXPECTED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "expected")
+DRIFT_DIR = os.path.join(REPO, "local", "live-evidence", "drift")
 
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
@@ -30,6 +33,28 @@ _VOLATILE_KEY = re.compile(
 #: Counter blocks: every value moves between two healthy runs (Group
 #: Replication cumulative counters, ProxySQL stats); only the shape is stable.
 _COUNTER_BLOCKS = ("metrics", "stats")
+#: Per-query workload statistics in ProxySQL reports change on every run
+#: because the live suites themselves send queries through ProxySQL. Omit them
+#: entirely while keeping structural parts (hostgroups, servers, rules, users,
+#: monitors and health settings) compared.
+_PROXYSQL_OMIT = ("query_digests",)
+_PROXYSQL_RULE_OMIT = ("digests", "digest_count", "possible_digests")
+
+
+def _is_proxysql_report(value):
+    return isinstance(value, dict) and (
+        value.get("schema_version") == "proxysql-1.0" or value.get("is_proxysql") is True
+    )
+
+
+def _normalize_proxysql_rules(rules):
+    if not isinstance(rules, (list, tuple)):
+        return normalize(rules, "query_rules")
+    return [
+        {k: normalize(v, k) for k, v in sorted(rule.items()) if k not in _PROXYSQL_RULE_OMIT}
+        if isinstance(rule, dict) else normalize(rule, "query_rules")
+        for rule in rules
+    ]
 
 
 def normalize(value, key=""):
@@ -37,6 +62,12 @@ def normalize(value, key=""):
     if isinstance(value, dict):
         if key in _COUNTER_BLOCKS:
             return {k: "<volatile>" for k in sorted(value)}
+        if not key and _is_proxysql_report(value):
+            return {
+                k: _normalize_proxysql_rules(v) if k == "query_rules" else normalize(v, k)
+                for k, v in sorted(value.items())
+                if k not in _PROXYSQL_OMIT
+            }
         return {k: normalize(v, k) for k, v in sorted(value.items())}
     if isinstance(value, (list, tuple)):
         return [normalize(item, key) for item in value]
@@ -71,6 +102,21 @@ def expected_path(name, version):
     return os.path.join(EXPECTED_DIR, "%s-%s.json" % (name, version))
 
 
+def drift_path(target):
+    return os.path.join(DRIFT_DIR, os.path.basename(target) + ".drift")
+
+
+def _write_json(target, data):
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary = target + ".part"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, target)
+
+
 def read_report(lab, profile_name, path):
     return lab.api(path, {"connection": conn_for(lab.profile(profile_name))})
 
@@ -81,17 +127,12 @@ def _reports_for(labs):
 
 
 def record(labs):
-    os.makedirs(EXPECTED_DIR, exist_ok=True)
     lab = Lab()
     written = []
     for name, profile, path, _needs in _reports_for(labs):
         report = read_report(lab, profile, path)
         target = expected_path(name, _version_of(report))
-        temporary = target + ".part"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(normalize(report), handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(temporary, target)
+        _write_json(target, normalize(report))
         written.append(target)
     return written
 
@@ -108,13 +149,12 @@ def compare(labs):
             continue
         with open(target, encoding="utf-8") as handle:
             expected = json.load(handle)
-        if expected == normalize(raw):
+        normalized = normalize(raw)
+        if expected == normalized:
             outcomes.append((name, True))
         else:
-            drift = target + ".drift"
-            with open(drift, "w", encoding="utf-8") as handle:
-                json.dump(normalize(raw), handle, indent=2, sort_keys=True)
-                handle.write("\n")
+            drift = drift_path(target)
+            _write_json(drift, normalized)
             outcomes.append((name, drift))
     return outcomes
 
