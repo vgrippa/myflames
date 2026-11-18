@@ -250,13 +250,24 @@ class _WritesBase(object):
         # sleep ends early (the opposite of the multiplexed ProxySQL refusal).
         self.assertTrue(stop.get("stopped"), "Stop did not send the kill: %s"
                         % redact(stop.get("message") or ""))
+        self.assertTrue(stop.get("stop_requested"), "Stop was not recorded for the running statement")
         self.assertIn("kill", (stop.get("message") or "").lower(),
                       "unexpected Stop answer: %s" % redact(stop.get("message") or ""))
         self.assertNotIn("error", outcome, "the sleep run errored: %s" % outcome.get("error"))
         self.assertLess(outcome["elapsed"], 7.0,
                         "the sleep ran %.1fs of 8s: the kill did not stop it" % outcome["elapsed"])
         run = outcome["result"].get("run") or {}
-        self.assertEqual(outcome["result"].get("status"), "stopped",
+        status = outcome["result"].get("status")
+        engine = (outcome["result"].get("session") or {}).get("engine")
+        if engine == "mysql" and status == "complete":
+            # mysql-server/sql/item_func.cc:6269-6281: an interrupted
+            # Item_func_sleep returns 1. A single SLEEP can succeed without
+            # ER_QUERY_INTERRUPTED, so the editor keeps its complete result.
+            rows = [row for result in run.get("results", []) if result.get("type") == "rows"
+                    for row in result.get("rows", [])]
+            self.assertEqual(rows, [["1"]], "the interrupted MySQL SLEEP did not return 1")
+            return
+        self.assertEqual(status, "stopped",
                          "the interrupted run did not report stopped: %s"
                          % redact(outcome["result"].get("message") or outcome["result"].get("status")))
         self.assertTrue((run.get("stopped") or {}).get("interrupted"),

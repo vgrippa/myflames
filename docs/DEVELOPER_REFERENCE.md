@@ -2473,7 +2473,9 @@ entire guard and every statement, including quoted text and comments. If all
 candidates occur, it refuses with nothing sent. Each string must split into
 exactly one complete SQL unit through `dbops.split_statements`, with closed
 quotes and comments, no client-command issues and identical boundaries under
-both backslash readings. Otherwise it refuses before token consumption or
+both backslash readings. This compares every quote, comment and intervening
+code span, including SQL inside executable comments, not just the outer unit.
+Otherwise it refuses before token consumption or
 transport. Internal tuples explicitly group individually validated units that
 depend on the same session. Their wire text uses each parsed unit's span,
 without its terminal delimiter or trailing delimiter comments, and the builder
@@ -2481,6 +2483,13 @@ inserts exactly one separator between units. Review and audit text stays
 unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
+The persistent editor passes its known `backslash_escapes` mode and the
+unit's already validated `delimiter` to `target_guarded_script`. This permits
+compound CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT and PACKAGE bodies,
+custom-delimiter units and escaped quotes without relaxing the default
+two-reading check for independent reviewed-write senders. The builder still
+revalidates closed tokens, client commands, dollar bodies and delimiter
+collisions; a caller-supplied DELIMITER command cannot bypass these checks.
 Reviewed-packet validation also scans MySQL dollar-quoted bodies: a tag starts only
 at an identifier boundary, contains identifier characters (including digits
 and multibyte characters), and closes only with the identical case-sensitive
@@ -3032,11 +3041,19 @@ planner, write gate and session engine from the CLI.
   helper refuses KILL with "The server could not be confirmed" when its
   required identity is unavailable; a missing or changed Galera node UUID
   cannot fall back to the shared id, hostname and port. The KILL binding is
-  separate from the write identity. Later write probes include the MySQL UUID.
+  separate from the write identity. A write guard requires the complete
+  startup binding too, with every required identity field: missing or invalid
+  identity refuses with `identity_unavailable`, "The server could not be
+  confirmed. Nothing was sent." Ordinary reads remain available. Later write probes include the MySQL UUID.
   The probe alone never authorizes a write: every non-read Run statement,
   Run session or transaction control, and the Commit and Rollback actions use
   `dbops.target_guarded_script` to send the recorded identity guard
   and its statement in one `COM_QUERY` packet on the existing tab client.
+  Explicit safe-updates changes also use that guard in their packet, with a
+  guarded state readback. A guard refusal finishes their audit as refused and
+  ends the session before any readback or retry. If only the readback fails,
+  the accepted setting is recorded as unverified with an unknown outcome;
+  it is never called unsent or retried.
   The guard also compares `CONNECTION_ID()` with the recorded backend session
   id, preserving the tab's transaction context across same-server proxy
   session switches (MySQL `sql/item_func.cc:1532–1541`; MariaDB
@@ -3172,6 +3189,11 @@ planner, write gate and session engine from the CLI.
   token, for example CREATE USER (`sql/sql_rewrite.cc:894–907`); processlist
   prefers rewritten text (`sql/sql_show.cc:3797–3807`). This deliberately
   refuses Stop rather than interrupting an unverified statement.
+  CALL and EXECUTE can expose inner SQL without the tab's token, so Stop
+  keeps the same refusal and explains that a statement inside a routine or
+  prepared statement continues. Sources: MySQL `sql/sp_instr.cc:971–983`
+  and `sql/sql_prepare.cc:293–308`; MariaDB `sql/sp_instr.cc:1158–1214`
+  and `sql/sql_prepare.cc:5259–5286`. No connection-id-only fallback is allowed.
   The helper sends generated SQL on stdin, retaining only its own exact
   private acknowledgement on errors. A KILL error after acknowledgement is
   distinct from a guard failure; 1094 (unknown thread id) says the statement
@@ -3181,7 +3203,12 @@ planner, write gate and session engine from the CLI.
   Close still terminates and reaps the tab's local client.
   `stopped` is true only when the KILL was sent. A statement it interrupts
   (1317 or 3169) is `stopped` and undone; one that ended normally is `ok` and
-  took effect, and later statements do not run. A statement still running
+  took effect, and later statements do not run. An interrupted MySQL SLEEP
+  can instead finish `complete`
+  with a result of `1` (MySQL `sql/item_func.cc:6269–6281`). The live writes
+  test accepts that outcome only with Stop recorded as requested/sent and
+  the eight-second sleep ending in less than seven seconds; MariaDB still
+  requires `stopped` with an interrupted statement. A statement still running
   `STOP_GRACE` (15) seconds after a KILL ends the session (`unresponsive`).
   `force: true` ends the session instead. KILLs and new statements are
   serialized (`send_lock`) and a KILL is never sent while a helper runs, so it
@@ -3273,6 +3300,9 @@ planner, write gate and session engine from the CLI.
 - DDL confirmation (db-operations sections 6, 7 and 9): `_decision` refuses
   multiple DDL statements, including those grouped by a custom DELIMITER, before
   credentials. Run them one at a time. A CREATE routine's body is one DDL.
+  A PACKAGE specification or body includes its outer END and any initialization
+  block, and a statement after that END needs its own review. MariaDB grammar:
+  `sql/sql_yacc.yy:20185–20199,20537–20595`.
   DDL embedded in anonymous blocks or SET STATEMENT wrappers refuses: submit
   it as standalone SQL so its target and safeguards can be reviewed.
   Temporary-table DDL also confirms. Multiple DML statements still share one
@@ -3282,7 +3312,9 @@ planner, write gate and session engine from the CLI.
 - ALTER review (db-operations section 9): `_plan_run` adds the exact
   `/*myflames:editor*/ SET SESSION lock_wait_timeout = 5` before ALTER, leaving
   the user's SQL intact. It is shown, token-bound, audited and executed as its
-  own statement in the same session; any error stops before ALTER. The setting
+  own statement, but sent in the same guarded `COM_QUERY` packet as ALTER;
+  the first user OK belongs to the setting and a setting error leaves ALTER
+  `not_run`. An identity refusal runs neither statement. The setting
   persists in the tab afterwards. The skill gives `N`, not a numeric value;
   five seconds is the chosen application policy, per metadata-lock wait, not a
   total ALTER deadline. Longer MariaDB WAIT clauses and MySQL SET_VAR overrides
@@ -4450,6 +4482,11 @@ without an automatic retry; light and dark at 1440 and 720 px).
 ### Locks
 
 `python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+The deprecated Kill CLI also catches a `ConnectorError` from its final
+identity projection before prompting: it returns `refused` with
+`outcome: "identity_unavailable"`, `sent: []` and no KILL statement, and
+records the refusal with both connection and audit passwords redacted.
+
 Transaction evidence is additive in `locks-1.1`: report-level `trx_checked`
 is true only when `INNODB_TRX` was read successfully. An empty transaction list
 with `trx_checked: false` cannot establish that no transactions are open.

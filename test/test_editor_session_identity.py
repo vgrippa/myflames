@@ -52,6 +52,7 @@ class EditorIdentityTests(unittest.TestCase):
             return
 ''')
         self.assert_usable_without_kill()
+        self.assert_writes_refused_without_identity()
 
     def test_startup_identity_fields_are_bound_in_one_routed_packet(self):
         first = '11111111-2222-3333-4444-555555555555'
@@ -131,8 +132,180 @@ class EditorIdentityTests(unittest.TestCase):
     def test_galera_missing_node_uuid_never_falls_back_to_shared_names(self):
         self.maria_client(wsrep=True, node_uuid=None)
         session = self.assert_usable_without_kill()
-        with self.assertRaisesRegex(ValueError, 'UUID is missing or invalid'):
+        with self.assertRaisesRegex(ValueError, 'The server could not be confirmed'):
             session._write_session_guard()
+
+    def assert_writes_refused_without_identity(self):
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        sql = 'SET @must_not_run = 17'
+        review = self.call('/api/editor/run', sql=sql)
+        before = len(self.packets())
+        with self.assertRaisesRegex(ed.EditorError, 'The server could not be confirmed') as caught:
+            self.call('/api/editor/run', sql=sql, confirmed=True,
+                      confirm_token=review['confirmation']['token'])
+        self.assertEqual(caught.exception.code, 'identity_unavailable')
+        self.assertEqual(len(self.packets()), before, 'no probe or user SQL should follow an incomplete binding')
+        self.assertNotIn(sql, self.session_log())
+        self.assertEqual(self.store.audit_records()[0]['outcome'], 'identity_unavailable')
+        self.assertEqual(self.run_sql('SELECT 8')['status'], 'complete')
+
+    def test_confirmed_write_refuses_missing_galera_uuid_but_reads_continue(self):
+        self.maria_client(wsrep=True, node_uuid=None)
+        self.assert_writes_refused_without_identity()
+
+    def test_confirmed_write_requires_loaded_galera_provider_uuid_with_wsrep_off(self):
+        self.maria_client(wsrep=True, node_uuid=None)
+        self.rewrite_client(lambda text: text.replace('[["wsrep_on", "ON"]]',
+            '[["wsrep_on", "OFF"], ["wsrep_provider", "/usr/lib/galera/libgalera_smm.so"]]'))
+        self.assert_writes_refused_without_identity()
+
+    def test_confirmed_write_refuses_denied_startup_identity_but_reads_continue(self):
+        self.inject_answers('''        if upper.startswith("SHOW GLOBAL STATUS WHERE "):
+            self.error(line, 1227, "42000", "Status read denied")
+            return
+''')
+        self.assert_writes_refused_without_identity()
+
+    def test_confirmed_write_refuses_invalid_mysql_uuid_but_reads_continue(self):
+        self.rewrite_client(lambda text: text.replace('11111111-2222-3333-4444-555555555555', 'invalid-uuid'))
+        self.assert_writes_refused_without_identity()
+
+    def test_safe_updates_refuses_missing_galera_uuid_before_sending(self):
+        self.maria_client(wsrep=True, node_uuid=None)
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        review = self.call('/api/editor/open', safe_updates=False)
+        before = len(self.packets())
+        with self.assertRaisesRegex(ed.EditorError, 'The server could not be confirmed'):
+            self.call('/api/editor/open', safe_updates=False, confirmed=True,
+                      confirm_token=review['confirmation']['token'])
+        self.assertEqual(len(self.packets()), before)
+        self.assertNotIn(ed.SAFE_UPDATES_OFF, self.session_log())
+        self.assertEqual(self.store.audit_records()[0]['outcome'], 'identity_unavailable')
+
+    def test_safe_updates_change_and_guard_share_a_packet_and_refuse_routing_changes(self):
+        for changed in ('server_uuid', 'connection_id'):
+            tab = 'safe-' + changed
+            self.assertEqual(self.run_sql('SELECT 7', tab=tab)['status'], 'complete')
+            session = self.registry.get(tab)
+            review = self.call('/api/editor/open', tab=tab, safe_updates=False)
+            wrong = ({'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'} if changed == 'server_uuid'
+                     else {'connection_id': session.connection_id + 1})
+            self.route_packets({}, wrong)
+            before = len(self.packets())
+            with self.assertRaises(ed.EditorError) as caught:
+                self.call('/api/editor/open', tab=tab, safe_updates=False, confirmed=True,
+                          confirm_token=review['confirmation']['token'])
+            self.assertEqual(caught.exception.code, 'identity_mismatch')
+            packets = self.packets()[before:]
+            self.assertEqual(len(packets), 2, 'a refused setting must not trigger a readback')
+            self.assertIn(ed.SAFE_UPDATES_OFF, packets[-1][2])
+            self.assertIn('SET @myflames_target = ', packets[-1][2])
+            self.assertNotIn(ed.SAFE_UPDATES_OFF, self.session_log(tab))
+            self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+            self.assertFalse(session.run_lock.locked())
+            self.route_packets()
+
+    def test_confirmed_compound_definitions_and_custom_delimiters_reach_one_guarded_packet(self):
+        definitions = (
+            'CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END',
+            'CREATE FUNCTION f() RETURNS INT BEGIN RETURN 1; END',
+            'CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW BEGIN SET NEW.a = 1; END',
+            'CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO BEGIN SELECT 1; SELECT 2; END',
+            'CREATE OR REPLACE PACKAGE BODY p AS FUNCTION f RETURN INT IS BEGIN RETURN 1; END; END',
+            'SET @custom = 42',
+            'SET @first = 1; SET @second = 2',
+        )
+        for index, definition in enumerate(definitions):
+            with self.subTest(definition=definition):
+                tab = 'compound-%d' % index
+                result = self.run_sql('DELIMITER //\n' + definition + '//', tab=tab)
+                self.assertEqual(result['status'], 'complete', result)
+                session = self.registry.get(tab)
+                packets = [p[2] for p in self.packets() if definition in p[2].replace(
+                    '; ' + session.statement_tag, ';').replace(session.statement_tag, '')]
+                self.assertEqual(len(packets), 1)
+                self.assertIn('SET @myflames_target = ', packets[0])
+                if definition.startswith('CREATE'):
+                    self.assertTrue(packets[0].endswith(definition))
+                record = next(r for r in self.store.audit_records() if r['id'] == result['run']['audit_id'])
+                self.assertEqual(record['statements'], [definition])
+
+    def test_safe_updates_readback_refusal_is_unknown_after_the_change_was_accepted(self):
+        self.run_sql('SELECT 7')
+        review = self.call('/api/editor/open', safe_updates=False)
+        self.route_packets({}, {}, {'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'})
+        before = len(self.packets())
+        with self.assertRaisesRegex(ed.EditorError, 'outcome is unknown') as caught:
+            self.call('/api/editor/open', safe_updates=False, confirmed=True,
+                      confirm_token=review['confirmation']['token'])
+        self.assertEqual(caught.exception.code, 'unknown')
+        self.assertEqual(len(self.packets()) - before, 3)
+        self.assertEqual(self.session_log().count(ed.SAFE_UPDATES_OFF), 1)
+        self.assertEqual(self.store.audit_records()[0]['status'], 'unknown')
+
+    def test_confirmed_backslash_quote_uses_the_known_session_mode(self):
+        for mode, sql in (('', r"SET @note = 'it\'s'"),
+                          ('NO_BACKSLASH_ESCAPES', r"SET @note = 'ends\'")):
+            tab = 'mode-' + (mode or 'default')
+            self.run_sql("SET SESSION sql_mode = '%s'" % mode, tab=tab)
+            result = self.run_sql(sql, tab=tab)
+            self.assertEqual(result['status'], 'complete', result)
+            self.assertIn(sql, self.session_log(tab))
+            self.assertTrue(any(sql in p[2] and 'SET @myflames_target = ' in p[2] for p in self.packets()))
+
+    def test_alter_setup_and_statement_share_one_packet_and_keep_separate_results(self):
+        sql = 'ALTER TABLE test.tt ADD COLUMN c INT'
+        with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):
+            result = self.run_sql(sql)
+        self.assertEqual(result['status'], 'complete', result)
+        packets = [p[2] for p in self.packets() if sql in p[2] or ed.ALTER_LOCK_WAIT in p[2]]
+        self.assertEqual(len(packets), 1)
+        self.assertIn('SET @myflames_target = ', packets[0])
+        self.assertLess(packets[0].index(ed.ALTER_LOCK_WAIT), packets[0].index(sql))
+        self.assertEqual([u['status'] for u in result['run']['statements']], ['ok', 'ok'])
+        self.assertEqual([r['statement'] for r in result['run']['results']], [0, 1])
+        self.assertEqual(result['run']['counts']['run'], 2)
+        self.assertEqual(self.store.audit_records()[0]['statements'], [ed.ALTER_LOCK_WAIT, sql])
+
+    def test_alter_setup_error_does_not_send_alter_and_is_attributed_to_setup(self):
+        self.inject_answers('''        if upper == "SET SESSION LOCK_WAIT_TIMEOUT = 5":
+            self.error(line, 1227, "42000", "Lock-wait setting denied")
+            return
+''')
+        sql = 'ALTER TABLE test.tt ADD COLUMN c INT'
+        with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):
+            result = self.run_sql(sql)
+        self.assertEqual([u['status'] for u in result['run']['statements']], ['error', 'not_run'])
+        self.assertEqual(result['run']['error']['statement'], 0)
+        self.assertEqual(result['run']['counts']['run'], 1)
+        self.assertNotIn(sql, self.session_log())
+
+    def test_alter_guard_refusal_sends_neither_setup_nor_alter(self):
+        self.run_sql('SELECT 7')
+        sql = 'ALTER TABLE test.tt ADD COLUMN c INT'
+        with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):
+            review = self.call('/api/editor/run', sql=sql)
+            self.route_packets({}, {}, {'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'})
+            result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                               confirm_token=review['confirmation']['token'])
+        self.assertEqual([u['status'] for u in result['run']['statements']], ['not_run', 'not_run'])
+        self.assertEqual(result['run']['counts']['run'], 0)
+        self.assertNotIn(ed.ALTER_LOCK_WAIT, self.session_log())
+        self.assertNotIn(sql, self.session_log())
+
+    def test_alter_error_preserves_successful_setup_and_reports_the_alter_error(self):
+        self.inject_answers('''        if upper.startswith("ALTER TABLE "):
+            self.error(line, 1146, "42S02", "Table does not exist")
+            return
+''')
+        sql = 'ALTER TABLE test.tt ADD COLUMN c INT'
+        with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):
+            result = self.run_sql(sql)
+        self.assertEqual([u['status'] for u in result['run']['statements']], ['ok', 'error'])
+        self.assertEqual(result['run']['error']['statement'], 1)
+        self.assertEqual(result['run']['counts']['run'], 2)
+        self.assertEqual([r['statement'] for r in result['run']['results']], [0, 1])
+        self.assertEqual(self.store.audit_records()[0]['status'], 'error')
 
     def test_transaction_controls_all_share_the_guarded_packet(self):
         controls = ('BEGIN', 'START TRANSACTION', 'ROLLBACK', 'ROLLBACK TO SAVEPOINT s',
@@ -279,6 +452,30 @@ class EditorIdentityTests(unittest.TestCase):
         finally:
             self.release()
             self.assertTrue(session.run.done.wait(5))
+
+    def test_stop_during_routine_or_prepared_statement_keeps_ownership_check(self):
+        for sql in ('CALL slow_routine()', 'EXECUTE slow_statement', "EXECUTE IMMEDIATE 'SELECT SLEEP(8)'"):
+            with self.subTest(sql=sql):
+                self.run_sql(sql + ' /*gate*/', wait=0)
+                session = self.registry.get('tab1')
+                active = self.state / ('active-%d' % session.connection_id)
+                self.until(lambda: active.exists() and sql in active.read_text(encoding='utf-8'),
+                           'outer statement to start')
+                # Engines display the untagged inner SQL, not the caller's
+                # private token. It is not safe to kill by connection id alone.
+                active.write_text('SELECT SLEEP(8)', encoding='utf-8')
+                try:
+                    stopped = self.call('/api/editor/stop')
+                    self.assertFalse(stopped['stopped'], stopped)
+                    self.assertIn('routine or prepared statement', stopped['message'])
+                    self.assertIn('continues', stopped['message'])
+                    self.assertNotIn(session.statement_tag.strip(), stopped['message'])
+                    self.assertFalse((self.state / 'kills.log').exists())
+                    self.assertIsNone(session.run.current.kill_sent_at)
+                    self.assertFalse(session.run.done.is_set())
+                finally:
+                    self.release()
+                    self.assertTrue(session.run.done.wait(5))
 
     def test_stop_timeout_never_exposes_generated_sql_or_tab_token(self):
         self.run_sql('SELECT 7 /*gate*/', wait=0)

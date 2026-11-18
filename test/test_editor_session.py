@@ -79,6 +79,14 @@ def packet_client(source):
                 raise AssertionError("guard acknowledgement missing from packet")
             self.result(statement[:marker.end() - 2], [marker.group(1)], [[marker.group(1)]])
             statement = statement[marker.end():]
+            # The generated lock-wait SET and its ALTER share this packet.
+            # Model only that fixed prefix, not an arbitrary SQL parser.
+            if statement.startswith("/*myflames:editor*/ SET SESSION lock_wait_timeout = 5\n;\n"):
+                setup, statement = statement.split("\n;\n", 1)
+                self.statement_error = False
+                self._statement(setup, line)
+                if self.statement_error:
+                    return
 ''')
     # Backend session routing is independent of the persistent client id.
     source = source.replace('"connection_id": str(self.conn_id),',
@@ -1724,8 +1732,8 @@ class ProcessTests(unittest.TestCase):
     def rows(self, result, index=0):
         return [r for r in result["run"]["results"] if r["type"] == "rows"][index]["rows"]
 
-    def session_log(self):
-        session = self.registry.get("tab1")
+    def session_log(self, tab="tab1"):
+        session = self.registry.get(tab)
         return (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8").splitlines()
 
     # -- helpers for barrier tests --------------------------------------------------------
@@ -3667,6 +3675,24 @@ class AlterPreflightTests(unittest.TestCase):
                      "BEGIN NOT ATOMIC DROP DATABASE d; END"):
             plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "; " + tail + "$$"}, None)
             self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
+
+    def test_review_package_definitions_keep_bodies_together_and_refuse_trailing_sql(self):
+        safety = {"type": "development", "read_only": False}
+        packages = (
+            'CREATE PACKAGE p AS FUNCTION f RETURN INT; PROCEDURE p1; END p',
+            'CREATE OR REPLACE PACKAGE BODY p AS FUNCTION f RETURN INT IS BEGIN RETURN 1; END; END p',
+            'CREATE PACKAGE BODY p AS PROCEDURE p1 IS BEGIN SELECT 1; END; BEGIN CALL p1; END p',
+            'CREATE PACKAGE BODY p FUNCTION f() RETURNS INT RETURN 1; END',
+        )
+        for package in packages:
+            with self.subTest(package=package):
+                plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '//'}, None)
+                self.assertEqual(ed._decision(plan, safety)['action'], 'confirm')
+                for tail in ('DROP DATABASE d', 'SELECT 1',
+                             'CREATE PROCEDURE q() BEGIN SELECT 1; END',
+                             'BEGIN NOT ATOMIC DROP DATABASE d; END'):
+                    plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '; ' + tail + '//'}, None)
+                    self.assertEqual(ed._decision(plan, safety)['action'], 'refuse', tail)
 
     def test_review_timeout_override_and_wrapped_ddl_refuse(self):
         safety = {"type": "development", "read_only": False}

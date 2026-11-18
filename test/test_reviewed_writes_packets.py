@@ -149,6 +149,7 @@ class PacketTests(unittest.TestCase):
                    'test_editor_session', 'test_editor_session_identity', 'test_reviewed_writes_guard',
                    'test_reviewed_writes_packets', 'test_reviewed_writes_evidence', 'test_accounts', 'test_cluster_privileges',
                    'test_cli_live_regressions', 'test_sql_cli', 'test_backend_kill_review')]
+        paths.append(root / 'test' / 'live' / 'live_writes.py')
         for path in paths:
             with self.subTest(file=path.name):
                 ast.parse(path.read_text(encoding='utf-8'),
@@ -394,6 +395,37 @@ class PacketTests(unittest.TestCase):
                 out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', before_send=consume)
                 self.assertEqual((out['status'], out['states'], writer.writes), ('refused', ['not_sent'], []))
                 consume.assert_not_called()
+
+    def test_quote_comment_token_changes_refuse_even_when_outer_spans_match(self):
+        for sql in (r"DELETE FROM t WHERE name = 'x\' # ' OR 1=1",
+                    r"DELETE FROM t WHERE name = 'x\' -- ' OR 1=1",
+                    r"/*! DELETE FROM t WHERE name = 'x\' # ' OR 1=1" + "\n*/"):
+            with self.subTest(sql=sql):
+                readings = [dbops.split_statements(sql, backslash_escapes=mode) for mode in (True, False)]
+                self.assertEqual([(u[0]['start'], u[0]['end']) for u in readings], [(0, len(sql))] * 2)
+                with self.assertRaisesRegex(ValueError, 'ambiguous quote boundaries'):
+                    dbops.target_statement(sql)
+                plan, writer, consume = self.plan(), Writer(), mock.Mock()
+                plan['statements'] = [sql]
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', before_send=consume)
+                self.assertEqual((out['status'], writer.writes), ('refused', []))
+                consume.assert_not_called()
+
+    def test_explicit_delimiter_revalidates_compound_units_without_weakening_defaults(self):
+        guard = dbops.target_session_guard('mysql', MYSQL)
+        sql = 'CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END'
+        with self.assertRaises(ValueError):
+            dbops.target_guarded_script(guard, [sql])
+        script, lines = dbops.target_guarded_script(guard, [sql], backslash_escapes=True, delimiter='//')
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(guarded_packets(script)[0][1], sql)
+        for bad in ("SET @a = 'unclosed", 'DELIMITER //\nSET @a = 1//',
+                    'SET @a = 1// SET @b = 2', r'SET @a = 1 \C latin1'):
+            with self.subTest(sql=bad), self.assertRaises(ValueError):
+                dbops.target_guarded_script(guard, [bad], backslash_escapes=True, delimiter='//')
+        # Knowing the delimiter never waives the unknown-mode token check.
+        with self.assertRaisesRegex(ValueError, 'ambiguous quote boundaries'):
+            dbops.target_guarded_script(guard, [r"DELETE FROM t WHERE name = 'x\' # ' OR 1=1"], delimiter='//')
 
     def test_closed_multiline_statements_share_the_apply_and_builder_contract(self):
         plan = self.plan()

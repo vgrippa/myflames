@@ -3118,6 +3118,39 @@ class TestKillAudit(LockCase):
         self.assertEqual(scenario.kills(), [])
         self.assertEqual((self.records()[0]['status'], self.records()[0]['outcome']), ('refused', 'identity'))
 
+    def test_cli_identity_projection_error_refuses_before_prompt_and_sends_nothing(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                scenario = KillScenario(ma_waits=[])
+                if engine == 'mariadb':
+                    scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
+                audit = self.trail()
+                audit.password = PASSWORD
+                scenario.conn.password = 'connection-secret'
+                original = scenario.conn.run
+
+                def fail_identity(sql, **kwargs):
+                    if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                        raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for ' +
+                                             PASSWORD + ' connection-secret')
+                    return original(sql, **kwargs)
+
+                stdin = mock.Mock()
+                stdin.readline.side_effect = AssertionError('must refuse before prompting')
+                with mock.patch.object(scenario.conn, 'run', side_effect=fail_identity), \
+                        mock.patch.object(scenario.conn, 'run_write') as send:
+                    code, result = locks.kill_cli(scenario.conn, 41, stdin=stdin, audit=audit)
+                send.assert_not_called()
+                self.assertEqual((code, result['status'], result['outcome'], result['sent']),
+                                 (1, 'refused', 'identity_unavailable', []))
+                self.assertIsNone(result['statement'])
+                self.assertIn('Nothing was sent', result['message'])
+                self.assertIn('SELECT denied', result['message'])
+                self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
+                visible = json.dumps(result) + json.dumps(self.records())
+                self.assertNotIn(PASSWORD, visible)
+                self.assertNotIn('connection-secret', visible)
+
     def test_direct_cli_read_only_gate_precedes_all_reads(self):
         from myflames import dbops
         scenario = KillScenario()

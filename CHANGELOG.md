@@ -25,6 +25,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Confirmed writes reject ambiguous quote and comment boundaries. Query editor safe-updates changes and ALTER lock-wait settings now check their destination in the same request as the change they protect, and an incomplete server identity refuses writes while leaving ordinary reads available.
 - A change confirmed through a proxy or router now reaches only the server that was reviewed, even when the proxy routes statements or backend sessions separately; on MariaDB Galera the check also tells apart nodes that share a name and server id.
 - Query editor binds startup identity and transaction controls to their server session, and Stop works with Performance Schema disabled while explaining ownership refusals and reporting when a statement has already ended without exposing internal SQL.
 - In a Group connection, **Users and roles**, Kill, Variables and replication skips re-check group membership and the group's strictest write policy at every login. A removed member or a changed policy refuses the earlier review, including when a password was typed. Every review expires if the group is deleted and recreated, even with the same name and members.
@@ -34,6 +35,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor confirmed writes accept validated compound definitions, custom delimiters and escaped quotes using the tab's SQL mode. Stop explains when a routine or prepared statement continues because its inner SQL cannot be confirmed as belonging to the tab.
 - Users and roles no longer fails with a SQL syntax error when changing passwords, creating accounts with generated passwords or granting MariaDB package privileges.
 - Query editor leaves stored routine, trigger and event bodies unchanged when their definition follows another statement under a custom delimiter.
 

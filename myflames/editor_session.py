@@ -852,12 +852,20 @@ class EditorSession(EditorInsights):
         pieces.append(terminal)
         return "".join(pieces)
 
-    def _guarded_statement(self, guard, send):
-        """Use the shared builder, retaining the tab's persistent transport."""
-        from . import dbops
-        return dbops.target_guarded_script([self._tag_statement(guard[0])], [self._tag_statement(send)])
+    def _guarded_statement(self, guard, send, delimiter=";"):
+        """Revalidate the planned unit with this session's mode and delimiter.
 
-    def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None):
+        A custom delimiter can contain a stored-program body or several
+        reviewed server statements. Helpers keep the stricter ';' default.
+        """
+        from . import dbops
+        tagged = tuple(self._tag_statement(s) for s in send) if isinstance(send, tuple) else self._tag_statement(send)
+        return dbops.target_guarded_script([self._tag_statement(guard[0])], [tagged],
+                                          backslash_escapes=self.backslash_escapes if self.sql_mode is not None else None,
+                                          delimiter=delimiter)
+
+    def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None, delimiter=";",
+              setup=None):
         """Write one statement; returns its Step. Holds send_lock so a KILL in
         flight is never followed by a new statement."""
         with self.send_lock:
@@ -865,7 +873,8 @@ class EditorSession(EditorInsights):
                 if self.ended:
                     raise ConnectorError(self.end_message or SESSION_ENDED_TEXT)
             if guard is not None:
-                script, packet_lines = self._guarded_statement(guard, send)
+                packet = (setup["send"], send) if setup is not None else send
+                script, packet_lines = self._guarded_statement(guard, packet, delimiter)
                 header, body = script.split("\n", 1)
                 self.delimiter = header[len("DELIMITER "):]
                 wire = body[:-(len(self.delimiter) + 2)]
@@ -879,6 +888,7 @@ class EditorSession(EditorInsights):
             first = self.lines + 1
             marker = first + wire.count("\n") + 2
             step = Step(kind, send, first, marker, unit=unit, limit=limit, results=results)
+            step.setup = setup
             step.echo_lines = wire.count("\n") + 1
             step.guarded = step.guard_pending = guard is not None
             step.guard_ok_pending = step.guarded
@@ -1432,7 +1442,9 @@ class EditorSession(EditorInsights):
                 raise ConnectorError(
                     "The server could not be confirmed. No KILL QUERY was sent. Any running statement continues. "
                     "Stop must verify that it belongs to this tab; the server may hide or rewrite its text, "
-                    "including statements containing passwords.") from None
+                    "including statements containing passwords. A statement running inside a routine or "
+                    "prepared statement can show its inner SQL instead; it continues when ownership "
+                    "cannot be confirmed.") from None
             code = dbops.error_code(dbops.target_error_text(exc))
             acknowledged = all(m in getattr(exc, "guard_markers", ()) for m in packet_lines.markers)
             if acknowledged and code == 1094:  # ER_NO_SUCH_THREAD, after the ownership check.
@@ -1477,15 +1489,22 @@ class EditorSession(EditorInsights):
         """
         from . import dbops
         identity = dict(self.server_identity or {})
+        # Optional startup reads are part of the binding. Never silently
+        # rebuild a weaker guard when their complete identity is unavailable.
+        complete = getattr(self, "_kill_identity", None)
+        unavailable = "The server could not be confirmed. Nothing was sent. Open a new tab."
+        if not complete or not identity or any(complete.get(k) != v for k, v in identity.items()):
+            raise ValueError(unavailable)
         value = identity.get("connection_id")
         if isinstance(value, bool) or not isinstance(value, (str, int)) or not re.fullmatch(r"[0-9]{1,20}", str(value)):
             raise ValueError("The tab's server session id is missing or invalid. Nothing was sent. Open a new tab.")
         connection_id = int(value)
         if not connection_id or connection_id != self.connection_id:
             raise ValueError("The tab's server session changed. Nothing was sent. Open a new tab.")
-        if "wsrep_gcomm_uuid" in (getattr(self, "_kill_identity", None) or {}):
-            identity["wsrep_gcomm_uuid"] = self._kill_identity["wsrep_gcomm_uuid"]
-        guard = dbops.target_session_guard(self.engine, identity)
+        try:
+            guard = dbops.target_session_guard(self.engine, complete)
+        except ValueError:
+            raise ValueError(unavailable) from None
         return [guard[0][:-2] + " OR CONNECTION_ID() <> %d);" % connection_id]
 
     # -- state ----------------------------------------------------------------------------
@@ -1799,17 +1818,19 @@ class EditorSession(EditorInsights):
                                       "busy")
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
                 statements = [u["send"] for u in run.units]
-                self._verify_identity(run.audit, statements)
                 try:
                     run.target_guard = self._write_session_guard()
                     # Refuse delimiter collisions before any user unit runs.
                     for unit in run.units:
                         if _needs_session_guard(unit):
-                            self._guarded_statement(run.target_guard, unit["send"])
+                            setup = unit.get("packet_setup")
+                            send = (setup["send"], unit["send"]) if setup is not None else unit["send"]
+                            self._guarded_statement(run.target_guard, send, unit.get("delimiter") or ";")
                 except ValueError as exc:
                     if run.audit is not None:
                         run.audit.outcome(statements, "refused", outcome="identity_unavailable", message=str(exc))
                     raise EditorError(str(exc), "identity_unavailable") from None
+                self._verify_identity(run.audit, statements)
             if run.audit is not None:
                 if run.alter_context is not None:
                     unit = _alter_unit({"units": run.units})
@@ -1930,16 +1951,24 @@ class EditorSession(EditorInsights):
             history_boundary = self._history_boundary(run) if run.kind == "run" else None
             replaced = False
             for unit in run.units:
+                if unit.get("generated") and unit["send"] == ALTER_LOCK_WAIT:
+                    # This visible, audited setup belongs to its ALTER's
+                    # packet, never an independent proxy-routing decision.
+                    continue
                 with self.lock:
                     if run.stop_requested or self.ended:
                         break
                     if _changes_privilege_context(unit):
                         self.privileges_changed = True
                 unit["status"] = "running"
+                setup = unit.get("packet_setup")
+                if setup is not None:
+                    setup["status"] = "running"
                 kill_ok = run.kind == "run" and not _needs_session_guard(unit) and unit.get("single", True)
                 step = self._send(run.kind == "run" and "user" or "action", unit["send"], unit=unit["index"],
                                   limit=run.limit, kill_ok=kill_ok,
-                                  guard=run.target_guard if _needs_session_guard(unit) else None)
+                                  guard=run.target_guard if _needs_session_guard(unit) else None,
+                                  delimiter=unit.get("delimiter") or ";", setup=setup)
                 self._wait_step(step)
                 for thread in list(run.kill_threads):
                     thread.join(KILL_TIMEOUT + 5)
@@ -2007,6 +2036,7 @@ class EditorSession(EditorInsights):
 
     def _finish(self, run):
         with self.lock:
+            self._finish_packet_setups(run)
             run.finished_at = _now()
             run.duration = time.monotonic() - run.started
             if run.guard_failure is not None:
@@ -2064,6 +2094,35 @@ class EditorSession(EditorInsights):
         self.run_lock.release()
         with self.lock:
             self.cond.notify_all()
+
+    def _finish_packet_setups(self, run):
+        """Attribute the ALTER packet's first OK to its visible setup unit.
+
+        Wait until normal stdout draining has finished: stderr can arrive
+        before the setup's OK. No extra statement is sent to infer success.
+        """
+        for step in list(run.steps):
+            setup = getattr(step, "setup", None)
+            if setup is None:
+                continue
+            unit = run.units[step.unit]
+            setup_step = Step(step.kind, setup["send"], step.first_line, step.marker_line, unit=setup["index"])
+            setup_step.sent_at, setup_step.done_at = step.sent_at, step.done_at
+            setup["duration_ms"] = step.duration_ms
+            if step.entries and step.entries[0]["type"] == "ok":
+                setup_step.entries = [step.entries.pop(0)]
+                setup["status"] = "ok"
+            elif run.guard_failure is not None:
+                setup["status"] = "not_run"
+            elif step.closed and step.real_errors() and not step.guard_unresolved:
+                # The guard succeeded but SET failed, so ALTER never ran.
+                setup["status"], unit["status"] = "error", "not_run"
+                setup_step.errors, step.errors = step.errors, []
+                run.failed = setup["index"]
+            else:
+                setup["status"], unit["status"] = "session_ended", "session_ended"
+                self.end("protocol", "The ALTER session setup could not be verified. " + SESSION_ENDED_TEXT)
+            run.steps.insert(run.steps.index(step), setup_step)
 
     def _snapshot(self, run, rows=True):
         offsets = run.offsets
@@ -2917,7 +2976,7 @@ _DROP_DATABASE = re.compile(r"^\s*DROP\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+
 _ALTER_TABLE = re.compile(r"^\s*ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE\s+(?:IF\s+EXISTS\s+)?(" +
                           _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)", re.I)
 _DDL_START = re.compile(r"^\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE)\b", re.I)
-_ROUTINE_CREATE = re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?(?:PROCEDURE|FUNCTION|TRIGGER|EVENT)\b", re.I | re.S)
+_ROUTINE_CREATE = re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b", re.I | re.S)
 
 
 def _ddl_codes(unit):
@@ -2929,15 +2988,28 @@ def _ddl_codes(unit):
     a batch; execution still uses the original shared statement splitter.
     """
     code = unit["code"]
-    if not _ROUTINE_CREATE.match(code):
+    routine = _ROUTINE_CREATE.match(code)
+    if not routine:
         return [part for part in code.split(";") if part.strip()]
-    tokens = list(re.finditer(r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT)\b|;", code, re.I))
-    blocks, parts, start, index = [], [], 0, 0
+    tokens = list(re.finditer(r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT|FUNCTION|PROCEDURE)\b|;", code, re.I))
+    # A package has an outer END in addition to its routines' BEGIN/END
+    # blocks. Its optional Oracle initializer BEGIN shares that outer END:
+    # mariadb-server/sql/sql_yacc.yy:20185-20199,20537-20595.
+    package = routine.group(1).upper() == "PACKAGE"
+    blocks, parts, start, index = ["PACKAGE"] if package else [], [], 0, 0
+    package_routine = False
     while index < len(tokens):
         token = tokens[index]
         word = token.group(0).upper()
-        if word in ("BEGIN", "CASE"):
-            blocks.append(word)
+        if package and blocks == ["PACKAGE"] and word in ("FUNCTION", "PROCEDURE"):
+            package_routine = True
+        elif word in ("BEGIN", "CASE"):
+            if word == "BEGIN" and blocks == ["PACKAGE"] and not package_routine:
+                blocks[-1] = "BEGIN"
+            else:
+                blocks.append(word)
+            if word == "BEGIN":
+                package_routine = False
         elif word == "END":
             following = tokens[index + 1] if index + 1 < len(tokens) else None
             qualifier = (following.group(0).upper() if following and
@@ -3281,13 +3353,14 @@ def _plan_run(payload, session):
         unit["send"] = prefix + unit["send"]
         unit["code"] = prefix + unit["code"]
         unit["explain_prefix"] = len(prefix)
-    # The guard is its own visible, audited statement. Failure stops the run
-    # before ALTER, using the same error handling as every user statement.
+    # The setup remains visible and audited, but shares the guarded packet
+    # with ALTER so a proxy cannot separate the setting from its use.
     guarded = []
     for unit in units:
         if _ALTER_TABLE.match(unit["code"]):
             guard = plan_statements(ALTER_LOCK_WAIT, base=unit["start"])[0]
             guard.update(generated=True, start=unit["start"], end=unit["start"])
+            unit["packet_setup"] = guard
             guarded.append(guard)
         guarded.append(unit)
     units = guarded
@@ -3636,6 +3709,13 @@ def _set_safe_updates(session, statement, audit=None):
     if not session._acquire_run_lock():
         raise EditorError("A statement is running in this tab. Wait for it or press Stop.", "busy")
     try:
+        try:
+            guard = session._write_session_guard()
+            session._guarded_statement(guard, statement)
+        except ValueError as exc:
+            if audit is not None:
+                audit.outcome([statement], "refused", outcome="identity_unavailable", message=str(exc))
+            raise EditorError(str(exc), "identity_unavailable") from None
         session._verify_identity(audit, [statement])
         if audit is not None:
             audit.server(session.engine, session.server_version)
@@ -3645,7 +3725,11 @@ def _set_safe_updates(session, statement, audit=None):
                 raise EditorError("The audit record could not be written, so nothing was sent: %s" % exc,
                                   "audit_failed")
         try:
-            step = session._helper(statement, results=0)
+            step = session._helper(statement, results=0, guard=guard)
+        except EditorError as exc:
+            if audit is not None:
+                audit.complete("refused", outcome=exc.code, message=str(exc))
+            raise
         except ConnectorError as exc:
             if audit is not None:
                 audit.complete("unknown", outcome="unknown", message=str(exc))
@@ -3664,7 +3748,13 @@ def _set_safe_updates(session, statement, audit=None):
             raise EditorError(dbops.redact(errors[0].get("message") or "The server refused the change.",
                                            session._conn.password if session._conn is not None else None), "error")
         session.safe_updates_wanted = statement == SAFE_UPDATES_ON
-        if not session.refresh_state() or session.ended or session.safe_updates != session.safe_updates_wanted:
+        try:
+            verified = session.refresh_state(guard=guard)
+        except (ConnectorError, EditorError):
+            # The setting already succeeded. A later guard refusal cannot
+            # turn it into an unsent change or justify retrying the write.
+            verified = False
+        if not verified or session.ended or session.safe_updates != session.safe_updates_wanted:
             if audit is not None:
                 audit.complete("unknown", outcome="unknown", message="Could not verify the safe-updates setting.")
             raise EditorError("The safe-updates setting could not be verified; its outcome is unknown.", "unknown")

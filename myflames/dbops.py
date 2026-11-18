@@ -1338,24 +1338,51 @@ class TargetPacketLines(tuple):
         return out
 
 
-def target_statement(sql, backslash_escapes=None):
+def target_statement(sql, backslash_escapes=None, delimiter=";"):
     """Validate one complete unit without changing its review/audit text."""
-    _target_statement_span(sql, backslash_escapes)
+    _target_statement_span(sql, backslash_escapes, delimiter)
     return sql
 
 
-def _target_statement_span(sql, backslash_escapes=None):
+def _target_token_spans(sql, pattern, base=0):
+    """Quote/comment spans and their intervening code, including executable comments.
+
+    Comparing only the containing statement misses a quote that consumes a
+    comment in one mode while the comment consumes that quote in the other.
+    Executable comments contain SQL, so their bodies need the same check.
+    """
+    spans, at = [], 0
+    for match in pattern.finditer(sql):
+        if at < match.start():
+            spans.append(("code", base + at, base + match.start()))
+        token = match.group()
+        opener = _VERSIONED_OPEN.match(token)
+        if opener:
+            spans.append(("executable", base + match.start(), base + match.end()))
+            spans.extend(_target_token_spans(token[opener.end():-2], pattern,
+                                             base + match.start() + opener.end()))
+        else:
+            kind = "comment" if token.startswith(("/*", "--", "#")) else "quote"
+            spans.append((kind, base + match.start(), base + match.end()))
+        at = match.end()
+    if at < len(sql):
+        spans.append(("code", base + at, base + len(sql)))
+    return tuple(spans)
+
+
+def _target_statement_span(sql, backslash_escapes=None, delimiter=";"):
     """Require one complete unit, with the same boundaries in both modes.
 
-    A known mode is permitted only for internal wrappers that assert that
-    mode before using a literal in this very packet.
+    A known mode belongs to an internal wrapper that asserts it in this
+    packet, or a persistent editor session that already read its SQL mode.
+    The editor may pass the delimiter used to validate a compound unit.
     """
     readings = (True, False) if backslash_escapes is None else (backslash_escapes,)
-    spans = []
+    spans, tokens = [], []
     for escaping in readings:
-        units = split_statements(sql, backslash_escapes=escaping)
-        dollar_units = split_statements(sql, backslash_escapes=escaping, dollar_quotes=True)
-        if (len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != ";" or
+        units = split_statements(sql, backslash_escapes=escaping, delimiter=delimiter)
+        dollar_units = split_statements(sql, backslash_escapes=escaping, delimiter=delimiter, dollar_quotes=True)
+        if (len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != delimiter or
                 len(dollar_units) != 1 or dollar_units[0]["unclosed"] or dollar_units[0]["issues"]):
             raise ValueError("Each reviewed statement must be one complete SQL statement with closed quotes and comments. "
                              "Nothing was sent. Review again.")
@@ -1367,16 +1394,17 @@ def _target_statement_span(sql, backslash_escapes=None):
         pattern = TOKEN if escaping else TOKEN_NO_BACKSLASH
         tail = pattern.sub(lambda m: " " if m.group().startswith(("/*", "--", "#")) else m.group(),
                            sql[unit["end"]:])
-        if sql[:unit["start"]].strip() or tail.strip("; \t\r\n"):
+        if sql[:unit["start"]].strip() or not re.fullmatch(r"(?:[ \t\r\n]|%s)*" % re.escape(delimiter), tail):
             raise ValueError("The reviewed SQL contains a client command or uncertain boundaries. "
                              "Nothing was sent. Review again.")
         spans.append((units[0]["start"], units[0]["end"]))
-    if len(set(spans)) != 1:
+        tokens.append(_target_token_spans(sql, pattern))
+    if len(set(spans)) != 1 or len(set(tokens)) != 1:
         raise ValueError("The reviewed SQL has ambiguous quote boundaries. Nothing was sent. Review again.")
     return spans[0]
 
 
-def target_guarded_script(guard, statements, backslash_escapes=None):
+def target_guarded_script(guard, statements, backslash_escapes=None, delimiter=";"):
     """Return (client input, packet start lines) for reviewed SQL.
 
     DELIMITER is a client command, even in --binary-mode. Each delimited
@@ -1397,7 +1425,7 @@ def target_guarded_script(guard, statements, backslash_escapes=None):
     for original, group in zip(statements, groups):
         wire_group = []
         for statement in group:
-            start, end = _target_statement_span(statement, backslash_escapes)
+            start, end = _target_statement_span(statement, backslash_escapes, delimiter)
             # Group separators belong to the builder. Copy only the parsed
             # unit, never its terminal delimiter(s) or trailing comments:
             # "SET ...;" joined with ";" is an empty server statement.

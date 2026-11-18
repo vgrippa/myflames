@@ -3395,7 +3395,14 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
         return unsent("refused", "identity")
     seen["connection_identity"] = dbops.connection_identity(connection, safety)
     keys, projection = _identity_projection(engine)
-    rows = _q(conn, "SELECT " + projection)
+    try:
+        rows = _q(conn, "SELECT " + projection)
+    except ConnectorError as exc:
+        message = dbops.redact(dbops.target_error_text(exc), getattr(conn, "password", None))
+        message = dbops.redact(message, audit.password if audit is not None else None)
+        result.update(status="refused", outcome="identity_unavailable", sent=[],
+                      message="The identity check could not run: %s. Nothing was sent." % message.rstrip("."))
+        return unsent("refused", "identity_unavailable")
     seen["server_identity"] = _identity_row(keys, rows[0]) if rows else {}
     if not seen["server_identity"]:
         result["status"], result["message"] = "refused", "Could not read the server identity; nothing was sent."
