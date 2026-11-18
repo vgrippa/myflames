@@ -157,8 +157,12 @@ class EditorProcessTests(unittest.TestCase):
         expected = ed.TAG + "KILL QUERY %d" % session.connection_id
         guard = session._kill_statement_guard(dbops.target_session_guard(session.engine, session._kill_identity),
                                                session.connection_id)
-        expected_batch = session._guarded_statement(guard, expected)[0]
+        # The control client inherits the global mode, so only the tab's
+        # own packets may assert its cached quote mode. Keep the full server
+        # and token ownership guard in this byte-for-byte packet comparison.
+        expected_batch = session._guarded_statement(guard, expected, use_session_mode=False)[0]
         kills = (self.state / "kills.log").read_text(encoding="utf-8")
+        self.assertNotIn("@@SESSION.sql_mode", kills)
         controls = [p for p in self.children[since:] if "--batch" in p.args and "--xml" not in p.args]
         self.assertTrue(controls, "KILL QUERY did not use a second client process")
         for control in controls:

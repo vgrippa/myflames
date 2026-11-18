@@ -508,9 +508,12 @@ class TestReadConsent(GroupCase):
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run
-            from _reviewed_replay import evidence_options
+            from _reviewed_replay import evidence_options, answer_evidence
             @evidence_options
             def run(sql, extra_flags=None, timeout=None):
+                evidence = answer_evidence(sql, extra_flags, timeout, run, conn.evidence_values)
+                if evidence is not None:
+                    return evidence
                 # The captured replica predates the optional reconnect read.
                 if sql == rp.REPLICATION_TAG + rp._RECEIVER_SQL:
                     raise ConnectorError('ERROR 1142: SELECT command denied')

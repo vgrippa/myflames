@@ -899,6 +899,8 @@ class EditorIdentityTests(unittest.TestCase):
 
     def test_token_tagging_keeps_routine_bodies_intact_in_both_batch_orders(self):
         session = ed.EditorSession('test', 'identity', {})
+        # Versioned CREATE comments now require the connected server facts.
+        session.engine, session.server_version = 'mysql', '8.4.11'
         definitions = (
             'CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END',
             'CREATE DEFINER = `owner`@`host` FUNCTION f() RETURNS INT BEGIN RETURN 1; END',

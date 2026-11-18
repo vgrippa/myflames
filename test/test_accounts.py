@@ -20,7 +20,7 @@ from myflames import accounts as a, dbops, privileges as p  # noqa: E402
 from myflames.connector import ConnectorError, MySQLConnection  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
 from _reviewed_replay import acknowledged_error
-from _reviewed_replay import evidence_options
+from _reviewed_replay import evidence_options, answer_evidence
 
 MYSQL_VERSION = '8.4.11'
 MARIADB_VERSION = '11.4.13-MariaDB'
@@ -78,16 +78,21 @@ class FakeConn(object):
     def is_mariadb(self):
         return self.engine == 'mariadb'
 
+    def evidence_identity(self):
+        from _reviewed_replay import UUID
+        values = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': self.version}
+        if self.engine == 'mysql':
+            values['server_uuid'] = UUID
+        values.update(getattr(self, 'evidence_values', {}))
+        return values
+
     @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
-        from _reviewed_replay import evidence_body, evidence_call, UUID
-        body, marker = evidence_body(sql)
-        if marker:
-            values = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': self.version}
-            if self.engine == 'mysql':
-                values['server_uuid'] = UUID
-            values.update(getattr(self, 'evidence_values', {}))
-            return evidence_call(lambda: self.run(body, extra_flags=['--comments'], timeout=timeout), marker, values)
+        evidence = answer_evidence(sql, extra_flags, timeout,
+                                   lambda body, flags, limit: self.run(body, extra_flags=flags, timeout=limit),
+                                   self.evidence_identity())
+        if evidence is not None:
+            return evidence
         self.calls.append((sql, extra_flags))
         if sql == 'SELECT @@version':
             return self.version + '\n'
@@ -214,7 +219,11 @@ class AccountsTest(unittest.TestCase):
                         timeouts.append(timeout)
                         now[0] += min(3, timeout) if timeout is not None else 3
                         if timeout is not None and timeout < 3:
-                            raise ConnectorError('Query timed out')
+                            # The prefix completed before the server stopped
+                            # this role read at its remaining query budget.
+                            # A lost transport would refuse the whole scope.
+                            code = 3024 if engine == 'mysql' else 1969
+                            raise ConnectorError('ERROR %d: Query timed out' % code)
                     return original(sql, extra_flags, timeout)
 
                 with mock.patch.object(conn, 'run', side_effect=run), \
@@ -255,11 +264,21 @@ class AccountsTest(unittest.TestCase):
         self.assertTrue(any('print_identified_with_as_hex = ON' in sql for sql, _ in conn.calls))
 
     def test_read_errors_are_sanitized_and_missing_accounts_detected(self):
-        self.conn.run = mock.Mock(side_effect=ConnectorError("ERROR 1227 IDENTIFIED BY '*HASH'"))
+        original = self.conn.run
+        error = ["ERROR 1227 IDENTIFIED BY '*HASH'"]
+        @evidence_options
+        def run(sql, extra_flags=None, timeout=None):
+            evidence = answer_evidence(sql, extra_flags, timeout, run, self.conn.evidence_identity())
+            if evidence is not None:
+                return evidence
+            if sql.startswith(a.TAG + 'SHOW GRANTS FOR '):
+                raise ConnectorError(error[0])
+            return original(sql, extra_flags, timeout)
+        self.conn.run = run
         with self.assertRaisesRegex(ConnectorError, '1227') as cm:
             a.read_account(self.conn, 'app')
         self.assertNotIn('HASH', str(cm.exception))
-        self.conn.run.side_effect = ConnectorError('ERROR 1141 (42000): There is no such grant')
+        error[0] = 'ERROR 1141 (42000): There is no such grant'
         self.assertFalse(a.read_account(self.conn, 'app')['exists'])
 
     def test_attributes_from_every_show_create_user_row(self):

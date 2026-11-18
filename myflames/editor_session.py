@@ -302,7 +302,20 @@ class Offsets(object):
 
 # ---- planning a run ---------------------------------------------------------------------
 
-def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=";"):
+def _check_executable_comments(sql, engine, server_version, backslash_escapes):
+    """Refuse conditional code that cannot describe what this server runs."""
+    from . import dbops
+    skipped = dbops.skipped_executable_comments(sql, engine, server_version, backslash_escapes)
+    if skipped:
+        comment = skipped[0]
+        found = comment["opener"] + " ... */"
+        reason = ("the server would skip it" if comment["certain"] else
+                  "myflames cannot establish whether the server executes it")
+        raise EditorError("Found executable comment %s; %s, so myflames cannot confirm what runs. "
+                          "Remove it or use SQL written for this server." % (found, reason), "invalid_statement")
+
+
+def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=";", server_version=None):
     """The statements of *sql* as the client will run them, or raise EditorError.
 
     Returns a list of dicts: ``index``, ``text`` (as written), ``start`` and
@@ -314,8 +327,18 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
     """
     from . import dbops
     from .live import TOKEN, TOKEN_NO_BACKSLASH
+    # The first request may be planned before startup. That request is
+    # planned again with the tab's engine/version before any user SQL runs.
+    if engine is not None:
+        _check_executable_comments(sql, engine, server_version, backslash_escapes)
+    statements = dbops.split_statements(sql, backslash_escapes, delimiter)
+    if "$" in sql:
+        dollars = dbops.split_statements(sql, backslash_escapes, delimiter, dollar_quotes=True)
+        if dbops._target_reading(statements) != dbops._target_reading(dollars):
+            raise EditorError("Dollar-quoted text ($...$) changes how the client reads this run. "
+                              "The Query editor does not run dollar-quoted text yet.", "invalid_statement")
     units = []
-    for stmt in dbops.split_statements(sql, backslash_escapes, delimiter):
+    for stmt in statements:
         number = len(units) + 1
         if stmt["unclosed"] or stmt.get("issues"):
             reasons = list(stmt.get("issues") or [])
@@ -343,8 +366,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         if _DOLLAR_QUOTE.search(code):
             raise EditorError("Statement %d contains dollar-quoted text ($...$), which the Query editor does not "
                               "run yet." % number, "invalid_statement")
-        spans = [m.span() for m in TOKEN.finditer(send)]
-        mode_sensitive = spans != [m.span() for m in TOKEN_NO_BACKSLASH.finditer(send)]
+        mode_sensitive = dbops._target_token_spans(send, TOKEN) != dbops._target_token_spans(send, TOKEN_NO_BACKSLASH)
         unit = {"index": len(units), "text": stmt["text"], "start": base + stmt["start"],
                 "end": base + stmt["end"], "send": send, "lead": lead, "code": code,
                 "mode_sensitive": mode_sensitive, "delimiter": stmt.get("delimiter"),
@@ -358,25 +380,42 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         # group SET/CALL and later SQL into one unit. Conservatively refuse an
         # ambiguous unit rather than guess the mode halfway through its text.
         # Restore quoted identifiers so `sql_mode` cannot evade this guard.
-        changes_mode = _MODE_CHANGE.search(restore_idents(unit["code"], unit.get("idents") or []))
+        changes_mode = _unit_changes_mode(unit)
+        unit["mode_unknown"] = changed is not None
         if changed is None and changes_mode and ";" in unit["code"]:
             changed = unit["index"]
         if unit["mode_sensitive"] and changed is not None:
             raise EditorError("Statement %d may change sql_mode and statement %d has a backslash before a quote, "
                               "which reads differently under NO_BACKSLASH_ESCAPES. Run them separately."
                               % (changed + 1, unit["index"] + 1), "invalid_statement")
+        if unit["mode_unknown"]:
+            # Even an unguarded read after a mode change must have identical
+            # complete boundaries under both possible client quote modes.
+            try:
+                dbops.target_statement(unit["send"], delimiter=unit.get("delimiter") or ";")
+            except ValueError as exc:
+                raise EditorError("Statement %d follows a possible sql_mode change: %s"
+                                  % (unit["index"] + 1, exc), "invalid_statement") from None
+            if engine is not None:
+                _check_executable_comments(unit["send"], engine, server_version, None)
         if changed is None and changes_mode:
             changed = unit["index"]
     return units
 
 
-def classify_units(units, backslash_escapes, sql):
+def _unit_changes_mode(unit):
+    """Conservatively include indirect changes and quoted sql_mode names."""
+    return bool(_MODE_CHANGE.search(restore_idents(unit["code"], unit.get("idents") or [])))
+
+
+def classify_units(units, backslash_escapes, sql, engine=None, server_version=None):
     """A dbops verdict for the run: the worst statement, with ``statements``
     being exactly what will be sent (for the confirmation)."""
     from . import dbops
     statements = []
     for unit in units:
-        verdict = dbops.classify(unit["send"], backslash_escapes)
+        verdict = dbops.classify(unit["send"], None if unit.get("mode_unknown") else backslash_escapes,
+                                 engine=engine, server_version=server_version)
         # BEGIN/START TRANSACTION and enabling autocommit can commit work
         # already in this tab. Apply exactly COMMIT's policy and audit class,
         # even when the shared classifier calls the control a read.
@@ -896,6 +935,10 @@ class EditorSession(EditorInsights):
         """
         from .live import TOKEN, TOKEN_NO_BACKSLASH
         from . import dbops
+        # In particular, a skipped CREATE header is not a stored definition.
+        # Check before discovering that boundary or inserting private tags.
+        _check_executable_comments(send, self.engine, self.server_version,
+                                   self.backslash_escapes if self.sql_mode is not None else None)
         pattern = TOKEN if self.backslash_escapes else TOKEN_NO_BACKSLASH
         # Use the shared lexical code to recognize CREATE after comments
         # (including executable comments). Once a definition starts, its
@@ -919,14 +962,14 @@ class EditorSession(EditorInsights):
         pieces.append(terminal)
         return "".join(pieces)
 
-    def _guarded_statement(self, guard, send, delimiter=";"):
+    def _guarded_statement(self, guard, send, delimiter=";", use_session_mode=True):
         """Revalidate the planned unit with this session's mode and delimiter.
 
         A custom delimiter can contain a stored-program body or several
         reviewed server statements. Helpers keep the stricter ';' default.
         """
         from . import dbops
-        backslash = self.backslash_escapes if self.sql_mode is not None else None
+        backslash = self.backslash_escapes if use_session_mode and self.sql_mode is not None else None
         if backslash is not None:
             # State refreshes can be routed independently of a write. Bind
             # the reading used below to this packet's executing session,
@@ -1503,7 +1546,10 @@ class EditorSession(EditorInsights):
         try:
             guard = dbops.target_session_guard(self.engine, getattr(self, "_kill_identity", None))
             guard = self._kill_statement_guard(guard, connection_id)
-            script, packet_lines = self._guarded_statement(guard, TAG + "KILL QUERY %d" % connection_id)
+            # A fresh helper inherits the global mode, not the tab's mode.
+            # Generated KILL SQL must validate under both readings instead.
+            script, packet_lines = self._guarded_statement(guard, TAG + "KILL QUERY %d" % connection_id,
+                                                           use_session_mode=False)
         except ValueError:
             raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
         try:
@@ -1783,7 +1829,8 @@ class EditorSession(EditorInsights):
             inner = plan["units"][0]["send"]
             # A custom DELIMITER can hide several semicolon-separated SQL
             # statements inside one client unit. Recheck the actual inner SQL.
-            if len(plan_statements(inner, self.backslash_escapes, self.engine)) != 1:
+            if len(plan_statements(inner, self.backslash_escapes, self.engine,
+                                   server_version=self.server_version)) != 1:
                 raise EditorError("A plan requires exactly one SQL statement.", "invalid_statement")
             prefix = ("ANALYZE FORMAT=JSON " if self.engine == "mariadb" else
                       "EXPLAIN ANALYZE FORMAT=JSON ") if mode == "analyze" else "EXPLAIN FORMAT=JSON "
@@ -1812,7 +1859,8 @@ class EditorSession(EditorInsights):
                 raise EditorError("Commit or roll back the tab's transaction and enable autocommit before "
                                   "planning. The transaction must be known to be closed; nothing was sent.",
                                   "transaction_open")
-            units = plan_statements(statement, self.backslash_escapes, self.engine)
+            units = plan_statements(statement, self.backslash_escapes, self.engine,
+                                    server_version=self.server_version)
             options = {key: getattr(self._conn, key) for key in (
                 "host", "port", "user", "password", "database", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key",
                 "ssl_cipher", "connect_timeout", "query_timeout", "ssh_host", "ssh_user", "ssh_port")}
@@ -1911,16 +1959,24 @@ class EditorSession(EditorInsights):
                 if self.run is not None and not self.run.done.is_set():
                     raise EditorError("A statement is already running in this tab. Wait for it or press Stop.",
                                       "busy")
+            mode_unknown = self.sql_mode is None
+            for unit in run.units:
+                _check_executable_comments(unit["send"], self.engine, self.server_version,
+                                           None if mode_unknown else self.backslash_escapes)
+                mode_unknown = mode_unknown or _unit_changes_mode(unit)
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
                 statements = [u["send"] for u in run.units]
                 try:
                     run.target_guard = self._write_session_guard()
                     # Refuse delimiter collisions before any user unit runs.
+                    mode_unknown = self.sql_mode is None
                     for unit in run.units:
                         if _needs_session_guard(unit):
                             setup = unit.get("packet_setup")
                             send = (setup["send"], unit["send"]) if setup is not None else unit["send"]
-                            self._guarded_statement(run.target_guard, send, unit.get("delimiter") or ";")
+                            self._guarded_statement(run.target_guard, send, unit.get("delimiter") or ";",
+                                                    use_session_mode=not mode_unknown)
+                        mode_unknown = mode_unknown or _unit_changes_mode(unit)
                 except ValueError as exc:
                     if run.audit is not None:
                         run.audit.outcome(statements, "refused", outcome="identity_unavailable", message=str(exc))
@@ -2068,6 +2124,12 @@ class EditorSession(EditorInsights):
                                   limit=run.limit, kill_ok=kill_ok,
                                   guard=run.target_guard if _needs_session_guard(unit) else None,
                                   delimiter=unit.get("delimiter") or ";", setup=setup)
+                if _unit_changes_mode(unit):
+                    # A CALL or multi-statement unit can change the mode
+                    # before failing. Invalidate after sending, even on an
+                    # error; only refresh_state may establish a new bit.
+                    with self.lock:
+                        self.sql_mode = None
                 self._wait_step(step)
                 for thread in list(run.kill_threads):
                     thread.join(KILL_TIMEOUT + 5)
@@ -2282,6 +2344,13 @@ class EditorSession(EditorInsights):
                         "position": error_position(error.get("message"), unit, offsets) if run.kind == "run" and
                         not (run.guard_failure and run.guard_failure["statement_index"] == unit["index"])
                         else None}
+                if error.get("code") == 9006 and re.search(
+                        r"ProxySQL Error: connection is locked to hostgroup \d+ but trying to reach hostgroup \d+",
+                        error.get("message") or "", re.I):
+                    item["detail"] = error["message"]
+                    item["message"] = ("The proxy has tied this tab to one server group after a refused change. "
+                                       "Close and reopen the tab to run reads again.\n\nServer detail: " +
+                                       error["message"])
                 results.append(item)
                 if not interrupted:
                     totals["errors"] += 1
@@ -3051,6 +3120,13 @@ def _selection(payload, sql, offsets, backslash=True):
     if selection is None and payload.get("cursor") is not None:
         cursor = _offset(payload, "cursor", offsets, total)
         stmt = statement_at(sql, dbops_split(sql, backslash), cursor)
+        if "$" in sql:
+            from . import dbops
+            dollar_stmt = statement_at(sql, dbops.split_statements(sql, backslash, dollar_quotes=True), cursor)
+            if dbops._target_reading([stmt] if stmt else []) != dbops._target_reading(
+                    [dollar_stmt] if dollar_stmt else []):
+                raise EditorError("Dollar-quoted text ($...$) changes which statement is at the cursor. "
+                                  "The Query editor does not run dollar-quoted text yet.", "invalid_statement")
         if stmt is None:
             raise EditorError("There is no statement at the cursor. Write SQL to run.", "empty")
         return stmt["start"], stmt["end"], "statement", stmt.get("delimiter") or ";"
@@ -3076,16 +3152,18 @@ _ALTER_TABLE = re.compile(r"^\s*ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE\s
                           _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)", re.I)
 _DDL_START = re.compile(r"^\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE)\b", re.I)
 _ROUTINE_CREATE = re.compile(
+    # MariaDB AGGREGATE FUNCTION: mariadb-server/sql/sql_yacc.yy:20502-20529.
     r"^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?|"
     r"ALTER\s+(?:DEFINER\s*=\s*[^;]+?\s+)?(?=EVENT\b))"
-    r"(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b", re.I | re.S)
+    r"(?:(AGGREGATE)\s+)?(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b", re.I | re.S)
 
 
 def _ddl_codes(unit):
     """Inspect masked client text for DDL batching, without changing splitting.
 
-    BEGIN/CASE bodies of routine definitions contain semicolons of their own.
-    Recognize those blocks so a trailing statement after END cannot inherit the
+    BEGIN/CASE bodies and statement-level IF/LOOP/WHILE/REPEAT/CASE blocks of
+    routine and event definitions contain semicolons of their own. Recognize
+    those blocks so a trailing statement after END cannot inherit the
     routine's confirmation. Ambiguous/unbalanced blocks fall back to refusing
     a batch; execution still uses the original shared statement splitter.
     """
@@ -3093,24 +3171,83 @@ def _ddl_codes(unit):
     routine = _ROUTINE_CREATE.match(code)
     if not routine:
         return [part for part in code.split(";") if part.strip()]
-    tokens = list(re.finditer(r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT|FUNCTION|PROCEDURE|AS|IS)\b|;", code, re.I))
+    # Statement-level IF, LOOP, WHILE, REPEAT and CASE blocks are part of one
+    # DDL even without an outer BEGIN (an EVENT body is a single sp_proc_stmt:
+    # mysql-server/sql/sql_yacc.yy:4883-4908, mariadb-server:4257-4265 and
+    # 20789-20811). THEN converts a pending IF into a block opener, which
+    # keeps the IF() function out; REPEAT(...) is a string function.
+    tokens = list(re.finditer(
+        r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT|THEN|DECLARE|FUNCTION|PROCEDURE|AS|IS)\b|;",
+        code, re.I))
     # A package has an outer END in addition to its routines' BEGIN/END
     # blocks. Its optional Oracle initializer BEGIN shares that outer END:
     # mariadb-server/sql/sql_yacc.yy:20185-20199,20537-20595.
-    package = routine.group(1).upper() == "PACKAGE"
+    package = routine.group(2).upper() == "PACKAGE"
     blocks, parts, start, index = ["PACKAGE"] if package else [], [], 0, 0
     package_routine = False
     package_declarations = False
     package_header = True
     oracle_package = False
+    declared = False
+    depth = 0
+    pending_if = {}
+    at = 0
+
+    def function_call(end):
+        """True when the word ending at *end* opens a parenthesized call whose
+        arguments hold top-level commas: the IF()/REPEAT() functions, not the
+        IF ... THEN / REPEAT ... UNTIL ... END REPEAT control statements."""
+        rest = code[end:]
+        lead = len(rest) - len(rest.lstrip())
+        if rest[lead:lead + 1] != "(":
+            return False
+        level = 0
+        for j in range(lead, len(rest)):
+            ch = rest[j]
+            if ch == "(":
+                level += 1
+            elif ch == ")":
+                level -= 1
+                if level == 0:
+                    return False
+            elif ch == "," and level == 1:
+                return True
+        return True  # unbalanced text opens no block
+
     while index < len(tokens):
         token = tokens[index]
         word = token.group(0).upper()
-        if package and blocks == ["PACKAGE"] and word in ("FUNCTION", "PROCEDURE"):
+        gap = code[at:token.start()]
+        at = token.end()
+        depth = max(0, depth + gap.count("(") - gap.count(")"))
+        # A keyword after a dot is a qualified name part (d.end, t.if), never
+        # a block keyword; quoted identifiers are placeholders in the masked
+        # code and cannot match the word pattern.
+        dotted = gap.rstrip().endswith(".")
+        if word == ";":
+            package_header = False
+            declared = False
+            pending_if.clear()
+            if not blocks:
+                parts.append(code[start:token.start()])
+                start = token.end()
+            elif blocks == ["PACKAGE"] and not package_declarations:
+                # Forward declarations and single-statement routine bodies
+                # end here too. An Oracle IS/AS declaration section, however,
+                # can contain semicolons before its routine's BEGIN.
+                # MariaDB sql_yacc.yy:19254-19259,20293-20312,20365-20378.
+                package_routine = False
+        elif dotted:
+            pass
+        elif package and blocks == ["PACKAGE"] and depth == 0 and word in ("FUNCTION", "PROCEDURE"):
             package_header = False
             package_routine = True
             package_declarations = False
-        elif package and blocks == ["PACKAGE"] and word in ("AS", "IS"):
+        elif package and blocks == ["PACKAGE"] and depth == 0 and not declared and word in ("AS", "IS"):
+            # Only a top-level AS/IS opens the package or an Oracle routine
+            # declaration section (sp_tail_is, mariadb-server sql_yacc.yy
+            # :20134-20137); one inside parentheses (a DEFAULT expression such
+            # as (1 IS NULL)) or after DECLARE is ordinary SQL.
             if package_routine:
                 package_declarations = True
             elif package_header:
@@ -3123,27 +3260,30 @@ def _ddl_codes(unit):
             if word == "BEGIN":
                 package_routine = False
                 package_declarations = False
+                declared = False
+        elif word == "IF":
+            if not function_call(token.end()):
+                pending_if[depth] = True
+        elif word == "THEN":
+            if pending_if.pop(depth, False):
+                blocks.append("IF")
+        elif word in ("LOOP", "WHILE"):
+            blocks.append(word)
+        elif word == "REPEAT":
+            if not function_call(token.end()):
+                blocks.append(word)
+        elif word == "DECLARE":
+            declared = True
         elif word == "END":
             following = tokens[index + 1] if index + 1 < len(tokens) else None
             qualifier = (following.group(0).upper() if following and
                          not code[token.end():following.start()].strip() else None)
             if qualifier in ("IF", "LOOP", "WHILE", "REPEAT", "CASE"):
                 index += 1
-            if qualifier not in ("IF", "LOOP", "WHILE", "REPEAT"):
-                if not blocks:
-                    return [part for part in code.split(";") if part.strip()]
-                blocks.pop()
-        elif word == ";":
-            package_header = False
             if not blocks:
-                parts.append(code[start:token.start()])
-                start = token.end()
-            elif blocks == ["PACKAGE"] and not package_declarations:
-                # Forward declarations and single-statement routine bodies
-                # end here too. An Oracle IS/AS declaration section, however,
-                # can contain semicolons before its routine's BEGIN.
-                # MariaDB sql_yacc.yy:19254-19259,20293-20312,20365-20378.
-                package_routine = False
+                return [part for part in code.split(";") if part.strip()]
+            blocks.pop()
+            declared = False
         index += 1
     if blocks:
         return [part for part in code.split(";") if part.strip()]
@@ -3432,7 +3572,8 @@ def _plan_run(payload, session):
     start, end, scope, delimiter = _selection(payload, sql, offsets, backslash)
     text = sql[start:end]
     engine = session.engine if session is not None else None
-    units = plan_statements(text, backslash, engine, base=start, delimiter=delimiter)
+    version = getattr(session, "server_version", None)
+    units = plan_statements(text, backslash, engine, base=start, delimiter=delimiter, server_version=version)
     explain_format = payload.get("explain_format")
     if explain_format is not None:
         from . import dbops
@@ -3446,8 +3587,8 @@ def _plan_run(payload, session):
         if re.match(r"\s*(?:(?:FORMAT\s*=\s*\w+|EXTENDED|PARTITIONS)\s+)*ANALYZE\b", unit["code"], re.I):
             raise EditorError("ANALYZE runs the statement. Use Run analysis or Run.", "invalid_statement")
         if explain_format == "tree" and session is not None:
-            version = parse_version_tuple(session.server_version or "", leading=True, default=None)
-            if engine != "mysql" or version is None or version < (8, 0, 16):
+            explain_version = parse_version_tuple(session.server_version or "", leading=True, default=None)
+            if engine != "mysql" or explain_version is None or explain_version < (8, 0, 16):
                 raise EditorError("Tree format needs MySQL 8.0.16 or later. Choose Table or JSON.", "invalid")
         prefix = ("EXPLAIN " if engine == "mariadb" and explain_format == "table"
                   else "EXPLAIN FORMAT=%s " % {"table": "TRADITIONAL", "tree": "TREE", "json": "JSON"}[explain_format])
@@ -3487,7 +3628,8 @@ def _plan_run(payload, session):
     units = guarded
     for index, unit in enumerate(units):
         unit["index"] = index
-    verdict = classify_units(units, None if session is None or session.sql_mode is None else backslash, text)
+    verdict = classify_units(units, None if session is None or session.sql_mode is None else backslash, text,
+                             engine, version)
     return {"sql": sql, "text": text, "offsets": offsets, "scope": scope, "units": units, "verdict": verdict}
 
 
@@ -4066,7 +4208,10 @@ def _run_api(payload, workspace, fill_password):
         if session is None:
             session = _open_session(registry, tab_id, full_options, identity, safety, name, payload,
                                     created=started)
-        plan = _plan_run(payload, session)
+        try:
+            plan = _plan_run(payload, session)
+        except EditorError as exc:
+            return {"status": "invalid", "code": exc.code, "message": str(exc), "session": session.status()}
         decision = _requested_review(_decision(plan, safety, session), payload)
         if decision["action"] != "refuse":
             review = _alter_review(plan, session)

@@ -220,6 +220,7 @@ def _default_roles_clause(create, engine):
     return []
 
 
+@dbops.target_evidence
 def read_account(conn, name, host='%', role=False, engine=None, version=None, include_catalog=True):
     """``account-1.0``: the account's own grants (credential-free), its
     roles and default roles, non-secret attributes, the grants it inherits
@@ -1705,30 +1706,37 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
     try:
         engine, version = _server(conn)
+        conn.check()
         if engine != plan['engine'] or version != plan['version']:
             return refuse('stale', 'The server version changed; nothing was sent.')
         actor = privileges.read_privileges(conn)
+        conn.check()
         if actor.get('account') != plan['actor'] or not actor.get('checked'):
             return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
         server = _actor_server(conn, plan['engine'], actor)
+        conn.check()
         if server != plan['actor_server']:
             return refuse('stale', 'The server identity changed; nothing was sent.')
         for dependency in plan['dependencies']:
             current_role = read_account(conn, dependency['name'], dependency['host'] or '%', True, engine, version, include_catalog=False)
+            conn.check()
             if fingerprint(current_role) != dependency['fingerprint']:
                 return refuse('stale', 'A role changed since the review; nothing was sent.')
         before = read_account(conn, plan['name'], plan['host'] or '%', plan['role'], engine, version, include_catalog=False)
+        conn.check()
         if fingerprint(before) != expect:
             return refuse('stale', 'The account\'s grants or attributes changed since the review; nothing was sent.')
         if plan['operation'] == 'rename':
             destination = read_account(conn, plan._options['new_name'], plan._options.get('new_host', plan['host']), False,
                                        engine, version, include_catalog=False)
+            conn.check()
             if destination['exists']:
                 return refuse('stale', 'An account with the new name now exists; nothing was sent.')
         guard_op = 'revoke_roles' if plan['operation'] == 'roles' and plan._options.get('mode') == 'revoke' else \
             plan['operation']
         guards = _guards(before, actor, guard_op, plan._context.get('privileges', []),
                          plan._options.get('level', 'global'), plan._options, conn=conn)
+        conn.check()
         if guards['blocked']:
             return refuse('refused', ' '.join(guards['blocked']) + ' Nothing was sent.')
         if guards['typed_name'] and typed_name != guards['typed_name']:
@@ -1750,6 +1758,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     out['before'] = before
     generated = plan._generated
     generated_applied = False
+    readback_audit = None
     try:
         for i, (sql, display) in enumerate(zip(plan._statements, plan['statements'])):
             audit = trail()
@@ -1770,7 +1779,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
             except (ConnectorError, KeyboardInterrupt) as exc:
                 if getattr(exc, 'identity_outcome', None):
                     message = str(exc)
-                    audit.complete('refused', outcome=exc.identity_outcome, error=exc.server_error_code,
+                    audit.complete('refused', outcome=exc.identity_outcome, error=getattr(exc, 'server_error_code', None),
                                    message=message)
                     out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
                     out.update(status='refused' if i == 0 else 'partial', outcome=exc.identity_outcome,
@@ -1807,7 +1816,13 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                 # statement, after CREATE USER and before ACCOUNT UNLOCK.
                 if generated and (engine == 'mysql' or plan['operation'] == 'password' or i == 1):
                     generated_applied = True
-                audit.complete('ok', outcome='sent')
+                # Keep the final accepted attempt pending until its readback
+                # validates. Finished audit rows deliberately cannot be
+                # rewritten, including from sent to an unknown outcome.
+                if i == len(plan['statements']) - 1:
+                    readback_audit = audit
+                else:
+                    audit.complete('ok', outcome='sent')
                 out['sent'].append(display)
                 out['statements'].append({'index': i, 'statement': display, 'status': 'ok'})
         else:
@@ -1835,14 +1850,24 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
         name = plan._options.get('new_name', plan['name']) if renamed else plan['name']
         host = plan._options.get('new_host', plan['host']) if renamed else plan['host']
         after = read_account(conn, name, host or '%', plan['role'], engine, version, include_catalog=False)
+        conn.check()
         out['after'], out['diff'] = after, grant_diff(before, after)
-        if out['audit_ids'] and out['status'] == 'applied':
-            try:
-                dbops.complete(store, out['audit_ids'][-1], 'ok', outcome='applied',
-                               after={'grants': after.get('grants', []), 'attributes': after.get('attributes', {}),
-                                      'exists': after.get('exists')})
-            except Exception:
-                out['warnings'].append('The after-state could not be attached to the audit record.')
+        if readback_audit is not None:
+            readback_audit.complete('ok', outcome='applied',
+                                    after={'grants': after.get('grants', []), 'attributes': after.get('attributes', {}),
+                                           'exists': after.get('exists')})
     except (ConnectorError, ValueError):
         out['warnings'].append('The statements may have changed the account, but it could not be read afterwards.')
+        if conn.problem:
+            # Statements were already accepted. Failed readback evidence must
+            # not report a stale account or claim a verified final effect.
+            message = 'The statements were sent, but the account could not be verified afterwards; the outcome is unknown.'
+            out.update(status='unknown', outcome='unverified', message=message, after={}, diff={})
+            if readback_audit is not None:
+                readback_audit.complete('unknown', outcome='unverified', message=message)
+    finally:
+        if readback_audit is not None:
+            # An ordinary optional read error still leaves an accepted write
+            # recorded as sent. complete() cannot replace a finished verdict.
+            readback_audit.complete('ok', outcome='sent')
     return out

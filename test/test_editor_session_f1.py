@@ -1,0 +1,348 @@
+"""F1 regressions: conditional SQL, helper modes and changing editor modes.
+
+The planner, classifier, target guards, review tokens and transport are real.
+Only the disposable client answers are synthetic; no server is started.
+"""
+import ast
+import os
+import types
+import unittest
+
+import test_editor_session as fixtures
+import test_editor_session_identity as identity_fixtures
+from myflames import dbops, editor_session as ed
+
+
+VERSIONS = (("mysql", "8.4.11"), ("mariadb", "11.4.13-MariaDB"))
+# The five shared attacks use future-version comments that both engines skip.
+# Engine-specific syntax from the same repros is covered separately below.
+SKIPPED_INPUTS = (
+    "DELIMITER $$\nCREATE PROCEDURE p() /*!999999 BEGIN */ SELECT 1; "
+    "DROP DATABASE prod; /*!999999 END */ $$",
+    "DELIMITER $$\nALTER EVENT e DO /*!999999 BEGIN */ SELECT 1; "
+    "DROP TABLE t; /*!999999 END */ $$",
+    "DELIMITER $$\n/*!999999 CREATE PROCEDURE p() BEGIN */ "
+    "DROP DATABASE prod /*!999999 ; END */ $$",
+    "/*!999999 CREATE TABLE x ( */ ALTER TABLE big DROP INDEX ix /*!999999 ) */",
+    "/*!999999 SELECT 1 FROM ( */ DELETE FROM t /*!999999 ) x */",
+)
+
+
+class ExecutableCommentTests(unittest.TestCase):
+    def test_skip_rules_match_engine_lexers(self):
+        # MySQL sql/sql_lex.cc:1991-2004; MariaDB sql/sql_lex.cc:2474-2486.
+        for engine, version in VERSIONS:
+            cases = (
+                ("/*! SET @x = 1 */", False),
+                ("/*!40101 SET @x = 1 */", False),
+                ("/*!50000 SET @x = 1 */", False),
+                ("/*!999999 SET @x = 1 */", True),
+                ("/*!50700 SET @x = 1 */", engine == "mariadb"),
+                ("/*!80016 SET @x = 1 */", engine == "mariadb"),
+                ("/*!99999 SET @x = 1 */", True),
+                ("/*M! SET @x = 1 */", engine == "mysql"),
+                ("/*M!100000 SET @x = 1 */", engine == "mysql"),
+                ("/*M!999999 SET @x = 1 */", True),
+            )
+            for sql, skipped in cases:
+                with self.subTest(engine=engine, sql=sql):
+                    found = dbops.skipped_executable_comments(sql, engine, version)
+                    self.assertEqual(bool(found), skipped)
+                    if found:
+                        self.assertTrue(found[0]["certain"])
+                        self.assertEqual((found[0]["start"], found[0]["end"]), (0, len(sql)))
+                        self.assertNotIn("SET", found[0]["opener"])
+
+    def test_six_digit_version_rules_and_boundaries(self):
+        for engine, version in VERSIONS:
+            for sql in ("/*!999999 SELECT 1 */", "/*!999999SELECT 1 */"):
+                self.assertTrue(dbops.skipped_executable_comments(sql, engine, version))
+        # MariaDB accepts a six-digit version without following whitespace;
+        # MySQL then consumes five digits. 100000 > 9.7.0; 10000 <= 9.7.0.
+        self.assertFalse(dbops.skipped_executable_comments("/*!100000SELECT 1 */", "mysql", "9.7.0"))
+        self.assertTrue(dbops.skipped_executable_comments("/*!100000 SELECT 1 */", "mysql", "9.7.0"))
+        self.assertFalse(dbops.skipped_executable_comments("/*!100000SELECT 1 */", "mariadb", "10.11.14"))
+        self.assertFalse(dbops.skipped_executable_comments("/*!80411 SELECT 1 */", "mysql", "8.4.11"))
+        self.assertTrue(dbops.skipped_executable_comments("/*!80412 SELECT 1 */", "mysql", "8.4.11"))
+        self.assertFalse(dbops.skipped_executable_comments("/*M!110413 SELECT 1 */", "mariadb", "11.4.13"))
+        self.assertTrue(dbops.skipped_executable_comments("/*M!110414 SELECT 1 */", "mariadb", "11.4.13"))
+
+    def test_unknown_facts_are_conservative_and_quotes_are_not_comments(self):
+        sql = "/*!999999 SELECT 1 */"
+        for engine, version in ((None, None), ("mysql", None), ("mariadb", "custom build")):
+            found = dbops.skipped_executable_comments(sql, engine, version)
+            self.assertEqual(len(found), 1)
+            self.assertFalse(found[0]["certain"])
+        for engine, version in VERSIONS:
+            quoted = "SELECT '/*!999999 SELECT 1 */', `/*!999999 name */` /* /*!999999 ignored */"
+            self.assertEqual(dbops.skipped_executable_comments(quoted, engine, version), [])
+            # Only NO_BACKSLASH_ESCAPES exposes this comment after the string.
+            ambiguous = r"SELECT 'tail\' /*!999999 DELETE FROM t */ -- '"
+            self.assertEqual(dbops.skipped_executable_comments(ambiguous, engine, version, True), [])
+            self.assertEqual(len(dbops.skipped_executable_comments(ambiguous, engine, version, False)), 1)
+            self.assertEqual(len(dbops.skipped_executable_comments(ambiguous, engine, version, None)), 1)
+
+    def test_classifier_cannot_hide_delete_in_a_skipped_read_wrapper(self):
+        sql = SKIPPED_INPUTS[-1]
+        # Generic callers without server facts must consider the skipped body
+        # too. Checking the per-statement verdict protects callers using it.
+        for engine, version in ((None, None),) + VERSIONS:
+            for backslash in (None, True, False):
+                with self.subTest(engine=engine, backslash=backslash):
+                    result = dbops.classify(sql, backslash, engine=engine, server_version=version)
+                    self.assertEqual(result["kind"], "risky")
+                    self.assertEqual(result["category"], "dml")
+                    self.assertIn("DELETE without a WHERE", " ".join(result["reasons"]))
+                    self.assertEqual(result["statements"][0]["kind"], "risky")
+                    self.assertEqual(result["statements"][0]["text"], sql)
+
+    def test_executed_block_comments_remain_one_ddl_and_dump_settings_are_accepted(self):
+        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END *///"
+        for engine, version in VERSIONS:
+            units = ed.plan_statements(sql, engine=engine, server_version=version)
+            self.assertEqual(len(units), 1)
+            self.assertEqual(len(ed._ddl_codes(units[0])), 1)
+            session = types.SimpleNamespace(engine=engine, server_version=version,
+                                            sql_mode="", backslash_escapes=True)
+            plan = ed._plan_run({"sql": sql}, session)
+            decision = ed._decision(plan, {"type": "production", "read_only": False, "profile_name": "prod"})
+            self.assertEqual(decision["action"], "confirm", decision)
+            for comment in ("/*!40101 SET @dump = 1 */", "/*! SET @dump = 1 */"):
+                self.assertEqual(ed.plan_statements(comment, engine=engine, server_version=version)[0]["send"], comment)
+            tagger = ed.EditorSession("tagger", "identity", {})
+            tagger.engine, tagger.server_version = engine, version
+            self.assertEqual(tagger._tag_statement(units[0]["send"]), tagger.statement_tag + units[0]["send"])
+
+    def test_unknown_facts_cannot_hide_an_older_write_inside_a_future_read_wrapper(self):
+        sql = "/*!999999 SELECT 1 FROM ( */ /*!50000 DELETE FROM t */ /*!999999 ) x */"
+        for engine, version in ((None, None), ("mysql", None), ("mariadb", None)) + VERSIONS:
+            with self.subTest(engine=engine, version=version):
+                result = dbops.classify(sql, engine=engine, server_version=version)
+                self.assertEqual(result["kind"], "risky")
+                self.assertEqual(result["statements"][0]["kind"], "risky")
+                if version is None:
+                    self.assertTrue(result["ambiguous"])
+        for engine, wrapper in (("mysql", "/*M!"), ("mariadb", "/*!50700")):
+            # The wrapper is certainly skipped, even without a version.
+            sql = "%s SELECT 1 FROM ( */ /*!50000 DELETE FROM t */ %s ) x */" % (wrapper, wrapper)
+            result = dbops.classify(sql, engine=engine)
+            self.assertEqual(result["kind"], "risky")
+            self.assertIn("DELETE without a WHERE", " ".join(result["reasons"]))
+
+    def test_skipped_fake_create_is_rejected_before_token_tagging(self):
+        for engine, version in VERSIONS:
+            session = ed.EditorSession("tagger", "identity", {})
+            session.engine, session.server_version = engine, version
+            for sql in SKIPPED_INPUTS[2:4]:
+                with self.subTest(engine=engine, sql=sql):
+                    with self.assertRaisesRegex(ed.EditorError, "server would skip it"):
+                        session._tag_statement(sql)
+
+
+class EditorDollarDelimiterTests(unittest.TestCase):
+    def test_identifier_delimiter_cannot_split_a_dollar_tag_before_detection(self):
+        for body in ("$tag$ SELECT 1; DELETE FROM t $tag$", "$tag$ SELECT 1", "$tag$ SELECT 1 $TAG$"):
+            sql = "DELIMITER tag\nSELECT " + body + "tag"
+            for engine, version in VERSIONS:
+                with self.subTest(body=body, engine=engine):
+                    with self.assertRaisesRegex(ed.EditorError, "[Dd]ollar-quoted"):
+                        ed.plan_statements(sql, engine=engine, server_version=version)
+                    # Cursor selection must not discard the offending tag
+                    # before the planner sees the selected fragment.
+                    with self.assertRaisesRegex(ed.EditorError, "[Dd]ollar-quoted"):
+                        ed._plan_run({"sql": sql, "cursor": sql.index("SELECT") + 2}, None)
+
+    def test_quoted_dollar_tags_and_identifier_dollars_keep_their_meaning(self):
+        self.assertEqual(ed.plan_statements("DELIMITER tag\nSELECT '$tag$'tag")[0]["send"], "SELECT '$tag$'")
+        for sql in ("SELECT `dollar$tag$name`", "SELECT prefix$tag$name", "SELECT '/* $tag$ */'"):
+            self.assertEqual(ed.plan_statements(sql)[0]["send"], sql)
+
+
+@unittest.skipIf(os.name == "nt", "the fake client is a POSIX script")
+class EditorF1ProcessTests(unittest.TestCase):
+    engine = "mysql"
+    setUp = fixtures.ProcessTests.setUp
+    call = fixtures.ProcessTests.call
+    run_sql = fixtures.ProcessTests.run_sql
+    rows = fixtures.ProcessTests.rows
+    session_log = fixtures.ProcessTests.session_log
+    until = fixtures.ProcessTests.until
+    logged = fixtures.ProcessTests.logged
+    packets = identity_fixtures.EditorIdentityTests.packets
+    rewrite_client = identity_fixtures.EditorIdentityTests.rewrite_client
+    inject_answers = identity_fixtures.EditorIdentityTests.inject_answers
+
+    def test_five_skipped_comment_attacks_send_no_packets_on_an_open_tab(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        for sql in SKIPPED_INPUTS:
+            with self.subTest(sql=sql):
+                before = len(self.packets())
+                result = self.run_sql(sql)
+                self.assertEqual(result["status"], "invalid", result)
+                self.assertEqual(result["code"], "invalid_statement")
+                self.assertIn("/*!999999", result["message"])
+                self.assertIn("server would skip it", result["message"])
+                self.assertIn("cannot confirm what runs", result["message"])
+                self.assertEqual(len(self.packets()), before, "neither user SQL nor a preflight may be sent")
+
+    def test_engine_specific_skipped_comments_send_nothing(self):
+        self.run_sql("SELECT 7")
+        sql = ("DELIMITER $$\nCREATE PROCEDURE p() /*M! BEGIN */ SELECT 1; "
+               "ALTER TABLE big DROP INDEX ix; /*M! END */ $$" if self.engine == "mysql" else
+               "DELIMITER $$\nCREATE PROCEDURE p() /*!50700 BEGIN */ SELECT 1; "
+               "DROP DATABASE prod; /*!50700 END */ $$")
+        cases = [sql]
+        if self.engine == "mariadb":
+            cases.append("/*!80016 SET @must_not_run = 1 */")
+        for sql in cases:
+            before = len(self.packets())
+            result = self.run_sql(sql)
+            self.assertEqual(result["status"], "invalid", result)
+            self.assertIn("server would skip it", result["message"])
+            self.assertEqual(len(self.packets()), before)
+
+    def test_executed_comments_reach_one_guarded_ddl_packet_and_dump_settings_stay_accepted(self):
+        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END *///"
+        result = self.run_sql(sql)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(len(result["run"]["statements"]), 1)
+        definition = ed.plan_statements(sql)[0]["send"]
+        packets = [p[2] for p in self.packets() if definition in p[2]]
+        self.assertEqual(len(packets), 1)
+        self.assertIn("SET @myflames_target = ", packets[0])
+        self.assertTrue(packets[0].endswith(definition), "no private token may enter the definition")
+        dump = "/*!40101 SET @dump = 1 */"
+        self.assertEqual(self.run_sql(dump)["status"], "complete")
+        self.assertTrue(any(dump in p[2] for p in self.packets()))
+
+    def test_first_alter_run_rechecks_comments_before_any_preflight(self):
+        sql = "ALTER TABLE tt ADD COLUMN c INT /*!999999 INVISIBLE */"
+        self.assertIsNone(self.registry.get("tab1"))
+        result = self.run_sql(sql)
+        self.assertEqual(result["status"], "invalid", result)
+        self.assertIn("server would skip it", result["message"])
+        self.assertIsNotNone(self.registry.get("tab1"))
+        self.assertFalse(any("ALTER TABLE tt" in p[2] or "SHOW CREATE TABLE" in p[2] or
+                             "information_schema.tables" in p[2].lower() for p in self.packets()))
+
+    def test_first_read_run_is_rechecked_after_startup_before_user_sql(self):
+        sql = "/*!999999 SELECT 1 */"
+        # No engine facts are available to the pre-startup plan. The second
+        # plan must refuse even though the first one classified a plain read.
+        self.assertEqual(ed._plan_run({"sql": sql}, None)["verdict"]["kind"], "read")
+        self.assertIsNone(self.registry.get("tab1"))
+        result = self.run_sql(sql)
+        self.assertEqual(result["status"], "invalid", result)
+        self.assertIn("server would skip it", result["message"])
+        self.assertIsNotNone(self.registry.get("tab1"), "startup established the engine/version")
+        self.assertTrue(self.packets(), "startup ran through the real client")
+        self.assertFalse(any(sql in p[2] for p in self.packets()), "the user comment never reached stdin")
+        self.assertEqual(self.rows(self.run_sql("SELECT 8")), [["8"]])
+
+    def test_start_run_rechecks_units_planned_before_server_facts(self):
+        self.run_sql("SELECT 7")
+        session = self.registry.get("tab1")
+        sql = "/*!999999 SELECT 1 */"
+        units = ed.plan_statements(sql)
+        ed.classify_units(units, True, sql)
+        run = ed.Run(units, 1000, self.connection, sql, ed.Offsets(sql), "all")
+        before = len(self.packets())
+        with self.assertRaisesRegex(ed.EditorError, "server would skip it"):
+            session.start_run(run)
+        self.assertEqual(len(self.packets()), before)
+        self.assertFalse(session.run_lock.locked())
+
+    def test_stop_uses_helper_mode_in_both_directions_and_tab_writes_assert_their_mode(self):
+        # Model the fresh helper's global mode separately from the tab. This
+        # server-side check would reject the old cached-mode KILL packet.
+        self.rewrite_client(lambda source: source.replace(
+            'self.sql_mode = "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"',
+            'self.sql_mode = os.environ.get("FAKE_GLOBAL_SQL_MODE", "")').replace(
+            "def one_shot(sql):\n", r'''def one_shot(sql):
+    expected = re.search(r"FIND_IN_SET\('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode\) > 0\) <=> ([01])", sql)
+    actual = "NO_BACKSLASH_ESCAPES" in os.environ.get("FAKE_GLOBAL_SQL_MODE", "").split(",")
+    if expected and int(expected.group(1)) != int(actual):
+        sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+        return 1
+'''))
+        for index, tab_mode in enumerate(("NO_BACKSLASH_ESCAPES", "")):
+            os.environ["FAKE_GLOBAL_SQL_MODE"] = "" if tab_mode else "NO_BACKSLASH_ESCAPES"
+            tab = "opposite-mode-%d" % index
+            self.assertEqual(self.run_sql("SET SESSION sql_mode = '%s'" % tab_mode, tab=tab)["status"], "complete")
+            session = self.registry.get(tab)
+            self.assertEqual(session.sql_mode, tab_mode)
+            write = "SET @mode_test = %d" % index
+            self.assertEqual(self.run_sql(write, tab=tab)["status"], "complete")
+            packet = next(p[2] for p in reversed(self.packets()) if write in p[2])
+            self.assertIn("@@SESSION.sql_mode) > 0) <=> %d" % int(bool(tab_mode)), packet)
+            sql = "SELECT 7 /*gate*/"
+            self.run_sql(sql, tab=tab, wait=0)
+            self.until(lambda: self.logged(tab, sql), "the owned read to reach its gate")
+            self.assertTrue(self.call("/api/editor/stop", tab=tab)["stopped"])
+            self.assertTrue(session.run.done.wait(5))
+            self.assertEqual(session.run.state, "stopped", session.snapshot())
+            self.assertFalse(session.ended)
+            batches = [ast.literal_eval(line) for line in (self.state / "helper-batches.log").read_text().splitlines()]
+            kill = next(b for b in reversed(batches) if "KILL QUERY" in b)
+            self.assertNotIn("@@SESSION.sql_mode", kill)
+            self.assertIn("information_schema.PROCESSLIST", kill)
+            self.assertIn("WHERE ID = %d" % session.connection_id, kill)
+            self.assertIn("AND ID <> CONNECTION_ID()", kill)
+            self.assertIn(session.statement_tag.rstrip(), kill)
+            self.assertIn("@@global.server_uuid" if self.engine == "mysql" else "@@global.server_id", kill)
+            self.assertEqual(self.rows(self.run_sql("SELECT 8", tab=tab)), [["8"]])
+
+    def test_sql_mode_change_followed_by_guarded_writes_completes_and_refreshes_mode(self):
+        self.assertEqual(self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")["status"], "complete")
+        sql = "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; INSERT INTO tt VALUES (1, 'mode'); SET @x = 42"
+        result = self.run_sql(sql)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual([u["status"] for u in result["run"]["statements"]], ["ok"] * 3)
+        session = self.registry.get("tab1")
+        self.assertFalse(session.ended)
+        self.assertEqual(session.sql_mode, "NO_BACKSLASH_ESCAPES")
+        sends = [u["send"] for u in ed.plan_statements(sql)]
+        packets = [next(p[2] for p in self.packets() if s in p[2]) for s in sends]
+        self.assertIn("@@SESSION.sql_mode", packets[0])
+        for packet in packets[1:]:
+            self.assertNotIn("@@SESSION.sql_mode", packet)
+            self.assertIn("SET @myflames_target = ", packet)
+            self.assertIn("CONNECTION_ID() <> %d" % session.connection_id, packet)
+        self.assertEqual(self.rows(self.run_sql("SELECT @x")), [["42"]])
+        self.assertEqual(self.rows(self.run_sql("SELECT * FROM tt")), [["1", "mode"]])
+        self.assertEqual(self.run_sql("SET @after_refresh = 1")["status"], "complete")
+        packet = next(p[2] for p in reversed(self.packets()) if "SET @after_refresh = 1" in p[2])
+        self.assertIn("@@SESSION.sql_mode) > 0) <=> 1", packet)
+
+    def test_ambiguous_later_unit_after_mode_change_refuses_before_any_send(self):
+        self.run_sql("SELECT 7")
+        for later in (r"INSERT INTO tt VALUES (1, 'tail\')", r"SELECT 'tail\'", r"/*! SET @x = 'tail\' */"):
+            sql = "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; " + later
+            before = len(self.packets())
+            result = self.run_sql(sql)
+            self.assertEqual(result["status"], "invalid", result)
+            self.assertEqual(len(self.packets()), before)
+
+    def test_proxysql_9006_has_recovery_message_and_original_detail(self):
+        original = "ProxySQL Error: connection is locked to hostgroup 30 but trying to reach hostgroup 32"
+        self.inject_answers('''        if upper == "SELECT 9006":
+            self.error(line, 9006, "HY000", %r)
+            return
+''' % original)
+        result = self.run_sql("SELECT 9006")
+        self.assertEqual(result["status"], "error", result)
+        error = result["run"]["error"]
+        self.assertEqual((error["code"], error["sqlstate"]), (9006, "HY000"))
+        self.assertIn("proxy has tied this tab to one server group after a refused change", error["message"])
+        self.assertIn("Close and reopen the tab to run reads again", error["message"])
+        self.assertEqual(error["detail"], original)
+        self.assertIn(original, error["message"], "the current result UI displays message text")
+        self.assertFalse(result["session"]["ended"])
+
+
+class MariaDBEditorF1ProcessTests(EditorF1ProcessTests):
+    engine = "mariadb"
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2491,7 +2491,13 @@ session's `@@SESSION.sql_mode` matches the reading used for validation,
 using a NULL-safe comparison. A state refresh from a different backend with
 the same connection id cannot authorize a write under another quote mode.
 A mode mismatch refuses before the protected SQL executes. An unknown mode
-keeps the two-reading validation. This permits
+keeps the two-reading validation. After a unit that may change `sql_mode`,
+the editor invalidates the cached mode for the rest of that run. Later units
+must validate under both backslash readings and their packets omit the mode
+assertion until `refresh_state` reads it again. The independent KILL helper
+always validates its generated SQL under both readings: a fresh connection
+inherits the global mode, which can differ from the tab's mode. Its server
+identity and statement-ownership guards remain mandatory. This permits
 compound CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT and PACKAGE bodies,
 custom-delimiter units and escaped quotes without relaxing the default
 two-reading check for independent reviewed-write senders. The builder still
@@ -2578,6 +2584,10 @@ in `expect.server`; older MariaDB plans without `server_id` refuse safely.
 Standalone MariaDB has no server UUID. Two standalone MariaDB servers with
 the same `server_id`, hostname and port cannot be distinguished by this
 guard; configure a different `server_id` for every standalone server.
+If a MariaDB host name is outside the comparable name grammar, both the
+review and write refusal explain that its characters cannot be compared
+safely and suggest a plain host name or a MySQL server with a UUID. The
+message never echoes the unsafe name.
 
 Every SQL sender captures and binds `wsrep_gcomm_uuid` when the reviewed
 server has a loaded `wsrep_provider` (nonempty and other than `none`), even
@@ -2632,10 +2642,13 @@ redact a string connection password and hide
 private evidence markers. Missing or non-string passwords do not break error
 handling. Saved-group consent refusals preserve `ProfileReadError` so optional
 privilege readers cannot turn revoked login permission into unknown coverage.
+The scope retains the original consent exception and re-raises it from
+every later `check()`, read or write, even when an optional reader caught it
+as `ValueError`. The original connection-group explanation is preserved.
 This adds identity/status work to each read and may refuse a rotating proxy;
 it does not make changing server state
 a transactional snapshot. Regression coverage: `test_reviewed_writes_e1.py`,
-`test_reviewed_writes_evidence.py` and the Accounts, Variables, Replication,
+`test_reviewed_writes_evidence.py`, `test_reviewed_writes_f2.py` and the Accounts, Variables, Replication,
 Privileges and Kill suites. These synthetic packet tests are not live proof.
 Kill projects provider detection and the node UUID in the same SELECT as the
 other identity fields and the process row, for single and bulk targets. A
@@ -2728,7 +2741,34 @@ The scalar-subquery behavior is documented in the
 [MySQL manual](https://dev.mysql.com/doc/refman/8.4/en/subquery-errors.html)
 and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/subqueries/subqueries-scalar-subqueries).
 
-- `classify(sql, backslash_escapes=None, key_columns=None)` returns
+- `skipped_executable_comments(sql, engine, server_version, backslash_escapes=None)`
+  lists executable comments the server would skip, with `start`, `end`,
+  `opener` (without its SQL body), and `certain`. It ignores comment-like
+  text inside strings, quoted identifiers and ordinary comments; an unknown
+  quote mode scans both readings and deduplicates the source spans.
+  MySQL executes numbered `/*!NNNNN ... */` or `/*!NNNNNN ... */` comments
+  only when the number is no higher than its version, and never executes
+  `/*M! ... */`. MariaDB applies its version comparison to both forms and
+  also skips MySQL-style numbers 50700–99999. Unnumbered `/*! ... */` executes
+  on both engines. Sources: `mysql-server/sql/sql_lex.cc:1991-2004` and
+  `mariadb-server/sql/sql_lex.cc:2474-2486`; the preceding lexer code specifies
+  five/six-digit parsing (MySQL requires whitespace after six digits).
+  Unknown engine/version facts mark possibly skipped comments as uncertain;
+  unsupported reversed executable comments also remain uncertain.
+  The Query editor refuses skipped or uncertain comments before user SQL
+  or an ALTER preflight is sent, including after first-run startup establishes
+  the server facts and before token tagging can recognize a fake CREATE.
+  Accepted executable comments retain their original text and body.
+  `classify` also classifies a reading with skipped or potentially skipped
+  comments blanked, preserving offsets and taking the worse overall and
+  per-statement verdict. A skipped SELECT wrapper cannot hide a DELETE from
+  callers that do not yet know the engine/version.
+  Without those facts, different conditional openers make the verdict risky
+  and ambiguous: considering only all comments present or all absent would
+  miss an older executable write inside a future-version read wrapper.
+  Certainly skipped comments are also blanked independently of uncertain
+  comments. This bounds the work without enumerating conditional combinations.
+- `classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None)` returns
   `{kind: read|write|risky, category, reasons[], statements: [{text, start, end,
   verb, kind, category, reasons}], count, ambiguous}`. `split_statements` splits
   like the mysql client on top of `live.TOKEN` / `TOKEN_NO_BACKSLASH` (no second
@@ -3114,6 +3154,11 @@ planner, write gate and session engine from the CLI.
   hostgroup 32", until that client disconnected. A drain SELECT therefore
   cannot recover that connection. Regression tests model that per-client
   lock in `test/test_editor_session_e3.py`.
+  A run result with ProxySQL error 9006 and this hostgroup-lock diagnostic
+  explains that the proxy tied the tab to one server group after a refused
+  change and asks the user to close and reopen the tab to run reads again.
+  The error's code and SQLSTATE stay unchanged; its original message remains
+  in `detail` and after the recovery text in `message` for the current UI.
   A successful read without `server_uuid` identifies MariaDB even when both
   version strings are customized. MySQL uses the UUID; MariaDB uses server id,
   hostname and port, plus `wsrep_gcomm_uuid` from that packet when the Galera
@@ -3231,6 +3276,21 @@ planner, write gate and session engine from the CLI.
   refused with `status: "invalid"`; so is a statement whose quotes read
   differently under NO_BACKSLASH_ESCAPES after a statement that may change
   `sql_mode` in the same run. `selection: {start, end}` runs only that part.
+  Executable comments the connected engine/version skips refuse the whole
+  selected run with `invalid_statement`: the message names the opener and
+  explains that the server would skip it, so myflames cannot confirm what
+  runs. This includes a fake BEGIN/END, CREATE header or read wrapper.
+  Planning before startup is provisional; the first run is planned again
+  after startup with the actual engine, version and quote mode, before any
+  user SQL is sent. `start_run` also rechecks its units before any transport
+  or identity probe. Executed comments such as a dump's `/*!40101 SET ... */`
+  remain accepted on both engines; `/*!80016 ... */` refuses on MariaDB.
+  After a possible mode change, every later unit must have identical
+  boundaries and token interpretation under both backslash readings,
+  including an unguarded read. The cached mode is invalidated as soon as
+  the mode-changing unit is sent, even if that unit later errors. Later
+  guarded packets retain server/session checks while omitting the mode
+  assertion until the end-of-run state refresh establishes a new mode.
   Offsets in requests and responses are UTF-16 code units (JavaScript string
   indexes; `Offsets`).
   Dollar-quote tags follow the utf8mb4 client's identifier-byte rules: ASCII
@@ -3238,6 +3298,14 @@ planner, write gate and session engine from the CLI.
   `$` ending the tag. An identifier character immediately before the opener
   prevents it from starting a dollar quote. Source: MySQL
   `client/mysql.cc:2715–2746`, `strings/sql_chars.cc:87–121`.
+  Planning compares the legacy split with a dollar-body split before
+  examining individual fragments: spans, delimiters, code, identifiers,
+  closure and parser issues must agree. This catches `$tag$` even when
+  `DELIMITER tag` would split its tag in the legacy reading. Cursor scoping
+  applies the same comparison before selecting a fragment. Sources: MySQL
+  `client/mysql.cc:2838,2966`. Regressions for executable comments, quote-mode
+  changes, independent Stop helpers, dollar delimiters and ProxySQL error
+  recovery are in `test/test_editor_session_f1.py`.
 - Values: NULL is `null`; everything else is the client's text (big integers,
   DECIMAL, dates as printed); binary columns print as `0x` plus upper-case hex
   and the column gets `hex: true` when every non-null value has that form. It
@@ -5553,6 +5621,25 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 
 ### Replication: status, skip, skip-loop
 
+Status and receiver-coverage reads for a loop confirmation share one
+`TargetEvidenceConnection`. Workspace and deprecated CLI loop startup pass
+that same scope into `SkipLoop`, which retains it for initial receiver reads
+and later iterations. An identity or consent failure in
+`receiver_guard_plan` refuses the scope; it cannot disable receiver coverage.
+Ordinary denied or unavailable instrumentation can still report coverage
+off after its packet identity validates. The CLI passes
+`receiver_required=(guard['receiver_guard'] == 'on')`, so coverage advertised
+in its confirmation must also be available when the loop starts.
+
+`read_status` keeps the Readyset diagnostic fallback outside its bound
+MySQL/MariaDB reader. Only when no identity has validated may it identify
+Readyset through the underlying connection after a nonfatal, non-permission
+failure. Login denial (1045) and the other replication denial codes also
+refuse without an identification retry. The hint has no channels or server identity and leaves the scope
+refused. Skip and loop startup check that scope before proceeding; the hint
+cannot authorize writes. An already validated scope never uses this unbound
+fallback, and a connection-group consent refusal keeps its original type.
+
 The topologies always use the stage presentation (server glyphs, selectable nodes, floating cards with contact shadows over a lit stage floor with a faint grid, and links, stems and the group line as lit rails) with no presentation controls; the group's rail uses the accent only when every member is healthy, and colors come from theme tokens through color-mix() and light-dark(), while shadows use black with alpha. Motion illustrates reported running links or healthy group membership, never measured traffic. Failed, stopped, unknown and stale links stay still, and the operating system's reduced-motion setting turns it off. Each place's ⓘ explains what the motion means.
 
 Overview cards derive health from judged channel statuses. Errors and stopped threads are problems; unjudged Group Replication channels never imply an OK or running state. The GTID mode comes from `gtid.mode`, with `gtid.gtid_mode` accepted for older payloads and missing values shown as unavailable. Maximum applier lag is the maximum of measured judged channels, with measured, unknown and unjudged channel counts; zero does not establish synchronization. Receiver, heartbeat and worker lag caveats remain visible in the lag view and inspector.
@@ -6186,6 +6273,24 @@ The Readyset place reads a Readyset SQL adapter (`3307`) or Admin SQL (`6036`) l
 - Endpoints, CLI, MCP and Workspace: `POST /api/live/readyset` (passes `_topo_args()` to `@grouped_read` `readyset.read_status` and calls `finish_read` to populate `report["connection_group"]`), `/api/live/readyset/explain-cache`, `/api/live/readyset/export-caches`, `/api/live/readyset/plan` and `/api/live/readyset/action`; CLI `python3 -m myflames readyset [--json] [--export-caches] [--explain-cache SQL_OR_ID] [--fail-on watch|problem]` (`--profile NAME` uses that saved connection's group through `request_profiles`, `members`, `profile_opener` and `finish_read`, like `replication`, unless CLI flags overrode its endpoint); MCP `readyset_status(profile, detail)` (read-only); Workspace (`ReadysetPlace.tsx`, `ConnectionGroupBar.tsx`, `readysetApi.ts`, `readyset.css`, lazy-loaded right after `ProxySQL` with sidebar mute `"This connection is not a Readyset instance"`): tabs Topology (`ConnectionGroupBar` above `ReadysetTopologyDiagram`, re-reading `/api/live/readyset` after a group change), Caches, Proxied queries, Tables, Dynamic parameters, Performance, plus the `CreateCacheSheet` live dry-run builder and `ExportCachesSheet`. Tests: `test/test_readyset.py`, `test/test_topology_links.py`, `test/test_connection_groups.py`, `apps/workspace/test/readyset.mjs` (fixtures from `apps/workspace/test/readyset-fixtures.py`), `apps/workspace/test/topology-groups.mjs`, and live Docker matrix `scripts/readyset-matrix.sh`.
 
 ### Users and roles: privileges, accounts
+
+`read_account` binds all grants, attributes, role expansion and optional
+catalog reads to one evidence scope. The apply endpoint shares one scope
+across its preliminary account read, plan rebuild, apply checks and
+post-write read. Nested readers reuse it. Optional server errors may retain
+their existing fallback only after the packet's identity validates,
+including error 1141 for an absent create or rename destination. Identity
+failures are checked before stale or typed-name verdicts. Failed identity
+or consent validation during post-write readback returns `status=unknown`,
+`outcome=unverified`, with no after-state or diff, and updates the last audit
+record to the same unknown outcome. Accepted statements remain recorded as
+sent; readback failure does not claim they were refused or rolled back.
+The last accepted statement's audit stays pending until readback completes:
+validated after-state finishes it as `ok/applied`, identity or consent failure
+as `unknown/unverified`, and an ordinary read error after a validated prefix
+as `ok/sent` without an after-state. Earlier accepted statements finish as
+`ok/sent`. This preserves the audit store's one-way completion rule; finished
+records are never rewritten to attach later evidence.
 
 Backend `myflames/privileges.py` (the one SHOW GRANTS parser, `has`, `requirements`, `can`, `read_privileges`) and `myflames/accounts.py` (`list_accounts`, `read_account`, `plan_change` and the `plan_*` wrappers, `apply`, `grant_diff`, `fingerprint`); endpoints `myflames/accounts_api.py` (dispatched by `ui._accounts_response`); CLI `myflames/accounts_cli.py` (dispatched from `cli.main`). Contract and evidence: the accounts skill and its references. Tests: `test/test_privileges.py`, `test/test_accounts.py`, `test/test_accounts_api.py`, `test/test_accounts_cli.py`, with live replays `test/fixtures/accounts/<server>.json` (MySQL 8.0.46, 8.4.11, 9.7.2, MariaDB 10.11.19, 11.4.13, recorded 2026-10-15; scenario in `PROVENANCE.txt`; helper `test/_accounts_replay.py`).
 

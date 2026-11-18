@@ -532,22 +532,27 @@ def _apply(payload, workspace, with_saved_password, request_profile):
             # drift. Compare first so those cases are audited stale refusals,
             # rather than unaudited input errors. The client cannot replace the
             # reviewed expect with a new fingerprint to approve unseen changes.
-            current = accounts.read_account(conn, request['user'], request['host'], request['role'])
+            evidence = dbops.TargetEvidenceConnection(conn)
+            current = accounts.read_account(evidence, request['user'], request['host'], request['role'])
+            evidence.check()
             if expect != entry['expect'] or accounts.fingerprint(current) != expect:
                 return stale(current, 'The account changed since the review; nothing was sent.')
             try:
-                plan = _build(conn, request, secrets, connection, profile, change_set_id=plan_id, safety=safety)
+                plan = _build(evidence, request, secrets, connection, profile, change_set_id=plan_id, safety=safety)
             except ValueError:
                 # The target can also change between the check and the rebuild.
-                current = accounts.read_account(conn, request['user'], request['host'], request['role'])
+                evidence.check()
+                current = accounts.read_account(evidence, request['user'], request['host'], request['role'])
+                evidence.check()
                 if accounts.fingerprint(current) != expect:
                     return stale(current, 'The account changed since the review; nothing was sent.')
                 raise
+            evidence.check()
             if _review_context(plan) != entry['review_context']:
                 return stale(plan, 'The server, connected account or a role changed since the review; nothing was sent.')
             if reviewed is not None and list(plan['statements']) != list(reviewed):
                 return stale(plan, 'The statements would differ from the ones you reviewed; nothing was sent.')
-            result = accounts.apply(conn, plan, expect, confirmed=True, typed_name=typed_name,
+            result = accounts.apply(evidence, plan, expect, confirmed=True, typed_name=typed_name,
                                     store=_ApplyAuditStore(store),
                                     surface='ui', connection=connection, profile=profile, safety=safety,
                                     before_send=before_send if grouped else None)

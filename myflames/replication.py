@@ -449,7 +449,6 @@ def _summary():
 
 
 @grouped_read
-@dbops.target_evidence
 def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
                 current_profile_id=None, topology_tiers=False, _identity=None):
     """The ``replication-1.0`` report. Read-only.
@@ -477,14 +476,23 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     and the replica's @@hostname is this computer's. Status reads for
     skips and the skip loop leave it off.
     """
-    reader = Reader(conn, REPLICATION_TAG)
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
     try:
-        server = preflight(reader, EXTRA_VARIABLES)
+        return _read_status(conn, source_versions, profiles, open_profile, replica_host,
+                            current_profile_id, topology_tiers, _identity)
     except ConnectorError as exc:
-        if not _fatal(exc) and not denied(exc):
+        # denied() covers statement privileges, but a refused login (1045)
+        # and replication's other denial codes must not trigger a new probe.
+        if conn.variables is None and not _fatal(exc) and not denied(exc) and \
+                dbops.error_code(str(exc)) not in _DENIED:
             try:
                 from . import readyset
-                rs_ok, rs_ver = readyset.identify(conn)
+                # Readyset cannot execute the MySQL identity prefix. This
+                # diagnostic has no channels or write evidence, and never
+                # clears the failed scope or borrows a prior server identity.
+                rs_ok, rs_ver = readyset.identify(conn.connection)
+            except ProfileReadError:
+                raise
             except Exception:
                 rs_ok, rs_ver = False, None
             if rs_ok:
@@ -502,6 +510,14 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
                     "notes": [], "summary": _summary(),
                 }
         raise
+
+
+@dbops.target_evidence
+def _read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
+                 current_profile_id=None, topology_tiers=False, _identity=None):
+    """Read MySQL/MariaDB status entirely within the caller's evidence scope."""
+    reader = Reader(conn, REPLICATION_TAG)
+    server = preflight(reader, EXTRA_VARIABLES)
     show_sql = status_statement(server.engine, server.version_tuple)
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -2463,7 +2479,9 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     # Status, permission and the final status recheck must describe one
     # node, even if a proxy routes each read packet independently.
     conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
+    conn.check()
     report = status_reader(conn)
+    conn.check()
     result["engine"], result["server_version"] = report.get("engine"), report.get("server_version")
     if audit is not None:
         audit.server(report.get("engine"), report.get("server_version"))
@@ -2745,6 +2763,7 @@ def _receiver_details(engine, identity=None, problem=None, version=None):
             "receiver_guard_instrument": instrument, "receiver_guard_note": note}
 
 
+@dbops.target_evidence
 def receiver_guard_plan(conn, report):
     """Read-only reconnect coverage for a loop confirmation; never enables it.
 
@@ -2754,6 +2773,7 @@ def receiver_guard_plan(conn, report):
     try:
         identity = read_receiver_identity(conn, report)
     except (ConnectorError, ValueError) as exc:
+        conn.check()
         if isinstance(exc, ConnectorError) and _fatal(exc):
             raise
         return _receiver_details(report.get("engine"), problem=str(exc), version=report.get("server_version"))
@@ -2913,8 +2933,10 @@ class SkipLoop(object):
         """
         try:
             report = self._read_status(self.conn)
+            self.conn.check()
             self._engine, self._server_version = report.get("engine"), report.get("server_version")
             problem = self._receiver_guard(report)
+            self.conn.check()
         except (ConnectorError, ValueError) as exc:
             problem = ("connection_lost", str(exc))
         except Exception as exc:

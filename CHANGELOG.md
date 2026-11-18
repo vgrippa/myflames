@@ -25,6 +25,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor refuses executable comments that the connected server would skip, before sending any SQL from the run. A skipped comment can no longer disguise a second schema change or hide a write behind a read.
+- Query editor refuses dollar-quoted text when a custom delimiter splits its tag, including when running the statement at the cursor.
+- Users and roles keeps account reads, review and apply checks on the same server, including optional reads. An identity or connection-group consent failure after a change reports an unknown outcome in both the result and audit. Replication skip loops keep their startup and receiver checks on the reviewed server and preserve receiver monitoring promised by the confirmation.
 - Query editor verifies startup protections and guards them on the tab's original server session when its identity is complete. Database changes require that identity guard. It refuses unsupported dollar-quoted text with multibyte tags and applies the commit policy to MariaDB transaction controls wrapped in SET STATEMENT.
 - Variable changes, replication skips, privilege checks and Kill confirmations require all review reads to come from the same server. Confirmed writes reject dollar-quote syntax whose meaning differs between MySQL clients, including multibyte tags.
 - Confirmed writes reject ambiguous quote and comment boundaries. Query editor writes also check the server's current quote mode in the request that executes them. Safe-updates changes and ALTER lock-wait settings check their destination in the same request as the change they protect, and an incomplete server identity refuses writes while leaving ordinary editor reads available. Kill checks that its session, transaction and prepared-XA evidence all came from the same server; an unreadable identity check refuses the change.
@@ -37,6 +40,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor Stop, row limits and timeouts work when the tab's quote mode differs from the server's default.
+- Query editor runs that change the SQL mode can continue with statements that read the same under either quote mode, while ambiguous later statements are refused before the run starts.
+- Query editor explains ProxySQL's server-group lock error and tells you to close and reopen the tab to run reads again, keeping the original server detail available.
+- Replication shows the Readyset hint when the connection cannot answer MySQL identity checks, without retrying a refused login. Account reviews preserve connection-group refusal explanations, and MariaDB reviews explain how to resolve a host name the identity check cannot compare safely.
 - Query editor accepts MariaDB package forward declarations and single-statement routines, compound ALTER EVENT bodies and terminal comments under a custom delimiter as one DDL confirmation.
 - Creating or renaming an account works when its destination does not yet exist: an expected read error preserves the validated server identity so the review can continue. Confirmed statements with trailing semicolons or comments no longer send an empty statement to the server.
 - Identity checks retain partial read output only when explicitly requested, keep client failures distinguishable, and tag their internal reads. Their error messages hide internal SQL and credentials, and privilege checks preserve connection-group consent refusals.

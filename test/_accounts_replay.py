@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from myflames.connector import ConnectorError
-from _reviewed_replay import evidence_options
+from _reviewed_replay import evidence_options, UUID
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'accounts'
 SERVERS = ('mysql-8.0', 'mysql-8.4', 'mysql-9.7', 'mariadb-10.11', 'mariadb-11.4')
@@ -34,6 +34,19 @@ class ReplayConn(object):
                 call = dict(call, sql=call['sql'].replace("'hostname', 'port')", "'hostname', 'port', 'wsrep_on', 'wsrep_node_name')"))
             self.answers.setdefault(call['sql'], call)
         self.version = version
+        # Reads-only captures did not record node identity. Supply explicit
+        # synthetic evidence, then prefer any identity the session captured.
+        # This supplements the fake transport, never the recorded SQL/output.
+        self.evidence_values = {'version': version, 'server_id': '1',
+                                'hostname': 'fixture-db', 'port': '3306'}
+        if 'mariadb' not in version.lower():
+            self.evidence_values['server_uuid'] = UUID
+        for call in self.answers.values():
+            for line in call.get('output', '').splitlines():
+                if '\t' in line:
+                    key, value = line.split('\t', 1)
+                    if key in ('server_id', 'hostname', 'port', 'server_uuid'):
+                        self.evidence_values[key] = value
         self.sent = []
         self.wire = []
 
@@ -43,14 +56,7 @@ class ReplayConn(object):
         body, marker = evidence_body(sql)
         if marker:
             self.wire.append(sql)
-            values = {'version': self.version}
-            for call in self.answers.values():
-                for line in call.get('output', '').splitlines():
-                    if '\t' in line:
-                        key, value = line.split('\t', 1)
-                        if key in ('server_id', 'hostname', 'port', 'server_uuid'):
-                            values[key] = value
-            return evidence_call(lambda: self.run(body, ['--comments'], timeout), marker, values)
+            return evidence_call(lambda: self.run(body, ['--comments'], timeout), marker, self.evidence_values)
         self.sent.append((sql, extra_flags))
         if sql == 'SELECT @@version':
             return self.version + '\n'

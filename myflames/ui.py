@@ -1255,7 +1255,7 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
                                      message=blocked[1], target=target)
             return {"schema_version": rp.LOOP_SCHEMA_VERSION, "job_id": None, "state": status, "channel": channel,
                     "message": blocked[1], "audit_id": audit_id}
-        conn = _replication_open(payload, workspace, state)
+        conn = dbops.TargetEvidenceConnection(_replication_open(payload, workspace, state))
         report = rp.read_status(conn)
         audit.server(report.get("engine"), report.get("server_version"))
         if not report.get("available") or not report.get("replica"):
@@ -1285,6 +1285,7 @@ def _replication_response(path, payload, workspace):
         try:
             with _group_guarded_connection(options, payload.get("connection"),
                                            getattr(workspace, "store", None)) as conn:
+                conn = dbops.TargetEvidenceConnection(conn)
                 # Source versions: the relay log, else a matching saved connection
                 # (opened at most once per process for the same settings and password).
                 conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}

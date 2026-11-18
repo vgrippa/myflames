@@ -118,6 +118,63 @@ AMBIGUOUS_REASON = ("A backslash before a quote is read differently when sql_mod
                     "so the statements could split in two ways; both readings were classified.")
 _IDENT = r"(?:`\d+`|[A-Z_$][A-Z0-9_$]*)"
 _VERSIONED_OPEN = re.compile(r"/\*M?!(?:\d{6}(?=\s)|\d{5})?")
+
+
+def skipped_executable_comments(sql, engine, server_version, backslash_escapes=None):
+    """List executable comments this server skips, outside quoted text.
+
+    Entries contain source offsets, the opener (never its SQL body), and
+    ``certain``: False means the engine/version is unknown, so execution
+    cannot be established. An unnumbered /*! comment always executes.
+    Unknown quote modes scan both readings and deduplicate source spans.
+
+    MySQL sql/sql_lex.cc:1949-2014 accepts six version digits only before
+    whitespace, otherwise five. MariaDB sql/sql_lex.cc:2419-2486 accepts
+    five or six digits and excludes MySQL's 50700-99999 range. MariaDB's
+    reversed comments are unsupported by our splitter, so cannot establish
+    executable code even on versions that implement them.
+    """
+    from .server_info import parse_version_tuple
+    version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb",
+                                  default=None)
+    version_id = None if version is None else version[0] * 10000 + version[1] * 100 + version[2]
+    patterns = (TOKEN, TOKEN_NO_BACKSLASH) if backslash_escapes is None else (
+        TOKEN if backslash_escapes else TOKEN_NO_BACKSLASH,)
+    found = {}
+    for pattern in patterns:
+        for match in pattern.finditer(sql):
+            token = match.group()
+            opener = _VERSIONED_OPEN.match(token)
+            if opener is None:
+                continue
+            maria = token.startswith("/*M!")
+            start = 4 if maria else 3
+            reversed_comment = token[start:start + 1] == "!"
+            digits = re.match(r"[0-9]{5,6}" if engine == "mariadb" else
+                              r"(?:[0-9]{6}(?=[ \t\r\n\f\v])|[0-9]{5})", token[start:])
+            required = int(digits.group()) if digits else None
+            certain = True
+            if engine == "mysql" and maria:
+                skipped = True
+            elif reversed_comment:
+                # The splitter leaves the second ! in code. Never let its
+                # fake header or block authorize a server interpretation.
+                skipped, certain = True, False
+            elif engine == "mariadb" and not maria and required is not None and 50700 <= required <= 99999:
+                skipped = True
+            elif engine not in ("mysql", "mariadb") and (maria or required is not None):
+                skipped, certain = True, False
+            elif required is not None and version_id is None:
+                skipped, certain = True, False
+            else:
+                skipped = required is not None and required > version_id
+            if skipped:
+                end = start + (len(digits.group()) if digits else int(reversed_comment))
+                found[match.span()] = {"start": match.start(), "end": match.end(),
+                                       "opener": token[:end], "certain": certain}
+    return [found[span] for span in sorted(found)]
+
+
 #: A line whose first word starts with "delimiter" is the client's DELIMITER
 #: command in --binary-mode (client/mysql.cc find_command and
 #: is_delimiter_command compare only the first 9 characters).
@@ -1032,7 +1089,7 @@ def _classify_reading(sql, backslash_escapes, key_columns):
     return statements
 
 
-def classify(sql, backslash_escapes=None, key_columns=None):
+def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None):
     """Classify SQL text as ``read``, ``write`` or ``risky`` with reasons.
 
     *backslash_escapes*: None reads strings both ways (with backslash
@@ -1040,6 +1097,8 @@ def classify(sql, backslash_escapes=None, key_columns=None):
     True or False uses one reading (when the session's sql_mode is known).
     *key_columns*: the key column names of the table an UPDATE or DELETE
     changes, when the caller knows them.
+    *engine*, *server_version*: optional server facts for executable comments.
+    Skipped (or potentially skipped) bodies cannot hide a more severe write.
 
     Returns ``{"kind", "category", "reasons", "statements": [{"text",
     "start", "end", "verb", "kind", "category", "reasons"}], "count",
@@ -1059,6 +1118,56 @@ def classify(sql, backslash_escapes=None, key_columns=None):
         # Both readings were classified; the worse one counts.
         summary = _worst([summary, _worst(results[1])])
         summary["reasons"].append(AMBIGUOUS_REASON)
+    for escaping in readings:
+        skipped = skipped_executable_comments(sql, engine, server_version, escaping)
+        if not skipped:
+            continue
+        certain = [comment for comment in skipped if comment["certain"]]
+        masks = [skipped]
+        if certain and len(certain) != len(skipped):
+            # Known skips apply even when the remaining comments execute.
+            # Example: MySQL always skips /*M!, but an unknown version may
+            # execute an older /*! comment containing the real write.
+            masks.append(certain)
+        # Keep offsets and line breaks intact while removing the code a
+        # server can skip. Classify that reading as well as executable code:
+        # a fake SELECT wrapper must not disguise the DELETE outside it.
+        for mask in masks:
+            parts, at = [], 0
+            for comment in mask:
+                parts.append(sql[at:comment["start"]])
+                parts.append(re.sub(r"[^\r\n]", " ", sql[comment["start"]:comment["end"]]))
+                at = comment["end"]
+            parts.append(sql[at:])
+            alternative = _classify_reading("".join(parts), escaping, key_columns)
+            summary = _worst([summary, _worst(alternative)])
+            # Both lists are ordered, non-overlapping source spans. Sweep
+            # them so one conditional comment in a large script does not
+            # introduce a full cross-product of statement comparisons.
+            first = 0
+            for statement in statements:
+                while first < len(alternative) and alternative[first]["end"] <= statement["start"]:
+                    first += 1
+                end = first
+                while end < len(alternative) and alternative[end]["start"] < statement["end"]:
+                    end += 1
+                overlapping = alternative[first:end]
+                if overlapping:
+                    statement.update(_worst([statement] + overlapping))
+        uncertain = {re.match(r"/\*M?!!?[0-9]*", sql[c["start"]:c["end"]]).group()
+                     for c in skipped if not c["certain"]}
+        if len(uncertain) > 1:
+            # Different conditions may execute independently. Checking only
+            # all bodies present/absent misses a future SELECT wrapper around
+            # an older executable DELETE. Refuse to call that a read without
+            # facts, rather than enumerate an unbounded number of readings.
+            ambiguous = True
+            unknown = _verdict("risky", "unknown",
+                               "Executable comments have different conditions and the server engine/version "
+                               "is unknown, so myflames cannot confirm which SQL executes.")
+            summary = _worst([summary, unknown])
+            for statement in statements:
+                statement.update(_worst([statement, unknown]))
     # A modern mysql client also recognizes dollar bodies. A tag may be a
     # legacy identifier instead, so no one reading can authorize the other.
     # Compare code as well as boundaries: a comment can hide the closing tag
@@ -1161,6 +1270,10 @@ _EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version"
                        "wsrep_on", "wsrep_provider", "wsrep_node_name")
 
 
+class _TargetIdentityError(ValueError):
+    """An app-built identity explanation safe to keep in a scope refusal."""
+
+
 class TargetEvidenceConnection(object):
     """Keep every successful review read on one node, even through a router.
 
@@ -1175,6 +1288,7 @@ class TargetEvidenceConnection(object):
         self.connection = conn
         self.variables = None
         self.problem = None
+        self._consent_error = None
 
     def __getattr__(self, name):
         return getattr(self.connection, name)
@@ -1196,6 +1310,8 @@ class TargetEvidenceConnection(object):
 
     def check(self):
         from .connector import ConnectorError
+        if self._consent_error is not None:
+            raise self._consent_error
         if self.problem:
             error = ConnectorError(self.problem)
             error.identity_outcome = "identity_unavailable"
@@ -1295,20 +1411,22 @@ class TargetEvidenceConnection(object):
                 raise ValueError("the server identity changed between evidence packets")
             self.variables = values
         except BaseException as exc:
+            from .connection_groups import ProfileReadError
+            if isinstance(exc, ProfileReadError):
+                # Optional readers may catch ValueError. Preserve this exact
+                # refusal for their caller's check(), including its explanation.
+                self._consent_error = exc
+                self.problem = str(exc)
+                raise
             cause = failure if failure is not None else exc
             detail = (_evidence_error_text(cause, getattr(self.connection, "password", None))
-                      if isinstance(cause, ConnectorError) else "")
+                      if isinstance(cause, ConnectorError) else
+                      str(cause) if isinstance(cause, _TargetIdentityError) else "")
             self.problem = ("The identity check could not run: " + (detail.rstrip(".") + ". " if detail else "") +
                             "Review evidence did not come from one identified server. Nothing was sent. Refresh and review again.")
             # Cancellation must keep its normal control flow, but a caller
             # that catches it still cannot reuse this incomplete scope.
             if not isinstance(exc, Exception):
-                raise
-            # Consent failures are app-built refusals with their own audit.
-            # Preserve their type so optional privilege readers cannot turn
-            # a revoked login into an unknown-permission fallback.
-            from .connection_groups import ProfileReadError
-            if isinstance(exc, ProfileReadError):
                 raise
             self.check()
         if failure is not None:
@@ -1394,6 +1512,10 @@ def target_session_guard(engine, identity):
         for key in names:
             value = identity.get(key)
             if not isinstance(value, str) or not _TARGET_NAME.fullmatch(value):
+                if key == "hostname" and isinstance(value, str) and value:
+                    raise _TargetIdentityError(
+                        "The server host name contains characters the identity check cannot compare safely. "
+                        "Set a plain host name or use a MySQL server with a UUID. Nothing was sent.")
                 raise ValueError("The reviewed server %s is missing or invalid. Nothing was sent. Refresh and review again."
                                  % key)
             values[key] = value
