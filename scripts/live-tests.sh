@@ -6,7 +6,7 @@
 # durations, non-zero on any failure.
 #
 # Usage:
-#   scripts/live-tests.sh [ic|galera|proxysql|shell|all] [--record]
+#   scripts/live-tests.sh [ic|galera|proxysql|shell|writes|all] [--record]
 #
 # Brings up only the labs the chosen suites need (idempotent
 # cluster-matrix.sh up, then check) and leaves them running for the next run.
@@ -41,7 +41,7 @@ selection="all"
 record=0
 for arg in "$@"; do
   case "$arg" in
-    ic|galera|proxysql|shell|all) selection="$arg" ;;
+    ic|galera|proxysql|shell|writes|all) selection="$arg" ;;
     --record) record=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -56,18 +56,23 @@ export MYFLAMES_LIVE_LABS=1
 # Labs and lanes per selection. The ic lane also carries the suites that share
 # the InnoDB Cluster (MySQL Shell rejoin, Query editor through ProxySQL);
 # the galera lane mutates only mf-galera-*. Lanes run in parallel, suites in
-# a lane in order.
+# a lane in order. The writes suite (reviewed writes on one member of each
+# cluster) runs only after every lane is done, so it never runs while another
+# suite changes the same cluster's membership.
 labs=""
 ic_lane=""
 galera_lane=""
+writes_lane=""
 case "$selection" in
   ic)       labs="ic";                  ic_lane="live_ic_group_routing" ;;
   galera)   labs="galera";              galera_lane="live_galera" ;;
   proxysql) labs="ic galera proxysql";  ic_lane="live_editor_proxysql" ;;
   shell)    labs="ic";                  ic_lane="live_shell" ;;
+  writes)   labs="ic galera";           writes_lane="live_writes" ;;
   all)      labs="ic galera proxysql"
             ic_lane="live_ic_group_routing live_shell live_editor_proxysql"
-            galera_lane="live_galera" ;;
+            galera_lane="live_galera"
+            writes_lane="live_writes" ;;
 esac
 
 started=$(python3 -c 'import time; print(time.time())')
@@ -112,7 +117,11 @@ pids=""
 rc=0
 for pid in $pids; do wait "$pid" || rc=1; done
 
-for lane in ic galera; do
+# Writes to one member of each cluster run only once the membership-changing
+# suites on both clusters are done.
+[ -n "$writes_lane" ] && run_lane writes $writes_lane
+
+for lane in ic galera writes; do
   [ -f "$tmp/$lane.log" ] || continue
   grep -E '^(PASS|FAIL|ERROR|SKIP) ' "$tmp/$lane.log" || true
   [ "$(cat "$tmp/$lane.rc" 2>/dev/null || echo 1)" = "0" ] || {

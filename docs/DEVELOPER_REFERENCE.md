@@ -7538,7 +7538,7 @@ images: `mysql:8.4.11` and `mariadb:11.4.13`.
 
 **Live lab suites** (`test/live/`, run by `scripts/live-tests.sh`). The
 cluster lab checks are repeatable unittest suites in the spirit of mtr:
-`scripts/live-tests.sh [ic|galera|proxysql|shell|all] [--record]` brings up
+`scripts/live-tests.sh [ic|galera|proxysql|shell|writes|all] [--record]` brings up
 only the labs the chosen suites need (idempotent `cluster-matrix.sh up`, then
 `check`), leaves them running for the next run, runs different clusters in
 parallel lanes with the scenarios on one cluster in order, prints one line per
@@ -7566,7 +7566,17 @@ lab-runner container, `scripts/lab-runner/Dockerfile`, on `mf-ic-net` with the
 worktree mounted read-only; the rejoin is restored also on failure) and
 `live_editor_proxysql` (Query editor runs through the ProxySQL frontend; Stop
 during a sleep refuses with "could not be confirmed" and the sleep completes,
-so no KILL is reported that did not stop the statement). A full `all` run
+so no KILL is reported that did not stop the statement) and `live_writes`
+(reviewed writes on real servers: on the InnoDB Cluster primary (MySQL) and on
+one Galera node (MariaDB), a throwaway account created, re-passworded and
+dropped through Users and roles with passwords containing a backslash and a
+single quote (the final password logs in with the client, the first no longer
+does; the account is dropped also on failure), a `long_query_time` global set
+and restored through Variables (always restored), and a confirmed editor write
+sequence in a throwaway schema plus Stop during a sleep on a direct connection
+(the sleep ends early, interrupted, and Stop reports the kill sent); the suite
+runs only after the membership-changing suites on both clusters are done). A
+full `all` run
 takes a few minutes against warm labs (the labs stay up between runs; a cold
 `up` dominates a first run). `--record` saves the normalized JSON of the
 read-only Cluster, Replication and ProxySQL reports per server version under
