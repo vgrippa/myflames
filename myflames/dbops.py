@@ -1192,6 +1192,12 @@ class TargetPacketLines(tuple):
 
 
 def target_statement(sql, backslash_escapes=None):
+    """Validate one complete unit without changing its review/audit text."""
+    _target_statement_span(sql, backslash_escapes)
+    return sql
+
+
+def _target_statement_span(sql, backslash_escapes=None):
     """Require one complete unit, with the same boundaries in both modes.
 
     A known mode is permitted only for internal wrappers that assert that
@@ -1218,7 +1224,7 @@ def target_statement(sql, backslash_escapes=None):
         spans.append((units[0]["start"], units[0]["end"]))
     if len(set(spans)) != 1:
         raise ValueError("The reviewed SQL has ambiguous quote boundaries. Nothing was sent. Review again.")
-    return sql
+    return spans[0]
 
 
 def target_guarded_script(guard, statements, backslash_escapes=None):
@@ -1238,9 +1244,16 @@ def target_guarded_script(guard, statements, backslash_escapes=None):
     groups = [s if isinstance(s, tuple) else (s,) for s in statements]
     if any(not group or any(not isinstance(s, str) or not s.strip() for s in group) for group in groups):
         raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
-    for group in groups:
+    wire_groups = []
+    for original, group in zip(statements, groups):
+        wire_group = []
         for statement in group:
-            target_statement(statement, backslash_escapes)
+            start, end = _target_statement_span(statement, backslash_escapes)
+            # Group separators belong to the builder. Copy only the parsed
+            # unit, never its terminal delimiter(s) or trailing comments:
+            # "SET ...;" joined with ";" is an empty server statement.
+            wire_group.append(statement[start:end] if isinstance(original, tuple) else statement)
+        wire_groups.append(tuple(wire_group))
     delimiter = next((d for d in _TARGET_DELIMITERS
                       if all(d not in s for s in list(guard) + [s for group in groups for s in group])), None)
     if delimiter is None:
@@ -1248,7 +1261,7 @@ def target_guarded_script(guard, statements, backslash_escapes=None):
                          "Review statements without all of the reserved delimiters.")
     parts, starts, markers, indices, sizes, line, index = ["DELIMITER " + delimiter + "\n"], [], [], [], [], 2, 0
     nonce = uuid.uuid4().hex
-    for k, group in enumerate(groups):
+    for k, group in enumerate(wire_groups):
         starts.append(line)
         markers.append("myflames_guard_ok_%s_%d" % (nonce, k))
         indices.append(index)

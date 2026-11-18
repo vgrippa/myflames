@@ -796,23 +796,32 @@ class EditorSession(EditorInsights):
 
         Tag suffix statements too: a custom DELIMITER can group several SQL
         statements, and PROCESSLIST exposes the currently executing suffix.
-        CREATE bodies stay intact: the DDL gate already refuses a definition
-        batched with trailing SQL, and tokens must not enter stored bodies.
+        CREATE bodies stay intact, including after an earlier statement:
+        the DDL gate refuses definitions batched with trailing SQL, and
+        tokens must not enter stored bodies.
         """
         from .live import TOKEN, TOKEN_NO_BACKSLASH
+        from . import dbops
         pattern = TOKEN if self.backslash_escapes else TOKEN_NO_BACKSLASH
-        if re.match(r"\s*CREATE\b", pattern.sub(" ", send), re.I):
-            return self.statement_tag + send
+        # Use the shared lexical code to recognize CREATE after comments
+        # (including executable comments). Once a definition starts, its
+        # internal semicolons belong to the stored body, not suffix SQL.
+        definition = next((unit["start"] for unit in dbops.split_statements(
+            send, backslash_escapes=self.backslash_escapes)
+            if re.match(r"\s*CREATE\b", unit["code"], re.I)), len(send))
         # A guard's final semicolon must remain its final character for the
         # shared packet builder. There is no suffix statement to tag there.
         terminal = ";" if send.endswith(";") else ""
         send = send[:-1] if terminal else send
+        suffix = send[definition:]
+        send = send[:definition]
         pieces, at = [self.statement_tag], 0
         for match in pattern.finditer(send):
             pieces.append(send[at:match.start()].replace(";", "; " + self.statement_tag))
             pieces.append(match.group())
             at = match.end()
         pieces.append(send[at:].replace(";", "; " + self.statement_tag))
+        pieces.append(suffix)
         pieces.append(terminal)
         return "".join(pieces)
 

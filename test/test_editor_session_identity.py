@@ -447,6 +447,29 @@ class EditorIdentityTests(unittest.TestCase):
             with self.subTest(sql=sql):
                 self.assertEqual(session._tag_statement(sql), session.statement_tag + sql)
 
+    def test_token_tagging_keeps_routine_bodies_intact_in_both_batch_orders(self):
+        session = ed.EditorSession('test', 'identity', {})
+        definitions = (
+            'CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END',
+            'CREATE DEFINER = `owner`@`host` FUNCTION f() RETURNS INT BEGIN RETURN 1; END',
+            '/* deploy */ CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW BEGIN SET @a = 1; END',
+            'CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO BEGIN SELECT 1; SELECT 2; END',
+            'CREATE OR REPLACE PACKAGE BODY p AS FUNCTION f RETURN INT IS BEGIN RETURN 1; END; END',
+            '/*!50003 CREATE*/ PROCEDURE p() BEGIN SELECT 1; SELECT 2; END',
+        )
+        for definition in definitions:
+            for before in (False, True):
+                with self.subTest(definition=definition, before=before):
+                    sql = 'SELECT 1; ' + definition if before else definition + '; SELECT 1'
+                    units = ed.plan_statements('DELIMITER //\n' + sql + '//')
+                    self.assertEqual(len(units), 1)
+                    tagged = session._tag_statement(units[0]['text'])
+                    expected = (session.statement_tag + 'SELECT 1; ' + session.statement_tag + ' ' + definition
+                                if before else session.statement_tag + sql)
+                    self.assertEqual(tagged, expected)
+                    self.assertNotIn(session.statement_tag, tagged[tagged.index(definition) + len('CREATE'):])
+                    self.assertEqual(session._tag_statement(sql + ';'), expected + ';')
+
     def test_statement_history_strips_only_this_sessions_tag_before_exact_matching(self):
         from myflames.editor_insights import FIELDS
         session = ed.EditorSession('test', 'identity', {})

@@ -19,13 +19,36 @@ import test_reviewed_writes_guard as guard_fixtures
 from test_reviewed_writes_guard import MYSQL, MARIA, UUID, Writer
 
 
+class StrictPacketServer(object):
+    """Parse one server statement without silently discarding empty ones.
+
+    Unlike the client's splitter, a multi-statement COM_QUERY consumes only
+    one delimiter at a time. MySQL and MariaDB skip whitespace before the
+    next parse, so another semicolon is a syntax error, not a no-op.
+    """
+    @staticmethod
+    def next_unit(sql, backslash_escapes, line, markers):
+        if sql.lstrip(' \t\r\n\f\v').startswith(';'):
+            error = ConnectorError('ERROR 1064 (42000) at line %d: Empty statement in query packet' % line)
+            error.guard_markers = tuple(markers)
+            raise error
+        units = dbops.split_statements(sql, backslash_escapes=backslash_escapes)
+        if not units:
+            return None, ''
+        unit = units[0]
+        remaining = sql[unit['end']:].lstrip(' \t\r\n\f\v')
+        if remaining.startswith(';'):
+            remaining = remaining[1:]
+        return unit, remaining
+
+
 class RoutingTransport(object):
     """Model DELIMITER, COM_QUERY routing and stop-on-error on both sides.
 
     A delimiter chosen by production is absent from every statement, so a
     literal split matches the client's quote-aware split. SQL within a packet
-    is parsed separately by the real splitter. The small fake server evaluates
-    just the identity comparisons emitted by target_session_guard.
+    is parsed separately by StrictPacketServer. The small fake server also
+    evaluates the identity comparisons emitted by target_session_guard.
     """
     password = None
 
@@ -62,11 +85,10 @@ class RoutingTransport(object):
             self.packets.append((backend, payload))
             remaining = payload
             while remaining.strip():
-                units = dbops.split_statements(remaining, backslash_escapes='NO_BACKSLASH_ESCAPES' not in session['mode'])
-                if not units:
+                unit, remaining = StrictPacketServer.next_unit(
+                    remaining, 'NO_BACKSLASH_ESCAPES' not in session['mode'], line, self.markers)
+                if unit is None:
                     break
-                unit = units[0]
-                remaining = remaining[unit['end']:].lstrip().lstrip(';')
                 sql = unit['text'].strip().rstrip(';')
                 if sql.startswith('SET @myflames_target = '):
                     differences = []
@@ -120,7 +142,7 @@ class PacketTests(unittest.TestCase):
     def test_changed_modules_keep_python37_syntax(self):
         root = Path(__file__).resolve().parents[1]
         paths = [root / 'myflames' / (name + '.py') for name in
-                 ('dbops', 'reviewed_writes', 'accounts', 'connector', 'privileges', 'locks', 'variables', 'replication')]
+                 ('dbops', 'reviewed_writes', 'accounts', 'connector', 'editor_session', 'privileges', 'locks', 'variables', 'replication')]
         paths += [root / 'test' / (name + '.py') for name in
                   ('_reviewed_replay', '_accounts_replay', 'test_cluster_shell', 'test_ui_group_consent', 'test_cluster_group_actions', 'test_variables',
                    'test_replication', 'test_locks', 'test_cluster_actions', 'test_editor_process',
@@ -177,6 +199,39 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(units(packets[1][1]), [setup.rstrip(';'), mode.rstrip(';')] + units(change))
         self.assertIn('NO_BACKSLASH_ESCAPES', body)
         self.assertTrue(body.endswith('SET SESSION sql_mode = @myflames_accounts_sql_mode'))
+
+    def test_strict_server_rejects_empty_statements_before_any_later_sql(self):
+        guard = dbops.target_session_guard('mysql', MYSQL)
+        script, _ = dbops.target_guarded_script(guard, [('SET @first = 1', 'SET @later = 2')])
+        # Reproduce the old builder's double delimiter without changing the
+        # production splitter or guard. The fake must fail this broken packet.
+        broken = script.replace('SET @first = 1\n;\n', 'SET @first = 1;\n;\n')
+        self.assertNotEqual(script, broken)
+        writer = RoutingTransport([MYSQL])
+        with self.assertRaisesRegex(ConnectorError, 'ERROR 1064') as caught:
+            writer.run_write(broken)
+        self.assertEqual(writer.executed, [(MYSQL, 'SET @first = 1')])
+        self.assertEqual(caught.exception.guard_markers, tuple(writer.markers))
+
+    def test_group_members_use_parsed_spans_instead_of_terminal_delimiters(self):
+        for tail in (';', ';;;', '; -- trailing comment', '; /* trailing comment */;'):
+            with self.subTest(tail=tail):
+                group = ("SET @first = 'a;b'" + tail, 'SET @second = 2 -- keep this comment\n')
+                original = tuple(group)
+                script, starts = dbops.target_guarded_script(dbops.target_session_guard('mysql', MYSQL), [group])
+                writer = RoutingTransport([MYSQL])
+                writer.run_write(script)
+                self.assertEqual(group, original, 'review/audit SQL must stay unchanged')
+                self.assertEqual([sql for _, sql in writer.executed],
+                                 ["SET @first = 'a;b'", 'SET @second = 2 -- keep this comment'])
+                self.assertEqual((starts.indices, starts.sizes), ((0,), (2,)))
+
+    def test_single_member_tuple_also_drops_its_own_terminal_delimiters(self):
+        script, _ = dbops.target_guarded_script(dbops.target_session_guard('mysql', MYSQL),
+                                              [('SET @only = 1;;; -- trailing comment',)])
+        writer = RoutingTransport([MYSQL])
+        writer.run_write(script)
+        self.assertEqual(writer.executed, [(MYSQL, 'SET @only = 1')])
 
     def test_account_client_quote_rules_follow_acknowledged_mode_for_backslash_passwords(self):
         # Model the client's parser, not just the server's SQL. Mode changes
@@ -386,6 +441,58 @@ class PacketTests(unittest.TestCase):
                     self.assertEqual(writer.sessions[1]['mode'], 'STRICT_TRANS_TABLES')
                     self.assertEqual(sum(statement in sql for _, sql in writer.executed), 1)
                     self.assertTrue(all(backend == identity for backend, _ in writer.executed))
+
+    def test_account_password_and_random_create_plans_use_strict_server_packets(self):
+        from test_accounts import FakeConn, actor
+        cases = [('mysql', '8.4.11'), ('mysql', '8.0.17'), ('mariadb', '11.4.13-MariaDB')]
+        for engine, version in cases:
+            for operation, options in [('password', {'password': "secret';with-semicolon"}),
+                                       ('create', {'random_password': True})]:
+                with self.subTest(engine=engine, version=version, operation=operation):
+                    conn = FakeConn(engine, exists=operation != 'create')
+                    conn.version = version
+                    # Exercise MariaDB's grouped temporary-password create as
+                    # well as its grouped SET PASSWORD and later unlock.
+                    if engine == 'mariadb':
+                        conn.plugins = ['simple_password_check']
+                    with mock.patch.object(privileges, 'read_privileges', return_value=actor(engine)):
+                        plan = accounts.plan_change(conn, operation, 'app', '%', **options)
+                    identity = plan['actor_server']
+                    writer = RoutingTransport([identity, dict(identity)])
+                    writer.run_stdin = writer.run_write
+                    guard = dbops.target_session_guard(engine, identity)[0]
+                    for sql in plan._statements:
+                        accounts._run_stdin(writer, guard + '\n' + sql, plan._passwords)
+                    executed = '\n'.join(sql for _, sql in writer.executed)
+                    self.assertIn('CREATE USER' if operation == 'create' else
+                                  'SET PASSWORD' if engine == 'mariadb' else 'ALTER USER', executed)
+                    mode_sets = sum(sql.startswith('SET SESSION sql_mode = CONCAT_WS')
+                                    for _, sql in writer.executed)
+                    restores = sum(sql == 'SET SESSION sql_mode = @myflames_accounts_sql_mode'
+                                   for _, sql in writer.executed)
+                    # Each wrapper stages the disposable client's quote mode,
+                    # then asserts and restores the account packet's own mode.
+                    self.assertEqual(mode_sets, 2 * restores)
+
+    def test_variables_session_sender_runs_set_and_readback_in_one_strict_packet(self):
+        from test_variables import plan_from
+        for server in ('mysql-8.4', 'mariadb-11.4'):
+            with self.subTest(server=server):
+                conn, plan, _ = plan_from(server, 'session')
+                writer = RoutingTransport([plan['expect']['server_identity']])
+                original = conn.run_write
+
+                def send(script, **kwargs):
+                    writer.run_write(script, **kwargs)
+                    return original(script, **kwargs)
+
+                conn.run_write = send
+                result = variables.apply_change(conn, plan, plan['expect'], confirmed=True)
+                self.assertEqual(result['status'], 'changed')
+                self.assertEqual(len(writer.packets), 1)
+                self.assertEqual(len(writer.executed), 3)
+                self.assertTrue(writer.executed[0][1].startswith(variables.TAG + 'SET SESSION'))
+                self.assertIn('SHOW SESSION VARIABLES', writer.executed[2][1])
 
     def test_replication_dependent_sequences_use_one_backend_session(self):
         from test_replication import status

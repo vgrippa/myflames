@@ -34,6 +34,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Users and roles no longer fails with a SQL syntax error when changing passwords, creating accounts with generated passwords or granting MariaDB package privileges.
+- Query editor leaves stored routine, trigger and event bodies unchanged when their definition follows another statement under a custom delimiter.
+
 - Query editor results keep their original order and error positions when a write checks the server identity. Private identity replies no longer appear as query results or count toward result limits.
 - A connection lost during a confirmed write is recorded as Outcome unknown. The editor ends that session before any later statement runs.
 - Query editor tabs open when optional server identity variables cannot be read, including MariaDB with custom version strings. If the required identity is unavailable, Stop and Close report that the server could not be confirmed before sending an interrupt.

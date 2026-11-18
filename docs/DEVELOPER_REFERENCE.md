@@ -2475,7 +2475,10 @@ exactly one complete SQL unit through `dbops.split_statements`, with closed
 quotes and comments, no client-command issues and identical boundaries under
 both backslash readings. Otherwise it refuses before token consumption or
 transport. Internal tuples explicitly group individually validated units that
-depend on the same session; account password wrappers validate their literal
+depend on the same session. Their wire text uses each parsed unit's span,
+without its terminal delimiter or trailing delimiter comments, and the builder
+inserts exactly one separator between units. Review and audit text stays
+unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
 ProxySQL Admin, Readyset and plans without a recognized SQL engine keep
@@ -3039,9 +3042,10 @@ planner, write gate and session engine from the CLI.
   both clients (MySQL `client/mysql.cc:1802–1805,2843–2859`; MariaDB
   `client/mysql.cc:1796–1798,2751–2772`). Only wire text changes: editor SQL,
   confirmation, result attribution and history keep the user's original SQL.
-  CREATE definitions receive only the outer leading tag; their stored bodies
-  stay unchanged, and the DDL gate already refuses a definition batched with
-  trailing SQL.
+  CREATE definitions receive only their leading tag, even when another
+  statement precedes the definition in a custom-delimiter unit; their stored
+  bodies stay unchanged. The DDL gate already refuses a definition batched
+  with trailing SQL.
   Statement-history matching removes only this session's leading private tag
   before applying the existing helper and exact-SQL checks. Guarded packets
   use the builder's collision-checked delimiter and keep the same bare
