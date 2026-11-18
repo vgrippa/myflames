@@ -159,16 +159,16 @@ class EditorProcessTests(unittest.TestCase):
                                                session.connection_id)
         expected_batch = session._guarded_statement(guard, expected)[0]
         kills = (self.state / "kills.log").read_text(encoding="utf-8")
-        controls = [p for p in self.children[since:] if "-e" in p.args]
+        controls = [p for p in self.children[since:] if "--batch" in p.args and "--xml" not in p.args]
         self.assertTrue(controls, "KILL QUERY did not use a second client process")
         for control in controls:
             self.assertNotEqual(control.pid, session.proc.pid)
-            actual = control.args[control.args.index("-e") + 1]
             # Each build gets a fresh nonce. Compare every other byte of the
             # packet, including this tab's ownership check and tagged KILL.
             private = r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+"
-            self.assertEqual(re.sub(private, "ACK", actual), re.sub(private, "ACK", expected_batch))
-            self.assertIn(actual, kills)
+            self.assertIn(re.sub(private, "ACK", expected_batch), re.sub(private, "ACK", kills))
+            self.assertNotIn("-e", control.args)
+            self.assertFalse(any("myflames:editor:" in arg for arg in control.args))
             self.assertIn("--skip-reconnect", control.args)
             self.assertNotIn("--force", control.args)
             self.assert_reaped(control)
@@ -176,7 +176,7 @@ class EditorProcessTests(unittest.TestCase):
     def test_start_reads_the_engine_identity_in_the_tabs_session(self):
         session = self.open_session()
         log = (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8")
-        self.assertIn("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on')", log)
+        self.assertIn("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider')", log)
         self.assertIn("SELECT CONNECTION_ID() AS connection_id", log)
         if self.engine == "mysql":
             self.assertEqual(session.server_identity["server_uuid"], "11111111-2222-3333-4444-555555555555")

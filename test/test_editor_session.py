@@ -98,6 +98,11 @@ def packet_client(source):
     source = source.replace('def one_shot(sql):\n', r'''
 def one_shot(sql):
     if "SET @myflames_target = " in sql:
+        if os.environ.get("FAKE_HELPER_MISMATCH") == "1":
+            with open(os.path.join(STATE, "helper-batches.log"), "a") as handle:
+                handle.write(repr(sql) + "\n")
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
         target = re.search(r"WHERE ID = (\d+)", sql)
         token = re.search(r"= BINARY '(/\*myflames:editor:[0-9a-f]{32}\*/)'", sql)
         own_id = os.environ.get("FAKE_KILL_CONTROL_ID")
@@ -108,6 +113,16 @@ def one_shot(sql):
         current = open(active).read() if active and os.path.exists(active) else ""
         if not token or not current.startswith(token.group(1)):
             sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        if os.environ.get("FAKE_PS") == "off" and "FROM performance_schema.processlist" in sql:
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        marker = re.search(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ", sql)
+        if marker:
+            print(marker.group(1), flush=True)
+        code = os.environ.get("FAKE_KILL_ERROR")
+        if code:
+            sys.stderr.write("ERROR %s (HY000) at line 2: KILL rejected\n" % code)
             return 1
 ''')
     return source
@@ -2233,10 +2248,10 @@ class ProcessTests(unittest.TestCase):
         session = self.registry.get("tab1")
         # A connector failure may quote a credential; neither the Stop reply
         # nor the notes returned by status may retain it.
-        with mock.patch.object(ed.MySQLConnection, "run", side_effect=ed.ConnectorError("denied s3cret-pw")):
+        with mock.patch.object(ed.MySQLConnection, "run_write", side_effect=ed.ConnectorError("denied s3cret-pw")):
             failed = self.call("/api/editor/stop")
         self.assertFalse(failed["stopped"])
-        self.assertIn("[redacted]", failed["message"])
+        self.assertIn("whether KILL QUERY ran is unknown", failed["message"])
         self.assertNotIn("s3cret-pw", json.dumps(failed))
         self.assertNotIn("s3cret-pw", json.dumps(session.status()))
         secrets = {"MYSQL_PWD": "env-secret", "MYSQL_HOST": "wrong-server",
@@ -2246,7 +2261,7 @@ class ProcessTests(unittest.TestCase):
             self.assertTrue(self.call("/api/editor/stop")["stopped"])
         self.assertTrue(session.run.done.wait(5))
         controls = [call for call in self.processes.call_args_list
-                    if any("KILL QUERY" in str(arg) for arg in call[0][0])]
+                    if "--batch" in call[0][0] and "--xml" not in call[0][0]]
         self.assertEqual(len(controls), 1)
         argv = controls[0][0][0]
         env = controls[0][1]["env"]

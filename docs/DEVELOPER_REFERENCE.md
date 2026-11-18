@@ -3012,26 +3012,44 @@ planner, write gate and session engine from the CLI.
   reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
-- Identity: startup reads connection id, version, hostname, port and server id
-  through the tab's persistent session, then reads optional `server_uuid` and
-  `wsrep_on` with `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)`.
+- Identity: after a preliminary session handshake, startup captures connection
+  id, version, hostname, port, server id, optional `server_uuid`, `wsrep_on`,
+  `wsrep_provider` and `wsrep_gcomm_uuid` in one `COM_QUERY` packet through
+  the tab's persistent client: a SELECT followed by SHOW GLOBAL VARIABLES
+  and SHOW GLOBAL STATUS. Only this complete packet supplies the write and
+  KILL identity; fields from the preliminary handshake are never combined
+  with its optional values. Autocommit, SQL mode and safe-updates settings
+  also come from this complete packet before deciding which setup is needed.
+  The client's private delimiter keeps these
+  statements in one packet. Any missing or failed identity result leaves
+  the tab open for ordinary reads, without a write or KILL binding.
   A successful read without `server_uuid` identifies MariaDB even when both
   version strings are customized. MySQL uses the UUID; MariaDB uses server id,
-  hostname and port, plus `wsrep_gcomm_uuid` from `SHOW GLOBAL STATUS` when
-  `wsrep_on` is ON. A final `SELECT CONNECTION_ID()` must still match before
-  binding this identity to KILL helpers. Optional identity errors, a changed
-  id or incomplete identity leave the tab open for reads. Stop and Close's
+  hostname and port, plus `wsrep_gcomm_uuid` from that packet when the Galera
+  provider is loaded, even with `wsrep_on` OFF (MariaDB
+  `sql/wsrep_var.cc:103–109` separates provider presence from wsrep_on).
+  MySQL-compatible Galera servers also retain the node UUID. Stop and Close's
   helper refuses KILL with "The server could not be confirmed" when its
   required identity is unavailable; a missing or changed Galera node UUID
   cannot fall back to the shared id, hostname and port. The KILL binding is
   separate from the write identity. Later write probes include the MySQL UUID.
-  The probe alone never authorizes a write: every non-read Run statement and
-  Commit uses `dbops.target_guarded_script` to send the recorded identity guard
+  The probe alone never authorizes a write: every non-read Run statement,
+  Run session or transaction control, and the Commit and Rollback actions use
+  `dbops.target_guarded_script` to send the recorded identity guard
   and its statement in one `COM_QUERY` packet on the existing tab client.
   The guard also compares `CONNECTION_ID()` with the recorded backend session
   id, preserving the tab's transaction context across same-server proxy
   session switches (MySQL `sql/item_func.cc:1532–1541`; MariaDB
   `sql/item_func.cc:836–843`).
+  Query-editor plan generation also guards its transaction-state and
+  autocommit reads, internal settings, START TRANSACTION READ ONLY, plan
+  statement and cleanup ROLLBACK. Its closed-transaction precondition must
+  come from the bound backend; a guard refusal ends the session before any
+  later helper or cleanup SQL is sent.
+  No client can detect a proxy that hands the same backend session to another
+  client between statements outside a transaction and then returns it with
+  the same identity. The guard detects a different server or connection id;
+  it cannot prove exclusive ownership throughout an idle interval.
   Each write packet repeats the guard, so per-packet proxy routing cannot
   move a confirmed write to another server. The guard's OK and its exact
   per-packet acknowledgement result set stay outside user results and their
@@ -3130,18 +3148,36 @@ planner, write gate and session engine from the CLI.
   session's private token, compared as binary text (not a substring or LIKE
   match), and excludes the helper's own `CONNECTION_ID()` so its tagged guard
   cannot authorize killing itself on a reused proxy backend.
-  MySQL 8.0.22+ uses `performance_schema.processlist`; MySQL 5.7 and
-  earlier 8.0 use `information_schema.PROCESSLIST`, as does MariaDB.
-  Engine sources: MySQL `storage/perfschema/table_processlist.cc:61–68,256–257`
-  and `sql/sql_show.cc:5642–5650`; MariaDB
+  Both engines use `information_schema.PROCESSLIST`, which works with
+  Performance Schema OFF. MySQL's P_S processlist is not perpetual
+  (`storage/perfschema/table_processlist.cc:76–86`); its handler returns EOF
+  when disabled (`storage/perfschema/ha_perfschema.cc:111–112,1759–1762`).
+  I_S PROCESSLIST is present in MySQL 5.7, 8.0, 8.4 and 9.7: local source refs
+  `origin/5.7:sql/sql_show.cc:2597,9116–9117`,
+  `origin/8.0:sql/sql_show.cc:3244,5152`,
+  `origin/8.4:sql/sql_show.cc:3248,5108` and current
+  `sql/sql_show.cc:3846–3854,5705`. It is deprecated in newer MySQL, so a
+  future removal will refuse Stop rather than weaken ownership verification.
+  It traverses the server thread list independently of P_S. MariaDB sources:
   `sql/sql_show.cc:3471,3522–3525,10565–10575`. The leading comment remains
   readable when the rest of INFO is truncated. A missing/hidden row, NULL
-  INFO, another tab's token, a recycled id, disabled instrumentation or a
+  INFO, another tab's token, a recycled id or a
   denied/unavailable processlist check cannot authorize KILL; there is no
   fallback to an identity-only check. This batch has
   `--skip-reconnect` and no `--force`, so a failed identity check cannot reach
   the KILL. A mismatch or an unavailable check reports
   `The server could not be confirmed. No KILL QUERY was sent.` to Stop;
+  the message also explains that the statement continues and the server may
+  hide or rewrite its text. MySQL's credential rewriter drops the leading
+  token, for example CREATE USER (`sql/sql_rewrite.cc:894–907`); processlist
+  prefers rewritten text (`sql/sql_show.cc:3797–3807`). This deliberately
+  refuses Stop rather than interrupting an unverified statement.
+  The helper sends generated SQL on stdin, retaining only its own exact
+  private acknowledgement on errors. A KILL error after acknowledgement is
+  distinct from a guard failure; 1094 (unknown thread id) says the statement
+  already ended, without claiming it succeeded. Timeouts report an unknown
+  interrupt outcome. Generated SQL and the private token never appear in
+  Stop responses or session notes, including server errors and timeouts.
   Close still terminates and reaps the tab's local client.
   `stopped` is true only when the KILL was sent. A statement it interrupts
   (1317 or 3169) is `stopped` and undone; one that ended normally is `ok` and
@@ -3183,6 +3219,17 @@ planner, write gate and session engine from the CLI.
   TRANSACTION, BEGIN, SET autocommit = 1, ANALYZE/OPTIMIZE/REPAIR/CHECK TABLE,
   FLUSH, RESET, replication statements; `implicit_commit`) while a transaction
   is open or unknown always asks, also on Development, with `warnings`.
+  BEGIN, START TRANSACTION and SET autocommit values that can enable it use
+  COMMIT's write confirmation and audit policy even when the transaction is
+  currently closed. Quoted names, quoted values and expressions cannot evade
+  that policy; only literal 0/OFF/FALSE is known not to commit. SET autocommit
+  retains its existing session-write policy even for those values. ROLLBACK,
+  SAVEPOINT, RELEASE SAVEPOINT and read-only SET TRANSACTION retain their read
+  policy but still carry the server/session guard in their packet.
+  The Rollback button remains available under read-only policy and after group
+  removal, subject to that identity guard. Engine behavior: MySQL
+  `sql/transaction.cc:125–146` and `sql/sys_vars.cc:5321–5324` commit existing
+  work for BEGIN and when enabling autocommit, respectively.
 - Safety: every run is classified per statement with `dbops.classify` (the
   session's backslash reading; before the session exists both readings) and
   judged by `dbops.decide` with `dbops.connection_safety` (a profile's type

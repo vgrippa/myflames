@@ -369,7 +369,16 @@ def classify_units(units, backslash_escapes, sql):
     statements = []
     for unit in units:
         verdict = dbops.classify(unit["send"], backslash_escapes)
+        # BEGIN/START TRANSACTION and enabling autocommit can commit work
+        # already in this tab. Apply exactly COMMIT's policy and audit class,
+        # even when the shared classifier calls the control a read.
+        if verdict["kind"] == "read" and implicit_commit(unit):
+            commit = dbops.classify("COMMIT")
+            verdict = dict(verdict, kind=commit["kind"], category=commit["category"],
+                           reasons=["This transaction control can commit this session's existing work."])
         unit["kind"], unit["category"], unit["reasons"] = verdict["kind"], verdict["category"], verdict["reasons"]
+        unit["session_control"] = any(s.get("category") in ("session", "transaction")
+                                      for s in verdict["statements"])
         # Several ';'-separated server statements in one client statement (a custom DELIMITER).
         unit["single"] = getattr(dbops, "REASON_MULTI", None) not in verdict["reasons"]
         unit["verb"] = verdict["statements"][0]["verb"] if verdict["statements"] else ""
@@ -384,6 +393,12 @@ def classify_units(units, backslash_escapes, sql):
                 reasons.append(reason)
     return {"kind": worst["kind"], "category": worst["category"], "reasons": reasons,
             "statements": statements, "count": len(statements)}
+
+
+def _needs_session_guard(unit):
+    """Reads that change session/transaction state need backend affinity too."""
+    return (unit.get("kind") != "read" or unit.get("session_control") or
+            unit.get("category") in ("session", "transaction"))
 
 
 def error_position(message, unit, offsets):
@@ -678,35 +693,47 @@ class EditorSession(EditorInsights):
                         else identity_from_version(self.server_version))
             self.engine = identity["engine"]
             self.server_product = identity["product"]
-            self.server_identity = self._identity_row(row)
+            # The first read establishes that a session opened, not a write
+            # or KILL binding. All fields of that binding must come from one
+            # COM_QUERY: a router can choose a different backend per packet.
+            self.server_identity = None
             self._kill_identity = None
-            variables_step = self._helper(TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN "
-                                                "('server_uuid', 'wsrep_on')")
-            variable_sets = [entry for entry in variables_step.entries if entry["type"] == "rows"]
-            if (variables_step.marker and not variables_step.real_errors() and len(variable_sets) == 1 and
-                    [column["name"].lower() for column in variable_sets[0]["columns"]] ==
-                    ["variable_name", "value"]):
-                variables = {name.lower(): value for name, value in variable_sets[0]["rows"]}
+            identity_step = self._helper(
+                TAG + "SELECT CONNECTION_ID() AS connection_id, VERSION() AS version, "
+                "@@version_comment AS version_comment, @@hostname AS hostname, @@port AS port, "
+                "@@server_id AS server_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, "
+                "@@sql_safe_updates AS sql_safe_updates; " + TAG +
+                "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider'); " +
+                TAG + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'", results=3)
+            sets = [entry for entry in identity_step.entries if entry["type"] == "rows"]
+            if (identity_step.marker and not identity_step.real_errors() and len(sets) == 3 and
+                    [column["name"].lower() for column in sets[1]["columns"]] == ["variable_name", "value"] and
+                    (not sets[2]["rows"] or
+                     [column["name"].lower() for column in sets[2]["columns"]] == ["variable_name", "value"])):
+                bound = self._helper_row(identity_step)
+                self.server_identity = self._identity_row(bound)
+                variables = {name.lower(): value for name, value in sets[1]["rows"]}
                 # MySQL registers server_uuid; MariaDB does not. SHOW succeeds
                 # with no row when an optional variable is absent.
-                detected_engine = "mariadb" if "server_uuid" not in variables else self.engine
+                detected_engine = "mariadb" if "server_uuid" not in variables else "mysql"
                 kill_identity = dict(self.server_identity or {})
                 if detected_engine == "mysql":
                     kill_identity["server_uuid"] = variables.get("server_uuid")
-                elif (variables.get("wsrep_on") or "").upper() in ("ON", "1"):
+                provider = (variables.get("wsrep_provider") or "").strip().lower()
+                if provider not in ("", "none") or (variables.get("wsrep_on") or "").upper() in ("ON", "1"):
                     # Galera peers can share id, hostname and port. Bind KILL
                     # to the node UUID, including a missing value to fail closed.
-                    node_step = self._helper(TAG + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'")
-                    node = self._helper_row(node_step) if node_step.marker and not node_step.real_errors() else None
-                    kill_identity["wsrep_gcomm_uuid"] = (node.get("Value") if node and
-                        (node.get("Variable_name") or "").lower() == "wsrep_gcomm_uuid" else None)
-                check = self._helper(TAG + "SELECT CONNECTION_ID() AS connection_id")
-                checked = self._helper_row(check) if check.marker and not check.real_errors() else None
-                if checked and self.connection_id and _int(checked.get("connection_id")) == self.connection_id:
-                    if detected_engine != self.engine:
-                        self.engine, self.server_product = detected_engine, "MariaDB"
-                    self._kill_identity = kill_identity if self.server_identity is not None else None
-                    if self.engine == "mysql" and self.server_identity is not None:
+                    status = {name.lower(): value for name, value in sets[2]["rows"]}
+                    kill_identity["wsrep_gcomm_uuid"] = status.get("wsrep_gcomm_uuid")
+                if self.server_identity is not None:
+                    row = bound
+                    self.connection_id = _int(bound.get("connection_id"))
+                    self.server_version = bound.get("version") or ""
+                    product = product_identity(self.server_version, bound.get("version_comment") or "")
+                    self.engine = detected_engine
+                    self.server_product = "MariaDB" if detected_engine == "mariadb" else product["product"]
+                    self._kill_identity = kill_identity
+                    if self.engine == "mysql":
                         self.server_identity["server_uuid"] = variables.get("server_uuid")
             from . import client_tools
             client_tools.remember_server(client_tools.endpoint_key(options), self.engine, self.server_version)
@@ -891,13 +918,23 @@ class EditorSession(EditorInsights):
                 self.cond.wait(0.5 if remaining is None else min(0.5, remaining))
             return True
 
-    def _helper(self, send, results=1, timeout=HELPER_TIMEOUT):
-        step = self._send("helper", send, results=results)
+    def _helper(self, send, results=1, timeout=HELPER_TIMEOUT, guard=None):
+        step = self._send("helper", send, results=results, guard=guard)
         ok = self._wait(lambda: step.marker and (step.closed or bool(step.real_errors()) or results == 0),
                         timeout)
         if not ok and not self.ended:
             self.end("protocol", "The MySQL client stopped answering. " + SESSION_ENDED_TEXT)
+        if guard is not None:
+            self._check_helper_guard(step)
         return step
+
+    def _check_helper_guard(self, step):
+        """Never follow a refused internal packet with another helper."""
+        failure = self._packet_guard_failure(step, step.real_errors())
+        if failure:
+            message = "The server session could not be confirmed. The requested operation was not sent."
+            self.end(failure["outcome"], message + " " + SESSION_ENDED_TEXT)
+            raise EditorError(message, failure["outcome"])
 
     def _helper_row(self, step):
         rows = [e for e in step.entries if e["type"] == "rows"]
@@ -1340,7 +1377,7 @@ class EditorSession(EditorInsights):
 
     def _kill_query(self, options, step):
         """KILL QUERY this session's statement from a second connection, only
-        while *step* still runs. Returns ("sent" | "skipped" | "failed", text)."""
+        while *step* still runs. Returns (sent/skipped/finished/failed, text)."""
         with self.send_lock:
             with self.lock:
                 if step.marker or getattr(step, "unfinished", False) or self.ended or not self.connection_id:
@@ -1350,7 +1387,8 @@ class EditorSession(EditorInsights):
                 kill_options = dict(options)
                 kill_options["query_timeout"] = KILL_TIMEOUT
                 kill_options["binary"] = self._checked_helper_binary()
-                self._send_kill(kill_options, connection_id)
+                if self._send_kill(kill_options, connection_id) is False:
+                    return "finished", None
                 with self.lock:
                     step.kill_sent_at = time.monotonic()
                 return "sent", None
@@ -1386,30 +1424,40 @@ class EditorSession(EditorInsights):
                 control._login_guard = login_guard
                 control._group_login_started = False
             with control:
-                control.run(script,
-                            extra_flags=list(_write_flags()) + ["--skip-reconnect"], timeout=KILL_TIMEOUT)
+                control.run_write(script, timeout=KILL_TIMEOUT)
         except ConnectorError as exc:
             # A processlist denial, missing table or hidden/absent target
             # cannot establish ownership either. No retry or weaker fallback.
-            if (dbops.target_guard_failed(exc, packet_lines) or
-                    dbops.error_code(str(exc)) in (1044, 1045, 1054, 1109, 1142, 1146, 1227)):
-                raise ConnectorError("The server could not be confirmed. No KILL QUERY was sent.") from None
-            raise dbops.shift_guard_error(exc, packet_lines) from None
+            if dbops.target_guard_failed(exc, packet_lines):
+                raise ConnectorError(
+                    "The server could not be confirmed. No KILL QUERY was sent. Any running statement continues. "
+                    "Stop must verify that it belongs to this tab; the server may hide or rewrite its text, "
+                    "including statements containing passwords.") from None
+            code = dbops.error_code(dbops.target_error_text(exc))
+            acknowledged = all(m in getattr(exc, "guard_markers", ()) for m in packet_lines.markers)
+            if acknowledged and code == 1094:  # ER_NO_SUCH_THREAD, after the ownership check.
+                return False
+            # Only generated SQL runs here. Do not surface its echoed packet,
+            # private token, or server text that quotes any part of that SQL.
+            if acknowledged and code is not None and not 2000 <= code <= 2999:
+                raise ConnectorError("The server rejected KILL QUERY (error %d). The statement may still be running."
+                                     % code) from None
+            raise ConnectorError("Stop could not be completed; whether KILL QUERY ran is unknown. "
+                                 "The statement may still be running.") from None
 
     def _kill_statement_guard(self, guard, connection_id):
         """Require this tab's currently running SQL, not merely a recycled id.
 
-        MySQL storage/perfschema/table_processlist.cc:61-68,256-257 supplies
-        ID/INFO; sql/sql_show.cc:5642-5650 supplies the pre-8.0.22 fallback.
+        MySQL sql/sql_show.cc:3846-3854,5642-5650 supplies ID/INFO even
+        without Performance Schema. Its P_S processlist is empty when OFF
+        (storage/perfschema/ha_perfschema.cc:111-112,1759-1762).
         MariaDB sql/sql_show.cc:3471,3522-3525,10565-10575 supplies ID/INFO.
         The leading token fits even a truncated INFO. Binary comparison
         avoids case folding or a LIKE wildcard changing the ownership check.
         """
         if isinstance(connection_id, bool) or not isinstance(connection_id, int) or connection_id <= 0:
             raise ValueError("Invalid editor connection id")
-        version = parse_version_tuple(self.server_version or "", leading=True, default=None)
-        table = ("performance_schema.processlist" if self.engine == "mysql" and version is not None and
-                 version >= (8, 0, 22) else "information_schema.PROCESSLIST")
+        table = "information_schema.PROCESSLIST"
         # statement_tag is generated locally from token_hex, never SQL input.
         prefix = self.statement_tag.rstrip()
         missing = ("NOT EXISTS (SELECT 1 FROM %s WHERE ID = %d AND "
@@ -1496,8 +1544,9 @@ class EditorSession(EditorInsights):
         self.end(code, message + " " + SESSION_ENDED_TEXT)
         raise EditorError(message, code)
 
-    def refresh_state(self):
+    def refresh_state(self, guard=None):
         """Read autocommit, the transaction state and sql_mode (tagged helpers)."""
+        guard_options = {"guard": guard} if guard is not None else {}
         if self.engine == "mysql":
             # PS_CURRENT_THREAD_ID() exists from MySQL 8.0.16 (sql/item_create.cc);
             # before it (5.7) the session's thread is found by its connection id.
@@ -1510,7 +1559,7 @@ class EditorSession(EditorInsights):
                                        "instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE "
                                        "THREAD_ID = " + thread + ") AS instrumented, (SELECT STATE FROM "
                                        "performance_schema.events_transactions_current WHERE THREAD_ID = "
-                                       + thread + ") AS state")
+                                       + thread + ") AS state", **guard_options)
             row = self._helper_row(probe) if not probe.real_errors() else None
             with self.lock:
                 self.transaction_source = "performance_schema"
@@ -1534,7 +1583,7 @@ class EditorSession(EditorInsights):
         step = self._helper(TAG + "SELECT '%s' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS "
                                   "autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates, "
                                   "DATABASE() AS database_name%s"
-                            % (token, extra))
+                            % (token, extra), **guard_options)
         row = self._helper_row(step)
         lost = False
         with self.lock:
@@ -1600,11 +1649,11 @@ class EditorSession(EditorInsights):
         if not self._acquire_run_lock():
             raise EditorError("A statement is already running in this tab. Wait for it or press Stop.", "busy")
         previous, run, timer = None, None, None
-        saved_version, rollback, problem = None, False, None
+        saved_version, rollback, problem, plan_guard = None, False, None, None
         password = self._conn.password if self._conn is not None else None
 
         def checked(statement, results=0):
-            step = self._helper(TAG + statement, results=results)
+            step = self._helper(TAG + statement, results=results, guard=plan_guard)
             if self.ended or not step.marker or step.real_errors():
                 raise EditorError(self._helper_problem(step) or SESSION_ENDED_TEXT, "plan_failed")
             return step
@@ -1636,7 +1685,14 @@ class EditorSession(EditorInsights):
                 unsupported = analyze_unsupported(self.server_version, self.engine == "mariadb")
                 if unsupported:
                     raise EditorError(unsupported, "unsupported")
-            if not self.refresh_state():
+            try:
+                plan_guard = self._write_session_guard()
+            except ValueError as exc:
+                raise EditorError(str(exc), "identity_unavailable") from None
+            # The closed-transaction check must describe the same backend
+            # that will receive START TRANSACTION, which can otherwise commit
+            # existing work on a backend chosen by a router.
+            if not self.refresh_state(guard=plan_guard):
                 raise EditorError(self.end_message or "Could not read the session state.", "session_ended")
             if self.engine == "mysql" and (self.in_transaction is not False or self.autocommit is not True):
                 raise EditorError("Commit or roll back the tab's transaction and enable autocommit before "
@@ -1673,9 +1729,10 @@ class EditorSession(EditorInsights):
                 timer.daemon = True
                 timer.start()
             units[0]["status"] = "running"
-            step = self._send("user", statement, unit=0, limit=1, results=1)
+            step = self._send("user", statement, unit=0, limit=1, results=1, guard=plan_guard)
             self._wait_step(step)
             self._wait(lambda: step.closed or bool(step.real_errors()), HELPER_TIMEOUT)
+            self._check_helper_guard(step)
             if self.ended or not step.marker or step.real_errors():
                 raise EditorError(self._helper_problem(step) or SESSION_ENDED_TEXT, "plan_failed")
             rows = [e for e in step.entries if e["type"] == "rows"]
@@ -1740,18 +1797,20 @@ class EditorSession(EditorInsights):
                 if self.run is not None and not self.run.done.is_set():
                     raise EditorError("A statement is already running in this tab. Wait for it or press Stop.",
                                       "busy")
-            if run.audit is not None:
+            if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
                 statements = [u["send"] for u in run.units]
                 self._verify_identity(run.audit, statements)
                 try:
                     run.target_guard = self._write_session_guard()
                     # Refuse delimiter collisions before any user unit runs.
                     for unit in run.units:
-                        if unit.get("kind") != "read":
+                        if _needs_session_guard(unit):
                             self._guarded_statement(run.target_guard, unit["send"])
                 except ValueError as exc:
-                    run.audit.outcome(statements, "refused", outcome="identity_unavailable", message=str(exc))
+                    if run.audit is not None:
+                        run.audit.outcome(statements, "refused", outcome="identity_unavailable", message=str(exc))
                     raise EditorError(str(exc), "identity_unavailable") from None
+            if run.audit is not None:
                 if run.alter_context is not None:
                     unit = _alter_unit({"units": run.units})
                     # run_lock is held: a concurrent USE cannot slip between
@@ -1877,10 +1936,10 @@ class EditorSession(EditorInsights):
                     if _changes_privilege_context(unit):
                         self.privileges_changed = True
                 unit["status"] = "running"
-                kill_ok = run.kind == "run" and unit.get("kind") == "read" and unit.get("single", True)
+                kill_ok = run.kind == "run" and not _needs_session_guard(unit) and unit.get("single", True)
                 step = self._send(run.kind == "run" and "user" or "action", unit["send"], unit=unit["index"],
                                   limit=run.limit, kill_ok=kill_ok,
-                                  guard=run.target_guard if unit.get("kind") != "read" else None)
+                                  guard=run.target_guard if _needs_session_guard(unit) else None)
                 self._wait_step(step)
                 for thread in list(run.kill_threads):
                     thread.join(KILL_TIMEOUT + 5)
@@ -2123,6 +2182,10 @@ class EditorSession(EditorInsights):
                     "message": "KILL QUERY sent. A statement it interrupts is undone; an open transaction stays "
                                "open."}
         target.stop_sent = False
+        if outcome == "finished":
+            return {"stopped": False, "stop_requested": True,
+                    "message": "The statement already ended before KILL QUERY could interrupt it. Check the run results "
+                               "for its outcome. Later statements of this run will not run."}
         if outcome == "skipped":
             return {"stopped": False, "stop_requested": True,
                     "message": "The statement had already finished, so it took effect. Later statements of this run "
@@ -3344,13 +3407,38 @@ _IMPLICIT_COMMIT = re.compile(
     r"|(?:FLUSH|RESET)\b|CACHE\s+INDEX\b|LOAD\s+INDEX\b|(?:INSTALL|UNINSTALL)\s+(?:PLUGIN|COMPONENT|SONAME)\b"
     r"|(?:START|STOP)\s+(?:REPLICA|SLAVE|GROUP_REPLICATION|ALL\s+SLAVES)\b|CHANGE\s+(?:REPLICATION|MASTER)\b)",
     re.I)
-_AUTOCOMMIT_ON = re.compile(r"^\s*SET\b.*\bAUTOCOMMIT\s*(?::=|=)\s*(?:1|ON|TRUE)\b", re.I)
+def _may_enable_autocommit(code, idents):
+    """Recognize assignment targets, not autocommit mentioned in a value.
+
+    Reuse the classifier's SET grammar and top-level comma handling. A
+    nonconstant or masked string value may enable autocommit; only literal
+    0/OFF/FALSE proves otherwise. User variables and global defaults do not
+    commit this session's transaction.
+    """
+    from . import dbops
+    start = re.match(r"\s*SET\b", code, re.I)
+    if not start:
+        return False
+    rest = code[start.end():].upper()
+    cuts = [-1] + [i for i, char in enumerate(dbops._flat(rest)) if char == ","] + [len(rest)]
+    for a, b in zip(cuts, cuts[1:]):
+        piece = rest[a + 1:b]
+        assignment = dbops._SET_ITEM.match(piece)
+        if not assignment or assignment.group(4):  # @user_variable
+            continue
+        scope = assignment.group(1) or assignment.group(2)
+        if scope in ("GLOBAL", "PERSIST", "PERSIST_ONLY"):
+            continue
+        name = dbops._name(re.split(r"\s*\.\s*", assignment.group(5))[-1], idents).lower()
+        if name == "autocommit" and not re.fullmatch(r"\s*(?:0|OFF|FALSE)\s*", piece[assignment.end():]):
+            return True
+    return False
 
 
 def implicit_commit(unit):
     """True when the statement commits an open transaction before it runs."""
-    code = unit["code"]
-    return bool(_IMPLICIT_COMMIT.match(code) or _AUTOCOMMIT_ON.match(code))
+    return any(_IMPLICIT_COMMIT.match(part) or _may_enable_autocommit(part, unit.get("idents") or [])
+               for part in unit["code"].split(";"))
 
 
 #: COMMIT or ROLLBACK, except ROLLBACK [WORK] TO [SAVEPOINT] name, which

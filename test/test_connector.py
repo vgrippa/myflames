@@ -2205,6 +2205,38 @@ class TestSafetyRegressions(unittest.TestCase):
                 for secret in ('connection-secret', 'new-secret', '414243'):
                     self.assertNotIn(secret, text)
 
+    def test_tagged_editor_guard_retains_only_its_acknowledgement_on_error(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        unrelated = 'myflames_guard_ok_' + 'f' * 32 + '_0'
+        output = ('private-result\n' + lines.markers[0] + '\n' + unrelated + '\n').encode()
+        failure = _fake_completed(output, b'ERROR 1094 (HY000) at line 2: Unknown thread id: 41', 1)
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', return_value=failure):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIsNone(dbops.target_guard_failed(caught.exception, lines))
+        self.assertNotIn('private-result', str(caught.exception))
+
+    def test_tagged_editor_guard_timeout_keeps_ack_without_generated_sql(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        timeout = subprocess.TimeoutExpired(['mysql'], 1, output=(lines.markers[0] + '\nprivate-result').encode(),
+                                            stderr=script.encode())
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', side_effect=timeout):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIn('outcome is unknown', str(caught.exception))
+        for private in (session.statement_tag, 'myflames_guard_ok_', 'private-result', 'SET @myflames_target'):
+            self.assertNotIn(private, str(caught.exception))
+
 
 class TestBoundedTransport(unittest.TestCase):
     """Exercise OS pipes with a local Python child, never a database."""

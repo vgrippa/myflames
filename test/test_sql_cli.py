@@ -426,11 +426,12 @@ class SQLTests(unittest.TestCase):
         self.assertTrue((self.state / 'kills.log').exists())
         invocations = [ast.literal_eval(line) for line in argv_log.read_text(encoding='utf-8').splitlines()[previous:]
                        if line.startswith('[')]
-        controls = [args for args in invocations if '-e' in args and
-                    'KILL QUERY ' in args[args.index('-e') + 1]]
+        controls = [args for args in invocations if '--batch' in args and '--xml' not in args]
         self.assertEqual(len(controls), 1)
         args = controls[0]
-        packet = args[args.index('-e') + 1]
+        self.assertNotIn('-e', args)
+        kills = (self.state / 'kills.log').read_text(encoding='utf-8')
+        packet = kills[kills.rfind('DELIMITER '):].rstrip('\n') + '\n'
         self.assertRegex(packet, r"WHERE ID = \d+ AND LEFT\(BINARY INFO, \d+\) = BINARY '/\*myflames:editor:[0-9a-f]{32}\*/'")
         packet = re.sub(r"/\*myflames:editor:[0-9a-f]{32}\*/ ", "", packet)
         ((guard, kill, _),) = guarded_packets(packet)
@@ -507,7 +508,8 @@ class SQLTests(unittest.TestCase):
 
         def changed(session, step):
             value = row(session, step)
-            if value and 'hostname' in value and 'myflames_editor' not in value:
+            if (value and 'hostname' in value and 'myflames_editor' not in value and
+                    'SHOW GLOBAL VARIABLES' not in step.send):
                 value['hostname'] = 'another-server'
             return value
 

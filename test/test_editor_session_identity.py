@@ -5,6 +5,8 @@ client's server answers, including a second Galera node, are synthetic.
 """
 import os
 import json
+import re
+import subprocess
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -51,12 +53,35 @@ class EditorIdentityTests(unittest.TestCase):
 ''')
         self.assert_usable_without_kill()
 
-    def test_changed_connection_id_during_optional_reads_keeps_the_tab_usable(self):
-        self.inject_answers('''        if upper == "SELECT CONNECTION_ID() AS CONNECTION_ID":
-            self.result(statement, ["connection_id"], [[str(self.conn_id + 1)]])
-            return
-''')
-        self.assert_usable_without_kill()
+    def test_startup_identity_fields_are_bound_in_one_routed_packet(self):
+        first = '11111111-2222-3333-4444-555555555555'
+        second = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        self.rewrite_client(lambda text: text.replace('"hostname": "fake-db"',
+            '"hostname": "host-" + getattr(self, "route_uuid", "1")[0]'))
+        self.route_packets({'server_uuid': first}, {'server_uuid': second}, {'server_uuid': first})
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertEqual(session.server_identity['server_uuid'], second)
+        self.assertEqual(session.server_identity['hostname'], 'host-a')
+        packets = [packet[2] for packet in self.packets()]
+        identity = [p for p in packets if 'SHOW GLOBAL VARIABLES' in p]
+        self.assertEqual(len(identity), 1)
+        self.assertIn('CONNECTION_ID() AS connection_id', identity[0])
+        self.assertIn('@@server_id AS server_id', identity[0])
+        self.assertIn('@@sql_safe_updates AS sql_safe_updates', identity[0])
+        self.assertIn('SHOW GLOBAL STATUS', identity[0])
+        self.assertIn('wsrep_provider', identity[0])
+        self.assertEqual(session._kill_identity['server_uuid'], second)
+        self.assertFalse(any(p.endswith('SELECT CONNECTION_ID() AS connection_id') for p in packets))
+
+    def test_startup_settings_are_read_from_the_bound_backend(self):
+        # The first handshake says safe updates is already enabled. The
+        # complete binding reports it disabled, so setup must still send SET.
+        self.rewrite_client(lambda text: text.replace(
+            '"sql_safe_updates": "1" if self.safe_updates else "0",',
+            '"sql_safe_updates": "1" if "myflames_editor" in names else "0",'))
+        self.run_sql('SELECT 7')
+        self.assertIn(ed.SAFE_UPDATES_ON, self.session_log())
 
     def test_incomplete_initial_identity_keeps_the_tab_usable(self):
         self.rewrite_client(lambda text: text.replace('"hostname": "fake-db"', '"hostname": None'))
@@ -92,6 +117,190 @@ class EditorIdentityTests(unittest.TestCase):
         session._send_kill(self.connection, session.connection_id)
         self.assertTrue(session.run.done.wait(5))
         self.assertTrue((self.state / 'kills.log').exists())
+
+    def test_loaded_galera_provider_requires_uuid_even_with_wsrep_off(self):
+        node = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        self.maria_client(wsrep=True, node_uuid=node)
+        self.rewrite_client(lambda text: text.replace('[["wsrep_on", "ON"]]',
+            '[["wsrep_on", "OFF"], ["wsrep_provider", "/usr/lib/galera/libgalera_smm.so"]]'))
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertEqual(session._kill_identity['wsrep_gcomm_uuid'], node)
+        self.assertIn(node, session._write_session_guard()[0])
+
+    def test_galera_missing_node_uuid_never_falls_back_to_shared_names(self):
+        self.maria_client(wsrep=True, node_uuid=None)
+        session = self.assert_usable_without_kill()
+        with self.assertRaisesRegex(ValueError, 'UUID is missing or invalid'):
+            session._write_session_guard()
+
+    def test_transaction_controls_all_share_the_guarded_packet(self):
+        controls = ('BEGIN', 'START TRANSACTION', 'ROLLBACK', 'ROLLBACK TO SAVEPOINT s',
+                    'SAVEPOINT s', 'RELEASE SAVEPOINT s', 'SET autocommit = 0',
+                    'SET autocommit = 1', 'SET SESSION TRANSACTION READ ONLY')
+        for index, sql in enumerate(controls):
+            tab = 'control-%d' % index
+            with self.subTest(sql=sql):
+                result = self.run_sql(sql, tab=tab)
+                self.assertIn(result['status'], ('complete', 'error'), result)
+                packets = [p[2] for p in self.packets() if sql in p[2] and 'SET @myflames_target = ' in p[2]]
+                self.assertTrue(packets, sql)
+                self.call('/api/editor/close', tab=tab, discard=True)
+
+    def test_read_classified_control_refuses_a_same_server_session_switch(self):
+        self.run_sql('SELECT 7')
+        session = self.registry.get('tab1')
+        self.route_packets({'connection_id': session.connection_id},
+                           {'connection_id': session.connection_id},
+                           {'connection_id': session.connection_id + 1})
+        result = self.run_sql('ROLLBACK')
+        self.assertEqual(result['run']['statements'][0]['status'], 'not_run', result)
+        self.assertNotIn('ROLLBACK', self.session_log())
+
+    def test_rollback_button_is_guarded_without_write_confirmation(self):
+        self.run_sql('SELECT 7')
+        session = self.registry.get('tab1')
+        self.route_packets({'connection_id': session.connection_id}, {'connection_id': session.connection_id + 1})
+        result = self.call('/api/editor/rollback')
+        self.assertEqual(result['run']['statements'][0]['status'], 'not_run', result)
+        self.assertIn(ed.TAG + 'ROLLBACK', self.packets()[-1][2])
+
+    def test_plan_controls_state_reads_and_explain_keep_the_session_guard(self):
+        self.run_sql('SELECT 7')
+        session = self.registry.get('tab1')
+        before = len(self.packets())
+        self.assertIsInstance(json.loads(session.run_plan('SELECT 1')), dict)
+        packets = [p[2] for p in self.packets()[before:]]
+        for sql in ('START TRANSACTION READ ONLY', ed.TAG + 'ROLLBACK', 'EXPLAIN FORMAT=JSON SELECT 1',
+                    'AS state', '@@autocommit AS autocommit'):
+            matching = [p for p in packets if sql in p]
+            self.assertEqual(len(matching), 1, sql)
+            self.assertIn('SET @myflames_target = ', matching[0])
+
+    def test_plan_refuses_routed_begin_before_it_can_commit_another_backend(self):
+        self.rewrite_client(lambda text: text.replace(
+            '        self.route_connection_id = route.get("connection_id", self.conn_id)',
+            '        self.route_connection_id = route.get("connection_id", self.conn_id)\n'
+            '        if "START TRANSACTION READ ONLY" in wire:\n'
+            '            self.route_connection_id += 1'))
+        self.run_sql('SELECT 7')
+        session = self.registry.get('tab1')
+        before = len(self.packets())
+        with self.assertRaisesRegex(ed.EditorError, 'session could not be confirmed'):
+            session.run_plan('SELECT 1')
+        self.assertTrue(session.ended)
+        self.assertNotIn(ed.TAG + 'START TRANSACTION READ ONLY', self.session_log())
+        packets = [p[2] for p in self.packets()[before:]]
+        self.assertIn('START TRANSACTION READ ONLY', packets[-1])
+        self.assertFalse(any('EXPLAIN FORMAT=JSON SELECT 1' in p or ed.TAG + 'ROLLBACK' in p for p in packets))
+
+    def test_commit_capable_controls_use_commit_policy_and_audit(self):
+        for index, sql in enumerate(('BEGIN', 'START TRANSACTION', 'SET autocommit = 1',
+                                     "SET @@SESSION.`autocommit` = 'ON'")):
+            tab = 'commit-control-%d' % index
+            with self.subTest(sql=sql):
+                review = self.call('/api/editor/run', tab=tab, sql=sql)
+                self.assertEqual(review['status'], 'needs_confirmation', review)
+                self.assertEqual(review['confirmation']['kind'], 'write')
+                self.assertIn(review['confirmation']['category'], ('transaction', 'session'))
+                result = self.call('/api/editor/run', tab=tab, sql=sql, confirmed=True,
+                                   confirm_token=review['confirmation']['token'])
+                audit = next(r for r in self.store.audit_records() if r['id'] == result['run']['audit_id'])
+                self.assertIn(sql, audit['statements'])
+                self.assertTrue(audit['finished_at'])
+                self.call('/api/editor/close', tab=tab, discard=True)
+
+    def test_autocommit_expressions_and_multiline_controls_cannot_evade_review(self):
+        safety = {'type': 'production', 'read_only': False}
+        for sql in ("SET\nSESSION `autocommit` = 'ON'", 'SET @@session.autocommit = DEFAULT',
+                    'SET autocommit = @enabled', 'SET autocommit = 1, autocommit = 0',
+                    'SET autocommit = (1)', 'DELIMITER //\nSELECT 1; BEGIN//'):
+            with self.subTest(sql=sql):
+                plan = ed._plan_run({'sql': sql}, None)
+                self.assertEqual(plan['verdict']['kind'], 'write')
+                self.assertEqual(ed._decision(plan, safety)['action'], 'confirm')
+        for sql in ('SET autocommit = 0', 'SET SESSION autocommit = OFF', 'SET @@autocommit = FALSE'):
+            with self.subTest(sql=sql):
+                plan = ed._plan_run({'sql': sql}, None)
+                self.assertEqual(plan['verdict']['kind'], dbops.classify(sql)['kind'])
+                self.assertFalse(ed.implicit_commit(plan['units'][0]))
+                self.assertTrue(ed._needs_session_guard(plan['units'][0]))
+        for sql in ('SET @autocommit = 1', 'SET GLOBAL autocommit = 1', 'SET @@GLOBAL.`autocommit` = 1',
+                    'SET sql_select_limit = @@autocommit = 1', "SET sql_mode = 'autocommit = 1'"):
+            with self.subTest(non_committing=sql):
+                plan = ed._plan_run({'sql': sql}, None)
+                self.assertFalse(ed.implicit_commit(plan['units'][0]))
+        for sql in ('BEGIN', 'START TRANSACTION', 'SET autocommit = 1'):
+            for kind, readonly in (('production', False), ('development', False), ('production', True)):
+                with self.subTest(sql=sql, policy=kind, readonly=readonly):
+                    expected = dbops.decide(dbops.classify('COMMIT'), kind, readonly)['action']
+                    plan = ed._plan_run({'sql': sql}, None)
+                    self.assertEqual(ed._decision(plan, {'type': kind, 'read_only': readonly})['action'], expected)
+
+    def test_stop_preserves_acknowledgement_for_kill_errors(self):
+        self.run_sql('SELECT 7 /*gate*/', wait=0)
+        self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+        session = self.registry.get('tab1')
+        try:
+            for code, message in (('1094', 'already ended'), ('1095', 'server rejected KILL QUERY'),
+                                  ('1242', 'server rejected KILL QUERY'), ('1227', 'server rejected KILL QUERY')):
+                with self.subTest(code=code), mock.patch.dict(os.environ, FAKE_KILL_ERROR=code):
+                    result = self.call('/api/editor/stop')
+                    self.assertFalse(result['stopped'], result)
+                    self.assertIn(message, result['message'])
+                    self.assertNotIn('server could not be confirmed', result['message'])
+                    self.assertIsNone(session.run.current.kill_sent_at)
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
+
+    def test_stop_still_checks_ownership_with_performance_schema_off(self):
+        with mock.patch.dict(os.environ, FAKE_PS='off'):
+            self.run_sql('SELECT 7 /*gate*/', wait=0)
+            self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+            result = self.call('/api/editor/stop')
+        self.assertTrue(result['stopped'], result)
+        self.assertTrue(self.registry.get('tab1').run.done.wait(5))
+        self.assertIn('information_schema.PROCESSLIST', (self.state / 'kills.log').read_text())
+
+    def test_rewritten_credential_statement_refuses_stop_with_explanation(self):
+        self.run_sql("CREATE USER 'slow' IDENTIFIED BY 'secret' /*gate*/", wait=0)
+        session = self.registry.get('tab1')
+        active = self.state / ('active-%d' % session.connection_id)
+        self.until(lambda: self.logged('tab1', "CREATE USER 'slow'"), 'credential statement to start')
+        active.write_text("CREATE USER 'slow'@'%' IDENTIFIED WITH caching_sha2_password AS '<secret>'")
+        try:
+            result = self.call('/api/editor/stop')
+            self.assertFalse(result['stopped'], result)
+            self.assertIn('rewrite', result['message'])
+            self.assertIn('statement continues', result['message'])
+            self.assertNotIn('secret', result['message'])
+            self.assertFalse((self.state / 'kills.log').exists())
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
+
+    def test_stop_timeout_never_exposes_generated_sql_or_tab_token(self):
+        self.run_sql('SELECT 7 /*gate*/', wait=0)
+        self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+        session = self.registry.get('tab1')
+
+        def timeout(argv, **kwargs):
+            script = kwargs['input'].decode('utf-8')
+            marker = re.search(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'", script).group(1)
+            self.assertNotIn(script, argv)
+            raise subprocess.TimeoutExpired(argv, 1, output=(marker + '\n').encode(), stderr=script.encode())
+
+        try:
+            with mock.patch.object(ed.MySQLConnection, '_run_client', side_effect=timeout):
+                result = self.call('/api/editor/stop')
+            visible = json.dumps(result) + json.dumps(session.status())
+            self.assertIn('unknown', result['message'])
+            for private in (session.statement_tag.strip(), 'SET @myflames_target', 'myflames_guard_ok_'):
+                self.assertNotIn(private, visible)
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
 
     def test_galera_kill_checks_node_uuid_even_with_identical_server_names_ids_and_ports(self):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -276,7 +485,7 @@ class EditorIdentityTests(unittest.TestCase):
             self.assertFalse((self.state / 'kills.log').exists())
             for code in (1054, 1142, 1146, 1227):
                 error = ConnectorError('ERROR %d (42000) at line 2: processlist unavailable' % code)
-                with self.subTest(code=code), mock.patch.object(ed.MySQLConnection, 'run', side_effect=error):
+                with self.subTest(code=code), mock.patch.object(ed.MySQLConnection, 'run_write', side_effect=error):
                     stopped = self.call('/api/editor/stop')
                     self.assertFalse(stopped['stopped'], stopped)
                     self.assertIn('The server could not be confirmed. No KILL QUERY was sent.', stopped['message'])
@@ -419,8 +628,9 @@ class EditorIdentityTests(unittest.TestCase):
         session = ed.EditorSession('test', 'identity', {})
         for engine, version, table in (('mysql', '5.7.44', 'information_schema.PROCESSLIST'),
                                        ('mysql', '8.0.21', 'information_schema.PROCESSLIST'),
-                                       ('mysql', '8.0.22', 'performance_schema.processlist'),
-                                       ('mysql', '8.4.11', 'performance_schema.processlist'),
+                                       ('mysql', '8.0.22', 'information_schema.PROCESSLIST'),
+                                       ('mysql', '8.4.11', 'information_schema.PROCESSLIST'),
+                                       ('mysql', '9.7.0', 'information_schema.PROCESSLIST'),
                                        ('mariadb', '11.4.13-MariaDB', 'information_schema.PROCESSLIST')):
             with self.subTest(engine=engine, version=version):
                 session.engine, session.server_version = engine, version

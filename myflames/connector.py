@@ -1391,6 +1391,18 @@ class MySQLConnection:
         """Compatibility name for :meth:`run_write` (SQL never on argv)."""
         return self.run_write(sql, extra_flags=extra_flags, timeout=timeout)
 
+    @staticmethod
+    def _write_guard_markers(sql):
+        """Recognize the editor's exact generated tag without trusting rows.
+
+        The shared builder also accepts a privately tagged guard. Strip only
+        that locally generated leading comment for marker discovery, never
+        from the SQL sent to the server.
+        """
+        from .dbops import target_script_markers
+        untagged = re.sub(r"^/\*myflames:editor:[0-9a-f]{32}\*/ ", "", sql or "", flags=re.M)
+        return target_script_markers(untagged)
+
     def run_write(self, sql, extra_flags=None, timeout=None):
         """Run *sql* sent on the client's standard input and return stdout.
 
@@ -1405,12 +1417,16 @@ class MySQLConnection:
         error. Errors redact the connection password and SQL credential
         clauses before they leave the connector.
         """
-        from .dbops import redact, strip_target_guard_markers, target_error_text, target_script_markers
+        from .dbops import redact, strip_target_guard_markers, target_error_text
         try:
-            return strip_target_guard_markers(self._run_write(sql, extra_flags, timeout), target_script_markers(sql))
-        except subprocess.TimeoutExpired:
-            raise ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
-                timeout or self.query_timeout)) from None
+            return strip_target_guard_markers(self._run_write(sql, extra_flags, timeout), self._write_guard_markers(sql))
+        except subprocess.TimeoutExpired as exc:
+            from .dbops import target_guard_markers
+            error = ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
+                timeout or self.query_timeout))
+            private = set(self._write_guard_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(exc.output)) if m in private)
+            raise error from None
         except ClientAuthPluginError:
             raise
         except (ConnectorError, OSError) as exc:
@@ -1447,8 +1463,8 @@ class MySQLConnection:
             error = ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
-            from .dbops import target_guard_markers, target_script_markers
-            private = set(target_script_markers(sql))
+            from .dbops import target_guard_markers
+            private = set(self._write_guard_markers(sql))
             error.guard_markers = tuple(m for m in target_guard_markers(_client_text(proc.stdout)) if m in private)
             raise error
         return _client_text(proc.stdout)
