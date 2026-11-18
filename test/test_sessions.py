@@ -654,16 +654,14 @@ class TestSessionsKillCLI(unittest.TestCase):
     def test_tty_confirmation_identity_change_refuses(self):
         import test_locks as fixtures
         scenario = fixtures.KillScenario()
-        reads = []
+        class SwitchOnConfirm(fixtures.FakeStdin):
+            def readline(self):
+                scenario.conn.responses = [(p, batch([['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
+                                           if p == 'SELECT @@server_uuid' else value)
+                                           for p, value in scenario.conn.responses]
+                return super(SwitchOnConfirm, self).readline()
 
-        def identity(sql):
-            reads.append(sql)
-            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else
-                           'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
-
-        scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
-                                   for p, value in scenario.conn.responses]
-        code, out, err, _ = self.call(scenario, '--kill', '41', stdin=fixtures.FakeStdin('yes\n'))
+        code, out, err, _ = self.call(scenario, '--kill', '41', stdin=SwitchOnConfirm('yes\n'))
         self.assertEqual((code, out, scenario.kills()), (2, '', []))
         self.assertIn('[y/N]', err)
         self.assertIn('server identity', err)

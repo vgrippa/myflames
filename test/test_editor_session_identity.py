@@ -40,6 +40,8 @@ class EditorIdentityTests(unittest.TestCase):
         result = self.run_sql('SELECT 7')
         self.assertEqual(result['status'], 'complete', result)
         self.assertEqual(self.rows(result), [['7']])
+        self.assertTrue(result['session']['safe_updates'])
+        self.assertIn(ed.SAFE_UPDATES_ON, self.session_log())
         session = self.registry.get('tab1')
         with self.assertRaisesRegex(ConnectorError, 'server could not be confirmed'):
             session._send_kill(self.connection, session.connection_id)
@@ -59,7 +61,9 @@ class EditorIdentityTests(unittest.TestCase):
         second = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         self.rewrite_client(lambda text: text.replace('"hostname": "fake-db"',
             '"hostname": "host-" + getattr(self, "route_uuid", "1")[0]'))
-        self.route_packets({'server_uuid': first}, {'server_uuid': second}, {'server_uuid': first})
+        self.rewrite_client(lambda text: text.replace('routes[count % len(routes)]',
+                                                      'routes[min(count, len(routes) - 1)]'))
+        self.route_packets({'server_uuid': first}, {'server_uuid': second})
         self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
         session = self.registry.get('tab1')
         self.assertEqual(session.server_identity['server_uuid'], second)
@@ -137,6 +141,7 @@ class EditorIdentityTests(unittest.TestCase):
 
     def assert_writes_refused_without_identity(self):
         self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        self.assertIn(ed.SAFE_UPDATES_ON, self.session_log())
         sql = 'SET @must_not_run = 17'
         review = self.call('/api/editor/run', sql=sql)
         before = len(self.packets())
@@ -173,6 +178,7 @@ class EditorIdentityTests(unittest.TestCase):
     def test_safe_updates_refuses_missing_galera_uuid_before_sending(self):
         self.maria_client(wsrep=True, node_uuid=None)
         self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        self.assertIn(ed.SAFE_UPDATES_ON, self.session_log())
         review = self.call('/api/editor/open', safe_updates=False)
         before = len(self.packets())
         with self.assertRaisesRegex(ed.EditorError, 'The server could not be confirmed'):

@@ -147,7 +147,8 @@ class PacketTests(unittest.TestCase):
                   ('_reviewed_replay', '_accounts_replay', 'test_cluster_shell', 'test_ui_group_consent', 'test_cluster_group_actions', 'test_variables',
                    'test_replication', 'test_locks', 'test_cluster_actions', 'test_editor_process',
                    'test_editor_session', 'test_editor_session_identity', 'test_reviewed_writes_guard',
-                   'test_reviewed_writes_packets', 'test_reviewed_writes_evidence', 'test_accounts', 'test_cluster_privileges',
+                   'test_reviewed_writes_packets', 'test_reviewed_writes_evidence', 'test_reviewed_writes_e1',
+                   'test_accounts', 'test_cluster_privileges',
                    'test_cli_live_regressions', 'test_sql_cli', 'test_backend_kill_review')]
         paths.append(root / 'test' / 'live' / 'live_writes.py')
         for path in paths:
@@ -161,7 +162,7 @@ class PacketTests(unittest.TestCase):
         script, lines = dbops.target_guarded_script(guard, statements)
         self.assertEqual(script.splitlines()[0], 'DELIMITER //')
         packets = guarded_packets(script)
-        self.assertEqual([(g, s) for g, s, _ in packets], [(guard[0], s) for s in statements])
+        self.assertEqual([(g, s) for g, s, _ in packets], [(guard[0], s.rstrip(';')) for s in statements])
         self.assertEqual(lines, tuple(line for _, _, line in packets))
         self.assertEqual(lines, (2, 5, 7))
         self.assertEqual(script.count(guard[0]), len(statements))
@@ -434,7 +435,9 @@ class PacketTests(unittest.TestCase):
         writer = Writer()
         out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test')
         self.assertEqual(out['status'], 'done')
-        self.assertEqual([s for _, s, _ in guarded_packets(writer.writes[0])], plan['statements'])
+        self.assertEqual([s for _, s, _ in guarded_packets(writer.writes[0])],
+                         ["SET @note =\n 'a; b'", 'SET @other =\n 2 /* closed */'])
+        self.assertEqual(out['sent'], plan['statements'])
 
     def test_noncanonical_account_mode_changes_refuse_with_nothing_sent(self):
         canonical = accounts._with_password_mode("ALTER USER app IDENTIFIED BY 'fixture-secret'")

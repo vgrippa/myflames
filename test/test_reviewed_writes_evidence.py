@@ -12,6 +12,7 @@ from myflames.connector import ConnectorError
 from _reviewed_replay import evidence_body, evidence_output
 import test_reviewed_writes_guard as guard_fixtures
 from test_reviewed_writes_guard import UUID, MYSQL, Writer
+from _reviewed_replay import evidence_options
 
 OTHER_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 PROVIDER = '/usr/lib/galera/libgalera_smm.so'
@@ -21,7 +22,7 @@ class EvidenceRouter(object):
     """Choose the next node for every COM_QUERY, not for every client login.
 
     All statements between the chosen DELIMITER are one packet. The captured
-    read output is served by that node alongside its own identity suffix.
+    read output is served by that node after its own identity prefix.
     """
     def __init__(self, reader, nodes):
         self.reader, self.nodes, self.packets, self.writes = reader, nodes, [], []
@@ -29,6 +30,7 @@ class EvidenceRouter(object):
     def __getattr__(self, name):
         return getattr(self.reader, name)
 
+    @evidence_options
     def run(self, sql, extra_flags=None, **kwargs):
         body, marker = evidence_body(sql)
         if marker is None:
@@ -201,6 +203,7 @@ class EvidenceTests(unittest.TestCase):
             transport.server_version.side_effect = AssertionError('unbound version')
             transport.server_version_comment.side_effect = AssertionError('unbound comment')
             transport.is_mariadb.side_effect = AssertionError('unbound engine')
+            @evidence_options
             def read(sql, **kwargs):
                 body, marker = evidence_body(sql)
                 self.assertEqual(body, 'SELECT @@version')
@@ -348,8 +351,10 @@ class EvidenceTests(unittest.TestCase):
                     result = reviewed_writes.execute(writer, plan, lambda: plan, 'test')
                     self.assertEqual((result['status'], writer.writes), ('refused', []))
         for sql in ("SELECT '$q$'", 'SELECT column$q$', 'SELECT é$q$',
-                    'SELECT 1 /* $q$ */', 'SELECT 1 -- $q$', 'SELECT $q$ body $q$'):
+                    'SELECT 1 /* $q$ */', 'SELECT 1 -- $q$'):
             dbops.target_statement(sql)
+        with self.assertRaisesRegex(ValueError, 'dollar-quote'):
+            dbops.target_statement('SELECT $q$ body $q$')
         self.assertEqual(len(dbops.split_statements('SELECT $q$ ; \' /* $q$; SELECT 2', dollar_quotes=True)), 2)
         # On legacy clients these are identifiers; the intervening write
         # must never disappear into a modern-client string classification.

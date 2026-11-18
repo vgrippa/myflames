@@ -27,6 +27,7 @@ from _reviewed_replay import ReplayConn
 from myflames import dbops, replication as rp, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
+from _reviewed_replay import evidence_options
 
 TAG = rp.REPLICATION_TAG
 REAL_RECEIVER_READER = rp.read_receiver_identity
@@ -134,6 +135,7 @@ def private_home():
 class NoConn(object):
     """A connection that must not be used."""
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         raise AssertionError('no SQL may be sent: ' + sql)
 
@@ -166,6 +168,7 @@ class StrictReplay(ReplayConn):
     """ReplayConn that fails once a statement's recorded answers run out, so
     a loop test ends with an error instead of polling the last answer forever."""
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         from _reviewed_replay import evidence_body
         body, _ = evidence_body(sql)
@@ -1965,7 +1968,9 @@ class TestReviewGateRegressions(ReplicationCase):
                 with mock.patch.object(rp, 'read_status', return_value=changed) as read:
                     result = rp.skip_one(conn, '', plan['identity'], report=confirmed, confirmed=True, settle_s=0)
                 self.assertEqual(result['status'], 'refused')
-                read.assert_called_once_with(conn)
+                read.assert_called_once()
+                self.assertIsInstance(read.call_args[0][0], dbops.TargetEvidenceConnection)
+                self.assertIs(read.call_args[0][0].connection, conn)
                 conn.run.assert_not_called()
 
     def test_loop_checks_source_and_selected_error_on_its_final_fresh_read(self):
@@ -2253,6 +2258,18 @@ class TestReviewGateSurfaces(ReplicationCase):
 
 class TestReceiverGuardFallback(ReplicationCase):
 
+    @staticmethod
+    def packet_reader(report, answer):
+        """Add explicit node evidence to the synthetic receiver transport."""
+        from _reviewed_replay import answer_evidence
+        identity = dict(report['settings']['server_identity'], version=report['server_version'])
+        @evidence_options
+        def read(sql, extra_flags=None, timeout=None):
+            packet = answer_evidence(sql, extra_flags, timeout,
+                                     lambda body, flags, seconds: answer(body), identity)
+            return packet if packet is not None else answer(sql)
+        return read
+
     def test_start_snapshot_has_real_receiver_coverage_before_worker_runs(self):
         for fixture_name, instrument in (('mysql-8.4-gtid-error', 'stage/sql/Checking source version'),
                                           ('mariadb-11.4-error', 'stage/sql/Checking master version')):
@@ -2264,9 +2281,11 @@ class TestReceiverGuardFallback(ReplicationCase):
                         report, _ = status(fixture_name)
                         report['capabilities']['performance_schema'] = True
                         conn = _write_mock()
-                        conn.run.return_value = self.stage_row(instrument, enabled='YES' if enabled else 'NO')
-                        if problem:
-                            conn.run.side_effect = problem
+                        def answer(sql):
+                            if problem:
+                                raise problem
+                            return self.stage_row(instrument, enabled='YES' if enabled else 'NO')
+                        conn.run.side_effect = self.packet_reader(report, answer)
                         loop = rp.SkipLoop(conn, report['channels'][0]['name'], [1062], 1,
                                            receiver_reader=REAL_RECEIVER_READER)
 
@@ -2312,6 +2331,7 @@ class TestReceiverGuardFallback(ReplicationCase):
         conn = _write_mock()
         answers = iter(rows)
 
+        @evidence_options
         def run(sql, **kwargs):
             if 'events_stages_summary_by_thread_by_event_name' in sql:
                 answer = next(answers)
@@ -2321,7 +2341,7 @@ class TestReceiverGuardFallback(ReplicationCase):
             self.assertTrue(sql.startswith(rp.SKIP_TAG), sql)
             return ''
 
-        conn.run.side_effect = run
+        conn.run.side_effect = self.packet_reader(report, run)
         clock = FakeTime()
         loop = rp.SkipLoop(conn, name, [1062], 1, clock=clock.monotonic, sleep=clock.sleep,
                            receiver_reader=REAL_RECEIVER_READER, settle_s=0)

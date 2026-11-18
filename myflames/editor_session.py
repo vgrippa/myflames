@@ -182,8 +182,10 @@ HEX_VALUE = re.compile(r"0x(?:[0-9A-F]{2})*\Z")
 _TAB_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _NEAR = re.compile(r"near '(.*)' at line (\d+)\s*\Z", re.S)
 #: A $tag$ opener outside strings: MySQL 8.1+ clients read dollar-quoted text
-#: when the server supports it; myflames' splitter does not.
-_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_$\u0080-\U0010ffff])\$[A-Za-z0-9_]*\$")
+#: when the server supports it; myflames' splitter does not. With our utf8mb4
+#: client charset, every valid multibyte character is an identifier character,
+#: including inside the tag (mysql.cc:2715-2746; strings/sql_chars.cc:87-121).
+_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_$\u0080-\U0010ffff])\$[A-Za-z0-9_\u0080-\U0010ffff]*\$")
 _READ_WRITE = re.compile(r"\bREAD\s+WRITE\b|\b(?:TRANSACTION_READ_ONLY|TX_READ_ONLY)\b\s*(?::=|=)", re.I)
 _MODE_CHANGE = re.compile(r"\bSQL_MODE\b|(?:^|;)\s*(?:CALL|EXECUTE|SOURCE)\b", re.I)
 
@@ -746,14 +748,37 @@ class EditorSession(EditorInsights):
                 setup.extend(getattr(dbops, "READ_ONLY_SESSION_GUARD", ("SET SESSION TRANSACTION READ ONLY",)))
             if not defer_safe_updates and self.safe_updates_wanted != bool(self.safe_updates):
                 setup.append("SET SESSION sql_safe_updates = %d" % (1 if self.safe_updates_wanted else 0))
+            try:
+                guard = self._write_session_guard()
+            except ValueError:
+                # Optional identity reads must not prevent ordinary reads.
+                # Apply and verify startup protections without a binding;
+                # later writes, session changes and KILL still require one.
+                guard = None
             for statement in setup:
-                step = self._helper(TAG + statement, results=0)
+                step = self._helper(TAG + statement, results=0, guard=guard)
                 if not step.marker or self.ended:
                     raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
                 if step.real_errors():
                     raise ConnectorError("Could not prepare the session (%s): %s"
                                          % (statement, step.real_errors()[0].get("message")))
-            self.refresh_state()
+            if not self.refresh_state(guard=guard):
+                raise ConnectorError("Could not verify session setup. " + SESSION_ENDED_TEXT)
+            if not defer_safe_updates and self.safe_updates != self.safe_updates_wanted:
+                raise ConnectorError("The session's safe-updates setting could not be verified. " +
+                                     SESSION_ENDED_TEXT)
+            if self.read_only:
+                # SHOW supports the old and new names without guessing a
+                # version from a customizable version string. MySQL uses
+                # transaction_read_only; MariaDB 10.11 uses tx_read_only.
+                step = self._helper(TAG + "SHOW SESSION VARIABLES WHERE Variable_name IN "
+                                    "('transaction_read_only', 'tx_read_only')", guard=guard)
+                sets = [entry for entry in step.entries if entry["type"] == "rows"]
+                if (not step.marker or step.real_errors() or len(sets) != 1 or not sets[0]["rows"] or
+                        any(len(row) != 2 or str(row[0]).lower() not in ("transaction_read_only", "tx_read_only") or
+                            str(row[1]).upper() not in ("ON", "1") for row in sets[0]["rows"])):
+                    raise ConnectorError("The session's read-only transaction setting could not be verified. " +
+                                         SESSION_ENDED_TEXT)
             with self.lock:
                 if self.ended:
                     raise ConnectorError(self.end_message or SESSION_ENDED_TEXT)
@@ -835,7 +860,7 @@ class EditorSession(EditorInsights):
         # internal semicolons belong to the stored body, not suffix SQL.
         definition = next((unit["start"] for unit in dbops.split_statements(
             send, backslash_escapes=self.backslash_escapes)
-            if re.match(r"\s*CREATE\b", unit["code"], re.I)), len(send))
+            if re.match(r"\s*CREATE\b", unit["code"], re.I) or _ROUTINE_CREATE.match(unit["code"])), len(send))
         # A guard's final semicolon must remain its final character for the
         # shared packet builder. There is no suffix statement to tag there.
         terminal = ";" if send.endswith(";") else ""
@@ -1612,7 +1637,12 @@ class EditorSession(EditorInsights):
                                   "autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates, "
                                   "DATABASE() AS database_name%s"
                             % (token, extra), **guard_options)
-        row = self._helper_row(step)
+        row = self._helper_row(step) if step.marker and not step.real_errors() else None
+        if row is not None and (row.get("autocommit") not in ("0", "1") or
+                                row.get("sql_safe_updates") not in ("0", "1") or
+                                not isinstance(row.get("sql_mode"), str) or "database_name" not in row):
+            # A cached setting is not a successful readback of this packet.
+            row = None
         lost = False
         with self.lock:
             if row is None:
@@ -1631,7 +1661,7 @@ class EditorSession(EditorInsights):
         if reconnected:
             self._terminate()
             return False
-        self._refresh_transaction_meter()
+        self._refresh_transaction_meter(**guard_options)
         return True
 
     def status(self):
@@ -1846,7 +1876,11 @@ class EditorSession(EditorInsights):
                     # run_lock is held: a concurrent USE cannot slip between
                     # checking the confirmed default schema and sending ALTER.
                     if unit is not None and _ALTER_TABLE.match(unit["code"]).group(2) is None:
-                        step = self._helper(TAG + "SELECT DATABASE() AS database_name")
+                        try:
+                            step = self._helper(TAG + "SELECT DATABASE() AS database_name", guard=run.target_guard)
+                        except EditorError as exc:
+                            run.audit.outcome(statements, "refused", outcome=exc.code, message=str(exc))
+                            raise
                         row = self._helper_row(step)
                         if (not step.marker or step.real_errors() or not row or
                                 row.get("database_name") != run.alter_context.get("schema")):
@@ -2985,7 +3019,10 @@ _DROP_DATABASE = re.compile(r"^\s*DROP\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+
 _ALTER_TABLE = re.compile(r"^\s*ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE\s+(?:IF\s+EXISTS\s+)?(" +
                           _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)", re.I)
 _DDL_START = re.compile(r"^\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE)\b", re.I)
-_ROUTINE_CREATE = re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b", re.I | re.S)
+_ROUTINE_CREATE = re.compile(
+    r"^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?|"
+    r"ALTER\s+(?:DEFINER\s*=\s*[^;]+?\s+)?(?=EVENT\b))"
+    r"(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b", re.I | re.S)
 
 
 def _ddl_codes(unit):
@@ -3000,25 +3037,36 @@ def _ddl_codes(unit):
     routine = _ROUTINE_CREATE.match(code)
     if not routine:
         return [part for part in code.split(";") if part.strip()]
-    tokens = list(re.finditer(r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT|FUNCTION|PROCEDURE)\b|;", code, re.I))
+    tokens = list(re.finditer(r"\b(?:BEGIN|CASE|END|IF|LOOP|WHILE|REPEAT|FUNCTION|PROCEDURE|AS|IS)\b|;", code, re.I))
     # A package has an outer END in addition to its routines' BEGIN/END
     # blocks. Its optional Oracle initializer BEGIN shares that outer END:
     # mariadb-server/sql/sql_yacc.yy:20185-20199,20537-20595.
     package = routine.group(1).upper() == "PACKAGE"
     blocks, parts, start, index = ["PACKAGE"] if package else [], [], 0, 0
     package_routine = False
+    package_declarations = False
+    package_header = True
+    oracle_package = False
     while index < len(tokens):
         token = tokens[index]
         word = token.group(0).upper()
         if package and blocks == ["PACKAGE"] and word in ("FUNCTION", "PROCEDURE"):
+            package_header = False
             package_routine = True
+            package_declarations = False
+        elif package and blocks == ["PACKAGE"] and word in ("AS", "IS"):
+            if package_routine:
+                package_declarations = True
+            elif package_header:
+                oracle_package = True
         elif word in ("BEGIN", "CASE"):
-            if word == "BEGIN" and blocks == ["PACKAGE"] and not package_routine:
+            if word == "BEGIN" and blocks == ["PACKAGE"] and oracle_package and not package_routine:
                 blocks[-1] = "BEGIN"
             else:
                 blocks.append(word)
             if word == "BEGIN":
                 package_routine = False
+                package_declarations = False
         elif word == "END":
             following = tokens[index + 1] if index + 1 < len(tokens) else None
             qualifier = (following.group(0).upper() if following and
@@ -3029,9 +3077,17 @@ def _ddl_codes(unit):
                 if not blocks:
                     return [part for part in code.split(";") if part.strip()]
                 blocks.pop()
-        elif word == ";" and not blocks:
-            parts.append(code[start:token.start()])
-            start = token.end()
+        elif word == ";":
+            package_header = False
+            if not blocks:
+                parts.append(code[start:token.start()])
+                start = token.end()
+            elif blocks == ["PACKAGE"] and not package_declarations:
+                # Forward declarations and single-statement routine bodies
+                # end here too. An Oracle IS/AS declaration section, however,
+                # can contain semicolons before its routine's BEGIN.
+                # MariaDB sql_yacc.yy:19254-19259,20293-20312,20365-20378.
+                package_routine = False
         index += 1
     if blocks:
         return [part for part in code.split(";") if part.strip()]
@@ -3512,15 +3568,34 @@ def _may_enable_autocommit(code, idents):
         if scope in ("GLOBAL", "PERSIST", "PERSIST_ONLY"):
             continue
         name = dbops._name(re.split(r"\s*\.\s*", assignment.group(5))[-1], idents).lower()
-        if name == "autocommit" and not re.fullmatch(r"\s*(?:0|OFF|FALSE)\s*", piece[assignment.end():]):
+        # Double-quoted identifiers under ANSI_QUOTES are masked as strings.
+        # Their name cannot prove that this is a different session variable.
+        if name in ("autocommit", "''") and not re.fullmatch(r"\s*(?:0|OFF|FALSE)\s*", piece[assignment.end():]):
             return True
     return False
+
+
+def _unwrap_set_statement(code):
+    """Expose a MariaDB SET STATEMENT's executable SQL for transaction checks.
+
+    Use the shared classifier's FOR boundary: expressions may contain a
+    parenthesized FOR or NEXT/PREVIOUS VALUE FOR. MariaDB sql_yacc.yy:17472-17486
+    accepts a directly_executable_statement after this boundary.
+    """
+    from . import dbops
+    code = code.upper()
+    while re.match(r"\s*SET\s+STATEMENT\b", code):
+        found = dbops._set_statement_for(dbops._flat(code))
+        if found is None:
+            break
+        code = code[found.end():]
+    return code
 
 
 def implicit_commit(unit):
     """True when the statement commits an open transaction before it runs."""
     return any(_IMPLICIT_COMMIT.match(part) or _may_enable_autocommit(part, unit.get("idents") or [])
-               for part in unit["code"].split(";"))
+               for part in (_unwrap_set_statement(p) for p in unit["code"].split(";")))
 
 
 #: COMMIT or ROLLBACK, except ROLLBACK [WORK] TO [SAVEPOINT] name, which
@@ -3552,8 +3627,8 @@ def may_replace_transaction(unit, errors):
         return False
     # Under a custom DELIMITER one client statement can hold several server
     # statements; code masks strings and comments, so ';' separates them.
-    parts = [part for part in unit["code"].split(";") if part.strip()]
-    if not any(_ENDING_CONTROL.match(part) or implicit_commit({"code": part}) for part in parts):
+    parts = [_unwrap_set_statement(part) for part in unit["code"].split(";") if part.strip()]
+    if not any(_ENDING_CONTROL.match(part) or implicit_commit(dict(unit, code=part)) for part in parts):
         return False
     if unit["status"] != "error" or len(parts) > 1 or not unit.get("single", True):
         return True
@@ -3806,8 +3881,12 @@ def _use_database(session, name):
     try:
         if session.ended:
             raise EditorError(session.end_message or SESSION_ENDED_TEXT, "session_ended")
+        try:
+            guard = session._write_session_guard()
+        except ValueError as exc:
+            raise EditorError(str(exc), "identity_unavailable") from None
         statement = "USE `%s`" % name.replace("`", "``")
-        step = session._helper(TAG + statement, results=0)
+        step = session._helper(TAG + statement, results=0, guard=guard)
         errors = step.real_errors()
         if not step.marker or session.ended:
             raise EditorError(session.end_message or SESSION_ENDED_TEXT, "session_ended")
@@ -3815,10 +3894,16 @@ def _use_database(session, name):
             from . import dbops
             raise EditorError(dbops.redact(errors[0].get("message") or "The server refused the database change.",
                                            session._conn.password if session._conn is not None else None), "error")
-        if not session.refresh_state() or session.ended:
-            raise EditorError("The database change could not be verified; its outcome is unknown.", "unknown")
-        if session.database_name != name:
-            raise EditorError("The database change could not be verified; its outcome is unknown.", "unknown")
+        try:
+            verified = session.refresh_state(guard=guard)
+        except (ConnectorError, EditorError):
+            # USE already succeeded. A refused readback cannot make that
+            # change unsent, and the tab must not keep an unverified schema.
+            verified = False
+        if not verified or session.ended or session.database_name != name:
+            message = "The database change could not be verified; its outcome is unknown."
+            session.end("use_unverified", message + " " + SESSION_ENDED_TEXT)
+            raise EditorError(message, "unknown")
     finally:
         session.run_lock.release()
 

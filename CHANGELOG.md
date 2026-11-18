@@ -25,6 +25,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor verifies startup protections and guards them on the tab's original server session when its identity is complete. Database changes require that identity guard. It refuses unsupported dollar-quoted text with multibyte tags and applies the commit policy to MariaDB transaction controls wrapped in SET STATEMENT.
+- Variable changes, replication skips, privilege checks and Kill confirmations require all review reads to come from the same server. Confirmed writes reject dollar-quote syntax whose meaning differs between MySQL clients, including multibyte tags.
 - Confirmed writes reject ambiguous quote and comment boundaries. Query editor writes also check the server's current quote mode in the request that executes them. Safe-updates changes and ALTER lock-wait settings check their destination in the same request as the change they protect, and an incomplete server identity refuses writes while leaving ordinary editor reads available. Kill checks that its session, transaction and prepared-XA evidence all came from the same server; an unreadable identity check refuses the change.
 - A change confirmed through a proxy or router now reaches only the server that was reviewed, even when the proxy routes statements or backend sessions separately; on MariaDB Galera the check also tells apart nodes that share a name and server id.
 - Query editor binds startup identity and transaction controls to their server session, and Stop works with Performance Schema disabled while explaining ownership refusals and reporting when a statement has already ended without exposing internal SQL.
@@ -35,13 +37,16 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor accepts MariaDB package forward declarations and single-statement routines, compound ALTER EVENT bodies and terminal comments under a custom delimiter as one DDL confirmation.
+- Creating or renaming an account works when its destination does not yet exist: an expected read error preserves the validated server identity so the review can continue. Confirmed statements with trailing semicolons or comments no longer send an empty statement to the server.
+- Identity checks retain partial read output only when explicitly requested, keep client failures distinguishable, and tag their internal reads. Their error messages hide internal SQL and credentials, and privilege checks preserve connection-group consent refusals.
 - Query editor confirmed writes accept validated compound definitions, custom delimiters and escaped quotes using the tab's SQL mode. Stop explains when a routine or prepared statement continues because its inner SQL cannot be confirmed as belonging to the tab.
 - Users and roles no longer fails with a SQL syntax error when changing passwords, creating accounts with generated passwords or granting MariaDB package privileges.
 - Query editor leaves stored routine, trigger and event bodies unchanged when their definition follows another statement under a custom delimiter.
 
 - Query editor results keep their original order and error positions when a write checks the server identity. Private identity replies no longer appear as query results or count toward result limits.
 - A connection lost during a confirmed write is recorded as Outcome unknown. The editor ends that session before any later statement runs.
-- Query editor tabs open when optional server identity variables cannot be read, including MariaDB with custom version strings. If the required identity is unavailable, Stop and Close report that the server could not be confirmed before sending an interrupt.
+- Query editor tabs open for ordinary reads when optional server identity variables cannot be read, including MariaDB with custom version strings, after applying and verifying startup protections. An incomplete identity still refuses writes and session changes; Stop and Close report that the server could not be confirmed before sending an interrupt.
 - Users and roles returns a generated password when MariaDB accepted it but a later identity check prevented unlocking the new account. The password is shown once and is never recorded in the audit.
 - MySQL Shell exception messages containing text such as `at STDIN:1` no longer supply a false error location. An error without Shell's own call-site line keeps an unknown outcome and still reads the cluster for visible partial changes.
 

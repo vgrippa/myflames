@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from myflames.connector import ConnectorError
+from _reviewed_replay import evidence_options
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'accounts'
 SERVERS = ('mysql-8.0', 'mysql-8.4', 'mysql-9.7', 'mariadb-10.11', 'mariadb-11.4')
@@ -34,11 +35,14 @@ class ReplayConn(object):
             self.answers.setdefault(call['sql'], call)
         self.version = version
         self.sent = []
+        self.wire = []
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
-        from _reviewed_replay import evidence_body, evidence_output
+        from _reviewed_replay import evidence_body, evidence_call
         body, marker = evidence_body(sql)
         if marker:
+            self.wire.append(sql)
             values = {'version': self.version}
             for call in self.answers.values():
                 for line in call.get('output', '').splitlines():
@@ -46,7 +50,7 @@ class ReplayConn(object):
                         key, value = line.split('\t', 1)
                         if key in ('server_id', 'hostname', 'port', 'server_uuid'):
                             values[key] = value
-            return evidence_output(self.run(body, ['--comments'], timeout), marker, values)
+            return evidence_call(lambda: self.run(body, ['--comments'], timeout), marker, values)
         self.sent.append((sql, extra_flags))
         if sql == 'SELECT @@version':
             return self.version + '\n'

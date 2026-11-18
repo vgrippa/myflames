@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _reviewed_replay import guarded_packets
+from _reviewed_replay import answer_evidence, evidence_options, guarded_packets
 from myflames import accounts_cli, dbops, editor_session, mcp_server, replication, server_checks, sql_cli
 from myflames import variables as V
 from myflames.perf_common import Server
@@ -32,6 +32,21 @@ class LiveCLIRegressions(unittest.TestCase):
                 mariadb_variable('long_query_time', type='DOUBLE', min='0', max='31536000',
                                  scope='GLOBAL & SESSION', global_value='0.200000', session_value='0.200000'))
 
+    def review_connection(self, variable):
+        conn = mock.Mock()
+        conn.password = None
+        values = dict(variable['server_identity'], version=variable['server_version'])
+        def answer(sql, flags, timeout):
+            self.assertEqual(sql, V.TAG + 'SHOW GRANTS')
+            return ''
+        @evidence_options
+        def run(sql, extra_flags=None, timeout=None):
+            packet = answer_evidence(sql, extra_flags, timeout, answer, values)
+            self.assertIsNotNone(packet, 'the grants read must carry its node evidence')
+            return packet
+        conn.run.side_effect = run
+        return conn
+
     def test_double_literals_are_plain_exact_decimals(self):
         for variable in self.variables():
             for raw, expected in (('10', '10'), ('10.00', '10'), ('0.00000001', '0.00000001'),
@@ -49,8 +64,7 @@ class LiveCLIRegressions(unittest.TestCase):
             with self.subTest(engine=variable['engine']):
                 after = {'engine': variable['engine'], 'server_version': variable['server_version'],
                          'server_identity': variable['server_identity'], 'global': '0.200000', 'global_read': True}
-                conn = mock.Mock()
-                conn.run.return_value = ""
+                conn = self.review_connection(variable)
                 store = WorkspaceStore(Path(self.temp.name) / (variable['engine'] + '.sqlite3'))
                 audit = dbops.AuditTrail(store, 'set_global', 'cli')
                 with mock.patch.object(V, 'read_variable', return_value=variable), \
@@ -68,8 +82,7 @@ class LiveCLIRegressions(unittest.TestCase):
             with self.subTest(engine=variable['engine']):
                 after = {'engine': variable['engine'], 'server_version': variable['server_version'],
                          'server_identity': variable['server_identity'], 'global': '10.000000'}
-                conn = mock.Mock()
-                conn.run.return_value = ''
+                conn = self.review_connection(variable)
                 store = WorkspaceStore(Path(self.temp.name) / (variable['engine'] + '.sqlite3'))
                 audit = dbops.AuditTrail(store, 'set_global', 'cli')
                 with mock.patch.object(V, 'read_variable', return_value=variable), \
@@ -95,8 +108,7 @@ class LiveCLIRegressions(unittest.TestCase):
             after = {'engine': variable['engine'], 'server_version': variable['server_version'],
                      'server_identity': variable['server_identity'], 'global': '0.200000',
                      'persisted': '0.2', 'persisted_state': {'present': True, 'value': '0.2', 'read': True}}
-            conn = mock.Mock()
-            conn.run.return_value = ''
+            conn = self.review_connection(variable)
             with mock.patch.object(V, 'read_variable', return_value=variable), \
                     mock.patch.object(V, '_after', return_value=after):
                 code, result = V.change_cli(conn, 'long_query_time', '0.2', 'persist', assume_yes=True, quiet=True)

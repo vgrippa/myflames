@@ -134,7 +134,7 @@ class GuardTests(unittest.TestCase):
         writer = Writer()
         out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual([(g, stmt) for g, stmt, _ in guarded_packets(writer.writes[0])],
-                         [(MYSQL_GUARD, stmt) for stmt in plan['statements']])
+                         [(MYSQL_GUARD, stmt.rstrip(';')) for stmt in plan['statements']])
         self.assertEqual(out['sent'], plan['statements'])
         self.assertEqual(self.records()[0]['statements'], [MYSQL_GUARD] + plan['statements'])
 
@@ -296,7 +296,7 @@ class GuardTests(unittest.TestCase):
             out = reviewed_writes.execute(conn, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
         self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'identity_mismatch', []))
         self.assertEqual([(g, s) for g, s, _ in guarded_packets(client.call_args[1]['input'].decode('utf-8'))],
-                         [(MYSQL_GUARD, s) for s in plan['statements']])
+                         [(MYSQL_GUARD, s.rstrip(';')) for s in plan['statements']])
         argv = client.call_args[0][0]
         self.assertIn('--skip-reconnect', argv)
         self.assertNotIn('--force', argv)

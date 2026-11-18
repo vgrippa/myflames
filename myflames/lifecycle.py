@@ -582,11 +582,11 @@ class LifecycleConnection(MySQLConnection):
         self.socket = socket
         super(LifecycleConnection, self).__init__(**options)
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, retain_partial_stdout=False):
         with self._invocation_defaults() as defaults_path:
-            return self._run_with_defaults(sql, extra_flags, timeout, defaults_path)
+            return self._run_with_defaults(sql, extra_flags, timeout, defaults_path, retain_partial_stdout)
 
-    def _run_with_defaults(self, sql, extra_flags, timeout, defaults_path):
+    def _run_with_defaults(self, sql, extra_flags, timeout, defaults_path, retain_partial_stdout=False):
         argv = self._build_argv('', extra_flags, defaults_path=defaults_path)[:-2]
         if self.socket:
             argv += ['--protocol=SOCKET', '--socket=' + self.socket]
@@ -602,8 +602,13 @@ class LifecycleConnection(MySQLConnection):
             auth = _client_auth_error(raw, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
-            error = ConnectorError(dbops.redact(raw, self.password))
-            error.server_error_code = dbops.error_code(raw)
+            from .connector import PartialReadError, _client_text, _server_read_error
+            message = dbops.redact(raw, self.password)
+            code = dbops.error_code(raw)
+            error = (PartialReadError(message, _client_text(proc.stdout))
+                     if retain_partial_stdout and _server_read_error(raw)
+                     else ConnectorError(message))
+            error.server_error_code = code
             raise error
         from .connector import _client_text
         return _client_text(proc.stdout)
@@ -623,7 +628,7 @@ class _BoundedConnection(object):
     def __init__(self, connection, job=None, deadline=None):
         self.connection, self.job, self.deadline = connection, job, deadline
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
         if self.job:
             self.job.check_cancel()
         seconds = min(timeout or 5, 5)
@@ -632,7 +637,7 @@ class _BoundedConnection(object):
             if seconds <= 0:
                 raise LifecycleError('Metadata sampling deadline reached.')
         try:
-            return self.connection.run(sql, extra_flags=extra_flags, timeout=seconds)
+            return self.connection.run(sql, extra_flags=extra_flags, timeout=seconds, **kwargs)
         finally:
             if self.job:
                 self.job.check_cancel()

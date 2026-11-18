@@ -485,8 +485,8 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
         result = m.execute_action(conn, plan)
         self.assertEqual(result['status'], 'done', result)
         self.assertEqual([(g, s) for g, s, _ in guarded_packets(conn.batches[0])],
-                         [(guard, '/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;')])
-        self.assertEqual(conn.writes, ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])
+                         [(guard, dbops.split_statements('/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;')[0]['text'])])
+        self.assertEqual(conn.writes, [dbops.split_statements(s)[0]['text'] for s in plan['statements']])
 
     def test_same_session_mismatch_refuses_before_any_action_is_executed(self):
         conn = self.client()
@@ -542,7 +542,7 @@ class TestGaleraReviewedIdentity(_ClusterPrivilegeCase):
                 plan = self.plan(conn, aid)
                 self.assertEqual(len(reviewed_writes.session_guard(plan)), 1)
                 self.assertEqual(m.execute_action(conn, plan, typed=plan['typed_guard'])['status'], 'done')
-                self.assertEqual(conn.writes, plan['statements'])
+                self.assertEqual(conn.writes, [dbops.split_statements(s)[0]['text'] for s in plan['statements']])
 
     def test_missing_identity_still_fails_closed(self):
         conn = self.client()

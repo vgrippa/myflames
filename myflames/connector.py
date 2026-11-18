@@ -769,7 +769,7 @@ def probe_client(path, check_trust=True, chosen=None):
 
 
 class PartialReadError(ConnectorError):
-    """A framed, read-only batch failed; its caller must validate completion.
+    """A read batch failed; its caller must validate any completed prefix.
 
     Output is deliberately absent from the error message and never accepted
     as a successful reading by the ordinary connector methods.
@@ -778,6 +778,18 @@ class PartialReadError(ConnectorError):
     def __init__(self, message, stdout):
         super().__init__(message)
         self.stdout = stdout
+
+
+def _server_read_error(stderr):
+    """Recognize a server diagnostic, excluding client error numbers.
+
+    MariaDB can echo the complete packet before its closing separator.
+    Only the first diagnostic after that echo determines the error kind.
+    """
+    boundary = stderr.rfind("\n--------------\n")
+    diagnostic = stderr[boundary + len("\n--------------\n"):] if boundary >= 0 else stderr
+    error = re.search(r"^ERROR\s+(\d+)\b", diagnostic, re.M)
+    return error is not None and not 2000 <= int(error.group(1)) <= 2999
 
 
 class _InvocationDefaults(str):
@@ -1289,19 +1301,26 @@ class MySQLConnection:
             self._group_login_started = True
         return _run_bounded(argv, **options)
 
-    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None):
+    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None,
+            retain_partial_stdout=False):
         """Run SQL through the resolved client and return its decoded stdout."""
-        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start)
+        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start,
+                                     retain_partial_stdout=retain_partial_stdout)
 
     def _run_with_binary(self, sql, binary, extra_flags=None, timeout=None, tail_timeout=None,
-                         on_tail_start=None, used=None):
+                         on_tail_start=None, used=None, retain_partial_stdout=False):
         """Run *sql* and return the raw stdout as a ``str``.
 
         Raises :class:`ConnectorError` with stderr attached on failure.
+        ``retain_partial_stdout=True`` retains completed stdout privately in
+        :class:`PartialReadError` only on a server SQL error, so client and
+        transport errors keep their ordinary type and never attach stdout.
         ``tail_timeout=(marker, seconds)`` is for framed read-only batches:
         unbuffered output starts a separate deadline at the complete marker
-        row, and errors retain stdout in :class:`PartialReadError`.
-        Optional on_tail_start runs at that marker, even if the tail fails.
+        row, and any non-zero client exit (except auth-plugin errors) or
+        timeout retains stdout in :class:`PartialReadError` for the caller to
+        validate against the markers. Optional on_tail_start runs at that
+        marker, even if the tail fails.
         """
         started = time.monotonic()
         try:
@@ -1339,7 +1358,11 @@ class MySQLConnection:
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
                 + self._tunnel_note(started)
             )
-            if tail_timeout is not None:
+            # Framed tail_timeout batches keep completed stdout on any failed
+            # exit (their caller validates the markers); retain_partial_stdout
+            # keeps it only for a server diagnostic, so a client or transport
+            # error never authorizes a read fallback.
+            if tail_timeout is not None or (retain_partial_stdout and _server_read_error(stderr)):
                 raise PartialReadError(message, _client_text(proc.stdout))
             raise ConnectorError(message)
         return _client_text(proc.stdout)

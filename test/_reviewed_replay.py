@@ -4,26 +4,66 @@ Keep recorded writes unchanged. The adapter unwraps guarded query packets,
 records their full input, and maps recorded errors to packet start lines.
 The supplements below are fake evidence, never claims about the live capture.
 """
+import contextvars
+import functools
 import re
 
 from _perf_replay import ReplayConn as RecordedReplayConn
-from myflames.connector import ConnectorError
+from myflames.connector import ConnectorError, PartialReadError
 from myflames import dbops
 
 UUID = '11111111-2222-3333-4444-555555555555'
 PREFIX = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE "
+_RETAIN_PARTIAL_STDOUT = contextvars.ContextVar('reviewed_replay_partial_stdout', default=False)
+
+
+def evidence_options(run):
+    """Forward the connector opt-in through old fake transport signatures.
+
+    Nested fake wrappers inherit the request's option. Ordinary reads retain
+    their old exception type; only an explicitly opted-in packet can expose
+    its completed identity prefix through evidence_call.
+    """
+    @functools.wraps(run)
+    def wrapped(*args, **kwargs):
+        enabled = kwargs.pop('retain_partial_stdout', _RETAIN_PARTIAL_STDOUT.get())
+        token = _RETAIN_PARTIAL_STDOUT.set(enabled)
+        try:
+            return run(*args, **kwargs)
+        finally:
+            _RETAIN_PARTIAL_STDOUT.reset(token)
+    return wrapped
+
+
+def read_statements(sql):
+    """Parse every server statement inside a single client read packet."""
+    if sql.startswith('DELIMITER '):
+        header, sql = sql.split('\n', 1)
+        delimiter = header[len('DELIMITER '):]
+        assert sql.endswith(delimiter + '\n')
+        assert sql.count(delimiter) == 1, 'evidence must occupy exactly one packet'
+        sql = sql[:-len(delimiter) - 1]
+    return [unit['text'] for unit in dbops.split_statements(sql)]
 
 
 def evidence_body(sql):
     """Unwrap a synthetic read packet without weakening production parsing."""
-    match = re.search(r"\n;\nSELECT '(myflames_evidence_[0-9a-f]{32})';\n", sql)
+    match = re.search(r"\n/\*myflames:[^\r\n]*?\*/ SELECT '(myflames_evidence_[0-9a-f]{32})';\n", sql)
     if not sql.startswith('DELIMITER ') or not match:
         return sql, None
     header, body = sql.split('\n', 1)
     delimiter = header[len('DELIMITER '):]
     assert body.endswith(delimiter + '\n')
     assert body.count(delimiter) == 1, 'evidence must occupy exactly one packet'
-    return sql[len(header) + 1:match.start()], match.group(1)
+    statements = read_statements(sql)
+    assert len(statements) >= 4
+    prefix = [re.sub(r'^/\*myflames:[^\r\n]*?\*/ ', '', statement) for statement in statements[:3]]
+    assert prefix[0].startswith('SHOW GLOBAL VARIABLES WHERE Variable_name IN (')
+    assert prefix[1] == "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"
+    assert prefix[2] == "SELECT '%s'" % match.group(1)
+    # Recordings used '; ' between read statements. Only separators change;
+    # the production builder's validated bodies remain byte-for-byte intact.
+    return '; '.join(statements[3:]), match.group(1)
 
 
 def evidence_output(output, marker, values, xml=False):
@@ -31,15 +71,33 @@ def evidence_output(output, marker, values, xml=False):
     values = {key: value for key, value in values.items()
               if key in dbops._EVIDENCE_VARIABLES or key == 'wsrep_gcomm_uuid'}
     if not xml:
-        return output + ('' if not output or output.endswith('\n') else '\n') + marker + '\n' + ''.join(
-            '%s\t%s\n' % (key, value) for key, value in values.items())
+        return ''.join('%s\t%s\n' % (key, value) for key, value in values.items()) + marker + '\n' + output
     from xml.sax.saxutils import escape
     def result(rows):
         return '<resultset>' + ''.join('<row>' + ''.join('<field name="%s">%s</field>' %
                     (escape(key), escape(str(value))) for key, value in row) + '</row>' for row in rows) + '</resultset>\n'
-    return output + result([[('marker', marker)]]) + result([
+    return result([
         [('Variable_name', key), ('Value', value)] for key, value in values.items() if key != 'wsrep_gcomm_uuid']) + result([
-        [('Variable_name', 'wsrep_gcomm_uuid'), ('Value', values['wsrep_gcomm_uuid'])]] if 'wsrep_gcomm_uuid' in values else [])
+        [('Variable_name', 'wsrep_gcomm_uuid'), ('Value', values['wsrep_gcomm_uuid'])]] if 'wsrep_gcomm_uuid' in values else []) + result([[('marker', marker)]]) + output
+
+
+def evidence_call(answer, marker, values, xml=False):
+    """Retain the prefix when the recorded READ raises a server error.
+
+    Transport failures never gain synthetic success evidence. The test's
+    fake explicitly supplies the identity, separately from recorded state.
+    """
+    try:
+        output = answer()
+    except ConnectorError as exc:
+        code = dbops.error_code(str(exc))
+        if not _RETAIN_PARTIAL_STDOUT.get() or code is None or 2000 <= code <= 2999:
+            raise
+        message = re.sub(r'\bat line \d+:', 'at line 2:', str(exc))
+        if not re.search(r'\bat line 2:', message):
+            message = re.sub(r'(ERROR\s+\d+(?:\s+\([^)]*\))?):', r'\1 at line 2:', message)
+        raise PartialReadError(message, evidence_output('', marker, values, xml)) from None
+    return evidence_output(output, marker, values, xml)
 
 
 def answer_evidence(sql, extra_flags, timeout, answer, values):
@@ -56,7 +114,7 @@ def answer_evidence(sql, extra_flags, timeout, answer, values):
     if marker is None:
         return None
     flags = [flag for flag in (extra_flags or []) if flag != '--skip-reconnect']
-    return evidence_output(answer(body, flags, timeout), marker, values, xml='--xml' in flags)
+    return evidence_call(lambda: answer(body, flags, timeout), marker, values, xml='--xml' in flags)
 
 
 def guarded_packets(sql):
@@ -167,11 +225,12 @@ class ReplayConn(RecordedReplayConn):
                     self.evidence_values.pop('server_uuid', None)
                 break
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         body, marker = evidence_body(sql)
-        output = super(ReplayConn, self).run(body, extra_flags=extra_flags, timeout=timeout)
-        return (evidence_output(output, marker, self.evidence_values, '--xml' in (extra_flags or []))
-                if marker else output)
+        def read():
+            return super(ReplayConn, self).run(body, extra_flags=extra_flags, timeout=timeout)
+        return evidence_call(read, marker, self.evidence_values, '--xml' in (extra_flags or [])) if marker else read()
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         body = recorded_body(sql)

@@ -470,6 +470,10 @@ def fixture_connection(tool, maria=False):
         conn = FakeConn(ver, [("SELECT 'myflames_who'", batch([
             ["myflames_who", "app@localhost", "app@%", "NONE", ver], [grant],
             ["partial_revokes", "OFF"]])), ("APPLICABLE_ROLES", "")])
+        # These privilege-only recordings predate the packet identity prefix.
+        conn.evidence_values = {'version': ver, 'server_id': '1', 'hostname': 'fixture-db', 'port': '3306'}
+        if not maria:
+            conn.evidence_values['server_uuid'] = '11111111-2222-3333-4444-555555555555'
     return conn, patches
 
 
@@ -658,7 +662,7 @@ class TestServerReadTools(unittest.TestCase):
             store.find_profile.assert_called_once_with("Fixture")
             self.assertEqual(store.connection_with_saved_password.call_args[0][0]["profile_id"], "p1")
             self.assertEqual(result["account"], "app@%")
-            with mock.patch.object(conn, "run", side_effect=ConnectorError("saved-test-secret failed")):
+            with mock.patch.object(conn, "run", side_effect=ConnectorError("ERROR 1045 (28000): saved-test-secret failed")):
                 with self.assertRaises(ValueError) as caught:
                     mcp.my_privileges_tool("Fixture")
             self.assertNotIn("saved-test-secret", str(caught.exception))

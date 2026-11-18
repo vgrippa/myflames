@@ -2460,6 +2460,9 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     if blocked:
         return _unsent(result, audit, "refused" if blocked[0] == "refused" else "needs_confirmation",
                        "read_only" if blocked[0] == "refused" else "needs_confirmation", blocked[1], expect)
+    # Status, permission and the final status recheck must describe one
+    # node, even if a proxy routes each read packet independently.
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
     report = status_reader(conn)
     result["engine"], result["server_version"] = report.get("engine"), report.get("server_version")
     if audit is not None:
@@ -2536,6 +2539,7 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
         blocked = before_send() if before_send is not None else None
         if blocked:
             return _unsent(result, audit, "refused", blocked, STOP_REASONS[blocked][0], expect)
+        conn.check()
         result["sent"] = send_state["sent"] = True
     try:
         conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
@@ -2851,7 +2855,10 @@ class SkipLoop(object):
                  receiver_required=False):
         if not isinstance(channel, str) or len(channel) > 256:
             raise ValueError("Choose the channel to watch by its name.")
-        self.conn = conn
+        # Receiver checks run from status-guard callbacks as well as between
+        # skips. Keep those reads in the same node scope as status and grants;
+        # otherwise a callback could silently inspect another proxy backend.
+        self.conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
         self.channel = channel
         self.codes = check_codes(codes)
         self.max_skips = check_max_skips(max_skips)
@@ -3101,7 +3108,7 @@ class SkipLoop(object):
         except ReceiverUnstable as exc:
             problem, unstable = str(exc), True
         except (ConnectorError, ValueError) as exc:
-            if isinstance(exc, ConnectorError) and _fatal(exc):
+            if isinstance(exc, ConnectorError) and (_fatal(exc) or getattr(exc, "identity_outcome", None)):
                 return "connection_lost", str(exc)
             problem = str(exc)
         details = _receiver_details(report.get("engine"), identity,

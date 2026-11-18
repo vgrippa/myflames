@@ -2357,7 +2357,7 @@ class TestBoundedTransport(unittest.TestCase):
     def test_identity_sql_error_retains_stdout_only_for_opted_in_read_batches(self):
         output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
         script = 'import sys\nsys.stdout.write(%r)\nsys.stderr.write("ERROR 1227: denied")\nsys.exit(1)' % output
-        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}):
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
             with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
                 with self.assertRaises(ConnectorError) as caught:
                     conn.run('SELECT 1', **options)
@@ -2365,6 +2365,39 @@ class TestBoundedTransport(unittest.TestCase):
                 if options:
                     self.assertEqual(caught.exception.stdout, output)
                 self.assertIsNotNone(self.children[0].poll())
+
+    def test_framed_tail_timeout_retains_stdout_on_connection_loss(self):
+        output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 2013 (HY000): Lost connection to MySQL server during query")\n'
+                  'sys.exit(1)' % output)
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
+            with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    conn.run('SELECT 1', **options)
+                if 'tail_timeout' in options:
+                    self.assertIs(type(caught.exception), connector.PartialReadError)
+                    self.assertEqual(caught.exception.stdout, output)
+                else:
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_opted_in_reads_never_attach_stdout_to_client_errors(self):
+        for diagnostic in ('ERROR 2003 (HY000): Cannot connect',
+                           'ERROR 2013 (HY000) at line 2: Lost connection',
+                           'client failed without a server diagnostic'):
+            for options in ({}, {'retain_partial_stdout': True}):
+                script = ('import sys\nsys.stdout.write("private prefix\\n")\n'
+                          'sys.stderr.write(%r)\nsys.exit(1)' % diagnostic)
+                with self.subTest(diagnostic=diagnostic, options=options), self.child(script), \
+                        MySQLConnection('h', binary='mysql') as conn:
+                    with self.assertRaises(ConnectorError) as caught:
+                        conn.run('SELECT 1', **options)
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                    self.assertNotIn('private prefix', str(caught.exception))
+                    self.assertIsNotNone(self.children[0].poll())
 
 
 class TestClientText(unittest.TestCase):
@@ -2451,6 +2484,10 @@ class TestClientSecurityFixes(unittest.TestCase):
                                          if text in genuine else ConnectorError)
                         if text in genuine:
                             self.assertIn('client_ed25519 plugin', str(caught.exception))
+                        if method == 'run' and text in genuine:
+                            with self.assertRaises(connector.ClientAuthPluginError) as opted:
+                                conn.run('SELECT 1', retain_partial_stdout=True)
+                            self.assertFalse(hasattr(opted.exception, 'stdout'))
 
     def test_option_file_keeps_the_client_it_was_built_for(self):
         mysql = self.binary()

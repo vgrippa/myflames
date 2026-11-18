@@ -1702,7 +1702,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
         return refuse('stale', 'The connection or the account changed since the review; nothing was sent.')
     if not _same_sql_connection(conn, plan._connection):
         return refuse('stale', 'The SQL connection differs from the reviewed one; nothing was sent.')
-    conn = dbops.TargetEvidenceConnection(conn)
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
     try:
         engine, version = _server(conn)
         if engine != plan['engine'] or version != plan['version']:

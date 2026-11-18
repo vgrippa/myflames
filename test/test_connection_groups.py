@@ -508,6 +508,8 @@ class TestReadConsent(GroupCase):
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run
+            from _reviewed_replay import evidence_options
+            @evidence_options
             def run(sql, extra_flags=None, timeout=None):
                 # The captured replica predates the optional reconnect read.
                 if sql == rp.REPLICATION_TAG + rp._RECEIVER_SQL:

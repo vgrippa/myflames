@@ -149,7 +149,7 @@ class CaptureAndStore(unittest.TestCase):
 
         def edit(method, sql, call):
             if "'myflames_who'" in sql:
-                raise ConnectorError('mysql client exited 1: login %s failed' % secret)
+                raise ConnectorError('mysql client exited 1: ERROR 1045 (28000): login %s failed' % secret)
             return call
         conn = R.ReplayConn(record, edit=edit)
         conn.password = secret
@@ -158,14 +158,16 @@ class CaptureAndStore(unittest.TestCase):
         self.assertIn('[redacted]', snapshot['coverage']['tables']['reason'])
 
     def test_every_read_gets_what_is_left_of_the_budget(self):
+        from _reviewed_replay import evidence_options, read_statements
         record = R.recording('mysql-8.4', 'before')
         seen = []
         conn = R.ReplayConn(record)
         conn.query_timeout = 600
         original = conn.run
 
+        @evidence_options
         def run(sql, extra_flags=None, timeout=None):
-            seen.append((sql[:40], timeout or conn.query_timeout))
+            seen.extend((statement, timeout or conn.query_timeout) for statement in read_statements(sql))
             return original(sql, extra_flags, timeout)
         conn.run = run
         # Ten seconds pass between budget checks: the privileges read (no

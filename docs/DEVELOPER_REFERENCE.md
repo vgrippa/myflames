@@ -2477,9 +2477,10 @@ both backslash readings. This compares every quote, comment and intervening
 code span, including SQL inside executable comments, not just the outer unit.
 Otherwise it refuses before token consumption or
 transport. Internal tuples explicitly group individually validated units that
-depend on the same session. Their wire text uses each parsed unit's span,
-without its terminal delimiter or trailing delimiter comments, and the builder
-inserts exactly one separator between units. Review and audit text stays
+depend on the same session. Every member, including a plain single statement,
+uses its parsed span on the wire, without terminal delimiters or comments
+after those delimiters. The builder inserts exactly one separator between
+units; the evidence binder uses the same rule for its read bodies. Review and audit text stays
 unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
@@ -2504,10 +2505,15 @@ packet delimiter. Quotes, comments and dollar signs inside identifiers do
 not open a body. Source: `mysql-server/client/mysql.cc:2715–2746`,
 `:2953–2974` (the client enables this grammar after its server probe at
 `:1288–1291`).
-The ordinary classifier retains the legacy reading, where dollar tags can
-be identifiers. Reviewed SQL must still pass that reading as one complete
-unit; a body with client-dependent semicolon or quote boundaries refuses.
-This prevents modern dollar syntax from hiding a legacy client's write.
+The classifier compares the legacy reading, where dollar tags can be
+identifiers, with the dollar-body reading. Differences in unit spans,
+delimiters, executable code, quoted identifiers, closure or parser issues
+mark the result and its statements risky and ambiguous. Reviewed SQL refuses
+any such difference, even when both readings contain one closed unit with
+the same outer span. For example, a dollar tag inside a comment cannot change
+which WHERE terms execute. Both paths use the splitter's identifier-boundary
+and multibyte-tag grammar. This prevents either client reading from
+authorizing different SQL under the other reading.
 ProxySQL Admin, Readyset and plans without a recognized SQL engine keep
 one physical line per statement (CR and LF are refused). ProxySQL apply
 also forces that restriction independently of a caller-supplied engine or sender. Statements retain
@@ -2516,9 +2522,9 @@ line so a trailing `--` or `#` comment cannot swallow it. For example:
 
 ```sql
 DELIMITER $$
-SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_0'; SET GLOBAL max_connections = 200;
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_0'; SET GLOBAL max_connections = 200
 $$
-SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_1'; SET GLOBAL max_connections = 201;
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_1'; SET GLOBAL max_connections = 201
 $$
 ```
 
@@ -2581,33 +2587,66 @@ Galera and PXC Cluster plans bind it in `expect.server.wsrep_gcomm_uuid`.
 MariaDB's provider-exists condition is separate from wsrep_on in
 `mariadb-server/sql/wsrep_var.cc:103–109`; an unset or `none` provider selects
 normal operation in `sql/wsrep_mysqld.cc:880–890`.
-Accounts' review and apply reads, Variables' value and metadata reads, and
-Replication's status reads use `dbops.TargetEvidenceConnection`. Every read
-packet contains its state statements, a private marker, the server identity
-variables (including provider detection), and the node status. A client
-`DELIMITER` absent from the payload keeps those statements in one COM_QUERY;
-`--skip-reconnect` prevents reconnecting midway. All successful packets in
-that review/recheck must return the same identity. A changed or incomplete
-identity invalidates the entire read, including when an optional reader
-catches the error, and no write may follow. Transport exceptions, incomplete
-packets and ambiguous internal SQL boundaries all set sticky
+Accounts' review and apply reads, Variables' value, metadata and grants reads,
+and Replication's status, privilege and final status rechecks use one shared
+`dbops.TargetEvidenceConnection` per review or recheck. `read_privileges`
+also binds its initial grants and optional role-flag reads when called alone;
+nested readers reuse the existing binder. A replication skip loop retains
+that scope across iterations and receiver-check callbacks. Kill CLI binds the lock report,
+privileges, target, transaction and XA reads before displaying confirmation.
+Every read packet starts with server identity variables (including provider
+detection), node status and a private marker, followed by the requested read
+bodies. A client `DELIMITER` absent from the payload keeps those statements
+in one COM_QUERY; `--skip-reconnect` prevents reconnecting midway. All packets
+retain comments: both identity reads and the marker SELECT carry the first
+read's leading `/*myflames:...*/` tag, or `/*myflames:target-evidence*/` when
+that read has no tag. The caller's read bodies keep their original tags.
+All packets in that review/recheck must return the same identity. A changed, duplicate or
+incomplete identity invalidates the entire read, including when an optional
+reader catches the error, and no write may follow. Transport exceptions,
+incomplete prefixes and ambiguous internal SQL boundaries all set sticky
 `identity_unavailable`; subsequent reads, writes and identity extraction in
-that scope refuse. A fresh wrapper cannot substitute caller-supplied
-variables for unread evidence. Version and flavor helpers read this scope's
-packet metadata, including `version_comment`, through the binder rather than
-the underlying connection's metadata cache. A SQL error that stops the packet
-before its identity suffix also refuses, even when a module normally treats
-that error as optional or as evidence that an object is absent. This adds identity/status work to
-each read and may refuse a rotating proxy; it does not make changing server
-state a transactional snapshot. The marker is removed before parsing state,
-including for XML replication status, and never enters review or audit data.
+that scope refuse. A fresh wrapper cannot substitute caller-supplied variables
+for unread evidence. Version and flavor helpers read this scope's metadata,
+including `version_comment`, rather than the transport's metadata cache.
+
+Ordinary `MySQLConnection.run` failures keep their existing `ConnectorError`
+or specialized client-error type and expose no stdout. The binder explicitly
+opts in with `retain_partial_stdout=True`; connector adapters and connection
+wrappers forward that option. Only a server SQL error retains completed
+stdout privately in `PartialReadError`. Genuine client errors, including
+authentication-plugin failures, keep their own type even with this opt-in.
+Framed readers' existing `tail_timeout` option keeps completed stdout privately
+in `PartialReadError` on any non-auth failed client exit or its own deadline
+expiration, and its caller validates the framing markers. When a
+server error names this packet's start line and the full identity prefix has
+validated, the binder raises the read's original error without poisoning the
+scope. Thus an expected 1141 from SHOW GRANTS for an absent account can reach
+the create/rename fallback. Client errors (2000–2999), missing or wrong error
+locations, missing markers and mismatched identities still fail closed, even
+if some prefix data arrived. The binder removes the prefix from successful
+batch/XML results and discards private stdout and MariaDB's SQL echo before
+passing a read error to its caller. Refusal details include only an
+`ERROR NNNN ...` diagnostic line, remove `near '...'` SQL echoes,
+redact a string connection password and hide
+private evidence markers. Missing or non-string passwords do not break error
+handling. Saved-group consent refusals preserve `ProfileReadError` so optional
+privilege readers cannot turn revoked login permission into unknown coverage.
+This adds identity/status work to each read and may refuse a rotating proxy;
+it does not make changing server state
+a transactional snapshot. Regression coverage: `test_reviewed_writes_e1.py`,
+`test_reviewed_writes_evidence.py` and the Accounts, Variables, Replication,
+Privileges and Kill suites. These synthetic packet tests are not live proof.
 Kill projects provider detection and the node UUID in the same SELECT as the
-other identity fields and the process row, for single and bulk targets.
+other identity fields and the process row, for single and bulk targets. A
+Galera identity row without `wsrep_gcomm_uuid` is incomplete and cannot
+authorize a Kill, including through the deprecated CLI.
 Its pre-KILL target, InnoDB transaction and prepared-XA rechecks also share
-one evidence scope: each read carries its own same-packet identity suffix,
+one evidence scope: each read carries its own same-packet identity prefix,
 and all identities must agree before KILL is sent. A denied transaction or XA
-read that prevents suffix validation refuses the entire recheck, including
-when the optional reader would otherwise ignore the error.
+read may use its existing fallback only after that prefix validates; an
+identity failure refuses the entire recheck, even if the optional reader
+catches the error.
 Its MariaDB projection explicitly reads `@@global.server_id`, matching the
 guard: `mariadb-server/sql/sys_vars.cc:3651–3657` makes the unqualified value
 session-scoped, so a proxy's reused session could otherwise override it.
@@ -3050,7 +3089,12 @@ planner, write gate and session engine from the CLI.
   also come from this complete packet before deciding which setup is needed.
   The client's private delimiter keeps these
   statements in one packet. Any missing or failed identity result leaves
-  the tab open for ordinary reads, without a write or KILL binding.
+  the tab open for ordinary reads, without a write or KILL binding. Required
+  startup hardening and state readbacks carry the recorded guard when a complete
+  identity is available; otherwise they are sent and verified without a guard.
+  State readback is required even when no startup setting needs to change.
+  A failed verification refuses startup; an incomplete identity still refuses
+  later writes, session-changing statements and KILL.
   A successful read without `server_uuid` identifies MariaDB even when both
   version strings are customized. MySQL uses the UUID; MariaDB uses server id,
   hostname and port, plus `wsrep_gcomm_uuid` from that packet when the Galera
@@ -3073,6 +3117,19 @@ planner, write gate and session engine from the CLI.
   ends the session before any readback or retry. If only the readback fails,
   the accepted setting is recorded as unverified with an unknown outcome;
   it is never called unsent or retried.
+  With a complete identity, startup read-only and safe-updates SETs and startup
+  state reads carry the recorded session guard in each packet. USE and its
+  state readback (including nested transaction-meter reads) and the unqualified
+  ALTER TABLE database-context check always require that guard. Startup requires a successful
+  state readback and the requested safe-updates value. A read-only connection
+  additionally verifies SHOW SESSION VARIABLES for `transaction_read_only` or
+  `tx_read_only`; missing, denied or false values end startup. These names are
+  session defaults, not evidence that an already open transaction is read-only
+  (MySQL `sql/sys_vars.cc:5094–5121`; MariaDB `sql/sys_vars.cc:4661–4701`).
+  A refused ALTER context guard is audited before any lock-wait SET or ALTER.
+  No later helper follows a guard refusal. A failed readback after USE reports
+  an unknown outcome and ends the session, since the database change was already
+  accepted. Tests: `test/test_editor_session_e2.py`.
   The guard also compares `CONNECTION_ID()` with the recorded backend session
   id, preserving the tab's transaction context across same-server proxy
   session switches (MySQL `sql/item_func.cc:1532–1541`; MariaDB
@@ -3138,7 +3195,7 @@ planner, write gate and session engine from the CLI.
   both clients (MySQL `client/mysql.cc:1802–1805,2843–2859`; MariaDB
   `client/mysql.cc:1796–1798,2751–2772`). Only wire text changes: editor SQL,
   confirmation, result attribution and history keep the user's original SQL.
-  CREATE definitions receive only their leading tag, even when another
+  CREATE definitions and ALTER EVENT bodies receive only their leading tag, even when another
   statement precedes the definition in a custom-delimiter unit; their stored
   bodies stay unchanged. The DDL gate already refuses a definition batched
   with trailing SQL.
@@ -3157,6 +3214,11 @@ planner, write gate and session engine from the CLI.
   `sql_mode` in the same run. `selection: {start, end}` runs only that part.
   Offsets in requests and responses are UTF-16 code units (JavaScript string
   indexes; `Offsets`).
+  Dollar-quote tags follow the utf8mb4 client's identifier-byte rules: ASCII
+  letters, digits and underscore, plus every valid multibyte character, with
+  `$` ending the tag. An identifier character immediately before the opener
+  prevents it from starting a dollar quote. Source: MySQL
+  `client/mysql.cc:2715–2746`, `strings/sql_chars.cc:87–121`.
 - Values: NULL is `null`; everything else is the client's text (big integers,
   DECIMAL, dates as printed); binary columns print as `0x` plus upper-case hex
   and the column gets `hex: true` when every non-null value has that form. It
@@ -3268,7 +3330,14 @@ planner, write gate and session engine from the CLI.
   BEGIN, START TRANSACTION and SET autocommit values that can enable it use
   COMMIT's write confirmation and audit policy even when the transaction is
   currently closed. Quoted names, quoted values and expressions cannot evade
-  that policy; only literal 0/OFF/FALSE is known not to commit. SET autocommit
+  that policy; only literal 0/OFF/FALSE is known not to commit. MariaDB
+  `SET STATEMENT ... FOR` wrappers are unwrapped before transaction-control
+  checks, including nested wrappers and the transaction-age reset. The FOR
+  boundary follows the classifier's expression handling; NEXT/PREVIOUS VALUE
+  FOR inside an assignment does not end the wrapper. A double-quoted SET
+  target may name `autocommit` under ANSI_QUOTES, so an unknown quoted name is
+  treated conservatively. MariaDB grammar: `sql/sql_yacc.yy:17472–17486`.
+  SET autocommit
   retains its existing session-write policy even for those values. ROLLBACK,
   SAVEPOINT, RELEASE SAVEPOINT and read-only SET TRANSACTION retain their read
   policy but still carry the server/session guard in their packet.
@@ -3318,10 +3387,16 @@ planner, write gate and session engine from the CLI.
   session of another identity, so requests racing on one tab cannot share it.
 - DDL confirmation (db-operations sections 6, 7 and 9): `_decision` refuses
   multiple DDL statements, including those grouped by a custom DELIMITER, before
-  credentials. Run them one at a time. A CREATE routine's body is one DDL.
+  credentials. Run them one at a time. A CREATE routine's body and an ALTER
+  EVENT compound body are each one DDL. Terminal semicolons and ordinary
+  comments under a custom delimiter do not add another statement.
   A PACKAGE specification or body includes its outer END and any initialization
-  block, and a statement after that END needs its own review. MariaDB grammar:
-  `sql/sql_yacc.yy:20185–20199,20537–20595`.
+  block, and a statement after that END needs its own review. Forward declarations
+  and routines with a single-statement body end at their semicolon; an Oracle
+  routine's IS/AS declarations can contain semicolons before its BEGIN. Native
+  package initializer blocks retain the package's separate outer END. MariaDB
+  grammar: `sql/sql_yacc.yy:19254–19259,19344–19349,20185–20199,20293–20312,20365–20378,20537–20595`;
+  ALTER EVENT: `sql/sql_yacc.yy:7673–7707,7820–7822,3294–3332`.
   DDL embedded in anonymous blocks or SET STATEMENT wrappers refuses: submit
   it as standalone SQL so its target and safeguards can be reviewed.
   Temporary-table DDL also confirms. Multiple DML statements still share one

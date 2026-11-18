@@ -1059,6 +1059,19 @@ def classify(sql, backslash_escapes=None, key_columns=None):
         # Both readings were classified; the worse one counts.
         summary = _worst([summary, _worst(results[1])])
         summary["reasons"].append(AMBIGUOUS_REASON)
+    # A modern mysql client also recognizes dollar bodies. A tag may be a
+    # legacy identifier instead, so no one reading can authorize the other.
+    # Compare code as well as boundaries: a comment can hide the closing tag
+    # while both readings still contain exactly one complete statement.
+    for escaping in readings if "$" in sql else ():
+        plain = split_statements(sql, backslash_escapes=escaping)
+        dollars = split_statements(sql, backslash_escapes=escaping, dollar_quotes=True)
+        if _target_reading(plain) != _target_reading(dollars):
+            ambiguous = True
+            summary = _verdict("risky", "unknown", "Dollar quotes change the SQL interpretation between clients.")
+            statements = [dict(s, kind="risky", category="unknown",
+                               reasons=list(s["reasons"]) + summary["reasons"]) for s in statements]
+            break
     return {"kind": summary["kind"], "category": summary["category"], "reasons": summary["reasons"],
             "statements": statements, "count": len(statements), "ambiguous": ambiguous}
 
@@ -1118,7 +1131,18 @@ def target_error_text(exc):
     match = _target_error_match(text)
     if match:
         text = text[match.start():]
-    return re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
+    text = re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
+    return re.sub(r"myflames_evidence_[0-9a-f]+", "[identity evidence]", text)
+
+
+def _evidence_error_text(exc, password=None):
+    """Keep one real diagnostic line, without the client's SQL echo."""
+    match = re.search(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?(ERROR\s+\d+\b[^\r\n]*)",
+                      target_error_text(exc), re.M)
+    if match is None:
+        return ""
+    detail = re.split(r"\bnear\s+['\"`]", match.group(1), maxsplit=1, flags=re.I)[0].rstrip()
+    return redact(detail, password if isinstance(password, str) else None)
 
 
 def target_has_galera(variables, engine=None):
@@ -1140,10 +1164,11 @@ _EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version"
 class TargetEvidenceConnection(object):
     """Keep every successful review read on one node, even through a router.
 
-    Each read and its identity suffix are ONE COM_QUERY, using a client
+    Each identity prefix and its read are ONE COM_QUERY, using a client
     delimiter absent from the entire payload. All reads in this scope must
     agree. No result from another node is ever returned to the caller.
-    Failures are sticky, including when an optional reader catches one.
+    Identity failures are sticky, including when an optional reader catches
+    one. A server error after the validated prefix preserves normal fallbacks.
     This binds the node, not a transactional snapshot of changing server data.
     """
     def __init__(self, conn):
@@ -1185,30 +1210,49 @@ class TargetEvidenceConnection(object):
         return self.connection.run_stdin(*args, **kwargs)
 
     def run(self, sql, extra_flags=None, **kwargs):
-        from .connector import ConnectorError, unescape_mysql
+        from .connector import ConnectorError, PartialReadError, unescape_mysql
         from .perf_common import named_rows
         self.check()
+        failure = None
         try:
             marker = "myflames_evidence_" + uuid.uuid4().hex
             units = split_statements(sql)
             # Boundary checks and transport are part of validation too. A
-            # failed suffix must poison the scope even if an optional reader
+            # failed prefix must poison the scope even if an optional reader
             # catches the error and tries to continue with earlier evidence.
+            bodies = []
             for unit in units:
-                _target_statement_span(unit["text"])
+                start, end = _target_statement_span(unit["text"])
+                bodies.append(unit["text"][start:end])
             if not units or any(unit["delimiter"] != ";" or unit["issues"] or unit["unclosed"] for unit in units):
                 raise ValueError("uncertain review evidence SQL boundaries")
-            body = sql[:units[-1]["end"]] + "\n;\nSELECT '%s';\n" % marker
-            body += "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
-            body += "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'\n"
+            leading = re.match(r"\s*(/\*myflames:[^\r\n]*?\*/)", units[0]["text"])
+            tag = (leading.group(1) if leading else "/*myflames:target-evidence*/") + " "
+            body = tag + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
+            body += tag + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid';\n"
+            body += tag + "SELECT '%s';\n" % marker
+            body += "\n;\n".join(bodies) + "\n"
             delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
             if delimiter is None:
                 raise ValueError("no safe review evidence packet delimiter")
             flags = list(extra_flags or [])
             if "--skip-reconnect" not in flags:
                 flags.append("--skip-reconnect")
-            text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
-                                       extra_flags=flags, **kwargs)
+            if "--comments" not in flags:
+                flags.append("--comments")
+            # The connector retains stdout separately from error messages.
+            # A valid prefix alone is insufficient: only a server diagnostic
+            # at this packet's line proves the read, rather than transport,
+            # failed. Transport errors cannot authorize an optional fallback.
+            try:
+                kwargs["retain_partial_stdout"] = True
+                text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
+                                           extra_flags=flags, **kwargs)
+            except PartialReadError as exc:
+                match = _target_error_match(str(exc))
+                if not match or int(match.group(2)) != 2 or 2000 <= int(match.group(1)) <= 2999:
+                    raise
+                text, failure = exc.stdout, exc
             if "--xml" in flags:
                 # mysql prints one XML document per result set. Preserve the
                 # original result document exactly for Reader.named().
@@ -1216,24 +1260,31 @@ class TargetEvidenceConnection(object):
                                              r"(?:/>|>[\s\S]*?</resultset>)", text))
                 if len(documents) < 3:
                     raise ValueError("missing evidence result sets")
-                evidence = documents[-3:]
-                marker_rows = named_rows(evidence[0].group())
+                evidence = documents[:3]
+                marker_rows = named_rows(evidence[2].group())
                 if len(marker_rows) != 1 or list(marker_rows[0].values()) != [marker]:
                     raise ValueError("missing evidence marker")
                 values = {}
-                for document in evidence[1:]:
+                for document in evidence[:2]:
                     for row in named_rows(document.group()):
                         row = {key.lower(): value for key, value in row.items()}
-                        values[row["variable_name"].lower()] = row["value"]
-                output = text[:evidence[0].start()].rstrip() + "\n"
+                        key = row["variable_name"].lower()
+                        if key in values:
+                            raise ValueError("duplicate server identity field")
+                        values[key] = row["value"]
+                output = text[evidence[2].end():].lstrip("\r\n")
             else:
-                output, separator, tail = text.partition(marker + "\n")
-                if not separator or (output and not output.endswith("\n")):
+                prefix, separator, output = text.partition(marker + "\n")
+                if not separator or (prefix and not prefix.endswith("\n")):
                     raise ValueError("missing evidence marker")
                 values = {}
-                for line in tail.splitlines():
+                for line in prefix.splitlines():
                     key, value = line.split("\t")
+                    if key.lower() in values:
+                        raise ValueError("duplicate server identity field")
                     values[key.lower()] = unescape_mysql(value)
+            if any(key not in _EVIDENCE_VARIABLES + ("wsrep_gcomm_uuid",) for key in values):
+                raise ValueError("unexpected server identity field")
             required = ("server_uuid",) if "server_uuid" in values else ("server_id", "hostname", "port", "version")
             if not all(values.get(key) for key in required):
                 raise ValueError("missing server identity")
@@ -1244,12 +1295,28 @@ class TargetEvidenceConnection(object):
                 raise ValueError("the server identity changed between evidence packets")
             self.variables = values
         except BaseException as exc:
-            self.problem = "The identity check could not run: review evidence did not come from one identified server. Nothing was sent. Refresh and review again."
+            cause = failure if failure is not None else exc
+            detail = (_evidence_error_text(cause, getattr(self.connection, "password", None))
+                      if isinstance(cause, ConnectorError) else "")
+            self.problem = ("The identity check could not run: " + (detail.rstrip(".") + ". " if detail else "") +
+                            "Review evidence did not come from one identified server. Nothing was sent. Refresh and review again.")
             # Cancellation must keep its normal control flow, but a caller
             # that catches it still cannot reuse this incomplete scope.
             if not isinstance(exc, Exception):
                 raise
+            # Consent failures are app-built refusals with their own audit.
+            # Preserve their type so optional privilege readers cannot turn
+            # a revoked login into an unknown-permission fallback.
+            from .connection_groups import ProfileReadError
+            if isinstance(exc, ProfileReadError):
+                raise
             self.check()
+        if failure is not None:
+            # The caller may legitimately handle 1141 (an absent account),
+            # 1193 (an optional variable), or other read errors. Do not leak
+            # the private prefix through the ordinary exception interface.
+            raise ConnectorError(_evidence_error_text(failure, getattr(self.connection, "password", None)) or
+                                 "The review read failed.") from None
         return output
 
 
@@ -1258,9 +1325,12 @@ def target_evidence(function):
     @functools.wraps(function)
     def bound(conn, *args, **kwargs):
         from .connector import ConnectorError
+        from .connection_groups import ProfileReadError
         evidence = conn if isinstance(conn, TargetEvidenceConnection) else TargetEvidenceConnection(conn)
         try:
             result = function(evidence, *args, **kwargs)
+        except ProfileReadError:
+            raise
         except (ConnectorError, ValueError):
             # Preserve the identity refusal if an inner reader replaced its
             # diagnostic with a generic grants/metadata error.
@@ -1392,6 +1462,12 @@ def _target_token_spans(sql, pattern, base=0):
     return tuple(spans)
 
 
+def _target_reading(units):
+    """All semantic and framing evidence used to compare client grammars."""
+    return [(u["start"], u["end"], u["delimiter"], u["code"], u["idents"], u["unclosed"], u["issues"])
+            for u in units]
+
+
 def _target_statement_span(sql, backslash_escapes=None, delimiter=";"):
     """Require one complete unit, with the same boundaries in both modes.
 
@@ -1408,6 +1484,8 @@ def _target_statement_span(sql, backslash_escapes=None, delimiter=";"):
                 len(dollar_units) != 1 or dollar_units[0]["unclosed"] or dollar_units[0]["issues"]):
             raise ValueError("Each reviewed statement must be one complete SQL statement with closed quotes and comments. "
                              "Nothing was sent. Review again.")
+        if _target_reading(units) != _target_reading(dollar_units):
+            raise ValueError("The reviewed SQL has ambiguous dollar-quote boundaries or code. Nothing was sent. Review again.")
         unit = units[0]
         # split_statements consumes valid DELIMITER commands. They cannot
         # hide before or after the one unit and change the packet framing.
@@ -1444,14 +1522,14 @@ def target_guarded_script(guard, statements, backslash_escapes=None, delimiter="
     if any(not group or any(not isinstance(s, str) or not s.strip() for s in group) for group in groups):
         raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
     wire_groups = []
-    for original, group in zip(statements, groups):
+    for group in groups:
         wire_group = []
         for statement in group:
             start, end = _target_statement_span(statement, backslash_escapes, delimiter)
             # Group separators belong to the builder. Copy only the parsed
             # unit, never its terminal delimiter(s) or trailing comments:
             # "SET ...;" joined with ";" is an empty server statement.
-            wire_group.append(statement[start:end] if isinstance(original, tuple) else statement)
+            wire_group.append(statement[start:end])
         wire_groups.append(tuple(wire_group))
     delimiter = next((d for d in _TARGET_DELIMITERS
                       if all(d not in s for s in list(guard) + [s for group in groups for s in group])), None)

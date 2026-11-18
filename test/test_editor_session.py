@@ -49,6 +49,12 @@ def packet_client(source):
     backend answers; classification, guard construction and framing are real.
     """
     source = source.replace("import os\n", "import os\nimport json\n", 1)
+    source = source.replace('        upper = text.upper()\n', '''        upper = text.upper()
+        if upper == "SHOW SESSION VARIABLES WHERE VARIABLE_NAME IN ('TRANSACTION_READ_ONLY', 'TX_READ_ONLY')":
+            name = "tx_read_only" if ENGINE == "mariadb" else "transaction_read_only"
+            self.result(statement, ["Variable_name", "Value"], [[name, "ON" if self.read_only else "OFF"]])
+            return
+''')
     source = source.replace('        self.write("--------------\\n%s\\n--------------\\n\\n" % statement)\n', r'''
         wire = statement
         self.write("--------------\n%s\n--------------\n\n" % wire)

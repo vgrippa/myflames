@@ -127,6 +127,7 @@ import re
 import sys
 import time
 
+from . import dbops
 from .connector import ConnectorError, MySQLConnection, terminal_text, unescape_mysql
 from .perf_common import _denied, _reason, _server, conn_identity
 
@@ -3001,6 +3002,8 @@ def _identity_row(keys, row):
     elif not identity.get("wsrep_node_name"):
         identity.pop("wsrep_node_name", None)
     required = ("server_id", "hostname", "version", "port") if "server_id" in identity else ("server_uuid",)
+    if str(identity.get("wsrep_on", "")).upper() in ("ON", "1"):
+        required += ("wsrep_gcomm_uuid",)
     return identity if all(identity.get(key) for key in required) else {}
 
 
@@ -3123,7 +3126,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     confirmed_target = seen
     try:
         # Bind the target row, transaction and optional XA reads to one
-        # node. A routing change or an unreadable suffix invalidates the
+        # node. A routing change or an unreadable prefix invalidates the
         # entire recheck, even when an optional reader catches that error.
         target, own = dbops.target_evidence(read_target)(conn, engine, ps_on, connection_id, server_identity=True)
     except ConnectorError as exc:
@@ -3334,6 +3337,15 @@ def describe_target(report, target, cid, mode):
     return lines
 
 
+@dbops.target_evidence
+def _kill_cli_review(conn, connection_id):
+    """Keep the displayed locks, privileges and target on the same node."""
+    report = lock_report(conn, waits_only=True, identity=True)
+    target, own = read_target(conn, report["engine"], report["capabilities"]["performance_schema"],
+                              connection_id, server_identity=True)
+    return report, target, own
+
+
 def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=False, stdin=None, stderr=None,
              audit=None, policy_text=None):
     """``myflames locks --kill ID``: show the session, confirm, end it, show the outcome.
@@ -3364,11 +3376,21 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
             result["audit_id"] = audit.outcome([statement], "refused", outcome="read_only", message=blocked[1],
                                                target={"connection_id": connection_id, "mode": mode})
         return 1, result
-    report = lock_report(conn, waits_only=True, identity=True)
-    engine, ps_on = report["engine"], report["capabilities"]["performance_schema"]
+    try:
+        report, target, own = _kill_cli_review(conn, connection_id)
+    except ConnectorError as exc:
+        message = dbops.redact(dbops.target_error_text(exc), getattr(conn, "password", None))
+        message = dbops.redact(message, audit.password if audit is not None else None)
+        result = refused_result(connection_id, mode, "Could not read the server identity. " + message)
+        result.update(outcome="identity_unavailable", sent=[])
+        if audit is not None:
+            result["audit_id"] = audit.outcome([statement], "refused", outcome="identity_unavailable",
+                                               message=result["message"],
+                                               target={"connection_id": connection_id, "mode": mode})
+        return 1, result
+    engine = report["engine"]
     if audit is not None:
         audit.server(engine, report["server_version"])
-    target, own = read_target(conn, engine, ps_on, connection_id)
     result = {"schema_version": KILL_SCHEMA_VERSION, "engine": engine, "server_version": report["server_version"],
               "connection_id": connection_id, "mode": mode, "statement": None, "status": None, "message": None,
               "verified": [], "target": target, "after": None}
@@ -3397,16 +3419,7 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
                              "Nothing was sent." % connection_id)
         return unsent("refused", "identity")
     seen["connection_identity"] = dbops.connection_identity(connection, safety)
-    keys, projection = _identity_projection(engine)
-    try:
-        rows = _q(conn, "SELECT " + projection)
-    except ConnectorError as exc:
-        message = dbops.redact(dbops.target_error_text(exc), getattr(conn, "password", None))
-        message = dbops.redact(message, audit.password if audit is not None else None)
-        result.update(status="refused", outcome="identity_unavailable", sent=[],
-                      message="The identity check could not run: %s. Nothing was sent." % message.rstrip("."))
-        return unsent("refused", "identity_unavailable")
-    seen["server_identity"] = _identity_row(keys, rows[0]) if rows else {}
+    seen["server_identity"] = target.get("server_identity") or {}
     if not seen["server_identity"]:
         result["status"], result["message"] = "refused", "Could not read the server identity; nothing was sent."
         return unsent("refused", "identity")

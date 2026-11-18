@@ -20,6 +20,7 @@ from myflames import accounts as a, dbops, privileges as p  # noqa: E402
 from myflames.connector import ConnectorError, MySQLConnection  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
 from _reviewed_replay import acknowledged_error
+from _reviewed_replay import evidence_options
 
 MYSQL_VERSION = '8.4.11'
 MARIADB_VERSION = '11.4.13-MariaDB'
@@ -77,15 +78,16 @@ class FakeConn(object):
     def is_mariadb(self):
         return self.engine == 'mariadb'
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
-        from _reviewed_replay import evidence_body, evidence_output, UUID
+        from _reviewed_replay import evidence_body, evidence_call, UUID
         body, marker = evidence_body(sql)
         if marker:
             values = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': self.version}
             if self.engine == 'mysql':
                 values['server_uuid'] = UUID
             values.update(getattr(self, 'evidence_values', {}))
-            return evidence_output(self.run(body, extra_flags=['--comments'], timeout=timeout), marker, values)
+            return evidence_call(lambda: self.run(body, extra_flags=['--comments'], timeout=timeout), marker, values)
         self.calls.append((sql, extra_flags))
         if sql == 'SELECT @@version':
             return self.version + '\n'
@@ -206,6 +208,7 @@ class AccountsTest(unittest.TestCase):
                 now, timeouts = [0.0], []
                 original = conn.run
 
+                @evidence_options
                 def run(sql, extra_flags=None, timeout=None):
                     if any(sql == a.TAG + 'SHOW GRANTS FOR ' + role(n) for n in ('a', 'b', 'c')):
                         timeouts.append(timeout)
@@ -1413,6 +1416,7 @@ class GrantEditorTest(unittest.TestCase):
 
     def test_catalog_unreadable_falls_back_and_keeps_held_scopes(self):
         original = self.conn.run
+        @evidence_options
         def run(sql, **kwargs):
             if sql in (a.TAG + 'SHOW PRIVILEGES', a.TAG + 'SHOW DATABASES'):
                 raise ConnectorError('ERROR 1227: secret-password')
@@ -1466,6 +1470,7 @@ class GrantEditorTest(unittest.TestCase):
 
     def test_scope_objects_bound_and_quoted_schema(self):
         calls = []
+        @evidence_options
         def run(sql, **kwargs):
             calls.append(sql)
             if 'information_schema.TABLES' in sql:
@@ -1482,6 +1487,7 @@ class GrantEditorTest(unittest.TestCase):
             a.scope_objects(self.conn, 'information_schema')
 
     def test_scope_objects_partial_failure_and_functions(self):
+        @evidence_options
         def run(sql, **kwargs):
             if 'information_schema.TABLES' in sql:
                 raise ConnectorError('secret-credential')

@@ -301,7 +301,7 @@ class Endpoints(Home):
         from _reviewed_replay import guarded_packets
         self.assertEqual(len(conn.writes), 1)
         self.assertEqual([(g, s) for g, s, _ in guarded_packets(conn.writes[0])],
-                         [(plan['session_guard'][0], s) for s in plan['statements']])
+                         [(plan['session_guard'][0], dbops.split_statements(s)[0]['text']) for s in plan['statements']])
         (record,) = self.audit()
         self.assertEqual((record['operation'], record['status'], record['connection']['engine']),
                          ('cluster_action', 'ok', 'mariadb'))

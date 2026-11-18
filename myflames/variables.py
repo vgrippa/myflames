@@ -1312,6 +1312,7 @@ def build_plan(v, value, mode, grants=None):
     return plan
 
 
+@dbops.target_evidence
 def plan_change(conn, name, value, mode, grants=True):
     """Read the variable (and the account's grants unless *grants* is False)
     and return the ``variable-plan-1.0``. Reads only."""

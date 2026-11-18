@@ -9,6 +9,7 @@ from myflames import account_compare as A, accounts, param_compare as P, privile
 from myflames.connector import ConnectorError
 from test_accounts import FakeConn
 from test_chart_data import validate
+from _reviewed_replay import evidence_options
 
 
 def account(name='app', host='%', grants=None, role=False, **kw):
@@ -26,6 +27,7 @@ def side(items=(), engine='mysql', complete=True):
 
 class CaptureConn(FakeConn):
     query_timeout = 30
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         if sql == 'SELECT @@version':
             return self.version + '\n'

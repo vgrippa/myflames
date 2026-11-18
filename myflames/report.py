@@ -184,10 +184,10 @@ class _Guarded(object):
         self._conn = conn
         self._cancel = cancel
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
         if self._cancel.is_set():
             raise ConnectorError("Cancelled.")
-        return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout)
+        return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -300,14 +300,14 @@ class _AttributionContext(object):
         self._answers = {}
         self._lock = threading.Lock()
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
         if sql not in self._shared:
-            return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout)
+            return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout, **kwargs)
         key = (sql, tuple(extra_flags or ()), timeout)
         with self._lock:
             if key not in self._answers:
                 try:
-                    self._answers[key] = (self._conn.run(sql, extra_flags=extra_flags, timeout=timeout), None)
+                    self._answers[key] = (self._conn.run(sql, extra_flags=extra_flags, timeout=timeout, **kwargs), None)
                 except ConnectorError as exc:
                     self._answers[key] = (None, str(exc))
             answer, error = self._answers[key]

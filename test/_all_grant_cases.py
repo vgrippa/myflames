@@ -8,6 +8,7 @@ from pathlib import Path
 from myflames import accounts, privileges
 from test_accounts import FakeConn, actor
 from _reviewed_replay import UUID, answer_evidence
+from _reviewed_replay import evidence_options
 
 FIXTURES = Path(__file__).parent / 'fixtures/accounts'
 
@@ -69,6 +70,7 @@ def plan(case, request, present=False):
         if 'information_schema.APPLICABLE_ROLES' in sql:
             return ''
         return original(sql, extra_flags, timeout)
+    @evidence_options
     def read(sql, extra_flags=None, timeout=None):
         packet = answer_evidence(sql, extra_flags, timeout, answer, identity)
         return packet if packet is not None else answer(sql, extra_flags, timeout)

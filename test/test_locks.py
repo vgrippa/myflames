@@ -22,6 +22,7 @@ from unittest import mock
 
 from myflames import locks, ui, workspace_cli
 from myflames.connector import ConnectorError
+from _reviewed_replay import evidence_options
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'locks')
 PASSWORD = 'hunter2-not-real'
@@ -67,8 +68,9 @@ class FakeConn(object):
         self.host, self.port, self.user = "127.0.0.1", 3306, None
         self.ssl_mode = self.ssl_ca = None
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
-        from _reviewed_replay import evidence_body, evidence_output
+        from _reviewed_replay import evidence_body, evidence_call
         body, marker = evidence_body(sql)
         if marker:
             # Synthetic packet metadata follows the same server identity as
@@ -76,13 +78,16 @@ class FakeConn(object):
             maria = 'MariaDB' in self.responses[0][1]
             pattern = ('SELECT @@global.server_id, @@hostname, @@version, @@port'
                        if maria else 'SELECT @@server_uuid')
-            raw = next(value for key, value in self.responses if key == pattern)
+            raw = next((value for key, value in self.responses if key == pattern), '')
+            if callable(raw):
+                raw = raw(sql)
             keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name')
                     if maria else ('server_uuid', 'wsrep_on', 'wsrep_gcomm_uuid'))
             values = dict(zip(keys, raw.strip().split('\t')))
+            values.update(getattr(self, 'evidence_values', {}))
             values = {key: value for key, value in values.items() if value != 'NULL'}
             values.setdefault('version', self.version)
-            return evidence_output(FakeConn.run(self, body, extra_flags=extra_flags, timeout=timeout), marker, values)
+            return evidence_call(lambda: FakeConn.run(self, body, extra_flags=extra_flags, timeout=timeout), marker, values)
         self.calls.append((sql, list(extra_flags or [])))
         for pattern, result in self.responses:
             if pattern in sql:
@@ -2811,6 +2816,7 @@ class TestKillAudit(LockCase):
             # The pending record exists before the KILL reaches the server.
             original_run = conn.run
 
+            @evidence_options
             def run(sql, extra_flags=None, timeout=None):
                 if KILL_TAG in sql:
                     seen.append([(r['status'], r['outcome_unknown']) for r in self.records()])
@@ -3131,7 +3137,7 @@ class TestKillAudit(LockCase):
         self.assertEqual(code, 2)
         self.assertIn('Could not read the server identity', err)
         self.assertEqual(scenario.kills(), [])
-        self.assertEqual((self.records()[0]['status'], self.records()[0]['outcome']), ('refused', 'identity'))
+        self.assertEqual((self.records()[0]['status'], self.records()[0]['outcome']), ('refused', 'identity_unavailable'))
 
     def test_cli_identity_projection_error_refuses_before_prompt_and_sends_nothing(self):
         for engine in ('mysql', 'mariadb'):
@@ -3213,14 +3219,14 @@ class TestKillAudit(LockCase):
 
     def test_cli_refuses_a_server_switch_during_confirmation(self):
         scenario = KillScenario()
-        reads = []
-        def identity(sql):
-            reads.append(sql)
-            return batch([['11111111-2222-3333-4444-555555555555' if len(reads) <= 2 else
-                           'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
-        scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
-                                   for p, value in scenario.conn.responses]
-        code, out, err = self.cli(scenario, '--kill', '41', stdin=FakeStdin('yes\n'))
+        class SwitchOnConfirm(FakeStdin):
+            def readline(self):
+                scenario.conn.responses = [(p, batch([['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
+                                           if p == 'SELECT @@server_uuid' else value)
+                                           for p, value in scenario.conn.responses]
+                return super(SwitchOnConfirm, self).readline()
+
+        code, out, err = self.cli(scenario, '--kill', '41', stdin=SwitchOnConfirm('yes\n'))
         self.assertEqual(code, 2)
         self.assertIn('server identity', err)
         self.assertEqual(scenario.kills(), [])

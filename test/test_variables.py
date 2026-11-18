@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from _perf_replay import FakeFactory, ReplayConn, fixture, run_cli  # noqa: E402
 from _reviewed_replay import ReplayConn, recorded_body
 from myflames import dbops, variables as V  # noqa: E402
+from _reviewed_replay import evidence_options
 
 TAG = V.TAG
 
@@ -998,6 +999,7 @@ class TestApply(unittest.TestCase):
         conn, plan, _data = plan_from('mysql-8.4', 'global')
         original = conn.run
 
+        @evidence_options
         def run(sql, extra_flags=None, timeout=None):
             if 'SET GLOBAL' in sql:
                 raise ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection to MySQL server')

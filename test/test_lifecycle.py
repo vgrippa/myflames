@@ -27,6 +27,7 @@ import uuid
 
 from _client_tools_fixture import private_client_dir
 from _grants_fixtures import grants_batch
+from _reviewed_replay import answer_evidence, evidence_options
 
 from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
@@ -101,7 +102,11 @@ class ReplayConnection(object):
     def __exit__(self, *args):
         self.closed = True
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        packet = answer_evidence(sql, extra_flags, timeout, self.run, self.variables)
+        if packet is not None:
+            return packet
         self.calls.append((sql, extra_flags))
         if sql.startswith(privileges.TAG):
             if 'myflames_who' in sql:

@@ -1174,6 +1174,7 @@ def _no_current_role(code, text):
     return code == 1046 or (code in (1305, 1370) and 'CURRENT_ROLE' in text.upper())
 
 
+@dbops.target_evidence
 def read_privileges(conn):
     """The privileges-1.0 report of the connected account, from one tagged
     client call in a fresh session: USER(), CURRENT_USER(), CURRENT_ROLE(),
@@ -1197,8 +1198,13 @@ def read_privileges(conn):
             if code in (1820, 1862):
                 # An expired account may connect (sandbox mode) but run only SET
                 # PASSWORD (MariaDB) or ALTER USER USER() (MySQL).
-                raise ConnectorError('ERROR %d: The password of this account has expired, so it can only set a '
-                                     'new one: myflames accounts password ACCOUNT.' % code) from None
+                message = ('ERROR %d: The password of this account has expired, so it can only set a '
+                           'new one: myflames accounts password ACCOUNT.' % code)
+                if conn.problem:
+                    # The prefix may itself be denied in password sandbox
+                    # mode. Keep the refusal sticky and the cause actionable.
+                    conn.problem += ' ' + message
+                raise ConnectorError(message) from None
             if attempt == 0 and _no_current_role(code, str(exc)):
                 # MySQL 5.7 has no CURRENT_ROLE() (mysql-8.0.11 sql/item_create.cc
                 # added it): the name resolves as a stored function, which fails

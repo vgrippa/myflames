@@ -12,7 +12,7 @@ from myflames.connector import ConnectorError
 from myflames.review_tokens import ReviewTokens
 from myflames.workspace_store import WorkspaceStore
 from test_locks import batch, KillScenario, bound_kill_expect, K_TARGET
-from _reviewed_replay import recorded_body
+from _reviewed_replay import evidence_options, recorded_body
 
 GR_COMMAND = 'Group Replicatio'  # COMMAND is VARCHAR(16) in MySQL's process-list tables.
 GR_FULL_COMMAND = 'Group Replication Data Stream subscription'
@@ -37,6 +37,7 @@ class BatchConnection(object):
     def run_write(self, sql, extra_flags=None, timeout=None):
         return self.run(recorded_body(sql), extra_flags=extra_flags)
 
+    @evidence_options
     def run(self, sql, extra_flags=None):
         from _reviewed_replay import evidence_body, evidence_output, UUID
         body, marker = evidence_body(sql)
@@ -223,6 +224,7 @@ class TestBulkKillReview(unittest.TestCase):
         conn = BatchConnection()
         run = conn.run
 
+        @evidence_options
         def change_policy(sql, extra_flags=None):
             answer = run(sql, extra_flags)
             if locks.KILL_TAG in sql:

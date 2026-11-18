@@ -165,8 +165,8 @@ class _ReadConnection(object):
     def __init__(self, conn):
         self._conn = conn
 
-    def run(self, sql, extra_flags=None, timeout=None):
-        return self._conn.run(_read_sql(sql), extra_flags=extra_flags, timeout=timeout)
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
+        return self._conn.run(_read_sql(sql), extra_flags=extra_flags, timeout=timeout, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)

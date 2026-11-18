@@ -13,6 +13,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from myflames import topology_links
 from myflames.connector import ConnectorError
+from _reviewed_replay import evidence_options
 
 
 def xml_rows(rows):
@@ -66,6 +67,7 @@ class FakeProbeConn(object):
             "gtid_mode": "ON",
         }
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         # A review evidence packet gets the marker row and this server's
         # identity projection in the same output, like a real server.
@@ -340,6 +342,7 @@ class TestMultiTierTopology(unittest.TestCase):
                 return self
             def __exit__(self, *exc):
                 return False
+            @evidence_options
             def run(self, sql, extra_flags=None, timeout=None):
                 raise ConnectorError("Failed using super-secret-probe-pw on mysql://u:url-pw@db:3306/s")
 

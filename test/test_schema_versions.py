@@ -75,6 +75,7 @@ class TestCaptureDeterministic(unittest.TestCase):
 
 class TestCaptureStatements(unittest.TestCase):
     def test_capture_sends_only_tagged_reads(self):
+        from _reviewed_replay import evidence_body, read_statements
         # The capture is: one tagged SHOW GLOBAL VARIABLES read, the tagged
         # information_schema inventory SELECTs, the privileges read, and one
         # run_script of USE + SET SESSION + SHOW CREATE statements.
@@ -88,11 +89,13 @@ class TestCaptureStatements(unittest.TestCase):
                 runs = [sent for sent in conn.sent if sent[0] == 'run']
                 self.assertEqual(len(scripts), 1)
                 for method, sql, flags in conn.sent:
-                    self.assertTrue(
-                        sql.startswith(TAG) or sql.startswith(PRIVILEGES_TAG),
-                        'statement without a tag: %r' % sql[:120])
-                    self.assertIsNone(forbidden.search(sql.replace('SHOW CREATE', '')),
-                                      'write keyword in: %r' % sql[:120])
+                    for statement in read_statements(sql):
+                        self.assertTrue(
+                            statement.startswith(TAG) or statement.startswith(PRIVILEGES_TAG),
+                            'statement without a tag: %r' % statement[:120])
+                        self.assertIsNone(forbidden.search(statement.replace('SHOW CREATE', '')),
+                                          'write keyword in: %r' % statement[:120])
+                runs = [(method, evidence_body(sql)[0], flags) for method, sql, flags in runs]
                 variables = [sql for _, sql, _ in runs
                              if sql.startswith(TAG) and 'SHOW GLOBAL VARIABLES' in sql]
                 self.assertEqual(len(variables), 1)

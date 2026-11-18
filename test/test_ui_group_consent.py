@@ -32,11 +32,13 @@ class GroupConsentTests(groups.GroupCase):
         original = connector.MySQLConnection._run_write_with_defaults
 
         def invoke(argv, **options):
+            from _reviewed_replay import evidence_body, evidence_output
             sql = options['input'].decode() if 'input' in options else argv[argv.index('-e') + 1]
+            body, marker = evidence_body(sql) if 'input' not in options else (sql, None)
             self.invocations.append(sql)
             if sql == 'SELECT @@version_comment':
                 text = 'MySQL Community Server (GPL)\n'
-            elif sql.startswith("/*myflames:privileges*/ SELECT 'myflames_who'"):
+            elif body.startswith("/*myflames:privileges*/ SELECT 'myflames_who'"):
                 # Explicit synthetic login evidence. Parse it through the real
                 # privileges reader instead of replacing the privilege gate.
                 text = ('myflames_who\troot@localhost\troot@localhost\tNONE\t8.4.11\n'
@@ -44,12 +46,17 @@ class GroupConsentTests(groups.GroupCase):
                         'REPLICATION_SLAVE_ADMIN ON *.* TO `root`@`localhost`\n'
                         'server_uuid\t11111111-2222-3333-4444-555555555555\n'
                         'server_id\t1\nhostname\tfixture-db\nport\t3306\n')
-            elif 'information_schema.APPLICABLE_ROLES' in sql:
+                if marker:
+                    text = evidence_output(text, marker, replay.evidence_values)
+            elif 'information_schema.APPLICABLE_ROLES' in body:
                 text = ''
+                if marker:
+                    text = evidence_output(text, marker, replay.evidence_values)
             elif 'input' in options:
                 text = replay.run_write(sql, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
             else:
-                text = replay.run(sql, extra_flags=['--comments'] + (['--xml'] if '--xml' in argv else []))
+                text = replay.run(sql, extra_flags=['--comments'] + (['--xml'] if '--xml' in argv else []),
+                                  retain_partial_stdout=True)
             return types.SimpleNamespace(returncode=0, stdout=(text or '').encode(), stderr=b'')
 
         def write(conn, sql, flags, timeout, defaults):

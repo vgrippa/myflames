@@ -123,7 +123,7 @@ class GroupActionTests(unittest.TestCase):
         self.assertEqual(self.clients['db-1'].writes, [])
         (script,) = self.clients['db-2'].writes
         self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
-                         [(plan['session_guard'][0], s) for s in plan['statements']])
+                         [(plan['session_guard'][0], dbops.split_statements(s)[0]['text']) for s in plan['statements']])
         self.assertIn(F.SERVER_UUIDS[1], guarded_packets(script)[0][0])
         self.assertNotIn(F.SERVER_UUIDS[0], guarded_packets(script)[0][0])
         (record,) = self.records()
@@ -230,7 +230,7 @@ class GroupActionTests(unittest.TestCase):
         self.assertIn(F.SERVER_UUIDS[1], guarded_packets(script)[0][0])
         self.assertNotIn(F.SERVER_UUIDS[0], guarded_packets(script)[0][0])
         self.assertEqual([(g, s) for g, s, _ in guarded_packets(script)],
-                         [(plan['session_guard'][0], s) for s in plan['statements']])
+                         [(plan['session_guard'][0], dbops.split_statements(s)[0]['text']) for s in plan['statements']])
 
     def test_address_suggestions_use_topology_endpoint_normalization_and_loopback_scope(self):
         report = cluster.read_status(self.clients['db-1'])
