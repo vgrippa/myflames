@@ -19,10 +19,15 @@ G8 = "/*!50000 SELECT '*/', 'tail\\' */ ; DROP DATABASE prod; /* ' */"
 OUTFILE = "SELECT 'a\\' INTO OUTFILE '/var/lib/mysql-files/out' -- '"
 ANSI_ATTACK = 'SELECT 1 AS "a\\"; DELETE FROM t; -- "'
 MSSQL_ATTACK = "SELECT 1 AS [a'] ; DELETE FROM t; -- '"
+CHARSET_COMMENT_ATTACK = "SELECT 1 /*!999999 ' */ \\C utf8mb4 /*\n; DELETE FROM t ; /* */ /*!999999 ' */"
+CHARSET_MARIA_COMMENT_ATTACK = "SELECT 1 /*M! ' */ \\C utf8mb4 /*\n; DELETE FROM t ; /* */ /*M! ' */"
+CHARSET_ANSI_ATTACK = 'SELECT 1 AS "a\\" \\C utf8mb4 /*\n; DELETE FROM t ; /* */ -- "'
+CHARSET_MSSQL_ATTACK = "SELECT 1 AS [a'] \\C utf8mb4 /*\n; DELETE FROM t ; /* */ -- '"
+COMMENT_DELIMITER_ATTACK = "/*!40101 SELECT 1 */ DELIMITER xx /*\nxx DELETE FROM t xx */"
 SAFETY = {"type": "production", "read_only": False, "profile_name": "prod"}
 
 
-def session(engine="mysql", version="8.4.11", mode="", bound=True, wsrep=None):
+def session(engine="mysql", version="8.4.11", mode="", bound=True, wsrep=None, client_engine="mysql"):
     identity = {"connection_id": 1, "server_id": "1", "hostname": "lexer-test", "port": "3306",
                 "version": version}
     if engine == "mysql":
@@ -32,7 +37,7 @@ def session(engine="mysql", version="8.4.11", mode="", bound=True, wsrep=None):
         complete["wsrep_on"] = "ON" if wsrep else "OFF"
         if wsrep:
             complete["wsrep_gcomm_uuid"] = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    return types.SimpleNamespace(engine=engine, server_version=version, sql_mode=mode,
+    return types.SimpleNamespace(engine=engine, server_version=version, sql_mode=mode, client_engine=client_engine,
                                  backslash_escapes=mode is None or "NO_BACKSLASH_ESCAPES" not in mode,
                                  in_transaction=False, connection_id=1,
                                  server_identity=identity if bound else None,
@@ -41,7 +46,9 @@ def session(engine="mysql", version="8.4.11", mode="", bound=True, wsrep=None):
 
 class SQLLexerTests(unittest.TestCase):
     def code(self, sql, engine, version, escaping=True):
-        units = dbops.split_statements(sql, escaping, delimiter="//", engine=engine, server_version=version)
+        # A MariaDB client frames even a /*M! body skipped by a MySQL server.
+        units = dbops.split_statements(sql, escaping, delimiter="//", engine=engine, server_version=version,
+                                       client_engine="mariadb")
         self.assertEqual(len(units), 1)
         return units[0]["code"]
 
@@ -212,7 +219,7 @@ class SQLLexerTests(unittest.TestCase):
 
     def test_unknown_mode_agreement_and_effect_disagreement(self):
         for engine, version in SERVERS:
-            for sql in ("SELECT 1", "SELECT 'it''s'", 'SELECT "x"', "/*!40101 SELECT 1 */"):
+            for sql in ("SELECT 1", "SELECT 'it''s'", "/*!40101 SELECT 1 */"):
                 with self.subTest(engine=engine, sql=sql):
                     result = dbops.classify(sql, engine=engine, server_version=version)
                     self.assertEqual(result["kind"], "read")
@@ -253,6 +260,294 @@ class SQLLexerTests(unittest.TestCase):
                 ed._plan_run({"sql": "DELIMITER //\n/*!40101 SELECT 1 *///"}, session(engine, version))
             accepted = ed._plan_run({"sql": "DELIMITER //\n/*!40101 SELECT 1 */ //"}, session(engine, version))
             self.assertEqual(accepted["units"][0]["send"], "/*!40101 SELECT 1 */")
+
+
+class ClientCommandLexerTests(unittest.TestCase):
+    """I3: command execution precedes SQL and can discard comment openers.
+
+    mysql-8.4.0 client/mysql.cc:2453-2464,2552-2553,2796-2815;
+    mariadb-11.8.9 client/mysql.cc:2506-2518,2659-2715. Binary mode
+    retains C (and MariaDB '-'), but not c/d or long-form charset.
+    The editor deliberately refuses those disabled spellings as well.
+    """
+
+    def test_inline_backslash_commands_are_detected_by_the_client_pass(self):
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                for command in ("C", "c", "d", "-", "!", ".", "T"):
+                    sql = "SELECT 1 \\" + command + " utf8mb4 /*\n; DELETE FROM t ; /* */"
+                    with self.subTest(engine=engine, client=client, command=command):
+                        scan = dbops.lex_sql(sql, engine=engine, server_version=version, sql_mode="",
+                                             client=True, client_engine=client, client_delimiter=";")
+                        self.assertIn((sql.index("\\"), dbops.REASON_CLIENT_COMMAND % command), scan["issues"])
+
+    def test_client_or_server_code_cannot_hide_charset_parameter_stripping(self):
+        for engine, version in SERVERS:
+            cases = [(CHARSET_COMMENT_ATTACK, ""), (CHARSET_MARIA_COMMENT_ATTACK, ""),
+                     (CHARSET_ANSI_ATTACK, "ANSI_QUOTES")]
+            if engine == "mariadb":
+                cases.append((CHARSET_MSSQL_ATTACK, "MSSQL"))
+            else:
+                cases.append((CHARSET_MSSQL_ATTACK, ""))
+            for client in ("mysql", "mariadb"):
+                for sql, bound_mode in cases:
+                    for mode in (bound_mode, None):
+                        with self.subTest(engine=engine, client=client, mode=mode, sql=sql):
+                            if sql == CHARSET_MARIA_COMMENT_ATTACK and engine == client == "mariadb":
+                                # Both parsers execute /*M!: this C stays inside
+                                # the same quoted token, so no command runs.
+                                self.assertFalse(any(u["issues"] for u in dbops.split_statements(
+                                    sql, engine=engine, server_version=version, sql_mode=mode, client_engine=client)))
+                                continue
+                            if sql == CHARSET_MSSQL_ATTACK and engine == "mysql":
+                                # MySQL has no bracket identifiers: the quote
+                                # after a starts a string containing C. This
+                                # is not an executable client-command repro.
+                                self.assertFalse(any(u["issues"] for u in dbops.split_statements(
+                                    sql, engine=engine, server_version=version, sql_mode=mode, client_engine=client)))
+                                continue
+                            verdict = dbops.classify(sql, engine=engine, server_version=version,
+                                                     sql_mode=mode, client_engine=client)
+                            self.assertEqual(verdict["kind"], "risky")
+                            self.assertIn(dbops.REASON_CLIENT_COMMAND % "C", verdict["reasons"])
+                            with self.assertRaises(ValueError):
+                                dbops.target_statement(sql, engine=engine, server_version=version,
+                                                       sql_mode=mode, client_engine=client)
+
+    def test_named_commands_after_leading_comments_are_not_sql(self):
+        prefixes = ("/* plain */ ", "/*!40101 x */ ", "/*!999999 ' */ ", "/*M! ' */ ",
+                    "/*+ hint */ ", "/* first */ /* second */ ", "/* multi\nline */ ")
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                for prefix in prefixes:
+                    for command in ("DELIMITER //", "delimiterSuffix //", "charset utf8mb4", "sandbox"):
+                        sql = prefix + command
+                        with self.subTest(engine=engine, client=client, sql=sql):
+                            scan = dbops.lex_sql(sql, engine=engine, server_version=version, client=True,
+                                                 client_engine=client, client_delimiter=";")
+                            self.assertTrue(scan["issues"], "leading comments must not hide a client command")
+                            for mode in ("", None):
+                                self.assertEqual(dbops.classify(sql, engine=engine, server_version=version,
+                                                                sql_mode=mode, client_engine=client)["kind"], "risky")
+                                with self.assertRaises(ValueError):
+                                    dbops.target_statement(sql, engine=engine, server_version=version,
+                                                           sql_mode=mode, client_engine=client)
+                for sql in (COMMENT_DELIMITER_ATTACK, "SELECT 1; /* x */ DELIMITER //",
+                            "charset utf8mb4", "charset;", "/* x */ charset;", "sandbox;",
+                            "DELIMITER //\ncharset//", "DELIMITER //\n/* x */ sandbox//"):
+                    with self.subTest(engine=engine, client=client, sql=sql):
+                        self.assertTrue(any(u["issues"] for u in dbops.split_statements(
+                            sql, engine=engine, server_version=version, sql_mode="", client_engine=client)))
+                        with self.assertRaises(ed.EditorError):
+                            ed.plan_statements(sql, engine=engine, server_version=version, identity_bound=True,
+                                               sql_mode="", client_engine=client)
+
+    def test_command_text_in_strings_and_comments_is_ordinary_text(self):
+        cases = ("SELECT '\\C utf8mb4 /*'", "SELECT '\\c \\d \\- charset delimiter'",
+                 "SELECT 1 /* \\C utf8mb4 */", "SELECT 1 # \\C utf8mb4\n",
+                 "SELECT 1 -- \\C utf8mb4\n", "SELECT '/* x */ DELIMITER //\ncharset utf8mb4'",
+                 "SELECT CHARSET('x'), delimiter FROM t", "SET NAMES utf8mb4", "SET CHARSET utf8mb4",
+                 "CREATE TABLE t (\ncharset INT,\ndelimiter INT\n)")
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                for mode in ("", "ANSI_QUOTES", "NO_BACKSLASH_ESCAPES", None):
+                    for sql in cases:
+                        with self.subTest(engine=engine, client=client, mode=mode, sql=sql):
+                            units = ed.plan_statements(sql, engine=engine, server_version=version,
+                                                       identity_bound=True, sql_mode=mode, client_engine=client)
+                            self.assertEqual(len(units), 1)
+                            self.assertEqual(units[0]["send"], sql.rstrip())
+                            self.assertEqual(dbops.target_statement(sql, engine=engine, server_version=version,
+                                                                    sql_mode=mode, client_engine=client), sql)
+
+    def test_standalone_delimiter_lines_keep_their_existing_behavior(self):
+        sql = "/* header */\nDELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT '\\C';"
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                for mode in ("", None):
+                    with self.subTest(engine=engine, client=client, mode=mode):
+                        units = ed.plan_statements(sql, engine=engine, server_version=version,
+                                                   identity_bound=True, sql_mode=mode, client_engine=client)
+                        self.assertEqual([u["send"] for u in units], ["SELECT 1; SELECT 2", "SELECT '\\C'"])
+                        self.assertEqual([u["delimiter"] for u in units], ["//", ";"])
+
+    def test_unknown_mode_distinguishes_identifiers_from_strings_and_names(self):
+        for engine, version in SERVERS:
+            for sql in ('SELECT "x"', 'ALTER TABLE "t" ADD COLUMN c INT', 'DROP DATABASE "prod"'):
+                with self.subTest(engine=engine, sql=sql):
+                    self.assertTrue(dbops.classify(sql, engine=engine, server_version=version)["ambiguous"])
+                    with self.assertRaisesRegex(ValueError, "ambiguous"):
+                        dbops.target_statement(sql, engine=engine, server_version=version)
+                    normal = dbops.split_statements(sql, engine=engine, server_version=version, sql_mode="")
+                    ansi = dbops.split_statements(sql, engine=engine, server_version=version, sql_mode="ANSI_QUOTES")
+                    self.assertNotEqual(dbops._mode_reading(normal), dbops._mode_reading(ansi))
+            left = dbops.split_statements("ALTER TABLE `a` ADD c INT", engine=engine, server_version=version)
+            right = dbops.split_statements("ALTER TABLE `b` ADD c INT", engine=engine, server_version=version)
+            self.assertNotEqual(dbops._mode_reading(left), dbops._mode_reading(right),
+                                "identical placeholder numbers must not erase the target name")
+
+
+class VersionAndClientLexerTests(unittest.TestCase):
+    """I2: independent expectations from tagged server and client sources."""
+
+    def test_mysql_comment_digits_change_at_810_not_800(self):
+        # mysql-5.7.44 sql/sql_lex.cc:1923-1938; mysql-8.0.46:1892-1910;
+        # mysql-8.1.0:1911-1929. The sixth zero is SQL on the older servers.
+        sql = "SELECT /*!100000 INTO OUTFILE '/tmp/i2' */"
+        for version, required, kind in (("5.7.44", 10000, "write"), ("8.0.46", 10000, "write"),
+                                         ("8.1.0", 100000, "read"), ("8.4.0", 100000, "read"),
+                                         ("9.7.2", 100000, "read")):
+            for client in ("mysql", "mariadb"):
+                with self.subTest(version=version, client=client):
+                    scan = dbops.lex_sql(sql, engine="mysql", server_version=version, sql_mode="")
+                    self.assertEqual(scan["comments"][0]["required"], required)
+                    verdict = dbops.classify(sql, engine="mysql", server_version=version,
+                                             sql_mode="", client_engine=client)
+                    self.assertEqual(verdict["kind"], kind)
+                    if kind == "write":
+                        self.assertEqual(verdict["category"], "file")
+                    unit = dbops.split_statements(sql, engine="mysql", server_version=version,
+                                                  sql_mode="", client_engine=client)[0]
+                    self.assertEqual(unit["code"], "SELECT 0 INTO OUTFILE ''" if kind == "write" else "SELECT")
+
+    def test_sixth_digit_requires_whitespace_only_from_mysql_810(self):
+        for version in ("5.7.44", "8.0.46", "8.1.0", "8.4.0", "9.7.2"):
+            for suffix in ("X", "", "\u00a0"):
+                with self.subTest(version=version, suffix=suffix):
+                    scan = dbops.lex_sql("/*!100000" + suffix + "*/", engine="mysql", server_version=version)
+                    self.assertEqual(scan["comments"][0]["required"], 10000)
+            for space in " \t\n\r\f\v":
+                scan = dbops.lex_sql("/*!100000" + space + "*/", engine="mysql", server_version=version)
+                self.assertEqual(scan["comments"][0]["required"],
+                                 10000 if version in ("5.7.44", "8.0.46") else 100000)
+
+    def test_unknown_mysql_version_and_engine_take_all_comment_grammars(self):
+        for engine, version in (("mysql", None), ("mysql", "custom"), (None, None), (None, "8.4.0")):
+            for space in ("", " "):
+                sql = "SELECT /*!100000" + space + "INTO OUTFILE '/tmp/i2' */"
+                with self.subTest(engine=engine, version=version, space=space):
+                    verdict = dbops.classify(sql, engine=engine, server_version=version, sql_mode="")
+                    self.assertEqual((verdict["kind"], verdict["category"]), ("write", "file"))
+                    self.assertEqual(verdict["statements"][0]["kind"], "write")
+                    self.assertTrue(verdict["ambiguous"])
+                    with self.assertRaisesRegex(ed.EditorError, "unknown|not bound"):
+                        ed._plan_run({"sql": sql}, session(engine, version))
+
+    def test_unknown_legacy_grammar_cannot_execute_an_810_or_higher_gate(self):
+        # The five-digit grammar ended before 8.1. A version-99999 gate
+        # cannot expose the final 9 as SQL on any server using that grammar.
+        sql = "/*!999999 SET @x=1 */"
+        for engine in ("mysql", None):
+            with self.subTest(engine=engine):
+                verdict = dbops.classify(sql, engine=engine, sql_mode="")
+                self.assertEqual((verdict["kind"], verdict["category"]), ("write", "session"))
+                self.assertFalse(verdict["ambiguous"])
+                self.assertNotIn(dbops.AMBIGUOUS_REASON, verdict["reasons"])
+        provisional = ed._plan_run({"sql": sql}, None)
+        self.assertEqual(provisional["verdict"]["kind"], "write")
+        self.assertEqual(provisional["units"][0]["send"], sql)
+
+    def test_legacy_mode_aliases_are_mysql_version_specific(self):
+        # mysql-5.7.44 sql/sys_vars.cc:3806-3830; mysql-8.0.46:4896-4909.
+        for mode in ("ORACLE", "MSSQL", "POSTGRESQL", "DB2", "MAXDB"):
+            for version in ("5.7.44", "8.0.46", "8.1.0", "8.4.0", "9.7.2"):
+                with self.subTest(mode=mode, version=version):
+                    flags = dbops.sql_mode_flags(mode, "mysql", version)
+                    self.assertEqual(flags["ansi_quotes"], version == "5.7.44")
+                    self.assertFalse(flags["mssql"], "MySQL's MSSQL alias does not enable brackets")
+                    result = dbops.classify(ANSI_ATTACK, engine="mysql", server_version=version,
+                                            sql_mode=mode, client_engine="mysql")
+                    self.assertEqual(result["kind"], "risky" if version == "5.7.44" else "read")
+            for version in (None, "custom"):
+                self.assertEqual(dbops.classify(ANSI_ATTACK, engine="mysql", server_version=version,
+                                                sql_mode=mode, client_engine="mysql")["kind"], "risky")
+            self.assertTrue(dbops.sql_mode_flags(mode, "mariadb", "11.4.10")["ansi_quotes"])
+        for version in ("5.7.44", "8.0.46", "8.1.0", "8.4.0", "9.7.2"):
+            self.assertTrue(dbops.sql_mode_flags("ANSI", "mysql", version)["ansi_quotes"])
+            self.assertFalse(dbops.sql_mode_flags("TRADITIONAL", "mysql", version)["ansi_quotes"])
+
+    def test_client_ansi_quotes_follows_binary_not_server(self):
+        # mariadb-10.11.16 client/mysql.cc:2630-2634;
+        # mysql-8.4.0 client/mysql.cc:2771-2785.
+        sql = 'SELECT "a\\"; SELECT 2 -- "'
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                with self.subTest(engine=engine, client=client):
+                    units = dbops.split_statements(sql, engine=engine, server_version=version,
+                                                   sql_mode="ANSI_QUOTES", client_engine=client)
+                    # MySQL servers do not advertise SERVER_STATUS_ANSI_QUOTES.
+                    self.assertEqual(len(units), 2 if engine == client == "mariadb" else 1)
+                    self.assertTrue(all(not u["unclosed"] and not u["issues"] for u in units))
+                    self.assertEqual(len(dbops.split_statements(sql, engine=engine, server_version=version,
+                                                                sql_mode="", client_engine=client)), 1)
+        with self.assertRaisesRegex(ed.EditorError, "client family is unknown"):
+            ed._plan_run({"sql": sql}, session("mariadb", "11.4.10", "ANSI_QUOTES", client_engine=None))
+
+    def test_maria_comment_is_ordinary_only_to_mysql_client(self):
+        # mysql-8.4.0 client/mysql.cc:2895-2902;
+        # mariadb-10.11.16 client/mysql.cc:2788-2798.
+        for sql in ("SELECT 1 /*M! ' */", "SELECT 1 /*M! ; DELETE FROM t */"):
+            with self.subTest(sql=sql):
+                mysql = dbops.split_statements(sql, engine="mysql", server_version="8.4.0",
+                                                sql_mode="", client_engine="mysql")
+                self.assertEqual(len(mysql), 1)
+                self.assertEqual(mysql[0]["code"], "SELECT 1")
+                self.assertFalse(mysql[0]["unclosed"] or mysql[0]["issues"])
+                self.assertEqual(dbops.classify(sql, engine="mysql", server_version="8.4.0",
+                                                sql_mode="", client_engine="mysql")["kind"], "read")
+                for client in ("mariadb", None):
+                    self.assertEqual(dbops.classify(sql, engine="mysql", server_version="8.4.0",
+                                                    sql_mode="", client_engine=client)["kind"], "risky")
+                    with self.assertRaises(ed.EditorError):
+                        ed._plan_run({"sql": sql}, session(client_engine=client))
+
+    def test_multiline_hint_hazards_refuse_mysql_framing(self):
+        # mysql-8.4.0 client/mysql.cc:2741,2895-2947: ss_comment is line-local.
+        for body in ("\n'", '\n"', "\n`", "\n$tag$", "\n$$", "\n/* inner", "\n-- comment", "\n# comment", "\n;"):
+            sql = "SELECT /*+ " + body + " */ 1"
+            with self.subTest(body=body):
+                verdict = dbops.classify(sql, engine="mysql", server_version="8.4.0",
+                                         sql_mode="", client_engine="mysql")
+                self.assertEqual(verdict["kind"], "risky")
+                self.assertIn(dbops.REASON_MULTILINE_HINT, verdict["reasons"])
+                with self.assertRaisesRegex(ed.EditorError, "multi-line optimizer hint"):
+                    ed._plan_run({"sql": sql}, session(client_engine="mysql"))
+                with self.assertRaises(ValueError):
+                    dbops.target_statement(sql, sql_mode="", client_engine="mysql")
+                # MariaDB 10.11-11.8 ml_comment and main's persistent hint
+                # state both keep these characters out of the client lexer.
+                self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
+                    "units"][0]["send"], sql)
+        for sql in ("SELECT /*+\n BKA(t)\n */ 1", "SELECT /*+ ' */ 1"):
+            self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
+        sql = "DELIMITER //\nSELECT /*+\n //\n */ 1//"
+        with self.assertRaisesRegex(ed.EditorError, "multi-line optimizer hint"):
+            ed._plan_run({"sql": sql}, session())
+
+    def test_trailing_backslash_cannot_change_reviewed_text(self):
+        # mysql-8.4.0 client/mysql.cc:2776-2785 drops an unpaired end-of-line
+        # backslash; MariaDB's binary-mode branch can append a NUL instead.
+        for quote in ("'", '"', "`"):
+            for newline in ("\n", "\r\n"):
+                sql = "SELECT " + quote + "a\\" + newline + "b" + quote
+                with self.subTest(quote=quote, newline=newline):
+                    units = dbops.split_statements(sql, sql_mode="", client_engine="mysql")
+                    self.assertIn(dbops.REASON_TRAILING_BACKSLASH, units[0]["issues"])
+                    self.assertEqual(dbops.classify(sql, sql_mode="", client_engine="mysql")["kind"], "risky")
+                    with self.assertRaisesRegex(ed.EditorError, "line ends with a backslash"):
+                        ed._plan_run({"sql": sql}, session())
+                    with self.assertRaises(ValueError):
+                        dbops.target_statement(sql, sql_mode="", client_engine="mysql")
+                    self.assertEqual(ed._plan_run({"sql": sql}, session(mode="NO_BACKSLASH_ESCAPES"))[
+                        "units"][0]["send"], sql)
+                    if quote == "`":
+                        self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
+                            "units"][0]["send"], sql)
+                    if quote == '"':
+                        self.assertEqual(ed._plan_run({"sql": sql}, session("mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))[
+                            "units"][0]["send"], sql)
+        sql = "SELECT 'a\\\\\nb'"
+        self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
 
 
 class EditorLexerTests(unittest.TestCase):
@@ -364,7 +659,7 @@ class EditorLexerTests(unittest.TestCase):
             self.assertEqual(plan["units"][0]["code"], "SELECT 1 + 2")
         bound = session("mariadb", "11.8.9-MariaDB", wsrep=False)
         editor = ed.EditorSession("wsrep-lexer", "test", {})
-        for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+        for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity", "client_engine"):
             setattr(editor, key, getattr(bound, key))
         sql = "SELECT 1 /*!99997 + 2 */"
         packet, unused_lines = editor._guarded_statement(editor._write_session_guard(), sql)

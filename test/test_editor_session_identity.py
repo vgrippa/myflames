@@ -176,13 +176,14 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertEqual(review['status'], 'needs_confirmation', review)
         self.assertIsNone(review['confirmation']['typed_target'])
         self.assertIsNone(self.registry.get('tab1'))
+        unused = self.call('/api/editor/run', sql=sql)['confirmation']['token']
         old_token = review['confirmation']['token']
         changed = self.call('/api/editor/run', sql=sql, confirmed=True, confirm_token=old_token)
         self.assertEqual(changed['status'], 'needs_confirmation', changed)
         self.assertEqual(changed['confirmation']['typed_target'], 'prod')
         self.assertNotEqual(changed['confirmation']['token'], old_token)
         self.assertFalse(any(definition in p[2] for p in self.packets()), 'old review sends no user SQL')
-        for token, target in ((old_token, 'prod'), (changed['confirmation']['token'], None),
+        for token, target in ((old_token, 'prod'), (unused, 'prod'), (changed['confirmation']['token'], None),
                               (changed['confirmation']['token'], 'PROD')):
             with self.subTest(token=token, target=target):
                 rejected = self.call('/api/editor/run', sql=sql, confirmed=True,
@@ -214,7 +215,7 @@ class EditorIdentityTests(unittest.TestCase):
                            confirm_token=changed['confirmation']['token'])
         self.assertEqual(result['status'], 'complete', result)
 
-    def test_first_run_changed_to_read_still_returns_a_new_review(self):
+    def test_first_run_changed_to_read_runs_without_another_review(self):
         sql = '/*!999999 SET @must_not_run = 1 */'
         review = self.call('/api/editor/run', sql=sql)
         self.assertEqual(review['status'], 'needs_confirmation', review)
@@ -222,23 +223,17 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertEqual(unused['status'], 'needs_confirmation', unused)
         changed = self.call('/api/editor/run', sql=sql, confirmed=True,
                             confirm_token=review['confirmation']['token'])
-        self.assertEqual(changed['status'], 'needs_confirmation', changed)
-        self.assertEqual(changed['confirmation']['kind'], 'read')
-        self.assertEqual(changed['confirmation']['statements'], [sql])
-        self.assertFalse(any(sql in p[2] for p in self.packets()))
+        self.assertEqual(changed['status'], 'complete', changed)
+        self.assertEqual(changed['run']['statements'][0]['kind'], 'read')
+        self.assertEqual(sum(p[2].endswith(sql) for p in self.packets()), 1)
+        audits = len(self.store.audit_records())
         for previous in (review, unused):
-            stale = self.call('/api/editor/run', sql=sql, confirmed=True,
-                              confirm_token=previous['confirmation']['token'])
-            self.assertEqual(stale['status'], 'needs_confirmation', stale)
-            self.assertFalse(any(sql in p[2] for p in self.packets()))
-        result = self.call('/api/editor/run', sql=sql, confirmed=True,
-                           confirm_token=changed['confirmation']['token'])
-        self.assertEqual(result['status'], 'complete', result)
-        before = len(self.packets())
-        replay = self.call('/api/editor/run', sql=sql, confirmed=True,
-                           confirm_token=changed['confirmation']['token'])
-        self.assertEqual(replay['status'], 'needs_confirmation', replay)
-        self.assertEqual(len(self.packets()), before, 'a read verdict cannot bypass a consumed review token')
+            # Tokens convey no authority when the bound policy allows the read.
+            result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                               confirm_token=previous['confirmation']['token'])
+            self.assertEqual(result['status'], 'complete', result)
+        self.assertEqual(sum(p[2].endswith(sql) for p in self.packets()), 3)
+        self.assertEqual(len(self.store.audit_records()), audits, 'allowed reads create no new review')
 
     def test_first_run_newly_visible_alter_has_preflight_before_review(self):
         sql = '/*!999999 CREATE */ ALTER TABLE d.tt ADD COLUMN c INT'

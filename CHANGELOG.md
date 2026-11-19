@@ -25,7 +25,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- Query editor asks for a new confirmation when connecting a new tab changes the reviewed SQL or its safety requirements, including the database name required for a drop. The earlier confirmation sends no user SQL.
+- The Query editor now refuses client commands hidden by comment or quote differences, including DELIMITER after leading comments. SQL with an unknown quote mode can no longer hide an ALTER TABLE target from its preflight and metadata-lock wait guard.
+
+- Query editor refuses DDL inside MariaDB anonymous compound blocks and asks for each change as standalone SQL. Anonymous blocks in ORACLE mode are refused alongside stored-program definitions.
+- Query editor interprets executable comments and quote modes using the server version and selected MySQL or MariaDB client, including MySQL 5.7 and 8.0 comment digits and MySQL 5.7 compatibility modes. Writes exposed by those rules require review. It explains refusals for multi-line hints or line-ending backslashes that can change what the client sends.
+- Query editor runs ordinary reads immediately on a new tab, including through ProxySQL, and accepts a confirmed first write when startup only adds transaction warnings, as on MySQL 5.7. Changed SQL or safety requirements, including the database name required for a drop, still need a new confirmation. Earlier confirmations cannot authorize another tab or session.
 - Query editor checks ANSI_QUOTES and MariaDB MSSQL quoting before allowing reads, refuses uncertain client boundaries and ORACLE stored-program definitions, and accepts dump headers when every possible SQL-mode reading agrees.
 
 - Query editor keeps stored-program confirmations separate from trailing SQL, including identifiers with dollar signs or Unicode characters, user variables, conditional table creation and MariaDB package bodies. Database drops inside a definition require the database name to be typed; definitions with multiple database targets refuse.
@@ -45,6 +49,12 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where the Query editor asked to confirm text that runs as several statements on the server but as one for the client. It now refuses before review and asks for each statement on its own, ending with the delimiter.
+- Query editor runs statements after a literal SQL-mode change using the reviewed mode, while checking that mode on the server before sending guarded statements.
+- Query editor handles a first-run ALTER that disappears inside a version comment without crashing or applying its lock-wait setup.
+- Query editor accepts quoted block and loop end labels, valid END and DO identifiers, and UDF declarations using SONAME while keeping trailing SQL in a separate confirmation.
+- Expired MySQL passwords report error 1862 when opening the Query editor or running scripts and writes, including clients that print the login hint only on stdout.
+- Query editor accepts stored functions returning `LONG CHARACTER SET ...` as one definition and keeps trailing SQL in a separate confirmation.
 - Fixed an issue where the Query editor refused stored functions with multi-word return types or quoted character sets, triggers with quoted ordering names, and MariaDB range or cursor loops. Each complete definition keeps its own confirmation.
 - Fixed an issue where the Query editor refused MariaDB's `/*!99997 ... */` comments even when the connected session had `wsrep_on` off. The session must still have it off when the SQL runs.
 - Query editor accepts stored-program row-constructor IF conditions and identifiers such as `col$end` without splitting their definition into separate confirmations.

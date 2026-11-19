@@ -804,9 +804,10 @@ def _server_read_error(stderr):
 
 class _InvocationDefaults(str):
     """Keep an option file paired with the client whose engine it describes."""
-    def __new__(cls, path, binary):
+    def __new__(cls, path, binary, client_engine=None):
         value = str.__new__(cls, path)
         value.binary = binary
+        value.client_engine = client_engine
         return value
 
 
@@ -1139,18 +1140,29 @@ class MySQLConnection:
             raise ConnectorError(str(exc)) from None
         return TUNNELS.acquire(spec)
 
-    def _defaults_engine(self, binary, used=None):
-        """Describe the actual client rather than its filename or server."""
+    def _client_engine_facts(self, binary, used=None):
+        """Return the existing option-file family and the confirmed lexer family.
+
+        Preserve the option-file fallback when a probe fails, but do not let
+        that fallback authorize a particular SQL framing interpretation.
+        """
         used = used or getattr(self, '_client_use', None)
         if used and os.path.realpath(used['path']) == os.path.realpath(binary):
-            return used['engine']
+            return used['engine'], used['engine']
         else:
             # A mysql symlink can be a MariaDB client. Probe the program, never
             # infer its engine from its filename or the server's engine.
             from . import client_tools
             name = os.path.splitext(os.path.basename(binary))[0]
             fields = client_tools.probe(name, binary) if os.path.isfile(binary) else {}
-            return fields.get('engine', 'mysql')
+            return fields.get('engine', 'mysql'), fields.get('engine') if fields.get('available') else None
+
+    def client_engine(self, binary, used=None):
+        """The actual binary's family, independent of its filename or server."""
+        return self._client_engine_facts(binary, used)[1]
+
+    def _defaults_engine(self, binary, used=None):
+        return self._client_engine_facts(binary, used)[0]
 
     @contextmanager
     def _invocation_defaults(self, binary=None, used=None):
@@ -1160,13 +1172,13 @@ class MySQLConnection:
         invocation holds the tunnel until it ends."""
         self._check_login_consent()
         binary = binary or self._resolve_binary()
-        engine = self._defaults_engine(binary, used)
+        engine, client_engine = self._client_engine_facts(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
             path = self._create_defaults_file(None if lease is None else ("127.0.0.1", lease.port),
                                               client_engine=engine)
             try:
-                yield _InvocationDefaults(path, binary)
+                yield _InvocationDefaults(path, binary, client_engine)
             finally:
                 try:
                     os.unlink(path)
@@ -1415,6 +1427,8 @@ class MySQLConnection:
             if auth is not None:
                 raise auth
         if proc.returncode != 0 and not _STATEMENT_ERROR.search(stderr):
+            if not stderr.strip() and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr.strip() or "no stderr"))
         return _client_text(proc.stdout), stderr
@@ -1495,6 +1509,8 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
             error = ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )

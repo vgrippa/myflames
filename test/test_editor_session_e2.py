@@ -11,6 +11,7 @@ import test_editor_session as fixtures
 import test_editor_session_identity as identity_fixtures
 from myflames import dbops, editor_session as ed
 from myflames.connector import ConnectorError
+from test_sql_lexer import session as bound_session
 
 
 class EditorBoundaryTests(unittest.TestCase):
@@ -41,7 +42,15 @@ class EditorBoundaryTests(unittest.TestCase):
             for control in controls:
                 sql = wrapper + control
                 with self.subTest(sql=sql):
-                    plan = ed._plan_run({'sql': sql}, None)
+                    bound = None
+                    if '"' in control:
+                        # I3 keeps identifier/string roles distinct. The
+                        # unknown-mode run refuses; known ANSI identifiers
+                        # still need all the commit-policy checks below.
+                        with self.assertRaisesRegex(ed.EditorError, 'quote mode is unknown'):
+                            ed._plan_run({'sql': sql}, None)
+                        bound = bound_session('mariadb', '11.8.9-MariaDB', 'ANSI_QUOTES')
+                    plan = ed._plan_run({'sql': sql}, bound)
                     self.assertTrue(ed.implicit_commit(plan['units'][0]))
                     self.assertNotEqual(plan['verdict']['kind'], 'read')
                     for ctype, readonly in (('production', False), ('development', False), ('production', True)):

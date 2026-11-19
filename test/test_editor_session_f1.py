@@ -6,11 +6,14 @@ Only the disposable client answers are synthetic; no server is started.
 import ast
 import os
 import unittest
+from unittest import mock
 
 import test_editor_session as fixtures
 import test_editor_session_identity as identity_fixtures
-from myflames import dbops, editor_session as ed
-from test_sql_lexer import session as bound_session, ANSI_ATTACK, MSSQL_ATTACK, SAFETY
+from myflames import connector, dbops, editor_session as ed
+from test_sql_lexer import (session as bound_session, ANSI_ATTACK, MSSQL_ATTACK, SAFETY,
+                            CHARSET_COMMENT_ATTACK, CHARSET_MARIA_COMMENT_ATTACK,
+                            CHARSET_ANSI_ATTACK, CHARSET_MSSQL_ATTACK, COMMENT_DELIMITER_ATTACK)
 
 
 VERSIONS = (("mysql", "8.4.11"), ("mariadb", "11.4.13-MariaDB"))
@@ -31,6 +34,137 @@ SKIPPED_INPUTS = (
 class SQLModePlanningTests(unittest.TestCase):
     """Bound-session attacks exercise the real planner, classifier and policy."""
 
+    def test_client_command_reproductions_refuse_with_bound_and_unknown_modes(self):
+        for engine, version in VERSIONS:
+            cases = [(CHARSET_COMMENT_ATTACK, ""), (CHARSET_MARIA_COMMENT_ATTACK, ""),
+                     (CHARSET_ANSI_ATTACK, "ANSI_QUOTES"), (COMMENT_DELIMITER_ATTACK, ""),
+                     ("/*!40101 x */ DELIMITER //", "")]
+            if engine == "mariadb":
+                cases.append((CHARSET_MSSQL_ATTACK, "MSSQL"))
+            else:
+                cases.append((CHARSET_MSSQL_ATTACK, ""))
+            for client in ("mysql", "mariadb"):
+                for sql, bound_mode in cases:
+                    for mode in (bound_mode, None):
+                        with self.subTest(engine=engine, client=client, mode=mode, sql=sql):
+                            if sql == CHARSET_MARIA_COMMENT_ATTACK and engine == client == "mariadb":
+                                plan = ed._plan_run({"sql": sql}, bound_session(engine, version, mode,
+                                                                              client_engine=client))
+                                self.assertEqual(plan["units"][0]["send"], sql)
+                                continue  # Both parsers keep C inside the same quoted token.
+                            if sql == CHARSET_MSSQL_ATTACK and engine == "mysql":
+                                plan = ed._plan_run({"sql": sql}, bound_session(engine, version, mode,
+                                                                              client_engine=client))
+                                self.assertEqual(plan["units"][0]["send"], sql)
+                                continue  # MySQL does not recognize bracket identifiers.
+                            bound = bound_session(engine, version, mode, client_engine=client)
+                            with self.assertRaises(ed.EditorError):
+                                ed._plan_run({"sql": sql}, bound)
+                            editor = ed.EditorSession("i3-command", "test", {})
+                            for key in ("engine", "server_version", "sql_mode", "connection_id",
+                                        "server_identity", "_kill_identity", "client_engine"):
+                                setattr(editor, key, getattr(bound, key))
+                            with self.assertRaises((ed.EditorError, ValueError)):
+                                editor._guarded_statement(editor._write_session_guard(), sql)
+
+    def test_double_quoted_alter_requires_known_mode_and_preserves_wait_guard(self):
+        for engine, version in VERSIONS:
+            sql = 'ALTER TABLE "t" ADD COLUMN c INT'
+            with self.subTest(engine=engine):
+                for prefix in ("", "SET sql_mode=CONCAT('ANSI_QUOTES', ''); ", "CALL change_mode(); "):
+                    with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                        ed._plan_run({"sql": prefix + sql}, bound_session(engine, version, None if not prefix else ""))
+                bound = bound_session(engine, version, "ANSI_QUOTES")
+                plan = ed._plan_run({"sql": sql}, bound)
+                alter = ed._alter_unit(plan)
+                self.assertIsNotNone(alter)
+                self.assertEqual(alter["idents"], ["t"])
+                self.assertTrue(alter["mode_sensitive"])
+                self.assertEqual(alter["packet_setup"]["send"], ed.ALTER_LOCK_WAIT)
+                self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "confirm")
+                for attack in ('ALTER TABLE "t" /*+ SET_VAR(lock_wait_timeout=100) */ ADD COLUMN c INT WAIT 100',
+                               'ALTER TABLE "t" WAIT 100 ADD COLUMN c INT'):
+                    decision = ed._decision(ed._plan_run({"sql": attack}, bound), SAFETY, bound)
+                    self.assertEqual(decision["action"], "refuse")
+                    self.assertIn("five-second metadata-lock wait", decision["text"])
+                    with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                        ed._plan_run({"sql": attack}, bound_session(engine, version, None))
+                plan = ed._plan_run({"sql": 'DROP DATABASE "prod"'}, bound)
+                self.assertEqual(ed._decision(plan, SAFETY, bound)["typed_target"], "prod")
+                for sql in ('DROP DATABASE "prod"', 'CREATE PROCEDURE "p"() SELECT 1'):
+                    with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                        ed._plan_run({"sql": sql}, bound_session(engine, version, None))
+
+    def test_legacy_mysql_comment_write_requires_consent(self):
+        sql = "SELECT /*!100000 INTO OUTFILE '/tmp/i2' */"
+        for version in ("5.7.44", "8.0.46"):
+            with self.subTest(version=version):
+                bound = bound_session("mysql", version)
+                plan = ed._plan_run({"sql": sql}, bound)
+                self.assertEqual(plan["units"][0]["send"], sql)
+                self.assertEqual((plan["verdict"]["kind"], plan["verdict"]["category"]), ("write", "file"))
+                self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "confirm")
+                self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), bound)["action"], "refuse")
+        for version in ("8.1.0", "8.4.0", "9.7.2"):
+            self.assertEqual(ed._plan_run({"sql": sql}, bound_session("mysql", version))["verdict"]["kind"], "read")
+
+    def test_mysql_57_literal_mode_prediction_refuses_legacy_alias_count_mismatch(self):
+        for mode in ("MSSQL", "ORACLE", "POSTGRESQL", "DB2", "MAXDB"):
+            sql = "SET sql_mode='%s'; %s" % (mode, ANSI_ATTACK)
+            with self.subTest(mode=mode):
+                bound = bound_session("mysql", "5.7.44")
+                with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                    ed._plan_run({"sql": sql}, bound)
+
+    def test_mariadb_client_keeps_ansi_identifier_in_guarded_packet(self):
+        sql = 'SELECT "a\\"'
+        for engine, version in VERSIONS:
+            with self.subTest(engine=engine):
+                bound = bound_session(engine, version, "ANSI_QUOTES", client_engine="mariadb")
+                if engine == "mysql":
+                    # mysql-8.4.0 sql/sys_vars.cc:4710-4718: no ANSI status
+                    # bit, even when a MariaDB client connects to it.
+                    with self.assertRaisesRegex(ed.EditorError, "Close every"):
+                        ed._plan_run({"sql": sql}, bound)
+                    continue
+                plan = ed._plan_run({"sql": sql}, bound)
+                self.assertEqual(plan["units"][0]["send"], sql)
+                editor = ed.EditorSession("i2-client", "test", {})
+                for key, value in vars(bound).items():
+                    if key != "backslash_escapes":
+                        setattr(editor, key, value)
+                packet, unused = editor._guarded_statement(editor._write_session_guard(), sql)
+                self.assertIn(sql, packet)
+                self.assertIn("FIND_IN_SET('ANSI_QUOTES', @@SESSION.sql_mode) > 0) <=> 1", packet)
+                with self.assertRaisesRegex(ed.EditorError, "Close every"):
+                    ed._plan_run({"sql": sql}, bound_session(engine, version, "ANSI_QUOTES", client_engine="mysql"))
+
+    def test_cursor_selection_uses_selected_client_family(self):
+        sql = 'SELECT "a\\"; SELECT 2 -- "'
+        for engine, version in VERSIONS:
+            bound = bound_session(engine, version, "ANSI_QUOTES", client_engine="mariadb")
+            if engine == "mysql":
+                with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                    ed._plan_run({"sql": sql, "cursor": sql.index("SELECT 2") + 2}, bound)
+                continue
+            plan = ed._plan_run({"sql": sql, "cursor": sql.index("SELECT 2") + 2}, bound)
+            self.assertEqual(plan["units"][0]["send"], 'SELECT 2 -- "')
+            self.assertEqual(plan["verdict"]["kind"], "read")
+
+    def test_custom_delimiter_cannot_match_an_invented_identifier_mask(self):
+        # The server mask represents "a" as `0`. Those invented backticks
+        # must not count as real delimiters in this valid single read.
+        sql = 'DELIMITER "`"\nSELECT "a"`'
+        for engine, version in VERSIONS:
+            for client in ("mysql", "mariadb"):
+                with self.subTest(engine=engine, client=client):
+                    bound = bound_session(engine, version, "ANSI_QUOTES", client_engine=client)
+                    plan = ed._plan_run({"sql": sql}, bound)
+                    self.assertEqual([unit["send"] for unit in plan["units"]], ['SELECT "a"'])
+                    self.assertEqual(plan["units"][0]["idents"], ["a"])
+                    self.assertEqual(plan["verdict"]["kind"], "read")
+                    self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "allow")
+
     def test_ansi_and_mssql_hidden_writes_require_review(self):
         for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
             modes = ("ANSI_QUOTES", "ANSI")
@@ -39,16 +173,19 @@ class SQLModePlanningTests(unittest.TestCase):
             for mode in modes:
                 for suffix in ("", ",NO_BACKSLASH_ESCAPES"):
                     with self.subTest(engine=engine, mode=mode + suffix):
-                        session = bound_session(engine, version, mode + suffix)
+                        session = bound_session(engine, version, mode + suffix, client_engine=engine)
+                        if engine == "mysql" and not suffix:
+                            with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                                ed._plan_run({"sql": ANSI_ATTACK}, session)
+                            continue
                         plan = ed._plan_run({"sql": ANSI_ATTACK}, session)
                         self.assertEqual(plan["verdict"]["kind"], "risky")
                         self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
                         self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), session)["action"], "refuse")
                         self.assertIn("DELETE FROM t", " ".join(u["code"] for u in plan["units"]))
         session = bound_session("mariadb", "11.8.9-MariaDB", "MSSQL")
-        plan = ed._plan_run({"sql": MSSQL_ATTACK}, session)
-        self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
-        self.assertEqual(plan["units"][0]["send"], MSSQL_ATTACK)
+        with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+            ed._plan_run({"sql": MSSQL_ATTACK}, session)
 
     def test_unknown_modes_accept_agreeing_comments_and_refuse_hidden_writes(self):
         for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
@@ -83,9 +220,14 @@ class SQLModePlanningTests(unittest.TestCase):
         for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
             for assignment in ("SET sql_mode='ANSI_QUOTES'", "SET SESSION sql_mode='ANSI_QUOTES'",
                                "SET @@SESSION.`sql_mode`='ANSI_QUOTES'"):
-                plan = ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound_session(engine, version))
+                bound = bound_session(engine, version, client_engine=engine)
+                if engine == "mysql":
+                    with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                        ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
+                    continue
+                plan = ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
                 self.assertEqual(plan["units"][1]["sql_mode"], "ANSI_QUOTES")
-                self.assertEqual(plan["units"][1]["kind"], "risky")
+                self.assertEqual([unit["kind"] for unit in plan["units"]], ["write", "read", "risky"])
             for assignment in ("SET sql_mode=@saved", "SET sql_mode=CONCAT(@@sql_mode, ',ANSI_QUOTES')"):
                 with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
                     ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound_session(engine, version))
@@ -104,7 +246,7 @@ class SQLModePlanningTests(unittest.TestCase):
 
     def test_explain_cannot_expose_an_unprefixed_statement_under_ansi_quotes(self):
         for engine, version in VERSIONS:
-            with self.assertRaisesRegex(ed.EditorError, "Explain one statement"):
+            with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
                 ed._plan_run({"sql": ANSI_ATTACK, "explain_format": "table"},
                              bound_session(engine, version, "ANSI_QUOTES"))
 
@@ -135,7 +277,7 @@ class SQLModePlanningTests(unittest.TestCase):
         for engine, version, mode in (("mysql", "8.4.11", "ANSI"), ("mariadb", "11.8.9-MariaDB", "MSSQL")):
             bound = bound_session(engine, version, mode)
             editor = ed.EditorSession("h1", "test", {})
-            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity", "client_engine"):
                 setattr(editor, key, getattr(bound, key))
             packet, unused = editor._guarded_statement(editor._write_session_guard(), ANSI_ATTACK)
             self.assertIn("FIND_IN_SET('ANSI_QUOTES', @@SESSION.sql_mode) > 0) <=> 1", packet)
@@ -155,7 +297,7 @@ class SQLModePlanningTests(unittest.TestCase):
             self.assertTrue(read["mode_sensitive"])
             self.assertTrue(ed._needs_session_guard(read))
             editor = ed.EditorSession("h1-mode-set", "test", {})
-            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity", "client_engine"):
                 setattr(editor, key, getattr(bound, key))
             with self.assertRaises(ValueError):
                 editor._guarded_statement(editor._write_session_guard(), read["send"], use_session_mode=False)
@@ -242,7 +384,7 @@ class ExecutableCommentTests(unittest.TestCase):
             for comment in ("/*!40101 SET @dump = 1 */", "/*! SET @dump = 1 */"):
                 self.assertEqual(ed.plan_statements(comment, engine=engine, server_version=version, identity_bound=True)[0]["send"], comment)
             tagger = ed.EditorSession("tagger", "identity", {})
-            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity", "client_engine"):
                 setattr(tagger, key, getattr(session, key))
             self.assertEqual(tagger._tag_statement(units[0]["send"]), tagger.statement_tag + units[0]["send"])
 
@@ -291,6 +433,30 @@ class EditorDollarDelimiterTests(unittest.TestCase):
             self.assertEqual(ed.plan_statements(sql)[0]["send"], sql)
 
 
+class ClientFamilyTests(unittest.TestCase):
+    def test_selected_client_family_is_not_inferred_from_filename(self):
+        conn = connector.MySQLConnection(host="localhost", binary="/example/mysql")
+        conn._client_use = {"path": "/example/mysql", "engine": "mariadb"}
+        self.assertEqual(conn.client_engine("/example/mysql"), "mariadb")
+        with mock.patch("myflames.connector.os.path.isfile", return_value=True), \
+                mock.patch("myflames.client_tools.probe", return_value={"available": True, "engine": "mysql"}) as probe:
+            self.assertEqual(conn.client_engine("/example/mariadb"), "mysql")
+            probe.assert_called_once_with("mariadb", "/example/mariadb")
+        with mock.patch("myflames.connector.os.path.isfile", return_value=True), \
+                mock.patch("myflames.client_tools.probe", return_value={"available": False, "engine": "mysql"}):
+            self.assertIsNone(conn.client_engine("/unprobed/mysql"))
+            self.assertEqual(conn._defaults_engine("/unprobed/mysql"), "mysql")
+        with mock.patch("myflames.connector.os.path.isfile", return_value=True), \
+                mock.patch("myflames.client_tools.probe", return_value={"available": False, "engine": "mariadb"}):
+            self.assertIsNone(conn.client_engine("/unprobed/mariadb"))
+            self.assertEqual(conn._defaults_engine("/unprobed/mariadb"), "mariadb")
+
+    def test_invocation_defaults_carries_the_chosen_client_family(self):
+        path = connector._InvocationDefaults("/private/defaults.cnf", "/example/mysql", "mariadb")
+        self.assertEqual(str(path), "/private/defaults.cnf")
+        self.assertEqual((path.binary, path.client_engine), ("/example/mysql", "mariadb"))
+
+
 @unittest.skipIf(os.name == "nt", "the fake client is a POSIX script")
 class EditorF1ProcessTests(unittest.TestCase):
     engine = "mysql"
@@ -304,6 +470,68 @@ class EditorF1ProcessTests(unittest.TestCase):
     packets = identity_fixtures.EditorIdentityTests.packets
     rewrite_client = identity_fixtures.EditorIdentityTests.rewrite_client
     inject_answers = identity_fixtures.EditorIdentityTests.inject_answers
+
+    def test_session_pins_client_family_from_banner_not_server_identity(self):
+        family = "mariadb" if self.engine == "mysql" else "mysql"
+        banner = "mariadb Ver 11.4.13-MariaDB" if family == "mariadb" else "mysql Ver 8.4.11"
+        self.rewrite_client(lambda source: source.replace(
+            'print("mariadb Ver 11.4.13-MariaDB" if ENGINE == "mariadb" else "mysql Ver 8.4.11")',
+            'print(%r)' % banner))
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        session = self.registry.get("tab1")
+        self.assertEqual(session.engine, self.engine)
+        self.assertEqual(session.client_engine, family)
+        self.assertEqual(ed._lexer_session_context(session)["client_engine"], family)
+
+    def test_client_framing_refusals_send_no_packets(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        session = self.registry.get("tab1")
+        self.assertEqual(session.client_engine, self.engine)
+        cases = [("SELECT 'a\\\nb'", "line ends with a backslash")]
+        if self.engine == "mysql":
+            cases.append(("SELECT /*+\n ' */ 1", "multi-line optimizer hint"))
+            cases.append(("SELECT /*+\n $tag$ */ 1", "multi-line optimizer hint"))
+        for sql, message in cases:
+            with self.subTest(sql=sql):
+                before = len(self.packets())
+                result = self.call("/api/editor/run", sql=sql)
+                self.assertEqual(result["status"], "invalid", result)
+                self.assertIn(message, result["message"])
+                self.assertEqual(len(self.packets()), before)
+
+    def test_client_commands_and_unknown_alter_targets_send_no_packets(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        session = self.registry.get("tab1")
+        cases = [(CHARSET_COMMENT_ATTACK, ""), (CHARSET_MARIA_COMMENT_ATTACK, ""),
+                 (CHARSET_ANSI_ATTACK, "ANSI_QUOTES"), (COMMENT_DELIMITER_ATTACK, ""),
+                 ("/*!40101 x */ DELIMITER //", ""), ("/* ordinary */ charset utf8mb4", ""),
+                 ("charset;", ""), ("DELIMITER //\n/* ordinary */ charset//", ""),
+                 ("SELECT 1 \\c", ""), ("SELECT 1 \\d //", ""), ("SELECT 1 \\-", ""),
+                 ('ALTER TABLE "t" /*+ SET_VAR(lock_wait_timeout=100) */ ADD COLUMN c INT WAIT 100', None)]
+        if self.engine == "mariadb":
+            cases.append((CHARSET_MSSQL_ATTACK, "MSSQL"))
+        for sql, bound_mode in cases:
+            for mode in (bound_mode, None):
+                with self.subTest(sql=sql, mode=mode):
+                    if sql == CHARSET_MARIA_COMMENT_ATTACK and self.engine == "mariadb":
+                        continue  # This client/server pair treats the bytes as one string.
+                    session.sql_mode = mode
+                    before = len(self.packets())
+                    result = self.call("/api/editor/run", sql=sql)
+                    self.assertEqual(result["status"], "invalid", result)
+                    self.assertEqual(len(self.packets()), before, "refusal must precede every helper or SQL packet")
+
+    def test_known_ansi_alter_review_uses_the_restored_table_name(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        session = self.registry.get("tab1")
+        session.sql_mode = "ANSI_QUOTES"
+        sql = 'ALTER TABLE "tt" ADD COLUMN c INT'
+        before = len(self.packets())
+        result = self.call("/api/editor/run", sql=sql)
+        self.assertEqual(result["status"], "needs_confirmation", result)
+        self.assertEqual(result["confirmation"]["alter_preflight"]["table"], "tt")
+        self.assertIn(ed.ALTER_LOCK_WAIT, result["confirmation"]["statements"])
+        self.assertFalse(any(sql in packet[2] for packet in self.packets()[before:]), "review does not execute ALTER")
 
     def test_skipped_wrappers_cannot_bypass_the_server_reading_write_gate(self):
         self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
@@ -500,7 +728,11 @@ class EditorF1ProcessTests(unittest.TestCase):
         packets = [next(p[2] for p in self.packets() if s in p[2]) for s in sends]
         self.assertIn("@@SESSION.sql_mode", packets[0])
         for packet in packets[1:]:
-            self.assertNotIn("@@SESSION.sql_mode", packet)
+            # A literal assignment supplies the later mode prediction. It
+            # is checked in each packet, even though the cached mode stays
+            # unknown until refresh_state finishes the run.
+            self.assertIn("FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode) > 0) <=> 1", packet)
+            self.assertIn("FIND_IN_SET('ANSI_QUOTES', @@SESSION.sql_mode) > 0) <=> 0", packet)
             self.assertIn("SET @myflames_target = ", packet)
             self.assertIn("CONNECTION_ID() <> %d" % session.connection_id, packet)
         self.assertEqual(self.rows(self.run_sql("SELECT @x")), [["42"]])

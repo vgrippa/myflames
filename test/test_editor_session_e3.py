@@ -165,6 +165,28 @@ class EditorRoutedStartupTests(unittest.TestCase):
         self.assertEqual(self.rows(self.run_sql('SELECT 7')), [['7']])
         self.assert_fresh_unbound_client()
 
+    def test_proxy_first_read_runs_without_a_review_for_unknown_transaction_state(self):
+        self.split_proxy_packets()
+        self.save_profile(type='development')
+        sql = 'SELECT @@hostname AS host, CONNECTION_ID() AS id'
+        self.inject_answers('''        if upper == "SELECT @@HOSTNAME AS HOST, CONNECTION_ID() AS ID":
+            self.result(statement, ["host", "id"], [["fake-db", str(self.route_connection_id)]])
+            return
+''')
+        result = self.call('/api/editor/run', sql=sql)
+        session = self.registry.get('tab1')
+        safety = {'type': 'development', 'read_only': False, 'profile_name': 'dev'}
+        before = ed._decision(ed._plan_run({'sql': sql}, None), safety)
+        after = ed._decision(ed._plan_run({'sql': sql}, session), safety, session)
+        self.assertEqual({key for key in before if before[key] != after[key]}, {'in_transaction'})
+        self.assertIs(before['in_transaction'], False)
+        self.assertIsNone(after['in_transaction'])
+        self.assertEqual(result['status'], 'complete', result)
+        self.assertEqual(self.rows(result), [['fake-db', str(session.connection_id)]])
+        self.assertEqual(self.session_log().count(sql), 1)
+        self.assertFalse(self.store.audit_records(), 'a read needs no write review')
+        self.assert_fresh_unbound_client()
+
     def test_proxy_fake_keeps_reads_locked_until_client_exit(self):
         self.split_proxy_packets(enabled=False)
         self.call('/api/editor/open')

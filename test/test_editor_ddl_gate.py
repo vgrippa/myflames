@@ -215,6 +215,113 @@ class EditorDdlGateTests(unittest.TestCase):
                 with self.subTest(engine=engine, returned=returned):
                     self.assert_definition_and_tail(definition, engine)
 
+    def test_quoted_end_labels_compare_names_instead_of_mask_indices(self):
+        # MySQL sql/sql_yacc.yy:5570-5644 compares the two decoded labels;
+        # MariaDB:4750-4753,4820-4854 uses the same optional end label.
+        for engine in ("mysql", "mariadb"):
+            for first, last in (("`lbl`", "`lbl`"), ("`Lbl`", "lbl"), ("lbl", "`LBL`"),
+                                ("`a``b`", "`a``b`")):
+                for body in ("BEGIN SELECT 1; END", "LOOP LEAVE %s; END LOOP" % first,
+                             "WHILE 0 DO SELECT 1; END WHILE", "REPEAT SELECT 1; UNTIL 1 END REPEAT"):
+                    definition = "CREATE PROCEDURE p() %s: %s %s" % (first, body, last)
+                    with self.subTest(engine=engine, definition=definition):
+                        self.assert_definition_and_tail(definition, engine)
+            for body in ("`one`: BEGIN SELECT 1; END `two`",
+                         "`one`: LOOP SELECT 1; END LOOP `two`"):
+                with self.subTest(engine=engine, mismatch=body):
+                    with self.assertRaises(ed.EditorError):
+                        parts_count("CREATE PROCEDURE p() " + body, engine)
+
+    def test_nonreserved_end_and_do_identifiers_keep_structural_boundaries(self):
+        # MySQL sql/sql_yacc.yy:15894-15911 and MariaDB:16765,19364-19367
+        # distinguish non-reserved names from compound-statement terminals.
+        definitions = (
+            "CREATE PROCEDURE p(start INT, end INT) BEGIN SELECT COALESCE(start, end); END",
+            "CREATE PROCEDURE p() BEGIN INSERT INTO t (start, end) VALUES (1, 2); END",
+            "CREATE PROCEDURE p() BEGIN DECLARE end INT; REPEAT SET end = 1; UNTIL end END REPEAT; END",
+            "CREATE PROCEDURE p() BEGIN DECLARE end INT; REPEAT SELECT 1; UNTIL end > 0 END REPEAT; END",
+            "CREATE PROCEDURE p() BEGIN DECLARE do INT; WHILE do > 0 DO SET do = do - 1; END WHILE; END",
+            "CREATE PROCEDURE p() BEGIN DECLARE do INT; WHILE do DO SELECT 1; END WHILE; END",
+            "CREATE PROCEDURE p() BEGIN WHILE 1 + do DO SELECT 1; END WHILE; END",
+            "CREATE PROCEDURE p() BEGIN REPEAT SELECT 1; UNTIL 1 + end END REPEAT; END",
+            "CREATE PROCEDURE p() BEGIN SELECT CASE WHEN end THEN end ELSE do END; END",
+            "CREATE EVENT IF NOT EXISTS do ON SCHEDULE EVERY 1 DAY DO SELECT 1",
+            "ALTER EVENT do DO SELECT 1",
+        )
+        for engine in ("mysql", "mariadb"):
+            for definition in definitions:
+                with self.subTest(engine=engine, definition=definition):
+                    self.assert_definition_and_tail(definition, engine)
+
+    def test_udf_without_body_is_one_ddl_and_never_absorbs_trailing_sql(self):
+        # MySQL sql/sql_yacc.yy:7007-7011,18456-18464,18491-18497;
+        # MariaDB:6196-6201,20530-20536.
+        for engine in ("mysql", "mariadb"):
+            for aggregate in ("", "AGGREGATE "):
+                for returned in ("STRING", "INTEGER", "REAL", "DECIMAL"):
+                    definition = "CREATE %sFUNCTION f RETURNS %s SONAME 'x.so'" % (aggregate, returned)
+                    with self.subTest(engine=engine, definition=definition):
+                        self.assert_definition_and_tail(definition, engine)
+            for invalid in ("CREATE FUNCTION f RETURNS INTEGER SONAME 'x.so' SELECT 1",
+                            "CREATE FUNCTION f RETURNS INTEGER SONAME",
+                            "CREATE FUNCTION f RETURNS INTEGER BEGIN SELECT 1; END"):
+                with self.subTest(engine=engine, invalid=invalid):
+                    with self.assertRaises(ed.EditorError):
+                        parts_count(invalid, engine)
+
+    def test_top_level_mariadb_compounds_refuse_every_embedded_ddl_verb(self):
+        # MariaDB sql/sql_yacc.yy:18696-18703,20812-20895 admits these as
+        # SQLCOM_COMPOUND. DDL executed by a block needs standalone review.
+        wrappers = ("BEGIN NOT ATOMIC %s; END", "IF 1 THEN %s; END IF",
+                    "WHILE 1 DO %s; END WHILE", "LOOP %s; END LOOP",
+                    "REPEAT %s; UNTIL 1 END REPEAT", "CASE WHEN 1 THEN %s; END CASE",
+                    "BEGIN NOT ATOMIC IF 1 THEN %s; END IF; END",
+                    "SET STATEMENT max_statement_time=1 FOR %s",
+                    "SET STATEMENT max_statement_time=1 FOR BEGIN NOT ATOMIC %s; END")
+        statements = ("CREATE DATABASE d", "CREATE OR REPLACE TABLE t (n INT)",
+                      "CREATE VIEW v AS SELECT 1", "CREATE SEQUENCE s", "ALTER DATABASE d CHARACTER SET utf8mb4",
+                      "ALTER TABLE t ADD COLUMN n INT", "DROP DATABASE prod", "DROP TABLES t",
+                      "DROP VIEW v", "DROP PROCEDURE p", "DROP FUNCTION f", "DROP TRIGGER tr", "DROP EVENT e",
+                      "RENAME TABLES t TO t2", "RENAME USER u TO u2", "TRUNCATE t")
+        for wrapper in wrappers:
+            for statement in statements:
+                with self.subTest(wrapper=wrapper, statement=statement):
+                    decision = self.decision(wrapper % statement, "mariadb")
+                    self.assertEqual(decision["action"], "refuse", decision)
+                    self.assertIn("standalone", decision["text"])
+
+    def test_top_level_compound_writes_keep_write_policy_and_quoted_text_is_not_ddl(self):
+        for body in ("UPDATE t SET n = 1 WHERE id = 1", "INSERT INTO t VALUES (1)",
+                     "SELECT 'DROP DATABASE prod', `truncate`, t.drop FROM t", "SET @create = 1",
+                     "SET truncate = 1", "DROP PREPARE stmt"):
+            sql = "BEGIN NOT ATOMIC IF 1 THEN %s; END IF; END" % body
+            with self.subTest(body=body):
+                decision = self.decision(sql, "mariadb")
+                self.assertEqual(decision["action"], "confirm", decision)
+                self.assertNotEqual(decision["kind"], "read")
+
+    def test_oracle_anonymous_blocks_refuse_including_after_possible_mode_change(self):
+        session = types.SimpleNamespace(engine="mariadb", server_version="11.8.9-MariaDB",
+                                        sql_mode="ORACLE", backslash_escapes=True, in_transaction=False,
+                                        connection_id=1, server_identity={})
+        for prefix in ("", "SET sql_mode='';//\n"):
+            for block in ("BEGIN NULL; END", "DECLARE n INT; BEGIN n := 1; END",
+                          "IF 1 THEN NULL; END IF"):
+                with self.subTest(prefix=prefix, block=block):
+                    with self.assertRaisesRegex(ed.EditorError, "ORACLE"):
+                        ed._plan_run({"sql": "DELIMITER //\n" + prefix + block + "//"}, session)
+
+    def test_long_charset_is_an_attribute_not_a_second_type_word(self):
+        # mysql-8.4.0 sql/sql_yacc.yy:7081-7085: LONG is a complete type,
+        # followed by opt_charset_with_opt_binary, including CHARACTER SET.
+        for returned in ("LONG CHARACTER SET utf8mb4", "LONG CHAR SET utf8mb4",
+                         "LONG CHARACTER SET 'utf8mb4'", "LONG CHARACTER SET `utf8mb4` COLLATE 'utf8mb4_bin'",
+                         "LONG CHARSET utf8mb4", "LONG VARCHAR CHARACTER SET utf8mb4",
+                         "LONG CHARACTER VARYING CHARACTER SET utf8mb4"):
+            definition = "CREATE FUNCTION f() RETURNS %s BEGIN RETURN 'x'; END" % returned
+            with self.subTest(returned=returned):
+                self.assert_definition_and_tail(definition, "mysql")
+
     def test_trigger_order_names_keep_the_body_boundary(self):
         # Both grammars use ident_or_text for the ordering anchor. Qualified
         # identifiers also remain atomic in this boundary-only scanner; the
