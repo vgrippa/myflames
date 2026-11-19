@@ -455,7 +455,10 @@ class _GAWritesBase(object):
         """
         from myflames import dbops, editor_session
         schema = _unique("mf_gbits_")
-        sql = "SELECT 'a\\'; SELECT 'SPLIT-AFTER' AS marker; -- ' AS probe"
+        # One valid statement under the restored mode (the backslash escapes
+        # the quote); a client with a stale NBE bit would split it at the
+        # first ';' and run the hidden SELECT 1.
+        sql = "SELECT 'a\\'; SELECT 1 AS hidden; -- ' AS probe"
         try:
             for setup in ("CREATE DATABASE %s" % schema, "SET SESSION sql_mode = ''",
                           "DELIMITER //\nCREATE FUNCTION %s.f_nbe() RETURNS INT "
@@ -478,7 +481,7 @@ class _GAWritesBase(object):
             rows = [part for part in run.get("results", []) if part.get("type") == "rows"]
             self.assertEqual(len(rows), 1, "the client must not expose a hidden second result")
             self.assertEqual([column["name"] for column in rows[0]["columns"]], ["probe"])
-            self.assertEqual(rows[0]["rows"], [["a'; SELECT 'SPLIT-AFTER' AS marker; -- "]])
+            self.assertEqual(rows[0]["rows"], [["a'; SELECT 1 AS hidden; -- "]])
         finally:
             dropped = self._confirmed_run("DROP DATABASE IF EXISTS %s" % schema)
             self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
