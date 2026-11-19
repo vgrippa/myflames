@@ -202,7 +202,11 @@ class EditorStatusO3Tests(unittest.TestCase):
                                               ("mariadb", "11.8.9-MariaDB", dbops.target_session_guard("mariadb", MARIA))):
             for family, client_versions in versions:
                 plan, unused = self.plan(GA_STATUS_PROBE, engine, server_version, "", family)
-                self.assertEqual(ed._review_statements(plan["units"]), [SYNC, GA_STATUS_PROBE])
+                # Sync helper, then the quote-status probe, then the unit.
+                review = ed._review_statements(plan["units"])
+                self.assertEqual(len(review), 3, review)
+                self.assertEqual((review[0], review[2]), (SYNC, GA_STATUS_PROBE))
+                self.assertTrue(review[1].startswith(ed.TAG + "SELECT '\\'") and "AS mf_probe" in review[1], review)
                 self.assertTrue(plan["units"][0]["client_status_sync"])
                 probe_script, unused = dbops.target_guarded_script(
                     guard, [GA_STATUS_PROBE], sql_mode="", engine=engine, server_version=server_version,

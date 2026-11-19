@@ -469,8 +469,11 @@ class _GAWritesBase(object):
             self.assertEqual(called["session"]["sql_mode"], "", "stored-function mode must be restored")
             review = self._editor("/api/editor/run", sql=sql, require_confirmation=True, wait=30)
             self.assertEqual(review.get("status"), "needs_confirmation", redact(str(review)))
-            self.assertEqual(review["confirmation"]["statements"],
-                             [editor_session.TAG + dbops.CLIENT_STATUS_SYNC, sql])
+            # The status helper, then the quote-status probe, then the unit.
+            listed = review["confirmation"]["statements"]
+            self.assertEqual(len(listed), 3, redact(str(listed)))
+            self.assertEqual((listed[0], listed[2]), (editor_session.TAG + dbops.CLIENT_STATUS_SYNC, sql))
+            self.assertIn("AS mf_probe", listed[1])
             result = self._editor("/api/editor/run", sql=sql, require_confirmation=True, confirmed=True,
                                   confirm_token=review["confirmation"]["token"], wait=30)
             self.assertEqual(result.get("status"), "complete", redact(str(result)))

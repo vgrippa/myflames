@@ -197,8 +197,10 @@ class ExplainP1ProcessTests(unittest.TestCase):
                 at = next(i for i, packet in enumerate(packets)
                           if packet.endswith(session.statement_tag + prefix + expected))
                 if needs_sync:
-                    self.assertGreater(at, 0)
-                    self.assertTrue(packets[at - 1].endswith(SYNC), packets)
+                    # Sync helper, then the quote-status probe, then the plan.
+                    self.assertGreater(at, 1)
+                    self.assertTrue(packets[at - 2].endswith(SYNC), packets)
+                    self.assertIn("AS mf_probe", packets[at - 1], packets)
 
     def test_explain_and_run_plan_accept_semicolon_inside_custom_delimiter_unit(self):
         cases = [("", "DELIMITER //\nSELECT 'a;b'//", "SELECT 'a;b'"),
