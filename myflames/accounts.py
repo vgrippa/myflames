@@ -1845,6 +1845,11 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
         out['generated_password'] = generated
     if out.get('outcome') in ('identity_mismatch', 'identity_unavailable'):
         return out
+    if not out['sent']:
+        # Nothing was sent (a consent or server refusal): there is no write
+        # to verify, and a failed readback must not replace the refusal with
+        # an unknown verdict.
+        return out
     try:
         renamed = plan['operation'] == 'rename' and out['status'] == 'applied'
         name = plan._options.get('new_name', plan['name']) if renamed else plan['name']

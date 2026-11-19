@@ -257,6 +257,40 @@ class AccountsApiTest(unittest.TestCase):
                                       expect=plan['expect'], confirmed=True)
                 self.assertEqual(self.conn.stdin, [])
 
+    def test_evidence_failure_during_apply_is_an_audited_identity_refusal(self):
+        for break_at in ('read', 'build'):
+            with self.subTest(break_at=break_at):
+                self.conn = FakeConn(name='t_api')
+                plan = self.call('/api/accounts/plan', connection=CONNECTION, operation='lock',
+                                 user='t_api', host='%')
+                before = len(self.workspace.store.audit_records())
+                broken = ConnectorError('mysql client exited 1: ERROR 2003 (HY000): Cannot connect')
+
+                def fail(sql, **kwargs):
+                    raise broken
+                if break_at == 'read':
+                    self.conn.run = fail
+                    result = self.call('/api/accounts/apply', connection=CONNECTION,
+                                       plan_id=plan['plan_id'], expect=plan['expect'], confirmed=True)
+                else:
+                    real_read = accounts_api.accounts.read_account
+
+                    def counting(*args, **kwargs):
+                        out = real_read(*args, **kwargs)
+                        self.conn.run = fail
+                        return out
+                    with mock.patch.object(accounts_api.accounts, 'read_account', counting):
+                        result = self.call('/api/accounts/apply', connection=CONNECTION,
+                                           plan_id=plan['plan_id'], expect=plan['expect'], confirmed=True)
+                self.assertEqual(result['status'], 'refused')
+                self.assertEqual(result['outcome'], 'identity_unavailable')
+                self.assertIn('identity check', result['message'])
+                self.assertEqual(self.conn.stdin, [])
+                records = self.workspace.store.audit_records()
+                self.assertEqual(len(records), before + 1)
+                self.assertEqual((records[-1]['status'], records[-1]['outcome']),
+                                 ('refused', 'identity_unavailable'))
+
     def test_plan_capacity_is_per_workspace_and_cli_fallback_is_separate(self):
         other = Workspace()
         with mock.patch.object(accounts_api, 'MAX_PLANS', 1):

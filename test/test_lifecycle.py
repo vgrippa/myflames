@@ -382,6 +382,21 @@ class ControlTransportTests(unittest.TestCase):
             self.assertNotIn('sql-secret', str(caught.exception))
             self.assertFalse(os.path.exists(self.defaults[0]))
 
+    def test_control_expired_password_hint_raises_the_server_1862_message(self):
+        # The batch client reports an expired password only on stdout; the
+        # lifecycle control path maps it to the server's own 1862 text.
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\n'
+                  'sys.stdin.buffer.read()\n'
+                  'sys.stdout.write(%r)\n'
+                  'sys.exit(1)\n' % hint)
+        with self.child(script), lc.LifecycleConnection(host='localhost', binary='mysql') as conn:
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+            self.assertEqual(caught.exception.server_error_code, 1862)
+            self.assertFalse(os.path.exists(self.defaults[0]))
+
     def test_control_timeout_reaps_client_and_removes_credentials(self):
         with self.child('import os\nr,w=os.pipe()\nos.read(r,1)'), \
                 lc.LifecycleConnection(host='localhost', binary='mysql') as conn:

@@ -149,6 +149,8 @@ def _read_sql(sql):
     # script, so a future module change cannot add SET or a write here.
     if re.search(r"/\*rs\+", sql, re.I):
         raise ValueError("MCP server analysis does not permit Readyset optimizer hints.")
+    if dbops.skipped_executable_comments(sql, None, None):
+        raise ValueError("MCP server analysis cannot establish the server conditions of executable comments.")
     for backslash in (True, False):
         units = dbops.split_statements(sql, backslash_escapes=backslash)
         # DELIMITER frames a client packet, not a single server statement.

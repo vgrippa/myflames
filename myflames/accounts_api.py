@@ -520,6 +520,22 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                                   for i, s in enumerate(reviewed)])
         return result
 
+    def unavailable(message):
+        # The audited twin of accounts.apply's identity_unavailable refusal:
+        # the evidence scope failed, so nothing was or can be sent.
+        audit = dbops.AuditTrail(store, 'accounts.' + request['operation'], 'ui', connection=plain,
+                                 safety=safety, policy=dbops.policy_summary(decision))
+        audit_id = audit.outcome(reviewed or [request['operation']], 'refused',
+                                 outcome='identity_unavailable', message=message,
+                                 target={'change_set_id': plan_id, 'request': request})
+        result = _unsent(request, 'refused', message, audit_id)
+        result.update(change_set_id=plan_id, outcome='identity_unavailable',
+                      statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
+                                  for i, s in enumerate(reviewed or [])])
+        return result
+
+    evidence = None
+
     try:
         conn = MySQLConnection(**options)
         if grouped:
@@ -558,7 +574,13 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                                     before_send=before_send if grouped else None)
     except connection_groups.ProfileReadError as exc:
         return changed(str(exc))
-    except (ValueError, ConnectorError) as exc:
+    except ConnectorError as exc:
+        if evidence is not None and evidence.problem:
+            # The evidence scope failed during the pre-apply read or rebuild;
+            # refuse audited rather than raise an unaudited error.
+            return unavailable(evidence.problem)
+        _reraise(exc, all_secrets)
+    except ValueError as exc:
         _reraise(exc, all_secrets)
     if result['status'] == 'needs_typed_name':
         _retry(plan_id, entry, workspace)

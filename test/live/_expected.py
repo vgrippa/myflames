@@ -5,7 +5,8 @@ after the suites: it reads the Cluster, Replication and ProxySQL reports from
 the labs and writes them under test/live/expected/, one file per report and
 server version, with volatile fields (UUIDs, timestamps, ports, durations,
 connection ids, log positions and counters) masked and ProxySQL per-query
-workload statistics omitted. A normal run (`compare`, also run as the
+workload statistics and the cluster live-footprint client list omitted. A
+normal run (`compare`, also run as the
 live_expected suite) normalizes the same way and fails on a drift when the file
 for the version under test exists (writing the drift file under
 local/live-evidence/drift/); a missing file skips.
@@ -39,6 +40,10 @@ _COUNTER_BLOCKS = ("metrics", "stats")
 #: monitors and health settings) compared.
 _PROXYSQL_OMIT = ("query_digests",)
 _PROXYSQL_RULE_OMIT = ("digests", "digest_count", "possible_digests")
+#: topology_tiers.live_footprint.clients lists whatever clients are connected
+#: at that moment (the ProxySQL monitor and pooled connections, in any order),
+#: so it changes on every run like the ProxySQL workload statistics.
+_FOOTPRINT_OMIT = ("clients",)
 
 
 def _is_proxysql_report(value):
@@ -62,6 +67,9 @@ def normalize(value, key=""):
     if isinstance(value, dict):
         if key in _COUNTER_BLOCKS:
             return {k: "<volatile>" for k in sorted(value)}
+        if key == "live_footprint":
+            return {k: normalize(v, k) for k, v in sorted(value.items())
+                    if k not in _FOOTPRINT_OMIT}
         if not key and _is_proxysql_report(value):
             return {
                 k: _normalize_proxysql_rules(v) if k == "query_rules" else normalize(v, k)

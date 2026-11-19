@@ -233,12 +233,12 @@ class AccountScopeTests(unittest.TestCase):
                             actor_reads[0] += 1
                         return router.second if actor_reads[0] >= changed_at else router.first
                     router.route = route
-                    if changed_at == 1:
-                        with self.assertRaisesRegex(ConnectorError, 'identity check could not run'):
-                            call('/api/accounts/apply', plan_id=plan['plan_id'], expect=plan['expect'], confirmed=True)
-                    else:
-                        out = call('/api/accounts/apply', plan_id=plan['plan_id'], expect=plan['expect'], confirmed=True)
-                        self.assertEqual((out['status'], out['outcome']), ('refused', 'identity_unavailable'))
+                    before = len(self.store.audit_records())
+                    out = call('/api/accounts/apply', plan_id=plan['plan_id'], expect=plan['expect'], confirmed=True)
+                    self.assertEqual((out['status'], out['outcome']), ('refused', 'identity_unavailable'))
+                    records = self.store.audit_records()
+                    self.assertEqual(len(records), before + 1)
+                    self.assertEqual(records[-1]['outcome'], 'identity_unavailable')
                 self.assertEqual(router.writes, [])
 
     def test_mariadb_unsafe_hostname_explains_the_remedy_without_echoing_it(self):

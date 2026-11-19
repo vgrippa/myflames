@@ -1054,6 +1054,58 @@ class AccountsTest(unittest.TestCase):
         result = self.apply(plan, before_send=lambda: None)
         self.assertEqual(result['status'], 'applied')
 
+    def test_nothing_sent_skips_the_post_write_readback(self):
+        # A server refusal on statement 0 sent nothing; a failing readback
+        # afterwards must not replace the refusal with an unknown verdict.
+        plan = self.plan('lock')
+        self.conn.broken = False
+
+        def refuse(sql, extra_flags=None, timeout=None):
+            self.conn.broken = True
+            raise acknowledged_error(ConnectorError(
+                'mysql client exited 1: ERROR 1227 (42000) at line 2: '
+                'Access denied; you need the SUPER privilege'), sql)
+        self.conn.run_stdin = refuse
+        real_run = self.conn.run
+
+        def run(sql, **kwargs):
+            if self.conn.broken:
+                raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): Cannot connect')
+            return real_run(sql, **kwargs)
+        self.conn.run = run
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'denied')
+        self.assertEqual(result['sent'], [])
+        self.assertEqual(result['after'], {})
+        self.assertEqual(result['diff'], {})
+        self.assertIn('Access denied', result['message'])
+        self.assertNotIn('unknown', result['status'])
+        (record,) = self.store.audit_records()
+        self.assertEqual((record['status'], record['outcome']), ('error', 'denied'))
+
+    def test_consent_refusal_at_statement_zero_keeps_its_verdict(self):
+        from myflames.connection_groups import ProfileReadError
+        plan = self.plan('lock')
+        self.conn.broken = False
+
+        def refuse(sql, extra_flags=None, timeout=None):
+            self.conn.broken = True
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        self.conn.run_stdin = refuse
+        real_run = self.conn.run
+
+        def run(sql, **kwargs):
+            if self.conn.broken:
+                raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): Cannot connect')
+            return real_run(sql, **kwargs)
+        self.conn.run = run
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertEqual(result['sent'], [])
+        self.assertIn('outside the current connection group', result['message'])
+        self.assertNotIn('The statements were sent', result['message'])
+
     def test_consent_loss_mid_apply_stops_at_the_next_statement(self):
         from myflames.connection_groups import ProfileReadError
         self.conn = FakeConn('mariadb', exists=False)

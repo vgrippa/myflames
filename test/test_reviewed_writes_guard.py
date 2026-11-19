@@ -409,7 +409,8 @@ class GuardTests(unittest.TestCase):
                     plan = accounts.plan_password(conn, 'app', password='new-secret')
                     out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
                 self.assert_packet_error(out, writer, 1142, 'denied')
-                self.assertGreater(len(conn.calls), len(calls_at_send))
+                # Nothing was accepted, so no post-write readback runs.
+                self.assertEqual(len(conn.calls), len(calls_at_send))
                 self.assertNotIn('new-secret', repr(out))
                 self.assertNotIn('new-secret', repr(self.records()))
                 self.assertNotIn('ALTER USER', out['message'])

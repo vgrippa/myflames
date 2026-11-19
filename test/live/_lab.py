@@ -30,10 +30,13 @@ if REPO not in sys.path:
     # myflames package at the repository root is not importable yet.
     sys.path.insert(0, REPO)
 MATRIX = os.path.join(REPO, "scripts", "cluster-matrix.sh")
+GA_MATRIX = os.path.join(REPO, "scripts", "ga-matrix.sh")
 LIVE_ENV = "MYFLAMES_LIVE_LABS"
 SKIP_REASON = "set %s=1 (scripts/live-tests.sh) to run the live lab suites" % LIVE_ENV
 
 _PASSWORD = None
+_GA_PASSWORDS = None
+_GA_SERVERS = None
 # The real HOME, captured before any suite replaces it with a throwaway home:
 # cluster-matrix.sh refuses a --home that equals the caller's HOME, so the
 # matrix subprocesses always run with this one.
@@ -72,13 +75,17 @@ def lab_password():
 
 
 def redact(text):
-    """The lab password never appears in a message that leaves a test."""
+    """The lab passwords never appear in a message that leaves a test."""
     if text is None:
         return ""
-    password = _PASSWORD
-    if password:
-        text = str(text).replace(password, "[redacted]")
-    return str(text)
+    text = str(text)
+    secrets = [_PASSWORD]
+    if _GA_PASSWORDS:
+        secrets.extend(_GA_PASSWORDS.values())
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return text
 
 
 class LabError(Exception):
@@ -106,14 +113,9 @@ def check_lab(*clusters):
     matrix("check", *clusters)
 
 
-def make_home(suite):
-    """A throwaway HOME with the lab profiles saved by cluster-matrix.sh.
-
-    Never the real ~/.myflames: the directory comes from tempfile and the
-    matrix script itself refuses a home that is or contains the real one.
-    One home is shared per run (MYFLAMES_LIVE_HOME, set by the runner or
-    created here), so the profiles step runs once per lane, not per suite.
-    """
+def _throwaway_home(suite):
+    """The run's throwaway HOME (shared through MYFLAMES_LIVE_HOME), never the
+    real one."""
     require_live()
     home = os.environ.get("MYFLAMES_LIVE_HOME")
     if not home:
@@ -126,9 +128,109 @@ def make_home(suite):
     os.environ["HOME"] = home
     os.environ["USERPROFILE"] = home
     os.environ["MYFLAMES_SECRET_BACKEND"] = "vault"
+    return home
+
+
+def make_home(suite):
+    """A throwaway HOME with the lab profiles saved by cluster-matrix.sh.
+
+    Never the real ~/.myflames: the directory comes from tempfile and the
+    matrix script itself refuses a home that is or contains the real one.
+    One home is shared per run (MYFLAMES_LIVE_HOME, set by the runner or
+    created here), so the profiles step runs once per lane, not per suite.
+    """
+    home = _throwaway_home(suite)
     marker = os.path.join(home, ".profiles-ready")
     if not os.path.exists(marker):
         matrix("profiles", "--home", home)
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write("ok\n")
+    return home
+
+
+def ga_lab():
+    return os.environ.get("GA_LAB") or os.path.join(REPO, "local", "ga-matrix")
+
+
+def ga_credentials_path():
+    """The GA matrix credentials file (CREDS_FILE of ga-matrix.sh, 0600)."""
+    return os.environ.get("CREDS_FILE") or os.path.join(ga_lab(), "credentials.env")
+
+
+def ga_passwords():
+    """The GA matrix *_PASSWORD values, read only to redact them; never printed."""
+    global _GA_PASSWORDS
+    if _GA_PASSWORDS is None:
+        creds = {}
+        with open(ga_credentials_path(), encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key.endswith("_PASSWORD") and value.strip():
+                    creds[key] = value.strip().strip("'\"")
+        if "MF_ADMIN_PASSWORD" not in creds:
+            raise LabError("MF_ADMIN_PASSWORD missing in %s" % ga_credentials_path())
+        _GA_PASSWORDS = creds
+    return _GA_PASSWORDS
+
+
+def ga_matrix(*args, **kwargs):
+    """Run scripts/ga-matrix.sh with CREDS_FILE set; fail with redacted output.
+
+    ``env_extra`` adds environment variables (MYFLAMES_HOME for profiles).
+    ga-matrix.sh has no --home flag: it takes the profiles home from
+    MYFLAMES_HOME, and checks it is not the real home itself.
+    """
+    env = dict(os.environ)
+    env["CREDS_FILE"] = ga_credentials_path()
+    env["HOME"] = _REAL_HOME
+    env["USERPROFILE"] = _REAL_HOME
+    env.update(kwargs.pop("env_extra", None) or {})
+    if kwargs:
+        raise TypeError("unexpected arguments: %s" % ", ".join(sorted(kwargs)))
+    proc = subprocess.run(["bash", GA_MATRIX] + [str(a) for a in args],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True, env=env)
+    if proc.returncode != 0:
+        raise LabError("ga-matrix.sh %s exited %d:\n%s" % (
+            " ".join(str(a) for a in args), proc.returncode, redact(proc.stdout)[-2000:]))
+    return proc.stdout
+
+
+def ga_servers():
+    """The GA matrix servers from ``ga-matrix.sh env``, keyed by name.
+
+    Raises LabError (the suites turn it into a skip) when the matrix's
+    credentials file is absent, so a machine without the matrix never runs
+    the env command (which would create a fresh credentials file as a side
+    effect) and never touches Docker. Cached per process: every class in a
+    lane would otherwise run the env command again.
+    """
+    global _GA_SERVERS
+    if _GA_SERVERS is not None:
+        return _GA_SERVERS
+    if not os.path.exists(ga_credentials_path()):
+        raise LabError("no GA matrix credentials at %s" % ga_credentials_path())
+    ga_passwords()  # load the credentials now so redact covers them everywhere
+    out = ga_matrix("env")
+    try:
+        data = json.loads(out)
+    except ValueError:
+        raise LabError("ga-matrix.sh env did not print JSON:\n%s" % redact(out)[-1000:])
+    _GA_SERVERS = dict((entry["name"], entry) for entry in data.get("servers") or ())
+    return _GA_SERVERS
+
+
+def make_ga_home(suite):
+    """A throwaway HOME with the GA matrix's saved profiles.
+
+    Same rules as make_home (tempfile home, one profiles step per lane),
+    but the profiles come from ``ga-matrix.sh profiles``, which reads the
+    home from MYFLAMES_HOME instead of a --home flag.
+    """
+    home = _throwaway_home(suite)
+    marker = os.path.join(home, ".ga-profiles-ready")
+    if not os.path.exists(marker):
+        ga_matrix("profiles", env_extra={"MYFLAMES_HOME": home})
         with open(marker, "w", encoding="utf-8") as handle:
             handle.write("ok\n")
     return home

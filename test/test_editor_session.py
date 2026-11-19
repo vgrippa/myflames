@@ -1374,12 +1374,19 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertTrue(result["session"]["read_only_transactions"])
         for sql in ("ANALYZE SELECT 1", "/* note */ ANALYZE DELETE FROM t",
-                    "/*!80000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
+                    "/*!50000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
                     "DELIMITER $$\nSELECT 1; DELETE FROM t$$"):
             with self.subTest(sql=sql):
                 reply = self.call("/api/editor/run", sql=sql, explain_format="table")
                 self.assertEqual(reply["status"], "invalid")
         self.assertNotIn("DELETE FROM t", self.session_log())
+        if self.engine == "mariadb":
+            # MariaDB skips this MySQL-only ANALYZE token; EXPLAIN SELECT
+            # is a read under the bound server's own interpretation.
+            skipped = "/*!80000 ANALYZE */ SELECT 1"
+            reply = self.call("/api/editor/run", sql=skipped, explain_format="table")
+            self.assertEqual(reply["status"], "complete", reply)
+            self.assertTrue(self.logged("tab1", "EXPLAIN " + skipped))
 
     def test_native_explain_with_planning_side_effects_is_reviewed(self):
         # Planning materializes (SELECT GET_LOCK(...)): verified on MySQL 9.7,
@@ -3365,8 +3372,8 @@ class RunScopeTests(unittest.TestCase):
 
     @staticmethod
     def session(backslash=True):
-        return types.SimpleNamespace(sql_mode="" if backslash else "NO_BACKSLASH_ESCAPES",
-                                     backslash_escapes=backslash, engine="mysql")
+        from test_sql_lexer import session as bound_session
+        return bound_session(mode="" if backslash else "NO_BACKSLASH_ESCAPES")
 
     def sends(self, payload, backslash=True):
         return [u["send"] for u in ed._plan_run(payload, self.session(backslash))["units"]]

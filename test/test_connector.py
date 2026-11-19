@@ -2399,6 +2399,28 @@ class TestBoundedTransport(unittest.TestCase):
                     self.assertNotIn('private prefix', str(caught.exception))
                     self.assertIsNotNone(self.children[0].poll())
 
+    def test_expired_password_stdout_hint_raises_the_server_1862_message(self):
+        # The batch client prints only this hint on stdout and exits 1 with an
+        # empty stderr; the connector maps it to the server's own 1862 text.
+        from myflames import dbops
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = 'import sys\nsys.stdout.write(%r)\nsys.exit(1)' % hint
+        with self.child(script), MySQLConnection('h', binary='mysql') as conn:
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+            self.assertEqual(dbops.error_code(str(caught.exception)), 1862)
+            self.assertIsNotNone(self.children[0].poll())
+
+    def test_expired_password_hint_with_stderr_keeps_the_client_error(self):
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 1045 (28000): Access denied for user")\nsys.exit(1)' % hint)
+        with self.child(script), MySQLConnection('h', binary='mysql') as conn:
+            with self.assertRaisesRegex(ConnectorError, r'mysql client exited 1: ERROR 1045'):
+                conn.run('SELECT 1')
+            self.assertIsNotNone(self.children[0].poll())
+
 
 class TestClientText(unittest.TestCase):
     """Windows clients write CRLF line ends; other systems keep data as is."""

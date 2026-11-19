@@ -276,6 +276,16 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
 _STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)
 
+#: With an expired password, the batch-mode client exits 1 with empty stderr
+#: and prints only this hint on stdout (client/mysql.cc), never the server
+#: diagnostic. Map it to the server's ER_MUST_CHANGE_PASSWORD_LOGIN text
+#: (mysql-server share/messages_to_clients.txt:7059) so callers matching
+#: error 1862 see the message they expect.
+_EXPIRED_PASSWORD_HINT = ("Please use --connect-expired-password option or invoke "
+                          "mysql in interactive mode.")
+EXPIRED_PASSWORD_MESSAGE = ("ERROR 1862 (HY000): Your password has expired. To log in "
+                            "you must change it using a client that supports expired passwords.")
+
 # C0 controls except tab and newline, DEL, and C1 controls (U+0080-U+009F).
 _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -1354,6 +1364,8 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], used or getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE + self._tunnel_note(started))
             message = (
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
                 + self._tunnel_note(started)

@@ -25,7 +25,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- Query editor refuses executable comments that the connected server would skip, before sending any SQL from the run. A skipped comment can no longer disguise a second schema change or hide a write behind a read.
+- Query editor keeps stored-program confirmations separate from trailing SQL, including identifiers with dollar signs or Unicode characters, user variables, conditional table creation and MariaDB package bodies. Database drops inside a definition require the database name to be typed; definitions with multiple database targets refuse.
+- Query editor detects SQL-mode changes through quoted variable names and calls inside compound statements before running later SQL with ambiguous quotes. A new tab closes if its requested safe-updates setting cannot be applied, and closing a tab during a proxy startup retry prevents another client from opening.
+- Query editor reads executable SQL comments using the connected server’s rules, accepts known cross-version dump options, and refuses uncertain session or quote-mode interpretations before a hidden write can bypass review.
 - Query editor refuses dollar-quoted text when a custom delimiter splits its tag, including when running the statement at the cursor.
 - Users and roles keeps account reads, review and apply checks on the same server, including optional reads. An identity or connection-group consent failure after a change reports an unknown outcome in both the result and audit. Replication skip loops keep their startup and receiver checks on the reviewed server and preserve receiver monitoring promised by the confirmation.
 - Query editor verifies startup protections and guards them on the tab's original server session when its identity is complete. Database changes require that identity guard. It refuses unsupported dollar-quoted text with multibyte tags and applies the commit policy to MariaDB transaction controls wrapped in SET STATEMENT.
@@ -40,6 +42,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor accepts stored-program row-constructor IF conditions and identifiers such as `col$end` without splitting their definition into separate confirmations.
 - Query editor Stop, row limits and timeouts work when the tab's quote mode differs from the server's default.
 - Query editor runs that change the SQL mode can continue with statements that read the same under either quote mode, while ambiguous later statements are refused before the run starts.
 - Query editor explains ProxySQL's server-group lock error and tells you to close and reopen the tab to run reads again, keeping the original server detail available.
@@ -79,6 +82,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where the workspace could fail to load a view or the Query editor under load, leaving the page stuck on Loading. The local server now queues connection bursts instead of refusing them; when every worker is busy it answers with a plain "try again" response, which the workspace retries on its own while opening and otherwise shows as an error with a **Try again** button.
 - Fixed an issue where the table data editor's review button read **Review 1 changes** for a single change.
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
+- A login with an expired MySQL password now shows the server's own message (error 1862: the password has expired and must be changed with a client that supports expired passwords) instead of a generic client failure, so Users and roles can explain that the account can only set a new password.
+- Users and roles keeps the original refusal when nothing was sent: a verification read that fails afterwards no longer turns the refusal into an unknown outcome. A server identity failure while applying a reviewed account change is now recorded as a refused change with the identity unavailable, instead of an unrecorded error.
 
 ### Security fixes
 

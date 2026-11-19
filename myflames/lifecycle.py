@@ -602,7 +602,13 @@ class LifecycleConnection(MySQLConnection):
             auth = _client_auth_error(raw, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
-            from .connector import PartialReadError, _client_text, _server_read_error
+            from .connector import (EXPIRED_PASSWORD_MESSAGE, PartialReadError, _client_text,
+                                    _EXPIRED_PASSWORD_HINT, _server_read_error)
+            if not raw.strip() and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                # Expired password: the batch client reports it only on stdout.
+                error = ConnectorError(EXPIRED_PASSWORD_MESSAGE)
+                error.server_error_code = 1862
+                raise error
             message = dbops.redact(raw, self.password)
             code = dbops.error_code(raw)
             error = (PartialReadError(message, _client_text(proc.stdout))
