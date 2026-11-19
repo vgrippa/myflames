@@ -166,9 +166,7 @@ def compare(labs):
         with open(target, encoding="utf-8") as handle:
             expected = json.load(handle)
         normalized = normalize(raw)
-        # Re-normalize the recorded file too, so a mask added after it was
-        # recorded (normalize is idempotent) applies to both sides.
-        if normalize(expected) == normalized:
+        if expected == normalized:
             outcomes.append((name, True))
         else:
             drift = drift_path(target)
