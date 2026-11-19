@@ -499,7 +499,9 @@ class ClientCommandLexerTests(unittest.TestCase):
                  "SELECT 1 /* \\C utf8mb4 */", "SELECT 1 # \\C utf8mb4\n",
                  "SELECT 1 -- \\C utf8mb4\n", "SELECT '/* x */ DELIMITER //\ncharset utf8mb4'",
                  "SELECT CHARSET('x'), delimiter FROM t", "SET NAMES utf8mb4", "SET CHARSET utf8mb4",
-                 "CREATE TABLE t (\ncharset INT,\ndelimiter INT\n)")
+                 # A column-zero delimiter prefix loses its newline in
+                 # add_line; indentation keeps this identifier as SQL.
+                 "CREATE TABLE t (\ncharset INT,\n delimiter INT\n)")
         for engine, version in SERVERS:
             for client in ("mysql", "mariadb"):
                 for mode in ("", "ANSI_QUOTES", "NO_BACKSLASH_ESCAPES", None):

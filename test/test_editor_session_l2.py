@@ -93,8 +93,8 @@ class EditorDumpL2Tests(unittest.TestCase):
                         plan, _ = self.plan(sql, engine, version)
                         self.assertEqual(plan["units"][-1]["sql_mode"], MODE)
 
-    def test_unrelated_assignments_and_reads_do_not_erase_the_save(self):
-        sql = ("SET @v=@@sql_mode; SET @other=1; SELECT @v; "
+    def test_unrelated_call_free_set_assignments_do_not_erase_the_save(self):
+        sql = ("SET @v=@@sql_mode; SET @other=1; SET @copy=@v; "
                "SET sql_mode='NO_BACKSLASH_ESCAPES'; SET sql_mode=@v; SELECT 1")
         for engine, version in SERVERS:
             plan, _ = self.plan(sql, engine, version)

@@ -510,9 +510,11 @@ class TestReviewGate(unittest.TestCase):
                 self.assertEqual([p['text'] for p in parts], ['SELECT 1', 'DROP TABLE t'])
                 self.assertEqual(self.kind(sql), 'risky')
         # An unquoted argument ends at a space; the client keeps the old
-        # delimiter when it has a backslash or is missing.
+        # delimiter when the parsed value still has a backslash or is
+        # missing. get_arg unescapes pairs in unquoted values first.
         self.assertEqual(dbops.split_statements('DELIMITER // ignored\nSELECT 1//')[0]['delimiter'], '//')
-        for sql in ('DELIMITER /\\/\nSELECT 1/\\/', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
+        self.assertEqual(dbops.split_statements('DELIMITER /\\/\nSELECT 1//')[0]['delimiter'], '//')
+        for sql in ('DELIMITER /\\\\/\nSELECT 1', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
             with self.subTest(sql=sql):
                 result = dbops.classify(sql)
                 self.assertEqual(result['kind'], 'risky')

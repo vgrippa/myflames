@@ -2932,7 +2932,10 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `mariadb-11.8.9:client/mysql.cc:2817–2818`.
   MariaDB 12.0.1+ keeps persistent hint and conditional-comment state
   (`mariadb-12.0.1:client/mysql.cc:2218,2366,2536,2779–2798`), but a nested
-  `/*!` can still replace hint state. Backslash commands in hints remain
+  `/*!` can still replace hint state. Its line-comment branch has no
+  `SSC_HINT` exclusion (`mariadb-12.0.1:client/mysql.cc:2694–2708`); the
+  oracle's hint line-comment guard applies only to the fixed MySQL ranges.
+  Backslash commands in hints remain
   conservatively refused across client versions.
   The client pass also refuses any ordinary `/* ... */` comment whose body
   contains a nested `/*!`, `/*+` or `/*M!` opener, on one line or across
@@ -2984,8 +2987,14 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   delimiter. This anticipates the space an ordinary comment can acquire
   via `need_space` (`mysql-8.4.0:client/mysql.cc:2921,2959–2962`;
   `mariadb-11.8.9:client/mysql.cc:2851,2865–2870`). Normalization uses server
-  token spans, including hint and executable-comment closers, so apparent
-  closers in strings, identifiers and line comments remain data. Token spans
+  token spans, including hint and executable-comment closers. Before inserting,
+  every possible client-family and ANSI-status reading must agree with the
+  server about any comment closer where the client could add a space.
+  A client-only closer inside a server string, identifier or skipped comment
+  refuses: normalization must not modify that data, and the client must not
+  insert an unreviewed space. This covers MariaDB MSSQL bracket identifiers,
+  MariaDB executable comments read by a MySQL client, and nested comments in
+  server-skipped version comments. Token spans
   for `send` are rebuilt after insertion; source ranges and error positions
   still map to the original editor text. The confirmation shows the normalized
   text, which must equal the client packet, including whitespace.
@@ -3021,11 +3030,31 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   | `mariadb-11.8.9` | `2432–2443` | Empty buffer required |
   | `mariadb-12.0.1` | `2352–2363` | Empty buffer required |
 
+  Separately from command dispatch, `add_line` omits the trailing newline
+  when its unflushed output begins with the first nine bytes of `delimiter`,
+  case-insensitively, unless a string or ordinary multi-line comment remains
+  open. No word boundary is required; special-comment state does not protect
+  that newline. A column-zero SQL continuation such as `delimiter -` followed
+  by `- 1 AND id = 5` can therefore become a `--` comment. The client lexer
+  refuses a column-zero `delimiter` prefix outside strings and comments in
+  sent SQL, unless myflames consumes it as a standalone DELIMITER command.
+  A line beginning inside a quoted token also refuses when it starts with
+  that prefix and closes the token before its newline. A line that stays
+  inside the quoted token keeps its newline and remains supported.
+  Indenting or quoting a `delimiter_x` identifier preserves its newline.
+  Sources (`client/mysql.cc`): `mysql-5.7.44:1179–1189,2786–2800`,
+  `mysql-8.0.46:1203–1214,2667–2680`, `mysql-8.1.0:1217–1228,2802–2815`,
+  `mysql-8.4.0:1233–1244,2966–2982`, `mysql-9.7.0:1235–1246,2987–3000`,
+  `mariadb-10.11.16:1178–1188,2849–2863`,
+  `mariadb-11.8.9:1185–1195,2878–2892`, `mariadb-12.0.1:1187–1197,2812–2826`.
+
   The executable-comment closer has the same overlap refusal as ordinary
   and hint closers, including `SELECT /*!40101 1 */*2`. A space before the
   multiplication operator makes the boundary explicit. The checked MySQL
   clients and MariaDB 10.11/11.8 clear special-comment state at `*` and
-  reexamine `/`; MariaDB 12.0.1 consumes both bytes. Every checked server
+  reexamine `/`; MariaDB 12.0.1 consumes both bytes for `/*!` and `/*+`.
+  It does not set special-comment state for `/*M!`, whose closing slash can
+  still reopen a comment (`mariadb-12.0.1:client/mysql.cc:2779–2792`). Every checked server
   consumes both closer bytes. This difference is refused on all clients,
   including an unknown family.
 
@@ -3042,7 +3071,9 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
 
   `test/client_addline_oracle.py` independently transcribes the relevant
   `add_line` states from `mysql-8.4.0` and `mariadb-11.8.9`, including the
-  per-line conditional/hint state and `\C` parameter removal. Its separate
+  per-line conditional/hint state, DELIMITER-prefix newline omission and
+  `\C` parameter removal. It feeds the planned `send` without the statement
+  tag; the transport adds that tag on the wire. Its separate
   server scanner counts statements without using production lexer tokens.
   `test/test_client_comment_parity.py` enumerates every fragment through
   length three over `/`, `*`, `!`, `+`, `M`, single quote, newline, space and
@@ -3057,7 +3088,9 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   commands or residual client buffer, under all eight client tags in the
   dispatch table and both Unix and Windows reader behavior. The oracle
   includes MySQL's comment-buffer lookup and
-  MariaDB 12.0.1's persistent special-comment state and two-byte closer.
+  MariaDB 12.0.1's persistent special-comment state and two-byte closer for
+  `/*!` and `/*+`, but not `/*M!`. The unknown client family is not exercised
+  by this line enumeration; explicit regressions check family disagreements.
   Characters outside the alphabets, including `#`, `--`, backticks, double
   quotes, digits and tabs, are not enumerated as fragments; executable-comment
   version digit rules and the trimming of all trailing non-graphic bytes are
@@ -3071,11 +3104,23 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   The server reading of each client unit still exposes every executable
   semicolon for classification, even when the client sees one quoted string.
   `DELIMITER` lines with nothing
-  pending are consumed as client commands; quotes are stripped from their
-  argument, and an unquoted argument ends at a space, not a tab. Missing
-  arguments or backslashes make boundaries uncertain. Sources: MySQL
+  pending are consumed as client commands. The argument follows the selected
+  client family's `get_arg`: both strip the opening quote and ignore text
+  after the closing quote; an unquoted argument ends at a space, not a tab.
+  MySQL accepts an unclosed quoted argument and stops at the first matching
+  quote. MariaDB requires closure and unescapes doubled quotes; it also
+  unescapes backslash pairs except inside backticks. MySQL unescapes
+  backslash pairs only for unquoted arguments. A missing or empty value,
+  remaining backslash, carriage return, or leading/trailing ASCII whitespace
+  refuses. The whitespace restriction prevents comment-space normalization
+  from creating the active delimiter, including `DELIMITER ' +'`.
+  Normalized text is split again before review so an internal space cannot
+  create a delimiter across a comment closer either (`/ +` across `*/+2`).
+  Unknown families require equal parsed arguments as well as equal discarded
+  source ranges before a DELIMITER line is consumed. Sources: MySQL
   `mysql-9.7.0:client/mysql.cc:2661–2682,2838–2912,4652–4671,4897–4935`;
-  MariaDB `mariadb-11.8.9:client/mysql.cc:2729–2808`.
+  MariaDB `mariadb-11.8.9:client/mysql.cc:2580–2584,2729–2808,4881–4905,5023–5080`;
+  MySQL argument parsing: `mysql-8.4.0:client/mysql.cc:4861–4900`.
   CRLF handling follows the binary-mode reader: Unix MySQL and all checked
   MariaDB clients keep the carriage return before LF, whereas MySQL on
   Windows removes it. `get_arg` therefore keeps that byte in an unquoted
@@ -3850,6 +3895,18 @@ planner, write gate and session engine from the CLI.
   `SET [SESSION|LOCAL] sql_mode=@saved_sql_mode` or
   `SET SQL_MODE=@OLD_SQL_MODE` restores that prediction only for the same
   user variable, compared case-insensitively, with no intervening reassignment.
+  Saves remain evidence only across call-free SET statements and standalone
+  CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT or PACKAGE definitions. A stored
+  body is not executed when it is defined. Any other intervening statement,
+  including `SELECT @v`, `SELECT f()`, DO or an INSERT that could fire a
+  trigger, invalidates saved values. Function-like calls in SET expressions
+  also invalidate them, including qualified or quoted function names.
+  `SET STATEMENT ... FOR` is checked by its wrapped statement, so a wrapped
+  UPDATE or SELECT also invalidates saves even without an explicit call.
+  A definition followed by executing SQL in the same client unit cannot
+  preserve a save. This deliberately gives up predictions for harmless reads
+  to avoid trusting user variables that stored functions or triggers may change
+  (`mariadb-11.8.9:sql/item_func.cc:4775–4779,5624–5628`).
   Quoted variable names and executed version comments use the same rules.
   Planning and pre-send revalidation each track saves afresh for that run;
   no saved value carries into another run or comes from an unbound session.

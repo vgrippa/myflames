@@ -284,8 +284,11 @@ DELIMITER ;
                 self.assertEqual(len(ed._ddl_codes(routine)), 1)
                 self.assertIn(r"""SELECT 'it\'s', "x";""", routine["send"])
                 self.assertEqual(ed._decision(plan, SAFETY)["action"], "refuse")
-                self.assertFalse(plan["units"][-1]["mode_unknown"])
-                self.assertEqual(plan["units"][-1]["sql_mode"], "")
+                # The routine's own preamble/restore remains predictable,
+                # but earlier DDL and DML invalidate @OLD_SQL_MODE: a
+                # trigger could have assigned that user variable.
+                self.assertTrue(plan["units"][-1]["mode_unknown"])
+                self.assertIsNone(plan["units"][-1]["sql_mode"])
 
     def test_end_and_do_operands_keep_each_definition_and_expose_trailing_sql(self):
         # MySQL sql_yacc.yy:3657-3727,10592-10600,10738-10744;

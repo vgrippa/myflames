@@ -25,6 +25,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor refuses SQL continuation lines starting with `DELIMITER` at column zero, including identifiers such as `delimiter_x`. MySQL and MariaDB clients can remove that line's newline and change which SQL runs; indenting or quoting the identifier keeps it usable.
 - Query editor refuses client commands at the start of a line inside multi-line comments, including optimizer hints and versioned comments. It also explains overlapping executable-comment closers that clients can read differently from the server.
 - Query editor recognizes MariaDB ORACLE assignments inside `SET STATEMENT ... FOR` when checking the SQL mode of later statements. These assignments no longer trigger an incorrect embedded-DDL refusal.
 - Query editor explains when a CRLF line puts a carriage return into a DELIMITER argument. Quote the delimiter or follow it with a space; with MySQL on Windows, use LF inside multi-line statements so the reviewed text stays unchanged.
@@ -64,6 +65,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where the Query editor could review SQL without a space the client would insert inside a string, identifier or skipped comment. Statements with those conflicting comment boundaries now refuse before review.
+- Fixed an issue where comment formatting could create an extra statement boundary. Query editor rejects delimiters with leading or trailing whitespace and checks the formatted SQL before review.
+- Fixed an issue where quoted `DELIMITER` arguments could differ from the selected MySQL or MariaDB client's interpretation. An unknown client family refuses arguments the clients read differently.
+- Fixed an issue where saved SQL modes remained trusted after a function or trigger could change the saved variable. Call-free `SET` statements and standalone stored-program definitions preserve dump routine save/restore sequences.
 - Query editor accepts inline block comments touching following SQL by showing the client's separating space in the reviewed text. Quoted data and editor error locations retain their original text and positions.
 - InnoDB Cluster action guidance now shows the required MySQL Shell 8.0.32 minimum consistently.
 

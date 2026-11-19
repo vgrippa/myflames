@@ -189,7 +189,8 @@ def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_ve
     has_backslash, has_double, has_bracket = "\\" in sql, '"' in sql, "[" in sql
     has_comments = "/*" in sql
     dialect_matters = has_comments or (engine not in ("mysql", "mariadb") and has_backslash and has_double)
-    client_matters = has_backslash or "/*M!" in sql or "/*+" in sql
+    client_matters = (has_backslash or "/*M!" in sql or "/*+" in sql or
+                      re.search(r"^[ \t\r\f\v]*delimiter", sql, re.I | re.M | re.ASCII) is not None)
     unique, seen = [], set()
     for reading in readings:
         key = (reading["backslash_escapes"] if has_backslash else None,
@@ -373,13 +374,22 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             if client_delimiter is not None and line_start and not pending and active is None:
                 command = _DELIMITER_COMMAND.match(sql, pos)
                 if command:
-                    value, end = _delimiter_argument(sql, command.end())
+                    value, end = _delimiter_argument(sql, command.end(), client_engine)
                     if value and "\\" not in value:
                         client_delimiter = value
                     token("delimiter_command", pos, end)
                     pos = code_start = end
                     command_start = end
                     continue
+            # add_line's newline guard is independent of find_command:
+            # even delimiter_x at column zero loses the line ending after
+            # pending SQL. The first nine bytes suffice, without a word
+            # boundary. Strings and ordinary comments are consumed whole
+            # below; special-comment command lines have their own refusal.
+            # mysql-8.4.0:client/mysql.cc:1233-1244,2966-2982;
+            # mariadb-11.8.9:client/mysql.cc:1185-1195,2878-2892.
+            if line_start and active is None and sql[pos:pos + 9].lower() == "delimiter":
+                issues.append((pos, REASON_DELIMITER_NEWLINE))
             if active is None and (line_start or pos == command_start):
                 # MySQL 8.4.0/HEAD looks past leading /* ... */ before
                 # add_line, even when those bytes are executable SQL or
@@ -407,8 +417,9 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             # at '*', then examines '/' on the next iteration. A delimiter
             # can start at that slash (client/mysql.cc:2946-2948).
             # A following '*' can instead reopen /*. Servers and MariaDB
-            # 12.0.1 consume both closer bytes, so refuse that overlap for
-            # all clients (mariadb-12.0.1:client/mysql.cc:2786-2792).
+            # 12.0.1 consume both closer bytes for /*! and /*+ (not /*M!),
+            # so refuse that overlap for all clients
+            # (mariadb-12.0.1:client/mysql.cc:2779-2792).
             close_end = pos + (1 if client else 2)
             token("executable_close", pos, close_end)
             active["end"] = pos + 2
@@ -443,6 +454,14 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             pending = True
             if not closed:
                 unclosed.append((start, pos))
+            elif client:
+                # The newline rule tests in_string at line END. A line
+                # starting inside this token can close it before the newline
+                # and expose the same delimiter-prefix concatenation. Earlier
+                # lines that remain inside the token keep their newlines.
+                line = sql.rfind("\n", start, pos) + 1
+                if line > start and sql[line:line + 9].lower() == "delimiter":
+                    issues.append((line, REASON_DELIMITER_NEWLINE))
             code_start = pos
             continue
         if dollar_quotes and ch == "$" and (pos == 0 or not (
@@ -625,13 +644,13 @@ def skipped_executable_comments(sql, engine, server_version, backslash_escapes=N
 #: A line whose first word starts with "delimiter" is the client's DELIMITER
 #: command in --binary-mode (client/mysql.cc find_command and
 #: is_delimiter_command compare only the first 9 characters).
-_DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n]*)", re.I)
+_DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n\f\v]*)", re.I | re.ASCII)
 _CLIENT_SPACE = " \t\n\r\f\v"
 _NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
 # Union of named commands in the supported client command tables, used only
 # for command-looking lines *inside* block comments. Ordinary SQL keeps the
 # narrower checks above. mysql-8.4.0:client/mysql.cc:404-452;
-# mariadb-12.0.1:client/mysql.cc:381-429 (also costs and sandbox).
+# mariadb-12.0.1:client/mysql.cc:381-426 (also costs and sandbox).
 _COMMENT_COMMAND_LINE = re.compile(
     r"\n[ \t\r\f\v]*(\\|delimiter|charset|sandbox|clear|connect|edit|ego|exit|go|help|"
     r"nopager|notee|pager|print|prompt|quit|rehash|source|status|system|tee|use|warnings|"
@@ -699,8 +718,13 @@ REASON_COMMENT_COMMAND = ("A multi-line comment contains a line starting with a 
                           "Move the command outside the comment or reword that line before running this SQL.")
 REASON_DASH_CONTROL = ("'--' before a control character is code to the client and a comment to the server, so the "
                        "statement boundaries are uncertain.")
-REASON_DELIMITER = ("A DELIMITER line needs a nonempty delimiter without backslashes or carriage returns. "
+REASON_DELIMITER = ("A DELIMITER line needs a nonempty delimiter without backslashes, carriage returns, "
+                    "or leading or trailing whitespace. Close quoted arguments and use a value both "
+                    "client families read alike when the family is unknown. "
                     "Quote the delimiter on a CRLF line, or use LF line endings.")
+REASON_DELIMITER_NEWLINE = ("A SQL line starts with DELIMITER at column zero. The client can remove its newline "
+                            "and join it to the next line. Indent or quote this identifier, or put a DELIMITER "
+                            "command after a complete statement.")
 REASON_CRLF_TRANSPORT = ("The MySQL client on Windows removes carriage returns from CRLF lines. "
                          "Use LF line endings in this statement so the reviewed and sent text agree.")
 REASON_COMMENT_FRAMING = ("A client delimiter splits a comment the server skips, so its SQL cannot be read "
@@ -727,10 +751,13 @@ REASON_READYSET_HINT = "A /*rs+ ... create ... */ hint creates a Readyset cache 
 _READYSET_CREATE_HINT = re.compile(r"^/\*rs\+.*\bcreate\b", re.I | re.S)
 
 
-def _delimiter_argument(sql, at):
+def _delimiter_argument(sql, at, client_engine=None):
     """The argument of a DELIMITER command line starting at *at*, read like
-    the client's get_arg: (delimiter or None, end of line). A quoted argument
-    ends at its closing quote; an unquoted one at a space (not a tab).
+    the selected client's get_arg: (delimiter or None, end of line). Text
+    after a closing quote is ignored; an unquoted value ends at a space,
+    not a tab. MySQL accepts an unclosed quote; MariaDB requires closure
+    and unescapes doubled quotes and backslash pairs except in backticks.
+    An unknown client family requires both readings to agree.
 
     In binary mode, batch_readline keeps a CR before LF on Unix and in
     MariaDB, while MySQL Windows removes it. get_arg keeps CR in an unquoted
@@ -742,17 +769,45 @@ def _delimiter_argument(sql, at):
     newline = sql.find("\n", at)
     stop = len(sql) if newline < 0 else newline
     rest = sql[at:stop]
-    i = 0
-    while i < len(rest) and rest[i] in _CLIENT_SPACE:
-        i += 1
-    if i < len(rest) and rest[i] in "'\"`":
-        quote = rest[i]
-        close = rest.find(quote, i + 1)
-        value = rest[i + 1:] if close < 0 else rest[i + 1:close]
+    def argument(family):
+        pos = 0
+        while pos < len(rest) and rest[pos] in _CLIENT_SPACE:
+            pos += 1
+        quote = rest[pos:pos + 1]
+        quote = quote if quote in ("'", '"', "`") else ""
+        pos += bool(quote)
+        value, closed = [], not quote
+        while pos < len(rest):
+            ch = rest[pos]
+            if (ch == "\\" and pos + 1 < len(rest) and
+                    (not quote if family == "mysql" else quote != "`")):
+                pos += 1
+                value.append(rest[pos])
+            elif quote and ch == quote and family == "mariadb" and rest[pos + 1:pos + 2] == quote:
+                value.append(ch)
+                pos += 1
+            elif ch == (quote or " "):
+                closed = True
+                break
+            else:
+                value.append(ch)
+            pos += 1
+        value = "".join(value)
+        # Whitespace at either edge can turn an inserted comment separator
+        # into a delimiter. Reject it before review rather than changing
+        # statement boundaries during pre-send revalidation.
+        if (not value or "\\" in value or "\r" in value or value[0] in _CLIENT_SPACE or
+                value[-1] in _CLIENT_SPACE or (family == "mariadb" and not closed)):
+            return None
+        return value
+
+    if client_engine in ("mysql", "mariadb"):
+        value = argument(client_engine)
     else:
-        space = rest.find(" ", i)
-        value = rest[i:] if space < 0 else rest[i:space]
-    return (None if "\r" in value else value), stop
+        value = argument("mysql")
+        if value != argument("mariadb"):
+            value = None
+    return value, stop
 
 
 # ---- splitting -----------------------------------------------------------------------
@@ -800,16 +855,18 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     DELIMITER/get_arg: mysql-server/client/mysql.cc:2661-2682,4652-4671,4897-4935;
     delimiter and line-comment recognition: :2838-2912; MariaDB :2746-2833.
     Dollar bodies use the optional newer client grammar (:2715-2746).
-    If supplied, ``discarded_prefixes`` collects original (start, end)
-    ranges dropped by consumed DELIMITER lines. The editor compares these
-    across readings before any prefix disappears from a planned unit.
+    If supplied, ``discarded_prefixes`` collects (start, end, delimiter)
+    for consumed DELIMITER lines. The editor compares both original ranges
+    and argument values before any prefix disappears from a planned unit.
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
     # add_line scans physical lines independently. A caller-supplied
     # delimiter must not cross a line or depend on CRLF translation either.
-    if not isinstance(delimiter, str) or not delimiter or any(ch in delimiter for ch in "\\\r\n"):
-        raise ValueError("Pass a delimiter of one or more characters without backslashes or line endings.")
+    if (not isinstance(delimiter, str) or not delimiter or any(ch in delimiter for ch in "\\\r\n") or
+            delimiter[0] in _CLIENT_SPACE or delimiter[-1] in _CLIENT_SPACE):
+        raise ValueError("Pass a delimiter of one or more characters without backslashes, line endings, "
+                         "or leading or trailing whitespace.")
     framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
                       client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
                       client_engine=client_engine, comment_dialect=comment_dialect,
@@ -877,7 +934,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
         kind, left, right = tokens[token_index]
         if kind == "delimiter_command":
             command = _DELIMITER_COMMAND.match(sql, left)
-            value, line_end = _delimiter_argument(sql, command.end())
+            value, line_end = _delimiter_argument(sql, command.end(), client_engine)
             # A MySQL client treats /*M! SQL */ as an ordinary comment, but
             # a MariaDB server executes it. Only discard a prefix the server
             # also ignores. Keep unsafe text in a refused unit, including
@@ -891,7 +948,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             if ignored:
                 consumed_delimiters.add(command.start(1))
                 if discarded_prefixes is not None:
-                    discarded_prefixes.append((state["start"], line_end))
+                    discarded_prefixes.append((state["start"], line_end, value))
             else:
                 issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
                       "before changing DELIMITER.")

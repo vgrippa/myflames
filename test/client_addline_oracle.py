@@ -14,7 +14,7 @@ Both reset ss_comment on each line but retain ml_comment and in_string.
 MySQL has SSC_HINT; MariaDB 11.8 treats /*+ as an ordinary comment. The
 optional client_version also selects MySQL's pre-8.2 empty-buffer command
 lookup and MariaDB 12.0.1's persistent special-comment state and atomic
-closer. See the source references beside those transitions below.
+closer for /*! and /*+ (not /*M!). See the source references below.
 
 Server sources for the separate statement counter:
   mysql-8.4.0:sql/sql_lex.cc:1037-1066,1311-1344,1900-2017;
@@ -57,7 +57,7 @@ def delimiter_command(line, family):
 
     Only DELIMITER is a named command with these flags; charset and sandbox
     are SQL text. mysql-8.4.0:client/mysql.cc:2640-2685,4615-4635,4861-4900;
-    mariadb-11.8.9:client/mysql.cc:2519-2568,4767-4787,5023-5080.
+    mariadb-11.8.9:client/mysql.cc:2580-2584,4881-4905,5023-5080.
     Return (recognized, usable value). CR is retained in an unquoted value.
     """
     command = line.lstrip(SPACE)
@@ -95,8 +95,10 @@ def delimiter_command(line, family):
 def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=False):
     """Return COM_QUERY texts, remaining buffer, and executed short commands.
 
-    Feed exactly the editor's <send> newline <private delimiter> newline
-    frame. remove_cntrl trims trailing ASCII whitespace before COM_QUERY
+    Feed the editor's <send> without its statement tag, followed by newline,
+    <private delimiter>, newline. The transport adds the tag on the wire;
+    this oracle tests the untagged send text. remove_cntrl trims trailing
+    ASCII whitespace before COM_QUERY
     (mysql-8.4.0:client/mysql.cc:3639-3641,5454-5458;
     mariadb-11.8.9:client/mysql.cc:3614,5522-5529).
     """
@@ -107,7 +109,8 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
     comment_lookup = family == "mysql" and version >= (8, 2, 0)
     persistent_special = family == "mariadb" and version >= (12, 0, 1)
     hints = family == "mysql" or persistent_special
-    hint_line_guard = persistent_special or (family == "mysql" and
+    # MariaDB 12.0.1:2694-2708 has no SSC_HINT exclusion here.
+    hint_line_guard = family == "mysql" and (
                       (version >= (9, 2, 0) or (8, 0, 43) <= version < (8, 1, 0) or
                        (8, 4, 6) <= version < (9, 0, 0)))
     buffer, packets, commands = "", [], []
@@ -136,6 +139,10 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
         if not persistent_special:
             ss_comment = 0
         need_space, pos = False, 0
+        # buffer contains both the flushed glob_buffer and the current
+        # add_line output. Track the latter: newline handling inspects only
+        # the bytes since the last flush (out = line), not the raw input.
+        out_start = len(buffer)
         while pos < len(line):
             ch = line[pos]
             tail = line[pos:]
@@ -157,12 +164,14 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                     continue
                 if following == "C":
                     commands.append("C")
+                    out_start = len(buffer)
                     pos += 1
                     stop = line.find("*/" if ss_comment else delimiter, pos)
                     pos = len(line) if stop < 0 else stop + (0 if ss_comment else len(delimiter))
                     continue
                 if following == "-" and family == "mariadb":
                     commands.append("-")
+                    out_start = len(buffer)
                     pos += 1
                     continue
                 buffer += "\\" + following
@@ -187,6 +196,7 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                 elif buffer.rstrip(SPACE):
                     packets.append(buffer.rstrip(SPACE))
                 buffer = ""
+                out_start = 0
                 continue
             # mysql:2859-2894 predates the hint #/-- fix. MariaDB:2772-2815.
             dash = tail.startswith("--") and (len(tail) == 2 or tail[2] in SPACE or
@@ -197,6 +207,7 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                 if empty:
                     packets.append(buffer.rstrip(SPACE))
                     buffer = ""
+                out_start = len(buffer)
                 break
             # No !ml_comment guard here. Consuming /* hides the overlapping
             # */ in /*/ from the next iteration. mysql:2895-2906;
@@ -210,12 +221,14 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                 buffer += "/*"
                 pos += 2
                 ml_comment = True
+                out_start = len(buffer)
                 continue
             # mysql:2907-2921; mariadb:2834-2851.
             if ml_comment and not ss_comment and tail.startswith("*/"):
                 buffer += "*/"
                 pos += 2
                 ml_comment, need_space = False, True
+                out_start = len(buffer)
                 continue
             # mysql:2922-2963; mariadb:2853-2875. Conditional open/close
             # examines one byte per iteration, unlike ordinary comments.
@@ -225,7 +238,8 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                 ss_comment = 2
             elif not in_string and ss_comment and tail.startswith("*/"):
                 ss_comment = 0
-                # MariaDB 12.0.1:2786-2792 consumes both closer bytes.
+                # MariaDB 12.0.1:2779-2792 sets this state for /*! and
+                # /*+ only, then consumes both closer bytes (not /*M!).
                 # Older clients reexamine '/', which may reopen a comment.
                 if persistent_special:
                     buffer += "*/"
@@ -240,7 +254,11 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
             need_space = False
             buffer += ch
             pos += 1
-        if buffer:
+        # is_delimiter_command checks the first nine bytes, without a word
+        # boundary. Special-comment state does not protect the newline.
+        # mysql-8.4.0:1233-1244,2966-2982; mariadb-11.8.9:1185-1195,2874-2892.
+        if buffer and (buffer[out_start:out_start + 9].lower() != "delimiter" or
+                       in_string or ml_comment):
             buffer += "\n"
     return packets, buffer, commands
 

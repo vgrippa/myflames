@@ -420,6 +420,26 @@ def _next_sql_mode(unit, saved_modes, engine=None, identity_bound=True):
     if not identity_bound:
         saved_modes.clear()
         return None if _unit_changes_mode(unit, engine) else current
+    # Definitions store their bodies without executing them. Keep the
+    # saved value only for a complete, standalone CREATE definition: a
+    # trailing SELECT/CALL in the same client packet can still change it.
+    if saved_modes and re.match(r"CREATE\b", code, re.I | re.ASCII) and _ROUTINE_CREATE.match(code):
+        try:
+            if len(_ddl_codes(unit)) == 1:
+                return current
+        except EditorError:
+            pass  # Unsupported boundaries cannot establish provenance.
+    # A SELECT can invoke a stored function; DML can fire a trigger. Both
+    # may assign user variables without an assignment visible in this SQL.
+    # Preserve saves only across SETs without any function-like call. This
+    # deliberately includes innocent reads among the invalidating statements.
+    # Quoted strings/identifiers are already masked, so text in a value
+    # cannot invent a call. Parenthesized arithmetic remains supported.
+    # mariadb-11.8.9:sql/item_func.cc:4775-4779 (stored-function/trigger saves).
+    parts = [_unwrap_set_statement(part) for part in code.split(";") if part.strip()]
+    if (not parts or not all(re.match(r"\s*SET\b", part, re.I | re.ASCII) for part in parts) or
+            re.search(_MASKED_QUALIFIED + r"\s*\(", code)):
+        saved_modes.clear()
     tokens = list(_MASKED_TOKEN.finditer(code))
     if any(_MODE_CHANGE.fullmatch(token.group()) for token in tokens):
         saved_modes.clear()
@@ -446,7 +466,8 @@ def _next_sql_mode(unit, saved_modes, engine=None, identity_bound=True):
 
     # Invalidate writes even when they do not themselves change sql_mode:
     # SET @v=..., SELECT @v:=..., SELECT/EXECUTE ... INTO @v, compound
-    # bodies and opaque quoted variable names. Ordinary @v reads preserve it.
+    # bodies and opaque quoted variable names. Call-free SET @other=@v
+    # preserves it; SELECT @v was conservatively invalidated above.
     into = any(token.group().upper() == "INTO" for token in tokens)
     for token in tokens:
         word = token.group()
@@ -490,7 +511,8 @@ def _check_discarded_delimiters(readings, before=None):
         if reference is None:
             reference = ranges
         elif ranges != reference:
-            raise EditorError("The possible client readings discard different SQL before DELIMITER. "
+            raise EditorError("The possible client readings discard different SQL before DELIMITER "
+                              "or choose different delimiter arguments. "
                               "Use ordinary comments before DELIMITER or select a known client family.",
                               "invalid_statement")
 
@@ -613,6 +635,24 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                          and send[end - 2:end] == "*/" and end < len(send)
                          and send[end] not in dbops._CLIENT_SPACE
                          and not send.startswith(stmt["delimiter"], end)})
+        # A client can see an ordinary comment inside a server identifier,
+        # string or skipped version comment. Its need_space then follows a
+        # different closer. Do not insert into that server data, or leave an
+        # unreviewed insertion to the client. Check every possible family
+        # and ANSI status reading, independently of the server token spans.
+        # mysql-8.4.0:client/mysql.cc:2907-2921,2959-2962;
+        # mariadb-11.8.9:client/mysql.cc:2834-2851,2865-2870.
+        for reading in readings:
+            client_scan = dbops.lex_sql(send, client=True, client_delimiter=stmt["delimiter"],
+                                       **dict(lexer_args, **reading))
+            for kind, start, end in client_scan["tokens"]:
+                if (kind == "comment" and send[start:start + 2] == "/*" and
+                        send[end - 2:end] == "*/" and end < len(send) and
+                        send[end] not in dbops._CLIENT_SPACE and not send.startswith(stmt["delimiter"], end) and
+                        end not in spaces):
+                    raise EditorError("The client and server disagree about a comment closer where the client "
+                                      "can insert a space. Separate the closer from following text or remove "
+                                      "the comment-like text before running this SQL.", "invalid_statement")
         inserted = tuple(at + index for index, at in enumerate(spaces))
         code, idents = stmt["code"], list(stmt.get("idents") or [])
         if spaces:
@@ -624,6 +664,19 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             send = "".join(parts)
             scan = dbops.lex_sql(send, **dict(lexer_args, **readings[0]))
             code, idents, tokens = dbops._masked_fragment(send, scan, 0, len(send))
+            # A delimiter with internal whitespace can straddle a closer:
+            # '/ +' was absent in '*/+2' but appears in '*/ +2'. Recheck
+            # the normalized unit before showing it for review, including
+            # the closing-slash framing rules for executable comments.
+            for reading in readings:
+                normalized = dbops.split_statements(send, delimiter=stmt["delimiter"],
+                                                   **dict(lexer_args, **reading))
+                if (len(normalized) != 1 or normalized[0]["text"] != send or
+                        normalized[0]["unclosed"] or normalized[0]["issues"] or
+                        _server_unit_count(send, normalized[0]) > 1):
+                    raise EditorError("Comment-space normalization changes this statement's delimiter boundaries. "
+                                      "Choose a delimiter without whitespace or separate the comment from "
+                                      "following SQL.", "invalid_statement")
         if "\x00" in send:
             raise EditorError("Statement %d contains a NUL character, which the client cannot send." % number,
                               "invalid_statement")

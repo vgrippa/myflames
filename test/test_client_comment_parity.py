@@ -5,7 +5,8 @@ import time
 import unittest
 from unittest import mock
 
-from client_addline_oracle import client_packets, server_statement_count, skip_over_comments_and_space
+from client_addline_oracle import (client_packets, delimiter_command, server_statement_count,
+                                  skip_over_comments_and_space)
 from myflames import editor_session as ed
 from test_editor_session_j2 import SAFETY, bound_session
 
@@ -53,6 +54,45 @@ def generated_lines():
 
 
 class ClientCommentParityTests(unittest.TestCase):
+    def test_oracle_delimiter_newlines_can_form_comments_and_remove_predicates(self):
+        cases = (
+            ("DELETE FROM t WHERE flag =\ndelimiter -\n- 1 AND id = 5",
+             "DELETE FROM t WHERE flag =\ndelimiter -- 1 AND id = 5"),
+            ("SELECT 1 AS\ndelimiter/\n* ' */ ; DELETE FROM t; -- '",
+             "SELECT 1 AS\ndelimiter/* ' */ ; DELETE FROM t; -- '"),
+            ("SELECT a,\nDeLiMiTeR_x\nFROM t", "SELECT a,\nDeLiMiTeR_xFROM t"),
+            ("SELECT 'first\ndelimiter_x' -\n- 1", "SELECT 'first\ndelimiter_x' -- 1"),
+        )
+        for family, versions in CLIENT_VERSIONS.items():
+            for version in versions:
+                for sql, expected in cases:
+                    with self.subTest(family=family, version=version, sql=sql):
+                        self.assertEqual(client_packets(sql, family, client_version=version),
+                                         ([expected], "", []))
+                for sql in ("SELECT 'a\ndelimiter_x\nb'", "SELECT a,\n delimiter_x\nFROM t",
+                            "SELECT 1\ndelimiter /* c */\n+2",
+                            "SELECT 1\ndelimiter -- c\n+2"):
+                    # in_string protects the newline; comment branches
+                    # flush the line output before the newline prefix test.
+                    self.assertEqual(client_packets(sql, family, client_version=version), ([sql], "", []))
+
+    def test_oracle_delimiter_get_arg_uses_each_family_quote_rules(self):
+        for argument, mysql, maria in (("'//", "//", None), ("'a''b'tail", "a", "a'b"),
+                                       ('"a""b" tail', "a", 'a"b'), ("`a``b`tail", "a", "a`b"),
+                                       ("'//'ignored", "//", "//"), (r"'\+'", None, "+")):
+            self.assertEqual(delimiter_command("DELIMITER " + argument, "mysql"), (True, mysql))
+            self.assertEqual(delimiter_command("DELIMITER " + argument, "mariadb"), (True, maria))
+
+    def test_oracle_hint_line_guard_is_mysql_only(self):
+        sql = "SELECT /*+ # */ 'x\n\\C utf8mb4\n'"
+        for family, versions in CLIENT_VERSIONS.items():
+            for version in versions:
+                with self.subTest(family=family, version=version):
+                    commands = client_packets(sql, family, client_version=version)[2]
+                    guarded = family == "mysql" and version in ("8.0.46", "9.7.0")
+                    ordinary = family == "mariadb" and version != "12.0.1"
+                    self.assertEqual(commands, [] if guarded or ordinary else ["C"])
+
     def test_oracle_named_dispatch_in_unclosed_special_comments(self):
         for family, versions in CLIENT_VERSIONS.items():
             for version in versions:
@@ -66,7 +106,11 @@ class ClientCommentParityTests(unittest.TestCase):
                             self.assertEqual(packets, ["DELETE FROM t"])
                             self.assertTrue(remaining.endswith("__oracle_end__\n"))
                         else:
-                            self.assertEqual((packets, remaining), ([sql], ""))
+                            # Special comments do not protect the physical
+                            # newline after the column-zero DELIMITER line.
+                            expected = (sql if family == "mariadb" and version != "12.0.1" and
+                                        opener == "/*+ " else sql.replace("DELIMITER ?\n", "DELIMITER ?"))
+                            self.assertEqual((packets, remaining), ([expected], ""))
                 # Ordinary comments retain ml_comment and suppress dispatch.
                 sql = "/* \nDELIMITER ?\n*/ SELECT 1"
                 self.assertEqual(client_packets(sql, family, client_version=version), ([sql], "", []))
@@ -99,6 +143,12 @@ class ClientCommentParityTests(unittest.TestCase):
             packets, remaining, commands = client_packets(sql, family, client_version=version)
             self.assertEqual((packets, commands), ([], []))
             self.assertTrue(remaining)
+        # /*M! does not set ss_comment, even in MariaDB 12.0.1. Its closer
+        # still exposes the overlapping /*; only /*! and /*+ are atomic.
+        sql = "SELECT /*M!100000 1 */*2"
+        packets, remaining, commands = client_packets(sql, "mariadb", client_version="12.0.1")
+        self.assertEqual((packets, commands), ([], []))
+        self.assertTrue(remaining)
 
     def test_oracle_known_comment_boundary_and_command_examples(self):
         for family in ("mysql", "mariadb"):
