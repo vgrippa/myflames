@@ -1289,7 +1289,7 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     statements as one unit and read the result back. *progress* follows the
     steps for the sheet (reviewed_writes.Progress)."""
     from . import reviewed_writes
-    reviewed = reviewed_writes.check_reviewed(reviewed)
+    reviewed = reviewed_writes.check_reviewed(reviewed, single_line=True)
     if audit is not None:
         audit.server("proxysql", (reviewed.get("expect") or {}).get("proxysql_version"))
     state = {}

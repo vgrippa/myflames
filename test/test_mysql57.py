@@ -59,6 +59,10 @@ class Privileges57(unittest.TestCase):
                 self.assertIn('CURRENT_USER(), CURRENT_ROLE(), VERSION()', conn.sent[0][0])
                 self.assertIn('CURRENT_USER(), NULL, VERSION()', conn.sent[1][0])
                 self.assertTrue(all(sql.startswith(p.TAG) for sql, _ in conn.sent))
+                from _reviewed_replay import read_statements
+                self.assertEqual(len(conn.wire), 2)
+                self.assertTrue(all(statement.startswith(p.TAG) for packet in conn.wire
+                                    for statement in read_statements(packet)))
                 codes.add(int(entry['calls'][0]['error'].split('ERROR ')[1].split(' ')[0]))
                 text = json.dumps(r, allow_nan=False)
                 for secret in replay.secrets(data):
@@ -236,15 +240,27 @@ class Accounts57(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not available on this server version'):
             self.plan('options_history')
 
-    def test_role_changes_are_refused_before_any_read(self):
+    def test_role_changes_are_refused_after_only_bound_version_read(self):
+        from _reviewed_replay import UUID, answer_evidence, evidence_options
         conn = mock.Mock()
         conn.server_version.return_value = '5.7.44-log'
+        values = {'server_uuid': UUID, 'version': '5.7.44-log'}
+        def version(sql, flags, timeout):
+            self.assertEqual(sql, 'SELECT @@version', 'no account or privilege reads for unsupported roles')
+            return '5.7.44-log\n'
+        @evidence_options
+        def read(sql, extra_flags=None, timeout=None):
+            packet = answer_evidence(sql, extra_flags, timeout, version, values)
+            self.assertIsNotNone(packet)
+            return packet
+        conn.run.side_effect = read
         for operation, role, options in (('create', True, {}), ('drop', True, {}),
                                          ('roles', False, {'mode': 'grant', 'roles': [{'name': 'r'}]})):
             with self.subTest(operation=operation):
                 with self.assertRaisesRegex(ValueError, '^This MySQL version has no roles; MySQL added them in 8.0.$'):
                     a.plan_change(conn, operation, 'r', '%', role=role, **options)
-        conn.run.assert_not_called()
+        self.assertEqual(conn.run.call_count, 3, 'one bound version read per refused request')
+        conn.server_version.assert_not_called()
 
     def test_server_floor_is_576(self):
         conn = mock.Mock()

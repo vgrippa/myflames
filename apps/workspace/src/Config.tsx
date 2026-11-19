@@ -463,7 +463,7 @@ function VariableSheet({
     if (policy) {
       // The type and read-only flag as they are now: the sheet was opened under the old ones.
       try {
-        const active = await policy.check();
+        const active = await policy.check(via.connection);
         if (connectionKey(active) !== via.key) {
           onDone({ ...base, status: "refused", message: "The connection's settings changed after this sheet opened, so nothing was sent. Check them and try again." });
           return;
@@ -950,7 +950,7 @@ function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRem
   async function confirm() {
     if (!ready || sending.current || stale || blocked || gate.disabledReason) return;
     sending.current = true; setBusy(true);
-    const results = await applyParameterBatch(rows, intents, request.via, plans, policy ? () => policy.check() : undefined,
+    const results = await applyParameterBatch(rows, intents, request.via, plans, policy ? () => policy.check(request.via.connection) : undefined,
       () => latestKey.current,
       (intent, plan) => api<VariableChange>("live/variable/apply", {
         connection: request.via.connection, ...intent, expect: plan.expect, confirmed: true,

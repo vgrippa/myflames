@@ -30,6 +30,7 @@ import type {
   Connection,
   ConnectionPlan,
   ErrorLogReport,
+  GroupConnection,
   HealthReport,
   IndexesReport,
   InnodbReport,
@@ -57,6 +58,7 @@ import {
   ViewActivityContext,
   ViewBackLabelContext,
   ViewSwitcherContext,
+  ViewServerContext,
   type ViewSwitcherShared,
   useWindowStatus,
   NavMarker,
@@ -85,6 +87,7 @@ import { serverKind, type ServerKind, type SlowState } from "./session";
 import {
   connectionKey,
   connectionLabel,
+  keyProfileId,
   lastViewRead,
   latestGeneration,
   nextGeneration,
@@ -94,6 +97,7 @@ import {
   type Bound,
 } from "./binding";
 import { HealthView, emptyHealth, rememberHealth, switchHealthConnection, type HealthMemory } from "./Health";
+import { GroupServerPicker, groupMemberLabel } from "./GroupServerPicker";
 import { ErrorLogView, ERROR_LOG_READ, errorLogBody } from "./ErrorLog";
 import { analysisSource as reportSource } from "./Report";
 import {
@@ -214,6 +218,7 @@ type RefreshRun = {
 };
 /** One view's read for Refresh all: the same parameters and request as its own Refresh. */
 type RefreshTask = {
+  connection: Connection;
   view: ServerKind;
   label: string;
   params: string;
@@ -281,6 +286,7 @@ export function Server({
   onNavigatePlace,
   picker,
   connection,
+  topologyConnection = connection,
   disabled,
   settings,
   initial,
@@ -298,6 +304,7 @@ export function Server({
   navigation,
   navCollapsed,
   onToggleNavCollapsed: toggleNavCollapsed,
+  groupServer = null,
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
   replication: propReplication,
@@ -325,6 +332,19 @@ export function Server({
   onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
+  /** Shared Cluster and Replication reports belong to the window's connection. */
+  topologyConnection?: Connection;
+  /** A Group connection (one connection group as one connection): the
+   * Server: control and the member's name, address and role, drawn in every
+   * view's header (kit.tsx ViewServerContext). Choosing a member switches
+   * this place to it (an explicit open; the shell re-reads with its
+   * connection). *note* says when a removed member moved the views. */
+  groupServer?: {
+    group: GroupConnection;
+    member: string;
+    note: string;
+    onChoose: (profileId: string) => void;
+  } | null;
   /** The Query editor is capturing: reads and row actions wait. */
   disabled: boolean;
   settings: LabSettings;
@@ -405,10 +425,24 @@ export function Server({
   /** Maintenance's open task section, restored with the workspace. */
   const [maintenanceSection, setMaintenanceSection] = useState<MaintenanceSection>(initial?.maintenance_section || "tools");
   const activeKey = connectionKey(connection);
+  const topologyKey = connectionKey(topologyConnection);
   const [localReplicationLoops, setLocalReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const effectiveLoops = propReplicationLoops !== undefined ? propReplicationLoops : localReplicationLoops;
-  const loopsHere = effectiveLoops?.key === activeKey ? effectiveLoops.report : [];
+  // A skip loop runs on the connection the Replication place holds; on a
+  // Group connection that is the group connection (its active member), while
+  // the Server: control may show another member. The loop stays visible,
+  // named by the server it runs on, whichever member the place shows.
+  const loopsBound = effectiveLoops && (effectiveLoops.key === activeKey || effectiveLoops.key === topologyKey)
+    ? effectiveLoops : null;
+  const loopsHere = loopsBound?.report || [];
   const loopActiveNow = loopsHere.some(loopActive);
+  /** The server a shown loop runs on, when it is not the member on screen. */
+  const loopServer = loopsBound && loopsBound.key !== activeKey
+    ? (() => {
+        const member = groupServer?.group.members.find((m) => m.profile_id === keyProfileId(loopsBound.key));
+        return member ? groupMemberLabel(member) : loopsBound.label;
+      })()
+    : "";
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
@@ -440,6 +474,8 @@ export function Server({
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
   latestConnection.current = connection;
+  const latestTopologyConnection = useRef(topologyConnection);
+  latestTopologyConnection.current = topologyConnection;
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
   useEffect(() => {
@@ -924,10 +960,13 @@ export function Server({
     const live = <T,>(b: Bound<T> | null) => (b && b.key === key ? b.report : null);
     const tasks: RefreshTask[] = [];
     const add = (view: ServerKind, params: string, path: string, body: (c: Connection) => object, accept: (b: Bound<never>) => void | boolean) => {
+      const via = view === "cluster" || view === "replication" ? latestTopologyConnection.current : latestConnection.current;
+      const readKey = connectionKey(via);
       // The view's own read still on its way is joined, never replaced.
-      const own = lastViewRead(view, key);
-      const joined = own && readRunning(key, own.params) ? own : null;
+      const own = lastViewRead(view, readKey);
+      const joined = own && readRunning(readKey, own.params) ? own : null;
       tasks.push({
+        connection: via,
         view,
         label: ALL_SERVER_VIEWS.find((v) => v.id === view)?.label || READ_LABELS[view] || view,
         params: joined ? joined.params : params,
@@ -1039,7 +1078,7 @@ export function Server({
     // Existing individual reads occupy worker slots too. Join them before
     // starting new requests, otherwise a held Locks read plus three sampling
     // reads would exceed the global budget.
-    return tasks.sort((a, b) => Number(readRunning(key, b.params)) - Number(readRunning(key, a.params)) || order_(a.view) - order_(b.view));
+    return tasks.sort((a, b) => Number(readRunning(connectionKey(b.connection), b.params)) - Number(readRunning(connectionKey(a.connection), a.params)) || order_(a.view) - order_(b.view));
   }
   /** Refresh every Server section of the connection in use; a second call while one runs does nothing. */
   async function refreshAll() {
@@ -1078,13 +1117,16 @@ export function Server({
         // A newer read of this view (its own Refresh) wins over this one.
         const generation = nextGeneration(task.view);
         const current = task;
+        const readKey = connectionKey(current.connection);
+        const currentConnection = () => current.view === "cluster" || current.view === "replication"
+          ? latestTopologyConnection.current : latestConnection.current;
         try {
-          const result = await sharedRead(key, current.params, (signal) => current.request(c, signal), { signal: controller.signal });
+          const result = await sharedRead(readKey, current.params, (signal) => current.request(current.connection, signal), { signal: controller.signal });
           if (controller.signal.aborted) throw new DOMException("Stopped", "AbortError");
           // Refreshed only when shown: a newer read of the view (or another
           // connection) replaced this one, so its answer is dropped.
-          if (connectionKey(latestConnection.current) === key && latestGeneration(current.view) === generation) {
-            const accepted = current.accept({ key, label, report: result as never });
+          if (connectionKey(currentConnection()) === readKey && latestGeneration(current.view) === generation) {
+            const accepted = current.accept({ key: readKey, label: connectionLabel(current.connection), report: result as never });
             update(current.view, accepted === false
               ? { state: "replaced", result, report: reportOfRef.current(current.view) }
               : { state: "ok", at: new Date().toISOString(), error: undefined });
@@ -1093,7 +1135,7 @@ export function Server({
           const stopped = controller.signal.aborted || (e as Error).name === "AbortError";
           const report = reportOfRef.current(current.view);
           update(current.view, stopped ? { state: "stopped", report } : { state: "failed", error: (e as Error).message, report });
-          if (!stopped && current.view === "cluster" && connectionKey(latestConnection.current) === key) propOnClusterFailed?.(key, (e as Error).message);
+          if (!stopped && current.view === "cluster" && connectionKey(currentConnection()) === readKey) propOnClusterFailed?.(readKey, (e as Error).message);
         }
       }
     };
@@ -1408,24 +1450,34 @@ export function Server({
   const common = { connection, disabled: disabled || !!analysisPhase, onBack };
   // A persistent status area: an active skip loop or a running maintenance
   // job stays reachable from any view, so Stop and Cancel are never lost
-  // while the work runs. Loops listed here belong to the connection in use;
-  // stopping one is cancellation of an authorized action, so it stays
-  // enabled during capture, policy loading and on a read-only connection.
+  // while the work runs. Loops listed here belong to the connection in use
+  // (on a Group connection, to the member the Replication place runs on,
+  // whichever member the Server: control shows); stopping one is
+  // cancellation of an authorized action, so it stays enabled during
+  // capture, policy loading and on a read-only connection.
   const [loopStopping, setLoopStopping] = useState("");
   const loopStoppingRef = useRef(new Set<string>());
   async function stopLoopNow(loop: SkipLoop) {
     const id = loop.job_id;
-    const c = latestConnection.current;
-    if (!id || loopStoppingRef.current.has(id) || connectionKey(c) !== activeKey) return;
+    const bound = effectiveLoops;
+    if (!id || !bound || loopStoppingRef.current.has(id)) return;
+    // Stop goes to the connection the loop runs on (its bound key): the
+    // member on screen, or the group connection while the Server: control
+    // shows another member.
+    const c = bound.key === connectionKey(latestConnection.current)
+      ? latestConnection.current
+      : bound.key === connectionKey(latestTopologyConnection.current)
+        ? latestTopologyConnection.current
+        : null;
+    if (!c) return;
     loopStoppingRef.current.add(id);
     setLoopStopping(id);
     try {
       await stopSkipLoop(c, id);
-      // The read rebinds loops to the connection in use; after a switch the
-      // view's own poll reconciles when you switch back.
+      // The read rebinds loops to the connection they run on; after a switch
+      // the view's own poll reconciles when you switch back.
       const answer = await readSkipLoops(c);
-      if (connectionKey(latestConnection.current) === activeKey)
-        setReplicationLoops({ key: activeKey, label: connectionLabel(c), report: answer.loops });
+      setReplicationLoops({ key: bound.key, label: connectionLabel(c), report: answer.loops });
     } catch {
       // The view shows loop status errors; the persistent banner stays quiet.
     } finally {
@@ -1435,6 +1487,16 @@ export function Server({
   }
   const MAINTENANCE_JOB_LABEL: Record<string, string> = { dump: "Dump", restore: "Restore", clone: "Clone" };
   const jobsHere = maintenanceJobsNow.filter((b) => jobActive(b.report));
+  // A Group connection: every single-server view's header names the member it
+  // reads (name · address · role) beside the Server: control that chooses it.
+  const groupServerMember = groupServer ? groupServer.group.members.find((m) => m.profile_id === groupServer.member) || null : null;
+  const viewServer = groupServer && groupServerMember ? (
+    <span className="group-server" data-member={groupServer.member}>
+      <GroupServerPicker group={groupServer.group} value={groupServer.member} narrow={compact} onChoose={groupServer.onChoose} />
+      {!compact && groupServer.group.members.length <= 4 && <span className="view-server-name">{groupMemberLabel(groupServerMember)}</span>}
+      {groupServer.note && <span className="group-server-note" role="status">{groupServer.note}</span>}
+    </span>
+  ) : null;
   const view = (() => {
     switch (kind) {
       case "health":
@@ -1624,6 +1686,7 @@ export function Server({
 
   return (
     <InstrumentsLinkContext.Provider value={openInstruments}>
+      <ViewServerContext.Provider value={viewServer}>
       <InspectorContext.Provider value={inspector}>
         <ColumnStoreContext.Provider value={columnStore}>
         <RefreshAllContext.Provider value={singlePlace ? null : {
@@ -1814,7 +1877,7 @@ export function Server({
                 </p>
               )}
               {loopsHere.some((l) => loopActive(l)) && (
-                <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
+                <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} server={loopServer} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
               )}
               {kind !== "maintenance" && jobsHere.length > 0 && (
                 <div className="ops-loop" role="status">
@@ -1923,6 +1986,7 @@ export function Server({
         </RefreshAllContext.Provider>
         </ColumnStoreContext.Provider>
       </InspectorContext.Provider>
+      </ViewServerContext.Provider>
     </InstrumentsLinkContext.Provider>
   );
 }

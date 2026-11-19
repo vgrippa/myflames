@@ -22,6 +22,7 @@ from unittest import mock
 
 from myflames import locks, ui, workspace_cli
 from myflames.connector import ConnectorError
+from _reviewed_replay import evidence_options
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'locks')
 PASSWORD = 'hunter2-not-real'
@@ -67,7 +68,26 @@ class FakeConn(object):
         self.host, self.port, self.user = "127.0.0.1", 3306, None
         self.ssl_mode = self.ssl_ca = None
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        from _reviewed_replay import evidence_body, evidence_call
+        body, marker = evidence_body(sql)
+        if marker:
+            # Synthetic packet metadata follows the same server identity as
+            # the process-row fixture. Preserve plain logical-read logs.
+            maria = 'MariaDB' in self.responses[0][1]
+            pattern = ('SELECT @@global.server_id, @@hostname, @@version, @@port'
+                       if maria else 'SELECT @@server_uuid')
+            raw = next((value for key, value in self.responses if key == pattern), '')
+            if callable(raw):
+                raw = raw(sql)
+            keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name')
+                    if maria else ('server_uuid', 'wsrep_on', 'wsrep_gcomm_uuid'))
+            values = dict(zip(keys, raw.strip().split('\t')))
+            values.update(getattr(self, 'evidence_values', {}))
+            values = {key: value for key, value in values.items() if value != 'NULL'}
+            values.setdefault('version', self.version)
+            return evidence_call(lambda: FakeConn.run(self, body, extra_flags=extra_flags, timeout=timeout), marker, values)
         self.calls.append((sql, list(extra_flags or [])))
         for pattern, result in self.responses:
             if pattern in sql:
@@ -75,6 +95,13 @@ class FakeConn(object):
                     raise result
                 return result(sql) if callable(result) else result
         raise AssertionError('unexpected SQL: ' + sql)
+
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        try:
+            return self.run(sql, extra_flags=extra_flags, timeout=timeout)
+        except ConnectorError as exc:
+            from _reviewed_replay import packet_error
+            raise packet_error(exc, sql) from None
 
     def server_version(self):
         return self.version
@@ -117,7 +144,7 @@ class FakeFactory(object):
 PATTERNS = (
     # Kill-time reads come first: the session read appends CONNECTION_ID() and
     # the transaction read filters on one thread, so neither matches below.
-    ('target', ', CONNECTION_ID() FROM '),
+    ('target', ', CONNECTION_ID()'),
     ('target_trx', 'WHERE trx_mysql_thread_id = '),
     ('survived_trx', 'WHERE trx_id = '),
     ('kill', KILL_TAG),
@@ -156,8 +183,8 @@ def fake(version, ps_on=True, **answers):
                        ('mli', NO_MLI), ('target_last', []), ('trx_scope', []), ('survived_trx', [])):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
-                 ('SELECT @@server_uuid', batch([['server-uuid-1']])),
-                 ('SELECT @@server_id, @@hostname, @@version', batch([['1', 'server-one', '11.4.13-MariaDB']]))]
+                 ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
+                 ('SELECT @@global.server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None]]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -504,11 +531,12 @@ class TestTransactionTimeZone(unittest.TestCase):
 class TestVersions(LockCase):
     def test_report_captures_server_identity_once_for_both_engines(self):
         for conn, expected in (
-                (empty_mysql(), {'server_uuid': 'server-uuid-1'}),
-                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'})):
+                (empty_mysql(), {'server_uuid': '11111111-2222-3333-4444-555555555555'}),
+                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
             with self.subTest(expected=expected):
                 self.assertEqual(self.report(conn, identity=True)['server_identity'], expected)
-                self.assertEqual(sum('SELECT @@server_' in sql for sql, _ in conn.calls), 1)
+                self.assertEqual(sum('SELECT @@server_' in sql or 'SELECT @@global.server_id' in sql
+                                     for sql, _ in conn.calls), 1)
 
     def test_identity_is_read_only_when_asked(self):
         # The CLI report and the Full analysis report do not need it; only the
@@ -1619,7 +1647,7 @@ class TestLocksAPI(LockCase):
         for needle, error in failures:
             with self.subTest(error=error):
                 responses = [] if needle == '@@version' else [(VERSION_SQL, batch([['8.4.6', 1]]))]
-                conn = FakeConn('8.4.6', responses + [('SELECT @@server_uuid', batch([['server-uuid-1']])), (needle, error)])
+                conn = FakeConn('8.4.6', responses + [('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])), (needle, error)])
                 with mock.patch('myflames.connector.MySQLConnection', FakeFactory(conn)):
                     with self.assertRaises((ValueError, ConnectorError)) as caught:
                         ui.api_response('/api/live/locks', {'connection': self.connection()}, workspace=object())
@@ -2195,8 +2223,8 @@ def bound_kill_expect(conn, expect=None, connection=None, safety=None):
     if connection is None:
         connection = {key: getattr(conn, key, None) for key in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')}
     version = conn.responses[0][1]
-    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'}
-                if 'MariaDB' in version else {'server_uuid': 'server-uuid-1'})
+    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'}
+                if 'MariaDB' in version else {'server_uuid': '11111111-2222-3333-4444-555555555555'})
     return dict(K_EXPECT if expect is None else expect,
                 connection_identity=dbops.connection_identity(connection, safety), server_identity=identity)
 
@@ -2231,6 +2259,12 @@ class KillScenario(object):
         rows = self.after if self.killed else ([self.target] if self.target else [])
         if isinstance(rows, Exception):
             raise rows
+        if rows and ('@@server_uuid' in sql or '@@global.server_id' in sql):
+            pattern = 'SELECT @@global.server_id, @@hostname, @@version, @@port' if '@@global.server_id' in sql else 'SELECT @@server_uuid'
+            identity = next(value for key, value in self.conn.responses if key == pattern)
+            if isinstance(identity, str):
+                cells = [None if cell == 'NULL' else cell for cell in identity.strip().split('\t')]
+                rows = [list(row) + cells for row in rows]
         return batch(rows)
 
     def read_trx(self, sql):
@@ -2246,7 +2280,8 @@ class KillScenario(object):
         return ''
 
     def kills(self):
-        return [sql for sql, _ in self.conn.calls if sql.startswith(KILL_TAG)]
+        from _reviewed_replay import recorded_body
+        return [recorded_body(sql) for sql, _ in self.conn.calls if KILL_TAG in sql]
 
 
 class TestKillSession(LockCase):
@@ -2256,8 +2291,11 @@ class TestKillSession(LockCase):
         json.dumps(result, allow_nan=False)
         for sql, flags in scenario.conn.calls:
             self.assertIn('--comments', flags, sql)
-            if sql.startswith(KILL_TAG):
-                self.assertRegex(sql[len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
+            if KILL_TAG in sql:
+                from _reviewed_replay import guarded_packets
+                packets = guarded_packets(sql)
+                self.assertEqual(len(packets), 1)
+                self.assertRegex(packets[0][1][len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
             else:
                 self.assert_read_statement(sql)
         self.assertLessEqual(len(scenario.kills()), 1, 'never more than one KILL')
@@ -2522,8 +2560,11 @@ class TestKillSession(LockCase):
             calls.append(sql)
             if 'performance_schema.threads' in sql:
                 raise denied
-            return batch([] if scenario.killed else [[None] + K_TARGET[1:3] + ['172.17.0.1:5555'] + K_TARGET[4:]])
-        scenario.conn.responses = [(p, target if p == ', CONNECTION_ID() FROM ' else a)
+            row = [None] + K_TARGET[1:3] + ['172.17.0.1:5555'] + K_TARGET[4:]
+            if '@@server_uuid' in sql:
+                row += ['11111111-2222-3333-4444-555555555555', 'OFF', None]
+            return batch([] if scenario.killed else [row])
+        scenario.conn.responses = [(p, target if p == ', CONNECTION_ID()' else a)
                                    for p, a in scenario.conn.responses]
         result, _ = self.kill(scenario, expect={'ps_thread_id': None})
         self.assertEqual(result['status'], 'killed')
@@ -2775,8 +2816,9 @@ class TestKillAudit(LockCase):
             # The pending record exists before the KILL reaches the server.
             original_run = conn.run
 
+            @evidence_options
             def run(sql, extra_flags=None, timeout=None):
-                if sql.startswith(KILL_TAG):
+                if KILL_TAG in sql:
                     seen.append([(r['status'], r['outcome_unknown']) for r in self.records()])
                 return original_run(sql, extra_flags, timeout)
             conn.run = run
@@ -2793,7 +2835,7 @@ class TestKillAudit(LockCase):
         self.assertEqual(result['audit_id'], record['id'])
         self.assertEqual((record['status'], record['outcome'], record['surface'], record['operation']),
                          ('ok', 'killed', 'cli', 'kill'))
-        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+        self.assertEqual(record['statements'], result['session_guard'] + [KILL_TAG + 'KILL CONNECTION 41'])
         self.assertEqual(record['target'], dict(bound_kill_expect(scenario.conn), connection_id=41, mode='connection'))
         self.assertEqual(record['verified'], ['connection', 'server identity', 'user', 'host', 'not this session', 'server thread', 'transaction'])
         self.assertEqual(record['policy'], {'action': 'confirm', 'kind': 'risky', 'category': 'kill',
@@ -2882,7 +2924,7 @@ class TestKillAudit(LockCase):
     def test_kill_is_sent_with_binary_mode(self):
         scenario = KillScenario()
         self.cli(scenario, '--kill', '41', '--yes')
-        [flags] = [f for sql, f in scenario.conn.calls if sql.startswith(KILL_TAG)]
+        [flags] = [f for sql, f in scenario.conn.calls if KILL_TAG in sql]
         self.assertEqual(flags, ['--comments', '--binary-mode'])
 
     def test_a_timeout_or_lost_connection_on_the_kill_is_outcome_unknown(self):
@@ -3046,7 +3088,44 @@ class TestKillAudit(LockCase):
                                     confirmed=True, audit=self.trail(), settle_s=0)
         self.assertEqual((result['status'], scenario.kills()), ('killed', [KILL_TAG + 'KILL CONNECTION 41']))
         self.assertEqual(self.records()[0]['target']['server_identity'],
-                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'})
+                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})
+
+    def test_identity_read_failure_refuses_and_audits_without_sending(self):
+        for engine in ('mysql', 'mariadb'):
+            for password_source in ('connection', 'audit'):
+                with self.subTest(engine=engine, password_source=password_source):
+                    scenario = KillScenario()
+                    if engine == 'mariadb':
+                        scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
+                    audit = self.trail()
+                    if password_source == 'connection':
+                        scenario.conn.password = PASSWORD
+                    else:
+                        audit.password = PASSWORD
+                    expected = bound_kill_expect(scenario.conn)
+                    original = scenario.conn.run
+
+                    def fail_identity(sql, **kwargs):
+                        if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                            raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for ' + PASSWORD)
+                        return original(sql, **kwargs)
+
+                    with mock.patch.object(scenario.conn, 'run', side_effect=fail_identity), \
+                            mock.patch.object(scenario.conn, 'run_write') as send:
+                        result = locks.kill_session(scenario.conn, 41, expect=expected, confirmed=True,
+                                                    audit=audit, settle_s=0)
+                    send.assert_not_called()
+                    self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                     ('refused', 'identity_unavailable', []))
+                    self.assertIsNone(result['statement'])
+                    self.assertIsNone(result['after'])
+                    self.assertTrue(result['message'].startswith('The identity check could not run: '))
+                    self.assertIn('SELECT denied for [redacted]', result['message'])
+                    record = self.records()[0]
+                    self.assertEqual((record['id'], record['status'], record['outcome'], record['message']),
+                                     (result['audit_id'], 'refused', 'identity_unavailable', result['message']))
+                    self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+                    self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.records()))
 
     def test_cli_missing_server_identity_is_refused_and_audited_before_prompt(self):
         scenario = KillScenario()
@@ -3058,7 +3137,40 @@ class TestKillAudit(LockCase):
         self.assertEqual(code, 2)
         self.assertIn('Could not read the server identity', err)
         self.assertEqual(scenario.kills(), [])
-        self.assertEqual((self.records()[0]['status'], self.records()[0]['outcome']), ('refused', 'identity'))
+        self.assertEqual((self.records()[0]['status'], self.records()[0]['outcome']), ('refused', 'identity_unavailable'))
+
+    def test_cli_identity_projection_error_refuses_before_prompt_and_sends_nothing(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                scenario = KillScenario(ma_waits=[])
+                if engine == 'mariadb':
+                    scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
+                audit = self.trail()
+                audit.password = PASSWORD
+                scenario.conn.password = 'connection-secret'
+                original = scenario.conn.run
+
+                def fail_identity(sql, **kwargs):
+                    if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                        raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for ' +
+                                             PASSWORD + ' connection-secret')
+                    return original(sql, **kwargs)
+
+                stdin = mock.Mock()
+                stdin.readline.side_effect = AssertionError('must refuse before prompting')
+                with mock.patch.object(scenario.conn, 'run', side_effect=fail_identity), \
+                        mock.patch.object(scenario.conn, 'run_write') as send:
+                    code, result = locks.kill_cli(scenario.conn, 41, stdin=stdin, audit=audit)
+                send.assert_not_called()
+                self.assertEqual((code, result['status'], result['outcome'], result['sent']),
+                                 (1, 'refused', 'identity_unavailable', []))
+                self.assertIsNone(result['statement'])
+                self.assertIn('Nothing was sent', result['message'])
+                self.assertIn('SELECT denied', result['message'])
+                self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
+                visible = json.dumps(result) + json.dumps(self.records())
+                self.assertNotIn(PASSWORD, visible)
+                self.assertNotIn('connection-secret', visible)
 
     def test_direct_cli_read_only_gate_precedes_all_reads(self):
         from myflames import dbops
@@ -3107,13 +3219,14 @@ class TestKillAudit(LockCase):
 
     def test_cli_refuses_a_server_switch_during_confirmation(self):
         scenario = KillScenario()
-        reads = []
-        def identity(sql):
-            reads.append(sql)
-            return batch([['server-uuid-1' if len(reads) <= 2 else 'replacement-server']])
-        scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
-                                   for p, value in scenario.conn.responses]
-        code, out, err = self.cli(scenario, '--kill', '41', stdin=FakeStdin('yes\n'))
+        class SwitchOnConfirm(FakeStdin):
+            def readline(self):
+                scenario.conn.responses = [(p, batch([['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
+                                           if p == 'SELECT @@server_uuid' else value)
+                                           for p, value in scenario.conn.responses]
+                return super(SwitchOnConfirm, self).readline()
+
+        code, out, err = self.cli(scenario, '--kill', '41', stdin=SwitchOnConfirm('yes\n'))
         self.assertEqual(code, 2)
         self.assertIn('server identity', err)
         self.assertEqual(scenario.kills(), [])

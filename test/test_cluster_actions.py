@@ -27,7 +27,12 @@ def local(report):
 
 
 def offered(report, name):
-    return [a['id'] for a in m.available_actions(report, member(report, name)['key'])]
+    target = member(report, name)
+    checks = {'bootstrap_group': 'OFF'}  # Existing recordings predate this preflight variable.
+    actions = m.available_actions(report, target['key'], checks)
+    if target['local']:
+        actions += m.overview_actions(report, checks)
+    return [a['id'] for a in actions if a['enabled']]
 
 
 class Writes(object):
@@ -39,7 +44,7 @@ class Writes(object):
         self.writes = []
 
     def run(self, sql, extra_flags=None, timeout=None):
-        if 'group_replication_bootstrap_group' in sql:
+        if 'SELECT @@global.group_replication_bootstrap_group' in sql:
             if self.bootstrap is None:
                 raise ConnectorError('mysql client exited 1: ERROR 1193 (HY000) at line 1: Unknown system variable')
             return '%s\n' % self.bootstrap
@@ -48,7 +53,8 @@ class Writes(object):
     def run_write(self, sql, extra_flags=None, timeout=None):
         self.writes.append(sql)
         if self.fail is not None:
-            raise self.fail
+            from _reviewed_replay import acknowledged_error
+            raise self.fail if dbops.error_code(str(self.fail)) == 1242 else acknowledged_error(self.fail, sql)
         return ''
 
     def __getattr__(self, name):
@@ -71,21 +77,23 @@ class Home(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
 
+
 class TestOffered(Home):
     def test_galera_desync_resync_and_bootstrap(self):
         healthy = F.report('galera-11.8-healthy')
         self.assertEqual(offered(healthy, local(healthy)['name']), ['desync_node'])
         for x in healthy['members']:
             if not x['local']:
-                self.assertEqual(m.available_actions(healthy, x['key']), [], 'never on a node this server is not')
+                self.assertFalse(any(a['enabled'] for a in m.available_actions(healthy, x['key'])),
+                                 'node SQL never runs on another node')
         donor = F.report('galera-11.8-donor')
         self.assertEqual((donor['galera']['desync'], offered(donor, local(donor)['name'])), ('ON', ['resync_node']))
         non_primary = F.report('galera-11.8-non-primary')
         self.assertEqual(offered(non_primary, local(non_primary)['name']), ['bootstrap_pc'])
         self.assertEqual(offered(F.report('galera-11.8-joiner'), local(F.report('galera-11.8-joiner'))['name']), [],
                          'a joining node is never bootstrapped')
-        self.assertEqual(m.available_actions(F.report('galera-11.8-wsrep-off'),
-                                             local(F.report('galera-11.8-wsrep-off'))['key']), [])
+        self.assertEqual(offered(F.report('galera-11.8-wsrep-off'),
+                                 local(F.report('galera-11.8-wsrep-off'))['name']), [])
 
     def test_donor_without_wsrep_desync_offers_neither(self):
         report = F.report('galera-11.8-healthy')
@@ -116,9 +124,9 @@ class TestOffered(Home):
     def test_group_replication(self):
         ic = F.report('ic-8.4-healthy')
         primary = next(x for x in ic['members'] if x['role'] == 'PRIMARY')
-        self.assertEqual(m.available_actions(ic, primary['key']), [], 'the primary is not switched to itself')
+        self.assertEqual(offered(ic, primary['name']), [], 'the primary is not switched to itself')
         for x in ic['members']:
-            ids = [a['id'] for a in m.available_actions(ic, x['key'])]
+            ids = [a['id'] for a in m.available_actions(ic, x['key']) if a['enabled']]
             if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE':
                 self.assertIn('switchover', ids)
             self.assertEqual('stop_member' in ids, x['local'])
@@ -126,7 +134,7 @@ class TestOffered(Home):
         offline = F.report('ic-8.4-local-offline')
         self.assertEqual(offered(offline, local(offline)['name']), ['start_member'])
         degraded = F.report('ic-8.4-degraded')
-        self.assertNotIn('switchover', [a['id'] for x in degraded['members'] for a in m.available_actions(degraded, x['key'])],
+        self.assertNotIn('switchover', [a['id'] for x in degraded['members'] for a in m.available_actions(degraded, x['key']) if a['enabled']],
                          'no switchover while a member is recovering or unreachable')
         plain = F.report('gr-8.4-multi-primary')
         self.assertIn('switch_to_single_primary', offered(plain, local(plain)['name']))
@@ -147,7 +155,8 @@ class TestOffered(Home):
     def test_old_mysql_offers_no_group_change(self):
         report = F.report('ic-8.4-healthy')
         report['server_version'] = '8.0.12'
-        self.assertEqual([a for x in report['members'] for a in m.available_actions(report, x['key'])], [])
+        self.assertEqual([a['id'] for x in report['members'] for a in m.available_actions(report, x['key'])
+                          if a['enabled']], [], 'All reviewed Group Replication changes need MySQL 8.0.13')
 
     def test_workspace_reports_match_the_schema(self):
         from pathlib import Path
@@ -160,7 +169,8 @@ class TestOffered(Home):
     def test_with_actions_is_only_for_the_workspace(self):
         report = F.report('galera-11.8-healthy')
         self.assertNotIn('actions', local(report), 'the CLI and MCP report has no actions')
-        self.assertEqual([a['id'] for a in local(m.with_actions(report))['actions']], ['desync_node'])
+        self.assertEqual([a['id'] for a in local(m.with_actions(report))['actions']],
+                         ['desync_node', 'resync_node', 'bootstrap_pc'])
 
 
 class TestPlans(Home):
@@ -276,7 +286,9 @@ class Endpoints(Home):
 
     def test_read_endpoint_adds_actions(self):
         report = self.api('/api/live/cluster', {'connection': self.connection}, F.conn('galera-11.8-healthy'))
-        self.assertEqual([a['id'] for a in local(report)['actions']], ['desync_node'])
+        self.assertEqual([a['id'] for a in local(report)['actions']],
+                         ['desync_node', 'resync_node', 'bootstrap_pc'])
+        self.assertEqual([a['id'] for a in local(report)['actions'] if a['enabled']], ['desync_node'])
         self.assertIn('/api/live/cluster/action', ui._WRITE_PATHS)
         self.assertNotIn('/api/live/cluster/action', ui._SERVER_VIEW_PATHS)
 
@@ -286,7 +298,10 @@ class Endpoints(Home):
         plan = self.plan(conn, 'desync_node', local(report)['key'])
         result = self.send(conn, plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(conn.writes, ['/*myflames:cluster_op*/ SET GLOBAL wsrep_desync = ON;'])
+        from _reviewed_replay import guarded_packets
+        self.assertEqual(len(conn.writes), 1)
+        self.assertEqual([(g, s) for g, s, _ in guarded_packets(conn.writes[0])],
+                         [(plan['session_guard'][0], dbops.split_statements(s)[0]['text']) for s in plan['statements']])
         (record,) = self.audit()
         self.assertEqual((record['operation'], record['status'], record['connection']['engine']),
                          ('cluster_action', 'ok', 'mariadb'))
@@ -372,7 +387,7 @@ class Endpoints(Home):
         report = F.report('ic-8.4-healthy')
         target = next(x for x in report['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
         conn = Writes(F.conn('ic-8.4-healthy'), fail=ConnectorError(
-            "mysql client exited 1: ERROR 3910 (HY000) at line 1: The function 'group_replication_set_as_primary' "
+            "mysql client exited 1: ERROR 3910 (HY000) at line 2: The function 'group_replication_set_as_primary' "
             "failed. There is a replica channel running in the group's current primary member."))
         result = self.send(conn, self.plan(conn, 'switchover', target['key']))
         self.assertEqual(result['status'], 'failed')

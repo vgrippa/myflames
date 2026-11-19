@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mariadb",
+ "flavor": "mariadb",
+ "server_product": "MariaDB",
  "server_version": "11.8.9-MariaDB-ubu2404-log",
  "version_comment": "mariadb.org binary distribution",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -48,5 +50,13 @@
  "statements": [
   "SHOW GLOBAL VARIABLES"
  ],
- "notes": []
+ "notes": [],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
+ },
+ "actions": []
 }

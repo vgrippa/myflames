@@ -114,6 +114,7 @@ test("explicit Use connection commits new credentials even for the same identity
   const context = { module: { exports: {} },
     recordConnectionUse() {}, patchLab: ({ connection: fields }) => { connection = { ...connection, ...fields }; },
     setActivePassword: password => { connection = { ...connection, password }; },
+    setGroupConnection() {},
     setPasswordRevision: update => { passwordRevision = update(passwordRevision); }, setConnectionNote() {},
   };
   vm.runInNewContext(code, context);

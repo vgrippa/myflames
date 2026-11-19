@@ -12,6 +12,7 @@ from myflames.connector import ConnectorError
 from myflames.review_tokens import ReviewTokens
 from myflames.workspace_store import WorkspaceStore
 from test_locks import batch, KillScenario, bound_kill_expect, K_TARGET
+from _reviewed_replay import evidence_options, recorded_body
 
 GR_COMMAND = 'Group Replicatio'  # COMMAND is VARCHAR(16) in MySQL's process-list tables.
 GR_FULL_COMMAND = 'Group Replication Data Stream subscription'
@@ -33,19 +34,28 @@ class BatchConnection(object):
     def __exit__(self, *args):
         pass
 
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        return self.run(recorded_body(sql), extra_flags=extra_flags)
+
+    @evidence_options
     def run(self, sql, extra_flags=None):
+        from _reviewed_replay import evidence_body, evidence_output, UUID
+        body, marker = evidence_body(sql)
+        if marker:
+            return evidence_output(BatchConnection.run(self, body, extra_flags), marker,
+                                   {'server_uuid': UUID, 'version': '8.4.6'})
         self.calls.append(sql)
         if 'SELECT @@version, @@performance_schema' in sql:
             return '8.4.6\t1\n'
         if 'SELECT @@server_uuid' in sql:
-            return 'server-1\n'
-        if sql.startswith(locks.KILL_TAG):
+            return '11111111-2222-3333-4444-555555555555\tOFF\tNULL\n'
+        if locks.KILL_TAG in sql:
             self.killed.add(int(sql.rsplit(' ', 1)[1]))
             return ''
         if 'information_schema.INNODB_TRX' in sql:
             return ''
         if 'FROM performance_schema.threads' in sql:
-            if ' IN (' in sql:
+            if 'PROCESSLIST_ID IN (' in sql:
                 if self.after_error:
                     raise ConnectorError('ERROR 1142: command denied')
                 return batch([[101, 1, 'app', 'localhost', None, 'Query', 3, None, 'SELECT 1']]) if self.remaining else ''
@@ -54,7 +64,8 @@ class BatchConnection(object):
                 return ''
             return batch([[cid + 100, cid, 'other' if cid == self.changed else 'app', 'localhost',
                            None, GR_COMMAND if cid == self.protected else 'Query', 3, None, 'SELECT 1', 999] +
-                          (['server-2' if cid == self.server_changed else 'server-1'] if '@@server_uuid' in sql else [])])
+                          (['server-2' if cid == self.server_changed else '11111111-2222-3333-4444-555555555555',
+                            'OFF', None] if '@@server_uuid' in sql else [])])
         raise AssertionError(sql)
 
 
@@ -75,7 +86,7 @@ class TestBulkKillReview(unittest.TestCase):
         identity = ui._review_identity(self.connection, self.workspace)
         body = {'connection': self.connection, 'confirmed': True, 'targets': [
             {'connection_id': cid, 'expect': {'user': 'app', 'host': 'localhost', 'ps_thread_id': cid + 100,
-             'connection_identity': identity, 'server_identity': {'server_uuid': 'server-1'}}}
+             'connection_identity': identity, 'server_identity': {'server_uuid': '11111111-2222-3333-4444-555555555555'}}}
             for cid in range(1, count + 1)]}
         body.update(changes)
         body['review_token'] = ui._bulk_kill_prepare(body, self.workspace)['review_token']
@@ -135,7 +146,8 @@ class TestBulkKillReview(unittest.TestCase):
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
                 mock.patch('myflames.locks.read_target', side_effect=ConnectorError('read test-secret failed')):
             result = ui._bulk_kill_response(self.payload(1), self.workspace)
-        self.assertEqual(result['errors'], 1)
+        self.assertEqual(result['errors'], 0)
+        self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
         self.assertEqual(conn.killed, set())
         self.assertEqual(len(self.records()), 2)
         self.assertNotIn('test-secret', json.dumps(result))
@@ -150,7 +162,7 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual((result['killed'], result['refused']), (4, 1))
         self.assertEqual(sum('SELECT @@server_uuid' in s for s in conn.calls), 1)
         self.assertEqual(sum('SELECT @@version, @@performance_schema' in s for s in conn.calls), 1)
-        self.assertEqual(sum('FROM performance_schema.threads' in s and ' IN (' in s for s in conn.calls), 1)
+        self.assertEqual(sum('FROM performance_schema.threads' in s and 'PROCESSLIST_ID IN (' in s for s in conn.calls), 1)
         self.assertEqual(sum('PROCESSLIST_ID = ' in s for s in conn.calls), 5)
         self.assertEqual(len(conn.calls), 3 + 2 * 5 + 4)
         self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
@@ -158,6 +170,43 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(len(self.records()), 5)
         self.assertTrue(all(r['after'] == {'present': False, 'trx_checked': False, 'trx_started': None,
                                             'rows_locked': None, 'same_trx': None, 'trx_survived': None} for r in self.records() if r['status'] == 'ok'))
+
+    def test_bulk_identity_read_failure_refuses_and_audits_every_target(self):
+        for engine in ('mysql', 'mariadb'):
+            for mode in ('connection', 'query'):
+                with self.subTest(engine=engine, mode=mode):
+                    conn = BatchConnection()
+                    original = conn.run
+                    identity_reads = []
+
+                    def fail_identity(sql, **kwargs):
+                        if 'SELECT @@version, @@performance_schema' in sql and engine == 'mariadb':
+                            return '11.4.13-MariaDB\t1\n'
+                        if "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid'" in sql:
+                            identity_reads.append(sql)
+                            raise ConnectorError('ERROR 1142 (42000) at line 1: SELECT denied for test-secret')
+                        return original(sql, **kwargs)
+
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(conn, 'run', side_effect=fail_identity), \
+                            mock.patch.object(conn, 'run_write') as send:
+                        result = ui._bulk_kill_response(self.payload(2, mode=mode), self.workspace)
+                    send.assert_not_called()
+                    self.assertEqual(conn.killed, set())
+                    self.assertEqual(len(identity_reads), 1, 'reuse the failed read without retrying')
+                    self.assertEqual((result['killed'], result['refused'], result['errors']), (0, 2, 0))
+                    records = {record['id']: record for record in self.records()}
+                    for row in result['results']:
+                        self.assertEqual(row['status'], 'refused')
+                        self.assertIsNone(row['after'])
+                        self.assertTrue(row['message'].startswith('The identity check could not run: '))
+                        self.assertIn('SELECT denied for [redacted]', row['message'])
+                        record = records[row['audit_id']]
+                        self.assertEqual((record['status'], record['outcome'], record['message']),
+                                         ('refused', 'identity_unavailable', row['message']))
+                        self.assertEqual(record['statements'],
+                                         [locks.KILL_TAG + 'KILL %s %d' % (mode.upper(), row['connection_id'])])
+                    self.assertNotIn('test-secret', json.dumps(result) + json.dumps(self.records()))
 
     def test_target_read_verifies_server_identity_without_an_extra_client_call(self):
         conn = BatchConnection(server_changed=2)
@@ -175,9 +224,10 @@ class TestBulkKillReview(unittest.TestCase):
         conn = BatchConnection()
         run = conn.run
 
+        @evidence_options
         def change_policy(sql, extra_flags=None):
             answer = run(sql, extra_flags)
-            if sql.startswith(locks.KILL_TAG):
+            if locks.KILL_TAG in sql:
                 self.store.save('profile', dict(self.connection, name='review', type='development', read_only=True),
                                 key=saved['id'])
             return answer
@@ -222,12 +272,12 @@ class TestBulkKillReview(unittest.TestCase):
         body = self.payload(2, mode='query')
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
             result = ui._bulk_kill_response(body, self.workspace)
-            sends = [sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)]
+            sends = [sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql]
             self.assertEqual(sends, [locks.KILL_TAG + 'KILL QUERY 1', locks.KILL_TAG + 'KILL QUERY 2'])
             # A failed verification never makes a consumed review reusable.
             with self.assertRaisesRegex(ValueError, 'review expired'):
                 ui._bulk_kill_response(body, self.workspace)
-            self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)], sends)
+            self.assertEqual([sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql], sends)
         self.assertEqual(result['killed'], 2)  # Existing count means accepted sends.
         records = {record['id']: record for record in self.records()}
         for row in result['results']:
@@ -250,7 +300,7 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(record['status'], 'ok')
         self.assertIsNone(record['after'])
         self.assertTrue(record['message'].startswith('Sent; could not verify'), record['message'])
-        self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)],
+        self.assertEqual([sql.split('\n', 1)[-1] for sql in conn.calls if locks.KILL_TAG in sql],
                          [locks.KILL_TAG + 'KILL QUERY 1'])
 
     def test_single_kill_unavailable_after_read_does_not_claim_completion(self):

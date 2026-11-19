@@ -25,7 +25,7 @@ for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two
   "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
   "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover", "result-switchover",
   "progress-sending", "ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
-  "ic-8.4-clusterset-invalidated"]) R[name] = await load(`cluster-${name}.json`);
+  "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
@@ -145,6 +145,36 @@ try {
   assert.equal(await page.$eval(nav, (b) => [...b.querySelectorAll(".status-dot")].filter((d) => d.getClientRects().length).length), 0, "OK draws no marker");
   assert.match(await page.$eval(nav, (b) => b.textContent), /cluster OK/, "the state still reaches screen readers");
 
+  // The identity line under the summary names this server, and the overview
+  // band lists every cluster-wide action the backend offers, enabled or not.
+  assert.equal(await h.text(`${view} .cluster-identity`),
+    "You are connected to mf-ic-1:3306, a SECONDARY, ONLINE. Stop and Start act on this server only.");
+  const overview = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled"), tab: e.tabIndex, why: e.getAttribute("aria-describedby") })));
+  assert.deepEqual(overview.map((a) => a.label), R["ic-8.4-healthy"].actions.map((a) => a.label));
+  assert.ok(overview.every((a) => a.disabled === "true"), "every mode switch and bare ClusterSet placeholder is disabled here");
+  assert.ok(overview.every((a) => a.tab === 0), "a disabled action stays in the tab order");
+  // Each reason is visible text under the group and the button's accessible description.
+  const reasons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(),
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+  for (const [i, a] of R["ic-8.4-healthy"].actions.entries()) {
+    assert.equal(reasons[i].label, a.label);
+    assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is visible and described: ${reasons[i].reason}`);
+    assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is visible: ${reasons[i].reason}`);
+  }
+  // Clicking or pressing Enter on a disabled action opens nothing; the reason stays in view.
+  const plansBeforeDisabled = plans.length;
+  await page.focus(`${view} .cluster-actions .review-actions > button`);
+  await page.keyboard.press("Enter");
+  await pause(300);
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][1].click(), view);
+  await pause(300);
+  assert.equal(plans.length, plansBeforeDisabled, "a disabled action plans nothing");
+  assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled action opens no review sheet");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-describedby")), overview[0].why,
+    "focus stays on the disabled action, its reason in view");
+
   // Keyboard: arrows move between member cards and select; Enter opens the inspector; Escape returns.
   await page.focus(`${view} .cluster-members .cluster-card`);
   await page.keyboard.press("ArrowRight");
@@ -213,9 +243,27 @@ try {
   await tab("Members");
   const secondary = R["ic-8.4-healthy"].members.find((m) => m.key === R["plan-switchover"].member_key);
   await h.select(`${view} tr[data-row-key="${secondary.key}"]`);
-  const memberButtons = await page.$$eval(".view-inspector .review-actions button", (els) => els.map((e) => e.textContent.trim()));
+  const memberButtons = await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((e) => e.textContent.trim()));
   assert.deepEqual(memberButtons, secondary.actions.map((a) => a.label));
   assert.ok(memberButtons.includes("Make primary…"), memberButtons.join());
+  // The member page lists every member action the backend offers, always: on
+  // this secondary connection Make primary is enabled, Start Group Replication
+  // stays visible, focusable and disabled with its reason as visible text.
+  const onSecondary = await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true", tab: e.tabIndex,
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+  const secondaryEnabled = Object.fromEntries(onSecondary.map((a) => [a.label, !a.disabled]));
+  assert.equal(onSecondary.find((a) => a.label === "Make primary…").disabled, false, "Make primary is enabled on this secondary");
+  const startDisabled = onSecondary.find((a) => a.label === "Start Group Replication…");
+  assert.equal(startDisabled.disabled, true);
+  assert.equal(startDisabled.tab, 0, "a disabled member action stays in the tab order");
+  assert.match(startDisabled.reason, /This member is not OFFLINE\. Stop Group Replication on this member before starting it again\./);
+  const plansBeforeMember = plans.length;
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Start Group Replication…").click());
+  await pause(300);
+  assert.equal(plans.length, plansBeforeMember, "a disabled member action plans nothing");
+  assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled member action opens no review sheet");
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
   await page.waitForSelector("dialog.action-review[open]", { visible: true });
   assert.deepEqual({ action: plans[0].action, member: plans[0].member_key }, { action: "switchover", member: secondary.key });
@@ -248,6 +296,8 @@ try {
   assert.match(answered.outcome, /^Done/);
   assert.deepEqual(answered.steps, ["done"]);
   assert.deepEqual(answered.effect, ["Primary"]);
+  assert.doesNotMatch(await page.$eval("dialog.action-review[open] .action-effect", (e) => e.textContent),
+    /Not readable/i, "the effect table says why a value is missing, never 'Not readable'");
   assert.equal(sends.length, 1);
   assert.match(sends[0].progress_id, /^[0-9a-f]{32}$/);
   await page.evaluate(() => [...document.querySelectorAll("dialog.action-review[open] .sheet-actions button")].find((b) => b.textContent.trim() === "Close").click());
@@ -255,6 +305,55 @@ try {
   await page.waitForSelector(`${view} .action-result`);
   assert.match(await page.$eval(`${view} .action-result`, (e) => e.textContent), /Done/);
   await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .action-result .text-button`)].find((b) => b.textContent.trim() === "Close").click(), view);
+  await backToList();
+
+  // A disabled action that needs a privilege shows the copyable GRANT (the
+  // existing copy pattern) with "Run it as an administrator, then Refresh.",
+  // and the unreadable-privileges line when the server cannot be asked.
+  const grantReport = JSON.parse(JSON.stringify(R["ic-8.4-healthy"]));
+  const grantMember = grantReport.members.find((m) => m.local);
+  const stopAction = grantMember.actions.find((a) => a.id === "stop_member");
+  stopAction.enabled = false;
+  stopAction.why_not = "This account lacks GROUP_REPLICATION_ADMIN.";
+  stopAction.fix = "Grant it on this server.";
+  stopAction.missing_privileges = [["GROUP_REPLICATION_ADMIN", "*.*"]];
+  stopAction.grant_sql = ["GRANT GROUP_REPLICATION_ADMIN ON *.* TO 'dba'@'%';",
+    ...Array.from({ length: 12 }, (x, i) => `-- grant note ${i + 1}: run as an administrator, then Refresh`)].join("\n");
+  const startAction = grantMember.actions.find((a) => a.id === "start_member");
+  startAction.privileges_unreadable = true;
+  await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
+  await refreshTo(grantReport);
+  await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
+  const grantInspector = await h.inspector();
+  assert.match(grantInspector, /This account lacks GROUP_REPLICATION_ADMIN\. Grant it on this server\./);
+  assert.match(grantInspector, /Run it as an administrator, then Refresh\./);
+  assert.match(grantInspector, /Privileges could not be read; the server refuses the change if one is missing\./);
+  // A long GRANT scrolls inside its box instead of stretching the page, in both themes.
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await pause(150);
+    const box = await page.evaluate(() => {
+      const e = document.querySelector(".view-inspector .cluster-action-why .ops-pre");
+      return {
+        found: !!e,
+        maxH: e ? getComputedStyle(e).maxHeight : "",
+        scroll: e ? e.scrollHeight : 0, client: e ? e.clientHeight : 0,
+        pre: e ? e.scrollHeight - e.clientHeight : null,
+        page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    assert.ok(box.pre > 0, `a long GRANT scrolls inside its box (${theme}): ${JSON.stringify(box)}`);
+    assert.ok(box.page <= 0, `no horizontal page scroll with the GRANT open (${theme}): ${box.page}`);
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await shot("cluster-grant.png");
+  await page.click(".view-inspector .cluster-action-why .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__grants[0]), stopAction.grant_sql, "Copy puts the GRANT on the clipboard");
+  const plansBeforeGrant = plans.length;
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await pause(300);
+  assert.equal(plans.length, plansBeforeGrant, "the action with the missing privilege still plans nothing");
   await backToList();
   // No Management tab: the sections stay the cluster's.
   assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Members", "Routers1"]);
@@ -316,6 +415,27 @@ try {
   await backToList();
   await shot("cluster-ic-members.png");
 
+  // The same member page, connected to the primary: the same buttons as on
+  // the secondary connection, with different enabled states and visible reasons.
+  const primaryMember = R["ic-8.4-degraded"].members.find((m) => m.local);
+  await h.select(`${view} tr[data-row-key="${primaryMember.key}"]`);
+  const onPrimary = await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true", tab: e.tabIndex,
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+  assert.deepEqual(onPrimary.map((a) => a.label), Object.keys(secondaryEnabled), "primary and secondary connections list the same member actions");
+  assert.notDeepEqual(Object.fromEntries(onPrimary.map((a) => [a.label, !a.disabled])), secondaryEnabled,
+    "the enabled states differ between the primary and the secondary connection");
+  const makeOnPrimary = onPrimary.find((a) => a.label === "Make primary…");
+  assert.equal(makeOnPrimary.disabled, true, "Make primary is disabled on the primary");
+  assert.equal(makeOnPrimary.tab, 0);
+  assert.match(makeOnPrimary.reason, /mf-ic-1:3306 is already the primary\. Choose an ONLINE secondary\./);
+  assert.equal(onPrimary.find((a) => a.label === "Stop Group Replication…").disabled, false, "Stop runs on the connected member");
+  // The overview band lists the same cluster-wide actions on both connections.
+  const degradedOverview = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => e.textContent.trim()));
+  assert.deepEqual(degradedOverview, R["ic-8.4-degraded"].actions.map((a) => a.label));
+  assert.deepEqual(degradedOverview, overview.map((a) => a.label), "the same overview buttons on both connections");
+  await backToList();
+
   // No quorum, a MISSING instance, this member OFFLINE.
   await tab("Topology");
   await refreshTo(R["ic-8.4-no-quorum"]);
@@ -375,8 +495,18 @@ try {
   assert.match(boxes[1].text, /Replica cluster.*mf-dr-1:3306.*mf-dr-2:3306.*mf-dr-3:3306/);
   assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3, "other clusters are not members");
   assert.match(await h.text(`${view} .clusterset-link-label`), /^clusterset_replication$/);
-  // The ClusterSet actions are on the connected member (MySQL Shell installed).
-  assert.ok(R["ic-8.4-clusterset-primary"].members.find((m) => m.local).actions.some((a) => a.id === "set_primary_cluster:drcluster"));
+  // The ClusterSet actions are cluster-wide, on the overview band (MySQL Shell
+  // installed): the named replica cluster gets its own enabled button, the bare
+  // placeholder keeps its reason.
+  const csAction = R["ic-8.4-clusterset-primary"].actions.find((a) => a.id === "set_primary_cluster:drcluster");
+  assert.ok(csAction && csAction.enabled, "the named ClusterSet action is an overview action, enabled");
+  const csButtons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true",
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+  assert.equal(csButtons.find((b) => b.label === "Make drcluster the primary cluster…").disabled, false);
+  const rejoinPlaceholder = csButtons.find((b) => b.label === "Rejoin cluster to the ClusterSet…");
+  assert.equal(rejoinPlaceholder.disabled, true);
+  assert.match(rejoinPlaceholder.reason, /No invalidated cluster is recorded in this ClusterSet\./);
   await shot("cluster-clusterset-primary-1440.png");
   // From a replica cluster: its copy of the metadata, the channel on the arrow, the source marked.
   await refreshTo(R["ic-8.4-clusterset-replica"]);
@@ -401,11 +531,31 @@ try {
   assert.match(await h.text(`${view} .clusterset-link-label`), /Invalidated · not replicating/);
   await shot("cluster-clusterset-invalidated-1440.png");
 
+  // Connected to a read replica of the ClusterSet's primary cluster: the band
+  // still renders, from the replica's replicated copy of the metadata.
+  await refreshTo(R["ic-8.4-read-replica-clusterset"]);
+  await page.waitForSelector(`${view} .clusterset-band`, { visible: true });
+  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /ClusterSet mfcs/);
+  assert.match(await h.text(`${view} .clusterset-band .clusterset-copy`), /this cluster's metadata copy, may be behind/);
+  assert.deepEqual(await page.$$eval(`${view} .clusterset-cluster`, (els) => els.map((e) => e.dataset.cluster)), ["mfcluster", "drcluster"]);
+  assert.match((await visible(`${view} .summary-line`))[0], /this server is a read replica/);
+  assert.match(await h.notes(), /the ClusterSet read here is its replicated copy of the metadata and may be behind/);
+
   // Multi-primary Group Replication without metadata: every member PRIMARY, no Routers tab.
   await refreshTo(R["gr-8.4-multi-primary"]);
   assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Members"]);
   assert.deepEqual(await visible(`${view} .cluster-members .cluster-role`), ["Primary", "Primary", "Primary"]);
   assert.match((await visible(`${view} .summary-line`))[0], /MySQL Group Replication · 3 of 3 members ONLINE · multi-primary/);
+  // An enabled cluster-wide action plans from the overview band, for the group.
+  const plansBeforeMode = plans.length;
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.textContent.trim() === "Switch to single-primary…").click(), view);
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeMode + 1, "the enabled overview action plans");
+  assert.deepEqual({ action: plans.at(-1).action, member: plans.at(-1).member_key },
+    { action: "switch_to_single_primary", member: null }, "an overview action plans for the group, not a member");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
 
   // MariaDB Galera: only this node is judged; the others are listed without a verdict.
   await refreshTo(R["galera-11.8-healthy"]);
@@ -439,6 +589,16 @@ try {
     cut: [...w.querySelectorAll("td")].filter((td) => td.scrollWidth > td.clientWidth + 1).map((td) => td.textContent) }));
   assert.ok(fit.scroll <= fit.client, JSON.stringify(fit));
   assert.deepEqual(fit.cut, []);
+  // A node action that must run on that node shows its reason and fix, with
+  // the saved connection for that node's address (Use cluster-galera-2).
+  const galera2 = R["galera-11.8-healthy"].members.find((m) => m.name === "galera-2");
+  await h.select(`${view} tr[data-row-key="${galera2.key}"]`);
+  const nodeInspector = await h.inspector();
+  assert.match(nodeInspector, /Desync runs on the node it changes, galera-2; this connection is to galera-1\./);
+  assert.match(nodeInspector, /Connect to galera-2 to desync it\./);
+  const useFix = await page.$$eval(".view-inspector .cluster-action-why .cluster-use-node", (els) => els.map((e) => e.textContent));
+  assert.ok(useFix.includes("Use cluster-galera-2"), `the fix carries the saved connection: ${useFix}`);
+  await backToList();
   await tab("Topology");
   await refreshTo(R["galera-11.8-donor"]);
   const donor = await page.$$eval(`${view} .cluster-card.is-local`, (els) => els.map((e) => ({ state: e.querySelector(".cluster-mark").textContent,
@@ -713,6 +873,20 @@ try {
   assert.equal(narrow.tabs, 3);
   assert.equal(narrow.frame, 0, "the cards wrap instead of running off the right edge");
   assert.ok(narrow.top < narrow.fold - 24, `the topology starts above the fold: ${JSON.stringify(narrow)}`);
+  // The action band and its reasons wrap at 720 px in both themes.
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await pause(200);
+    const wrap = await page.evaluate((sel) => ({
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      reasons: [...document.querySelectorAll(`${sel} .cluster-action-why`)].map((e) => e.scrollWidth - e.clientWidth),
+      band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0 }), view);
+    assert.equal(wrap.band, 1, "the overview action band is present at 720 px");
+    assert.ok(wrap.overflow <= 0, `horizontal page scroll at 720 px (${theme}): ${wrap.overflow}`);
+    assert.ok(wrap.reasons.length > 0 && wrap.reasons.every((d) => d <= 0), `reasons wrap at 720 px (${theme}): ${wrap.reasons}`);
+    await shot(`cluster-720-${theme}.png`);
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await shot("cluster-720.png");
   await tab("Members");
   await pause(200);

@@ -2205,6 +2205,38 @@ class TestSafetyRegressions(unittest.TestCase):
                 for secret in ('connection-secret', 'new-secret', '414243'):
                     self.assertNotIn(secret, text)
 
+    def test_tagged_editor_guard_retains_only_its_acknowledgement_on_error(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        unrelated = 'myflames_guard_ok_' + 'f' * 32 + '_0'
+        output = ('private-result\n' + lines.markers[0] + '\n' + unrelated + '\n').encode()
+        failure = _fake_completed(output, b'ERROR 1094 (HY000) at line 2: Unknown thread id: 41', 1)
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', return_value=failure):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIsNone(dbops.target_guard_failed(caught.exception, lines))
+        self.assertNotIn('private-result', str(caught.exception))
+
+    def test_tagged_editor_guard_timeout_keeps_ack_without_generated_sql(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        timeout = subprocess.TimeoutExpired(['mysql'], 1, output=(lines.markers[0] + '\nprivate-result').encode(),
+                                            stderr=script.encode())
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', side_effect=timeout):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIn('outcome is unknown', str(caught.exception))
+        for private in (session.statement_tag, 'myflames_guard_ok_', 'private-result', 'SET @myflames_target'):
+            self.assertNotIn(private, str(caught.exception))
+
 
 class TestBoundedTransport(unittest.TestCase):
     """Exercise OS pipes with a local Python child, never a database."""
@@ -2325,13 +2357,70 @@ class TestBoundedTransport(unittest.TestCase):
     def test_identity_sql_error_retains_stdout_only_for_opted_in_read_batches(self):
         output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
         script = 'import sys\nsys.stdout.write(%r)\nsys.stderr.write("ERROR 1227: denied")\nsys.exit(1)' % output
-        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}):
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
             with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
                 with self.assertRaises(ConnectorError) as caught:
                     conn.run('SELECT 1', **options)
                 self.assertEqual(isinstance(caught.exception, connector.PartialReadError), bool(options))
                 if options:
                     self.assertEqual(caught.exception.stdout, output)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_framed_tail_timeout_retains_stdout_on_connection_loss(self):
+        output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 2013 (HY000): Lost connection to MySQL server during query")\n'
+                  'sys.exit(1)' % output)
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
+            with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    conn.run('SELECT 1', **options)
+                if 'tail_timeout' in options:
+                    self.assertIs(type(caught.exception), connector.PartialReadError)
+                    self.assertEqual(caught.exception.stdout, output)
+                else:
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_opted_in_reads_never_attach_stdout_to_client_errors(self):
+        for diagnostic in ('ERROR 2003 (HY000): Cannot connect',
+                           'ERROR 2013 (HY000) at line 2: Lost connection',
+                           'client failed without a server diagnostic'):
+            for options in ({}, {'retain_partial_stdout': True}):
+                script = ('import sys\nsys.stdout.write("private prefix\\n")\n'
+                          'sys.stderr.write(%r)\nsys.exit(1)' % diagnostic)
+                with self.subTest(diagnostic=diagnostic, options=options), self.child(script), \
+                        MySQLConnection('h', binary='mysql') as conn:
+                    with self.assertRaises(ConnectorError) as caught:
+                        conn.run('SELECT 1', **options)
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                    self.assertNotIn('private prefix', str(caught.exception))
+                    self.assertIsNotNone(self.children[0].poll())
+
+    def test_expired_password_stdout_hint_raises_the_server_1862_message(self):
+        # The batch client prints only this hint on stdout and exits 1 with an
+        # empty stderr; the connector maps it to the server's own 1862 text.
+        from myflames import dbops
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = 'import sys\nsys.stdout.write(%r)\nsys.exit(1)' % hint
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    getattr(conn, method)('SELECT 1')
+                self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+                self.assertEqual(dbops.error_code(str(caught.exception)), 1862)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_expired_password_hint_with_stderr_keeps_the_client_error(self):
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 1045 (28000): Access denied for user")\nsys.exit(1)' % hint)
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaisesRegex(ConnectorError, r'mysql client exited 1: ERROR 1045'):
+                    getattr(conn, method)('SELECT 1')
                 self.assertIsNotNone(self.children[0].poll())
 
 
@@ -2419,6 +2508,10 @@ class TestClientSecurityFixes(unittest.TestCase):
                                          if text in genuine else ConnectorError)
                         if text in genuine:
                             self.assertIn('client_ed25519 plugin', str(caught.exception))
+                        if method == 'run' and text in genuine:
+                            with self.assertRaises(connector.ClientAuthPluginError) as opted:
+                                conn.run('SELECT 1', retain_partial_stdout=True)
+                            self.assertFalse(hasattr(opted.exception, 'stdout'))
 
     def test_option_file_keeps_the_client_it_was_built_for(self):
         mysql = self.binary()

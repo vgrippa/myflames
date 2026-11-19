@@ -40,6 +40,113 @@ from myflames.workspace_store import WorkspaceStore
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "editor"
 FAKE = Path(__file__).resolve().parent / "_fake_mysql_client.py"
 
+
+def packet_client(source):
+    """Teach a disposable fake about private tags and multi-statement packets.
+
+    Keep logical statement logs for the older session assertions, and retain
+    every actual wire packet separately. Routing controls describe synthetic
+    backend answers; classification, guard construction and framing are real.
+    """
+    source = source.replace("import os\n", "import os\nimport json\n", 1)
+    source = source.replace('        upper = text.upper()\n', '''        upper = text.upper()
+        if upper == "SHOW SESSION VARIABLES WHERE VARIABLE_NAME IN ('TRANSACTION_READ_ONLY', 'TX_READ_ONLY')":
+            name = "tx_read_only" if ENGINE == "mariadb" else "transaction_read_only"
+            self.result(statement, ["Variable_name", "Value"], [[name, "ON" if self.read_only else "OFF"]])
+            return
+''')
+    source = source.replace('        self.write("--------------\\n%s\\n--------------\\n\\n" % statement)\n', r'''
+        wire = statement
+        self.write("--------------\n%s\n--------------\n\n" % wire)
+        with open(os.path.join(STATE, "packets.log"), "a") as handle:
+            handle.write(json.dumps([self.conn_id, line, wire]) + "\n")
+        route_path = os.path.join(STATE, "packet-routes.json")
+        routes = json.load(open(route_path)) if os.path.exists(route_path) else []
+        count = getattr(self, "route_count", 0)
+        route = routes[count % len(routes)] if routes else {}
+        if routes:
+            self.route_count = count + 1
+        self.route_uuid = route.get("server_uuid", "11111111-2222-3333-4444-555555555555")
+        self.route_connection_id = route.get("connection_id", self.conn_id)
+        self.route_sql_mode = route.get("sql_mode", self.sql_mode)
+        statement = re.sub(r"/\*myflames:editor:[0-9a-f]{32}\*/ ", "", wire)
+        if statement.startswith("SET @myflames_target = "):
+            guard, separator, statement = statement.partition("; ")
+            if not separator:
+                raise AssertionError("guard and write did not share a packet")
+            mismatch = (self.route_uuid not in guard if ENGINE == "mysql" else route.get("mismatch", False))
+            expected_id = re.search(r"CONNECTION_ID\(\) <> (\d+)", guard)
+            mismatch = mismatch or bool(expected_id and int(expected_id.group(1)) != self.route_connection_id)
+            expected_mode = re.search(r"FIND_IN_SET\('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode\) > 0\) <=> ([01])", guard)
+            no_backslash = "NO_BACKSLASH_ESCAPES" in self.route_sql_mode.upper().split(",")
+            mismatch = mismatch or bool(expected_mode and int(expected_mode.group(1)) != int(no_backslash))
+            if mismatch:
+                self.error(line, 1242, "21000", "Subquery returns more than 1 row")
+                return
+            self.ok()
+            marker = re.match(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ", statement)
+            if not marker:
+                raise AssertionError("guard acknowledgement missing from packet")
+            self.result(statement[:marker.end() - 2], [marker.group(1)], [[marker.group(1)]])
+            statement = statement[marker.end():]
+            # The generated lock-wait SET and its ALTER share this packet.
+            # Model only that fixed prefix, not an arbitrary SQL parser.
+            if statement.startswith("/*myflames:editor*/ SET SESSION lock_wait_timeout = 5\n;\n"):
+                setup, statement = statement.split("\n;\n", 1)
+                self.statement_error = False
+                self._statement(setup, line)
+                if self.statement_error:
+                    return
+''')
+    # Backend session routing is independent of the persistent client id.
+    source = source.replace('"connection_id": str(self.conn_id),',
+                            '"connection_id": str(getattr(self, "route_connection_id", self.conn_id)),')
+    source = source.replace('"server_uuid": "11111111-2222-3333-4444-555555555555",',
+                            '"server_uuid": getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555"),')
+    source = source.replace('"sql_mode": self.sql_mode,',
+                            '"sql_mode": getattr(self, "route_sql_mode", self.sql_mode),')
+    source = source.replace('                client.run(statement, start_line)\n', r'''
+                active = os.path.join(STATE, "active-%d" % client.conn_id)
+                with open(active, "w") as handle:
+                    handle.write(statement)
+                try:
+                    client.run(statement, start_line)
+                finally:
+                    if os.path.exists(active):
+                        os.remove(active)
+''')
+    source = source.replace('def one_shot(sql):\n', r'''
+def one_shot(sql):
+    if "SET @myflames_target = " in sql:
+        if os.environ.get("FAKE_HELPER_MISMATCH") == "1":
+            with open(os.path.join(STATE, "helper-batches.log"), "a") as handle:
+                handle.write(repr(sql) + "\n")
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        target = re.search(r"WHERE ID = (\d+)", sql)
+        token = re.search(r"= BINARY '(/\*myflames:editor:[0-9a-f]{32}\*/)'", sql)
+        own_id = os.environ.get("FAKE_KILL_CONTROL_ID")
+        if target and own_id == target.group(1) and "AND ID <> CONNECTION_ID()" in sql:
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        active = os.path.join(STATE, "active-%s" % target.group(1)) if target else ""
+        current = open(active).read() if active and os.path.exists(active) else ""
+        if not token or not current.startswith(token.group(1)):
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        if os.environ.get("FAKE_PS") == "off" and "FROM performance_schema.processlist" in sql:
+            sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\n")
+            return 1
+        marker = re.search(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ", sql)
+        if marker:
+            print(marker.group(1), flush=True)
+        code = os.environ.get("FAKE_KILL_ERROR")
+        if code:
+            sys.stderr.write("ERROR %s (HY000) at line 2: KILL rejected\n" % code)
+            return 1
+''')
+    return source
+
 # Extend only this module's disposable fake binary. The shared client fixture
 # remains unchanged, and all commands still cross the real framed XML pipes.
 PLAN_FAKE = r'''
@@ -511,7 +618,9 @@ class ReplayTests(unittest.TestCase):
         for name in ("mysql-8.4-client-session", "mariadb-11.4-client-session", "mysql-8.4-client-kill"):
             with self.subTest(name=name):
                 session, steps, data = replay_session(name)
-                self.assertEqual(session.proc.stdin.getvalue().decode("utf-8"), data["stdin"])
+                sent = session.proc.stdin.getvalue().decode("utf-8")
+                sent = sent.replace("; " + session.statement_tag, ";").replace(session.statement_tag, "")
+                self.assertEqual(sent, data["stdin"])
 
     def test_session_capture(self):
         for name in ("mysql-8.4-client-session", "mariadb-11.4-client-session"):
@@ -1051,10 +1160,25 @@ class ProcessTests(unittest.TestCase):
         # Add identity fields to this test's client without changing the shared fixture.
         client = FAKE.read_text(encoding="utf-8").replace(
             '"connection_id": str(self.conn_id),',
-            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+            '"server_uuid": "11111111-2222-3333-4444-555555555555",')
+        # Model batch abort on the first guarded packet, before any KILL.
+        # The persistent editor stays on its original server; only the helper
+        # can be routed elsewhere by this synthetic test control.
+        client = client.replace('def one_shot(sql):\n', '''def one_shot(sql):
+    with open(os.path.join(STATE, "helper-batches.log"), "a") as handle:
+        handle.write(repr(sql) + "\\n")
+    if sql.startswith("DELIMITER ") and "SET @myflames_target = " in sql and os.environ.get("FAKE_HELPER_MISMATCH") == "1":
+        sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\\n")
+        return 1
+    if sql.startswith("DELIMITER "):
+        header, body = sql.split("\\n", 1)
+        sql = body.replace(header.split(" ", 1)[1], "")
+''')
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
         client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
+        client = packet_client(client)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(0o755)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
@@ -1233,6 +1357,7 @@ class ProcessTests(unittest.TestCase):
         # Another tab cannot see the temporary table; its server error is kept.
         other = self.call("/api/editor/run", tab="fresh", sql="SELECT * FROM tt", explain_format="table")
         self.assertEqual(other["run"]["error"]["code"], 1146)
+        self.assertEqual(other["run"]["statements"][0]["sent"], prefix + "SELECT * FROM tt")
         # Safe updates does not reject the read in the application layer.
         dml = self.call("/api/editor/run", sql="UPDATE tt SET v = 2", explain_format="table")
         self.assertEqual(dml["status"], "complete")
@@ -1248,14 +1373,23 @@ class ProcessTests(unittest.TestCase):
         self.connection["read_only"] = True
         result = self.call("/api/editor/run", sql="DELETE FROM t", explain_format="table")
         self.assertEqual(result["status"], "complete")
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        self.assertEqual(result["run"]["statements"][0]["sent"], prefix + "DELETE FROM t")
         self.assertTrue(result["session"]["read_only_transactions"])
         for sql in ("ANALYZE SELECT 1", "/* note */ ANALYZE DELETE FROM t",
-                    "/*!80000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
+                    "/*!50000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
                     "DELIMITER $$\nSELECT 1; DELETE FROM t$$"):
             with self.subTest(sql=sql):
                 reply = self.call("/api/editor/run", sql=sql, explain_format="table")
                 self.assertEqual(reply["status"], "invalid")
         self.assertNotIn("DELETE FROM t", self.session_log())
+        if self.engine == "mariadb":
+            # MariaDB skips this MySQL-only ANALYZE token; EXPLAIN SELECT
+            # is a read under the bound server's own interpretation.
+            skipped = "/*!80000 ANALYZE */ SELECT 1"
+            reply = self.call("/api/editor/run", sql=skipped, explain_format="table")
+            self.assertEqual(reply["status"], "complete", reply)
+            self.assertTrue(self.logged("tab1", "EXPLAIN " + skipped))
 
     def test_native_explain_with_planning_side_effects_is_reviewed(self):
         # Planning materializes (SELECT GET_LOCK(...)): verified on MySQL 9.7,
@@ -1276,7 +1410,17 @@ class ProcessTests(unittest.TestCase):
         # statement it would send differs (MariaDB's plain EXPLAIN).
         [reviewed] = asked["confirmation"]["statements"]
         self.assertTrue(reviewed.startswith("EXPLAIN ") and reviewed.endswith(sql), reviewed)
-        # A plain Explain on the same Production connection runs without asking.
+        # Startup may change a plain read's prefix without requiring consent.
+        first = self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")
+        self.assertEqual(first["status"], "complete", first)
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        self.assertEqual(first["run"]["statements"][0]["sent"], prefix + "SELECT 1")
+        # The unused provisional write token cannot authorize this started session.
+        stale = self.call("/api/editor/run", tab="tab2", sql=sql, explain_format="table",
+                          confirmed=True, confirm_token=asked["confirmation"]["token"])
+        self.assertEqual(stale["status"], "needs_confirmation", stale)
+        self.assertFalse(self.logged("tab2", prefix + sql))
+        # A plain Explain in the bound Production tab runs without asking.
         self.assertEqual(self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")["status"],
                          "complete")
 
@@ -1620,8 +1764,8 @@ class ProcessTests(unittest.TestCase):
     def rows(self, result, index=0):
         return [r for r in result["run"]["results"] if r["type"] == "rows"][index]["rows"]
 
-    def session_log(self):
-        session = self.registry.get("tab1")
+    def session_log(self, tab="tab1"):
+        session = self.registry.get(tab)
         return (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8").splitlines()
 
     # -- helpers for barrier tests --------------------------------------------------------
@@ -1684,6 +1828,47 @@ class ProcessTests(unittest.TestCase):
         session = self.registry.get("tab1")
         self.assertEqual(session.port, 3307)
         self.assertFalse(self.logged("tab1", "SELECT 5"))
+
+    def test_group_removal_refuses_run_on_existing_session_before_sending(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.assertEqual(self.run_sql("SELECT 1")["status"], "complete")
+        session = self.registry.get("tab1")
+        self.assertIsNotNone(session)
+        self.store.assign_profile_group([profile["id"]], "")
+        before = self.session_log()
+        with mock.patch.object(session, "start_run", wraps=session.start_run) as send, \
+                self.assertRaisesRegex(ValueError, "^This saved connection is outside the current connection group\\.$"):
+            self.run_sql("SELECT 5")
+        send.assert_not_called()
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.logged("tab1", "SELECT 5"))
+        # Cleanup does not require the revoked group route.
+        self.connection.pop("group_name")
+
+    def test_group_removal_allows_rollback_stop_status_and_close_on_existing_session(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.run_sql("START TRANSACTION")
+        session = self.registry.get("tab1")
+        self.assertTrue(session.in_transaction)
+        self.store.assign_profile_group([profile["id"]], "")
+        # Cleanup reaches the tab's own session despite the lost membership.
+        status = self.call("/api/editor/status")
+        self.assertIsNotNone(status["session"])
+        stopped = self.call("/api/editor/stop")
+        self.assertFalse(stopped["stopped"])
+        self.assertIn("Nothing is running", stopped["message"])
+        self.assertEqual(self.call("/api/editor/rollback")["status"], "complete")
+        self.assertTrue(self.logged("tab1", "ROLLBACK"))
+        # A new statement on the removed member is still refused before sending.
+        with self.assertRaisesRegex(ValueError, "outside the current connection group"):
+            self.run_sql("SELECT 5")
+        self.assertFalse(self.logged("tab1", "SELECT 5"))
+        self.assertTrue(self.call("/api/editor/close")["closed"])
+        self.assertIsNone(self.registry.get("tab1"))
 
     def test_gate_2_row_limit_never_kills_a_call(self):
         result = self.run_sql("CALL rows_then_write()", limit=100, wait=0)
@@ -1846,24 +2031,27 @@ class ProcessTests(unittest.TestCase):
                     self.assertEqual(done["status"], "complete")
                     self.assertTrue(self.logged(tab, sql))
 
-    def test_review_new_session_regates_changed_warnings(self):
+    def test_review_new_session_preserves_consent_when_only_warnings_change(self):
         sql = "CREATE TABLE reviewed (id INT)"
         asked = self.call("/api/editor/run", sql=sql)
         self.assertEqual(asked["confirmation"]["warnings"], [])
         open_session = ed._open_session
+        warnings = []
 
         def opened(*args, **kwargs):
             session = open_session(*args, **kwargs)
             session.in_transaction = None
+            warnings.extend(ed._decision(ed._plan_run({"sql": sql}, session),
+                                         {"type": "production", "read_only": False}, session)["warnings"])
             return session
 
         with mock.patch.object(ed, "_open_session", side_effect=opened):
             again = self.call("/api/editor/run", sql=sql, confirmed=True,
                               confirm_token=asked["confirmation"]["token"])
-        self.assertEqual(again["status"], "needs_confirmation")
-        self.assertTrue(again["confirmation"]["warnings"])
-        self.assertNotEqual(asked["confirmation"]["token"], again["confirmation"]["token"])
-        self.assertFalse(self.logged("tab1", sql))
+        self.assertTrue(warnings, 'startup still warns about the unknown transaction state')
+        self.assertEqual(again["status"], "complete", again)
+        self.assertEqual(again["run"]["counts"]["run"], 1)
+        self.assertEqual(self.session_log().count(sql), 1)
 
     def test_gate_12_running_status_sends_no_rows(self):
         self.run_sql("SELECT 1;\nSELECT 2 /*gate*/", wait=0)
@@ -2061,16 +2249,52 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(self.rows(self.run_sql("SELECT 7")), [["7"]])
         self.assertFalse(final["session"]["ended"])
 
+    def test_consent_stop_helper_on_another_server_sends_no_kill(self):
+        self.run_sql("SELECT 1 /*gate*/", wait=0)
+        self.until(lambda: self.logged("tab1", "SELECT 1 /*gate*/"), "the statement to start")
+        try:
+            with mock.patch.dict(os.environ, FAKE_HELPER_MISMATCH="1"):
+                stopped = self.call("/api/editor/stop")
+            self.assertFalse(stopped["stopped"], stopped)
+            self.assertIn("server could not be confirmed", stopped["message"].lower())
+            self.assertFalse((self.state / "kills.log").exists(), "the wrong server received a KILL")
+            script = (self.state / "helper-batches.log").read_text()
+            self.assertIn("SET @myflames_target = ", script)
+        finally:
+            self.release()
+            self.assertTrue(self.registry.get("tab1").run.done.wait(5))
+
+    def test_consent_close_helper_on_another_server_sends_no_kill(self):
+        self.run_sql("SELECT 1 /*gate*/", wait=0)
+        self.until(lambda: self.logged("tab1", "SELECT 1 /*gate*/"), "the statement to start")
+        with mock.patch.dict(os.environ, FAKE_HELPER_MISMATCH="1"):
+            closed = self.call("/api/editor/close", discard=True)
+        self.assertTrue(closed["closed"])
+        self.assertFalse((self.state / "kills.log").exists(), "Close killed an unrelated server's statement")
+
+    def test_consent_stop_completed_run_after_group_removal_is_an_unsent_refusal(self):
+        profile = self.save_profile(type="development")
+        self.store.assign_profile_group([profile["id"]], "G")
+        self.connection["group_name"] = "G"
+        self.assertEqual(self.run_sql("SELECT 1")["status"], "complete")
+        self.store.assign_profile_group([profile["id"]], "")
+        from myflames import ui
+        stopped = ui.api_response("/api/editor/stop", {"connection": self.connection, "tab_id": "tab1"},
+                                  self.workspace)
+        self.assertFalse(stopped["stopped"])
+        self.assertIn("Nothing is running", stopped["message"])
+        self.assertFalse((self.state / "kills.log").exists())
+
     def test_stop_control_connection_scrubs_environment_and_errors(self):
         self.run_sql("SELECT 1 /*gate*/", wait=0)
         self.until(lambda: self.logged("tab1", "SELECT 1 /*gate*/"), "the statement to start")
         session = self.registry.get("tab1")
         # A connector failure may quote a credential; neither the Stop reply
         # nor the notes returned by status may retain it.
-        with mock.patch.object(ed.MySQLConnection, "run", side_effect=ed.ConnectorError("denied s3cret-pw")):
+        with mock.patch.object(ed.MySQLConnection, "run_write", side_effect=ed.ConnectorError("denied s3cret-pw")):
             failed = self.call("/api/editor/stop")
         self.assertFalse(failed["stopped"])
-        self.assertIn("[redacted]", failed["message"])
+        self.assertIn("whether KILL QUERY ran is unknown", failed["message"])
         self.assertNotIn("s3cret-pw", json.dumps(failed))
         self.assertNotIn("s3cret-pw", json.dumps(session.status()))
         secrets = {"MYSQL_PWD": "env-secret", "MYSQL_HOST": "wrong-server",
@@ -2080,7 +2304,7 @@ class ProcessTests(unittest.TestCase):
             self.assertTrue(self.call("/api/editor/stop")["stopped"])
         self.assertTrue(session.run.done.wait(5))
         controls = [call for call in self.processes.call_args_list
-                    if any("KILL QUERY" in str(arg) for arg in call[0][0])]
+                    if "--batch" in call[0][0] and "--xml" not in call[0][0]]
         self.assertEqual(len(controls), 1)
         argv = controls[0][0][0]
         env = controls[0][1]["env"]
@@ -2140,7 +2364,9 @@ class ProcessTests(unittest.TestCase):
     def test_lost_connection_ends_the_session(self):
         result = self.run_sql("SELECT lose_connection();\nSELECT 2")
         self.assertEqual(result["status"], "session_ended")
-        self.assertEqual([s["status"] for s in result["run"]["statements"]], ["error", "not_run"])
+        self.assertEqual([s["status"] for s in result["run"]["statements"]], ["session_ended", "not_run"])
+        record = next(r for r in self.store.audit_records() if r['id'] == result['run']['audit_id'])
+        self.assertEqual((record['status'], record['outcome']), ('unknown', 'session_ended'))
         self.assertEqual(result["session"]["message"], ed.SESSION_ENDED_TEXT)
         self.assertEqual(self.run_sql("SELECT 1")["status"], "session_ended")
 
@@ -2573,7 +2799,13 @@ class ProcessTests(unittest.TestCase):
                         asked = answer
                     answer = self.call("/api/editor/run", sql=sql, confirmed=True,
                                        confirm_token=asked["confirmation"]["token"], typed_target=target)
-                    self.assertNotEqual(answer["status"], "needs_confirmation")
+                    if self.engine == "mariadb" and sql.startswith("/*!80000"):
+                        # The bound MariaDB skips this DROP, so the allowed
+                        # no-op runs without asking for another confirmation.
+                        self.assertEqual(answer["run"]["statements"][0]["kind"], "read")
+                        self.assertIsNone(answer["run"]["audit_id"])
+                    self.assertEqual(answer["status"], "complete", answer)
+                    self.assertEqual(self.session_log().count(sql), 1)
                     self.registry.close()
                     self.registry = ed.EditorSessions(reap_every=0)
                     self.workspace.editor = self.registry
@@ -3161,9 +3393,9 @@ class RunScopeTests(unittest.TestCase):
     backslashes, the client's \\g terminator, executable comments and DELIMITER."""
 
     @staticmethod
-    def session(backslash=True):
-        return types.SimpleNamespace(sql_mode="" if backslash else "NO_BACKSLASH_ESCAPES",
-                                     backslash_escapes=backslash, engine="mysql")
+    def session(backslash=True, engine="mysql", version="8.4.11"):
+        from test_sql_lexer import session as bound_session
+        return bound_session(engine, version, mode="" if backslash else "NO_BACKSLASH_ESCAPES")
 
     def sends(self, payload, backslash=True):
         return [u["send"] for u in ed._plan_run(payload, self.session(backslash))["units"]]
@@ -3171,8 +3403,7 @@ class RunScopeTests(unittest.TestCase):
     def test_native_explain_scoping_formats_and_error_offsets(self):
         sql = "SELECT 1;\nUPDATE t SET name = '😀';\nDELETE FROM t"
         for engine, version in (("mysql", "8.0.16"), ("mariadb", "11.4.13")):
-            session = self.session(False)
-            session.engine, session.server_version = engine, version
+            session = self.session(False, engine, version)
             for fmt in ("table", "json", "tree"):
                 payload = {"sql": sql, "cursor": sql.index("UPDATE") + 2, "explain_format": fmt}
                 if fmt == "tree" and engine == "mariadb":
@@ -3187,8 +3418,7 @@ class RunScopeTests(unittest.TestCase):
                 position = ed.error_position("Syntax error near 'name' at line 1", unit, plan["offsets"])
                 self.assertEqual(position["offset"], sql.index("name"))
                 self.assertEqual((position["line"], position["column"]), (2, 14))
-        session = self.session()
-        session.server_version = "8.0.15"
+        session = self.session(version="8.0.15")
         with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
             ed._plan_run({"sql": "SELECT 1", "explain_format": "tree"}, session)
         with self.assertRaisesRegex(ed.EditorError, "Choose Table"):
@@ -3476,14 +3706,34 @@ class AlterPreflightTests(unittest.TestCase):
         self.assertTrue(any("does not prove" in s for s in result["warnings"]))
 
     def test_review_routine_ddl_cannot_authorize_trailing_ddl(self):
+        session = RunScopeTests.session()  # K2 requires a known non-ORACLE context.
         safety = {"type": "development", "read_only": False}
         routine = "CREATE PROCEDURE p() BEGIN SELECT CASE WHEN 1 THEN 2 ELSE 3 END; BEGIN SELECT 1; END; END"
-        plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "$$"}, None)
+        plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "$$"}, session)
         self.assertEqual(ed._decision(plan, safety)["action"], "confirm")
         for tail in ("DROP DATABASE d", "CREATE PROCEDURE q() BEGIN SELECT 1; END",
                      "BEGIN NOT ATOMIC DROP DATABASE d; END"):
-            plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "; " + tail + "$$"}, None)
+            plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "; " + tail + "$$"}, session)
             self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
+
+    def test_review_package_definitions_keep_bodies_together_and_refuse_trailing_sql(self):
+        session = RunScopeTests.session()  # These fixtures isolate boundary/review checks.
+        safety = {"type": "development", "read_only": False}
+        packages = (
+            'CREATE PACKAGE p AS FUNCTION f RETURN INT; PROCEDURE p1; END p',
+            'CREATE OR REPLACE PACKAGE BODY p AS FUNCTION f RETURN INT IS BEGIN RETURN 1; END; END p',
+            'CREATE PACKAGE BODY p AS PROCEDURE p1 IS BEGIN SELECT 1; END; BEGIN CALL p1; END p',
+            'CREATE PACKAGE BODY p FUNCTION f() RETURNS INT RETURN 1; END',
+        )
+        for package in packages:
+            with self.subTest(package=package):
+                plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '//'}, session)
+                self.assertEqual(ed._decision(plan, safety)['action'], 'confirm')
+                for tail in ('DROP DATABASE d', 'SELECT 1',
+                             'CREATE PROCEDURE q() BEGIN SELECT 1; END',
+                             'BEGIN NOT ATOMIC DROP DATABASE d; END'):
+                    plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '; ' + tail + '//'}, session)
+                    self.assertEqual(ed._decision(plan, safety)['action'], 'refuse', tail)
 
     def test_review_timeout_override_and_wrapped_ddl_refuse(self):
         safety = {"type": "development", "read_only": False}
@@ -3491,11 +3741,16 @@ class AlterPreflightTests(unittest.TestCase):
                     "ALTER /*+ SET_VAR(lock_wait_timeout=100) */ TABLE t ADD COLUMN c INT",
                     "DELIMITER $$\nSELECT 1; ALTER TABLE t ADD COLUMN c INT$$",
                     "CREATE TABLE a AS SELECT function(); DROP TABLE b",
-                    "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$",
                     "SET STATEMENT lock_wait_timeout=100 FOR ALTER TABLE t ADD COLUMN c INT"):
             with self.subTest(sql=sql):
                 plan = ed._plan_run({"sql": sql}, None)
                 self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
+        # Before a session exists, defer only the ORACLE-mode decision.
+        # Embedded DDL must still refuse at the provisional policy gate.
+        plan = ed._plan_run({"sql": "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$"}, None)
+        decision = ed._decision(plan, safety)
+        self.assertEqual(decision["action"], "refuse")
+        self.assertIn("standalone", decision["text"])
 
     def test_review_suggestion_is_version_gated_and_never_instant_none(self):
         for engine, version in (("mysql", "8.4.0"), ("mysql", "9.7.0"), ("mariadb", "10.11.1"), ("mariadb", "13.0.0")):

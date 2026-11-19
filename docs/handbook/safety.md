@@ -22,6 +22,10 @@ Every protected change in **Server**, **Workload**, **Replication**, **Cluster**
 
 Reviewed SQL is executed SQL: confirming binds a review token to the exact statements, connection policy and target identity. Right before sending, myflames re-reads the saved connection policy and checks the live target again; if the policy or the target changed after you opened the sheet, nothing is sent. If the connection drops or times out after statements were sent, myflames marks the result **Outcome unknown** and never retries the write automatically.
 
+Cluster SQL changes check the server identity in the session that sends the SQL. Galera checks the node's UUID as well as its server details. MySQL Shell first checks its global session's server UUID, then checks the group UUID of the Cluster object it obtains through AdminAPI. For ClusterSet actions it compares the set's name and every member cluster's group UUID with the reviewed metadata. A mismatch refuses the action. The action uses that checked object; AdminAPI manages its own connections to members.
+
+MySQL Shell Cluster actions require MySQL Shell 8.0.32 or later; rejoining a member needs 8.1.0 or later and cluster metadata 2.0.0 or later. **Rejoin to the cluster…** stays disabled when the cluster's ClusterSet status cannot be verified as exactly `OK`. Check the status and perform the rejoin in MySQL Shell when the app cannot establish it.
+
 Privilege checks read `SHOW GRANTS` as a hint. When myflames cannot prove from `SHOW GRANTS` that an action is permitted, it reports the privilege state as unverified with the reason rather than assuming permission.
 
 ## Audit log

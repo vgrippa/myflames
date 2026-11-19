@@ -178,7 +178,7 @@ class EditorInsights(object):
             unit["server_stats"] = dict(stats, available=True, reason=None, event_id=unsigned(row["event_id"]),
                                         **analysis_eligibility(unit))
 
-    def _refresh_transaction_meter(self, observation=False):
+    def _refresh_transaction_meter(self, observation=False, guard=None):
         """Sample the open transaction. *observation* (a poll) stops before
         any read while a user operation waits, and keeps the previous sample:
         that operation samples again when it ends (refresh_state)."""
@@ -196,6 +196,9 @@ class EditorInsights(object):
                  "note": "Age is measured since this tab first observed the transaction."}
         if observation and self._user_waiting():
             return
+        # An explicit guarded state readback must keep its nested reads on
+        # the same backend too. Ordinary meter polls remain advisory reads.
+        guard_options = {"guard": guard} if guard is not None else {}
         # trx_started is the OS zone's local time (M/storage/innobase/handler/
         # i_s.cc:325-348, Ma i_s.cc:211-235), NOW() the session time_zone's
         # (M/sql/item_timefunc.cc:2462, Ma item_timefunc.cc:2239-2244). Compare
@@ -203,7 +206,7 @@ class EditorInsights(object):
         step = self._helper(TAG +
             "SELECT trx_id, GREATEST(0, TIMESTAMPDIFF(SECOND, trx_started, " + SYSTEM_NOW + ")) AS age_seconds, "
             "trx_rows_modified AS rows_modified, trx_rows_locked AS rows_locked, trx_lock_structs AS lock_structs "
-            "FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = CONNECTION_ID() LIMIT 1")
+            "FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = CONNECTION_ID() LIMIT 1", **guard_options)
         rows = helper_rows(step)
         if rows:
             row = rows[0]
@@ -219,7 +222,7 @@ class EditorInsights(object):
                     return
                 query = blocking_transactions_query(self.engine, parse_version_tuple(self.server_version or ""),
                                                     trx, self._thread_expression(), BLOCKING_LIMIT + 1)
-                step = self._helper(TAG + query)
+                step = self._helper(TAG + query, **guard_options)
                 if step.real_errors() or not step.marker:
                     meter["note"] = "Blocking sessions could not be read; open Server > Locks to check."
                 else:

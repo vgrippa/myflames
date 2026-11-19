@@ -276,6 +276,16 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
 _STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)
 
+#: With an expired password, the batch-mode client exits 1 with empty stderr
+#: and prints only this hint on stdout (client/mysql.cc), never the server
+#: diagnostic. Map it to the server's ER_MUST_CHANGE_PASSWORD_LOGIN text
+#: (mysql-server share/messages_to_clients.txt:7059) so callers matching
+#: error 1862 see the message they expect.
+_EXPIRED_PASSWORD_HINT = ("Please use --connect-expired-password option or invoke "
+                          "mysql in interactive mode.")
+EXPIRED_PASSWORD_MESSAGE = ("ERROR 1862 (HY000): Your password has expired. To log in "
+                            "you must change it using a client that supports expired passwords.")
+
 # C0 controls except tab and newline, DEL, and C1 controls (U+0080-U+009F).
 _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -769,7 +779,7 @@ def probe_client(path, check_trust=True, chosen=None):
 
 
 class PartialReadError(ConnectorError):
-    """A framed, read-only batch failed; its caller must validate completion.
+    """A read batch failed; its caller must validate any completed prefix.
 
     Output is deliberately absent from the error message and never accepted
     as a successful reading by the ordinary connector methods.
@@ -780,11 +790,24 @@ class PartialReadError(ConnectorError):
         self.stdout = stdout
 
 
+def _server_read_error(stderr):
+    """Recognize a server diagnostic, excluding client error numbers.
+
+    MariaDB can echo the complete packet before its closing separator.
+    Only the first diagnostic after that echo determines the error kind.
+    """
+    boundary = stderr.rfind("\n--------------\n")
+    diagnostic = stderr[boundary + len("\n--------------\n"):] if boundary >= 0 else stderr
+    error = re.search(r"^ERROR\s+(\d+)\b", diagnostic, re.M)
+    return error is not None and not 2000 <= int(error.group(1)) <= 2999
+
+
 class _InvocationDefaults(str):
     """Keep an option file paired with the client whose engine it describes."""
-    def __new__(cls, path, binary):
+    def __new__(cls, path, binary, client_engine=None):
         value = str.__new__(cls, path)
         value.binary = binary
+        value.client_engine = client_engine
         return value
 
 
@@ -1117,18 +1140,29 @@ class MySQLConnection:
             raise ConnectorError(str(exc)) from None
         return TUNNELS.acquire(spec)
 
-    def _defaults_engine(self, binary, used=None):
-        """Describe the actual client rather than its filename or server."""
+    def _client_engine_facts(self, binary, used=None):
+        """Return the existing option-file family and the confirmed lexer family.
+
+        Preserve the option-file fallback when a probe fails, but do not let
+        that fallback authorize a particular SQL framing interpretation.
+        """
         used = used or getattr(self, '_client_use', None)
         if used and os.path.realpath(used['path']) == os.path.realpath(binary):
-            return used['engine']
+            return used['engine'], used['engine']
         else:
             # A mysql symlink can be a MariaDB client. Probe the program, never
             # infer its engine from its filename or the server's engine.
             from . import client_tools
             name = os.path.splitext(os.path.basename(binary))[0]
             fields = client_tools.probe(name, binary) if os.path.isfile(binary) else {}
-            return fields.get('engine', 'mysql')
+            return fields.get('engine', 'mysql'), fields.get('engine') if fields.get('available') else None
+
+    def client_engine(self, binary, used=None):
+        """The actual binary's family, independent of its filename or server."""
+        return self._client_engine_facts(binary, used)[1]
+
+    def _defaults_engine(self, binary, used=None):
+        return self._client_engine_facts(binary, used)[0]
 
     @contextmanager
     def _invocation_defaults(self, binary=None, used=None):
@@ -1138,13 +1172,13 @@ class MySQLConnection:
         invocation holds the tunnel until it ends."""
         self._check_login_consent()
         binary = binary or self._resolve_binary()
-        engine = self._defaults_engine(binary, used)
+        engine, client_engine = self._client_engine_facts(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
             path = self._create_defaults_file(None if lease is None else ("127.0.0.1", lease.port),
                                               client_engine=engine)
             try:
-                yield _InvocationDefaults(path, binary)
+                yield _InvocationDefaults(path, binary, client_engine)
             finally:
                 try:
                     os.unlink(path)
@@ -1289,19 +1323,26 @@ class MySQLConnection:
             self._group_login_started = True
         return _run_bounded(argv, **options)
 
-    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None):
+    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None,
+            retain_partial_stdout=False):
         """Run SQL through the resolved client and return its decoded stdout."""
-        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start)
+        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start,
+                                     retain_partial_stdout=retain_partial_stdout)
 
     def _run_with_binary(self, sql, binary, extra_flags=None, timeout=None, tail_timeout=None,
-                         on_tail_start=None, used=None):
+                         on_tail_start=None, used=None, retain_partial_stdout=False):
         """Run *sql* and return the raw stdout as a ``str``.
 
         Raises :class:`ConnectorError` with stderr attached on failure.
+        ``retain_partial_stdout=True`` retains completed stdout privately in
+        :class:`PartialReadError` only on a server SQL error, so client and
+        transport errors keep their ordinary type and never attach stdout.
         ``tail_timeout=(marker, seconds)`` is for framed read-only batches:
         unbuffered output starts a separate deadline at the complete marker
-        row, and errors retain stdout in :class:`PartialReadError`.
-        Optional on_tail_start runs at that marker, even if the tail fails.
+        row, and any non-zero client exit (except auth-plugin errors) or
+        timeout retains stdout in :class:`PartialReadError` for the caller to
+        validate against the markers. Optional on_tail_start runs at that
+        marker, even if the tail fails.
         """
         started = time.monotonic()
         try:
@@ -1335,11 +1376,17 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], used or getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE + self._tunnel_note(started))
             message = (
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
                 + self._tunnel_note(started)
             )
-            if tail_timeout is not None:
+            # Framed tail_timeout batches keep completed stdout on any failed
+            # exit (their caller validates the markers); retain_partial_stdout
+            # keeps it only for a server diagnostic, so a client or transport
+            # error never authorizes a read fallback.
+            if tail_timeout is not None or (retain_partial_stdout and _server_read_error(stderr)):
                 raise PartialReadError(message, _client_text(proc.stdout))
             raise ConnectorError(message)
         return _client_text(proc.stdout)
@@ -1380,6 +1427,8 @@ class MySQLConnection:
             if auth is not None:
                 raise auth
         if proc.returncode != 0 and not _STATEMENT_ERROR.search(stderr):
+            if not stderr.strip() and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr.strip() or "no stderr"))
         return _client_text(proc.stdout), stderr
@@ -1390,6 +1439,18 @@ class MySQLConnection:
     def run_stdin(self, sql, extra_flags=None, timeout=None):
         """Compatibility name for :meth:`run_write` (SQL never on argv)."""
         return self.run_write(sql, extra_flags=extra_flags, timeout=timeout)
+
+    @staticmethod
+    def _write_guard_markers(sql):
+        """Recognize the editor's exact generated tag without trusting rows.
+
+        The shared builder also accepts a privately tagged guard. Strip only
+        that locally generated leading comment for marker discovery, never
+        from the SQL sent to the server.
+        """
+        from .dbops import target_script_markers
+        untagged = re.sub(r"^/\*myflames:editor:[0-9a-f]{32}\*/ ", "", sql or "", flags=re.M)
+        return target_script_markers(untagged)
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         """Run *sql* sent on the client's standard input and return stdout.
@@ -1405,16 +1466,25 @@ class MySQLConnection:
         error. Errors redact the connection password and SQL credential
         clauses before they leave the connector.
         """
-        from .dbops import redact
+        from .dbops import redact, strip_target_guard_markers, target_error_text
         try:
-            return self._run_write(sql, extra_flags, timeout)
-        except subprocess.TimeoutExpired:
-            raise ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
-                timeout or self.query_timeout)) from None
+            return strip_target_guard_markers(self._run_write(sql, extra_flags, timeout), self._write_guard_markers(sql))
+        except subprocess.TimeoutExpired as exc:
+            from .dbops import target_guard_markers
+            error = ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
+                timeout or self.query_timeout))
+            private = set(self._write_guard_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(exc.output)) if m in private)
+            raise error from None
         except ClientAuthPluginError:
             raise
         except (ConnectorError, OSError) as exc:
-            raise ConnectorError(redact(str(exc), self.password)) from None
+            text = target_error_text(exc) if (sql or "").startswith("DELIMITER ") else str(exc)
+            error = ConnectorError(redact(text, self.password))
+            # Preserve only private guard acknowledgements, never arbitrary
+            # result rows (CREATE USER can return a generated password).
+            error.guard_markers = getattr(exc, "guard_markers", ())
+            raise error from None
 
     def _run_write(self, sql, extra_flags, timeout):
         with self._invocation_defaults() as defaults_path:
@@ -1439,9 +1509,15 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
-            raise ConnectorError(
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
+            error = ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
+            from .dbops import target_guard_markers
+            private = set(self._write_guard_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(proc.stdout)) if m in private)
+            raise error
         return _client_text(proc.stdout)
 
     def query_rows(self, sql):

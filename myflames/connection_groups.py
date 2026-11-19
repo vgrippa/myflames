@@ -13,8 +13,54 @@ import unicodedata
 
 
 IDENTITY_FIELDS = ('server_uuid', 'gr_group_name', 'cluster_kind', 'cluster_name',
-                   'cluster_id', 'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid')
+                   'cluster_id', 'clusterset_id', 'clusterset_name', 'wsrep_cluster_uuid', 'wsrep_node_uuid')
 CLUSTER_IDENTITY_FIELDS = tuple(key for key in IDENTITY_FIELDS if key != 'server_uuid')
+GROUP_MAX_LEN = 80
+GROUP_MAX_MEMBERS = 16
+
+#: Strictness order of connection types for a group's effective safety:
+#: production first, then staging, development, local; anything else is unset.
+_TYPE_STRICTNESS = {'production': 4, 'staging': 3, 'development': 2, 'local': 1}
+
+
+def strictest_type(types):
+    """The strictest connection type in *types*; None when every value is unset."""
+    best, best_rank = None, 0
+    for value in types or ():
+        rank = _TYPE_STRICTNESS.get(value, 0) if isinstance(value, str) else 0
+        if rank > best_rank:
+            best, best_rank = value, rank
+    return best
+
+
+def group_effective_safety(profiles, group_name):
+    """The strictest connection type across the current members of *group_name*.
+
+    Read-only stays each member's own flag; only the environment type is
+    shared. Member names and endpoints always come from the store record,
+    never from topology evidence.
+    """
+    return strictest_type(profile.get('type') for profile in profiles or ()
+                          if isinstance(profile, dict) and (profile.get('group') or '') == group_name)
+
+
+def group_primary(members):
+    """The member the stored topology identity marks primary or source, or None.
+
+    A member is a replication source when another member's recorded identity
+    lists its server UUID as a source. Topology labels never decide this and
+    never rename a member.
+    """
+    members = [m for m in members or () if isinstance(m, dict)]
+    sources = set()
+    for profile in members:
+        identity = profile.get('topology_identity') or {}
+        sources.update(identity.get('source_uuids') or ())
+    for profile in members:
+        uuid = (profile.get('topology_identity') or {}).get('server_uuid')
+        if uuid and uuid in sources:
+            return profile
+    return None
 
 
 class ProfileReadError(ValueError):
@@ -24,10 +70,40 @@ class ProfileReadError(ValueError):
 def validate_group(value):
     if not isinstance(value, str) or any(unicodedata.category(c) in ('Cc', 'Cf', 'Cs') for c in value):
         raise ValueError('A connection group must be text without control characters.')
+    if len(value) > 200:
+        raise ValueError('A connection group must have at most 80 characters.')
     value = value.strip()
-    if len(value) > 80:
+    if len(value) > GROUP_MAX_LEN:
         raise ValueError('A connection group must have at most 80 characters.')
     return value
+
+
+def list_groups(profiles, preferred_order=None):
+    """Distinct non-empty connection groups across *profiles*, ordered by name."""
+    by_name = {}
+    for profile in profiles or ():
+        if not isinstance(profile, dict) or not isinstance(profile.get('id'), str):
+            continue
+        group = (profile.get('group') or '').strip()
+        if not group:
+            continue
+        by_name.setdefault(group, []).append(profile)
+    groups = []
+    for name in sorted(by_name, key=lambda g: (g.lower(), g)):
+        group_profiles = by_name[name]
+        order = (preferred_order or {}).get(name)
+        if order:
+            rank = {pid: idx for idx, pid in enumerate(order)}
+            group_profiles = sorted(group_profiles, key=lambda p: rank.get(p['id'], len(rank)))
+        ctype = 'production' if any(p.get('type') != 'development' for p in group_profiles) else 'development'
+        groups.append({
+            'name': name,
+            'profile_ids': [p['id'] for p in group_profiles],
+            'count': len(group_profiles),
+            'type': ctype,
+            'read_only': all(bool(p.get('read_only')) for p in group_profiles),
+        })
+    return groups
 
 
 def current_profile(profiles, profile_id, current=None):
@@ -68,10 +144,23 @@ def probe_note(profile, exc):
         profile.get('name') or profile.get('id') or 'unnamed', profile.get('group') or '', safe_problem(exc))
 
 
-def record_read(opener, profile, outcome, message=''):
+def record_read(opener, profile, outcome, message='', identity=None):
     scope = getattr(opener, 'group_scope', None)
     if scope is not None:
-        scope.record(profile, outcome, message)
+        scope.record(profile, outcome, message, identity)
+
+
+class _ProfileRead(dict):
+    """Public read outcome with private evidence from this profile's probe.
+
+    Attributes are deliberately outside the JSON report. In particular, a
+    reported peer UUID or an address suggestion cannot supply this evidence.
+    """
+    def __init__(self, profile):
+        super(_ProfileRead, self).__init__(id=profile['id'], name=profile.get('name') or profile['id'],
+                                           type=profile.get('type') or 'production')
+        self.profile = dict(profile)
+        self.identity = {}
 
 
 class GroupScope(object):
@@ -82,31 +171,46 @@ class GroupScope(object):
         self.read = []
         self.attempted = set()
 
-    def record(self, profile, outcome, message=''):
+    def record(self, profile, outcome, message='', identity=None):
         if profile.get('id') not in {p['id'] for p in self.profiles}:
             return
         item = next((r for r in self.read if r['id'] == profile['id']), None)
-        if item is not None and item['outcome'] == 'read':
-            return
         if item is None:
-            item = {'id': profile['id'], 'name': profile.get('name') or profile['id'],
-                    'type': profile.get('type') or 'production'}
+            item = _ProfileRead(profile)
             self.read.append(item)
+        if outcome == 'read' and identity:
+            item.identity.update(identity)
+        if item.get('outcome') == 'read':
+            return
         item.update(outcome=outcome, message=message)
 
     def opener(self, original):
         if original is None or not self.profiles:
             return None
         allowed = {p['id']: p for p in self.profiles}
+        consent = getattr(original, 'consent', None)
 
         def check(profile):
-            if profile.get('id') not in allowed or profile.get('group') != self.current.get('group'):
-                raise ValueError('This saved connection is outside the current connection group.')
+            prof = {'id': profile} if isinstance(profile, str) else profile
+            if not isinstance(prof, dict) or prof.get('id') not in allowed or (
+                    'group' in prof and prof.get('group') != self.current.get('group')):
+                raise ProfileReadError('This saved connection is outside the current connection group.')
+            if callable(consent):
+                consent(profile)
+
+        def attach_guard(conn, profile):
+            guard = getattr(conn, '_login_guard', None)
+            if callable(guard):
+                def login_guard():
+                    check(profile)
+                    guard()
+                conn._login_guard = login_guard
+            return conn
 
         def open_profile(profile):
             check(profile)
-            self.attempted.add(profile['id'])
-            return original(profile)
+            self.attempted.add(profile['id'] if isinstance(profile, dict) else profile)
+            return attach_guard(original(profile), profile)
         prepare = getattr(original, 'prepare', None)
         if callable(prepare):
             def prepared(profile):
@@ -114,10 +218,12 @@ class GroupScope(object):
                 fingerprint, connect = prepare(profile)
                 def guarded():
                     check(profile)
-                    self.attempted.add(profile['id'])
-                    return connect()
+                    self.attempted.add(profile['id'] if isinstance(profile, dict) else profile)
+                    return attach_guard(connect(), profile)
                 return fingerprint, guarded
             open_profile.prepare = prepared
+        open_profile.check = check
+        open_profile.consent = check
         open_profile.group_scope = self
         open_profile.current_profile = self.current
         return open_profile
@@ -147,6 +253,12 @@ def grouped_read(function):
         parent = getattr(opener, 'group_scope', None)
         pid = values.get('current_profile_id')
         current = current_profile(profiles, pid, explicit_current or getattr(opener, 'current_profile', None))
+        if current and identity is not None and '_topology_observation' not in identity:
+            # Callers without a store-issued token still retain the read's
+            # start order, just like saved-peer probes. Never re-date it when
+            # finish_read publishes the result.
+            from .workspace_store import _topology_probe_observation
+            identity['_topology_observation'] = _topology_probe_observation(current)
         scope = parent or GroupScope(profiles, current)
         if 'profiles' in values:
             values['profiles'] = members(profiles, scope.current)
@@ -197,6 +309,7 @@ def identity_from_report(report, extra=None):
         identity['gr_group_name'] = cluster.get('uuid')
     if kind in ('galera', 'pxc'):
         identity['wsrep_cluster_uuid'] = cluster.get('uuid')
+        identity['wsrep_node_uuid'] = (report.get('galera') or {}).get('gcomm_uuid')
     for key in IDENTITY_FIELDS:
         if (extra or {}).get(key):
             identity[key] = extra[key]
@@ -327,21 +440,56 @@ def request_profiles(store, connection):
         current = current_profile(profiles, (connection or {}).get('profile_id'))
         if current and not _same_endpoint(connection, current):
             current = None
+        if current and isinstance(connection, dict) and connection.get('group_name') is not None:
+            group_name = validate_group(connection.get('group_name'))
+            if not group_name or current.get('group') != group_name:
+                current = None
         return profiles, current
     except Exception:
         # Optional saved topology evidence must never fail the open-server read.
         return [], None
 
 
+def begin_read(store, current):
+    """Private identity sink with an observation reserved before the first read.
+
+    Saving optional topology evidence may fail without preventing a status
+    read. An invalid token then prevents a later save from acquiring a newer
+    timestamp for evidence that was actually collected earlier.
+    """
+    if not current:
+        return {}
+    try:
+        observation = store.begin_topology_observation()
+    except Exception:
+        observation = False
+    return {'_topology_observation': observation}
+
+
 def finish_read(store, report, connection, profiles, current, identity=None):
-    """Persist only the current profile; suggestions never cause a login."""
+    """Persist direct observations only; suggestions never cause a login."""
     reads = (report.get('connection_group') or {}).get('read') or []
     report['connection_group'] = describe(report, profiles, current, reads,
                                           connection.get('ssh_host') or connection.get('host'), identity=identity)
     if current:
         try:
-            store.record_topology_identity(current['id'], identity_from_report(report, identity), expected=current)
+            store.record_topology_identity(current['id'], identity_from_report(report, identity), expected=current,
+                                            observation=(identity or {}).get('_topology_observation'))
         except Exception:
             # Saving non-secret evidence is best effort, just like reading it.
             pass
+        if any(isinstance(read, _ProfileRead) and read.identity for read in reads):
+            # Recheck consent after the probes, and bind each observation to
+            # the endpoint it actually read. Revoked or edited profiles cannot
+            # gain evidence from another member's report or from a stale read.
+            fresh_profiles, fresh_current = request_profiles(store, connection)
+            allowed = {p['id']: p for p in members(fresh_profiles, fresh_current)}
+            for read in reads:
+                if (not isinstance(read, _ProfileRead) or not read.identity or
+                        read['id'] not in allowed or read.profile.get('group') != fresh_current.get('group')):
+                    continue
+                try:
+                    store.record_topology_identity(read['id'], read.identity, expected=read.profile)
+                except Exception:
+                    pass
     return report

@@ -23,8 +23,11 @@ import time
 import types
 import unittest
 from unittest import mock
+import uuid
 
 from _client_tools_fixture import private_client_dir
+from _grants_fixtures import grants_batch
+from _reviewed_replay import answer_evidence, evidence_options
 
 from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
@@ -56,7 +59,7 @@ CATALOG = [['app', 't', 'BASE TABLE', 'InnoDB', '100', '20'],
 def server_variables(engine='mysql', identity='donor', version=None):
     return {'version': version or ('11.4.5-MariaDB' if engine == 'mariadb' else '8.4.3'),
             'version_comment': engine, 'hostname': identity, 'server_id': '1' if identity == 'donor' else '2',
-            'server_uuid': identity if engine == 'mysql' else '', 'port': '3306',
+            'server_uuid': str(uuid.uuid5(uuid.NAMESPACE_DNS, identity)) if engine == 'mysql' else '', 'port': '3306',
             'datadir': '/server/data/', 'socket': '/server/mysql.sock', 'local_infile': 'ON',
             'version_compile_os': 'Linux', 'version_compile_machine': 'x86_64',
             'character_set_server': 'utf8mb4', 'character_set_filesystem': 'binary',
@@ -99,7 +102,11 @@ class ReplayConnection(object):
     def __exit__(self, *args):
         self.closed = True
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        packet = answer_evidence(sql, extra_flags, timeout, self.run, self.variables)
+        if packet is not None:
+            return packet
         self.calls.append((sql, extra_flags))
         if sql.startswith(privileges.TAG):
             if 'myflames_who' in sql:
@@ -113,6 +120,10 @@ class ReplayConnection(object):
         body = sql[len(lc.TAG):]
         if self.denied and self.denied in body:
             raise ConnectorError('ERROR 1142 SELECT command denied')
+        if sql == dbops._grants_read_sql(lc.TAG):
+            return grants_batch(self.grants, login='operator@local', account='operator@%',
+                                version=self.variables['version'], server=self.variables,
+                                variables={'server_uuid': self.variables.get('server_uuid') or None})
         if body.startswith('SHOW GLOBAL VARIABLES') and '7365727665725f75756964' in body:
             self.identity_reads += 1
             values = dict(self.variables)
@@ -172,6 +183,31 @@ class ReplayConnection(object):
             if entry['contains'] in body:
                 return entry['result']
         raise AssertionError('Unexpected SQL: ' + body)
+
+
+class GrantsReplayTests(unittest.TestCase):
+    def test_lifecycle_grants_use_one_login_on_supported_engines(self):
+        for engine, version, partial in (
+                ('mysql', '5.7.44', None), ('mysql', '8.0.15', None), ('mysql', '8.4.11', False),
+                ('mysql', '9.7.2', False), ('mariadb', '10.11.16-MariaDB', None),
+                ('mariadb', '11.4.13-MariaDB', None), ('mariadb', '11.8.9-MariaDB', None)):
+            with self.subTest(engine=engine, version=version):
+                conn = ReplayConnection(server_variables(engine, version=version))
+                result, have = lc._grants(conn)
+                self.assertTrue(result['checked'], result)
+                self.assertEqual((result['user'], result['account'], result['grants']),
+                                 ('operator', 'operator@%', conn.grants))
+                self.assertIs(result['partial_revokes'], partial)
+                self.assertIn('ALL PRIVILEGES', have)
+                self.assertEqual(conn.calls, [(dbops._grants_read_sql(lc.TAG), ['--comments', '--skip-reconnect'])])
+
+    def test_denied_grants_leave_the_lifecycle_hint_unchecked(self):
+        conn = ReplayConnection()
+        conn.denied = 'SHOW GRANTS'
+        check = lc._privileges_check(conn, [('SELECT', 'ALL PRIVILEGES')])
+        self.assertEqual(check['status'], 'not_checked')
+        self.assertEqual(check['missing_any_of'], [['SELECT', 'ALL PRIVILEGES']])
+        self.assertEqual(len(conn.calls), 1)
 
 
 class StrictReplay(object):
@@ -344,6 +380,21 @@ class ControlTransportTests(unittest.TestCase):
             self.assertEqual(caught.exception.server_error_code, 1045)
             self.assertNotIn('connection-secret', str(caught.exception))
             self.assertNotIn('sql-secret', str(caught.exception))
+            self.assertFalse(os.path.exists(self.defaults[0]))
+
+    def test_control_expired_password_hint_raises_the_server_1862_message(self):
+        # The batch client reports an expired password only on stdout; the
+        # lifecycle control path maps it to the server's own 1862 text.
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\n'
+                  'sys.stdin.buffer.read()\n'
+                  'sys.stdout.write(%r)\n'
+                  'sys.exit(1)\n' % hint)
+        with self.child(script), lc.LifecycleConnection(host='localhost', binary='mysql') as conn:
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+            self.assertEqual(caught.exception.server_error_code, 1862)
             self.assertFalse(os.path.exists(self.defaults[0]))
 
     def test_control_timeout_reaps_client_and_removes_credentials(self):
@@ -859,7 +910,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(detect.call_args[1]['server']['version'], '8.0.36')
             self.assertIs(detect.call_args[1]['job'], runner)
             lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, job=runner)
-            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'], 'recipient')
+            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'],
+                             str(uuid.uuid5(uuid.NAMESPACE_DNS, 'recipient')))
             self.assertIs(detect.call_args[1]['job'], runner)
             lc.prepare_physical_backup(ReplayConnection(server_variables('mariadb')), CONNECTION,
                                        self.output, job=runner)

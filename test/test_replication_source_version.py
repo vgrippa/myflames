@@ -34,6 +34,7 @@ import unittest
 from unittest import mock
 
 from _perf_replay import ReplayConn, fixture as recorded_fixture, run_cli
+from _reviewed_replay import ReplayConn
 from myflames import replication as rp, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore

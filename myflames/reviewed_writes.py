@@ -12,8 +12,9 @@ The workspace issues a review token bound to that whole plan
 fresh read, refuses with "nothing was sent" when the statements or the
 ``expect`` identity differ from the reviewed plan, checks the typed guard,
 consumes the token (``before_send``), writes the pending audit record, and
-sends every statement as one unit: one client invocation with the statements
-on standard input (``MySQLConnection.run_write``: ``--comments``,
+sends each statement in one query packet with its reviewed server identity
+guard, repeated for every packet: one client invocation on standard input
+(``MySQLConnection.run_write``: ``--comments``,
 ``--binary-mode``, no reconnect; batch mode stops at the first error, so a
 later statement never runs after a failed one). It never retries.
 
@@ -54,7 +55,8 @@ import time
 from .connector import ConnectorError
 
 #: "ERROR 1045 (28000) at line 2: ..." from the mysql client in batch mode:
-#: the input line of the statement that failed (one statement per line here).
+#: the packet's input start line; SQL packet maps translate it to a statement
+#: index before the common error handler. Shell retains its prefix offset.
 _AT_LINE = re.compile(r"\bat line (\d+)\b")
 _ERROR = re.compile(r"ERROR\s+(\d+)")
 
@@ -208,19 +210,59 @@ def review_details(plan):
     """What a review token binds: the plan as reviewed, without its token and
     the policy text (the connection identity already carries type and
     read-only, so a policy change voids the token)."""
+    # The HTTP plan response uses this same object. Publish the automatically
+    # derived prefix for review, and bind it with the rest of the plan. Never
+    # accept a caller-supplied guard instead of deriving it from expect.
+    guard = session_guard(plan)
+    if guard:
+        plan["session_guard"] = guard
     return {key: value for key, value in plan.items() if key not in ("review_token", "policy")}
 
 
-def check_reviewed(plan):
+def session_guard(plan):
+    """Derive a same-session guard in the sender's own language.
+
+    ProxySQL Admin and Readyset do not expose these server identity variables.
+    """
+    from .dbops import target_session_guard
+    expect = plan.get("expect") or {}
+    identity = expect.get("server_identity") or expect.get("server")
+    if plan.get("via") == "mysqlsh":
+        from .cluster_shell import target_session_guard as shell_guard
+        return shell_guard(identity)
+    if expect.get("engine") not in (
+            "mysql", "percona", "percona_server", "pxc", "mariadb"):
+        return []
+    if expect.get("kind") in ("galera", "pxc"):
+        identity = dict(identity or {})
+        identity.setdefault("wsrep_gcomm_uuid", None)
+    return target_session_guard(expect["engine"], identity)
+
+
+def check_reviewed(plan, single_line=False):
     """A reviewed plan sent back by the client, validated for shape before it
     is used: never trusted for anything the token does not cover."""
     if not isinstance(plan, dict):
         raise ValueError("Send the reviewed plan with the action.")
     statements = plan.get("statements")
     if not isinstance(plan.get("action"), str) or not isinstance(statements, list) or not statements \
-            or not all(isinstance(s, str) and s and "\n" not in s and "\r" not in s for s in statements) \
+            or not all(isinstance(s, str) and s.strip() for s in statements) \
             or len(statements) > 10:
         raise ValueError("The reviewed plan is not valid. Review the action again; nothing was sent.")
+    if single_line and any("\n" in s or "\r" in s for s in statements):
+        raise ValueError("Each reviewed Admin statement must be on one line. Nothing was sent. Review again.")
+    if plan.get("via") != "mysqlsh":
+        from .dbops import target_statement
+        expect = plan.get("expect")
+        engine = expect.get("engine") if isinstance(expect, dict) else None
+        # SQL identity packets have explicit start-line maps. Admin interfaces
+        # retain their one-input-line-per-statement error contract. A caller
+        # on such an interface must not inherit SQL's multiline exception.
+        admin = engine not in ("mysql", "percona", "percona_server", "pxc", "mariadb")
+        for statement in statements:
+            if admin and ("\n" in statement or "\r" in statement):
+                raise ValueError("Each reviewed Admin statement must be on one line. Nothing was sent. Review again.")
+            target_statement(statement)
     return plan
 
 
@@ -236,11 +278,12 @@ def result(schema_version, plan):
 
 def refused(out, message, outcome, audit=None, target=None, progress=None):
     out["status"], out["message"] = "refused", message
+    out["outcome"] = outcome
     out["not_sent"] = list(out["statements"])
     out["states"] = ["not_sent"] * len(out["statements"])
     _set(progress, "finished", out["states"], "refused")
     if audit is not None:
-        out["audit_id"] = audit.outcome(out["statements"], "refused", outcome=outcome, message=message,
+        out["audit_id"] = audit.outcome(list(out.get("session_guard") or []) + out["statements"], "refused", outcome=outcome, message=message,
                                         target=target)
     return out
 
@@ -258,10 +301,13 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
     after)* the rows of what changed (what, before, now). *progress* (a
     :class:`Progress`) follows each step. *refused_text(statement, error)*
     words a statement refusal when no partial change was observed.
+    *verify_on_error* permits a state read after a first-statement server
+    error; only MySQL Shell plans also read after a reply-less error.
     Returns the ``schema_version``
     envelope (see the module docstring).
     """
-    from .dbops import may_have_run
+    from .dbops import may_have_run, target_guard_failed, shift_guard_error, target_guarded_script, target_not_connected
+    from .connection_groups import ProfileReadError
     out = result(schema_version, reviewed)
     expect = reviewed.get("expect")
     _set(progress, "checking")
@@ -269,9 +315,22 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         fresh = plan_fresh()
     except ValueError as exc:
         return refused(out, "%s Nothing was sent." % str(exc).rstrip(), "changed", audit, expect, progress)
-    if fresh.get("statements") != reviewed.get("statements") or fresh.get("expect") != expect:
+    if fresh.get("statements") != reviewed.get("statements") or fresh.get("expect") != expect \
+            or fresh.get("via") != reviewed.get("via"):
         return refused(out, "The target changed after you reviewed it, so nothing was sent. Review the action "
                             "again.", "changed", audit, expect, progress)
+    try:
+        out["session_guard"] = session_guard(reviewed)
+    except ValueError as exc:
+        return refused(out, str(exc), "identity_unavailable", audit, expect, progress)
+    statements = out["statements"]
+    packet_lines = None
+    script = "\n".join(out["session_guard"] + statements)
+    if out["session_guard"] and fresh.get("via") != "mysqlsh":
+        try:
+            script, packet_lines = target_guarded_script(out["session_guard"], statements)
+        except ValueError as exc:
+            return refused(out, str(exc), "review", audit, expect, progress)
     guard = fresh.get("typed_guard")
     if guard and typed != guard:
         return refused(out, "Type %s exactly to confirm. Nothing was sent." % guard, "typed_guard", audit, expect,
@@ -281,38 +340,84 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             before_send()
         except ValueError as exc:
             return refused(out, str(exc), getattr(exc, "outcome", "review"), audit, expect, progress)
-    statements = out["statements"]
     if audit is not None:
         try:
-            out["audit_id"] = audit.attempt(statements, target=expect, verified=fresh.get("verified"))
+            out["audit_id"] = audit.attempt(out["session_guard"] + statements, target=expect, verified=fresh.get("verified"))
         except Exception as exc:
             _set(progress, "finished", ["not_sent"] * len(statements), "refused")
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     _set(progress, "sending", ["sent"] * len(statements))
     try:
-        conn.run_write("\n".join(statements), timeout=timeout)
+        conn.run_write(script, timeout=timeout)
     except KeyboardInterrupt as exc:
         _set(progress, "finished", ["unknown"] * len(statements), "unknown")
         if audit is not None:
             audit.fail(exc, statements)
         raise
+    except (Refusal, ProfileReadError) as exc:
+        # Login consent can change after the pending record is durable. No
+        # subprocess ran: finish that same record rather than logging an error
+        # or leaving a pending attempt that suggests an uncertain write.
+        outcome = getattr(exc, "outcome", "changed")
+        out.update(status="refused", outcome=outcome, message=str(exc), not_sent=list(statements),
+                   states=["not_sent"] * len(statements))
+        _set(progress, "finished", out["states"], "refused")
+        if audit is not None:
+            audit.complete("refused", outcome=outcome, message=out["message"])
+        return out
     except ConnectorError as exc:
-        from .dbops import redact
+        from .dbops import redact, target_error_text
         pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
+        guard_failure = target_guard_failed(exc, packet_lines) if out["session_guard"] else None
+        if guard_failure:
+            index = guard_failure.get("statement_index", 0)
+            out.update(status="partial" if index else "refused", outcome=guard_failure["outcome"],
+                       message=redact(guard_failure["message"], pw),
+                       sent=statements[:index], not_sent=statements[index:],
+                       states=["done"] * index + ["not_sent"] * (len(statements) - index))
+            _set(progress, "finished", out["states"], out["status"])
+            if audit is not None:
+                audit.complete("error" if index else "refused", outcome=out["outcome"],
+                               error=redact(target_error_text(exc), pw), message=out["message"])
+            return out
+        if out["session_guard"]:
+            exc = shift_guard_error(exc, packet_lines)
         text = redact(str(exc), pw)
         out["error"] = redact(server_message(text), pw)
         code, line = error_number(text), failed_line(text)
-        definite = code is not None and (line is None or (not client_error(code) and 1 <= line <= len(statements)))
+        definite = code is not None and (target_not_connected(exc) if line is None else
+                                        (not client_error(code) and 1 <= line <= len(statements)))
         if may_have_run(exc) or not definite:
             out["status"] = "unknown"
             out["states"] = ["unknown"] * len(statements)
             out["message"] = ("No reply arrived (%s), so whether %s ran is unknown. Nothing will be sent again: "
                               "refresh and check the state before you do anything else."
                               % (out["error"], "these statements" if len(statements) > 1 else "the statement"))
-            _set(progress, "finished", out["states"], "unknown")
+            # An AdminAPI exception can omit its call site after changing
+            # the cluster. A read can show a partial change, but an unchanged
+            # visible snapshot cannot prove that no operation ran elsewhere.
+            if fresh.get("via") == "mysqlsh" and verify_on_error and read_after is not None:
+                _set(progress, "reading")
+                try:
+                    out["after"] = read_after()
+                except (ConnectorError, ValueError):
+                    out["after"] = None
+                if effect is not None and out["after"] is not None:
+                    try:
+                        out["effect"] = effect(fresh, out["after"])
+                    except (KeyError, TypeError, ValueError):
+                        out["effect"] = None
+                if out["effect"]:
+                    out["status"] = "partial"
+                    out["message"] = ("An error was reported (%s), and part of the change is visible. "
+                                      "The statement location is unknown; check the current state before "
+                                      "doing anything else." % out["error"])
+            _set(progress, "finished", out["states"], out["status"])
             if audit is not None:
-                audit.complete("unknown", outcome="timeout" if "timed out" in text else "no_reply", error=text,
-                               message=out["message"])
+                audit.complete("error" if out["status"] == "partial" else "unknown",
+                               outcome="partial" if out["status"] == "partial" else
+                               "timeout" if "timed out" in text else "no_reply", error=text,
+                               message=out["message"], after=out["after"])
             return out
         if line is None:
             out["status"] = "failed"

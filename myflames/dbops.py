@@ -7,8 +7,8 @@ changes and replication actions next) goes through the same four parts:
   is a risky write, with the reasons. It splits scripts into statements the
   way the mysql client does (comments, quoted strings and identifiers under
   both backslash readings, executable comments ``/*! */`` and ``/*M! */``
-  whose content is code, ``DELIMITER`` lines), reusing the tokenizer in
-  :mod:`myflames.live` (``TOKEN`` and ``TOKEN_NO_BACKSLASH``). It is a hint:
+  whose content is code, ``DELIMITER`` lines), using :func:`lex_sql` for
+  every quote and comment boundary. It is a hint:
   a SELECT can call a stored function that writes, and anything myflames
   cannot prove to be a read is classified as a write or a risky write.
 * :func:`decide` turns a classification plus the connection's type
@@ -48,8 +48,10 @@ Classification decisions (see docs/DEVELOPER_REFERENCE.md, "Write safety"):
   the table (``key_columns``) and WHERE compares none of them; without that
   information it is a write and the reason says the key was not checked.
 """
+import bisect
 import csv
 import datetime
+import functools
 import getpass
 import io
 import json
@@ -58,7 +60,8 @@ import sys
 import time
 import uuid
 
-from .live import DASH_CONTROL, TOKEN, TOKEN_NO_BACKSLASH
+from .live import DASH_CONTROL
+from .server_info import parse_version_tuple
 from .workspace_store import (AUDIT_DEFAULT_RETENTION_DAYS as DEFAULT_RETENTION_DAYS,
                               AUDIT_MAX_RETENTION_DAYS as MAX_RETENTION_DAYS, CONNECTION_TYPES)
 
@@ -113,15 +116,515 @@ SESSION_RISKY_VARIABLES = {
 #: MariaDB SET STATEMENT, is a write.
 SESSION_GUARD_VARIABLES = frozenset(("transaction_read_only", "tx_read_only", "sql_safe_updates"))
 
-AMBIGUOUS_REASON = ("A backslash before a quote is read differently when sql_mode has NO_BACKSLASH_ESCAPES, "
-                    "so the statements could split in two ways; both readings were classified.")
+AMBIGUOUS_REASON = ("SQL reads differently under NO_BACKSLASH_ESCAPES, ANSI_QUOTES, MariaDB MSSQL mode, "
+                    "server versions or client families; all possible readings were classified.")
 _IDENT = r"(?:`\d+`|[A-Z_$][A-Z0-9_$]*)"
-_VERSIONED_OPEN = re.compile(r"/\*M?!(?:\d{6}(?=\s)|\d{5})?")
+
+
+def sql_mode_flags(sql_mode, engine=None, server_version=None):
+    """The lexical flags of a known mode, including server combination names.
+
+    mysql-5.7.44 sql/sys_vars.cc:3794-3839; mysql-8.0.46:4896-4909.
+    MariaDB sql/sys_vars.cc:3999-4039 and sql/sql_class.h:168-192.
+    None means unknown, not an empty mode. Without version facts this single
+    reading includes legacy aliases; lexer_readings also checks modern modes.
+    """
+    if not isinstance(sql_mode, str):
+        return None
+    names = {name.strip().upper() for name in sql_mode.split(",")}
+    ansi = {"ANSI_QUOTES", "ANSI"}
+    version = parse_version_tuple(server_version, leading=True, default=None)
+    if engine != "mysql" or version is None or version < (8, 0, 0):
+        ansi.update(("ORACLE", "MSSQL", "POSTGRESQL", "DB2", "MAXDB"))
+    return {"backslash_escapes": "NO_BACKSLASH_ESCAPES" not in names,
+            "ansi_quotes": bool(names & ansi),
+            "mssql": engine != "mysql" and "MSSQL" in names}
+
+
+def oracle_mode(sql_mode, engine):
+    """Whether a known MariaDB session uses its PL/SQL stored-program grammar."""
+    return engine == "mariadb" and isinstance(sql_mode, str) and "ORACLE" in {
+        name.strip().upper() for name in sql_mode.split(",")}
+
+
+def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_version=None,
+                   client_engine=None, sql=None):
+    """Bounded complete readings, never a mixture of independently masked tokens.
+
+    Unknown server facts need all three version-number grammars. Keep the
+    actual engine unknown so a guessed dialect cannot authorize a version
+    gate. The client family is independent of the server it connects to.
+    """
+    version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb", default=None)
+    flags = sql_mode_flags(sql_mode, engine, server_version)
+    modes = [flags] if flags is not None else [
+        {"backslash_escapes": b, "ansi_quotes": a, "mssql": m}
+        for b in ((True, False) if backslash_escapes is None else (bool(backslash_escapes),))
+        for a in (False, True)
+        for m in ((False,) if engine == "mysql" else (False, True))]
+    if flags is not None and (engine not in ("mysql", "mariadb") or (engine == "mysql" and version is None)):
+        for candidate in (sql_mode_flags(sql_mode, "mysql", "5.7.44"),
+                          sql_mode_flags(sql_mode, "mysql", "8.1.0")):
+            if candidate not in modes:
+                modes.append(candidate)
+    if engine == "mariadb":
+        dialects = ("mariadb",)
+    elif engine == "mysql" and version is not None:
+        dialects = ("mysql_legacy" if version < (8, 1, 0) else "mysql",)
+    else:
+        dialects = ("mysql", "mysql_legacy", "mariadb")
+    clients = (client_engine,) if client_engine in ("mysql", "mariadb") else ("mysql", "mariadb")
+    # A proxy can acknowledge SET sql_mode without forwarding MariaDB's
+    # SERVER_STATUS_ANSI_QUOTES bit. Knowing the server mode therefore does
+    # not tell us how that client frames double quotes. Keep both complete
+    # client readings, independently of the server's token roles.
+    readings = [dict(mode, comment_dialect=dialect, client_engine=family, client_ansi_quotes=status)
+                for mode in modes for dialect in dialects for family in clients
+                for status in ((False, True) if family == "mariadb" and mode["ansi_quotes"] else (False,))]
+    if sql is None:
+        return readings
+    # Do not rescan a long unquoted statement for modes with no applicable
+    # characters. Executable comments keep every digit grammar; double quotes
+    # with backslashes keep the unknown server's ANSI status-bit alternatives.
+    has_backslash, has_double, has_bracket = "\\" in sql, '"' in sql, "[" in sql
+    has_comments = "/*" in sql
+    dialect_matters = has_comments or (engine not in ("mysql", "mariadb") and has_backslash and has_double)
+    client_matters = has_backslash or "/*M!" in sql or "/*+" in sql
+    unique, seen = [], set()
+    for reading in readings:
+        key = (reading["backslash_escapes"] if has_backslash else None,
+               reading["ansi_quotes"] if has_double else None,
+               reading["mssql"] if has_bracket else None,
+               reading["comment_dialect"] if dialect_matters else None,
+               reading["client_engine"] if client_matters else None,
+               reading["client_ansi_quotes"] if has_backslash and has_double else None)
+        if key not in seen:
+            seen.add(key)
+            unique.append(reading)
+    return unique
+
+
+def _comment_header(sql, at, engine, version_id, wsrep_on, comment_dialect=None):
+    """An executable opener and its server disposition, without reading its body."""
+    maria = sql.startswith("/*M!", at)
+    start = at + (4 if maria else 3)
+    reversed_comment = sql[start:start + 1] == "!"
+    digits_at = start + int(reversed_comment)
+    dialect = comment_dialect or ("mysql_legacy" if engine == "mysql" and
+                                  (version_id is None or version_id < 80100) else engine)
+    # mysql-5.7.44 sql/sql_lex.cc:1923-1938 and mysql-8.0.46:1892-1910
+    # always consume five digits. mysql-8.1.0:1911-1929 adds the sixth.
+    pattern = {"mariadb": r"[0-9]{5,6}", "mysql_legacy": r"[0-9]{5}"}.get(
+        dialect, r"(?:[0-9]{6}(?=[ \t\r\n\f\v])|[0-9]{5})")
+    digits = re.match(pattern, sql[digits_at:digits_at + 7])
+    required = int(digits.group()) if digits else None
+    end = digits_at + (len(digits.group()) if digits else 0)
+    problem = None
+    if reversed_comment:
+        executes, problem = None, "reversed executable comment"
+    elif engine == "mysql" and maria:
+        executes = False
+    elif dialect == "mysql_legacy" and required is not None and required >= 80100:
+        # This grammar exists only below 8.1. Even with an unknown version,
+        # a server using it cannot execute a gate of 80100 or higher. Do not
+        # invent a leading sixth digit of SQL in an impossible execution.
+        executes = False
+        if version_id is None or engine not in ("mysql", "mariadb"):
+            problem = "unknown version for executable comment"
+    elif engine not in ("mysql", "mariadb") and (maria or required is not None):
+        executes, problem = None, "unknown engine for executable comment"
+    elif engine == "mariadb" and not maria and required == 99997 and wsrep_on is not False:
+        # A local wsrep session executes this otherwise skipped marker.
+        # mariadb-server/sql/sql_lex.cc:2492-2500.
+        executes, problem = None, "MariaDB wsrep executable comment /*!99997"
+    elif engine == "mariadb" and not maria and required is not None and 50700 <= required <= 99999:
+        executes = False
+    elif required is not None and version_id is None:
+        executes, problem = None, "unknown version for executable comment"
+    else:
+        executes = required is None or required <= version_id
+    return {"start": at, "opener_end": end, "opener": sql[at:end],
+            "executes": executes, "certain": executes is not None and problem is None, "problem": problem,
+            "maria": maria, "required": required}
+
+
+def _hint_quotes_closed(body):
+    """Hint quotes must close before the first */, with doubling as escape.
+
+    mysql-5.7.44 sql/sql_lex_hints.h:150-188 (quoted identifiers);
+    mysql-8.0.46:110-147 (also quoted text). Clients do not see hint
+    quotes, so comment markers and backslashes are checked separately,
+    including inside otherwise balanced spans.
+    """
+    pos, quote = 0, None
+    while pos < len(body):
+        char = body[pos]
+        if quote is None:
+            if char in "'\"`":
+                quote = char
+        elif char == quote:
+            if body[pos + 1:pos + 2] == quote:
+                pos += 1
+            else:
+                quote = None
+        pos += 1
+    return quote is None
+
+
+def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
+            dollar_quotes=False, client=False, unknown_execute=True, wsrep_on=None,
+            client_delimiter=None, framing=(), ansi_quotes=False, mssql=False,
+            sql_mode=None, comment_dialect=None, client_engine=None, client_ansi_quotes=False):
+    """Read SQL once, preserving source spans and every lexical uncertainty.
+
+    Tokens are (kind, start, end). Executed comment openers/closers are
+    separate tokens: quotes and line comments in their SQL bodies own their
+    complete contents, including apparent ``*/`` markers. Ordinary comments
+    consume no nested level; skipped versioned comments consume one.
+
+    ``client`` selects the framing differences in the client's add_line:
+    it does not evaluate version gates, and -- needs ASCII whitespace.
+    Both passes use this same quote/comment scanner. Server code must never
+    be derived from the client pass. Unknown version gates can be read both
+    ways by the classifier; the editor requires bound facts before sending.
+
+    Sources: mysql-server/sql/sql_lex.cc:1037-1066,1782-1812,1931-2075;
+    mariadb-server/sql/sql_lex.cc:1639-1694,1824-1860,2401-2562;
+    mysql-server/client/mysql.cc:2785-2799,2838-2965.
+    """
+    if not isinstance(sql, str):
+        raise ValueError("Pass SQL text.")
+    flags = sql_mode_flags(sql_mode, engine, server_version)
+    if flags is not None:
+        backslash_escapes, ansi_quotes, mssql = (flags[key] for key in
+                                                ("backslash_escapes", "ansi_quotes", "mssql"))
+    # MariaDB add_line honors ANSI_QUOTES and never escapes inside backticks
+    # (mariadb-10.11.16 client/mysql.cc:2630-2634). MySQL ignores ANSI_QUOTES
+    # (mysql-8.4.0 client/mysql.cc:2771-2785). Neither knows MSSQL brackets.
+    # Only MariaDB servers advertise the ANSI status bit (mariadb-11.8.9
+    # sql/sys_vars.cc:4002-4009; mysql-8.4.0:4710-4718), but a proxy can
+    # consume that reply. This function scans one explicit status reading;
+    # lexer_readings enumerates both even with a known server and mode.
+    if client:
+        ansi_quotes = client_engine == "mariadb" and client_ansi_quotes
+        mssql = False
+    version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb", default=None)
+    version_id = None if version is None else version[0] * 10000 + version[1] * 100 + version[2]
+    tokens, comments, unclosed, issues = [], [], [], []
+    n, pos, code_start = len(sql), 0, 0
+    active, pending = None, False
+    command_start = 0
+    framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
+
+    def token(kind, start, end):
+        if code_start < start:
+            tokens.append(("code", code_start, start))
+        tokens.append((kind, start, end))
+
+    def consume_comment(start, nested):
+        # consume_comment(1) calls consume_comment(0), not itself: one level
+        # only, even when the inner text contains more /* openers.
+        at = start
+        while at < n:
+            if sql.startswith("*/", at):
+                return at + 2, True
+            if nested and sql.startswith("/*", at):
+                end = sql.find("*/", at + 2)
+                if end < 0:
+                    return n, False
+                at = end + 2
+            else:
+                at += 1
+        return n, False
+
+    while pos < n:
+        ch = sql[pos]
+        if pos in framing_at:
+            end = framing_at[pos]
+            token("framing", pos, end)
+            pos = code_start = end
+            continue
+        if client:
+            line_start = pos == 0 or sql[pos - 1] == "\n"
+            if pos == command_start:
+                # MySQL 8.2+ also looks past earlier lines containing only
+                # block comments, including executed /*! SQL */. Inspect
+                # this raw prefix once per unit before its SQL body can set
+                # pending or open a quote. A DELIMITER consumed by our own
+                # splitter loses this issue only after the server reading
+                # proves that the discarded prefix contains no SQL.
+                command = _client_named_command(sql, pos, client_delimiter, across_lines=True)
+                if command is not None and command[2]:
+                    issues.append((command[0], REASON_NAMED_CLIENT_COMMAND % command[1]))
+            if client_delimiter is not None and line_start and not pending and active is None:
+                command = _DELIMITER_COMMAND.match(sql, pos)
+                if command:
+                    value, end = _delimiter_argument(sql, command.end())
+                    if value and "\\" not in value:
+                        client_delimiter = value
+                    token("delimiter_command", pos, end)
+                    pos = code_start = end
+                    command_start = end
+                    continue
+            if active is None and (line_start or pos == command_start):
+                # MySQL 8.4.0/HEAD looks past leading /* ... */ before
+                # add_line, even when those bytes are executable SQL or
+                # contain quotes. Refuse instead of changing the reviewed
+                # text or trying to retain the command's discarded tail.
+                command = _client_named_command(sql, pos, client_delimiter)
+                if command is not None:
+                    at, name, after_comment = command
+                    if not pending or after_comment:
+                        issues.append((at, REASON_NAMED_CLIENT_COMMAND % name))
+            # add_line tests the delimiter before opening a quote/dollar body.
+            if client_delimiter is not None and sql.startswith(client_delimiter, pos):
+                end = pos + len(client_delimiter)
+                token("delimiter", pos, end)
+                pos = code_start = end
+                command_start = end
+                pending = False
+                continue
+        if active is not None and sql.startswith("*/", pos):
+            # The conditional-comment branch in add_line clears ss_comment
+            # at '*', then examines '/' on the next iteration. A delimiter
+            # can start at that slash (client/mysql.cc:2946-2948).
+            close_end = pos + (1 if client else 2)
+            token("executable_close", pos, close_end)
+            active["end"] = pos + 2
+            active = None
+            pos = close_end
+            code_start = pos
+            continue
+        if ch in "'\"`" or (ch == "[" and mssql and engine != "mysql"):
+            start, quote = pos, "]" if ch == "[" else ch
+            identifier = ch in "`[" or (ch == '"' and ansi_quotes)
+            pos += 1
+            closed = False
+            while pos < n:
+                if sql[pos] == quote:
+                    if pos + 1 < n and sql[pos + 1] == quote:
+                        pos += 2
+                        continue
+                    pos += 1
+                    closed = True
+                    break
+                # Server identifiers escape only by doubling. The MySQL
+                # client consumes backslash pairs even inside backticks,
+                # except that a following backtick still closes the name.
+                escapes = backslash_escapes and (not identifier or (client and client_engine != "mariadb"))
+                if sql[pos] == "\\" and escapes:
+                    if client and (pos + 1 == n or sql[pos + 1] == "\n" or sql.startswith("\r\n", pos + 1)):
+                        issues.append((pos, REASON_TRAILING_BACKSLASH))
+                    pos = min(n, pos + (1 if client and quote == "`" and sql[pos + 1:pos + 2] == "`" else 2))
+                else:
+                    pos += 1
+            token("identifier" if identifier else "string", start, pos)
+            pending = True
+            if not closed:
+                unclosed.append((start, pos))
+            code_start = pos
+            continue
+        if dollar_quotes and ch == "$" and (pos == 0 or not (
+                sql[pos - 1].isalnum() or sql[pos - 1] in "_$" or ord(sql[pos - 1]) >= 128)):
+            dollar = re.match(r"\$[\w\x80-\U0010ffff]*\$", sql[pos:])
+            if dollar:
+                start, tag = pos, dollar.group()
+                end = sql.find(tag, pos + len(tag))
+                pos = n if end < 0 else end + len(tag)
+                token("string", start, pos)
+                pending = True
+                if end < 0:
+                    unclosed.append((start, pos))
+                code_start = pos
+                continue
+        dash = sql.startswith("--", pos)
+        after_dash = sql[pos + 2:pos + 3]
+        dash_comment = dash and (not after_dash or after_dash in _CLIENT_SPACE or
+                                 (not client and (ord(after_dash) < 32 or ord(after_dash) == 127)))
+        if dash and DASH_CONTROL.match(sql, pos):
+            issues.append((pos, REASON_DASH_CONTROL))
+        if ch == "#" or dash_comment:
+            end = sql.find("\n", pos)
+            end = n if end < 0 else end
+            token("comment", pos, end)
+            pos = code_start = end
+            continue
+        if sql.startswith("/*", pos):
+            special = sql.startswith("/*!", pos) or (sql.startswith("/*M!", pos) and
+                                                       (not client or client_engine == "mariadb"))
+            if client and active is not None:
+                # add_line's ml_comment and ss_comment interact:
+                # the first */ can clear ss_comment while leaving ml_comment
+                # open. Do not pretend the nested comment is an independent
+                # token (mysql-9.7.0:client/mysql.cc:2913-2948).
+                issues.append((pos, REASON_NESTED_CLIENT_COMMENT))
+            header = _comment_header(sql, pos, engine, version_id, wsrep_on, comment_dialect) if special else None
+            # Inside executed code an ordinary /* ... */ is scanned just
+            # like any other SQL comment. It restores the enclosing state.
+            if header is not None:
+                comments.append(header)
+                execute = client or header["executes"] is True or (
+                    header["executes"] is None and unknown_execute)
+                if execute:
+                    if active is not None:
+                        # The server has a single in_comment state, not an
+                        # unbounded stack of executable comment bodies.
+                        active["end"] = pos
+                    # add_line does not consume a server version number or
+                    # an atomic opener. Its next character can itself start
+                    # a client delimiter, even the '*' or '!' in this marker.
+                    opener_end = pos + 1 if client else header["opener_end"]
+                    token("executable_open", pos, opener_end)
+                    active = header
+                    pos = code_start = opener_end
+                    continue
+            # MySQL sees /*M! as an ordinary comment, not consume_comment(1).
+            nested = bool(header and not (engine == "mysql" and header["maria"]))
+            end, closed = consume_comment(pos + 2, nested and not client)
+            token("comment", pos, end)
+            if client and header is None and not sql.startswith("/*+", pos):
+                # mysql-8.4.0:client/mysql.cc:2907-2930 sets ss_comment for
+                # /*! or /*+ even while ml_comment is open. The first */
+                # then clears only ss_comment, unlike the server's first-*/
+                # boundary. MariaDB has the same /*! interaction
+                # (mariadb-11.8.9:client/mysql.cc:2834-2859); /*M! does not
+                # set ss_comment there. Refuse all three special openers on
+                # every client, across lines too, without modelling version-
+                # specific state. Quotes and #/-- inside this body are data.
+                body = sql[pos + 2:end - 2 if closed else end]
+                if any(opener in body for opener in ("/*!", "/*+", "/*M!")):
+                    issues.append((pos, REASON_NESTED_ORDINARY_COMMENT))
+            if header is not None:
+                header["end"] = end
+            if not closed:
+                unclosed.append((pos, end))
+            if _READYSET_CREATE_HINT.match(sql[pos:end]):
+                issues.append((pos, REASON_READYSET_HINT))
+            if sql.startswith("/*+", pos) and "\\" in sql[pos:end]:
+                at = sql.index("\\", pos, end)
+                issues.append((at, REASON_CLIENT_COMMAND % sql[at + 1:at + 2]))
+            if sql.startswith("/*+", pos):
+                body = sql[pos + 3:end - 2 if closed else end]
+                # Nested /*! changes MySQL's SSC_HINT to SSC_CONDITIONAL
+                # even on one line. It also sets conditional state in
+                # MariaDB 10.11-11.8 ordinary /*+ comments. The # / -- hint
+                # bug affects MySQL 5.7.44, 8.0.42, 8.1.0, 8.4.0, 8.4.5 and
+                # 9.1.0; fixed in 8.0.43, 8.4.6 and 9.2.0 (514931dba1e,
+                # Bug#30875669). Refuse hazardous bodies on every client,
+                # independent of its patch release.
+                if (any(mark in body for mark in ("/*", "#", "\\")) or re.search(r"--(?:\s|$)", body) or
+                        not _hint_quotes_closed(body)):
+                    issues.append((pos, REASON_HINT))
+            # MySQL's ss_comment is local to add_line, so after the first
+            # newline a hint's quotes/comments/delimiters become client code.
+            # Refuse those forms instead of guessing how the private frame
+            # survives them. The all-client hint restriction above also
+            # covers the one-line nested/comment cases.
+            if sql.startswith("/*+", pos):
+                body = sql[pos + 3:end - 2 if closed else end]
+                multiline = "\n" in body or "\r" in body
+                if multiline and (any(quote in body for quote in "'\"`") or
+                                  (client_delimiter is not None and client_delimiter in body) or
+                                  (client and client_engine != "mariadb" and
+                                   re.search(r"(?<![\w$\x80-\U0010ffff])\$[\w\x80-\U0010ffff]*\$", body))):
+                    issues.append((pos, REASON_MULTILINE_HINT))
+            if (client and client_engine != "mariadb" and sql.startswith("/*+", pos) and closed and client_delimiter is not None and
+                    sql.startswith(client_delimiter, end - 1)):
+                issues.append((end - 1, REASON_EXECUTED_FRAMING))
+            pos = code_start = end
+            continue
+        # The client can discard a command and all its parameters, including
+        # a /* that the server pass would otherwise treat as a comment.
+        # Check both complete readings: a quote in skipped conditional SQL
+        # must not hide a command exposed by the other pass. Quoted/comment
+        # tokens have already been consumed above, so their text stays data.
+        if ch == "\\" and sql[pos + 1:pos + 2] not in ("g", "G", "N"):
+            issues.append((pos, REASON_CLIENT_COMMAND % sql[pos + 1:pos + 2]))
+        if ch not in _CLIENT_SPACE:
+            pending = True
+        pos += 1
+    if code_start < n:
+        tokens.append(("code", code_start, n))
+    if active is not None:
+        active["end"] = n
+        active["problem"] = "unterminated executable comment"
+        unclosed.append((active["start"], n))
+    return {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
+
+
+def skipped_executable_comments(sql, engine, server_version, backslash_escapes=None, wsrep_on=None,
+                                sql_mode=None):
+    """Executable comments skipped or uncertain under the server's own lexer.
+
+    Return source offsets, the opener (never SQL text), and ``certain``.
+    Unknown quote modes inspect both readings. Executed comments with an
+    unterminated body are included as uncertain, so callers can refuse them.
+    """
+    found = {}
+    for reading in lexer_readings(backslash_escapes, engine, sql_mode, server_version, sql=sql):
+        # Scan both possible dispositions when server facts are incomplete.
+        for unknown_execute in (True, False):
+            scan = lex_sql(sql, engine=engine, server_version=server_version,
+                           unknown_execute=unknown_execute, wsrep_on=wsrep_on, **reading)
+            for comment in scan["comments"]:
+                if comment["executes"] is False or comment["problem"]:
+                    item = {k: comment[k] for k in ("start", "end", "opener", "certain")}
+                    if comment["problem"]:
+                        item.update(certain=False, problem=comment["problem"])
+                    found[(item["start"], item["end"])] = item
+            if not any(comment["executes"] is None for comment in scan["comments"]):
+                break
+    return [found[span] for span in sorted(found)]
+
+
 #: A line whose first word starts with "delimiter" is the client's DELIMITER
 #: command in --binary-mode (client/mysql.cc find_command and
 #: is_delimiter_command compare only the first 9 characters).
 _DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n]*)", re.I)
 _CLIENT_SPACE = " \t\n\r\f\v"
+_NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
+
+
+def _client_named_command(sql, start, delimiter, across_lines=False):
+    """A command at a line/unit head, conservatively skipping block comments.
+
+    mysql-8.4.0 client/mysql.cc:2453-2464,2577-2593 runs this lookup
+    before reading any quotes in the comments. The older MySQL and MariaDB
+    clients do not skip the prefix, but the editor refuses it on both.
+    The unit-head check crosses newlines too: executable comments count as
+    comments here, whatever the server does with their bodies. Line-local
+    checks keep their bounded lookahead while a statement is pending.
+    """
+    at, after_comment = start, False
+    while True:
+        while at < len(sql) and sql[at] in (_CLIENT_SPACE if across_lines else " \t\r\f\v"):
+            at += 1
+        if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
+                (at + 2 == len(sql) or sql[at + 2] in _CLIENT_SPACE))):
+            end = sql.find("\n", at)
+            if end < 0:
+                return None
+            at, after_comment = end + 1, True
+            continue
+        if not sql.startswith("/*", at):
+            break
+        end = sql.find("*/", at + 2)
+        if end < 0:
+            return None
+        at, after_comment = end + 2, True
+    command = _NAMED_CLIENT_COMMAND.match(sql, at)
+    if command is None:
+        return None
+    name, end = command.group().upper(), command.end()
+    # add_line also looks up the completed buffer after removing its
+    # delimiter. Thus charset; and charset// can be command spellings,
+    # while CHARSET(...) and identifiers such as charset_name remain SQL.
+    if name != "DELIMITER" and end < len(sql) and sql[end] not in _CLIENT_SPACE and not (
+            delimiter is not None and sql.startswith(delimiter, end)):
+        return None
+    return at, name, after_comment
+
+
 #: Only ASCII white space separates tokens: both lexers read a non-ASCII
 #: space such as U+00A0 or U+3000 as an identifier character (a multibyte lead
 #: byte), so ``CONCAT\u00a0(`` names another function; str.split() would
@@ -129,15 +632,36 @@ _CLIENT_SPACE = " \t\n\r\f\v"
 _CODE_SPACE = re.compile("[%s]+" % re.escape(_CLIENT_SPACE))
 #: Flags every write sends to the mysql or mariadb client: keep comments (the
 #: myflames tag) and turn the client's backslash commands off (--binary-mode
-#: disables every command except \C and DELIMITER in non-interactive use, on
-#: MySQL and MariaDB clients alike).
+#: disables all but \C and DELIMITER in non-interactive use; MariaDB also
+#: recognizes \- (sandbox). The lexer refuses those remaining commands).
 WRITE_CLIENT_FLAGS = ("--comments", "--binary-mode")
-REASON_CLIENT_COMMAND = ("A backslash command (\\%s) outside quotes is run by the mysql client itself, not sent "
-                         "to the server.")
+REASON_CLIENT_COMMAND = ("Client backslash commands (\\%s) are not supported outside SQL strings and comments. "
+                         "Remove the command before running this SQL.")
+REASON_NAMED_CLIENT_COMMAND = ("The client command %s is not supported here. "
+                               "Put DELIMITER on its own line at the script start or after a complete statement, "
+                               "with only whitespace or ordinary comments on earlier lines; use SQL instead of other client commands.")
 REASON_DASH_CONTROL = ("'--' before a control character is code to the client and a comment to the server, so the "
                        "statement boundaries are uncertain.")
 REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
                     "statement boundaries uncertain.")
+REASON_COMMENT_FRAMING = ("A client delimiter splits a comment the server skips, so its SQL cannot be read "
+                          "as one complete server comment.")
+REASON_EXECUTED_FRAMING = ("A client delimiter splits an executable comment before it closes. "
+                           "Close the comment before the delimiter.")
+REASON_QUOTE_FRAMING = ("A client delimiter splits a server string or quoted identifier. "
+                        "Use quoting that the client and server can frame together.")
+REASON_NESTED_CLIENT_COMMENT = ("A nested /* inside an executable comment changes the client's comment state. "
+                                "Use SQL without nested executable comments.")
+REASON_NESTED_ORDINARY_COMMENT = ("An ordinary comment contains a nested /*!, /*+ or /*M! opener. "
+                                  "The client can end this comment differently from the server. "
+                                  "Remove the nested opener before running this SQL.")
+REASON_HINT = ("An optimizer hint (/*+ ... */) contains a comment marker "
+               "(/*, # or -- followed by whitespace or a line ending), a backslash, or an unclosed quote. "
+               "Close quoted values before */ and remove comment markers and backslashes, including inside quotes.")
+REASON_MULTILINE_HINT = ("A multi-line optimizer hint contains quotes, dollar quotes or the client delimiter. "
+                         "Keep this hint on one line or remove those characters.")
+REASON_TRAILING_BACKSLASH = ("A line ends with a backslash inside a string or quoted identifier. "
+                            "The client can change that text; move the backslash away from the line ending.")
 REASON_READYSET_HINT = "A /*rs+ ... create ... */ hint creates a Readyset cache when run on Readyset."
 _READYSET_CREATE_HINT = re.compile(r"^/\*rs\+.*\bcreate\b", re.I | re.S)
 
@@ -164,134 +688,166 @@ def _delimiter_argument(sql, at):
 
 # ---- splitting -----------------------------------------------------------------------
 
-def split_statements(sql, backslash_escapes=True, delimiter=";"):
-    """Split *sql* into statements like the mysql client.
+def _masked_fragment(sql, scan, start, end):
+    """Mask one source range using the server tokens, never rescan with a regex."""
+    code, idents, spans = [], [], []
+    ends = scan.get("ends")
+    if ends is None:
+        ends = scan["ends"] = [token[2] for token in scan["tokens"]]
+    at = bisect.bisect_right(ends, start)
+    while at < len(ends):
+        kind, left, right = scan["tokens"][at]
+        if left >= end:
+            break
+        left, right = max(left, start), min(right, end)
+        spans.append((kind, left, right))
+        if kind == "code":
+            code.append(sql[left:right])
+        elif kind == "identifier":
+            code.append("`%d`" % len(idents))
+            quote = "]" if sql[left] == "[" else sql[left]
+            idents.append(sql[left + 1:right - 1].replace(quote * 2, quote))
+        elif kind == "string":
+            code.append("''")
+        else:
+            code.append(" ")
+        at += 1
+    return _CODE_SPACE.sub(" ", "".join(code)).strip(" "), idents, tuple(spans)
 
-    Returns a list of dicts: ``text`` (the statement as written, without its
-    delimiter), ``start`` and ``end`` (offsets in *sql*), ``code`` (the text
-    with comments blanked, strings as ``''``, quoted identifiers as numbered
-    placeholders such as ``\\`0\\```, executable comment bodies kept as code),
-    ``idents`` (the quoted identifier names, by placeholder number),
-    ``unclosed`` (an unterminated quote or comment, or an unusable DELIMITER),
-    ``issues`` (reasons the boundaries are uncertain: a client backslash
-    command, "--" before a control character), and ``delimiter``.
-    ``DELIMITER x`` lines are client commands, parsed like the client
-    (quotes stripped, an unquoted argument ends at a space): they change the
-    delimiter and are never part of a statement. ``\\g`` and ``\\G`` outside
-    quotes end a statement, as the client does without --binary-mode. A
-    statement that is only comments is dropped. *backslash_escapes* False
-    reads strings as under sql_mode NO_BACKSLASH_ESCAPES. *delimiter* is the
-    delimiter in effect where *sql* starts (a part of a longer script that
-    follows a DELIMITER line).
+
+def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
+                     engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
+                     ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
+                     client_ansi_quotes=False):
+    """Client statement boundaries with code masked by the server's SQL lexer.
+
+    ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
+    ``token_spans`` come exclusively from :func:`lex_sql`'s server reading.
+    The client framing pass uses that same lexer with ``client=True``:
+    conditional comments do not suppress client delimiters, regardless of
+    whether the server will execute their contents. An unusable DELIMITER,
+    client command or unclosed token is never a safe unit.
+
+    DELIMITER/get_arg: mysql-server/client/mysql.cc:2661-2682,4652-4671,4897-4935;
+    delimiter and line-comment recognition: :2838-2912; MariaDB :2746-2833.
+    Dollar bodies use the optional newer client grammar (:2715-2746).
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
     if not isinstance(delimiter, str) or not delimiter or "\\" in delimiter:
         raise ValueError("Pass a delimiter of one or more characters without a backslash.")
-    pattern = TOKEN if backslash_escapes else TOKEN_NO_BACKSLASH
+    framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
+                      client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
+                      client_engine=client_engine, comment_dialect=comment_dialect,
+                      client_ansi_quotes=client_ansi_quotes)
+    scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
+                   unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
+                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
     out = []
-    state = {"start": 0, "code": [], "idents": [], "pending": False, "unclosed": False, "issues": []}
-    versioned = False
+    consumed_delimiters = set()
+    state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
+    pos, token_index = 0, 0
     n = len(sql)
-    pos = 0
-
-    def finish(end, next_start):
-        if state["pending"] or state["issues"]:
-            raw = sql[state["start"]:end]
-            lead = len(raw) - len(raw.lstrip())
-            text = raw.strip()
-            out.append({"text": text, "start": state["start"] + lead, "end": state["start"] + lead + len(text),
-                        "code": _CODE_SPACE.sub(" ", "".join(state["code"])).strip(" "),
-                        "idents": list(state["idents"]),
-                        "unclosed": state["unclosed"], "issues": list(state["issues"]), "delimiter": delimiter})
-        state.update(start=next_start, code=[], idents=[], pending=False, unclosed=False, issues=[])
 
     def issue(reason):
         if reason not in state["issues"]:
             state["issues"].append(reason)
 
+    def finish(end, next_start):
+        start = state["start"]
+        code, idents, tokens = _masked_fragment(sql, scan, start, end)
+        # A skipped comment cannot mask SQL across separate COM_QUERYs.
+        # In --force mode a later fragment could execute after the first
+        # fragment's unclosed-comment error. Refuse this framing, including
+        # for classifier callers outside the editor's packet builder.
+        for boundary in (start, end):
+            index = bisect.bisect_right(scan["ends"], boundary)
+            if index < len(scan["tokens"]):
+                kind, left, right = scan["tokens"][index]
+                if kind == "comment" and left < boundary < right:
+                    issue(REASON_COMMENT_FRAMING)
+                if kind in ("string", "identifier") and left < boundary < right:
+                    issue(REASON_QUOTE_FRAMING)
+            for comment in scan["comments"]:
+                if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
+                    issue(REASON_EXECUTED_FRAMING)
+        for at, reason in scan["issues"] + framing["issues"]:
+            if start <= at < end and not (at in consumed_delimiters and
+                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                issue(reason)
+        unclosed = state["unclosed"] or any(left < end and right > start
+                                            for left, right in scan["unclosed"] + framing["unclosed"])
+        if code or state["pending"] or state["issues"] or unclosed:
+            raw = sql[start:end]
+            lead = len(raw) - len(raw.lstrip())
+            text = raw.strip()
+            out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
+                        "code": code, "idents": idents, "token_spans": tokens,
+                        "unclosed": bool(unclosed), "issues": list(state["issues"]), "delimiter": delimiter,
+                        "next_start": next_start})
+        state.update(start=next_start, pending=False, issues=[], unclosed=False)
+
+    tokens = framing["tokens"]
     while pos < n:
-        match = pattern.search(sql, pos)
-        stop = match.start() if match else n
-        i = pos
-        restart = False
-        while i < stop:
-            if (i == 0 or sql[i - 1] == "\n") and not state["pending"] and not versioned:
-                command = _DELIMITER_COMMAND.match(sql, i)
-                if command:
-                    value, line_end = _delimiter_argument(sql, command.end())
-                    if value and "\\" not in value:
-                        delimiter = value
-                    else:
-                        # The client prints an error and keeps the old delimiter.
-                        state["unclosed"] = True
-                        issue(REASON_DELIMITER)
-                    pos = line_end
-                    state.update(start=pos, code=[], idents=[])
-                    restart = True
-                    break
-            if versioned and sql.startswith("*/", i):
-                state["code"].append(" ")
-                versioned = False
-                i += 2
-                continue
-            if sql.startswith(delimiter, i):
-                finish(i, i + len(delimiter))
-                i += len(delimiter)
-                continue
-            ch = sql[i]
-            if ch == "\\":
-                following = sql[i + 1] if i + 1 < n else ""
-                if following in ("g", "G"):
-                    finish(i, i + 2)
-                    i += 2
-                    continue
-                if following != "N":
-                    # \N is NULL; any other backslash command belongs to the client.
-                    issue(REASON_CLIENT_COMMAND % (following or ""))
-            elif ch in "'\"`" or sql.startswith("/*", i):
-                # TOKEN matched no closed string, identifier or comment here.
-                state["unclosed"] = True
-            elif ch == "-" and DASH_CONTROL.match(sql, i):
-                issue(REASON_DASH_CONTROL)
-            state["code"].append(ch)
-            if not ch.isspace():
-                state["pending"] = True
-            i += 1
-        if restart:
-            continue
-        if not match:
+        while token_index < len(tokens) and tokens[token_index][2] <= pos:
+            token_index += 1
+        if token_index == len(tokens):
             break
-        token = match.group()
-        if token.startswith("/*+") and "\\" in token:
-            # The client runs backslash commands inside optimizer hints (they are
-            # not comments to its add_line: SSC_HINT), e.g. /*+ \C latin1 */.
-            at = token.index("\\")
-            issue(REASON_CLIENT_COMMAND % (token[at + 1:at + 2] or ""))
-        if token.startswith("/*"):
-            if _READYSET_CREATE_HINT.match(token):
-                issue(REASON_READYSET_HINT)
-            opener = _VERSIONED_OPEN.match(token)
-            if opener and not versioned:
-                # The body of an executable comment is code: scan it (a
-                # delimiter inside ends the statement, as in the client).
-                state["code"].append(" ")
-                versioned = True
-                pos = match.start() + opener.end()
+        kind, left, right = tokens[token_index]
+        if kind == "delimiter_command":
+            command = _DELIMITER_COMMAND.match(sql, left)
+            value, line_end = _delimiter_argument(sql, command.end())
+            # A MySQL client treats /*M! SQL */ as an ordinary comment, but
+            # a MariaDB server executes it. Only discard a prefix the server
+            # also ignores. Keep unsafe text in a refused unit, including
+            # when this DELIMITER is the last line of the run.
+            # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
+            # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
+            ignored = not prefix_code and not any(
+                comment["executes"] is not False and comment["start"] < left and
+                comment["end"] > state["start"] for comment in scan["comments"])
+            if ignored:
+                consumed_delimiters.add(command.start(1))
+            else:
+                issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
+                      "before changing DELIMITER.")
+            # Suppress only the exact command proved safe above. Other
+            # commands and problems in the prefix must still refuse.
+            for at, reason in scan["issues"] + framing["issues"]:
+                if state["start"] <= at < line_end and not (at in consumed_delimiters and
+                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                    issue(reason)
+            if not ignored:
+                finish(line_end, line_end)
+            if value and "\\" not in value:
+                delimiter = value
+            else:
+                state["unclosed"] = True
+                issue(REASON_DELIMITER)
+            pos = line_end
+            state["start"] = pos
+            continue
+        if kind == "delimiter":
+            finish(left, right)
+            pos = right
+            continue
+        if kind != "code":
+            if kind in ("identifier", "string"):
+                state["pending"] = True
+            pos = right
+            continue
+        ch = sql[pos]
+        if ch == "\\":
+            following = sql[pos + 1:pos + 2]
+            if following in ("g", "G"):
+                finish(pos, pos + 2)
+                pos += 2
                 continue
-            state["code"].append(" ")
-        elif token[0] in "-#":
-            state["code"].append(" ")
-        elif token[0] == "`":
-            state["code"].append("`%d`" % len(state["idents"]))
-            state["idents"].append(token[1:-1].replace("``", "`"))
+            # lex_sql reports unsupported commands in both complete passes.
+        if ch not in _CLIENT_SPACE:
             state["pending"] = True
-        else:
-            state["code"].append("''")
-            state["pending"] = True
-        pos = match.end()
-    if versioned:
-        state["unclosed"] = True
+        pos += 1
     finish(n, n)
     return out
 
@@ -384,7 +940,7 @@ def _verb(upper):
 _READ_FUNCTIONS = frozenset("""
 ABS ACOS ASIN ATAN ATAN2 AVG BIT_AND BIT_OR BIT_XOR CEIL CEILING CHAR
 CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS CONNECTION_ID CONV
-CONVERT COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME
+CONVERT CONVERT_TZ COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME
 CURRENT_TIMESTAMP CURRENT_USER CURTIME DATABASE DATE DATE_ADD DATE_FORMAT
 DATE_SUB DATEDIFF DAY DAYNAME DAYOFMONTH DAYOFWEEK DAYOFYEAR DEGREES EXP EXTRACT
 FIELD FIND_IN_SET FLOOR FORMAT FOUND_ROWS FROM_BASE64 FROM_DAYS FROM_UNIXTIME
@@ -434,7 +990,29 @@ _ADMIN_FUNCTION_PREFIXES = ("GROUP_REPLICATION_", "ASYNCHRONOUS_CONNECTION_FAILO
                             "KEYRING_", "VERSION_TOKENS_", "SERVICE_GET_", "SERVICE_RELEASE_")
 
 
-def _select_function_checks(upper, idents):
+def _native_read_functions(engine, server_version):
+    """Version-specific readers stay unknown until server facts establish them.
+
+    CURRENT_ROLE: mysql-8.0.11 sql/item_create.cc:1316 and mariadb-10.11.1
+    sql/sql_yacc.yy:9850. JSON_VALUE: mysql-8.0.21:sql/sql_yacc.yy:1261,
+    10005-10010 adds JSON_VALUE_SYM (absent in mysql-8.0.20); MariaDB's
+    checked floor is mariadb-10.11.1:sql/item_create.cc:5787. Other floors
+    are checked versions, not claims about first releases.
+    """
+    version = parse_version_tuple(server_version, leading=True,
+                                  prefer_mariadb=engine == "mariadb", default=None)
+    names = set(_READ_FUNCTIONS)
+    if version is not None:
+        if ((engine == "mysql" and version >= (8, 0, 11)) or
+                (engine == "mariadb" and version >= (10, 11, 1))):
+            names.add("CURRENT_ROLE")
+        if ((engine == "mysql" and version >= (8, 0, 21)) or
+                (engine == "mariadb" and version >= (10, 11, 1))):
+            names.add("JSON_VALUE")
+    return names
+
+
+def _select_function_checks(upper, idents, native_functions=None):
     """Inspect calls in the shared scanner's code, never strings/comments.
 
     Parenthesis pairs make CTE column declarations cheap to recognize without
@@ -485,7 +1063,7 @@ def _select_function_checks(upper, idents):
                     continue
                 found.append(_verdict("write", "session", "LAST_INSERT_ID with an argument changes session state."))
                 continue
-            if name in _READ_FUNCTIONS and (name not in _SPACE_SENSITIVE_FUNCTIONS or
+            if name in (native_functions or _READ_FUNCTIONS) and (name not in _SPACE_SENSITIVE_FUNCTIONS or
                                            matches[i].end() == matches[i + 1].start()):
                 continue
         if not qualified and not quoted and name.startswith(_ADMIN_FUNCTION_PREFIXES):
@@ -498,10 +1076,10 @@ def _select_function_checks(upper, idents):
     return found
 
 
-def _select_checks(upper, idents, into=True):
+def _select_checks(upper, idents, into=True, native_functions=None):
     """The SELECT expression checks; *into* False skips INTO (an explained
     INSERT INTO or SELECT ... INTO writes nothing)."""
-    found = _select_function_checks(upper, idents)
+    found = _select_function_checks(upper, idents, native_functions)
     if into and re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
         found.append(_verdict("write", "file", "INTO OUTFILE or DUMPFILE writes a file on the database server host "
                                                "(it needs the FILE privilege)."))
@@ -763,7 +1341,7 @@ def _set_checks(upper, idents):
 _REPLICATION_WORDS = r"(?:REPLICA|SLAVE|SLAVES|GROUP_REPLICATION|ALL)"
 
 
-def _classify_code(upper, idents, key_columns):
+def _classify_code(upper, idents, key_columns, native_functions=None):
     """Verdict for one statement's masked code, upper-cased."""
     upper = upper.strip()
     text = upper
@@ -776,19 +1354,19 @@ def _classify_code(upper, idents, key_columns):
     second = nxt.group(1) if nxt else ""
 
     if word in ("SELECT", "TABLE", "VALUES"):
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "WITH":
         flat = _flat(text)
         main = re.search(r"\b(SELECT|TABLE|VALUES|UPDATE|DELETE|INSERT|REPLACE)\b", flat[lead.end():])
         if not main:
-            return _select_checks(upper, idents)
+            return _select_checks(upper, idents, native_functions=native_functions)
         verb = main.group(1)
         at = lead.end() + main.start()
         if verb in ("UPDATE", "DELETE"):
             return _update_delete(verb, text[at:], idents, key_columns)
         if verb in ("INSERT", "REPLACE"):
             return _verdict("write", "dml", "%s adds rows." % verb)
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "HANDLER":
         # Both engines retain OPEN's MDL ticket with MDL_EXPLICIT duration
         # (sql/sql_handler.cc). Match the operation after the table name,
@@ -800,13 +1378,13 @@ def _classify_code(upper, idents, key_columns):
                                             "HANDLER CLOSE or the session ends")
         # HANDLER READ evaluates its WHERE expression on the server; apply
         # the SELECT expression checks (functions, :=, named locks) to it.
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "SHOW":
         # SHOW's WHERE and expression parts are evaluated by the server
         # (sql/sql_show.cc evaluates the condition like a SELECT WHERE), so
         # SHOW TABLES WHERE GET_LOCK('x', 0) would take a named lock. Apply
         # the SELECT expression checks instead of trusting the verb.
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "GET":
         # GET DIAGNOSTICS only assigns variables (session state).
         return _verdict("write", "session", "GET DIAGNOSTICS assigns condition information to variables.")
@@ -827,7 +1405,7 @@ def _classify_code(upper, idents, key_columns):
                 return _verdict("write", "session", "EXPLAIN ... INTO assigns the plan to a user variable.")
             rest = rest[m.end():]
         if analyzed and rest.strip():
-            inner = _classify_code(rest, idents, key_columns)
+            inner = _classify_code(rest, idents, key_columns, native_functions)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
             return inner
         # Plain EXPLAIN does not run the statement, but planning evaluates
@@ -848,7 +1426,7 @@ def _classify_code(upper, idents, key_columns):
             close = rest.index(")", target.end())
             if "(" not in rest[target.end():close]:
                 rest = rest[:target.end() - 1] + " " + rest[close + 1:]
-        verdict = _select_checks(rest, idents, into=False)
+        verdict = _select_checks(rest, idents, into=False, native_functions=native_functions)
         if verdict["kind"] != "read":
             verdict["reasons"] = ["EXPLAIN evaluates constant expressions and derived tables while it plans "
                                   "the statement."] + verdict["reasons"]
@@ -856,7 +1434,7 @@ def _classify_code(upper, idents, key_columns):
     if word == "ANALYZE":
         if re.match(r"\s*(?:SELECT|UPDATE|DELETE|INSERT|REPLACE|WITH|FORMAT\b|\()", after):
             inner_text = re.sub(r"^\s*FORMAT\s*=\s*[A-Z_]+", "", after)
-            inner = _classify_code(inner_text, idents, key_columns)
+            inner = _classify_code(inner_text, idents, key_columns, native_functions)
             inner["reasons"] = ["MariaDB ANALYZE runs the statement."] + inner["reasons"]
             return inner
         return _verdict("write", "maintenance", "ANALYZE TABLE updates index statistics.")
@@ -985,7 +1563,7 @@ REASON_MULTI = ("The client sends this as one request and the server runs each '
                 "the worst one counts.")
 
 
-def _classify_statement(stmt, key_columns):
+def _classify_statement(stmt, key_columns, native_functions=None):
     """Verdict for one client statement. Under a DELIMITER other than ';' the
     text can hold several server statements (the client connects with
     CLIENT_MULTI_STATEMENTS), so each ';'-separated part is judged."""
@@ -996,50 +1574,112 @@ def _classify_statement(stmt, key_columns):
         category = "server" if not stmt["unclosed"] and reasons == [REASON_READYSET_HINT] else "unknown"
         return {"kind": "risky", "category": category, "reasons": reasons}
     parts = [p for p in stmt["code"].upper().split(";") if p.strip()]
-    verdicts = [_classify_code(p, stmt["idents"], key_columns) for p in parts]
+    verdicts = [_classify_code(p, stmt["idents"], key_columns, native_functions) for p in parts]
     verdict = _worst(verdicts)
     if len(parts) > 1:
         verdict["reasons"].append(REASON_MULTI)
     return verdict
 
 
-def _classify_reading(sql, backslash_escapes, key_columns):
+def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_version=None,
+                      unknown_execute=True, wsrep_on=None, **quote_args):
+    units = split_statements(sql, backslash_escapes, engine=engine, server_version=server_version,
+                            unknown_execute=unknown_execute, wsrep_on=wsrep_on, **quote_args)
     statements = []
-    for stmt in split_statements(sql, backslash_escapes):
-        verdict = _classify_statement(stmt, key_columns)
+    native_functions = _native_read_functions(engine, server_version)
+    for stmt in units:
+        verdict = _classify_statement(stmt, key_columns, native_functions)
         statements.append({"text": stmt["text"], "start": stmt["start"], "end": stmt["end"],
                            "verb": _verb(stmt["code"].upper()), "kind": verdict["kind"],
                            "category": verdict["category"], "reasons": verdict["reasons"]})
-    return statements
+    return units, statements
 
 
-def classify(sql, backslash_escapes=None, key_columns=None):
-    """Classify SQL text as ``read``, ``write`` or ``risky`` with reasons.
+def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None, wsrep_on=None,
+             sql_mode=None, client_engine=None):
+    """Classify every modelled server reading and keep the worst effect.
 
-    *backslash_escapes*: None reads strings both ways (with backslash
-    escapes, and as under NO_BACKSLASH_ESCAPES) and keeps the worse verdict;
-    True or False uses one reading (when the session's sql_mode is known).
-    *key_columns*: the key column names of the table an UPDATE or DELETE
-    changes, when the caller knows them.
-
-    Returns ``{"kind", "category", "reasons", "statements": [{"text",
-    "start", "end", "verb", "kind", "category", "reasons"}], "count",
-    "ambiguous"}``; ``kind`` is the worst statement's.
+    Unknown engines or MySQL versions use all version-number grammars. Unknown quote modes
+    compare complete readings, not a union of independently masked tokens.
+    Unknown version conditions still fail closed when mixed conditions could
+    expose code that neither the all-execute nor all-skip reading exposes.
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
     if len(sql) > 1000000:
         raise ValueError("SQL text is limited to 1,000,000 characters.")
-    readings = [True, False] if backslash_escapes is None else [bool(backslash_escapes)]
-    results = [_classify_reading(sql, b, key_columns) for b in readings]
-    statements = results[0]
+    readings = lexer_readings(backslash_escapes, engine, sql_mode, server_version, client_engine, sql)
+    units, statements = _classify_reading(sql, key_columns=key_columns, engine=engine,
+                                         server_version=server_version, wsrep_on=wsrep_on, **readings[0])
+    reference = _mode_reading(units)
+    skipped_reference = None
     summary = _worst(statements)
-    ambiguous = len(results) > 1 and \
-        [(s["start"], s["end"]) for s in results[1]] != [(s["start"], s["end"]) for s in statements]
+    ambiguous = False
+
+    def merge(alternative):
+        # Preserve original source text while merging overlapping verdicts.
+        first = 0
+        for statement in statements:
+            while first < len(alternative) and alternative[first]["end"] <= statement["start"]:
+                first += 1
+            end = first
+            while end < len(alternative) and alternative[end]["start"] < statement["end"]:
+                end += 1
+            if end > first:
+                statement.update(_worst([statement] + alternative[first:end]))
+
+    for reading in readings[1:]:
+        units, alternative = _classify_reading(sql, key_columns=key_columns, engine=engine,
+                                              server_version=server_version, wsrep_on=wsrep_on, **reading)
+        meaning = _mode_reading(units)
+        if meaning != reference:
+            # A future gate cannot execute with the legacy five-digit
+            # grammar. If that yields exactly the existing all-skip reading,
+            # it adds no lexical ambiguity: conditional execute/skip effects
+            # already participate in the worst verdict below. A sixth digit
+            # exposed as SQL, different quotes or client framing still does.
+            if reading["comment_dialect"] == "mysql_legacy":
+                if skipped_reference is None:
+                    skipped, unused = _classify_reading(
+                        sql, key_columns=key_columns, engine=engine, server_version=server_version,
+                        unknown_execute=False, wsrep_on=wsrep_on, **readings[0])
+                    skipped_reference = _mode_reading(skipped)
+                ambiguous = ambiguous or meaning != skipped_reference
+            else:
+                ambiguous = True
+        summary = _worst([summary, _worst(alternative)])
+        merge(alternative)
     if ambiguous:
-        # Both readings were classified; the worse one counts.
-        summary = _worst([summary, _worst(results[1])])
         summary["reasons"].append(AMBIGUOUS_REASON)
+    for reading in readings if "/*" in sql else ():
+        scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
+        uncertain = [c for c in scan["comments"] if c["problem"]]
+        if uncertain:
+            unused_units, alternative = _classify_reading(
+                sql, key_columns=key_columns, engine=engine, server_version=server_version,
+                unknown_execute=False, wsrep_on=wsrep_on, **reading)
+            summary = _worst([summary, _worst(alternative)])
+            merge(alternative)
+            if len({c["opener"] for c in uncertain}) > 1 or any(
+                    c.get("problem") in ("reversed executable comment", "unterminated executable comment",
+                                         "MariaDB wsrep executable comment /*!99997") for c in uncertain):
+                ambiguous = True
+                unknown = _verdict("risky", "unknown",
+                                   "Executable comments have uncertain server conditions, so myflames cannot "
+                                   "confirm which SQL executes.")
+                summary = _worst([summary, unknown])
+                for statement in statements:
+                    statement.update(_worst([statement, unknown]))
+    for reading in readings if "$" in sql else ():
+        plain = split_statements(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
+        dollars = split_statements(sql, dollar_quotes=True, engine=engine,
+                                   server_version=server_version, wsrep_on=wsrep_on, **reading)
+        if _target_reading(plain) != _target_reading(dollars):
+            ambiguous = True
+            summary = _verdict("risky", "unknown", "Dollar quotes change the SQL interpretation between clients.")
+            statements = [dict(s, kind="risky", category="unknown",
+                               reasons=list(s["reasons"]) + summary["reasons"]) for s in statements]
+            break
     return {"kind": summary["kind"], "category": summary["category"], "reasons": summary["reasons"],
             "statements": statements, "count": len(statements), "ambiguous": ambiguous}
 
@@ -1054,6 +1694,580 @@ def classify(sql, backslash_escapes=None, key_columns=None):
 #: guard cannot be lifted on a read-only connection.
 READ_ONLY_SESSION_GUARD = ("SET SESSION TRANSACTION READ ONLY",)
 
+# The same UUID grammar used for reviewed Cluster and replication actions.
+_TARGET_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_TARGET_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,255}")
+_TARGET_ERROR = re.compile(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?ERROR\s+(\d+)"
+                           r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):", re.M)
+TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one you reviewed. Nothing was sent. "
+                            "Refresh and review again.")
+# Both clients keep their delimiter in a 16-byte buffer. None of these
+# candidates contains whitespace, quoting or a client backslash command.
+_TARGET_DELIMITERS = ("$$", "//", "__mf_end_1__", "__mf_end_2__")
+_TARGET_MARKER = re.compile(r"^myflames_guard_ok_[0-9a-f]{32}_[0-9]+$", re.M)
+
+
+def target_guard_markers(text):
+    """Private acknowledgements only, never SQL result rows or credentials."""
+    return tuple(_TARGET_MARKER.findall(text or ""))
+
+
+def target_script_markers(sql):
+    """Only acknowledgements inserted immediately after a packet's guard."""
+    return tuple(re.findall(r"^SET @myflames_target = [^\r\n]*?; SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'; ",
+                            sql or "", re.M))
+
+
+def strip_target_guard_markers(text, markers=()):
+    # Filter this invocation's nonce, preserving ordinary result rows that
+    # happen to resemble the reserved prefix, including unguarded queries.
+    private = set(markers)
+    return "\n".join(row for row in text.split("\n") if row not in private)
+
+
+def _target_error_match(text):
+    # MariaDB can echo the entire query before its diagnostic. A newline in
+    # a quoted value may itself look like ERROR ... at line ...; only search
+    # after the client's closing echo separator in that case.
+    boundary = text.rfind("\n--------------\n")
+    return _TARGET_ERROR.search(text, boundary + len("\n--------------\n") if boundary >= 0 else 0)
+
+
+def target_error_text(exc):
+    """The diagnostic without echoed SQL or private acknowledgement names."""
+    text = str(exc)
+    match = _target_error_match(text)
+    if match:
+        text = text[match.start():]
+    text = re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
+    return re.sub(r"myflames_evidence_[0-9a-f]+", "[identity evidence]", text)
+
+
+def _evidence_error_text(exc, password=None):
+    """Keep one real diagnostic line, without the client's SQL echo."""
+    match = re.search(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?(ERROR\s+\d+\b[^\r\n]*)",
+                      target_error_text(exc), re.M)
+    if match is None:
+        return ""
+    detail = re.split(r"\bnear\s+['\"`]", match.group(1), maxsplit=1, flags=re.I)[0].rstrip()
+    return redact(detail, password if isinstance(password, str) else None)
+
+
+def target_has_galera(variables, engine=None):
+    """Provider existence is independent of this session's wsrep_on.
+
+    MariaDB sql/wsrep_var.cc:107-108 checks a nonempty provider != 'none'.
+    Keep wsrep_on as additional evidence for older/incomplete snapshots.
+    """
+    variables = variables or {}
+    provider = str(variables.get("wsrep_provider") or "").lower()
+    return (engine == "pxc" or provider not in ("", "none") or
+            str(variables.get("wsrep_on", "")).upper() in ("ON", "1"))
+
+
+_EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version", "version_comment",
+                       "wsrep_on", "wsrep_provider", "wsrep_node_name")
+
+
+class _TargetIdentityError(ValueError):
+    """An app-built identity explanation safe to keep in a scope refusal."""
+
+
+class TargetEvidenceConnection(object):
+    """Keep every successful review read on one node, even through a router.
+
+    Each identity prefix and its read are ONE COM_QUERY, using a client
+    delimiter absent from the entire payload. All reads in this scope must
+    agree. No result from another node is ever returned to the caller.
+    Identity failures are sticky, including when an optional reader catches
+    one. A server error after the validated prefix preserves normal fallbacks.
+    This binds the node, not a transactional snapshot of changing server data.
+    """
+    def __init__(self, conn):
+        self.connection = conn
+        self.variables = None
+        self.problem = None
+        self._consent_error = None
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def server_version(self):
+        """Use this scope's packet metadata, never the transport's cache."""
+        self.check()
+        if self.variables is None:
+            self.run("SELECT @@version", extra_flags=["--comments"])
+        return self.variables.get("version", "")
+
+    def server_version_comment(self):
+        self.server_version()
+        return self.variables.get("version_comment", "")
+
+    def is_mariadb(self):
+        from .server_info import detect_flavor
+        return detect_flavor(self.server_version(), self.server_version_comment()) == "mariadb"
+
+    def check(self):
+        from .connector import ConnectorError
+        if self._consent_error is not None:
+            raise self._consent_error
+        if self.problem:
+            error = ConnectorError(self.problem)
+            error.identity_outcome = "identity_unavailable"
+            raise error
+
+    def run_write(self, *args, **kwargs):
+        self.check()
+        return self.connection.run_write(*args, **kwargs)
+
+    def run_stdin(self, *args, **kwargs):
+        self.check()
+        return self.connection.run_stdin(*args, **kwargs)
+
+    def run(self, sql, extra_flags=None, **kwargs):
+        from .connector import ConnectorError, PartialReadError, unescape_mysql
+        from .perf_common import named_rows
+        self.check()
+        failure = None
+        try:
+            marker = "myflames_evidence_" + uuid.uuid4().hex
+            units = split_statements(sql)
+            # Boundary checks and transport are part of validation too. A
+            # failed prefix must poison the scope even if an optional reader
+            # catches the error and tries to continue with earlier evidence.
+            bodies = []
+            for unit in units:
+                start, end = _target_statement_span(unit["text"])
+                bodies.append(unit["text"][start:end])
+            if not units or any(unit["delimiter"] != ";" or unit["issues"] or unit["unclosed"] for unit in units):
+                raise ValueError("uncertain review evidence SQL boundaries")
+            leading = re.match(r"\s*(/\*myflames:[^\r\n]*?\*/)", units[0]["text"])
+            tag = (leading.group(1) if leading else "/*myflames:target-evidence*/") + " "
+            body = tag + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
+            body += tag + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid';\n"
+            body += tag + "SELECT '%s';\n" % marker
+            body += "\n;\n".join(bodies) + "\n"
+            delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
+            if delimiter is None:
+                raise ValueError("no safe review evidence packet delimiter")
+            flags = list(extra_flags or [])
+            if "--skip-reconnect" not in flags:
+                flags.append("--skip-reconnect")
+            if "--comments" not in flags:
+                flags.append("--comments")
+            # The connector retains stdout separately from error messages.
+            # A valid prefix alone is insufficient: only a server diagnostic
+            # at this packet's line proves the read, rather than transport,
+            # failed. Transport errors cannot authorize an optional fallback.
+            try:
+                kwargs["retain_partial_stdout"] = True
+                text = self.connection.run("DELIMITER %s\n%s%s\n" % (delimiter, body, delimiter),
+                                           extra_flags=flags, **kwargs)
+            except PartialReadError as exc:
+                match = _target_error_match(str(exc))
+                if not match or int(match.group(2)) != 2 or 2000 <= int(match.group(1)) <= 2999:
+                    raise
+                text, failure = exc.stdout, exc
+            if "--xml" in flags:
+                # mysql prints one XML document per result set. Preserve the
+                # original result document exactly for Reader.named().
+                documents = list(re.finditer(r"(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*?"
+                                             r"(?:/>|>[\s\S]*?</resultset>)", text))
+                if len(documents) < 3:
+                    raise ValueError("missing evidence result sets")
+                evidence = documents[:3]
+                marker_rows = named_rows(evidence[2].group())
+                if len(marker_rows) != 1 or list(marker_rows[0].values()) != [marker]:
+                    raise ValueError("missing evidence marker")
+                values = {}
+                for document in evidence[:2]:
+                    for row in named_rows(document.group()):
+                        row = {key.lower(): value for key, value in row.items()}
+                        key = row["variable_name"].lower()
+                        if key in values:
+                            raise ValueError("duplicate server identity field")
+                        values[key] = row["value"]
+                output = text[evidence[2].end():].lstrip("\r\n")
+            else:
+                prefix, separator, output = text.partition(marker + "\n")
+                if not separator or (prefix and not prefix.endswith("\n")):
+                    raise ValueError("missing evidence marker")
+                values = {}
+                for line in prefix.splitlines():
+                    key, value = line.split("\t")
+                    if key.lower() in values:
+                        raise ValueError("duplicate server identity field")
+                    values[key.lower()] = unescape_mysql(value)
+            if any(key not in _EVIDENCE_VARIABLES + ("wsrep_gcomm_uuid",) for key in values):
+                raise ValueError("unexpected server identity field")
+            required = ("server_uuid",) if "server_uuid" in values else ("server_id", "hostname", "port", "version")
+            if not all(values.get(key) for key in required):
+                raise ValueError("missing server identity")
+            engine = "mysql" if "server_uuid" in values else "mariadb"
+            identity = {key: values[key] for key in required}
+            target_session_guard(engine, target_galera_identity(None, engine, identity, values))
+            if self.variables is not None and self.variables != values:
+                raise ValueError("the server identity changed between evidence packets")
+            self.variables = values
+        except BaseException as exc:
+            from .connection_groups import ProfileReadError
+            if isinstance(exc, ProfileReadError):
+                # Optional readers may catch ValueError. Preserve this exact
+                # refusal for their caller's check(), including its explanation.
+                self._consent_error = exc
+                self.problem = str(exc)
+                raise
+            cause = failure if failure is not None else exc
+            detail = (_evidence_error_text(cause, getattr(self.connection, "password", None))
+                      if isinstance(cause, ConnectorError) else
+                      str(cause) if isinstance(cause, _TargetIdentityError) else "")
+            self.problem = ("The identity check could not run: " + (detail.rstrip(".") + ". " if detail else "") +
+                            "Review evidence did not come from one identified server. Nothing was sent. Refresh and review again.")
+            # Cancellation must keep its normal control flow, but a caller
+            # that catches it still cannot reuse this incomplete scope.
+            if not isinstance(exc, Exception):
+                raise
+            self.check()
+        if failure is not None:
+            # The caller may legitimately handle 1141 (an absent account),
+            # 1193 (an optional variable), or other read errors. Do not leak
+            # the private prefix through the ordinary exception interface.
+            raise ConnectorError(_evidence_error_text(failure, getattr(self.connection, "password", None)) or
+                                 "The review read failed.") from None
+        return output
+
+
+def target_evidence(function):
+    """Bind a complete review/recheck, including nested evidence readers."""
+    @functools.wraps(function)
+    def bound(conn, *args, **kwargs):
+        from .connector import ConnectorError
+        from .connection_groups import ProfileReadError
+        evidence = conn if isinstance(conn, TargetEvidenceConnection) else TargetEvidenceConnection(conn)
+        try:
+            result = function(evidence, *args, **kwargs)
+        except ProfileReadError:
+            raise
+        except (ConnectorError, ValueError):
+            # Preserve the identity refusal if an inner reader replaced its
+            # diagnostic with a generic grants/metadata error.
+            evidence.check()
+            raise
+        evidence.check()
+        return result
+    return bound
+
+
+def target_galera_identity(conn, engine, identity, variables, tag=""):
+    """Use only node evidence captured in the same packet as the read state."""
+    out = dict(identity or {})
+    if isinstance(conn, TargetEvidenceConnection):
+        conn.check()
+        if conn.variables is None:
+            conn.problem = "The identity check could not run: no server evidence was read. Nothing was sent. Refresh and review again."
+            conn.check()
+    evidence = conn.variables if isinstance(conn, TargetEvidenceConnection) else variables
+    evidence = evidence or {}
+    if isinstance(conn, TargetEvidenceConnection) and conn.variables:
+        keys = ("server_id", "hostname", "port") if engine == "mariadb" else ("server_uuid",)
+        if all(out.get(key) for key in keys) and any(str(out[key]) != str(evidence.get(key, "")) for key in keys):
+            conn.problem = "The identity check could not run: the reviewed state and server identity disagree. Nothing was sent. Refresh and review again."
+            conn.check()
+    if not target_has_galera(evidence, engine):
+        return out
+    out.update(wsrep_on=evidence.get("wsrep_on", "OFF"),
+               wsrep_gcomm_uuid=evidence.get("wsrep_gcomm_uuid"))
+    if evidence.get("wsrep_provider"):
+        out["wsrep_provider"] = evidence["wsrep_provider"]
+    return out
+
+
+def target_session_guard(engine, identity):
+    """One SQL line bound only to a previously reviewed server identity.
+
+    A scalar subquery returns NULL on a match and two rows on a mismatch
+    (ERROR 1242). Use target_guarded_script to send it in the SAME query
+    packet as each write, without --force or reconnect. Missing or unsafe
+    identity values fail closed.
+    Like READ_ONLY_SESSION_GUARD, the returned list is review/audit metadata.
+    """
+    from .collectors import _sql_string
+    identity = identity if isinstance(identity, dict) else {}
+    if engine in ("mysql", "percona", "percona_server", "pxc"):
+        uuid = identity.get("server_uuid")
+        if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
+            raise ValueError("The reviewed server UUID is missing or invalid. Nothing was sent. Refresh and review again.")
+        different = "@@global.server_uuid <> %s" % _sql_string(uuid)
+    elif engine == "mariadb":
+        values = {}
+        for key, maximum in (("server_id", 4294967295), ("port", 65535)):
+            value = identity.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, str)) or \
+                    len(str(value)) > 10 or not re.fullmatch(r"[0-9]+", str(value)) or not 0 <= int(value) <= maximum:
+                raise ValueError("The reviewed server %s is missing or invalid. Nothing was sent. Refresh and review again."
+                                 % key)
+            values[key] = int(value)
+        names = ["hostname"] + (["wsrep_node_name"] if "wsrep_node_name" in identity else [])
+        for key in names:
+            value = identity.get(key)
+            if not isinstance(value, str) or not _TARGET_NAME.fullmatch(value):
+                if key == "hostname" and isinstance(value, str) and value:
+                    raise _TargetIdentityError(
+                        "The server host name contains characters the identity check cannot compare safely. "
+                        "Set a plain host name or use a MySQL server with a UUID. Nothing was sent.")
+                raise ValueError("The reviewed server %s is missing or invalid. Nothing was sent. Refresh and review again."
+                                 % key)
+            values[key] = value
+        different = " OR ".join("@@global.%s <> %s" % (key, str(values[key]) if key in ("server_id", "port")
+                                                      else _sql_string(values[key]))
+                                for key in ["server_id", "hostname", "port"] + names[1:])
+    else:
+        raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
+    if "wsrep_gcomm_uuid" in identity or target_has_galera(identity, engine):
+        uuid = identity.get("wsrep_gcomm_uuid")
+        if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
+            raise ValueError("The identity check could not run: the reviewed Galera node UUID is missing or invalid. Nothing was sent. "
+                             "Refresh and review again.")
+        # MariaDB 10.11/11.4/11.8 sql/sql_show.cc: GLOBAL_STATUS uses
+        # variables_fields_info (VARIABLE_NAME, VARIABLE_VALUE). MySQL/PXC
+        # exposes the same columns in performance_schema.global_status
+        # (mysql-server/storage/perfschema/table_global_status.cc:65-66).
+        table = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
+        different += (" OR NOT ((SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') <=> %s)"
+                      % (table, _sql_string(uuid)))
+    return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
+
+
+class TargetPacketLines(tuple):
+    """Packet locations plus private acknowledgements and reviewed indices.
+
+    Tuple compatibility keeps the existing SQL and Shell error consumers
+    intact. A tuple of statements explicitly groups trusted, session-dependent
+    units into one packet; a plain string must always be exactly one unit.
+    """
+    def __new__(cls, lines, markers, indices, sizes):
+        out = tuple.__new__(cls, lines)
+        out.markers, out.indices, out.sizes = tuple(markers), tuple(indices), tuple(sizes)
+        return out
+
+
+def target_statement(sql, backslash_escapes=None, delimiter=";", engine=None, server_version=None,
+                     wsrep_on=None, sql_mode=None, client_engine=None):
+    """Validate one complete unit without changing its review/audit text."""
+    _target_statement_span(sql, backslash_escapes, delimiter, engine, server_version, wsrep_on, sql_mode, client_engine)
+    return sql
+
+
+def _target_token_spans(sql, backslash_escapes=True, base=0, engine=None, server_version=None, wsrep_on=None,
+                        **quote_args):
+    """The shared lexer's quote, comment and code spans, including executed SQL."""
+    return tuple((kind, base + start, base + end) for kind, start, end in
+                 lex_sql(sql, backslash_escapes, engine, server_version, wsrep_on=wsrep_on, **quote_args)["tokens"])
+
+
+def _target_reading(units):
+    """All semantic and framing evidence used to compare client grammars."""
+    return [(u["start"], u["end"], u["delimiter"], u["code"], u["idents"], u["unclosed"], u["issues"],
+             u.get("token_spans", ())) for u in units]
+
+
+def _mode_reading(units):
+    """Compare boundaries, token roles, restored identifiers and effects.
+
+    A double-quoted identifier is not interchangeable with a string, even
+    when both classify as a read or DDL. The editor needs the actual names
+    for ALTER preflight, timeout guards and typed DROP confirmation.
+    """
+    out = []
+    for unit in units:
+        verdict = _classify_statement(unit, None)
+        code = re.sub(r"`[0-9]+`", lambda match: "`" + _name(match.group(), unit["idents"]).replace("`", "``") + "`",
+                      unit["code"])
+        out.append((unit["start"], unit["end"], unit["delimiter"],
+                    code, unit.get("token_spans", ()),
+                    unit["unclosed"], unit["issues"], verdict["kind"], verdict["category"]))
+    return out
+
+
+def _target_statement_span(sql, backslash_escapes=None, delimiter=";", engine=None, server_version=None,
+                           wsrep_on=None, sql_mode=None, client_engine=None):
+    """Require one complete unit with identical full readings when mode is unknown."""
+    readings = lexer_readings(backslash_escapes, engine, sql_mode, server_version, client_engine, sql)
+    spans, meanings = [], []
+    for reading in readings:
+        units = split_statements(sql, delimiter=delimiter, engine=engine, server_version=server_version,
+                                 wsrep_on=wsrep_on, **reading)
+        dollar_units = split_statements(sql, delimiter=delimiter, dollar_quotes=True, engine=engine,
+                                        server_version=server_version, wsrep_on=wsrep_on, **reading)
+        if (len(units) != 1 or units[0]["unclosed"] or units[0]["issues"] or units[0]["delimiter"] != delimiter or
+                len(dollar_units) != 1 or dollar_units[0]["unclosed"] or dollar_units[0]["issues"]):
+            raise ValueError("Each reviewed statement must be one complete SQL statement with closed quotes and comments. "
+                             "Nothing was sent. Review again.")
+        if _target_reading(units) != _target_reading(dollar_units):
+            raise ValueError("The reviewed SQL has ambiguous dollar-quote boundaries or code. Nothing was sent. Review again.")
+        unit = units[0]
+        # DELIMITER commands consumed by the splitter cannot hide before or
+        # after the unit. Only delimiters, whitespace and comments may trail.
+        tail_scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
+        tail, unused_idents, unused_spans = _masked_fragment(sql, tail_scan, unit["end"], len(sql))
+        if sql[:unit["start"]].strip() or not re.fullmatch(r"(?:[ \t\r\n]|%s)*" % re.escape(delimiter), tail):
+            raise ValueError("The reviewed SQL contains a client command or uncertain boundaries. "
+                             "Nothing was sent. Review again.")
+        spans.append((unit["start"], unit["end"]))
+        meanings.append(_mode_reading(units))
+    if any(meaning != meanings[0] for meaning in meanings[1:]):
+        raise ValueError("The reviewed SQL has ambiguous quote boundaries or code. Nothing was sent. Review again.")
+    return spans[0]
+
+
+def target_guarded_script(guard, statements, backslash_escapes=None, delimiter=";", engine=None,
+                          server_version=None, wsrep_on=None, sql_mode=None, client_engine=None):
+    """Return (client input, packet start lines) for reviewed SQL.
+
+    DELIMITER is a client command, even in --binary-mode. Each delimited
+    buffer becomes one COM_QUERY containing the identity check followed by
+    its statement. The server stops that packet at its first error; batch
+    mode stops before sending the next packet. Strings are single complete
+    statements; internal tuples keep session setup and use in the same packet.
+    Audit/review metadata remains the original guard plus statements.
+    """
+    statements = list(statements)
+    if len(guard) != 1 or not isinstance(guard[0], str) or not guard[0].endswith(";") or not statements:
+        raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
+    target_statement(guard[0])
+    groups = [s if isinstance(s, tuple) else (s,) for s in statements]
+    if any(not group or any(not isinstance(s, str) or not s.strip() for s in group) for group in groups):
+        raise ValueError("The guarded SQL script is invalid. Nothing was sent. Review again.")
+    wire_groups = []
+    for group in groups:
+        wire_group = []
+        for statement in group:
+            start, end = _target_statement_span(statement, backslash_escapes, delimiter, engine, server_version,
+                                               wsrep_on, sql_mode, client_engine)
+            # Group separators belong to the builder. Copy only the parsed
+            # unit, never its terminal delimiter(s) or trailing comments:
+            # "SET ...;" joined with ";" is an empty server statement.
+            wire_group.append(statement[start:end])
+        wire_groups.append(tuple(wire_group))
+    delimiter = next((d for d in _TARGET_DELIMITERS
+                      if all(d not in s for s in list(guard) + [s for group in groups for s in group])), None)
+    if delimiter is None:
+        raise ValueError("No safe SQL packet delimiter is available for these statements. Nothing was sent. "
+                         "Review statements without all of the reserved delimiters.")
+    parts, starts, markers, indices, sizes, line, index = ["DELIMITER " + delimiter + "\n"], [], [], [], [], 2, 0
+    nonce = uuid.uuid4().hex
+    for k, group in enumerate(wire_groups):
+        starts.append(line)
+        markers.append("myflames_guard_ok_%s_%d" % (nonce, k))
+        indices.append(index)
+        sizes.append(len(group))
+        index += len(group)
+        # A newline before separators also closes trailing line comments.
+        statement = "\n;\n".join(group) if len(group) > 1 else group[0]
+        # A fresh line keeps a trailing -- or # comment from swallowing the
+        # delimiter and merging this packet with the next one.
+        packet = guard[0] + " SELECT '" + markers[-1] + "'; " + statement + "\n" + delimiter + "\n"
+        parts.append(packet)
+        line += packet.count("\n")
+    return "".join(parts), TargetPacketLines(starts, markers, indices, sizes)
+
+
+def target_guard_failed(exc, packet_lines=None):
+    """Refusal details for a guard error, or None without definite evidence.
+
+    With packet_lines, a server error before that packet's acknowledgement
+    proves its protected statements never ran. A 1242 after acknowledgement
+    belongs to the statement, even though its line names the whole packet.
+    Without
+    a packet map, preserve the first-line contract used by MySQL Shell.
+    Transport failures never prove a guard refusal.
+    """
+    match = _target_error_match(str(exc))
+    if packet_lines is not None:
+        if not match or 2000 <= int(match.group(1)) <= 2999 or int(match.group(2)) not in packet_lines:
+            return None
+        packet = packet_lines.index(int(match.group(2)))
+        markers = getattr(packet_lines, "markers", ())
+        if markers and markers[packet] in getattr(exc, "guard_markers", ()):
+            return None
+        # A legacy tuple has no acknowledgement metadata; retain its old
+        # 1242-only contract for existing first-line/Shell integrations.
+        if not markers and int(match.group(1)) != 1242:
+            return None
+        index = getattr(packet_lines, "indices", range(len(packet_lines)))[packet]
+        if int(match.group(1)) != 1242:
+            reason = redact(target_error_text(str(exc)[match.end():]).strip()).rstrip(".")
+            return {"outcome": "identity_unavailable", "statement_index": index,
+                    "message": "The identity check could not run: %s. %s Refresh and review again." %
+                    (reason, "Nothing was sent." if not index else "Earlier statements ran; this statement and the remaining statements were not sent.")}
+        message = TARGET_IDENTITY_MISMATCH if index == 0 else (
+            "The server answering this connection is not the one you reviewed. %s ran; "
+            "this statement and the remaining statements were not sent. Refresh and review again."
+            % ("The first statement" if index == 1 else "The first %d statements" % index))
+        return {"outcome": "identity_mismatch", "message": message, "statement_index": index}
+    if not match or int(match.group(2)) != 1 or 2000 <= int(match.group(1)) <= 2999:
+        return None
+    if int(match.group(1)) == 1242:
+        return {"outcome": "identity_mismatch", "message": TARGET_IDENTITY_MISMATCH}
+    # Discard any MariaDB SQL echo before the actual ERROR line. Callers
+    # additionally redact their connection password before display/audit.
+    message = redact(target_error_text(str(exc)[match.end():]).strip())
+    return {"outcome": "identity_unavailable",
+            "message": "The identity check could not run: %s. Nothing was sent. Refresh and review again."
+                       % message.rstrip(".")}
+
+
+def shift_guard_error(exc, packet_lines=None):
+    """Map packet start lines to 1-based statement indices.
+
+    Without a packet map, keep the one-line prefix contract used by Shell.
+    An unrecognized packet line maps to zero so it cannot falsely identify
+    a completed statement. Never rewrite a line quoted in the SQL echo.
+    """
+    from .connector import ConnectorError
+
+    def shift(match):
+        line = int(match.group(2))
+        mapped = (getattr(packet_lines, "indices", range(len(packet_lines)))[packet_lines.index(line)] + 1
+                  if line in packet_lines else 0) \
+            if packet_lines is not None else max(1, line - 1)
+        return match.group(0)[:match.start(2) - match.start()] + str(mapped) + ":"
+
+    text = str(exc)
+    if packet_lines is not None:
+        match = _target_error_match(text)
+        if match:
+            # MariaDB echoes the whole packet before the error. That echo
+            # can contain passwords, or misleading statement/line text.
+            text = text[match.start():]
+    out = ConnectorError(_TARGET_ERROR.sub(shift, target_error_text(text)))
+    out.guard_markers = getattr(exc, "guard_markers", ())
+    if packet_lines is not None:
+        match = _target_error_match(str(exc))
+        if match and int(match.group(2)) in packet_lines:
+            packet = packet_lines.index(int(match.group(2)))
+            # A server diagnostic locates the packet, not a substatement of
+            # a dependent sequence. Never invent which of those completed.
+            out.guarded_group = getattr(packet_lines, "sizes", (1,) * len(packet_lines))[packet] > 1
+        out.guarded_unknown = not match and not target_not_connected(out)
+    return out
+
+
+def target_not_connected(exc):
+    """Only an initial connection/login failure proves no packet was sent."""
+    return (not getattr(exc, "guard_markers", ()) and not re.search(r"\bat line \d+", str(exc))
+            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005, 2026))
+
+
+def redact_target_error(exc, password=None):
+    """Redact diagnostics without discarding private transport evidence."""
+    from .connector import ConnectorError
+    out = ConnectorError(redact(str(exc), password))
+    for key in ("guard_markers", "guarded_unknown", "guarded_group"):
+        if hasattr(exc, key):
+            setattr(out, key, getattr(exc, key))
+    return out
+
 
 def normalize_type(value):
     """A connection type: 'production' or 'development'. Anything else is an error."""
@@ -1064,7 +2278,7 @@ def normalize_type(value):
     return value.lower()
 
 
-def connection_safety(profile=None, connection=None):
+def connection_safety(profile=None, connection=None, store=None, target_profile=None):
     """The type and read-only flag a write on this connection is judged by.
 
     A request never lowers the protection. An unsaved connection is
@@ -1075,6 +2289,15 @@ def connection_safety(profile=None, connection=None):
     the saved password); otherwise it is ``production``. The profile's
     read-only flag applies either way. Returns ``{"profile_id",
     "profile_name", "type", "read_only", "endpoint_matches"}``.
+
+    With *store* (the workspace store), a request that names a connection
+    group (``connection["group_name"]``) or a *target_profile* other than the
+    active member is judged by the group's effective safety: the strictest
+    type of the active member, the target and every current member of the
+    group (connection_groups.group_effective_safety; production > staging >
+    development > local > unset). Read-only stays the member's own flag. A
+    group the store cannot confirm keeps ``production``: the protection never
+    drops below it.
     """
     connection = connection if isinstance(connection, dict) else {}
     asked_read_only = connection.get("read_only") is True
@@ -1084,10 +2307,64 @@ def connection_safety(profile=None, connection=None):
         matches = _same_endpoint(profile, connection) if connection else True
         if not matches:
             ctype = DEFAULT_CONNECTION_TYPE
-        return {"profile_id": profile.get("id"), "profile_name": profile.get("name"), "type": ctype,
-                "read_only": bool(profile.get("read_only")) or asked_read_only, "endpoint_matches": matches}
-    return {"profile_id": None, "profile_name": None, "type": DEFAULT_CONNECTION_TYPE,
-            "read_only": asked_read_only, "endpoint_matches": False}
+        safety = {"profile_id": profile.get("id"), "profile_name": profile.get("name"), "type": ctype,
+                  "read_only": bool(profile.get("read_only")) or asked_read_only, "endpoint_matches": matches}
+    else:
+        safety = {"profile_id": None, "profile_name": None, "type": DEFAULT_CONNECTION_TYPE,
+                  "read_only": asked_read_only, "endpoint_matches": False}
+    if store is None:
+        return safety
+    return _group_safety(safety, profile, connection, store, target_profile)
+
+
+def _group_safety(safety, profile, connection, store, target_profile=None):
+    """Raise *safety* to the group connection's effective type (never lower it).
+
+    Applies when the request names ``group_name`` or targets a member other
+    than the active one. The group's members are read from the store at every
+    call, so a member joining or leaving changes the policy (and the
+    :func:`connection_identity` built from it) at once.
+    """
+    from .connection_groups import _TYPE_STRICTNESS, group_effective_safety, strictest_type, validate_group
+    group_name = connection.get("group_name")
+    target_id = target_profile.get("id") if isinstance(target_profile, dict) else None
+    active_id = safety.get("profile_id") or connection.get("profile_id")
+    if group_name in (None, "") and (not target_id or target_id == active_id):
+        return safety
+    group = None
+    if group_name not in (None, ""):
+        try:
+            group = validate_group(group_name) or None
+        except ValueError:
+            group = None
+        if group is None:
+            # An unusable group claim cannot lower the protection.
+            return dict(safety, type=DEFAULT_CONNECTION_TYPE)
+    try:
+        profiles = store.list("profile")
+    except Exception:
+        profiles = None
+    if not isinstance(profiles, (list, tuple)):
+        return dict(safety, type=DEFAULT_CONNECTION_TYPE)
+    if group is not None:
+        # Consent belongs to this stored incarnation of the group. Never
+        # accept a generation supplied by the request or a stale profile.
+        member = next((p for p in profiles if isinstance(p, dict) and p.get("id") == active_id
+                       and p.get("group") == group), None)
+        safety = dict(safety, group_name=group,
+                      group_generation=(member or {}).get("group_generation") or "")
+    candidates = [safety["type"]]
+    if group is not None:
+        candidates.append(group_effective_safety(profiles, group))
+    elif isinstance(profile, dict) and isinstance(profile.get("group"), str) and profile.get("group"):
+        candidates.append(group_effective_safety(profiles, profile["group"]))
+    if isinstance(target_profile, dict):
+        target_type = target_profile.get("type")
+        candidates.append(target_type if target_type in CONNECTION_TYPES else DEFAULT_CONNECTION_TYPE)
+    effective = strictest_type(candidates)
+    if effective is not None and _TYPE_STRICTNESS.get(effective, 0) > _TYPE_STRICTNESS.get(safety["type"], 0):
+        return dict(safety, type=effective)
+    return safety
 
 
 def _same_endpoint(profile, connection):
@@ -1143,7 +2420,27 @@ def connection_identity(connection, safety=None):
     read_only = source.get("read_only") is True
     if ctype != DEFAULT_CONNECTION_TYPE or read_only:
         key += [ctype, read_only]
+    if isinstance(safety, dict) and safety.get("group_name"):
+        # A mapping cannot be mistaken for the optional SSH list at index 6
+        # by identity_endpoint. Cleanup remains bound only to its endpoint.
+        key.append({"group_name": safety["group_name"],
+                    "group_generation": safety.get("group_generation") or ""})
     return json.dumps(key, separators=(",", ":"), ensure_ascii=False)
+
+
+def identity_group(identity):
+    """The store-derived consent binding, apart from endpoint and policy.
+
+    Account plans allow a policy change to reach the current policy gate,
+    but must never survive changing or recreating their connection group.
+    """
+    try:
+        key = json.loads(identity) if isinstance(identity, str) else None
+    except ValueError:
+        return None
+    if isinstance(key, list) and key and isinstance(key[-1], dict):
+        return key[-1]
+    return None
 
 
 #: Elements of a :func:`connection_identity` list that name the endpoint.
@@ -1546,26 +2843,77 @@ def privilege_hint(operation, engine, version, grants, variable=None, schema=Non
     return result
 
 
-def read_grants(conn, tag="/*myflames:dbops*/ "):
-    """``{"checked", "user", "account", "grants", "error"}`` from USER(),
-    CURRENT_USER() and plain SHOW GRANTS (which includes the roles active at
-    login). Errors are returned, not raised. The lines carry no credential:
-    MariaDB prints the account's password hash or plugin string in its
-    global line, and :func:`strip_credentials` removes it here."""
-    from .connector import ConnectorError
-    from .perf_common import _reason, text_rows
+def _grants_read_sql(tag, galera_identity=False):
+    """Frame one fresh login's account, grants and wildcard setting.
 
-    def rows(sql):
-        return text_rows(conn, sql, tag)
+    SHOW rather than @@ reads optional variables without failing on MariaDB
+    or MySQL 5.7. Both identity snapshots also include the connection id:
+    a reconnect must not combine two logins, even to the same server.
+    Galera node status is opt-in: MySQL materializes the global status cache
+    for this read (storage/perfschema/pfs_variable.cc:1166-1210).
+    """
+    who = "USER(), CURRENT_USER(), VERSION(), CONNECTION_ID(), @@global.server_id, @@global.hostname, @@global.port"
+    variables = "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'partial_revokes')"
+    node = "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"
+    snapshot = [variables] + ([node] if galera_identity else [])
+    return "; ".join(tag + sql for sql in (
+        ["SELECT 'myflames_grants_begin', " + who] + snapshot +
+        ["SELECT 'myflames_grants_rows'", "SHOW GRANTS", "SELECT 'myflames_grants_end', " + who] + snapshot +
+        ["SELECT 'myflames_grants_done'"]))
+
+
+def read_grants(conn, tag="/*myflames:dbops*/ ", galera_identity=False):
+    """Account, SHOW GRANTS and partial_revokes from one client invocation.
+
+    Identity/account snapshots bracket the grants in that same login. A
+    changed or incomplete read returns checked=False and no account/grants,
+    so it can never produce an advisory GRANT for another backend's user.
+    MariaDB's password hash/plugin clauses are removed before returning.
+    Request galera_identity only when the caller needs the node UUID; other
+    reads, including lifecycle preflights, never materialize global status.
+    """
+    from .connector import ConnectorError, unescape_mysql
+    from .perf_common import _reason
+
+    def failed(error):
+        return {"checked": False, "user": None, "account": None, "grants": [],
+                "partial_revokes": None, "error": redact(error)}
+
     try:
-        who = rows("SELECT USER(), CURRENT_USER() LIMIT 1")
-        grants = [strip_credentials(row[0]) for row in rows("SHOW GRANTS") if row and row[0]]
+        text = conn.run(_grants_read_sql(tag, galera_identity), extra_flags=["--comments", "--skip-reconnect"])
     except ConnectorError as exc:
-        return {"checked": False, "user": None, "account": None, "grants": [], "error": redact(_reason(exc))}
-    login = (who[0][0] or "") if who and who[0] else ""
+        return failed(_reason(exc))
+    rows = [[unescape_mysql(cell) for cell in line.split("\t")] for line in text.split("\n") if line]
+    starts = [i for i, row in enumerate(rows) if len(row) == 8 and row[0] == "myflames_grants_begin"]
+    middle = [i for i, row in enumerate(rows) if row == ["myflames_grants_rows"]]
+    ends = [i for i, row in enumerate(rows) if len(row) == 8 and row[0] == "myflames_grants_end"]
+    done = [i for i, row in enumerate(rows) if row == ["myflames_grants_done"]]
+    if not all(len(indices) == 1 for indices in (starts, middle, ends, done)):
+        return failed("The account and grants could not be read in one verified server session.")
+    start, middle, end, done = starts[0], middle[0], ends[0], done[0]
+    if not (start == 0 < middle < end < done == len(rows) - 1):
+        return failed("The account and grants could not be read in one verified server session.")
+    who = rows[start]
+    before = {row[0].lower(): row[1] for row in rows[start + 1:middle] if len(row) == 2}
+    after = {row[0].lower(): row[1] for row in rows[end + 1:done] if len(row) == 2}
+    if who[1:] != rows[end][1:] or before != after:
+        return failed("The server identity or account changed while reading grants. Refresh and try again.")
+    # VERSION() can be overridden in MariaDB. The registered variables are
+    # the engine evidence: MySQL has server_uuid, MariaDB does not.
+    if (not all(who[1:]) or ("server_uuid" in before and
+                            not _TARGET_UUID.fullmatch(before.get("server_uuid") or "")) or
+            (galera_identity and not _TARGET_UUID.fullmatch(before.get("wsrep_gcomm_uuid") or ""))):
+        return failed("The account and grants could not be read in one verified server session.")
+    grant_rows = rows[middle + 1:end]
+    if any(len(row) != 1 or not row[0] for row in grant_rows):
+        return failed("The account and grants could not be read in one verified server session.")
+    grants = [strip_credentials(row[0]) for row in grant_rows]
+    partial = before.get("partial_revokes", "").upper()
+    partial = True if partial in ("ON", "1") else False if partial in ("OFF", "0") else None
+    login = who[1] or ""
     user = login.rsplit("@", 1)[0] if "@" in login else (login or None)
-    account = who[0][1] if who and len(who[0]) > 1 else None
-    return {"checked": True, "user": user, "account": account, "grants": grants, "error": None}
+    return {"checked": True, "user": user, "account": who[2], "grants": grants,
+            "partial_revokes": partial, "error": None}
 
 
 # ---- redaction -------------------------------------------------------------------------
@@ -1805,7 +3153,8 @@ def may_have_run(exc):
     if isinstance(exc, KeyboardInterrupt):
         return True
     text = str(exc)
-    return "timed out" in text or error_code(text) == 2013 or "Lost connection to" in text
+    return (bool(getattr(exc, "guarded_unknown", False)) or bool(getattr(exc, "guarded_group", False))
+            or "timed out" in text or error_code(text) in (2006, 2013) or "Lost connection to" in text)
 
 
 class AuditTrail(object):
