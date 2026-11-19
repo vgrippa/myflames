@@ -3706,16 +3706,18 @@ class AlterPreflightTests(unittest.TestCase):
         self.assertTrue(any("does not prove" in s for s in result["warnings"]))
 
     def test_review_routine_ddl_cannot_authorize_trailing_ddl(self):
+        session = RunScopeTests.session()  # K2 requires a known non-ORACLE context.
         safety = {"type": "development", "read_only": False}
         routine = "CREATE PROCEDURE p() BEGIN SELECT CASE WHEN 1 THEN 2 ELSE 3 END; BEGIN SELECT 1; END; END"
-        plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "$$"}, None)
+        plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "$$"}, session)
         self.assertEqual(ed._decision(plan, safety)["action"], "confirm")
         for tail in ("DROP DATABASE d", "CREATE PROCEDURE q() BEGIN SELECT 1; END",
                      "BEGIN NOT ATOMIC DROP DATABASE d; END"):
-            plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "; " + tail + "$$"}, None)
+            plan = ed._plan_run({"sql": "DELIMITER $$\n" + routine + "; " + tail + "$$"}, session)
             self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
 
     def test_review_package_definitions_keep_bodies_together_and_refuse_trailing_sql(self):
+        session = RunScopeTests.session()  # These fixtures isolate boundary/review checks.
         safety = {"type": "development", "read_only": False}
         packages = (
             'CREATE PACKAGE p AS FUNCTION f RETURN INT; PROCEDURE p1; END p',
@@ -3725,12 +3727,12 @@ class AlterPreflightTests(unittest.TestCase):
         )
         for package in packages:
             with self.subTest(package=package):
-                plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '//'}, None)
+                plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '//'}, session)
                 self.assertEqual(ed._decision(plan, safety)['action'], 'confirm')
                 for tail in ('DROP DATABASE d', 'SELECT 1',
                              'CREATE PROCEDURE q() BEGIN SELECT 1; END',
                              'BEGIN NOT ATOMIC DROP DATABASE d; END'):
-                    plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '; ' + tail + '//'}, None)
+                    plan = ed._plan_run({'sql': 'DELIMITER //\n' + package + '; ' + tail + '//'}, session)
                     self.assertEqual(ed._decision(plan, safety)['action'], 'refuse', tail)
 
     def test_review_timeout_override_and_wrapped_ddl_refuse(self):
@@ -3743,10 +3745,12 @@ class AlterPreflightTests(unittest.TestCase):
             with self.subTest(sql=sql):
                 plan = ed._plan_run({"sql": sql}, None)
                 self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
-        # J2 treats a missing session's mode as unknown, including ORACLE;
-        # this is refused during planning, before a policy decision exists.
-        with self.assertRaisesRegex(ed.EditorError, "Anonymous compound blocks in MariaDB ORACLE mode"):
-            ed._plan_run({"sql": "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$"}, None)
+        # Before a session exists, defer only the ORACLE-mode decision.
+        # Embedded DDL must still refuse at the provisional policy gate.
+        plan = ed._plan_run({"sql": "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$"}, None)
+        decision = ed._decision(plan, safety)
+        self.assertEqual(decision["action"], "refuse")
+        self.assertIn("standalone", decision["text"])
 
     def test_review_suggestion_is_version_gated_and_never_instant_none(self):
         for engine, version in (("mysql", "8.4.0"), ("mysql", "9.7.0"), ("mariadb", "10.11.1"), ("mariadb", "13.0.0")):

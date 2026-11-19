@@ -15,7 +15,7 @@ from test_sql_lexer import (session as bound_session, ANSI_ATTACK, MSSQL_ATTACK,
                             CHARSET_COMMENT_ATTACK, CHARSET_MARIA_COMMENT_ATTACK,
                             CHARSET_ANSI_ATTACK, CHARSET_MSSQL_ATTACK, COMMENT_DELIMITER_ATTACK,
                             J1_SERVERS, J1_HINT_NESTED, J1_HINT_HASH, J1_COMMENT_DELIMITER, J1_ANSI_PROXY,
-                            J3_COMMENT_SCRIPTS)
+                            J3_COMMENT_SCRIPTS, K1_SERVERS, K1_ORDINARY_COMMENT_ATTACKS, K1_CONTROL)
 
 
 VERSIONS = (("mysql", "8.4.11"), ("mariadb", "11.4.13-MariaDB"))
@@ -35,6 +35,26 @@ SKIPPED_INPUTS = (
 
 class SQLModePlanningTests(unittest.TestCase):
     """Bound-session attacks exercise the real planner, classifier and policy."""
+
+    def test_unbound_oracle_compound_refusal_explains_missing_binding(self):
+        sql = "DELIMITER //\nBEGIN NOT ATOMIC SELECT 1; END//"
+        provisional = ed._plan_run({"sql": sql}, None)
+        self.assertEqual(ed._decision(provisional, SAFETY)["action"], "confirm")
+        sessions = []
+        for engine, version in K1_SERVERS:
+            for mode in ("", "ORACLE", None):
+                sessions.append(bound_session(engine, version, mode, bound=False))
+        for unbound in sessions:
+            with self.subTest(session=unbound):
+                with self.assertRaises(ed.EditorError) as raised:
+                    ed._plan_run({"sql": sql}, unbound)
+                message = str(raised.exception)
+                self.assertIn("not bound to this session", message)
+                self.assertIn("confirmed session", message)
+                self.assertNotIn("known mode without ORACLE", message)
+        # A bound MariaDB session with unknown mode still needs mode advice.
+        with self.assertRaisesRegex(ed.EditorError, "known mode without ORACLE"):
+            ed._plan_run({"sql": sql}, bound_session("mariadb", "11.8.9-MariaDB", None))
 
     def test_consumed_comment_prefixed_delimiter_never_appears_in_send(self):
         for engine, version in VERSIONS:
@@ -504,6 +524,34 @@ class EditorF1ProcessTests(unittest.TestCase):
     rewrite_client = identity_fixtures.EditorIdentityTests.rewrite_client
     inject_answers = identity_fixtures.EditorIdentityTests.inject_answers
 
+    def test_round_k1_nested_ordinary_comments_send_nothing_but_control_runs(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        session = self.registry.get("tab1")
+        for engine, version in K1_SERVERS:
+            if engine != self.engine:
+                continue
+            for client in ("mysql", "mariadb"):
+                # Supply consistent bound server facts at the real API entry;
+                # only the disposable client's answers are synthetic.
+                session.server_version = version
+                session.server_identity["version"] = version
+                session._kill_identity["version"] = version
+                session.client_engine = client
+                self.assertTrue(ed._lexer_session_context(session)["identity_bound"])
+                for label, sql in K1_ORDINARY_COMMENT_ATTACKS:
+                    with self.subTest(version=version, client=client, label=label):
+                        before = self.packets()
+                        result = self.call("/api/editor/run", sql=sql)
+                        self.assertEqual(result["status"], "invalid", result)
+                        self.assertIn("ordinary comment contains a nested", result["message"])
+                        self.assertEqual(self.packets(), before, "no helper or user SQL may be sent")
+                with self.subTest(version=version, client=client, label="KD-control"):
+                    before = len(self.packets())
+                    result = self.call("/api/editor/run", sql=K1_CONTROL)
+                    self.assertEqual(result["status"], "complete", result)
+                    self.assertTrue(any(K1_CONTROL in packet[2] for packet in self.packets()[before:]))
+                    self.assertEqual(result["run"]["statements"][0]["kind"], "read")
+
     def test_session_pins_client_family_from_banner_not_server_identity(self):
         family = "mariadb" if self.engine == "mysql" else "mysql"
         banner = "mariadb Ver 11.4.13-MariaDB" if family == "mariadb" else "mysql Ver 8.4.11"
@@ -621,6 +669,7 @@ class EditorF1ProcessTests(unittest.TestCase):
             self.assertIn("SET @myflames_target", packet)
 
     def test_executed_comments_reach_one_guarded_ddl_packet_and_dump_settings_stay_accepted(self):
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
         sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END */ //"
         result = self.run_sql(sql)
         self.assertEqual(result["status"], "complete", result)

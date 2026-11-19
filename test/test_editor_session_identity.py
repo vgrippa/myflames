@@ -170,7 +170,9 @@ class EditorIdentityTests(unittest.TestCase):
         # The provisional unknown-version reading includes TEMPORARY. The
         # started server skips it, revealing a DROP DATABASE typed target.
         # Real planner, classifier and gate throughout; only the client is fake.
-        definition = 'CREATE PROCEDURE p() BEGIN DROP /*!999999 TEMPORARY */ DATABASE prod; END'
+        # Definitions require a known non-ORACLE session since K2. A plain
+        # DROP still exercises provisional review and the changed typed target.
+        definition = 'DROP /*!999999 TEMPORARY */ DATABASE prod'
         sql = 'DELIMITER //\n' + definition + '//'
         review = self.call('/api/editor/run', sql=sql)
         self.assertEqual(review['status'], 'needs_confirmation', review)
@@ -361,6 +363,7 @@ class EditorIdentityTests(unittest.TestCase):
         for index, definition in enumerate(definitions):
             with self.subTest(definition=definition):
                 tab = 'compound-%d' % index
+                self.assertEqual(self.run_sql('SELECT 7', tab=tab)['status'], 'complete')
                 result = self.run_sql('DELIMITER //\n' + definition + '//', tab=tab)
                 self.assertEqual(result['status'], 'complete', result)
                 session = self.registry.get(tab)

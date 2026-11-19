@@ -78,6 +78,9 @@ class EditorBoundaryTests(unittest.TestCase):
             self.assertFalse(ed.may_replace_transaction(dict(unit, status='error'), [{'code': 1064}]), sql)
 
     def test_compound_ddl_and_terminal_comments_need_one_confirmation(self):
+        # Boundary/review fixtures need a known non-ORACLE context. An
+        # unbound context now refuses definitions before this gate (K2).
+        session = bound_session()
         definitions = (
             'CREATE PACKAGE BODY p AS PROCEDURE p1; BEGIN NULL; END p',
             'CREATE PACKAGE BODY p AS PROCEDURE p1 IS n INT; BEGIN NULL; END; BEGIN p1; END p',
@@ -93,13 +96,13 @@ class EditorBoundaryTests(unittest.TestCase):
             for terminal in ('', ';', '; -- trailing comment\n', '; # trailing comment\n', '; /* trailing comment */'):
                 sql = 'DELIMITER //\n' + definition + terminal + '//'
                 with self.subTest(sql=sql):
-                    plan = ed._plan_run({'sql': sql}, None)
+                    plan = ed._plan_run({'sql': sql}, session)
                     self.assertEqual(len(ed._ddl_codes(plan['units'][0])), 1)
                     self.assertEqual(ed._decision(plan, safety)['action'], 'confirm')
             for tail in ('SELECT 1', 'DROP DATABASE d', 'CREATE PROCEDURE q() BEGIN SELECT 1; END'):
                 sql = 'DELIMITER //\n' + definition + '; ' + tail + '//'
                 with self.subTest(trailing_sql=sql):
-                    self.assertEqual(ed._decision(ed._plan_run({'sql': sql}, None), safety)['action'], 'refuse')
+                    self.assertEqual(ed._decision(ed._plan_run({'sql': sql}, session), safety)['action'], 'refuse')
 
 
 @unittest.skipIf(os.name == 'nt', 'the fake client is a POSIX script')
@@ -445,6 +448,7 @@ class EditorSetupPacketTests(unittest.TestCase):
         self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_mismatch'))
 
     def test_alter_event_body_and_trailing_comment_are_preserved_in_one_packet(self):
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
         sql = 'ALTER EVENT e DO BEGIN SELECT 1; SELECT 2; END; -- tail\n'
         result = self.run_sql('DELIMITER //\n' + sql + '//')
         self.assertEqual(result['status'], 'complete', result)

@@ -384,7 +384,9 @@ def _literal_sql_mode(unit):
     Only the dump's exact save-then-set form extends the single assignment;
     arbitrary expressions and other multi-SETs still leave the mode unknown.
     """
-    # mysql-server/client/mysqldump.cc:995,1588-1589; MariaDB:835,1812-1813.
+    # mysql-9.7.0:client/mysqldump.cc:995,1588-1597;
+    # mariadb-11.8.9:client/mysqldump.cc:839,1830-1839 and
+    # mariadb-10.11.16:client/mysqldump.c:796,1733-1746.
     # Match masked identifiers first. Restoring a whole quoted name before
     # parsing could turn punctuation inside that name into assignment syntax.
     system = r"@\s*@\s*(?:(?:SESSION|LOCAL)\s*\.\s*)?"
@@ -442,9 +444,12 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         sql_mode = None if backslash_escapes is None else ("" if backslash_escapes else "NO_BACKSLASH_ESCAPES")
     units, offset, pending = [], 0, []
     current_mode, current_backslash = sql_mode, backslash_escapes
+    # No session yet: _run_api must re-plan on the opened session before
+    # sending. False identifies an existing unbound session and still refuses.
+    provisional = engine is None and server_version is None and identity_bound is None
     # A later literal SET may fail with Continue on error. Once this run
     # could have entered ORACLE grammar, a prediction cannot rule it out.
-    oracle_possible = engine == "mariadb" and (sql_mode is None or dbops.oracle_mode(sql_mode, engine))
+    oracle_possible = engine != "mysql" and (sql_mode is None or dbops.oracle_mode(sql_mode, "mariadb"))
     lexer_args = {"engine": engine, "server_version": server_version, "wsrep_on": wsrep_on,
                   "client_engine": client_engine}
     while offset < len(sql) or pending:
@@ -465,7 +470,6 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         send_offset = offset + stmt["start"]
         # Compare this unit independently. Do not let initial quote settings
         # mask a later unit after a literal SET changes them.
-        provisional = engine is None and server_version is None and identity_bound is None
         meanings, first_frame, count_mismatch = {}, None, False
         for reading in readings:
             checked = dbops.split_statements(stmt["text"], delimiter=stmt["delimiter"],
@@ -549,7 +553,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                                  if start >= stmt["start"] + lead and end <= stmt["end"]),
                 "mode_unknown": current_mode is None and current_backslash is None,
                 "conditional_sql": bool(dbops.lex_sql(send, **dict(lexer_args, **readings[0]))["comments"])}
-        if oracle_possible and re.search(
+        if not provisional and oracle_possible and re.search(
                 r"(?:^|;)\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?|ALTER\s+)"
                 r"(?:DEFINER\s*=\s*[^;]+?\s+)?(?:AGGREGATE\s+)?"
                 r"(?:PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b",
@@ -565,8 +569,8 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                                   "NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MSSQL quoting. Run them separately."
                                   % number, "invalid_statement")
             next_mode = _literal_sql_mode(unit) if identity_bound else None
-            oracle_possible = oracle_possible or (engine == "mariadb" and
-                                                   (next_mode is None or dbops.oracle_mode(next_mode, engine)))
+            oracle_possible = oracle_possible or (engine != "mysql" and
+                                                   (next_mode is None or dbops.oracle_mode(next_mode, "mariadb")))
             if next_mode != current_mode or current_backslash is not None:
                 delimiter = stmt["delimiter"]
                 offset += stmt["next_start"]
@@ -585,45 +589,46 @@ def _unit_changes_mode(unit):
     """Conservatively include indirect changes and quoted sql_mode names."""
     from . import dbops
     code = unit["code"]
-    # Restore delimited identifiers. An opaque string assignment target in
-    # a non-ANSI reading still cannot prove that sql_mode is unchanged.
-    # Inspect SETs inside wrappers/blocks too, before sending any of the run.
-    # Walk once rather than repeatedly scanning the rest of a large routine.
-    assignment_pattern = re.compile(dbops._SET_ITEM.pattern, re.I | re.ASCII)
+    # Recognize each lvalue/operator pair independently of earlier values.
+    # CHARACTER SET inside CAST, nested expressions and SET NAMES must not
+    # replace the context of the enclosing assignment list. SET statements
+    # have no enclosing expression parentheses, including in stored bodies.
+    # mysql-9.7.0:sql/sql_yacc.yy:16607-16731;
+    # mariadb-11.8.9:sql/sql_yacc.yy:17009-17319.
+    prefixes = {"SET", "STATEMENT", "SESSION", "LOCAL", "GLOBAL", "PERSIST", "PERSIST_ONLY", ","}
     equals = re.compile(r"\s*(?::=|=)")
-    depth, setting_depth, target = 0, None, False
+    depth, setting, previous = 0, False, None
     for token in _MASKED_TOKEN.finditer(code):
         word = token.group()
         word = word.upper() if word.isascii() else word
         if _MODE_CHANGE.fullmatch(word):
             return True
-        if word == "SET":
-            setting_depth, target = depth, True
+        if word == "SET" and depth == 0:
+            setting = True
         elif word == ";":
-            setting_depth, target = None, False
-        elif target:
-            if word == "STATEMENT":
-                continue
-            target = False
-            # MySQL sql_yacc.yy:16674-16689 and MariaDB:17661-17756:
-            # @@ and its scope may have spaces between grammar tokens.
-            # A read of this token on the RHS is never a mode assignment.
-            if re.match(r"@\s*@", word, re.ASCII):
-                operator = equals.match(code, token.end())
-                candidate = re.sub(r"^@\s*@\s*", "@@", word, count=1)
-                assignment = assignment_pattern.match(candidate + operator.group()) if operator else None
-            else:
-                assignment = assignment_pattern.match(code, token.start())
-            if assignment and not assignment.group(4):
-                name = dbops._name(re.split(r"\s*\.\s*", assignment.group(5))[-1], unit.get("idents") or [])
+            setting = False
+        elif setting and depth == 0 and previous in prefixes and equals.match(code, token.end()):
+            # Spaces around the scope dot are valid. Spaced @ @ is not
+            # system-variable syntax: both lexers enter MY_LEX_HOSTNAME
+            # after the first @. It is stripped here only as a
+            # conservative possible change, not as proof that the server
+            # accepts it.
+            # Variables/qualified names are atomic masked tokens. Strip only
+            # a system-variable sigil; @sql_mode is a different user variable.
+            # @@sql_mode on the RHS has no assignment prefix, so even a
+            # comparison with '=' there remains a read of the current mode.
+            candidate = re.sub(r"^@\s*@\s*", "", word, count=1)
+            if not candidate.startswith("@"):
+                name = dbops._name(re.split(r"\s*\.\s*", candidate)[-1], unit.get("idents") or [])
+                # A string-masked target may be a quoted name in another
+                # reading. It cannot establish that the mode is unchanged.
                 if name.lower() in ("sql_mode", "''"):
                     return True
         if word == "(":
             depth += 1
         elif word == ")":
             depth = max(0, depth - 1)
-        elif word == "," and setting_depth == depth:
-            target = True
+        previous = word
     return False
 
 
@@ -1882,10 +1887,11 @@ class EditorSession(EditorInsights):
     def _kill_statement_guard(self, guard, connection_id):
         """Require this tab's currently running SQL, not merely a recycled id.
 
-        MySQL sql/sql_show.cc:3846-3854,5642-5650 supplies ID/INFO even
+        mysql-9.7.0:sql/sql_show.cc:3846-3854,5705 supplies ID/INFO even
         without Performance Schema. Its P_S processlist is empty when OFF
         (storage/perfschema/ha_perfschema.cc:111-112,1759-1762).
-        MariaDB sql/sql_show.cc:3471,3522-3525,10565-10575 supplies ID/INFO.
+        mysql-8.4.0:sql/sql_show.cc:3232,5094 registers the same table.
+        mariadb-11.8.9:sql/sql_show.cc:3461,3512-3515,10433-10443 supplies ID/INFO.
         The leading token fits even a truncated INFO. Binary comparison
         avoids case folding or a LIKE wildcard changing the ownership check.
         """
@@ -3551,8 +3557,8 @@ class _DdlBoundaryScanner:
         # END and DO are non-reserved identifiers in expression positions.
         # Track the positions needed to distinguish those names from a CASE
         # closer or WHILE's DO, without interpreting an expression's value.
-        # MySQL sql_yacc.yy:3657-3727,10592-10600,10738-10744;
-        # MariaDB:3213-3268,10198-10216,10624-10628.
+        # mysql-9.7.0:sql/sql_yacc.yy:3657-3727,10592-10600,10738-10744;
+        # mariadb-11.8.9:sql/sql_yacc.yy:3036-3092,9870-9895,10289.
         return word in ("(", ",", "+", "-", "*", "/", "%", "=", "<", ">", "!", "~", "^", "|", "&",
                         "CASE", "WHEN", "THEN", "ELSE", "AND", "OR", "XOR", "NOT", "IS", "IN", "LIKE",
                         "REGEXP", "RLIKE", "BETWEEN", "DIV", "MOD", "COLLATE", "AS", "SELECT", "RETURN",
@@ -3737,6 +3743,8 @@ class _DdlBoundaryScanner:
         word = self.word()
         if self.level > 1 and word in ("CREATE", "ALTER", "DROP", "RENAME", "TRUNCATE"):
             # DROP PREPARE deallocates a prepared statement, not an object.
+            # mysql-9.7.0:sql/sql_yacc.yy:2627-2645;
+            # mariadb-11.8.9:sql/sql_yacc.yy:2157-2167.
             self.embedded_ddl = self.embedded_ddl or not (word == "DROP" and self.word(1) == "PREPARE")
         if word in ("BEGIN", "LOOP", "REPEAT", "WHILE", "FOR", "IF", "CASE"):
             self.pos += 1
@@ -3908,7 +3916,9 @@ def _ddl_parts(units):
     # Masked strings and comments contain no semicolons. A routine body is
     # part of its CREATE, not another immediately executed DDL statement.
     for unit in units:
-        if unit.get("generated"):
+        # SHOW CREATE and other classified reads describe objects without
+        # executing their DDL, including routine names found by the scanner.
+        if unit.get("generated") or unit.get("kind") == "read":
             continue
         codes = _ddl_codes(unit)
         for code in codes:
@@ -3930,6 +3940,11 @@ def _embedded_compound_ddl(unit):
     An unsupported compound boundary cannot establish standalone safety.
     MariaDB sql/sql_yacc.yy:18696-18703,20812-20895.
     """
+    # The shared classifier judges every server statement in the unit.
+    # Only an entirely read-only unit is exempt: a read before a block or
+    # DROP PREPARE before DDL must still take the ordinary write checks.
+    if unit.get("kind") == "read":
+        return False
     code = unit["code"]
     if _ROUTINE_CREATE.match(code):
         # The DDL gate separately proves that this is exactly one definition.
@@ -3973,14 +3988,21 @@ def _embedded_compound_ddl(unit):
     return False
 
 
-def _check_oracle_compounds(units, engine, sql_mode):
+def _check_oracle_compounds(units, engine, sql_mode, identity_bound=None):
     """Anonymous PL/SQL has the same unsupported grammar as stored bodies."""
+    # Only the pre-session plan defers this decision to the bound re-plan.
+    # An existing unbound session has identity_bound=False, not None.
+    if engine is None and identity_bound is None:
+        return
     from . import dbops
     possible = engine != "mysql" and (sql_mode is None or dbops.oracle_mode(sql_mode, engine))
     for unit in units:
         if possible and not _ROUTINE_CREATE.match(unit["code"]) and _COMPOUND_START.search(unit["code"]):
+            guidance = ("Use a session with a known mode without ORACLE." if identity_bound else
+                        "The server engine and SQL mode are not bound to this session. "
+                        "Open a tab with a confirmed session before running this SQL.")
             raise EditorError("Anonymous compound blocks in MariaDB ORACLE mode are not supported by the "
-                              "Query editor. Use a session with a known mode without ORACLE.", "invalid_statement")
+                              "Query editor. " + guidance, "invalid_statement")
         if engine != "mysql" and _unit_changes_mode(unit):
             mode = _literal_sql_mode(unit)
             # With Continue on error, a later assignment cannot prove that
@@ -4265,7 +4287,7 @@ def _plan_run(payload, session):
     text = sql[start:end]
     engine, version = context["engine"], context["server_version"]
     units = plan_statements(text, backslash, base=start, delimiter=delimiter, **context)
-    _check_oracle_compounds(units, engine, context["sql_mode"])
+    _check_oracle_compounds(units, engine, context["sql_mode"], context["identity_bound"])
     explain_format = payload.get("explain_format")
     if explain_format is not None:
         from . import dbops

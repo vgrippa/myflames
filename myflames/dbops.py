@@ -314,7 +314,6 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
     n, pos, code_start = len(sql), 0, 0
     active, pending = None, False
     command_start = 0
-    consumed_delimiters = set()
     framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
 
     def token(kind, start, end):
@@ -352,8 +351,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # block comments, including executed /*! SQL */. Inspect
                 # this raw prefix once per unit before its SQL body can set
                 # pending or open a quote. A DELIMITER consumed by our own
-                # splitter is removed from these issues below: it never
-                # reaches the client's input as part of a SQL unit.
+                # splitter loses this issue only after the server reading
+                # proves that the discarded prefix contains no SQL.
                 command = _client_named_command(sql, pos, client_delimiter, across_lines=True)
                 if command is not None and command[2]:
                     issues.append((command[0], REASON_NAMED_CLIENT_COMMAND % command[1]))
@@ -361,7 +360,6 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 command = _DELIMITER_COMMAND.match(sql, pos)
                 if command:
                     value, end = _delimiter_argument(sql, command.end())
-                    consumed_delimiters.add(command.start(1))
                     if value and "\\" not in value:
                         client_delimiter = value
                     token("delimiter_command", pos, end)
@@ -455,10 +453,10 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             special = sql.startswith("/*!", pos) or (sql.startswith("/*M!", pos) and
                                                        (not client or client_engine == "mariadb"))
             if client and active is not None:
-                # add_line's ml_comment and line-local ss_comment interact:
+                # add_line's ml_comment and ss_comment interact:
                 # the first */ can clear ss_comment while leaving ml_comment
                 # open. Do not pretend the nested comment is an independent
-                # token (mysql client/mysql.cc:2913-2948).
+                # token (mysql-9.7.0:client/mysql.cc:2913-2948).
                 issues.append((pos, REASON_NESTED_CLIENT_COMMENT))
             header = _comment_header(sql, pos, engine, version_id, wsrep_on, comment_dialect) if special else None
             # Inside executed code an ordinary /* ... */ is scanned just
@@ -484,6 +482,18 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             nested = bool(header and not (engine == "mysql" and header["maria"]))
             end, closed = consume_comment(pos + 2, nested and not client)
             token("comment", pos, end)
+            if client and header is None and not sql.startswith("/*+", pos):
+                # mysql-8.4.0:client/mysql.cc:2907-2930 sets ss_comment for
+                # /*! or /*+ even while ml_comment is open. The first */
+                # then clears only ss_comment, unlike the server's first-*/
+                # boundary. MariaDB has the same /*! interaction
+                # (mariadb-11.8.9:client/mysql.cc:2834-2859); /*M! does not
+                # set ss_comment there. Refuse all three special openers on
+                # every client, across lines too, without modelling version-
+                # specific state. Quotes and #/-- inside this body are data.
+                body = sql[pos + 2:end - 2 if closed else end]
+                if any(opener in body for opener in ("/*!", "/*+", "/*M!")):
+                    issues.append((pos, REASON_NESTED_ORDINARY_COMMENT))
             if header is not None:
                 header["end"] = end
             if not closed:
@@ -495,10 +505,13 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 issues.append((at, REASON_CLIENT_COMMAND % sql[at + 1:at + 2]))
             if sql.startswith("/*+", pos):
                 body = sql[pos + 3:end - 2 if closed else end]
-                # Nested /*! changes SSC_HINT to SSC_CONDITIONAL even on
-                # one line. Older MySQL clients also recognize # / -- in
-                # hints. Reject hazardous hint bodies on every client rather
-                # than relying on a particular patch release's state machine.
+                # Nested /*! changes MySQL's SSC_HINT to SSC_CONDITIONAL
+                # even on one line. It also sets conditional state in
+                # MariaDB 10.11-11.8 ordinary /*+ comments. The # / -- hint
+                # bug affects MySQL 5.7.44, 8.0.42, 8.1.0, 8.4.0, 8.4.5 and
+                # 9.1.0; fixed in 8.0.43, 8.4.6 and 9.2.0 (514931dba1e,
+                # Bug#30875669). Refuse hazardous bodies on every client,
+                # independent of its patch release.
                 if (any(mark in body for mark in ("/*", "#", "\\")) or re.search(r"--(?:\s|$)", body) or
                         not _hint_quotes_closed(body)):
                     issues.append((pos, REASON_HINT))
@@ -536,11 +549,6 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
         active["end"] = n
         active["problem"] = "unterminated executable comment"
         unclosed.append((active["start"], n))
-    # Only this exact command was consumed. An earlier executable comment
-    # keeps SQL pending, leaving its DELIMITER in the sent unit (JG2).
-    # Other named commands, and issues in the discarded prefix, still refuse.
-    issues = [(at, reason) for at, reason in issues
-              if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER")]
     return {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
 
 
@@ -631,7 +639,7 @@ REASON_CLIENT_COMMAND = ("Client backslash commands (\\%s) are not supported out
                          "Remove the command before running this SQL.")
 REASON_NAMED_CLIENT_COMMAND = ("The client command %s is not supported here. "
                                "Put DELIMITER on its own line at the script start or after a complete statement, "
-                               "with only whitespace or ordinary comments before it; use SQL instead of other client commands.")
+                               "with only whitespace or ordinary comments on earlier lines; use SQL instead of other client commands.")
 REASON_DASH_CONTROL = ("'--' before a control character is code to the client and a comment to the server, so the "
                        "statement boundaries are uncertain.")
 REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
@@ -644,10 +652,13 @@ REASON_QUOTE_FRAMING = ("A client delimiter splits a server string or quoted ide
                         "Use quoting that the client and server can frame together.")
 REASON_NESTED_CLIENT_COMMENT = ("A nested /* inside an executable comment changes the client's comment state. "
                                 "Use SQL without nested executable comments.")
+REASON_NESTED_ORDINARY_COMMENT = ("An ordinary comment contains a nested /*!, /*+ or /*M! opener. "
+                                  "The client can end this comment differently from the server. "
+                                  "Remove the nested opener before running this SQL.")
 REASON_HINT = ("An optimizer hint (/*+ ... */) contains a comment marker "
                "(/*, # or -- followed by whitespace or a line ending), a backslash, or an unclosed quote. "
                "Close quoted values before */ and remove comment markers and backslashes, including inside quotes.")
-REASON_MULTILINE_HINT = ("A multi-line optimizer hint contains quotes, comment markers or the client delimiter. "
+REASON_MULTILINE_HINT = ("A multi-line optimizer hint contains quotes, dollar quotes or the client delimiter. "
                          "Keep this hint on one line or remove those characters.")
 REASON_TRAILING_BACKSLASH = ("A line ends with a backslash inside a string or quoted identifier. "
                             "The client can change that text; move the backslash away from the line ending.")
@@ -733,6 +744,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                    unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
                    ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
     out = []
+    consumed_delimiters = set()
     state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
     pos, token_index = 0, 0
     n = len(sql)
@@ -760,7 +772,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                 if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
                     issue(REASON_EXECUTED_FRAMING)
         for at, reason in scan["issues"] + framing["issues"]:
-            if start <= at < end:
+            if start <= at < end and not (at in consumed_delimiters and
+                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                 issue(reason)
         unclosed = state["unclosed"] or any(left < end and right > start
                                             for left, right in scan["unclosed"] + framing["unclosed"])
@@ -784,12 +797,29 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
         if kind == "delimiter_command":
             command = _DELIMITER_COMMAND.match(sql, left)
             value, line_end = _delimiter_argument(sql, command.end())
-            # Keep non-command refusals in the discarded prefix. The lexer
-            # has already removed the named-command issue for this exact
-            # consumed DELIMITER, whose text will never be sent as SQL.
+            # A MySQL client treats /*M! SQL */ as an ordinary comment, but
+            # a MariaDB server executes it. Only discard a prefix the server
+            # also ignores. Keep unsafe text in a refused unit, including
+            # when this DELIMITER is the last line of the run.
+            # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
+            # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
+            ignored = not prefix_code and not any(
+                comment["executes"] is not False and comment["start"] < left and
+                comment["end"] > state["start"] for comment in scan["comments"])
+            if ignored:
+                consumed_delimiters.add(command.start(1))
+            else:
+                issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
+                      "before changing DELIMITER.")
+            # Suppress only the exact command proved safe above. Other
+            # commands and problems in the prefix must still refuse.
             for at, reason in scan["issues"] + framing["issues"]:
-                if state["start"] <= at < line_end:
+                if state["start"] <= at < line_end and not (at in consumed_delimiters and
+                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                     issue(reason)
+            if not ignored:
+                finish(line_end, line_end)
             if value and "\\" not in value:
                 delimiter = value
             else:
@@ -964,9 +994,10 @@ def _native_read_functions(engine, server_version):
     """Version-specific readers stay unknown until server facts establish them.
 
     CURRENT_ROLE: mysql-8.0.11 sql/item_create.cc:1316 and mariadb-10.11.1
-    sql/sql_yacc.yy:9850. JSON_VALUE: mysql-8.4.0 sql/sql_yacc.yy:10528
-    and mariadb-10.11.1 sql/item_create.cc:5787. These deliberately conservative
-    floors are versions checked in source, not claims about first releases.
+    sql/sql_yacc.yy:9850. JSON_VALUE: mysql-8.0.21:sql/sql_yacc.yy:1261,
+    10005-10010 adds JSON_VALUE_SYM (absent in mysql-8.0.20); MariaDB's
+    checked floor is mariadb-10.11.1:sql/item_create.cc:5787. Other floors
+    are checked versions, not claims about first releases.
     """
     version = parse_version_tuple(server_version, leading=True,
                                   prefer_mariadb=engine == "mariadb", default=None)
@@ -975,7 +1006,7 @@ def _native_read_functions(engine, server_version):
         if ((engine == "mysql" and version >= (8, 0, 11)) or
                 (engine == "mariadb" and version >= (10, 11, 1))):
             names.add("CURRENT_ROLE")
-        if ((engine == "mysql" and version >= (8, 4, 0)) or
+        if ((engine == "mysql" and version >= (8, 0, 21)) or
                 (engine == "mariadb" and version >= (10, 11, 1))):
             names.add("JSON_VALUE")
     return names

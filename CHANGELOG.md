@@ -25,6 +25,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor refuses ordinary comments containing nested executable-comment or optimizer-hint openers that could make the database client send SQL different from the reviewed statement.
+- Query editor detects SQL-mode assignments after CAST, CONVERT, charset clauses and nested expressions, so later SQL with ambiguous quoting cannot bypass review.
+- Query editor refuses DELIMITER changes that would discard SQL the server executes, including MariaDB executable comments read by a MySQL client.
+- Query editor refuses possible MariaDB ORACLE stored-program definitions in an existing session without a confirmed server binding, including after routed startup. A new tab can review its first definition or anonymous block before connecting; the opened session's engine and SQL mode decide support before any user SQL is sent.
 - Query editor refuses optimizer hints containing comment markers, backslashes, unclosed quotes, or quotes and delimiters in multi-line hints. Client commands after comment-only prefixes across lines refuse when they remain in the SQL sent to the client. It checks both MariaDB client ANSI_QUOTES states, including when a proxy acknowledges a mode change without forwarding the status flag, so hidden statement boundaries cannot bypass review.
 - Server analysis tools now reject SELECT statements that write files, assign variables, acquire locks or call functions with unknown effects. Native functions that vary by server version require verified engine and version facts.
 - Query editor checks compound blocks and database-drop targets even after a leading DDL statement or DROP PREPARE. A unit that drops more than one database refuses review. Tabs without a confirmed server session treat displayed engine, version and SQL-mode values as unknown when deciding what SQL can run.
@@ -53,6 +57,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor runs SHOW CREATE statements without a DDL refusal, including when grouped with other reads under a custom delimiter.
 - Query editor accepts ordinary comment lines before standalone DELIMITER commands and balanced quoted values in one-line optimizer hints, including SET_VAR and quoted table names. Explain keeps its engine-specific format on tabs without a confirmed server binding and lets the server report unsupported Explain statements as ordinary errors. Executable-comment refusals on those tabs explain the missing binding.
 - Query editor accepts the SQL-mode save-and-set headers and routine preambles emitted by mysqldump and mariadb-dump. Reading or saving the current mode leaves it unchanged; restoring a mode from a variable still requires unambiguous later SQL.
 - Query editor accepts END and DO identifiers after INTERVAL, BINARY and event schedule keywords, while keeping SQL after the definition in a separate confirmation.

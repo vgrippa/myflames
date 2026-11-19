@@ -595,7 +595,22 @@ class EditorOpenSafetyTests(unittest.TestCase):
         self.assertFalse(session.ended)
         self.assertTrue(session.safe_updates)
 
-    def test_definition_drop_typed_name_is_required_before_any_client_opens(self):
+    def test_first_definition_requires_a_review_token_before_any_client_opens(self):
+        sql = "DELIMITER //\nCREATE PROCEDURE p() BEGIN DROP DATABASE `prod`; END//"
+        for confirmed in (False, True):
+            with self.subTest(confirmed=confirmed):
+                review = self.call("/api/editor/run", sql=sql, confirmed=confirmed, typed_target="prod")
+                self.assertEqual(review["status"], "needs_confirmation", review)
+                self.assertEqual(review["confirmation"]["typed_target"], "prod")
+                self.assertEqual(review["confirmation"]["statements"],
+                                 ["CREATE PROCEDURE p() BEGIN DROP DATABASE `prod`; END"])
+                self.assertIsNone(review["session"])
+                self.assertFalse(self.children)
+
+    def test_definition_drop_typed_name_is_required_before_any_user_sql(self):
+        # Existing bound sessions retain the typed-target confirmation rule.
+        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+        before = len(self.packets())
         sql = "DELIMITER //\nCREATE PROCEDURE p() BEGIN DROP DATABASE `prod`; END//"
         review = self.call("/api/editor/run", sql=sql)
         self.assertEqual(review["status"], "needs_confirmation")
@@ -605,7 +620,7 @@ class EditorOpenSafetyTests(unittest.TestCase):
                 refused = self.call("/api/editor/run", sql=sql, confirmed=True, typed_target=typed,
                                     confirm_token=review["confirmation"]["token"])
                 self.assertEqual(refused["status"], "needs_confirmation")
-                self.assertFalse(self.children)
+                self.assertEqual(len(self.packets()), before)
         result = self.call("/api/editor/run", sql=sql, confirmed=True, typed_target="prod",
                            confirm_token=review["confirmation"]["token"])
         self.assertEqual(result["status"], "complete")

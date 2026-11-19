@@ -28,6 +28,16 @@ J1_HINT_NESTED = "SELECT /*+ /*! ' */ ' \\C utf8mb4 ' /*\n' ; DROP DATABASE prod
 J1_HINT_HASH = "SELECT /*+ BKA(t) # */ 'x' AS a, '\n\\C gbk\n' AS b -- '\n;\nSELECT 1"
 J1_COMMENT_DELIMITER = "/*!40101 SELECT 1 */\nDELIMITER //\nDELETE FROM t//\nSELECT 1;"
 J1_ANSI_PROXY = 'SELECT 1 AS "a\\"; SELECT "second" AS x; -- "'
+K1_ORDINARY_COMMENT_ATTACKS = (
+    ("KA-nested!", "SELECT 1 /* x /*! y */ , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '"),
+    ("KB-nested+", "SELECT 1 /* x /*+ y */ , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '"),
+    ("KC-nested5", "SELECT 1 /* a /*!50000 b */ , ' /* z */ \\C gbk '\n, '; DROP DATABASE prod; -- '"),
+    ("KM-nestedM!", "SELECT 1 /* x /*M! y */ , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '"),
+)
+K1_CONTROL = "SELECT 1 /* x y */ , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '"
+K1_SERVERS = (("mysql", "5.7.44"), ("mysql", "8.0.46"), ("mysql", "8.4.0"), ("mysql", "9.7.0"),
+              ("mariadb", "10.11.16-MariaDB"), ("mariadb", "11.4.10-MariaDB"),
+              ("mariadb", "11.8.9-MariaDB"))
 J3_PROCEDURE = "CREATE PROCEDURE p() BEGIN SELECT 1; END"
 J3_COMMENT_SCRIPTS = (
     ("cmtDELIM", "-- make the procedure\nDELIMITER //\n" + J3_PROCEDURE + "//\nDELIMITER ;\nCALL p();",
@@ -288,6 +298,78 @@ class ClientCommandLexerTests(unittest.TestCase):
     The editor deliberately refuses those disabled spellings as well.
     """
 
+    def test_round_k1_ordinary_comment_attacks_refuse_and_control_remains_read(self):
+        # mysql-8.4.0:client/mysql.cc:2907-2930 leaves ml_comment open
+        # after the first */ when an inner /*! or /*+ set ss_comment.
+        for engine, version in K1_SERVERS:
+            for client in ("mysql", "mariadb"):
+                bound = session(engine, version, client_engine=client)
+                for label, sql in K1_ORDINARY_COMMENT_ATTACKS:
+                    with self.subTest(engine=engine, version=version, client=client, label=label):
+                        verdict = dbops.classify(sql, engine=engine, server_version=version,
+                                                 sql_mode="", client_engine=client)
+                        self.assertEqual(verdict["kind"], "risky")
+                        self.assertIn("ordinary comment contains a nested", " ".join(verdict["reasons"]))
+                        with self.assertRaisesRegex(ed.EditorError, "ordinary comment contains a nested"):
+                            ed._plan_run({"sql": sql}, bound)
+                        # The packet builder intentionally returns its generic
+                        # invalid-statement message instead of lexer details.
+                        with self.assertRaises(ValueError):
+                            dbops.target_statement(sql, engine=engine, server_version=version,
+                                                   sql_mode="", client_engine=client)
+                with self.subTest(engine=engine, version=version, client=client, label="KD-control"):
+                    plan = ed._plan_run({"sql": K1_CONTROL}, bound)
+                    self.assertEqual([u["send"] for u in plan["units"]], [K1_CONTROL])
+                    self.assertEqual(plan["verdict"]["kind"], "read")
+                    self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "allow")
+
+    def test_nested_special_openers_refuse_inside_ordinary_comments_across_lines(self):
+        for client in ("mysql", "mariadb"):
+            for opener in ("/*!", "/*!50000", "/*+", "/*M!", "/*M!100100"):
+                # Quotes and line-comment markers do not protect text inside
+                # an ordinary block comment. Newlines cannot make it safe on
+                # every supported client's state machine either.
+                for before, after in ((" ", " "), ("\n", " "), (" ", "\n"), ("\r\n", "\r\n"),
+                                      (" '", "' "), (' "', '" '), (" # ", " "), (" -- ", " ")):
+                    sql = "SELECT 1 /* outer" + before + opener + " inner" + after + "*/"
+                    with self.subTest(client=client, sql=sql):
+                        server = dbops.lex_sql(sql, engine="mysql", server_version="8.4.0", sql_mode="")
+                        self.assertFalse(server["issues"], "the server still ends at the first */")
+                        scan = dbops.lex_sql(sql, client=True, client_engine=client, client_delimiter=";")
+                        self.assertTrue(any("ordinary comment contains a nested" in reason
+                                            for at, reason in scan["issues"]))
+                        self.assertFalse(scan["unclosed"])
+                        with self.assertRaisesRegex(ed.EditorError, "ordinary comment contains a nested"):
+                            ed._plan_run({"sql": sql}, session(client_engine=client))
+                # Existing executable-comment and hint guards still own
+                # nested openers in those contexts.
+                for sql, reason in (("/*!50000 SELECT 1 " + opener + " x */ */",
+                                     dbops.REASON_NESTED_CLIENT_COMMENT),
+                                    ("SELECT /*+ BKA(t) " + opener + " x */ 1", dbops.REASON_HINT)):
+                    scan = dbops.lex_sql(sql, client=True, client_engine=client, client_delimiter=";")
+                    self.assertIn(reason, [message for at, message in scan["issues"]])
+
+    def test_nested_opener_text_stays_data_in_line_comments_and_quoted_tokens(self):
+        for engine, version in K1_SERVERS:
+            for client in ("mysql", "mariadb"):
+                for opener in ("/*!", "/*+", "/*M!"):
+                    body = "/* outer " + opener + " inner */"
+                    cases = ["SELECT 1 /* ordinary */", "SELECT 1 /* outer /* ordinary */",
+                             "# " + body + "\nSELECT 1", "-- " + body + "\nSELECT 1",
+                             "SELECT 1 # " + body, "SELECT 1 -- " + body]
+                    cases.extend("SELECT " + quote + body + quote for quote in ("'", '"', "`"))
+                    for sql in cases:
+                        with self.subTest(engine=engine, version=version, client=client, sql=sql):
+                            plan = ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
+                            self.assertEqual(plan["verdict"]["kind"], "read")
+                            self.assertEqual(ed._decision(plan, SAFETY)["action"], "allow")
+
+    def test_named_command_message_places_ordinary_comments_on_earlier_lines(self):
+        sql = "/* setup */ DELIMITER //\nSELECT 1//"
+        with self.assertRaises(ed.EditorError) as raised:
+            ed._plan_run({"sql": sql}, session())
+        self.assertIn("ordinary comments on earlier lines", str(raised.exception))
+
     def test_round_j_hints_and_comment_commands_cannot_classify_as_reads(self):
         for engine, version in J1_SERVERS:
             for client in ("mysql", "mariadb"):
@@ -321,8 +403,8 @@ class ClientCommandLexerTests(unittest.TestCase):
                 for opener in ("/*!40101", "/*M!100100"):
                     sql = J1_COMMENT_DELIMITER.replace("/*!40101", opener)
                     with self.subTest(engine=engine, client=client, opener=opener):
-                        if opener == "/*M!100100" and client == "mysql":
-                            continue  # This client consumes an ordinary comment, then DELIMITER.
+                        if opener == "/*M!100100" and client == "mysql" and engine == "mysql":
+                            continue  # Only this server also ignores the consumed prefix.
                         with self.assertRaisesRegex(ed.EditorError, "client command DELIMITER"):
                             ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
 
@@ -451,18 +533,20 @@ class ClientCommandLexerTests(unittest.TestCase):
                         sql = initial + prefix + command + "\nDELETE FROM t//\nSELECT 1;"
                         with self.subTest(client=client, prefix=prefix, command=command, initial=initial):
                             units = dbops.split_statements(sql, sql_mode="", client_engine=client)
-                            pending_sql = "/*!" in prefix or ("/*M!" in prefix and client == "mariadb")
+                            # With an unknown server, /*M! can execute even
+                            # when the MySQL client treats it as a comment.
+                            pending_sql = "/*!" in prefix or "/*M!" in prefix
                             if command.lower().startswith("delimiter") and not pending_sql:
                                 # J3 narrows J1: this whole command line is
                                 # consumed, so it cannot change client framing.
                                 self.assertFalse(any(unit["issues"] for unit in units))
-                                plan = ed._plan_run({"sql": sql}, session(client_engine=client))
+                                plan = ed._plan_run({"sql": sql}, session(client_engine=client, bound=False))
                                 expected = (["SELECT 0"] if initial else []) + ["DELETE FROM t", "SELECT 1;"]
                                 self.assertEqual([unit["send"] for unit in plan["units"]], expected)
                                 continue
                             self.assertTrue(any("client command" in reason for unit in units for reason in unit["issues"]))
                             with self.assertRaises(ed.EditorError):
-                                ed._plan_run({"sql": sql}, session(client_engine=client))
+                                ed._plan_run({"sql": sql}, session(client_engine=client, bound=False))
 
     def test_unknown_mode_distinguishes_identifiers_from_strings_and_names(self):
         for engine, version in SERVERS:
@@ -481,6 +565,32 @@ class ClientCommandLexerTests(unittest.TestCase):
 
 
 class VersionAndClientLexerTests(unittest.TestCase):
+    def test_json_value_native_reader_starts_at_mysql_8021(self):
+        # JSON_VALUE_SYM is absent in mysql-8.0.20; mysql-8.0.21 adds it
+        # at sql/sql_yacc.yy:1261,10005-10010.
+        sql = "SELECT JSON_VALUE('{}', '$.a')"
+        for version, kind, action in (("8.0.20", "risky", "confirm"), ("8.0.21", "read", "allow")):
+            for client in ("mysql", "mariadb"):
+                with self.subTest(version=version, client=client):
+                    bound = session("mysql", version, client_engine=client)
+                    plan = ed._plan_run({"sql": sql}, bound)
+                    self.assertEqual(plan["verdict"]["kind"], kind)
+                    self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], action)
+                    if kind == "read":
+                        self.assertEqual(mcp_server._read_sql(sql, engine="mysql", server_version=version), sql)
+                    else:
+                        with self.assertRaises(ValueError):
+                            mcp_server._read_sql(sql, engine="mysql", server_version=version)
+                    for call in ("db.JSON_VALUE", "`JSON_VALUE`"):
+                        self.assertNotEqual(dbops.classify(sql.replace("JSON_VALUE", call), engine="mysql",
+                                                           server_version=version, sql_mode="")["kind"], "read")
+
+    def test_multiline_hint_message_names_dollar_quotes_without_comment_markers(self):
+        with self.assertRaises(ed.EditorError) as raised:
+            ed._plan_run({"sql": "SELECT /*+\n $tag$ */ 1"}, session(client_engine="mysql"))
+        self.assertIn("dollar quotes", str(raised.exception))
+        self.assertNotIn("comment markers", str(raised.exception))
+
     """I2: independent expectations from tagged server and client sources."""
 
     def test_mysql_comment_digits_change_at_810_not_800(self):
