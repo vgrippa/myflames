@@ -153,8 +153,10 @@ def ga_lab():
 
 
 def ga_credentials_path():
-    """The GA matrix credentials file (CREDS_FILE of ga-matrix.sh, 0600)."""
-    return os.environ.get("CREDS_FILE") or os.path.join(ga_lab(), "credentials.env")
+    """The GA matrix credentials file (0600). GA_CREDS_FILE, never CREDS_FILE:
+    cluster-matrix.sh reads CREDS_FILE too, so a GA value there would send
+    the GA credentials to the cluster lanes."""
+    return os.environ.get("GA_CREDS_FILE") or os.path.join(ga_lab(), "credentials.env")
 
 
 def ga_passwords():
@@ -174,8 +176,10 @@ def ga_passwords():
 
 
 def ga_matrix(*args, **kwargs):
-    """Run scripts/ga-matrix.sh with CREDS_FILE set; fail with redacted output.
+    """Run scripts/ga-matrix.sh; fail with redacted output.
 
+    The credentials file reaches ga-matrix.sh as its own CREDS_FILE in the
+    subprocess environment only, so the cluster lanes never see it.
     ``env_extra`` adds environment variables (MYFLAMES_HOME for profiles).
     ga-matrix.sh has no --home flag: it takes the profiles home from
     MYFLAMES_HOME, and checks it is not the real home itself.

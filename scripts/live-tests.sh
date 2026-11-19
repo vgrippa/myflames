@@ -32,9 +32,12 @@
 #
 # Labs and credentials come from CLUSTER_LAB (default local/cluster-matrix;
 # credentials.env there stays 0600 and is never printed). The ga lane's
-# servers and credentials come from the GA matrix (default
-# local/ga-matrix/credentials.env, or CREDS_FILE, also 0600 and never
-# printed). Suites always use a throwaway HOME with
+# servers and credentials come from the GA matrix in GA_LAB (default
+# local/ga-matrix), with credentials from GA_CREDS_FILE (default
+# $GA_LAB/credentials.env, also 0600 and never printed). The GA credentials
+# variable is GA-only: cluster-matrix.sh reads CREDS_FILE too, so the ga
+# lane hands its file to ga-matrix.sh as CREDS_FILE in the ga-matrix.sh
+# environment only. Suites always use a throwaway HOME with
 # MYFLAMES_SECRET_BACKEND=vault, never the real ~/.myflames. Requires
 # MYFLAMES_LIVE_LABS=1 semantics: this script sets it for the suites it
 # starts.
@@ -58,15 +61,19 @@ done
 
 export CLUSTER_LAB="${CLUSTER_LAB:-$REPO/local/cluster-matrix}"
 CREDS="$CLUSTER_LAB/credentials.env"
+# The GA matrix lives in GA_LAB; its credentials file has its own variable
+# so a value exported for the ga lane never reaches cluster-matrix.sh.
+export GA_LAB="${GA_LAB:-$REPO/local/ga-matrix}"
+export GA_CREDS_FILE="${GA_CREDS_FILE:-$GA_LAB/credentials.env}"
 export MYFLAMES_LIVE_LABS=1
 
 # The GA matrix check for the ga lane: any live_writes_ga server running.
 # Read-only: without the matrix credentials file it reports "not up" so
-# ga-matrix.sh status never gets the chance to create a fresh one.
+# ga-matrix.sh status never gets the chance to create a fresh one. The file
+# goes to ga-matrix.sh as its own CREDS_FILE in its environment only.
 ga_up() {
-  local creds="${CREDS_FILE:-$REPO/local/ga-matrix/credentials.env}"
-  [ -r "$creds" ] || return 1
-  bash scripts/ga-matrix.sh status 2>/dev/null | \
+  [ -r "$GA_CREDS_FILE" ] || return 1
+  CREDS_FILE="$GA_CREDS_FILE" bash scripts/ga-matrix.sh status 2>/dev/null | \
     awk '$3 == "running" && $1 ~ /^(mysql-5.7|mysql-8.0|mysql-8.4|mysql-9.7|percona-8.0|percona-8.4|mariadb-10.11|mariadb-11.4|mariadb-11.8)$/ { found=1 } END { exit !found }'
 }
 

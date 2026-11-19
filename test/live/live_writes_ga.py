@@ -27,9 +27,12 @@ live_writes.py does:
 - Variables: review and apply a harmless global (long_query_time) and
   restore it, as live_writes.py does (restored also on failure).
 - Query editor: in a throwaway schema with a canary table, a DELIMITER
-  procedure wrapper and a versioned-comment DELETE must each refuse with
-  nothing sent, and the canary must still be there. (This item checks a fix
-  landing in parallel; it may fail until then.)
+  procedure wrapper must refuse even when confirmed, and a versioned-comment
+  DELETE (a DELETE on the server's own reading of the executable comment)
+  must come back for confirmation as a write with nothing sent; the canary
+  must still be there. A CREATE DATABASE with a versioned ENCRYPTION comment
+  (mysqldump's clause) is accepted on every server, with confirmation, then
+  dropped.
 
 Credentials come only from the matrix's 0600 credentials file (read by
 _lab.ga_passwords for redaction, never printed). The saved profiles come
@@ -190,13 +193,7 @@ class _GAWritesBase(object):
     def _drop_schema(self, schema):
         """Cleanup: the throwaway schema goes away also when a test failed."""
         try:
-            first = self._editor("/api/editor/run", sql="DROP DATABASE IF EXISTS `%s`" % schema,
-                                 require_confirmation=True, wait=30)
-            if first.get("status") == "needs_confirmation":
-                token = (first.get("confirmation") or {}).get("token")
-                self._editor("/api/editor/run", sql="DROP DATABASE IF EXISTS `%s`" % schema,
-                             require_confirmation=True, confirmed=True,
-                             confirm_token=token, wait=30)
+            self._confirmed_run("DROP DATABASE IF EXISTS `%s`" % schema)
         except Exception:
             pass
 
@@ -330,17 +327,36 @@ class _GAWritesBase(object):
             self.assertEqual(result.get("status"), "complete",
                              "the confirmed write did not complete: %s"
                              % redact(result.get("message") or result.get("status")))
-        attacks = (
-            ("DELIMITER procedure wrapper",
-             "DELIMITER $$\nCREATE PROCEDURE p() /*!999999 BEGIN */ SELECT 1; DROP TABLE canary;"
-             " /*!999999 END */ $$"),
-            ("versioned-comment DELETE",
-             "/*!999999 SELECT 1 FROM ( */ DELETE FROM canary /*!999999 ) x */"),
-        )
-        for what, sql in attacks:
-            result = self._run_with_confirmation(sql)
-            self._assert_refused(result, what)
-            self._assert_canary(schema)
+        # A DELIMITER procedure wrapper must refuse, even when confirmed.
+        result = self._run_with_confirmation(
+            "DELIMITER $$\nCREATE PROCEDURE p() /*!999999 BEGIN */ SELECT 1; DROP TABLE canary;"
+            " /*!999999 END */ $$")
+        self._assert_refused(result, "DELIMITER procedure wrapper")
+        self._assert_canary(schema)
+        # The server reads the executable comment, so this is a DELETE: the
+        # review asks for confirmation of a write and, unconfirmed, sends
+        # nothing.
+        first = self._editor("/api/editor/run",
+                             sql="/*!999999 SELECT 1 FROM ( */ DELETE FROM canary /*!999999 ) x */",
+                             require_confirmation=True, wait=30)
+        self.assertEqual(first.get("status"), "needs_confirmation",
+                         "the versioned-comment DELETE did not come back for review: %s"
+                         % redact(first.get("message") or first.get("status")))
+        self.assertIn((first.get("confirmation") or {}).get("kind"), ("write", "risky"),
+                      "the versioned-comment DELETE was not reviewed as a write: %s"
+                      % redact(str(first.get("confirmation"))))
+        self.assertNotIn("run", first, "the unconfirmed run sent statements")
+        self._assert_canary(schema)
+        # A versioned comment every server reads as part of a plain CREATE
+        # DATABASE (mysqldump's ENCRYPTION clause) is accepted everywhere,
+        # with confirmation, then dropped.
+        enc_schema = _unique("mf_genc_")
+        self.addCleanup(self._drop_schema, enc_schema)
+        created = self._confirmed_run(
+            "CREATE DATABASE `%s` /*!80016 DEFAULT ENCRYPTION='N' */" % enc_schema)
+        self.assertEqual(created.get("status"), "complete",
+                         "CREATE DATABASE with a versioned comment did not complete: %s"
+                         % redact(created.get("message") or created.get("status")))
 
 
 class MySQL57WritesTest(_GAWritesBase, unittest.TestCase):

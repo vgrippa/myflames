@@ -167,7 +167,7 @@ CASES = (
     # Several statements: the worst counts.
     ('SELECT 1; DROP TABLE t', 'risky', 'ddl', ['SELECT', 'DROP TABLE']),
     ('SELECT 1 # x\n; DELETE FROM t', 'risky', 'dml', ['SELECT', 'DELETE']),
-    ('SELECT 1 /*!50000 ; DROP TABLE t */', 'risky', 'ddl', ['SELECT', 'DROP TABLE']),
+    ('SELECT 1 /*!50000 ; DROP TABLE t */', 'risky', 'unknown', ['SELECT', 'DROP TABLE']),
     ("PREPARE s FROM 'DROP TABLE t'; EXECUTE s", 'risky', 'unknown', ['PREPARE', 'EXECUTE']),
     ('INSERT INTO t VALUES (1); SELECT 1', 'write', 'dml', ['INSERT', 'SELECT']),
     ('DELIMITER //\nCREATE PROCEDURE p() BEGIN UPDATE t SET a = 1; END//\nDELIMITER ;\nCALL p();',

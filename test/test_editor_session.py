@@ -1356,6 +1356,12 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual((session.connection_id, session.in_transaction, session.sql_mode, session.safe_updates), before)
         # Another tab cannot see the temporary table; its server error is kept.
         other = self.call("/api/editor/run", tab="fresh", sql="SELECT * FROM tt", explain_format="table")
+        if self.engine == "mariadb":
+            self.assertEqual(other["status"], "needs_confirmation", other)
+            self.assertEqual(other["confirmation"]["statements"], ["EXPLAIN SELECT * FROM tt"])
+            self.assertFalse(self.logged("fresh", "EXPLAIN SELECT * FROM tt"))
+            other = self.call("/api/editor/run", tab="fresh", sql="SELECT * FROM tt", explain_format="table",
+                              confirmed=True, confirm_token=other["confirmation"]["token"])
         self.assertEqual(other["run"]["error"]["code"], 1146)
         # Safe updates does not reject the read in the application layer.
         dml = self.call("/api/editor/run", sql="UPDATE tt SET v = 2", explain_format="table")
@@ -1371,6 +1377,15 @@ class ProcessTests(unittest.TestCase):
     def test_native_explain_read_only_is_sent_and_analyze_never_slips_in(self):
         self.connection["read_only"] = True
         result = self.call("/api/editor/run", sql="DELETE FROM t", explain_format="table")
+        if self.engine == "mariadb":
+            # Connecting changes the provisional MySQL EXPLAIN prefix. Even
+            # a read waits for consent to the exact newly planned SQL.
+            self.assertEqual(result["status"], "needs_confirmation", result)
+            self.assertEqual(result["confirmation"]["kind"], "read")
+            self.assertEqual(result["confirmation"]["statements"], ["EXPLAIN DELETE FROM t"])
+            self.assertFalse(self.logged("tab1", "EXPLAIN DELETE FROM t"))
+            result = self.call("/api/editor/run", sql="DELETE FROM t", explain_format="table",
+                               confirmed=True, confirm_token=result["confirmation"]["token"])
         self.assertEqual(result["status"], "complete")
         self.assertTrue(result["session"]["read_only_transactions"])
         for sql in ("ANALYZE SELECT 1", "/* note */ ANALYZE DELETE FROM t",
@@ -1407,7 +1422,16 @@ class ProcessTests(unittest.TestCase):
         # statement it would send differs (MariaDB's plain EXPLAIN).
         [reviewed] = asked["confirmation"]["statements"]
         self.assertTrue(reviewed.startswith("EXPLAIN ") and reviewed.endswith(sql), reviewed)
-        # A plain Explain on the same Production connection runs without asking.
+        # First-run MariaDB SQL uses a new prefix and must be reviewed again.
+        first = self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")
+        if self.engine == "mariadb":
+            self.assertEqual(first["status"], "needs_confirmation", first)
+            self.assertEqual(first["confirmation"]["statements"], ["EXPLAIN SELECT 1"])
+            self.assertFalse(self.logged("tab2", "EXPLAIN SELECT 1"))
+            first = self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table",
+                              confirmed=True, confirm_token=first["confirmation"]["token"])
+        self.assertEqual(first["status"], "complete", first)
+        # A plain Explain in the bound Production tab runs without asking.
         self.assertEqual(self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")["status"],
                          "complete")
 
@@ -2783,6 +2807,16 @@ class ProcessTests(unittest.TestCase):
                         asked = answer
                     answer = self.call("/api/editor/run", sql=sql, confirmed=True,
                                        confirm_token=asked["confirmation"]["token"], typed_target=target)
+                    if self.engine == "mariadb" and sql.startswith("/*!80000"):
+                        # The connected MariaDB skips this DROP. The complete
+                        # decision changed, so even its downgrade needs review.
+                        self.assertEqual(answer["status"], "needs_confirmation", answer)
+                        self.assertIsNone(answer["confirmation"]["typed_target"])
+                        self.assertEqual(answer["confirmation"]["kind"], "read")
+                        self.assertEqual(answer["confirmation"]["statements"], [sql])
+                        self.assertFalse(self.logged("tab1", sql))
+                        answer = self.call("/api/editor/run", sql=sql, confirmed=True,
+                                           confirm_token=answer["confirmation"]["token"])
                     self.assertNotEqual(answer["status"], "needs_confirmation")
                     self.registry.close()
                     self.registry = ed.EditorSessions(reap_every=0)

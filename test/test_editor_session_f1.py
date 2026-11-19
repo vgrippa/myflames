@@ -10,7 +10,7 @@ import unittest
 import test_editor_session as fixtures
 import test_editor_session_identity as identity_fixtures
 from myflames import dbops, editor_session as ed
-from test_sql_lexer import session as bound_session
+from test_sql_lexer import session as bound_session, ANSI_ATTACK, MSSQL_ATTACK, SAFETY
 
 
 VERSIONS = (("mysql", "8.4.11"), ("mariadb", "11.4.13-MariaDB"))
@@ -26,6 +26,139 @@ SKIPPED_INPUTS = (
     "/*!999999 CREATE TABLE x ( */ ALTER TABLE big DROP INDEX ix /*!999999 ) */",
     "/*!999999 SELECT 1 FROM ( */ DELETE FROM t /*!999999 ) x */",
 )
+
+
+class SQLModePlanningTests(unittest.TestCase):
+    """Bound-session attacks exercise the real planner, classifier and policy."""
+
+    def test_ansi_and_mssql_hidden_writes_require_review(self):
+        for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
+            modes = ("ANSI_QUOTES", "ANSI")
+            if engine == "mariadb":
+                modes += ("ORACLE", "POSTGRESQL", "DB2", "MAXDB", "MSSQL")
+            for mode in modes:
+                for suffix in ("", ",NO_BACKSLASH_ESCAPES"):
+                    with self.subTest(engine=engine, mode=mode + suffix):
+                        session = bound_session(engine, version, mode + suffix)
+                        plan = ed._plan_run({"sql": ANSI_ATTACK}, session)
+                        self.assertEqual(plan["verdict"]["kind"], "risky")
+                        self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
+                        self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), session)["action"], "refuse")
+                        self.assertIn("DELETE FROM t", " ".join(u["code"] for u in plan["units"]))
+        session = bound_session("mariadb", "11.8.9-MariaDB", "MSSQL")
+        plan = ed._plan_run({"sql": MSSQL_ATTACK}, session)
+        self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
+        self.assertEqual(plan["units"][0]["send"], MSSQL_ATTACK)
+
+    def test_unknown_modes_accept_agreeing_comments_and_refuse_hidden_writes(self):
+        for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
+            session = bound_session(engine, version, None)
+            for sql in ("/*!40101 SELECT 1 */", "CALL change_mode(); /*!40101 SET @x=1 */"):
+                plan = ed._plan_run({"sql": sql}, session)
+                self.assertTrue(all(u["mode_unknown"] for u in plan["units"]))
+            for sql in (ANSI_ATTACK, "CALL change_mode(); " + ANSI_ATTACK):
+                with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                    ed._plan_run({"sql": sql}, session)
+            with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                ed._plan_run({"sql": ANSI_ATTACK, "cursor": 1}, session)
+        with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+            ed._plan_run({"sql": MSSQL_ATTACK}, bound_session("mariadb", "11.8.9-MariaDB", None))
+
+    def test_mysqldump_mode_headers_options_and_restore_plan_on_both_engines(self):
+        for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
+            for header in ("SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'",
+                           "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */"):
+                statements = [header, "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */",
+                              "/*!40101 SET NAMES utf8mb4 */",
+                              "CREATE TABLE t (id int, CHECK (id > 0) /*!80016 NOT ENFORCED */)",
+                              "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */"]
+                sql = ";\n".join(statements) + ";"
+                with self.subTest(engine=engine, header=header):
+                    plan = ed._plan_run({"sql": sql}, bound_session(engine, version))
+                    self.assertEqual([u["send"] for u in plan["units"]], statements)
+                    self.assertEqual(plan["verdict"]["kind"], "risky")
+                    self.assertEqual("NOT ENFORCED" in plan["units"][3]["code"], engine == "mysql")
+
+    def test_literal_mode_is_applied_to_later_units_but_expressions_are_unknown(self):
+        for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.8.9-MariaDB")):
+            for assignment in ("SET sql_mode='ANSI_QUOTES'", "SET SESSION sql_mode='ANSI_QUOTES'",
+                               "SET @@SESSION.`sql_mode`='ANSI_QUOTES'"):
+                plan = ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound_session(engine, version))
+                self.assertEqual(plan["units"][1]["sql_mode"], "ANSI_QUOTES")
+                self.assertEqual(plan["units"][1]["kind"], "risky")
+            for assignment in ("SET sql_mode=@saved", "SET sql_mode=CONCAT(@@sql_mode, ',ANSI_QUOTES')"):
+                with self.assertRaisesRegex(ed.EditorError, "quote mode is unknown"):
+                    ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound_session(engine, version))
+
+    def test_mode_literal_cannot_come_from_comment_text(self):
+        for engine, version in VERSIONS:
+            # Only the double-quoted value assigns the mode; the comment's
+            # single-quoted text must never supply the inferred value.
+            sql = "/* 'ANSI_QUOTES' */ SET sql_mode=\"NO_BACKSLASH_ESCAPES\"; SELECT 1"
+            plan = ed._plan_run({"sql": sql}, bound_session(engine, version))
+            self.assertIsNone(plan["units"][1]["sql_mode"])
+            self.assertTrue(plan["units"][1]["mode_unknown"])
+            sql = "/* 'ANSI_QUOTES' */ SET sql_mode='NO_AUTO_VALUE_ON_ZERO'; SELECT 1"
+            plan = ed._plan_run({"sql": sql}, bound_session(engine, version))
+            self.assertEqual(plan["units"][1]["sql_mode"], "NO_AUTO_VALUE_ON_ZERO")
+
+    def test_explain_cannot_expose_an_unprefixed_statement_under_ansi_quotes(self):
+        for engine, version in VERSIONS:
+            with self.assertRaisesRegex(ed.EditorError, "Explain one statement"):
+                ed._plan_run({"sql": ANSI_ATTACK, "explain_format": "table"},
+                             bound_session(engine, version, "ANSI_QUOTES"))
+
+    def test_oracle_definitions_refuse_and_helper_requires_binding(self):
+        session = bound_session("mariadb", "11.8.9-MariaDB", "ORACLE")
+        self.assertTrue(ed.bound_oracle_mode(session))
+        self.assertIsNone(ed.bound_oracle_mode(bound_session("mariadb", "11.8.9-MariaDB", "ORACLE", bound=False)))
+        self.assertIsNone(ed.bound_oracle_mode(bound_session("mariadb", "11.8.9-MariaDB", None)))
+        self.assertFalse(ed.bound_oracle_mode(bound_session(mode="ANSI")))
+        for definition in ("CREATE PROCEDURE p AS BEGIN NULL; END", "CREATE OR REPLACE FUNCTION f RETURN INT AS BEGIN RETURN 1; END",
+                           "CREATE PACKAGE BODY p AS END", "ALTER EVENT e DO BEGIN SELECT 1; END",
+                           "ALTER PROCEDURE p COMMENT 'x'"):
+            with self.subTest(definition=definition), self.assertRaisesRegex(ed.EditorError, "ORACLE mode"):
+                ed._plan_run({"sql": "DELIMITER //\n" + definition + "//"}, session)
+        self.assertEqual(ed._plan_run({"sql": "SELECT 1 AS \"x\""}, session)["verdict"]["kind"], "read")
+        self.assertEqual(ed._plan_run({"sql": "CREATE TABLE t (event INT)"}, session)["verdict"]["kind"], "risky")
+        with self.assertRaisesRegex(ed.EditorError, "known mode"):
+            ed._plan_run({"sql": "CREATE PROCEDURE p() SELECT 1"},
+                         bound_session("mariadb", "11.8.9-MariaDB", None))
+        for initial, prefix in (("ORACLE", "SET sql_mode=''; "),
+                                ("", "SET sql_mode='ORACLE'; SET sql_mode='INVALID_MODE'; "),
+                                ("", "SET sql_mode=@saved; SET sql_mode=''; ")):
+            with self.subTest(initial=initial, prefix=prefix), self.assertRaisesRegex(ed.EditorError, "ORACLE"):
+                ed._plan_run({"sql": prefix + "CREATE PROCEDURE p() SELECT 1"},
+                             bound_session("mariadb", "11.8.9-MariaDB", initial))
+
+    def test_guard_binds_every_lexical_flag_and_oracle_grammar(self):
+        for engine, version, mode in (("mysql", "8.4.11", "ANSI"), ("mariadb", "11.8.9-MariaDB", "MSSQL")):
+            bound = bound_session(engine, version, mode)
+            editor = ed.EditorSession("h1", "test", {})
+            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+                setattr(editor, key, getattr(bound, key))
+            packet, unused = editor._guarded_statement(editor._write_session_guard(), ANSI_ATTACK)
+            self.assertIn("FIND_IN_SET('ANSI_QUOTES', @@SESSION.sql_mode) > 0) <=> 1", packet)
+            if engine == "mariadb":
+                self.assertIn("FIND_IN_SET('MSSQL', @@SESSION.sql_mode) > 0) <=> 1", packet)
+                self.assertIn("FIND_IN_SET('ORACLE', @@SESSION.sql_mode) > 0) <=> 0", packet)
+
+    def test_predicted_read_after_failed_mode_set_cannot_avoid_guard(self):
+        for engine, version in VERSIONS:
+            # A literal prediction is not an acknowledgement of SET. With
+            # Continue on error an invalid mode leaves ANSI_QUOTES active.
+            bound = bound_session(engine, version, "ANSI_QUOTES")
+            sql = "SET sql_mode='INVALID_MODE'; " + ANSI_ATTACK
+            plan = ed._plan_run({"sql": sql}, bound)
+            read = plan["units"][1]
+            self.assertEqual(read["kind"], "read")
+            self.assertTrue(read["mode_sensitive"])
+            self.assertTrue(ed._needs_session_guard(read))
+            editor = ed.EditorSession("h1-mode-set", "test", {})
+            for key in ("engine", "server_version", "sql_mode", "connection_id", "server_identity", "_kill_identity"):
+                setattr(editor, key, getattr(bound, key))
+            with self.assertRaises(ValueError):
+                editor._guarded_statement(editor._write_session_guard(), read["send"], use_session_mode=False)
 
 
 class ExecutableCommentTests(unittest.TestCase):
@@ -97,7 +230,7 @@ class ExecutableCommentTests(unittest.TestCase):
                     self.assertEqual(result["statements"][0]["text"], sql)
 
     def test_executed_block_comments_remain_one_ddl_and_dump_settings_are_accepted(self):
-        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END *///"
+        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END */ //"
         for engine, version in VERSIONS:
             units = ed.plan_statements(sql, engine=engine, server_version=version, identity_bound=True)
             self.assertEqual(len(units), 1)
@@ -213,7 +346,7 @@ class EditorF1ProcessTests(unittest.TestCase):
             self.assertIn("SET @myflames_target", packet)
 
     def test_executed_comments_reach_one_guarded_ddl_packet_and_dump_settings_stay_accepted(self):
-        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END *///"
+        sql = "DELIMITER //\nCREATE PROCEDURE p() /*!50000 BEGIN */ SELECT 1; SELECT 2; /*!50000 END */ //"
         result = self.run_sql(sql)
         self.assertEqual(result["status"], "complete", result)
         self.assertEqual(len(result["run"]["statements"]), 1)
@@ -267,7 +400,7 @@ class EditorF1ProcessTests(unittest.TestCase):
     def test_g1_delete_requires_consent_and_g8_mode_change_sends_nothing(self):
         from test_sql_lexer import G1A, G2, G8
         self.run_sql("SELECT 7")
-        for sql in (G1A, G2):
+        for sql in (G1A,):
             before = len(self.packets())
             result = self.call("/api/editor/run", sql=sql)
             self.assertEqual(result["status"], "needs_confirmation", result)
@@ -275,7 +408,10 @@ class EditorF1ProcessTests(unittest.TestCase):
             self.assertEqual(result["confirmation"]["statements"], [sql])
             self.assertEqual(len(self.packets()), before)
         before = len(self.packets())
-        sql = "DELIMITER //\nSET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'//\n" + G8 + "//"
+        nested = self.call("/api/editor/run", sql=G2)
+        self.assertEqual(nested["status"], "invalid", nested)
+        self.assertIn("nested", nested["message"])
+        sql = "DELIMITER //\nSET SESSION sql_mode = @next_mode//\n" + G8 + "//"
         result = self.call("/api/editor/run", sql=sql)
         self.assertEqual(result["status"], "invalid", result)
         self.assertEqual(result["code"], "invalid_statement")
@@ -376,7 +512,7 @@ class EditorF1ProcessTests(unittest.TestCase):
     def test_ambiguous_later_unit_after_mode_change_refuses_before_any_send(self):
         self.run_sql("SELECT 7")
         for later in (r"INSERT INTO tt VALUES (1, 'tail\')", r"SELECT 'tail\'", r"/*! SET @x = 'tail\' */"):
-            sql = "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; " + later
+            sql = "SET SESSION sql_mode = @next_mode; " + later
             before = len(self.packets())
             result = self.run_sql(sql)
             self.assertEqual(result["status"], "invalid", result)

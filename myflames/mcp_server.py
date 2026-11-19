@@ -151,8 +151,8 @@ def _read_sql(sql):
         raise ValueError("MCP server analysis does not permit Readyset optimizer hints.")
     if dbops.skipped_executable_comments(sql, None, None):
         raise ValueError("MCP server analysis cannot establish the server conditions of executable comments.")
-    for backslash in (True, False):
-        units = dbops.split_statements(sql, backslash_escapes=backslash)
+    for reading in dbops.lexer_readings():
+        units = dbops.split_statements(sql, **reading)
         # DELIMITER frames a client packet, not a single server statement.
         # Its masked code preserves every executable semicolon, including
         # SQL in executable comments, without splitting quoted data.

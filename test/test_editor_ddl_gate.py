@@ -182,10 +182,123 @@ class EditorDdlGateTests(unittest.TestCase):
                     self.assertEqual(parts_count(sql, engine), 1)
                     self.assertEqual(parts_count(sql + "; DROP DATABASE prod", engine), 2)
 
+    def assert_definition_and_tail(self, definition, engine):
+        """A complete definition reviews once; no trailing SQL shares it."""
+        sql = "DELIMITER //\n" + definition + "//"
+        self.assertEqual(parts_count(sql, engine), 1)
+        self.assertEqual(self.decision(definition, engine)["action"], "confirm")
+        for tail in ("DROP DATABASE prod", "CREATE TABLE extra (n INT)", "SELECT 2"):
+            merged = definition + "; " + tail
+            with self.subTest(tail=tail):
+                self.assertEqual(parts_count("DELIMITER //\n" + merged + "//", engine), 2)
+                self.assertEqual(self.decision(merged, engine)["action"], "refuse")
+
+    def test_multiword_returns_types_and_quoted_charset_keep_one_definition(self):
+        # mysql-server/sql/sql_yacc.yy:7157-7336,7371-7409,7698-7746;
+        # mariadb-server/sql/sql_yacc.yy:6835-6879,19287-19322.
+        common = ("DOUBLE PRECISION", "DOUBLE PRECISION(10, 2)",
+                  "CHAR VARYING(10)", "CHARACTER VARYING(10)", "NCHAR VARYING(10)",
+                  "NATIONAL CHAR(10)", "NATIONAL CHARACTER VARYING(10)",
+                  "NATIONAL VARCHAR(10)", "NCHAR VARCHAR(10)",
+                  "LONG VARCHAR", "LONG VARBINARY", "LONG CHARACTER VARYING",
+                  "CHAR(10) ASCII", "CHAR(10) UNICODE", "CHAR(10) BYTE",
+                  "VARCHAR(10) CHARACTER SET 'utf8mb4' COLLATE 'utf8mb4_bin'",
+                  'VARCHAR(10) CHARSET "utf8mb4" COLLATE "utf8mb4_bin"',
+                  "CHAR(10) CHAR SET `utf8mb4` COLLATE `utf8mb4_bin`")
+        maria = ("TYPE OF t.c", "TYPE OF d.t.c", "ROW TYPE OF d.t",
+                 "ROW(a INT, b CHAR(10))", "TEXT COMPRESSED", "TEXT COMPRESSED=zlib",
+                 "GEOMETRY REF_SYSTEM_ID = 4326")
+        for engine in ("mysql", "mariadb"):
+            for returned in common + (maria if engine == "mariadb" else ()):
+                definition = ("CREATE FUNCTION f() RETURNS %s DETERMINISTIC "
+                              "BEGIN DECLARE x INT DEFAULT 1; RETURN x; END" % returned)
+                with self.subTest(engine=engine, returned=returned):
+                    self.assert_definition_and_tail(definition, engine)
+
+    def test_trigger_order_names_keep_the_body_boundary(self):
+        # Both grammars use ident_or_text for the ordering anchor. Qualified
+        # identifiers also remain atomic in this boundary-only scanner; the
+        # server, not this gate, validates the anchor's namespace.
+        for engine in ("mysql", "mariadb"):
+            for order in ("FOLLOWS", "PRECEDES"):
+                for anchor in ("'other_trg'", '"other_trg"', "`other_trg`",
+                               "d.other_trg", "`d` . `other_trg`"):
+                    definition = ("CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW %s %s "
+                                  "BEGIN SET NEW.n = 1; SET @seen = 1; END" % (order, anchor))
+                    with self.subTest(engine=engine, order=order, anchor=anchor):
+                        self.assert_definition_and_tail(definition, engine)
+
+    def test_handlers_cursors_nested_declarations_and_loop_labels(self):
+        bodies = (
+            "BEGIN DECLARE x INT; DECLARE c CURSOR FOR SELECT d.t.end FROM d.t; "
+            "DECLARE CONTINUE HANDLER FOR NOT FOUND SET x = 1; "
+            "OPEN c; FETCH c INTO x; CLOSE c; END",
+            "BEGIN DECLARE EXIT HANDLER FOR SQLSTATE VALUE '45000', 1062, SQLEXCEPTION "
+            "BEGIN DECLARE x INT; SET x = 1; SET @seen = x; END; SELECT 2; END",
+            "BEGIN DECLARE condition_name CONDITION FOR SQLSTATE '45000'; "
+            "DECLARE CONTINUE HANDLER FOR condition_name, SQLWARNING BEGIN SELECT 1; END; SELECT 2; END",
+            "outer_label: BEGIN DECLARE x INT; BEGIN DECLARE y INT; SET y = 2; END; "
+            "lp: LOOP SET x = 1; LEAVE lp; END LOOP lp; "
+            "wh: WHILE x < 2 DO SET x = x + 1; END WHILE wh; "
+            "rp: REPEAT SET x = x + 1; UNTIL x > 3 END REPEAT rp; END outer_label",
+        )
+        for engine in ("mysql", "mariadb"):
+            for body in bodies:
+                with self.subTest(engine=engine, body=body):
+                    self.assert_definition_and_tail("CREATE PROCEDURE p() " + body, engine)
+
+    def test_mariadb_for_range_and_cursor_loops(self):
+        # mariadb-server/sql/sql_yacc.yy:4769-4788,19426-19429.
+        bodies = (
+            "FOR i IN 1..10 DO SELECT i; SELECT 2; END FOR",
+            "lp: FOR i IN REVERSE 1..10 DO SELECT i; END FOR lp",
+            "FOR i IN (1 + 1)..(CASE WHEN 1 THEN 10 ELSE 2 END) DO SELECT i; END FOR",
+            "FOR r IN (SELECT t.case, d.t.end FROM d.t) DO SELECT r.case; END FOR",
+            "BEGIN DECLARE c CURSOR FOR SELECT 1 AS n; "
+            "FOR r IN c DO BEGIN DECLARE n INT; SET n = r.n; END; END FOR; END",
+            "BEGIN DECLARE c CURSOR (n INT) FOR SELECT n; "
+            "FOR r IN c(2) DO SELECT r.n; END FOR; END",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                self.assert_definition_and_tail("CREATE PROCEDURE p() " + body, "mariadb")
+
+    def test_exception_sections_have_explicit_boundaries(self):
+        # EXCEPTION is in MariaDB's Oracle grammar (20079-20102). This
+        # exercises boundaries only, not permission to run ORACLE-mode SQL.
+        for body in (
+                "BEGIN SELECT 1; EXCEPTION WHEN SQLSTATE '45000' THEN SELECT 2; END",
+                "BEGIN BEGIN SELECT 1; EXCEPTION WHEN NOT FOUND THEN SELECT 2; END; "
+                "EXCEPTION WHEN 1062, SQLWARNING THEN BEGIN DECLARE x INT; SET x = 1; END; "
+                "WHEN OTHERS THEN SELECT 3; END"):
+            with self.subTest(body=body):
+                self.assert_definition_and_tail("CREATE PROCEDURE p() " + body, "mariadb")
+
+    def test_three_part_and_spaced_qualifiers_cannot_merge_statements(self):
+        for engine in ("mysql", "mariadb"):
+            for case, end in (("d.t.case", "d.t.end"), ("t .case", "t .end"),
+                              ("d . t . case", "d . t . end"),
+                              ("`d` . t.case", "`d` . t.end")):
+                for head in ("CREATE PROCEDURE p() SELECT ",
+                             "CREATE FUNCTION f() RETURNS INT RETURN ",
+                             "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET @v = ",
+                             "CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO SELECT "):
+                    definition = head + case
+                    with self.subTest(engine=engine, definition=definition):
+                        self.assert_definition_and_tail(definition, engine)
+                        merged = definition + "; DROP DATABASE prod; SELECT " + end
+                        self.assertEqual(parts_count("DELIMITER //\n" + merged + "//", engine), 3)
+                        self.assertEqual(self.decision(merged, engine)["action"], "refuse")
+
     def test_unbalanced_or_unknown_structures_fail_closed(self):
         for body in ("BEGIN SELECT 1; END IF", "BEGIN IF 1 THEN SELECT 1; END; END",
                      "BEGIN SELECT CASE WHEN 1 THEN 2; END", "BEGIN WHILE 1 SELECT 1; END WHILE; END",
-                     "BEGIN FOR x IN 1..2 DO SELECT 1; END FOR; END",
+                     "BEGIN FOR x IN 1..2 DO SELECT 1; END LOOP; END",
+                     "BEGIN FOR x IN 1..2 SELECT 1; END FOR; END",
+                     "BEGIN FOR x IN 1..2 DO SELECT 1; END; END",
+                     "BEGIN EXCEPTION WHEN SQLWARNING SELECT 1; END",
+                     "BEGIN EXCEPTION SELECT 1; END",
+                     "BEGIN EXCEPTION WHEN SQLWARNING THEN SELECT 1; END IF",
                      "IS PROCEDURE nested() BEGIN SELECT 1; END; BEGIN SELECT 1; END"):
             with self.subTest(body=body):
                 with self.assertRaisesRegex(ed.EditorError, "One DDL per confirmation"):

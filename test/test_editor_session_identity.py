@@ -123,6 +123,146 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertTrue(session.run.done.wait(5))
         self.assertTrue((self.state / 'kills.log').exists())
 
+    def test_startup_retains_wsrep_off_for_conditional_sql_and_packet_guard(self):
+        self.maria_client()
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertEqual(session._kill_identity.get('wsrep_on'), 'OFF')
+        self.assertIs(ed._lexer_session_context(session)['wsrep_on'], False)
+        sql = 'SELECT 7 /*!99997 INTO OUTFILE \'/tmp/must-not-run\' */'
+        plan = ed._plan_run({'sql': sql}, session)
+        self.assertEqual(plan['units'][0]['code'], 'SELECT 7')
+        result = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(result['status'], 'complete', result)
+        packet = next(p[2] for p in self.packets() if sql in p[2])
+        self.assertIn('@@SESSION.wsrep_on <=> 0', packet)
+        self.assertIn('SET @myflames_target = ', packet)
+        self.assertIn(sql, packet, 'the original SQL stays intact after the session guard')
+        self.assertEqual(session._kill_identity.get('wsrep_on'), 'OFF', 'state refresh keeps the binding')
+
+    def test_startup_retains_wsrep_on_and_refuses_special_marker(self):
+        self.maria_client(wsrep=True)
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertEqual(session._kill_identity.get('wsrep_on'), 'ON')
+        self.assertIs(ed._lexer_session_context(session)['wsrep_on'], True)
+        before = len(self.packets())
+        result = self.call('/api/editor/run', sql='SELECT 7 /*!99997 INTO OUTFILE \'/tmp/must-not-run\' */')
+        self.assertEqual(result['status'], 'invalid', result)
+        self.assertIn('wsrep', result['message'])
+        self.assertEqual(len(self.packets()), before)
+
+    def test_missing_wsrep_variable_cannot_authorize_special_marker(self):
+        self.maria_client()
+        # Keep a row so the XML fake reports its column names, as the real
+        # identity packet does. wsrep_on itself is absent, not assumed OFF.
+        self.rewrite_client(lambda text: text.replace('[["wsrep_on", "OFF"]]', '[["wsrep_provider", "none"]]'))
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertNotIn('wsrep_on', session._kill_identity)
+        self.assertIsNone(ed._lexer_session_context(session)['wsrep_on'])
+        before = len(self.packets())
+        result = self.call('/api/editor/run', sql='SELECT 7 /*!99997 INTO OUTFILE \'/tmp/must-not-run\' */')
+        self.assertEqual(result['status'], 'invalid', result)
+        self.assertEqual(len(self.packets()), before)
+
+    def test_first_run_replans_typed_drop_target_before_sending(self):
+        # The provisional unknown-version reading includes TEMPORARY. The
+        # started server skips it, revealing a DROP DATABASE typed target.
+        # Real planner, classifier and gate throughout; only the client is fake.
+        definition = 'CREATE PROCEDURE p() BEGIN DROP /*!999999 TEMPORARY */ DATABASE prod; END'
+        sql = 'DELIMITER //\n' + definition + '//'
+        review = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(review['status'], 'needs_confirmation', review)
+        self.assertIsNone(review['confirmation']['typed_target'])
+        self.assertIsNone(self.registry.get('tab1'))
+        old_token = review['confirmation']['token']
+        changed = self.call('/api/editor/run', sql=sql, confirmed=True, confirm_token=old_token)
+        self.assertEqual(changed['status'], 'needs_confirmation', changed)
+        self.assertEqual(changed['confirmation']['typed_target'], 'prod')
+        self.assertNotEqual(changed['confirmation']['token'], old_token)
+        self.assertFalse(any(definition in p[2] for p in self.packets()), 'old review sends no user SQL')
+        for token, target in ((old_token, 'prod'), (changed['confirmation']['token'], None),
+                              (changed['confirmation']['token'], 'PROD')):
+            with self.subTest(token=token, target=target):
+                rejected = self.call('/api/editor/run', sql=sql, confirmed=True,
+                                     confirm_token=token, typed_target=target)
+                self.assertEqual(rejected['status'], 'needs_confirmation', rejected)
+                self.assertFalse(any(definition in p[2] for p in self.packets()))
+        result = self.call('/api/editor/run', sql=sql, confirmed=True, typed_target='prod',
+                           confirm_token=changed['confirmation']['token'])
+        self.assertEqual(result['status'], 'complete', result)
+        self.assertEqual(sum(definition in p[2] for p in self.packets()), 1)
+
+    def test_first_run_replans_each_unit_even_when_overall_decision_is_unchanged(self):
+        sql = 'SET @first = 1; /*!999999 SET @second = 2 */'
+        provisional = ed._plan_run({'sql': sql}, None)
+        review = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(review['status'], 'needs_confirmation', review)
+        changed = self.call('/api/editor/run', sql=sql, confirmed=True,
+                            confirm_token=review['confirmation']['token'])
+        self.assertEqual(changed['status'], 'needs_confirmation', changed)
+        session = self.registry.get('tab1')
+        bound = ed._plan_run({'sql': sql}, session)
+        safety = {'type': 'production', 'read_only': False}
+        self.assertEqual(ed._decision(provisional, safety), ed._decision(bound, safety, session))
+        self.assertEqual(provisional['units'][1]['kind'], 'write')
+        self.assertEqual(bound['units'][1]['kind'], 'read')
+        self.assertNotIn('SET @first = 1', self.session_log())
+        self.assertFalse(any('/*!999999 SET @second = 2 */' in p[2] for p in self.packets()))
+        result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=changed['confirmation']['token'])
+        self.assertEqual(result['status'], 'complete', result)
+
+    def test_first_run_changed_to_read_still_returns_a_new_review(self):
+        sql = '/*!999999 SET @must_not_run = 1 */'
+        review = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(review['status'], 'needs_confirmation', review)
+        unused = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(unused['status'], 'needs_confirmation', unused)
+        changed = self.call('/api/editor/run', sql=sql, confirmed=True,
+                            confirm_token=review['confirmation']['token'])
+        self.assertEqual(changed['status'], 'needs_confirmation', changed)
+        self.assertEqual(changed['confirmation']['kind'], 'read')
+        self.assertEqual(changed['confirmation']['statements'], [sql])
+        self.assertFalse(any(sql in p[2] for p in self.packets()))
+        for previous in (review, unused):
+            stale = self.call('/api/editor/run', sql=sql, confirmed=True,
+                              confirm_token=previous['confirmation']['token'])
+            self.assertEqual(stale['status'], 'needs_confirmation', stale)
+            self.assertFalse(any(sql in p[2] for p in self.packets()))
+        result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=changed['confirmation']['token'])
+        self.assertEqual(result['status'], 'complete', result)
+        before = len(self.packets())
+        replay = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=changed['confirmation']['token'])
+        self.assertEqual(replay['status'], 'needs_confirmation', replay)
+        self.assertEqual(len(self.packets()), before, 'a read verdict cannot bypass a consumed review token')
+
+    def test_first_run_newly_visible_alter_has_preflight_before_review(self):
+        sql = '/*!999999 CREATE */ ALTER TABLE d.tt ADD COLUMN c INT'
+        provisional = ed._plan_run({'sql': sql}, None)
+        self.assertIsNone(ed._alter_unit(provisional))
+        initial = self.call('/api/editor/run', sql=sql)
+        self.assertEqual(initial['status'], 'needs_confirmation', initial)
+        self.assertIsNone(initial['confirmation']['alter_preflight'])
+        self.assertIsNone(self.registry.get('tab1'))
+        review = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=initial['confirmation']['token'])
+        self.assertEqual(review['status'], 'needs_confirmation', review)
+        self.assertEqual(review['confirmation']['statements'], [ed.ALTER_LOCK_WAIT, sql])
+        preflight = review['confirmation']['alter_preflight']
+        self.assertEqual((preflight['schema'], preflight['table']), ('d', 'tt'))
+        self.assertTrue(preflight['warnings'])
+        self.assertFalse(any(p[2].endswith(sql) for p in self.packets()))
+        self.assertNotIn(ed.ALTER_LOCK_WAIT, self.session_log())
+        result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=review['confirmation']['token'])
+        self.assertEqual(result['status'], 'complete', result)
+        packet = next(p[2] for p in self.packets() if p[2].endswith(sql))
+        self.assertIn(ed.ALTER_LOCK_WAIT, packet)
+
     def test_loaded_galera_provider_requires_uuid_even_with_wsrep_off(self):
         node = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         self.maria_client(wsrep=True, node_uuid=node)

@@ -2473,8 +2473,10 @@ entire guard and every statement, including quoted text and comments. If all
 candidates occur, it refuses with nothing sent. Each string must split into
 exactly one complete SQL unit through `dbops.split_statements`, with closed
 quotes and comments, no client-command issues and identical boundaries under
-both backslash readings. This compares every quote, comment and intervening
-code span, including SQL inside executable comments, not just the outer unit.
+all modelled quote modes when the session mode is unknown. This compares
+quote boundaries, executable code and classified effects, including SQL inside
+executable comments, not just the outer unit. An otherwise identical string
+or quoted-identifier reading is acceptable when its effect agrees.
 Otherwise it refuses before token consumption or
 transport. Internal tuples explicitly group individually validated units that
 depend on the same session. Every member, including a plain single statement,
@@ -2484,25 +2486,23 @@ units; the evidence binder uses the same rule for its read bodies. Review and au
 unchanged. Account password wrappers validate their literal
 under the mode they assert in that packet. `check_reviewed` and the builder
 both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
-The persistent editor passes its known `backslash_escapes` mode and the
-unit's already validated `delimiter` to `target_guarded_script`. Every such
-packet also asserts that the `NO_BACKSLASH_ESCAPES` flag in the executing
-session's `@@SESSION.sql_mode` matches the reading used for validation,
-using a NULL-safe comparison. A state refresh from a different backend with
-the same connection id cannot authorize a write under another quote mode.
-A mode mismatch refuses before the protected SQL executes. An unknown mode
-keeps the two-reading validation. After a unit that may change `sql_mode`,
-the editor invalidates the cached mode for the rest of that run. Later units
-must validate under both backslash readings and their packets omit the mode
-assertion until `refresh_state` reads it again. The independent KILL helper
-always validates its generated SQL under both readings: a fresh connection
-inherits the global mode, which can differ from the tab's mode. Its server
-identity and statement-ownership guards remain mandatory. This permits
-compound CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT and PACKAGE bodies,
-custom-delimiter units and escaped quotes without relaxing the default
-two-reading check for independent reviewed-write senders. The builder still
-revalidates closed tokens, client commands, dollar bodies and delimiter
-collisions; a caller-supplied DELIMITER command cannot bypass these checks.
+The persistent editor passes its known `sql_mode` and the unit's validated
+`delimiter` to `target_guarded_script`. Each such packet asserts the executing
+session's `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES` flags with NULL-safe
+comparisons; MariaDB packets also check `MSSQL` and `ORACLE`. A refresh from
+another backend with the same connection id cannot authorize a different
+quote or stored-program grammar. An unknown mode keeps all-reading validation.
+With a bound session, planning can infer a later mode from a single literal `SET [SESSION] sql_mode
+= '<mode>'`; expressions, indirect changes and multi-assignment dump headers
+leave it unknown. Execution still invalidates cached mode after a possible
+change, and independent helpers validate under every modelled mode. The packet
+builder rechecks closure, client commands, dollar bodies and delimiter collisions.
+A caller-supplied DELIMITER command cannot bypass these checks.
+Mode-sensitive reads also require the guarded packet. A literal mode assignment
+is only a planning prediction: it can fail while Continue on error leaves the
+old mode active. The existing preflight therefore validates later mode-sensitive
+units under unknown modes before any user statement runs, even when their
+predicted verdict is read.
 Reviewed-packet validation also scans MySQL dollar-quoted bodies: a tag starts only
 at an identifier boundary, contains identifier characters (including digits
 and multibyte characters), and closes only with the identical case-sensitive
@@ -2746,14 +2746,27 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   packet validation. It returns source spans for code, strings, quoted
   identifiers, ordinary comments and executable comment boundaries, plus
   closure and uncertainty evidence. Strings honor doubled quotes and
-  `NO_BACKSLASH_ESCAPES`; backticks escape only by doubling. Inside an executed
+  `NO_BACKSLASH_ESCAPES`. `ANSI_QUOTES` makes double quotes identifiers;
+  backticks, ANSI double quotes and MariaDB MSSQL brackets escape their
+  closing delimiter only by doubling, never with a backslash. `sql_mode_flags`
+  expands MySQL `ANSI`, and MariaDB `ANSI`, `ORACLE`, `MSSQL`, `POSTGRESQL`,
+  `DB2` and `MAXDB`. `lex_sql` accepts `sql_mode` or explicit
+  `backslash_escapes`, `ansi_quotes` and `mssql` flags. Sources:
+  `mysql-server/sql/sys_vars.cc:4708–4721`, `sql/sql_lex.cc:1782–1820,1906–1914`;
+  `mariadb-server/sql/sql_class.h:168–192`, `sql/sys_vars.cc:3999–4039`,
+  `sql/sql_lex.cc:2084–2085,2377–2388,2966–3016`.
+  Inside an executed
   `/*! ... */` or `/*M! ... */`, the body is SQL: a quoted `*/`, or one in a
   `#` or `-- ` line comment, does not close the executable comment.
   Sources: `mysql-server/sql/sql_lex.cc:1037–1066,1782–1812,1931–2075` and
   `mariadb-server/sql/sql_lex.cc:1639–1694,2401–2562`.
 - MySQL reads six version digits only when followed by ASCII whitespace,
   otherwise five (`mysql-server/sql/sql_lex.cc:1975–1997`). MariaDB reads five
-  or six with no whitespace requirement, executes `/*M!` only on MariaDB,
+  or six with no whitespace requirement. Unknown engines are checked under
+  both digit grammars through `lexer_readings`/`comment_dialect`, including
+  provisional planning and MCP filtering; a MySQL five-digit interpretation
+  cannot hide a MariaDB write clause following the sixth digit.
+  MariaDB executes `/*M!` only on MariaDB,
   and skips MySQL-style version numbers 50700–99999
   (`mariadb-server/sql/sql_lex.cc:2419–2486`). An ordinary comment consumes
   no nested level; a skipped versioned comment consumes one nested
@@ -2761,14 +2774,14 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `mysql-server/sql/sql_lex.cc:1331–1366,2004–2027` and
   `mariadb-server/sql/sql_lex.cc:1824–1860,2507–2531`.
 - `skipped_executable_comments(sql, engine, server_version, backslash_escapes=None,
-  wsrep_on=None)` reports skipped or uncertain comments with `start`, `end`,
+  wsrep_on=None, sql_mode=None)` reports skipped or uncertain comments with `start`, `end`,
   `opener` (never the SQL body), `certain`, and an optional construct-only
-  `problem`. Unknown quote modes inspect both readings. Unknown engine or
+  `problem`. Unknown quote modes inspect every modelled reading. Unknown engine or
   version facts make version gates uncertain. Reversed comments (`/*!!`)
   and unterminated executed comments refuse in the editor. MariaDB's
   `/*!99997` marker also refuses unless wsrep is known off: a local wsrep
   session executes it specially (`mariadb-server/sql/sql_lex.cc:2492–2500`).
-- With a complete engine/version/session binding and known quote mode, the
+- With a complete engine/version/session binding, the
   editor classifies the server's own reading: skipped comments are comments,
   and the SQL sent stays unchanged. This accepts cross-version dump options
   such as `CREATE DATABASE d /*!80016 DEFAULT ENCRYPTION='N' */` on MariaDB
@@ -2779,14 +2792,17 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `sql/sys_vars.cc:6564–6570`). An absent or unrecognized wsrep value stays
   unknown.
 - `classify(sql, backslash_escapes=None, key_columns=None, engine=None,
-  server_version=None, wsrep_on=None)` returns `{kind: read|write|risky,
+  server_version=None, wsrep_on=None, sql_mode=None)` returns `{kind: read|write|risky,
   category, reasons[], statements: [{text, start, end, verb, kind, category,
   reasons}], count, ambiguous}`. Unknown version gates are considered both
   executed and skipped; different unknown conditions are risky instead of
   enumerating all combinations. Unknown quote mode takes the worst overall
   and per-statement verdict even when offsets match: token spans, delimiters,
-  masked code, identifiers, closure and issues all participate in comparison.
-  A hidden `INTO OUTFILE` therefore cannot inherit the other reading's read
+  masked code, closure, issues and effect all participate in comparison.
+  Four readings cover backslash mode times ANSI_QUOTES; MariaDB and unknown
+  engines also consider bracket identifiers. An unknown mode refuses in the
+  editor only when readings disagree, so mode-independent dump headers remain
+  usable after a nonliteral mode change. A hidden `INTO OUTFILE` therefore cannot inherit the other reading's read
   verdict. Review text always retains the original source.
 - Client framing is distinct from server masking but uses the same lexer.
   The client recognizes delimiters inside conditional comments before the
@@ -2795,7 +2811,17 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   can connect to MySQL (MySQL `client/mysql.cc:2913–2914`; MariaDB
   `client/mysql.cc:2834–2836`). A delimiter cutting a server-skipped comment
   is risky and refuses in the editor: it cannot mask SQL in a later packet
-  after an earlier packet errors under `--force`.
+  after an earlier packet errors under `--force`. A delimiter splitting an
+  executed comment or a server string/identifier also refuses. Client strings
+  suppress delimiters and persist across lines, but the client knows only the
+  NO_BACKSLASH_ESCAPES status bit, not ANSI_QUOTES or MSSQL identifiers.
+  Nested `/*` inside an executable comment refuses because `ml_comment` and
+  the line-local `ss_comment` interact at the closing markers. Executable
+  openers, closing markers and version digits are not atomic to the client;
+  a custom delimiter cutting any of them also refuses. Sources:
+  `mysql-server/client/mysql.cc:2750–2755,2785–2799,2838–2839,2913–2965`.
+  The server reading of each client unit still exposes every executable
+  semicolon for classification, even when the client sees one quoted string.
   `DELIMITER` lines with nothing
   pending are consumed as client commands; quotes are stripped from their
   argument, and an unquoted argument ends at a space, not a tab. Missing
@@ -3293,43 +3319,64 @@ planner, write gate and session engine from the CLI.
   use the builder's collision-checked delimiter and keep the same bare
   `delimiter` completion marker with its actual input line number.
 - Planning (`plan_statements`): `dbops.split_statements` with the session's
-  backslash reading (`@@sql_mode`, read at start and after every run); a
+  lexical mode (`@@sql_mode`, read at start and after every run); a
   statement with `unclosed` or `issues` (client backslash command, also inside
   a `/*+ */` optimizer hint, which the client does not treat as a comment; `--`
   before a control character; unusable DELIMITER), a NUL, a leading `delimiter` word,
   or dollar-quoted text (`$tag$`, read as a string by MySQL 8.1+ clients) is
   refused with `status: "invalid"`; so is a statement whose quotes read
-  differently under NO_BACKSLASH_ESCAPES after a statement that may change
-  `sql_mode` in the same run. Possible changes include quoted assignment
-  targets (`"sql_mode"` under ANSI_QUOTES is an opaque string in the mask)
+  differently under an unknown NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MSSQL
+  mode. Possible changes include quoted assignment targets
   and CALL/EXECUTE anywhere in a unit, including SET STATEMENT wrappers and
   compound bodies. An opaque SET target cannot prove the mode is unchanged.
   `selection: {start, end}` runs only that part.
-  Executable comments are accepted when the engine, version and quote mode
-  are known and bound to the tab's complete server/session identity. Known
+  Executable comments require engine and version facts bound to the tab's
+  complete server/session identity. An unknown quote mode is accepted when
+  every modelled reading agrees on boundaries and effect. Known
   skipped options are masked for planning and gating but remain unchanged
   on the wire. Dump headers `/*!40101 ... */`, `/*!40103 ... */` and
   `/*!50503 ... */` remain executable on both engines; `/*!80016 ... */`
   executes on MySQL 8.0.16+ and is a comment on MariaDB or MySQL 5.7.
-  The editor refuses unknown or unbound facts, unknown quote mode,
+  The editor refuses unknown or unbound server facts, disagreeing quote modes,
   unterminated executed comments, reversed `/*!!` comments, and MariaDB's
   `/*!99997` marker when wsrep is on or unknown. The message names only the
   construct and reason, never its SQL body. A routed reads-only tab has no
   complete binding and cannot authorize conditional SQL from display facts.
-  Planning before startup is provisional and repeated after startup.
+  Startup retains the identity packet's observed `wsrep_on` in `_kill_identity`;
+  an absent value stays unknown. When that value is OFF, the guarded packet
+  requires `@@SESSION.wsrep_on <=> 0`, so the cached value cannot authorize a
+  different reading after the session setting changes.
+  Planning before startup is provisional and repeated after startup. `_run_api`
+  compares the complete decision, including typed target, kind, category,
+  reasons, warnings and ALTER preflight, plus the aggregate verdict and every
+  unit's send text, verdict and guard requirements. Any difference returns a new
+  confirmation, or a refusal, before sending user SQL. Even a change to a read
+  verdict requires that new review; replies carrying a confirmation token still
+  validate and consume it. Run-review digests include the started client's
+  private session tag, so other unused provisional tokens cannot authorize the
+  bound review. A newly discovered ALTER gets its preflight before
+  that comparison. Regression coverage: `test/test_editor_session_identity.py`.
   `start_run` revalidates each unit with the current binding before any
   transport or identity probe; changed masked code requires a fresh plan.
   Conditional reads also use the guarded packet, so a proxy cannot send
   their version-sensitive text to an unreviewed backend.
-  If a run starts with unknown `sql_mode`, every unit is mode-unknown.
-  After any possible mode change, later units must likewise have identical
-  full readings under both backslash modes, including unguarded reads.
-  Comparisons include source/token spans, delimiters, masked code,
-  identifiers, closure and issues. The cached mode is invalidated when the
-  changing unit is sent, even if it errors. Later guarded packets keep their
-  server/session checks and omit the mode assertion until the end-of-run
-  state refresh establishes a mode. Regressions: `test/test_sql_lexer.py`
-  and `test/test_editor_session_f1.py`.
+  In a bound session, a single literal `SET [SESSION] sql_mode = '<mode>'` supplies the later
+  planning mode, including combination names. A nonliteral assignment or
+  indirect change leaves later units mode-unknown. Every unknown reading
+  must agree on boundaries and classified effect, including unguarded reads
+  and executable comments. Quoted identifiers and strings with identical spans
+  can agree on a read effect. The cached execution mode is still invalidated
+  when a changing unit is sent, even if it errors; later packets retain
+  their server/session guards and validate unknown modes until refreshed.
+  MariaDB `ORACLE` quoting is modelled, but CREATE/ALTER stored-program units
+  refuse with an explanation that the editor does not support that PL/SQL
+  grammar. Unknown MariaDB modes cannot authorize those definitions either.
+  A later literal cannot rule out an earlier possible ORACLE mode in that run,
+  because the assignment could fail under Continue on error; use a separate run
+  after the session mode has been refreshed.
+  `bound_oracle_mode(session)` exposes True/False for a bound mode, or None
+  without that fact, to the DDL scanner; `dbops.oracle_mode(sql_mode, engine)` handles planning modes.
+  Tests: `test/test_sql_lexer.py` and `test/test_editor_session_f1.py`.
   Offsets in requests and responses are UTF-16 code units (JavaScript string
   indexes; `Offsets`).
   Dollar-quote tags follow the utf8mb4 client's identifier-byte rules: ASCII
@@ -3530,6 +3577,21 @@ planner, write gate and session engine from the CLI.
   control keywords. Unbalanced or unsupported structures refuse with
   "One DDL per confirmation" instead of guessing a boundary. MySQL grammar:
   `sql/sql_yacc.yy:4883–4908,5268–5336,5570–5833`.
+  Function return headers consume multi-word types before their length or
+  precision, including `DOUBLE PRECISION`, `CHARACTER VARYING` and `NATIONAL
+  CHAR`. Charset, collation and trigger FOLLOWS/PRECEDES names can be quoted
+  strings or identifiers. Qualified names remain atomic here; the server
+  validates whether a particular name is legal in that position. MySQL grammar:
+  `sql/sql_yacc.yy:7371–7409,7698–7746,18360–18371`; MariaDB:
+  `sql/sql_yacc.yy:6835–6879,18932–18944,19287–19322`.
+  DECLARE handlers, cursor declarations, nested BEGIN blocks with declarations
+  and labelled loops retain their statement boundaries. MariaDB range and
+  cursor FOR loops end at `END FOR` after `DO`, or `END LOOP` after `LOOP`;
+  expressions and cursor SELECTs cannot consume a statement separator.
+  EXCEPTION WHEN sections have an explicit THEN and stop at the enclosing END.
+  Recognizing these boundaries does not authorize ORACLE-mode SQL or replace
+  the server's syntax checks. MariaDB grammar:
+  `sql/sql_yacc.yy:4769–4788,19426–19429,19586–19690,19903–19906,20079–20102`.
   A PACKAGE specification or body includes its outer END and any initialization
   block, and a statement after that END needs its own review. Forward declarations
   and routines with a single-statement body end at their semicolon; an Oracle
@@ -7990,8 +8052,16 @@ GRANTS fallback for an account that does not exist yet (a MySQL 5.7 refusal
 of an operation it lacks must state its reason), an expired-password account
 whose privileges read returns the 1820/1862 message and whose reviewed writes
 refuse with nothing sent, a `long_query_time` global set and restored, and
-two editor inputs (a DELIMITER procedure wrapper and a versioned-comment
-DELETE) that must refuse with nothing sent and leave a canary table intact).
+the editor cases in a throwaway schema with a canary table: a DELIMITER
+procedure wrapper must refuse even when confirmed, a versioned-comment
+DELETE (a DELETE on the server's own reading of the executable comment)
+must come back for confirmation as a write with nothing sent and the canary
+intact, and a CREATE DATABASE with a versioned ENCRYPTION comment
+(mysqldump's clause) is accepted on every server, with confirmation, then
+dropped). The GA matrix lives in `GA_LAB` (default `local/ga-matrix`) and
+its credentials in `GA_CREDS_FILE` (default `$GA_LAB/credentials.env`); the
+variable is GA-only because `cluster-matrix.sh` reads `CREDS_FILE` too, so
+the file reaches `ga-matrix.sh` as `CREDS_FILE` in its environment only.
 The `ga` selection brings up nothing itself: it checks `ga-matrix.sh status`
 and runs the lane against the servers already up, with the matrix's saved
 profiles in its own throwaway home (`ga-matrix.sh profiles` with

@@ -25,6 +25,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor asks for a new confirmation when connecting a new tab changes the reviewed SQL or its safety requirements, including the database name required for a drop. The earlier confirmation sends no user SQL.
+- Query editor checks ANSI_QUOTES and MariaDB MSSQL quoting before allowing reads, refuses uncertain client boundaries and ORACLE stored-program definitions, and accepts dump headers when every possible SQL-mode reading agrees.
+
 - Query editor keeps stored-program confirmations separate from trailing SQL, including identifiers with dollar signs or Unicode characters, user variables, conditional table creation and MariaDB package bodies. Database drops inside a definition require the database name to be typed; definitions with multiple database targets refuse.
 - Query editor detects SQL-mode changes through quoted variable names and calls inside compound statements before running later SQL with ambiguous quotes. A new tab closes if its requested safe-updates setting cannot be applied, and closing a tab during a proxy startup retry prevents another client from opening.
 - Query editor reads executable SQL comments using the connected server’s rules, accepts known cross-version dump options, and refuses uncertain session or quote-mode interpretations before a hidden write can bypass review.
@@ -42,6 +45,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where the Query editor refused stored functions with multi-word return types or quoted character sets, triggers with quoted ordering names, and MariaDB range or cursor loops. Each complete definition keeps its own confirmation.
+- Fixed an issue where the Query editor refused MariaDB's `/*!99997 ... */` comments even when the connected session had `wsrep_on` off. The session must still have it off when the SQL runs.
 - Query editor accepts stored-program row-constructor IF conditions and identifiers such as `col$end` without splitting their definition into separate confirmations.
 - Query editor Stop, row limits and timeouts work when the tab's quote mode differs from the server's default.
 - Query editor runs that change the SQL mode can continue with statements that read the same under either quote mode, while ambiguous later statements are refused before the run starts.

@@ -17,6 +17,8 @@ G1B = ("DELIMITER $$\nCREATE PROCEDURE p() /*!50000 COMMENT '*/' */ "
 G2 = "/*!999999 /* */ SELECT 1 FROM ( */ DELETE FROM t /*!999999 ) x */"
 G8 = "/*!50000 SELECT '*/', 'tail\\' */ ; DROP DATABASE prod; /* ' */"
 OUTFILE = "SELECT 'a\\' INTO OUTFILE '/var/lib/mysql-files/out' -- '"
+ANSI_ATTACK = 'SELECT 1 AS "a\\"; DELETE FROM t; -- "'
+MSSQL_ATTACK = "SELECT 1 AS [a'] ; DELETE FROM t; -- '"
 SAFETY = {"type": "production", "read_only": False, "profile_name": "prod"}
 
 
@@ -60,7 +62,11 @@ class SQLLexerTests(unittest.TestCase):
                     scan = dbops.lex_sql(sql, True, engine, version)
                     self.assertEqual(scan["unclosed"], [])
                     self.assertEqual(scan["comments"][0]["end"], len(sql))
-                    self.assertEqual(dbops.classify(sql, engine=engine, server_version=version)["kind"], "read")
+                    expected = "risky" if inner.startswith("/*") else "read"
+                    self.assertEqual(dbops.classify(sql, engine=engine, server_version=version)["kind"], expected)
+                    if inner.startswith("/*"):
+                        with self.assertRaisesRegex(ed.EditorError, "nested"):
+                            ed._plan_run({"sql": sql}, session(engine, version))
                     self.assertFalse(dbops.skipped_executable_comments(sql, engine, version))
 
     def test_skipped_comment_consumes_exactly_one_nested_level(self):
@@ -167,6 +173,87 @@ class SQLLexerTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaises(ValueError):
                 mcp_server._read_sql(sql)
 
+    def test_mode_combinations_and_delimited_identifier_escapes(self):
+        # MySQL sys_vars.cc:4708-4716; MariaDB sys_vars.cc:3999-4039.
+        for engine, version in SERVERS:
+            combinations = ("ANSI_QUOTES", "ANSI")
+            if engine == "mariadb":
+                combinations += ("ORACLE", "MSSQL", "POSTGRESQL", "DB2", "MAXDB")
+            for mode in combinations:
+                for suffix in ("", ",NO_BACKSLASH_ESCAPES"):
+                    with self.subTest(engine=engine, mode=mode + suffix):
+                        scan = dbops.lex_sql('SELECT "a""b", "c\\"', engine=engine,
+                                             server_version=version, sql_mode=mode + suffix)
+                        self.assertEqual([kind for kind, start, end in scan["tokens"]],
+                                         ["code", "identifier", "code", "identifier"])
+                        self.assertFalse(scan["unclosed"])
+                        self.assertEqual(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version,
+                                                       sql_mode=mode + suffix)["kind"], "risky")
+            self.assertEqual(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version,
+                                           sql_mode="")["kind"], "read")
+        unit = dbops.split_statements('SELECT [a]]b], [c\\]', engine="mariadb", sql_mode="MSSQL")[0]
+        self.assertEqual(unit["idents"], ["a]b", "c\\"])
+        self.assertEqual(unit["code"], "SELECT `0`, `1`")
+        self.assertEqual(dbops.classify(MSSQL_ATTACK, engine="mariadb", sql_mode="MSSQL")["kind"], "risky")
+        self.assertFalse(dbops.sql_mode_flags("MSSQL", "mysql")["mssql"])
+
+    def test_unknown_engine_reads_both_six_digit_grammars(self):
+        # MariaDB consumes all six digits even without a following space.
+        # MySQL consumes five, leaving 0INTO or 0FOR, not the write clause.
+        for clause, category in (("INTO OUTFILE '/tmp/h1'", "file"), ("FOR UPDATE", "locking_read")):
+            sql = "SELECT 1 /*!100000" + clause + "*/"
+            with self.subTest(clause=clause):
+                verdict = dbops.classify(sql, sql_mode="")
+                self.assertEqual((verdict["kind"], verdict["category"]), ("write", category))
+                with self.assertRaises(ValueError):
+                    mcp_server._read_sql(sql)
+                with self.assertRaisesRegex(ValueError, "ambiguous"):
+                    dbops.target_statement(sql, sql_mode="")
+
+    def test_unknown_mode_agreement_and_effect_disagreement(self):
+        for engine, version in SERVERS:
+            for sql in ("SELECT 1", "SELECT 'it''s'", 'SELECT "x"', "/*!40101 SELECT 1 */"):
+                with self.subTest(engine=engine, sql=sql):
+                    result = dbops.classify(sql, engine=engine, server_version=version)
+                    self.assertEqual(result["kind"], "read")
+                    self.assertFalse(result["ambiguous"])
+                    self.assertEqual(dbops.target_statement(sql, engine=engine, server_version=version), sql)
+            self.assertTrue(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version)["ambiguous"])
+            with self.assertRaises(ValueError):
+                dbops.target_statement(ANSI_ATTACK, engine=engine, server_version=version)
+        self.assertTrue(dbops.classify(MSSQL_ATTACK, engine="mariadb")["ambiguous"])
+
+    def test_client_delimiter_cannot_split_executed_comment_or_server_quote(self):
+        for engine, version in SERVERS:
+            for sql in ("/*!50000 SELECT 1; DELETE FROM t */", "/*! SELECT 'a;b'; SELECT 2 */"):
+                with self.subTest(engine=engine, sql=sql):
+                    verdict = dbops.classify(sql, engine=engine, server_version=version, sql_mode="")
+                    self.assertEqual(verdict["kind"], "risky")
+                    self.assertIn(dbops.REASON_EXECUTED_FRAMING, verdict["reasons"])
+                    with self.assertRaisesRegex(ed.EditorError, "client delimiter"):
+                        ed._plan_run({"sql": sql}, session(engine, version))
+        for sql in ("SELECT 1 AS [a; DELETE FROM t; -- ]",):
+            with self.assertRaisesRegex(ed.EditorError, "client delimiter"):
+                ed._plan_run({"sql": sql}, session("mariadb", "11.8.9-MariaDB", "MSSQL"))
+
+    def test_client_delimiter_can_split_comment_marker_or_version_digits(self):
+        # add_line scans each character, not a parsed version header.
+        for engine, version in SERVERS:
+            for delimiter in ("!", "*", "40101", "01"):
+                sql = "DELIMITER " + delimiter + "\n/*!40101 SELECT 1 */" + delimiter
+                with self.subTest(engine=engine, delimiter=delimiter):
+                    with self.assertRaisesRegex(ed.EditorError, "client delimiter"):
+                        ed._plan_run({"sql": sql}, session(engine, version))
+            for marker in ("/*!40101", "/*+"):
+                sql = "DELIMITER /end\n" + marker + " SELECT 1 */end"
+                with self.subTest(engine=engine, marker=marker):
+                    with self.assertRaisesRegex(ed.EditorError, "client delimiter"):
+                        ed._plan_run({"sql": sql}, session(engine, version))
+            with self.assertRaisesRegex(ed.EditorError, "client delimiter"):
+                ed._plan_run({"sql": "DELIMITER //\n/*!40101 SELECT 1 *///"}, session(engine, version))
+            accepted = ed._plan_run({"sql": "DELIMITER //\n/*!40101 SELECT 1 */ //"}, session(engine, version))
+            self.assertEqual(accepted["units"][0]["send"], "/*!40101 SELECT 1 */")
+
 
 class EditorLexerTests(unittest.TestCase):
     def plan(self, sql, engine="mysql", version="8.4.11", mode="", **kwargs):
@@ -176,6 +263,10 @@ class EditorLexerTests(unittest.TestCase):
         for engine, version in SERVERS:
             for sql in (G1A, G2):
                 with self.subTest(engine=engine, sql=sql):
+                    if sql == G2:
+                        with self.assertRaisesRegex(ed.EditorError, "nested"):
+                            self.plan(sql, engine, version)
+                        continue
                     plan = self.plan(sql, engine, version)
                     self.assertEqual(plan["verdict"]["kind"], "risky")
                     self.assertEqual(ed._decision(plan, SAFETY)["action"], "confirm")
@@ -209,11 +300,14 @@ class EditorLexerTests(unittest.TestCase):
         self.assertEqual(plan["verdict"]["kind"], "read")
         self.assertTrue(ed._needs_session_guard(plan["units"][0]))
 
-    def test_g8b_mode_change_refuses_before_any_unit_runs(self):
-        sql = "DELIMITER //\nSET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'//\n" + G8 + "//"
+    def test_g8b_literal_mode_exposes_drop_and_nonliteral_mode_refuses(self):
         for engine, version in SERVERS:
+            sql = "DELIMITER //\nSET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'//\n" + G8 + "//"
+            plan = self.plan(sql, engine, version)
+            self.assertEqual(plan["verdict"]["kind"], "risky")
+            self.assertIn("DROP DATABASE prod", plan["units"][1]["code"])
             with self.assertRaisesRegex(ed.EditorError, "NO_BACKSLASH_ESCAPES"):
-                self.plan(sql, engine, version)
+                self.plan(sql.replace("'NO_BACKSLASH_ESCAPES'", "@mode"), engine, version)
 
     def test_unknown_initial_mode_marks_every_unit_unknown(self):
         for engine, version in SERVERS:
@@ -245,7 +339,6 @@ class EditorLexerTests(unittest.TestCase):
     def test_refusals_name_construct_without_sql_body(self):
         secret = "private_sql_body"
         cases = (("/*!40101 SELECT '%s' */", {"bound": False}),
-                 ("/*!40101 SELECT '%s' */", {"mode": None}),
                  ("/*!!999999 SELECT '%s' */", {}),
                  ("/*!40101 SELECT '%s'", {}),
                  ("/*!99997 SELECT '%s' */", {"wsrep": True}),
