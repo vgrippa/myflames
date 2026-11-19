@@ -195,6 +195,12 @@ function respond(pathname, body) {
   }
   if (pathname === "/api/editor/status")
     return [200, { status: sessions.has(body.tab_id) ? "idle" : "none", session: sessions.get(body.tab_id) || null, run: null }];
+  if (pathname === "/api/editor/use") {
+    // The Database picker's choice applied to the open session: USE.
+    const session = sessions.get(body.tab_id);
+    if (session) session.database_name = body.database ?? null;
+    return [200, { status: session ? "ok" : "none", database: body.database ?? null, session: session || null }];
+  }
   if (["/api/editor/open", "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback"].includes(pathname))
     return [400, { error: "Not mocked in this suite." }];
   if (pathname === "/api/live/privileges") {
@@ -202,6 +208,15 @@ function respond(pathname, body) {
     return [200, { schema_version: "privileges-1.0", account: "test@%", actions: privilegeActions }];
   }
   if (pathname === "/api/live/top") return [200, top];
+  if (pathname === "/api/live/schemas")
+    return [200, {
+      schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "2026-10-12T11:00:00+00:00", uptime_s: null,
+      schemas: [
+        { name: "analytics", tables: 3, system: false },
+        { name: "shop", tables: 5, system: false },
+      ],
+      user_tables: 8, all_limit: 500, all_note: "", system: [],
+    }];
   if (pathname === "/api/live/start") {
     if (mock.busyOnce) {
       mock.busyOnce = false;
@@ -458,6 +473,33 @@ try {
   await nav("Query editor");
   assert.equal(await activeTab(), "Top #1 · orders");
   assert.match(await text(".tab-source"), /From Top statements, digest aaaaaaaaaaaa · runs in shop, the schema it was recorded in/);
+
+  // 2b. The schema note says what the run will use and why: the tab's
+  // Database picker choice on a tab without a session, then a USE applied to
+  // the open session.
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #2 · shop)').click();
+  assert.equal(await activeTab(), "Top #2 · shop");
+  assert.match(await text(".tab-source"), /runs in shop, the schema it was recorded in/,
+    "without a picker choice the note keeps the recorded schema");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('select[data-action="database"] option')].some((o) => o.value === "analytics"),
+  );
+  await page.select('select[data-action="database"]', "analytics");
+  await page.waitForFunction(() =>
+    document.querySelector(".tab-source")?.textContent.includes("runs in analytics, picked in this tab"),
+  );
+  assert.match(await text(".editor-feedback"), /analytics is the default database when this tab's session opens/);
+  // The open session of the Top #1 tab follows the USE the picker sends.
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #1 · orders)').click();
+  assert.equal(await activeTab(), "Top #1 · orders");
+  assert.match(await text(".tab-source"), /runs in shop, the schema it was recorded in/,
+    "the session opened by Explain reports no current schema yet");
+  await page.select('select[data-action="database"]', "analytics");
+  await page.waitForFunction(() =>
+    document.querySelector(".tab-source")?.textContent.includes("runs in analytics, the open session's current schema"),
+  );
+  assert.equal(await page.$eval('select[data-action="database"]', (e) => e.value), "analytics",
+    "the Database picker shows the session's current schema");
 
   // 3. Run analysis states what it executes before anything runs, then shows
   // its measurements in the editor's Analysis tab; Explore opens Plans.

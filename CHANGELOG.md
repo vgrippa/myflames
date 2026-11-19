@@ -70,6 +70,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where Query editor Explain refused a single statement on MariaDB with `ANSI_QUOTES` or a mode that includes it. Stopping Explain or Run analysis while preparing the statement now reports cancellation instead of an internal error.
 - Users and roles again accepts passwords containing backslashes on NO_BACKSLASH_ESCAPES sessions, using its reviewed mode-setting reply before the client reads the password.
 - Fixed an issue where the Query editor could review SQL without a space the client would insert inside a string, identifier or skipped comment. Statements with those conflicting comment boundaries now refuse before review.
 - Fixed an issue where comment formatting could create an extra statement boundary. Query editor rejects delimiters with leading or trailing whitespace and checks the formatted SQL before review.

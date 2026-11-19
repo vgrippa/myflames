@@ -2602,6 +2602,28 @@ export const QueryLab = forwardRef<
   const tabBound = boundMember(tab);
   const tabBaseDatabase = tab.member && !tabBound ? "" : (tabBound || connection).database || "";
   const session = rt.session;
+  // The schema a run of this tab uses, and why: a measurement runs in the
+  // schema its statement was recorded in; an open session runs in its current
+  // schema (a USE, or the Database picker's choice applied to it); without a
+  // session the tab's Database picker choice wins over the connection's
+  // default schema and the schema the digest was recorded in.
+  const liveSchema = session && !session.ended && !rt.measureBefore ? session.database_name || "" : "";
+  const tabSchemaNote = !tab.source
+    ? ""
+    : rt.measureBefore
+      ? tabSchema
+        ? ` · runs in ${tabSchema}, the schema it was recorded in`
+        : " · runs without a default schema"
+      : liveSchema
+        ? ` · runs in ${liveSchema}, the open session's current schema`
+        : tabSchema
+          ? ` · runs in ${tabSchema}, ${
+              tab.database
+                ? "picked in this tab"
+                : tabBaseDatabase
+                  ? "the connection's schema"
+                  : "the schema it was recorded in"}`
+          : "";
   const running = rt.running;
   const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
   const sessionBusy = !!rt.operation || rt.stopping;
@@ -3322,11 +3344,7 @@ export const QueryLab = forwardRef<
                 <code title={tab.source.digest}>
                   {shortDigest(tab.source.digest)}
                 </code>
-                {tabSchema &&
-                  (!rt.measureBefore && tabBaseDatabase
-                    ? ` · runs in ${tabSchema}, the connection's schema`
-                    : ` · runs in ${tabSchema}, the schema it was recorded in`)}
-                {rt.measureBefore && !tabSchema && " · runs without a default schema"}
+                {tabSchemaNote}
                 {tab.target && !unbound && ` · on ${tab.target.label}`}
               </p>
             )}

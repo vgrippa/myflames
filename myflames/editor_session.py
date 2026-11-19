@@ -1499,8 +1499,11 @@ class EditorSession(EditorInsights):
 
     def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None, delimiter=";",
               setup=None, sql_mode=_PLAN_MODE_UNSET):
-        """Write one statement; returns its Step. Holds send_lock so a KILL in
-        flight is never followed by a new statement."""
+        """Write one statement; return its Step, or None if stopped during sync.
+
+        Helpers always return a Step. Holds send_lock so a KILL in flight is
+        never followed by a new statement.
+        """
         # Validate the entire user packet before any helper is sent. The
         # helper has its own client boundary and is awaited before writing
         # the affected bytes; putting SET inside this packet is too late.
@@ -2433,6 +2436,8 @@ class EditorSession(EditorInsights):
                 timer.start()
             units[0]["status"] = "running"
             step = self._send("user", statement, unit=0, limit=1, results=1, guard=plan_guard)
+            if step is None:
+                raise EditorError("Plan cancelled before it started.", "stopped")
             self._wait_step(step)
             self._wait(lambda: step.closed or bool(step.real_errors()), HELPER_TIMEOUT)
             self._check_helper_guard(step)
@@ -4658,11 +4663,10 @@ def _plan_run(payload, session):
         if explain_format not in ("table", "tree", "json"):
             raise EditorError("Choose Table, Tree or JSON for Explain.", "invalid")
         # A custom DELIMITER must not smuggle an unprefixed second statement
-        # into this read. Keep the normal splitter and client-command checks.
+        # into this read. Reuse the planner's synchronized client reading and
+        # client-command checks, just as Run analysis does.
         if (len(units) != 1 or len([part for part in units[0]["code"].split(";") if part.strip()]) != 1 or
-                len(dbops.split_statements(units[0]["send"], True if backslash is None else backslash,
-                                          engine=engine, server_version=version,
-                                          sql_mode=units[0].get("sql_mode"), client_engine=context["client_engine"])) != 1):
+                len(plan_statements(units[0]["send"], backslash, **context)) != 1):
             raise EditorError("Explain one statement at a time.", "invalid_statement")
         unit = units[0]
         if re.match(r"\s*(?:(?:FORMAT\s*=\s*\w+|EXTENDED|PARTITIONS)\s+)*ANALYZE" + _SQL_BOUNDARY, unit["code"], re.I | re.ASCII):
