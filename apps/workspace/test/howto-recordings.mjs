@@ -617,7 +617,7 @@ const GUIDES = [
     await openEditor(h);
     await setEditorText(page, MULTI_SQL);
     await rec.restart();
-    await rec.hold(800);
+    await rec.hold(1200);
     // Three cursors: click line 1, then Option-click lines 2 and 3 at the same column.
     let p = await posPoint(page, 1, 9);
     await page.mouse.click(p.x, p.y);
@@ -630,13 +630,13 @@ const GUIDES = [
     }
     await page.keyboard.up("Alt");
     assert.equal(await cursorCount(page), 3, "Option-click added two cursors");
-    await rec.hold(300);
+    await rec.hold(1500);
     await rec.caption("type once");
     await page.keyboard.type(", customer_id", { delay: 45 });
-    await rec.hold(500);
+    await rec.hold(2000);
     await rec.caption("Esc");
     await escapeToOneCursor(page);
-    await rec.hold(300);
+    await rec.hold(1000);
     // ⌘D twice on "status" (line 1, after the edit at 0-based column 41).
     p = await posPoint(page, 1, 43);
     await page.mouse.click(p.x, p.y);
@@ -647,13 +647,13 @@ const GUIDES = [
     await press(page, "Meta", "d");
     await pause(300);
     assert.equal(await cursorCount(page), 2, "⌘D twice selected two occurrences");
-    await rec.hold(400);
+    await rec.hold(1500);
     await rec.caption("type: state");
     await page.keyboard.type("state", { delay: 45 });
-    await rec.hold(500);
+    await rec.hold(1500);
     await rec.caption("Esc");
     await escapeToOneCursor(page);
-    await rec.hold(250);
+    await rec.hold(800);
     // ⇧⌘L on "orders" selects all three occurrences (column 30 after the edit).
     p = await posPoint(page, 2, 30);
     await page.mouse.click(p.x, p.y);
@@ -661,10 +661,10 @@ const GUIDES = [
     await press(page, "Meta", "Shift", "l");
     await pause(150);
     assert.ok((await cursorCount(page)) >= 3, "⇧⌘L selected every occurrence");
-    await rec.hold(600);
+    await rec.hold(1800);
     await rec.caption("Esc");
     await escapeToOneCursor(page);
-    await rec.hold(250);
+    await rec.hold(800);
     // ⇧Option-drag a box over the "id" column of all three lines.
     const from = await posPoint(page, 1, 7);
     const to = await posPoint(page, 3, 9);
@@ -672,6 +672,7 @@ const GUIDES = [
     await drag(page, from, to, { keys: ["Shift", "Alt"] });
     const selection = await editorSelection(page);
     assert.notEqual(selection.start, selection.end, "the box selection is not empty");
+    await rec.hold(1500);
     await rec.caption("");
   }],
   ["suggestions", async (h, rec) => {
@@ -679,41 +680,41 @@ const GUIDES = [
     await openEditor(h);
     await setEditorText(page, "");
     await rec.restart();
-    await rec.hold(300);
+    await rec.hold(1000);
     let p = await posPoint(page, 1, 0);
     await page.mouse.click(p.x, p.y);
     await rec.caption("type: SEL");
     await page.keyboard.type("SEL", { delay: 110 });
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
-    await rec.hold(350);
+    await rec.hold(1200);
     await rec.caption("Tab");
     await page.keyboard.press("Tab");
     await pause(300);
     await page.waitForFunction(() => document.querySelector(".sql-editor")?.value === "SELECT");
-    await rec.hold(350);
+    await rec.hold(1000);
     await rec.caption("type: FROM o");
     await page.keyboard.type(" FROM o", { delay: 90 });
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
-    await rec.hold(350);
+    await rec.hold(1200);
     await rec.caption("click orders");
     await pickCompletion(page, "orders");
     await page.waitForFunction(() => document.querySelector(".sql-editor")?.value === "SELECT FROM orders");
-    await rec.hold(350);
+    await rec.hold(1000);
     await rec.caption("type: o");
     await page.keyboard.type(" o", { delay: 90 });
-    await rec.hold(250);
+    await rec.hold(800);
     // Back after "SELECT ": complete a column through the alias o.
     p = await posPoint(page, 1, 7);
     await page.mouse.click(p.x, p.y);
     await rec.caption("type: o.");
     await page.keyboard.type("o.", { delay: 110 });
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
-    await rec.hold(350);
+    await rec.hold(1200);
     await rec.caption("click status");
     await pickCompletion(page, "status");
     await page.keyboard.type(" ");
     await page.waitForFunction(() => document.querySelector(".sql-editor")?.value === "SELECT o.status FROM orders o");
-    await rec.hold(400);
+    await rec.hold(1200);
     // Show the on-demand list at the end of the statement.
     p = await posPoint(page, 1, 7);
     await page.mouse.click(p.x, p.y);
@@ -722,7 +723,7 @@ const GUIDES = [
     await rec.caption("Ctrl+Space");
     await press(page, "Control", "Space");
     await page.waitForSelector(".cm-tooltip-autocomplete", { visible: true });
-    await rec.hold(600);
+    await rec.hold(1500);
     await rec.caption("Esc");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector(".cm-tooltip-autocomplete"));
@@ -734,16 +735,16 @@ const GUIDES = [
     await openEditor(h);
     await setEditorText(page, RUN_SQL);
     await rec.restart();
-    await rec.hold(1500);
+    await rec.hold(1800);
     await rec.caption("⌘Enter");
     await press(page, "Meta", "Enter");
     await page.waitForFunction(() => /24 rows/.test(document.body.textContent));
-    await rec.hold(2500);
+    await rec.hold(2800);
     await rec.caption("click Explain");
     await page.click("[data-action=explain]");
     await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
-    await rec.hold(1500);
+    await rec.hold(2000);
     await rec.caption("click Explore");
     const explore = await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .find((b) => b.textContent.trim() === "Explore" && b.getClientRects().length));
@@ -754,63 +755,63 @@ const GUIDES = [
       .map((svg) => svg.textContent).join(" ").match(/\borders\b/));
     assert.match(await page.$$eval(".plan-screen svg", (svgs) => svgs.map((svg) => svg.textContent).join(" ")), /\borders\b/);
     await rec.caption("");
-    await rec.hold(2500);
+    await rec.hold(3000);
   }],
   ["find-replace", async (h, rec) => {
     const { page } = h;
     await openEditor(h);
     await setEditorText(page, MULTI_SQL.replace(/FROM orders/g, "FROM orders"));
     await rec.restart();
-    await rec.hold(800);
+    await rec.hold(1200);
     await rec.caption("⌘F");
     await press(page, "Meta", "f");
     await page.waitForSelector(".sql-find", { visible: true });
-    await rec.hold(250);
+    await rec.hold(1000);
     await rec.caption("type: status");
     await page.click('.sql-find input[aria-label="Find"]');
     await page.keyboard.type("status", { delay: 70 });
-    await rec.hold(500);
+    await rec.hold(1500);
     await rec.caption("⌘G");
     await press(page, "Meta", "g");
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("⌥⌘F");
     await press(page, "Meta", "Alt", "f");
     await page.waitForSelector('.sql-find input[aria-label="Replace with"]', { visible: true });
-    await rec.hold(300);
+    await rec.hold(1000);
     await rec.caption("type: state");
     await page.click('.sql-find input[aria-label="Replace with"]');
     await page.keyboard.type("state", { delay: 70 });
-    await rec.hold(350);
+    await rec.hold(1200);
     await rec.caption("click Replace all");
     await clickButton(page, "Replace all", ".sql-find");
     await page.waitForFunction(() => (document.querySelector(".sql-editor")?.value.match(/state =/g) || []).length === 3);
-    await rec.hold(2000);
+    await rec.hold(2500);
     await rec.caption("⌘Z");
     await page.$eval(EDITOR, (el) => el.focus());
     await press(page, "Meta", "z");
     await page.waitForFunction(() => (document.querySelector(".sql-editor")?.value.match(/status =/g) || []).length === 3);
     await rec.caption("");
-    await rec.hold(1200);
+    await rec.hold(2000);
   }],
   ["settings-theme", async (h, rec) => {
     const { page } = h;
-    await rec.hold(300);
+    await rec.hold(800);
     await rec.caption("⌘,");
     await press(page, "Meta", ",");
     await page.waitForSelector('.settings-page [data-theme-id="dark"]', { visible: true });
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("click Dark");
     await page.click('[data-theme-id="dark"]');
     await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
-    await rec.hold(2000);
+    await rec.hold(2500);
     await rec.caption("click System");
     await page.click('[data-theme-id="system"]');
     await page.waitForFunction(() => !document.documentElement.dataset.theme);
-    await rec.hold(2000);
+    await rec.hold(2500);
     await rec.caption("click Query editor");
     await page.click("#settings-section-editor");
     await page.waitForFunction(() => /Multiple cursors/.test(document.querySelector(".settings-panel")?.textContent || ""));
-    await rec.hold(350);
+    await rec.hold(1200);
     const toggle = async (on) => {
       await page.locator('.settings-page .settings-editor-group .session-toggle ::-p-text(Multiple cursors)').click();
       await page.waitForFunction((want) => {
@@ -835,7 +836,7 @@ const GUIDES = [
     await rec.caption("⌘Enter");
     await press(page, "Meta", "Enter");
     await page.waitForFunction(() => /24 rows/.test(document.body.textContent));
-    await rec.hold(1200);
+    await rec.hold(2000);
     // Sidebar: drag the right edge wider.
     let box = await (await page.waitForSelector(".sidebar-resizer")).boundingBox();
     const resizerPoint = () => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
@@ -844,7 +845,7 @@ const GUIDES = [
     await drag(page, from, { x: from.x + 80, y: from.y });
     const widened = await page.$eval(".sidebar-resizer", (e) => Number(e.getAttribute("aria-valuenow")));
     assert.ok(widened > 208, `sidebar widened (${widened})`);
-    await rec.hold(2000);
+    await rec.hold(2500);
     // Query editor splitter: drag the editor taller.
     const splitter = await (await page.waitForSelector(".editor-splitter")).boundingBox();
     const beforeHeight = await page.$eval(".editor-splitter", (e) => Number(e.getAttribute("aria-valuenow")));
@@ -853,7 +854,7 @@ const GUIDES = [
     await drag(page, sfrom, { x: sfrom.x, y: sfrom.y + 90 });
     const taller = await page.$eval(".editor-splitter", (e) => Number(e.getAttribute("aria-valuenow")));
     assert.ok(taller > beforeHeight, `editor grew (${beforeHeight} to ${taller})`);
-    await rec.hold(2000);
+    await rec.hold(2500);
     // Double-click the sidebar edge to reset it (the editor splitter has only
     // drag and arrow keys: QueryLab.tsx "editor-splitter").
     box = await (await page.waitForSelector(".sidebar-resizer")).boundingBox();
@@ -862,7 +863,7 @@ const GUIDES = [
     await page.mouse.click(p.x, p.y, { clickCount: 2 });
     await page.waitForFunction(() => document.querySelector(".sidebar-resizer")?.getAttribute("aria-valuenow") === "208");
     await rec.caption("");
-    await rec.hold(1500);
+    await rec.hold(2200);
   }],
   ["edit-table-rows", async (h, rec) => {
     const { page } = h;
@@ -1004,11 +1005,11 @@ const GUIDES = [
     await rec.caption("Run analysis options");
     await page.click('button[aria-label="Run analysis options"]');
     await page.waitForSelector(".editor-options-popover.popover");
-    await rec.hold(1000);
+    await rec.hold(1500);
     await rec.caption("Parameters and execution conditions");
     await page.click(".editor-parameters summary");
     await page.waitForSelector('textarea[aria-label="Query parameters"]', { visible: true });
-    await rec.hold(1000);
+    await rec.hold(1200);
     await rec.caption('type: {"id": 42}');
     // The app pre-fills the skeleton when the SQL names :id; replace the
     // value outright (in the harness ⌘A did not clear the field).
@@ -1019,7 +1020,7 @@ const GUIDES = [
       e.dispatchEvent(new Event("input", { bubbles: true }));
     }, '{"id": 42}');
     await page.waitForFunction(() => document.querySelector('textarea[aria-label="Query parameters"]')?.value === '{"id": 42}');
-    await rec.hold(1500);
+    await rec.hold(2500);
     await page.keyboard.press("Escape");
     await pause(1000);
     await rec.caption("click Explain");
@@ -1028,7 +1029,7 @@ const GUIDES = [
     await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .some((b) => b.textContent.trim() === "Explore" && b.getClientRects().length), { timeout: 10000 });
     await rec.caption("Explore in the Explain result");
-    await rec.hold(2500);
+    await rec.hold(3000);
     await rec.caption("");
   }],
   ["digest-baseline", async (h, rec) => {
@@ -1092,13 +1093,13 @@ const GUIDES = [
     await rec.caption("Explore sample plan");
     await clickButton(page, "Explore sample plan");
     await page.waitForSelector(".plan-screen svg", { visible: true, timeout: 15000 });
-    await rec.hold(1500);
+    await rec.hold(2000);
     await rec.caption("Import plan");
     await clickButton(page, "Import plan", ".plans-bar ");
     await page.waitForSelector("dialog[open] input[type=file]");
     await (await page.$("dialog[open] input[type=file]")).uploadFile(path.join(root, "test/mariadb-explain-join.json"));
     await page.waitForFunction(() => document.querySelectorAll(".plan-item").length === 2);
-    await rec.hold(1200);
+    await rec.hold(1500);
     await rec.caption("click Compare");
     await clickButton(page, "Compare", ".plans-bar ");
     await page.waitForSelector(".compare-selectors select");
@@ -1108,32 +1109,32 @@ const GUIDES = [
     await page.select(".compare-selectors label:first-of-type select", ids[0][0]);
     await page.select(".compare-selectors label:last-of-type select", ids[1][1] || ids[1][0]);
     await page.waitForSelector(".comparison-row");
-    await rec.hold(2500);
+    await rec.hold(3000);
     await rec.caption("click a change");
     const rows = await page.$$(".comparison-row");
     await rows[Math.min(1, rows.length - 1)].click();
     await page.waitForFunction(() => !!document.querySelector(".comparison-row.selected"));
     await rec.caption("");
-    await rec.hold(2500);
+    await rec.hold(3000);
   }],
   ["slowest-operator", async (h, rec) => {
     const { page } = h;
     await openSamplePlan(h);
-    await rec.hold(1500);
+    await rec.hold(2000);
     await rec.caption("Go to");
     await clickButton(page, "Go to");
     await page.waitForFunction(() => [...document.querySelectorAll("button")]
       .some((b) => b.textContent.trim() === "Largest self time" && b.getClientRects().length));
-    await rec.hold(1000);
+    await rec.hold(1500);
     await rec.caption("Largest self time");
     await clickButton(page, "Largest self time");
     await page.waitForFunction(() => /Self time/.test(document.querySelector(".plan-fold")?.textContent || ""));
-    await rec.hold(2500);
+    await rec.hold(3000);
     await rec.caption("click Stats");
     await page.click('.segmented[aria-label="Chart view"] button[data-value="stats"]');
     await page.waitForFunction(() => /Time per table/.test(document.body.textContent) && /Time per operator type/.test(document.body.textContent));
     await rec.caption("");
-    await rec.hold(2500);
+    await rec.hold(3000);
   }],
   ["investigation", async (h, rec) => {
     const { page } = h;
@@ -1586,6 +1587,14 @@ const isWriteSql = (sql) => /^(ALTER|OPTIMIZE|ANALYZE|DROP|UPDATE\s+performance_
 const baseEditorRun = extra["/api/editor/run"];
 const baseLiveStart = extra["/api/live/start"];
 const baseLiveStatus = extra["/api/live/status"];
+// The connection-group guide saves the group through the real endpoint, then
+// the Cluster place re-reads: as topology-groups.mjs swaps state.fallback on
+// /api/profiles/group success, the mock names the new group from then on.
+let clusterGroupSaved = "";
+const clusterRead = () => ok(clusterGroupSaved
+  ? { ...clusterHealthy, connection_group: {
+    name: clusterGroupSaved, read: [], suggestions: [], join: [], suggested_name: clusterGroupSaved } }
+  : clusterHealthy);
 Object.assign(extra, {
   "/api/editor/run": (body) => {
     if (body.decline) return ok({ status: "declined" });
@@ -1621,7 +1630,11 @@ Object.assign(extra, {
   "/api/live/replication": replicationMocks["/api/live/replication"],
   "/api/live/replication/skip": replicationMocks["/api/live/replication/skip"],
   "/api/live/replication/skip-loop/status": replicationMocks["/api/live/replication/skip-loop/status"],
-  "/api/live/cluster": ok(clusterHealthy),
+  "/api/live/cluster": clusterRead,
+  "/api/profiles/group": (body) => {
+    clusterGroupSaved = (body.group || "").trim();
+    return ok({ updated: body.profile_ids || [], group: clusterGroupSaved });
+  },
   "/api/live/cluster/plan": ok(clusterPlan),
   "/api/live/cluster/action": { ...ok(clusterResult), delay: 600 },
   "/api/live/action/progress": ok(clusterProgress),
@@ -1682,10 +1695,10 @@ GUIDES.push(
     const view = '.server-view[data-view="locks"]';
     await page.waitForSelector(`${view} .lock-tree`, { visible: true });
     await rec.restart();
-    await rec.hold(1500);
+    await rec.hold(1800);
     await rec.caption("select the blocker");
     await h.select(`${view} .lock-tree tr[data-connection="53"]`);
-    await rec.hold(1500);
+    await rec.hold(1800);
     await rec.caption("click Kill…");
     await page.click('.view-inspector [aria-label="Kill blocker: connection 53"]');
     await page.waitForSelector("dialog.kill-dialog[open]");
@@ -1701,7 +1714,7 @@ GUIDES.push(
     await page.waitForFunction(() => [...document.querySelectorAll(".kill-result")]
       .some((e) => e.classList.contains("killed") && e.offsetParent !== null));
     await rec.caption("");
-    await rec.hold(2500);
+    await rec.hold(2800);
   }],
   ["top-statements", async (h, rec) => {
     const { page } = h;
@@ -1743,36 +1756,36 @@ GUIDES.push(
     const view = '.server-view[data-view="sessions"]';
     await page.waitForSelector(`${view} tbody tr[data-session]`, { visible: true });
     await rec.caption("");
-    await rec.hold(1200);
+    await rec.hold(1500);
     await rec.caption("click Kill sessions…");
     await page.click(`${view} .view-toolbar button[data-action=kill-sessions]`);
     await page.waitForSelector("dialog.mass-kill-dialog[open]");
-    await rec.hold(600);
+    await rec.hold(1000);
     await rec.caption("Kill query");
     await clickText(page, 'dialog.mass-kill-dialog .segmented[aria-label="Kill mode"] button', "Kill query");
-    await rec.hold(400);
+    await rec.hold(1000);
     await rec.caption("preset: Runaway queries");
     await clickText(page, "dialog.mass-kill-dialog .mass-kill-presets button", "Runaway queries");
     await page.waitForFunction(() => /[1-9]\d* matching sessions/.test(document.querySelector(".preview-title")?.textContent || ""));
     await rec.caption("");
-    await rec.hold(1100);
+    await rec.hold(2500);
     const footer = await page.waitForFunction(() => {
       const b = document.querySelector(".mass-kill-footer-actions button.danger");
       return b && !b.disabled && /Kill \d+ quer/.test(b.textContent) ? b : false;
     });
     await rec.caption("review the sessions");
-    await rec.hold(700);
+    await rec.hold(1200);
     await footer.asElement().click();
     await footer.dispose();
     await page.waitForSelector("dialog.confirm-sheet[open]");
     await page.waitForFunction(() => /KILL QUERY \d+/.test(document.querySelector("dialog.confirm-sheet")?.textContent || ""));
     await rec.caption("check the statements");
-    await rec.hold(1500);
+    await rec.hold(2500);
     await clickText(page, "dialog.confirm-sheet .sheet-actions button", "Send ");
     await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"), { timeout: 10000 });
     assert.ok(h.state.other.some((o) => o.path === "/api/live/kill/bulk"), "the reviewed KILLs were sent");
     await rec.caption("");
-    await rec.hold(1300);
+    await rec.hold(2000);
   }],
   ["hide-index", async (h, rec) => {
     const { page } = h;
@@ -2011,7 +2024,9 @@ GUIDES.push(
     await page.waitForSelector("dialog.connection-group-sheet[open]", { visible: true });
     await rec.hold(1300);
     await rec.caption("name the group");
-    await page.click(".connection-group-field input");
+    // The sheet pre-fills the topology's suggested name (mfcluster here);
+    // select it outright, then type the guide's name over it.
+    await page.click(".connection-group-field input", { clickCount: 3 });
     await page.keyboard.type("shop-pipeline", { delay: 70 });
     // The Create sheet groups the connection in use; ticking other saved
     // connections is the Review sheet's flow (the bar's Review… state).
@@ -2031,17 +2046,17 @@ GUIDES.push(
     await page.click('.main-nav button[data-place="query"]');
     await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
     await rec.restart();
-    await rec.hold(1200);
+    await rec.hold(1500);
     await rec.caption("open the connection picker");
     await openConnectionPicker(page);
     await page.waitForSelector('.picker-panel .group-connection-row[data-group="mf-ic"]', { visible: true });
     await rec.caption("");
-    await rec.hold(2800);
+    await rec.hold(3000);
     await rec.caption("Open group connection mf-ic");
     await page.click('button[aria-label="Open group connection mf-ic"]');
     await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-ic · 3 servers"));
     await rec.caption("");
-    await rec.hold(2400);
+    await rec.hold(3000);
     await rec.caption("Server: starts on the primary");
     await h.server();
     await page.waitForSelector('.server-view[data-view="health"] .group-server-picker', { visible: true });
@@ -2083,21 +2098,21 @@ GUIDES.push(
     const { page } = h;
     await rec.caption("Home: Connections menu");
     await page.click('.connections-header-actions button[aria-label="Connections menu"]');
-    await rec.hold(300);
+    await rec.hold(1000);
     await rec.caption("Import from MySQL Workbench or DBeaver…");
     await clickText(page, '[role="menu"] button', "Import from MySQL Workbench or DBeaver…");
     await page.waitForSelector("dialog.connection-import-sheet[open]");
     await page.waitForFunction(() => document.querySelector(".connection-import-preview")?.textContent.includes("Reports MariaDB"));
     await rec.caption("");
-    await rec.hold(1500);
+    await rec.hold(3400);
     await rec.caption("Import 2 connections");
     await clickText(page, "dialog.connection-import-sheet button", "Import 2 connections");
     await page.waitForFunction(() => document.querySelector("dialog.connection-import-sheet")?.textContent.includes("Imported 2 connections."));
     await rec.caption("");
-    await rec.hold(1000);
+    await rec.hold(2500);
     await clickText(page, "dialog.connection-import-sheet button", "Done");
     await page.waitForFunction(() => /Reports MariaDB/.test(document.body.textContent) && !document.querySelector("dialog.connection-import-sheet"));
-    await rec.hold(1300);
+    await rec.hold(2800);
   }],
   // ---- docs/handbook/howto-topology.md ----
   ["replication-skip", async (h, rec) => {
