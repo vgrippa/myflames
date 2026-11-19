@@ -212,8 +212,9 @@ class SQLModePlanningTests(unittest.TestCase):
                     quoted = bound_session(engine, version, "ANSI_QUOTES", client_engine=client)
                     if engine == client == "mariadb":
                         plan = ed._plan_run({"sql": 'SELECT "a\\"'}, quoted)
+                        probe = ed.TAG + dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb")[0]
                         self.assertEqual(ed._review_statements(plan["units"]),
-                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, 'SELECT "a\\"'])
+                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, probe, 'SELECT "a\\"'])
                     else:
                         with self.assertRaises(ed.EditorError):
                             ed._plan_run({"sql": 'SELECT "a\\"'}, quoted)
@@ -312,8 +313,9 @@ class SQLModePlanningTests(unittest.TestCase):
                         ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
                 else:
                     plan = ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
+                    probe = ed.TAG + dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb")[0]
                     self.assertEqual(ed._review_statements(plan["units"]),
-                                     [assignment, ed.TAG + dbops.CLIENT_STATUS_SYNC,
+                                     [assignment, ed.TAG + dbops.CLIENT_STATUS_SYNC, probe,
                                       'SELECT 1 AS "a\\"', 'DELETE FROM t'])
                     self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "confirm")
                     self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), bound)["action"], "refuse")
@@ -632,8 +634,9 @@ class EditorF1ProcessTests(unittest.TestCase):
             result = self.call("/api/editor/run", sql=J1_ANSI_PROXY, require_confirmation=True)
             if self.engine == client == "mariadb":
                 self.assertEqual(result["status"], "needs_confirmation", result)
+                probe = ed.TAG + dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb")[0]
                 self.assertEqual(result["confirmation"]["statements"],
-                                 [ed.TAG + dbops.CLIENT_STATUS_SYNC, 'SELECT 1 AS "a\\"', 'SELECT "second" AS x'])
+                                 [ed.TAG + dbops.CLIENT_STATUS_SYNC, probe, 'SELECT 1 AS "a\\"', 'SELECT "second" AS x'])
             else:
                 self.assertEqual(result["status"], "invalid", result)
             self.assertEqual(len(self.packets()), before)

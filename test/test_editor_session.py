@@ -3454,12 +3454,26 @@ class RunScopeTests(unittest.TestCase):
                                     ({}, "Missing parameter: a")):
             with self.subTest(parameters=parameters), self.assertRaisesRegex(ed.EditorError, message):
                 explain("SELECT :a", parameters)
-        # Strings end at different places with and without backslash escapes:
-        # binding would guess, so it is refused.
-        with self.assertRaisesRegex(ed.EditorError, "NO_BACKSLASH_ESCAPES"):
-            explain("SELECT 'it\\'s', :a", {"a": 1})
+        # On a bound session with a known mode, parameter binding uses that
+        # mode (including NO_BACKSLASH_ESCAPES and double-quoted tokens).
+        self.assertEqual(explain("SELECT 'it\\'s', :a", {"a": 1}),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT 'it\\'s', 1"])
+        self.assertEqual(explain("SELECT 'a\\', ':a', :b", {"b": 1}, backslash=False),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT 'a\\', ':a', 1"])
+        self.assertEqual(explain('SELECT "alice", :a', {"a": 1}),
+                         ['EXPLAIN FORMAT=TRADITIONAL SELECT "alice", 1'])
         self.assertEqual(explain("SELECT 'it''s', :a", {"a": 1}, backslash=False),
                          ["EXPLAIN FORMAT=TRADITIONAL SELECT 'it''s', 1"])
+        # When the mode is genuinely unknown, disagreeing readings still refuse.
+        unbound = self.session()
+        unbound._routed_startup = True
+        mode_unknown = self.session()
+        mode_unknown.sql_mode = None
+        for unknown in (None, unbound, mode_unknown):
+            for sql in ("SELECT 'it\\'s', :a", 'SELECT "col", :a'):
+                with self.subTest(unknown=unknown, sql=sql), self.assertRaisesRegex(
+                        ed.EditorError, "NO_BACKSLASH_ESCAPES"):
+                    ed._plan_run({"sql": sql, "explain_format": "table", "parameters": {"a": 1}}, unknown)
 
     def test_bound_cursor_uses_mode_and_resynchronizes_selected_unit(self):
         sql = "SELECT 'a\\'; INSERT INTO t VALUES (1); SELECT 'c';"

@@ -62,27 +62,62 @@ class RoutingTransport(object):
         self.committed = []
         self.counters = []
         self.client_escaping = True
+        self.stale_after_sync = False
 
     def run_write(self, script, **kwargs):
-        delimiter, body, first_line = ';', script, 1
+        from client_addline_oracle import client_packets
+        delimiter = ';'
         if script.startswith('DELIMITER '):
-            header, body = script.split('\n', 1)
-            delimiter, first_line = header.split(' ', 1)[1], 2
-        offset = 0
-        for chunk in body.split(delimiter):
-            payload = chunk.strip()
+            header = script.split('\n', 1)[0]
+            delimiter = header.split(' ', 1)[1]
+        outputs = []
+        remaining_script = script
+        if script.startswith('DELIMITER '):
+            _, remaining_script = script.split('\n', 1)
+        search_from = 0
+        # Split packets incrementally with the client's current escaping bit so
+        # a mode-setting reply updates the bit before the next packet is scanned.
+        while remaining_script.strip():
+            feed = 'DELIMITER ' + delimiter + '\n' + remaining_script
+            if not feed.endswith('\n'):
+                feed += '\n'
+            packets, _, _ = client_packets(
+                feed, 'mysql', delimiter=';', append_delimiter=False, backslash_escapes=self.client_escaping)
+            if not packets:
+                break
+            payload = packets[0].strip()
             if not payload:
-                continue
-            # Account for the newline following the previous delimiter.
-            line = first_line + body[:offset].count('\n') + len(chunk) - len(chunk.lstrip('\n'))
+                break
+            at = script.find(payload, search_from)
+            line = script[:max(0, at)].count('\n') + 1
+            end_at = remaining_script.find(payload) + len(payload)
+            nl = remaining_script.find('\n' + delimiter + '\n', end_at)
+            if nl >= 0:
+                remaining_script = remaining_script[nl + len('\n' + delimiter + '\n'):]
+                search_from = max(0, at) + len(payload)
+            elif remaining_script[end_at:].startswith(delimiter):
+                remaining_script = remaining_script[end_at + len(delimiter):]
+                search_from = max(0, at) + len(payload)
+            else:
+                # Split happened mid-line inside an unclosed/stale packet.
+                remaining_script = remaining_script[end_at:]
+                search_from = max(0, at) + len(payload)
             slot = len(self.packets) % len(self.backends)
             backend, session = self.backends[slot], self.sessions[slot]
-            if delimiter != ';':
-                client_units = dbops.split_statements('DELIMITER ' + delimiter + '\n' + payload + '\n' + delimiter,
-                                                     backslash_escapes=self.client_escaping)
+            if delimiter != ';' and len(packets) == 1:
+                client_units = dbops.split_statements(
+                    'DELIMITER ' + delimiter + '\n' + payload + '\n' + delimiter,
+                    backslash_escapes=self.client_escaping)
                 assert len(client_units) == 1 and not client_units[0]['unclosed'], payload
-                assert delimiter not in client_units[0]['text'], payload
+                if 'AS mf_probe' not in payload:
+                    assert delimiter not in client_units[0]['text'], payload
             self.packets.append((backend, payload))
+            server_escaping = 'NO_BACKSLASH_ESCAPES' not in session['mode']
+            parse_check = dbops.split_statements(payload, backslash_escapes=server_escaping)
+            if any(u['unclosed'] for u in parse_check):
+                error = ConnectorError('ERROR 1064 (42000) at line %d: You have an error in your SQL syntax' % line)
+                error.guard_markers = tuple(self.markers)
+                raise error
             remaining = payload
             while remaining.strip():
                 unit, remaining = StrictPacketServer.next_unit(
@@ -103,7 +138,9 @@ class RoutingTransport(object):
                         error.guard_markers = tuple(self.markers)
                         raise error
                 elif re.fullmatch(r"SELECT '(myflames_guard_ok_[0-9a-f]{32}_[0-9]+)'", sql):
-                    self.markers.append(sql[len("SELECT '"):-1])
+                    marker = sql[len("SELECT '"):-1]
+                    self.markers.append(marker)
+                    outputs.append(marker)
                 else:
                     self.executed.append((backend, sql))
                     if sql == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode':
@@ -113,6 +150,24 @@ class RoutingTransport(object):
                         session['mode'] += ',' + mode
                     elif sql == 'SET SESSION sql_mode = @myflames_accounts_sql_mode':
                         session['mode'] = session['variables']['account_mode']
+                    elif sql.startswith('SELECT ') and 'AS mf_probe' in sql:
+                        quote_val = []
+                        pos = sql.index("'") + 1
+                        while pos < len(sql):
+                            ch = sql[pos]
+                            if ch == "'":
+                                if pos + 1 < len(sql) and sql[pos + 1] == "'":
+                                    quote_val.append("'")
+                                    pos += 2
+                                    continue
+                                break
+                            if ch == "\\" and ('NO_BACKSLASH_ESCAPES' not in session['mode']) and pos + 1 < len(sql):
+                                quote_val.append(sql[pos + 1])
+                                pos += 2
+                                continue
+                            quote_val.append(ch)
+                            pos += 1
+                        outputs.append(''.join(quote_val).replace('\\', '\\\\'))
                     elif sql.startswith('SET GTID_NEXT = '):
                         session['gtid_next'] = sql.split("'")[1]
                     elif sql == replication.SKIP_TAG + 'BEGIN':
@@ -128,9 +183,9 @@ class RoutingTransport(object):
                     elif sql == replication.SKIP_TAG + 'SET GLOBAL sql_slave_skip_counter = 1':
                         self.counters.append((backend, session['channel']))
                     assert not ('DROP USER' in unit['code']), 'a password escaped its literal'
-            self.client_escaping = 'NO_BACKSLASH_ESCAPES' not in session['mode']
-            offset += len(chunk) + len(delimiter)
-        return '\n'.join(self.markers) + '\n'
+            if not self.stale_after_sync:
+                self.client_escaping = 'NO_BACKSLASH_ESCAPES' not in session['mode']
+        return '\n'.join(outputs) + ('\n' if outputs else '')
 
 
 class PacketTests(unittest.TestCase):
@@ -240,9 +295,15 @@ class PacketTests(unittest.TestCase):
     def test_account_client_quote_rules_keep_agreeing_backslash_passwords(self):
         # Model the client's parser, not just the server's SQL. Mode changes
         # take effect for parsing subsequent packets only after their replies.
+        class ProbeWriter(Writer):
+            def run_write(self, sql, **kwargs):
+                super().run_write(sql, **kwargs)
+                delimiter = sql.split('\n', 1)[0].split(' ', 1)[1]
+                return "\\\\" + "'" + delimiter + "\n"
+
         for password in (r'C:\logs', "x'; DROP USER root; --"):
             with self.subTest(password=password):
-                writer = Writer()
+                writer = ProbeWriter()
                 guard = dbops.target_session_guard('mysql', MYSQL)
                 statement = 'ALTER USER `app`@`%` IDENTIFIED BY ' + accounts._password(password)
                 accounts._run_stdin(writer, guard[0] + '\n' + accounts._with_password_mode(statement), (password,))
@@ -254,7 +315,8 @@ class PacketTests(unittest.TestCase):
                     client = dbops.split_statements('DELIMITER ' + delimiter + '\n' + payload + '\n' +
                                                    delimiter + '\n', backslash_escapes=escaping)
                     self.assertEqual(len(client), 1)
-                    self.assertNotIn(delimiter, client[0]['text'], 'the client swallowed the packet delimiter')
+                    if 'AS mf_probe' not in payload:
+                        self.assertNotIn(delimiter, client[0]['text'], 'the client swallowed the packet delimiter')
                     # This packet may arrive in a new server session. The
                     # client's acknowledged mode still controls its scanner.
                     server_escaping = True
@@ -273,7 +335,7 @@ class PacketTests(unittest.TestCase):
                             server_escaping = original_mode
                         elif 'ALTER USER' in unit['code']:
                             writes.append(sql)
-                    escaping = server_escaping
+                    escaping = server_escaping if original_mode is None else original_mode
                 self.assertEqual(writes, [accounts.TAG + statement])
                 self.assertTrue(escaping, 'the original SQL mode was not restored')
 
@@ -290,10 +352,29 @@ class PacketTests(unittest.TestCase):
                     statement = 'ALTER USER `app`@`%` IDENTIFIED BY ' + accounts._password(password)
                     accounts._run_stdin(writer, guard[0] + '\n' + accounts._with_password_mode(statement),
                                         (password,))
-                    self.assertEqual(len(writer.packets), 2)
+                    self.assertEqual(len(writer.packets), 3)
                     self.assertNotIn(statement, writer.packets[0][1])
+                    self.assertIn('AS mf_probe', writer.packets[1][1])
                     self.assertIn(accounts.TAG + statement, [s for unused, s in writer.executed])
                     self.assertFalse(any(s.startswith("DROP USER") for unused, s in writer.executed))
+
+    def test_account_stale_client_after_sync_stops_at_probe_without_running_password(self):
+        for engine, identity in (("mysql", MYSQL), ("mariadb", MARIA)):
+            password = "x\\'; DROP USER victim; -- "
+            with self.subTest(engine=engine):
+                writer = RoutingTransport([identity])
+                writer.run_stdin = writer.run_write
+                writer.sessions[0]["mode"] = "NO_BACKSLASH_ESCAPES"
+                writer.client_escaping = True
+                writer.stale_after_sync = True
+                guard = dbops.target_session_guard(engine, identity)
+                statement = 'ALTER USER `app`@`%` IDENTIFIED BY ' + accounts._password(password)
+                with self.assertRaisesRegex(ConnectorError, "quote status could not be confirmed. Nothing was sent."):
+                    accounts._run_stdin(writer, guard[0] + '\n' + accounts._with_password_mode(statement),
+                                        (password,))
+                self.assertEqual(len(writer.packets), 2)
+                self.assertFalse(any("ALTER USER" in s for _, s in writer.executed))
+                self.assertFalse(any("DROP USER" in s for _, s in writer.executed))
 
     def test_proxy_change_after_password_setup_never_sends_the_account_change(self):
         other = dict(MYSQL, server_uuid='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')

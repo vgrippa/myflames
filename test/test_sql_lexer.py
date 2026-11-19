@@ -796,16 +796,19 @@ class VersionAndClientLexerTests(unittest.TestCase):
                     # A bound NBE mode permits refreshing the stale escape
                     # bit before the client reads this otherwise intact text.
                     plan = ed._plan_run({"sql": sql}, session(mode="NO_BACKSLASH_ESCAPES"))
+                    nbe_probe = ed.TAG + dbops.client_status_probe("$$", False)[0]
                     self.assertEqual(ed._review_statements(plan["units"]),
-                                     [ed.TAG + dbops.CLIENT_STATUS_SYNC, sql])
+                                     [ed.TAG + dbops.CLIENT_STATUS_SYNC, nbe_probe, sql])
                     if quote == "`":
                         self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
                             "units"][0]["send"], sql)
                     if quote == '"':
                         plan = ed._plan_run({"sql": sql}, session(
                             "mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))
+                        ansi_probe = ed.TAG + dbops.client_status_probe(
+                            "$$", True, ansi_quotes=True, client_engine="mariadb")[0]
                         self.assertEqual(ed._review_statements(plan["units"]),
-                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, sql])
+                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, ansi_probe, sql])
         sql = "SELECT 'a\\\\\nb'"
         self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
 

@@ -412,6 +412,49 @@ class ClientCommentParityTests(unittest.TestCase):
         self.assertGreater(accepted, 1000)
         self.assertFalse(failures, "First mismatch: %r" % (failures[:1],))
 
+    def test_client_status_probe_oracle_matrix(self):
+        from myflames import dbops
+        delimiters = (";",) + dbops._TARGET_DELIMITERS
+        for family, versions in CLIENT_VERSIONS.items():
+            actual_states = ([(False, False), (True, False)] if family == "mysql"
+                             else [(False, False), (False, True), (True, False), (True, True)])
+            expected_configs = ([(False, None), (True, None)] +
+                                ([(True, False), (True, True)] if family == "mariadb" else []))
+            for client_version in versions:
+                for delimiter in delimiters:
+                    for exp_backslash, exp_ansi in expected_configs:
+                        sql, expected_value = dbops.client_status_probe(
+                            delimiter, exp_backslash, ansi_quotes=exp_ansi, client_engine=family)
+                        server_units = dbops.split_statements(
+                            sql, delimiter=delimiter, backslash_escapes=exp_backslash,
+                            ansi_quotes=bool(exp_ansi), engine=family, client_engine=family,
+                            client_backslash_escapes=exp_backslash, client_ansi_quotes=bool(exp_ansi))
+                        self.assertEqual(len(server_units), 1)
+                        self.assertFalse(server_units[0]["unclosed"])
+                        self.assertFalse(server_units[0]["issues"])
+                        for actual_backslash, actual_ansi in actual_states:
+                            with self.subTest(family=family, version=client_version, delimiter=delimiter,
+                                              exp=(exp_backslash, exp_ansi), actual=(actual_backslash, actual_ansi)):
+                                packets, residual, commands = client_packets(
+                                    sql, family, delimiter=delimiter, client_version=client_version,
+                                    backslash_escapes=actual_backslash, ansi_quotes=actual_ansi)
+                                self.assertEqual(residual, "")
+                                self.assertEqual(commands, [])
+                                matched = (actual_backslash == exp_backslash and
+                                           (exp_ansi is None or actual_ansi == exp_ansi))
+                                if matched:
+                                    self.assertEqual(packets, [sql])
+                                    self.assertEqual(expected_value,
+                                                     ("'" if exp_backslash else "\\'") + delimiter)
+                                else:
+                                    self.assertGreaterEqual(len(packets), 2)
+                                    self.assertNotEqual(packets[0], sql)
+                                    self.assertTrue(sql.startswith(packets[0]))
+                                    broken = dbops.split_statements(
+                                        packets[0], backslash_escapes=exp_backslash,
+                                        ansi_quotes=bool(exp_ansi), engine=family)
+                                    self.assertTrue(broken[0]["unclosed"], packets)
+
 
 if __name__ == "__main__":
     unittest.main()

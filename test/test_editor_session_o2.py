@@ -37,8 +37,9 @@ class EditorPlanningO2Tests(unittest.TestCase):
             for client in ("mysql", "mariadb", None):
                 with self.subTest(engine=engine, client=client):
                     plan = self.plan(NBE_ATTACK, engine, version, "NO_BACKSLASH_ESCAPES", client)
+                    probe = dbops.client_status_probe("$$", False)[0]
                     self.assertEqual(ed._review_statements(plan["units"]),
-                                     [ed.TAG + dbops.CLIENT_STATUS_SYNC, NBE_ATTACK])
+                                     [ed.TAG + dbops.CLIENT_STATUS_SYNC, ed.TAG + probe, NBE_ATTACK])
                     args = dict(engine=engine, server_version=version,
                                 sql_mode="NO_BACKSLASH_ESCAPES", client_engine=client)
                     self.assertNotEqual(dbops.classify(NBE_ATTACK, **args)["kind"], "read")
@@ -117,4 +118,5 @@ class EditorNbeO2ProcessTests(unittest.TestCase):
                 self.assertEqual(result["status"], "complete", result)
                 packets = [p[2] for p in self.packets()[before:]]
                 at = next(i for i, p in enumerate(packets) if p.endswith(session.statement_tag + NBE_ATTACK))
-                self.assertTrue(packets[at - 1].endswith(ed.TAG + dbops.CLIENT_STATUS_SYNC))
+                self.assertTrue(packets[at - 2].endswith(ed.TAG + dbops.CLIENT_STATUS_SYNC))
+                self.assertTrue(packets[at - 1].endswith(ed.TAG + dbops.client_status_probe("$$", False)[0]))

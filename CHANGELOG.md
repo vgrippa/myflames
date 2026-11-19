@@ -26,6 +26,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Security fixes
 
 - Query editor checks both client escape-status values and MariaDB quote-status values, then refreshes them before affected SQL on a verified session. This prevents stale status after a stored function or procedure from changing the reviewed statement. The helper appears in review and audit; ordinary statements keep their existing diagnostics. Unverified sessions and unknown SQL modes refuse affected text.
+  - Both Query editor and Users and roles verify the client's active quote and backslash-escape status with a delimiter-splitting probe right after refreshing it, ending before any protected SQL is read or sent if an intermediary keeps stale status bits or returns an unexpected probe result.
 - Query editor detects client dollar-quote boundaries hidden inside skipped comments or quoted identifiers, including closing lines whose newline the client removes. Statements that could change after review refuse before execution.
 - Query editor handles quote-containing delimiters at doubled quotes, so every statement the client would split out appears in the review and receives its required confirmation.
 - Query editor refuses delimiters longer than 15 UTF-8 bytes and DELIMITER command lines longer than 255 UTF-8 bytes. MySQL and MariaDB clients truncate these values, which can change the statements that run.
@@ -67,9 +68,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Opening a Group connection re-checks both the active member and each probed member before every login. Removing either member, changing its saved address or recreating the group prevents later logins under the old consent. A stored server identity can no longer be overwritten by an older in-flight or cached probe.
 - Query editor Stop and Close confirm the server on the connection sending `KILL QUERY` before interrupting a statement. If the server cannot be confirmed, no KILL is sent. A tab whose member left its group can still roll back, stop and close its existing session to release locks, while new statements stay refused.
 - Query editor Stop and Close on MariaDB Galera also confirm the node UUID, preventing an interrupt from reaching another node with the same server name, id and port.
+- Import CSV writes a value that contains a backslash as a hexadecimal literal instead of a quoted string, in the reviewed sample and in the statements sent. The client's view of NO_BACKSLASH_ESCAPES can be stale, and a raw backslash could change how the client splits the statement from the reviewed text.
 
 ### Bug fixes
 
+- Fixed an issue where Query editor Explain with Parameters refused statements containing double-quoted text, MariaDB `MSSQL` brackets or backslash-escaped quotes even when the tab's SQL mode was known, and preserved a custom `DELIMITER` when Explain and Explore recheck a single statement. Explain still refuses ambiguous quoting when the session mode is unknown.
 - Fixed an issue where Query editor Explain refused a single statement on MariaDB with `ANSI_QUOTES` or a mode that includes it. Stopping Explain or Run analysis while preparing the statement now reports cancellation instead of an internal error.
 - Users and roles again accepts passwords containing backslashes on NO_BACKSLASH_ESCAPES sessions, using its reviewed mode-setting reply before the client reads the password.
 - Fixed an issue where the Query editor could review SQL without a space the client would insert inside a string, identifier or skipped comment. Statements with those conflicting comment boundaries now refuse before review.
@@ -131,10 +134,12 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where long version labels could push the update badge outside the sidebar. Update alerts remain visible when the sidebar is hidden, and screen readers announce a new update and when it is ready.
 - Fixed an issue where choosing the version while **Updates and news** was already open did not move keyboard focus to its heading. Empty status bars are skipped by Tab.
 - Fixed an issue where the workspace could fail to load a view or the Query editor under load, leaving the page stuck on Loading. The local server now queues connection bursts instead of refusing them; when every worker is busy it answers with a plain "try again" response, which the workspace retries on its own while opening and otherwise shows as an error with a **Try again** button.
+- Fixed an issue where the Top statements tab's schema note could name a different schema than Run analysis used: after a `USE` in the tab's open session (or with the session's database dropped) the capture connection now opens in the session's current schema, and the note, Run, Explain and Run analysis all follow the one rule the Database picker shows. A session belonging to another connection is no longer read for the note.
 - Fixed an issue where the table data editor's review button read **Review 1 changes** for a single change.
 - Fixed an issue where myflames could fail to open, with **Could not open myflames: The Python backend did not become ready in time.**, on a computer where DNS lookups are slow. The workspace no longer looks up a host name for its local address when it starts.
 - A login with an expired MySQL password now shows the server's own message (error 1862: the password has expired and must be changed with a client that supports expired passwords) instead of a generic client failure, so Users and roles can explain that the account can only set a new password.
 - Users and roles keeps the original refusal when nothing was sent: a verification read that fails afterwards no longer turns the refusal into an unknown outcome. A server identity failure while applying a reviewed account change is now recorded as a refused change with the identity unavailable, instead of an unrecorded error.
+- Fixed an issue where `SELECT ROW_COUNT()` was classified as a risky statement. `ROW_COUNT()` only reads session state, so it now classifies as a read.
 
 ### Security fixes
 

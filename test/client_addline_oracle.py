@@ -100,7 +100,8 @@ def delimiter_command(line, family):
 
 
 def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=False,
-                   dollar_quote_supported=True, append_delimiter=True):
+                   dollar_quote_supported=True, append_delimiter=True,
+                   backslash_escapes=True, ansi_quotes=False):
     """Return COM_QUERY texts, remaining buffer, and executed short commands.
 
     Feed the editor's <send> without its statement tag, followed by newline,
@@ -111,6 +112,8 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
     mariadb-11.8.9:client/mysql.cc:3614,5522-5529).
     append_delimiter=False instead reads an already terminated user script,
     including its DELIMITER commands, without adding a private frame.
+    backslash_escapes=False models a stale SERVER_STATUS_NO_BACKSLASH_ESCAPES
+    bit in the client's add_line state.
     """
     if family not in ("mysql", "mariadb") or not sql.isascii():
         raise ValueError("Outside the ASCII comment oracle's domain")
@@ -160,7 +163,9 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
             tail = line[pos:]
             # mysql:2771-2823; mariadb:2659-2727. Only \C takes
             # parameters in this domain. Disabled commands are copied.
-            if not ml_comment and ch == "\\" and not (family == "mariadb" and in_string == "`"):
+            in_quote_escapes = backslash_escapes and not (
+                family == "mariadb" and (in_string == "`" or (in_string == '"' and ansi_quotes)))
+            if not ml_comment and ch == "\\" and (not in_string or in_quote_escapes):
                 pos += 1
                 following = line[pos:pos + 1]
                 if not following:

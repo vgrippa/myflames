@@ -1338,9 +1338,75 @@ class AccountsTest(unittest.TestCase):
         self.assertNotEqual(data['env'].get('HOME'), os.environ.get('HOME'))
         self.assertIn('NO_BACKSLASH_ESCAPES', data['stdin'])
         statements = dbops.split_statements(data['stdin'], backslash_escapes=False)
-        self.assertEqual(len(statements), 5)
+        self.assertEqual(len(statements), 6)
         self.assertEqual(statements[2]['text'], 'SET SESSION sql_mode = @@SESSION.sql_mode')
+        self.assertEqual(statements[3]['text'], dbops.client_status_probe('$$', False)[0])
         self.assertFalse(any('DROP USER' in s['code'] for s in statements))
+
+    def test_stale_quote_status_stops_at_probe_before_any_password_bytes(self):
+        """A client whose quote-status reply stays stale splits the probe at its
+        embedded delimiter and stops before sending any password SQL."""
+        for password in ("slash\\'; DROP USER victim; -- ", "slash$$\\'; DROP USER victim; -- "):
+            expected_delim = '//' if '$$' in password else '$$'
+            for engine in ('mysql', 'mariadb'):
+                with self.subTest(engine=engine, expected_delim=expected_delim):
+                    self.conn = FakeConn(engine)
+                    plan = self.plan('password', password=password)
+                    reviewed = plan['statements'][0]
+                    self.assertIn(dbops.CLIENT_STATUS_SYNC + ';\n' +
+                                  dbops.client_status_probe(expected_delim, False)[0], reviewed)
+                    seen_scripts = []
+                    def stale_client(script, extra_flags=None, timeout=None):
+                        from client_addline_oracle import client_packets
+                        seen_scripts.append(script)
+                        # Model a client that ignores SERVER_STATUS_NO_BACKSLASH_ESCAPES
+                        # from Packet 0, splits Packet 1 at expected_delim, and stops on ERROR 1064.
+                        self.assertTrue(script.startswith('DELIMITER ' + expected_delim + '\n'))
+                        packets, residual, _ = client_packets(
+                            script, engine, delimiter=';', append_delimiter=False, backslash_escapes=True)
+                        self.assertEqual(residual, '')
+                        sync_idx = script.index(dbops.CLIENT_STATUS_SYNC)
+                        probe_idx = script.index('AS mf_probe')
+                        acct_kw = 'SET PASSWORD FOR' if engine == 'mariadb' else 'ALTER USER'
+                        acct_idx = script.index(acct_kw)
+                        self.assertLess(sync_idx, probe_idx)
+                        self.assertLess(probe_idx, acct_idx)
+                        self.assertIn("SELECT '\\''", packets[1])
+                        err = ConnectorError('mysql client exited 1: ERROR 1064 (42000) at line %d: '
+                                             'You have an error in your SQL syntax' %
+                                             (script[:script.index(packets[1])].count('\n') + 1))
+                        err.guard_markers = (dbops.target_script_markers(script)[0],)
+                        raise err
+                    self.conn.run_stdin = stale_client
+                    result = self.apply(plan)
+                    self.assertEqual(len(seen_scripts), 1)
+                    self.assertEqual(result['status'], 'refused')
+                    self.assertIn("The client's quote status could not be confirmed. Nothing was sent.", result['message'])
+                    self.assertEqual(result['sent'], [])
+                    self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+
+    def test_wrong_or_missing_probe_reply_reports_unknown_outcome(self):
+        # The client finished the script without an error, so the account
+        # packet after the probe was sent: never report "Nothing was sent".
+        password = "x\\'; DROP USER victim; --"
+        for reply in ('', 'wrong\n'):
+            with self.subTest(reply=reply):
+                self.conn = FakeConn('mysql')
+                plan = self.plan('password', password=password)
+                self.conn.run_stdin = mock.Mock(return_value=reply)
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'unknown')
+                self.assertIn("could not be confirmed after the account statement was sent", result['message'])
+                self.assertNotIn("Nothing was sent", result['message'])
+                self.assertEqual(self.store.audit_records()[-1]['status'], 'unknown')
+
+    def test_probe_row_is_stripped_without_hiding_random_password_row(self):
+        self.conn = FakeConn('mysql', name='admin', host='localhost')
+        plan = self.plan('password', random_password=True, current_password="cur\\'$$")
+        self.conn.run_stdin = mock.Mock(return_value="\\\\'//\nadmin\tlocalhost\tserver-gen-PW\t1\n")
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'applied')
+        self.assertEqual(result['generated_password'], 'server-gen-PW')
 
     def test_transport_errors_never_echo_credentials(self):
         conn = MySQLConnection('127.0.0.1', password='connection-secret', binary='/fake/mysql')

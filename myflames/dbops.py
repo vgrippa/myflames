@@ -226,6 +226,29 @@ CLIENT_STATUS_SYNC_REQUIRED = ("The session quote mode is unknown or the session
                                "Open a bound session with a known sql_mode before running it.")
 
 
+def client_status_probe(delimiter, backslash_escapes, ansi_quotes=None, client_engine=None):
+    """Build (sql, expected_value) to confirm the client's active quote bits.
+
+    Under the expected bits the client reads one SELECT; under any stale bit
+    it splits at the embedded copy of *delimiter* and sends a prefix with an
+    unclosed quote that the server rejects before later packets are scanned.
+    Comments after the embedded delimiter keep trailing quotes balanced so an
+    interactive client never swallows its following delimiter marker.
+    """
+    if (not isinstance(delimiter, str) or not delimiter or
+            any(ch in delimiter for ch in "'\"\\`\r\n\t\f\v ") or "/*" in delimiter or "*/" in delimiter):
+        raise ValueError("Invalid client status probe delimiter.")
+    if not backslash_escapes:
+        return "SELECT '\\''" + delimiter + "' /* ' */ AS mf_probe", "\\'" + delimiter
+    sql = "SELECT '\\'" + delimiter + "' /* ' */ AS mf_probe"
+    if ansi_quotes is not None and client_engine != "mysql":
+        if ansi_quotes:
+            sql += ", 1 AS \"\\\"\"" + delimiter + "\" /* \" */"
+        else:
+            sql += ", 1 AS \"\\\"" + delimiter + "\" /* \" */"
+    return sql, "'" + delimiter
+
+
 def client_status_sensitive(sql, delimiter=";", client_engine=None):
     """Whether stale reply bits can change one client's framing or bytes.
 
@@ -1194,7 +1217,7 @@ STR_TO_DATE SUBDATE SUBSTR SUBSTRING SUBSTRING_INDEX SUM SYSDATE SYSTEM_USER
 TAN TIME TIME_FORMAT TIME_TO_SEC TIMEDIFF TIMESTAMP TIMESTAMPADD TIMESTAMPDIFF
 TO_BASE64 TO_DAYS TO_SECONDS TRIM TRUNCATE UCASE UNHEX UNIX_TIMESTAMP UPPER USER
 UTC_DATE UTC_TIME UTC_TIMESTAMP UUID UUID_SHORT VAR_POP VAR_SAMP VARIANCE VERSION WEEK WEEKDAY
-WEEKOFYEAR YEAR YEARWEEK CAST ROW ROW_NUMBER RANK DENSE_RANK LAG LEAD
+WEEKOFYEAR YEAR YEARWEEK CAST ROW ROW_COUNT ROW_NUMBER RANK DENSE_RANK LAG LEAD
 FIRST_VALUE LAST_VALUE NTH_VALUE NTILE CUME_DIST PERCENT_RANK
 """.split())
 
@@ -1820,9 +1843,10 @@ def _classify_statement(stmt, key_columns, native_functions=None):
 
 
 def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_version=None,
-                      unknown_execute=True, wsrep_on=None, **quote_args):
-    units = split_statements(sql, backslash_escapes, engine=engine, server_version=server_version,
-                            unknown_execute=unknown_execute, wsrep_on=wsrep_on, **quote_args)
+                      unknown_execute=True, wsrep_on=None, delimiter=";", **quote_args):
+    units = split_statements(sql, backslash_escapes, delimiter=delimiter, engine=engine,
+                             server_version=server_version, unknown_execute=unknown_execute,
+                             wsrep_on=wsrep_on, **quote_args)
     statements = []
     native_functions = _native_read_functions(engine, server_version)
     for stmt in units:
@@ -1834,7 +1858,7 @@ def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_v
 
 
 def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None, wsrep_on=None,
-             sql_mode=None, client_engine=None, client_status_synced=False):
+             sql_mode=None, client_engine=None, client_status_synced=False, delimiter=";"):
     """Classify every modelled server reading and keep the worst effect.
 
     Unknown engines or MySQL versions use all version-number grammars. Unknown quote modes
@@ -1849,7 +1873,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
     readings = lexer_readings(backslash_escapes, engine, sql_mode, server_version, client_engine, sql,
                               client_status_synced=client_status_synced)
     units, statements = _classify_reading(sql, key_columns=key_columns, engine=engine,
-                                         server_version=server_version, wsrep_on=wsrep_on, **readings[0])
+                                         server_version=server_version, wsrep_on=wsrep_on,
+                                         delimiter=delimiter, **readings[0])
     reference = _mode_reading(units)
     skipped_reference = None
     summary = _worst(statements)
@@ -1869,7 +1894,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
 
     for reading in readings[1:]:
         units, alternative = _classify_reading(sql, key_columns=key_columns, engine=engine,
-                                              server_version=server_version, wsrep_on=wsrep_on, **reading)
+                                              server_version=server_version, wsrep_on=wsrep_on,
+                                              delimiter=delimiter, **reading)
         meaning = _mode_reading(units)
         if meaning != reference:
             # A future gate cannot execute with the legacy five-digit
@@ -1881,7 +1907,7 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                 if skipped_reference is None:
                     skipped, unused = _classify_reading(
                         sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                        unknown_execute=False, wsrep_on=wsrep_on, **readings[0])
+                        unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **readings[0])
                     skipped_reference = _mode_reading(skipped)
                 ambiguous = ambiguous or meaning != skipped_reference
             else:
@@ -1896,7 +1922,7 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
         if uncertain:
             unused_units, alternative = _classify_reading(
                 sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                unknown_execute=False, wsrep_on=wsrep_on, **reading)
+                unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **reading)
             summary = _worst([summary, _worst(alternative)])
             merge(alternative)
             if len({c["opener"] for c in uncertain}) > 1 or any(
@@ -1910,8 +1936,9 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                 for statement in statements:
                     statement.update(_worst([statement, unknown]))
     for reading in readings if "$" in sql else ():
-        plain = split_statements(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
-        dollars = split_statements(sql, dollar_quotes=True, engine=engine,
+        plain = split_statements(sql, delimiter=delimiter, engine=engine, server_version=server_version,
+                                 wsrep_on=wsrep_on, **reading)
+        dollars = split_statements(sql, delimiter=delimiter, dollar_quotes=True, engine=engine,
                                    server_version=server_version, wsrep_on=wsrep_on, **reading)
         if _target_reading(plain) != _target_reading(dollars):
             ambiguous = True

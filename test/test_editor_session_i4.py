@@ -60,9 +60,11 @@ class EditorRunPredictionTests(unittest.TestCase):
                         self.assertEqual(self.registry.tokens, tokens)
                     else:
                         self.assertEqual(review['status'], 'needs_confirmation', review)
+                        probe = ed.TAG + dbops.client_status_probe(
+                            '$$', True, ansi_quotes=True, client_engine='mariadb')[0]
                         self.assertEqual(review['confirmation']['statements'],
                                          ["SET sql_mode='ANSI_QUOTES'", ed.TAG + dbops.CLIENT_STATUS_SYNC,
-                                          'SELECT 1 AS "a\\"', 'DELETE FROM t'])
+                                          probe, 'SELECT 1 AS "a\\"', 'DELETE FROM t'])
                     self.assertEqual(len(self.packets()), before)
                     self.assertEqual(self.session_log(tab), log)
                     continue
@@ -70,7 +72,11 @@ class EditorRunPredictionTests(unittest.TestCase):
                 statements = ["SET sql_mode='%s'" % mode] + following_statements
                 reviewed = list(statements)
                 if mode == 'NO_AUTO_VALUE_ON_ZERO':
+                    probe = ed.TAG + dbops.client_status_probe(
+                        '$$', True, ansi_quotes=False if self.engine == 'mariadb' else None,
+                        client_engine=self.engine)[0]
                     reviewed.insert(1, ed.TAG + dbops.CLIENT_STATUS_SYNC)
+                    reviewed.insert(2, probe)
                 self.assertEqual(review['status'], 'needs_confirmation', review)
                 self.assertEqual(review['confirmation']['statements'], reviewed)
                 self.assertEqual(len(self.packets()), before, 'review must send no user SQL or helpers')

@@ -7,6 +7,7 @@ the module docstring and checked live by scripts/lab-csv-import.py.
 import codecs
 import io
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -410,13 +411,23 @@ class SqlTextTest(unittest.TestCase):
         self.assertEqual(ci.sql_text("it's"), "'it''s'")
         for mode in (None, True, False):
             self.assertEqual(ci.sql_text('plain', mode), "'plain'")
-        self.assertEqual(ci.sql_text('a\\b', None), "CONVERT(X'615C62' USING utf8mb4)")
-        self.assertEqual(ci.sql_text('a\\b', True), "'a\\\\b'")
-        self.assertEqual(ci.sql_text('a\\b', False), "'a\\b'")
         self.assertEqual(ci.sql_text("x\n'y'\t\x00\x1a", True), "'x\\n''y''\\t\\0\\Z'")
         self.assertEqual(ci.sql_text('x\ny', False), "CONVERT(X'780A79' USING utf8mb4)")
         self.assertEqual(ci.sql_text('bell\x07', True), "CONVERT(X'62656C6C07' USING utf8mb4)")
         self.assertEqual(ci.sql_text('\u00e9\U0001F600'), "'\u00e9\U0001F600'")
+
+    def test_a_backslash_is_hex_under_every_mode_and_round_trips(self):
+        # The client's view of NO_BACKSLASH_ESCAPES can be stale, so a value
+        # with a backslash never goes as a quoted literal: the hex text means
+        # the same whatever status bits the client splits with.
+        for mode in (None, True, False):
+            with self.subTest(mode=mode):
+                text = ci.sql_text('a\\b', mode)
+                self.assertEqual(text, "CONVERT(X'615C62' USING utf8mb4)")
+                hexed = re.search(r"X'([0-9A-F]+)'", text).group(1)
+                self.assertEqual(bytes.fromhex(hexed).decode('utf-8'), 'a\\b')
+        text = ci.sql_text('C:\\x y', True)
+        self.assertEqual(bytes.fromhex(re.search(r"X'([0-9A-F]+)'", text).group(1)).decode('utf-8'), 'C:\\x y')
 
     def test_values_rows_and_prefix(self):
         items = [('null', None), ('num', '-1.5'), ('bit', 5), ('bytes', b'\x00A'), ('text', "o'k"), ('bytes', b'')]

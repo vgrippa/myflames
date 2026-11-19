@@ -2522,8 +2522,13 @@ then use the synchronized bits, while retaining every possible client family.
 An unbound session or unknown mode refuses; family, delimiter or dollar-grammar
 disagreements that remain after synchronization still refuse.
 The helper is named in editor review and audit, including for an allowed read;
-its results are internal. Both packets assert the target and expected mode.
-A failed helper stops before the unit, including with Continue on error.
+its results are internal. Immediately after that `SET` reply, both the Query editor
+and Users and roles (`_with_password_mode`) send `dbops.client_status_probe`
+as a following packet using the packet's active delimiter so any stale client quote
+or backslash-escape bit splits at the embedded delimiter and fails on the server
+before later units are read, and verify the probe result before proceeding or
+returning output. Both packets assert the target and expected mode.
+A failed helper or probe stops before the unit, including with Continue on error.
 The helper can raise server warnings without changing what it sends: MySQL
 raises warning 3135 when strict mode and its sub-modes are only partly set
 (`mysql-8.4.0:sql/sys_vars.cc:4629–4648`), MySQL 8.0+ warns that
@@ -4604,10 +4609,11 @@ planner, write gate and session engine from the CLI.
   explained statement (named locks, `:=`, sequences, locking clauses, and
   functions that are not verified native readers) without the INTO check; DDL
   after EXPLAIN stays a read because the server refuses it. An optional
-  `parameters` object fills `:name` placeholders with `live.fill_parameters`
-  (the literals of `bind_query`: hex strings, finite numbers, NULL, lists for
-  IN; refused when backslash and NO_BACKSLASH_ESCAPES readings disagree); a
-  statement without placeholders is sent as written, and Run never binds. No
+  `parameters` object fills `:name` placeholders in SQL code spans using the
+  session's bound mode (the literals of `bind_query`: hex strings, finite
+  numbers, NULL, lists for IN; refused when an unknown mode makes readings
+  disagree); a statement without placeholders is sent as written, and Run
+  never binds. No
   SELECT projection, transaction wrapper or session setting change. Messages
   and history show the exact `EXPLAIN …` sent (`statement.sent`). The UI's
   Explain format select (`explain_format` in the UI preferences store, with a one-time legacy `myflames.editor.explainFormat` localStorage fallback)
@@ -9297,7 +9303,10 @@ primary key.
 `/*myflames:import_csv*/` tag; identifiers are backquoted. Text literals use
 plain quotes when the value has no backslash or control character, escapes
 when the session's NO_BACKSLASH_ESCAPES state is known, and
-`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. Apply
+`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. A value
+with a backslash is always `CONVERT(X'..' USING utf8mb4)`, whatever the
+session's state: the client's view of NO_BACKSLASH_ESCAPES can be stale, and
+a raw backslash can change how the client splits the statement. Apply
 refuses when the session's NO_BACKSLASH_ESCAPES state differs from the
 plan's. INSERT batches hold at most 1,000 rows and 1 MiB per statement and
 never cross a commit boundary; a single larger row goes alone up to

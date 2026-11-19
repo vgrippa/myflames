@@ -11,6 +11,7 @@ import re
 import unittest
 from unittest import mock
 
+from client_addline_oracle import client_packets
 import test_editor_session as fixtures
 import test_editor_session_identity as identity_fixtures
 from test_editor_session_j2 import SAFETY, bound_session
@@ -29,6 +30,7 @@ REVIEWER_TEXTS = (
     ("NO_BACKSLASH_ESCAPES", "SELECT 'x\\', ' \\C utf8mb4 ' AS a\n, '; SELECT 2; -- ' AS b"),
 )
 LAB_TEXT = "SELECT 'a\\'; SELECT 'SPLIT-AFTER' AS marker; -- ' AS probe"
+GA_STATUS_PROBE = "SELECT 'x\\', \\C utf8mb4 ' AS a\n, 'y' AS b"
 ANSI_TEXT = 'SELECT "a\\" /*c*/x " AS s -- "'
 ANSI_ON_TEXT = 'SELECT 1 AS "a\\", 2 AS "\ndelimiter_x\n" -- "'
 SYNC = "/*myflames:editor*/ SET SESSION sql_mode = @@SESSION.sql_mode"
@@ -65,7 +67,11 @@ class EditorStatusO3Tests(unittest.TestCase):
                             self.assertEqual(len(plan["units"]), 1)
                             self.assertEqual(plan["units"][0]["send"], sql)
                             self.assertTrue(plan["units"][0]["client_status_sync"])
-                            self.assertEqual(ed._review_statements(plan["units"]), [SYNC, sql])
+                            probe = ed.TAG + dbops.client_status_probe(
+                                "$$", "NO_BACKSLASH_ESCAPES" not in mode,
+                                ansi_quotes=False if ("NO_BACKSLASH_ESCAPES" not in mode and client != "mysql") else None,
+                                client_engine=client)[0]
+                            self.assertEqual(ed._review_statements(plan["units"]), [SYNC, probe, sql])
                             self.assertEqual(plan["verdict"]["kind"], "read")
                             self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "allow")
                             self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), session)["action"], "allow")
@@ -73,10 +79,12 @@ class EditorStatusO3Tests(unittest.TestCase):
     def test_mariadb_ansi_bit_can_be_stale_when_server_ansi_mode_is_off(self):
         for client in ("mariadb", None):
             plan, unused = self.plan(ANSI_TEXT, "mariadb", "11.8.9-MariaDB", "", client)
-            self.assertEqual(ed._review_statements(plan["units"]), [SYNC, ANSI_TEXT])
+            probe_off = ed.TAG + dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine=client)[0]
+            self.assertEqual(ed._review_statements(plan["units"]), [SYNC, probe_off, ANSI_TEXT])
             self.assertEqual(plan["verdict"]["kind"], "read")
         plan, unused = self.plan(ANSI_ON_TEXT, "mariadb", "11.8.9-MariaDB", "ANSI_QUOTES", "mariadb")
-        self.assertEqual(ed._review_statements(plan["units"]), [SYNC, ANSI_ON_TEXT])
+        probe_on = ed.TAG + dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb")[0]
+        self.assertEqual(ed._review_statements(plan["units"]), [SYNC, probe_on, ANSI_ON_TEXT])
         # MariaDB's client on a MySQL server receives no ANSI bit, even when
         # MySQL's sql_mode uses ANSI_QUOTES. Synchronization must not invent it.
         readings = dbops.lexer_readings(None, "mysql", "ANSI_QUOTES", "8.4.0", "mariadb",
@@ -112,8 +120,9 @@ class EditorStatusO3Tests(unittest.TestCase):
     def test_status_helper_is_per_affected_unit_and_cannot_fix_other_ambiguity(self):
         plan, unused = self.plan("SELECT 1; " + LAB_TEXT + "\n; SELECT ROW_COUNT()")
         self.assertEqual([u["client_status_sync"] for u in plan["units"]], [False, True, False])
+        probe = ed.TAG + dbops.client_status_probe("$$", True)[0]
         self.assertEqual(ed._review_statements(plan["units"]),
-                         ["SELECT 1", SYNC, LAB_TEXT, "SELECT ROW_COUNT()"])
+                         ["SELECT 1", SYNC, probe, LAB_TEXT, "SELECT ROW_COUNT()"])
         # MySQL's client ignores ANSI_QUOTES: SET cannot teach it identifier
         # quoting. Unknown family must still check that client reading.
         sql = 'SELECT 1 AS "a\\", 2 AS "b"'
@@ -158,21 +167,70 @@ class EditorStatusO3Tests(unittest.TestCase):
                 transport.run_stdin = transport.run_write
                 guard = dbops.target_session_guard(engine, identity)
                 reviewed = accounts._with_password_mode(account)
-                self.assertIn("SET SESSION sql_mode = @@SESSION.sql_mode;\n", reviewed)
-                with self.assertRaisesRegex(accounts.ConnectorError, "quote-status helper changed"):
-                    accounts._run_stdin(transport, guard[0] + "\n" + reviewed.replace(
-                        "SET SESSION sql_mode = @@SESSION.sql_mode;\n", ""), [password])
-                self.assertEqual(transport.packets, [], "a removed reviewed helper must refuse before sending")
+                probe_sql, _ = dbops.client_status_probe("$$", False)
+                self.assertIn("SET SESSION sql_mode = @@SESSION.sql_mode;\n" + probe_sql + ";\n", reviewed)
+                for tampered in (
+                    reviewed.replace("SET SESSION sql_mode = @@SESSION.sql_mode;\n", ""),
+                    reviewed.replace(probe_sql + ";\n", ""),
+                    reviewed.replace(probe_sql, "SELECT 1"),
+                ):
+                    with self.assertRaisesRegex(accounts.ConnectorError, "quote-status helper changed"):
+                        accounts._run_stdin(transport, guard[0] + "\n" + tampered, [password])
+                    self.assertEqual(transport.packets, [], "a removed or changed reviewed helper must refuse before sending")
                 accounts._run_stdin(transport, guard[0] + "\n" + reviewed, [password])
-                self.assertEqual(len(transport.packets), 2)
+                self.assertEqual(len(transport.packets), 3)
                 self.assertNotIn(account, transport.packets[0][1])
                 self.assertIn("SET SESSION sql_mode = CONCAT_WS", transport.packets[0][1])
                 self.assertTrue(transport.packets[0][1].endswith("SET SESSION sql_mode = @@SESSION.sql_mode"))
-                self.assertNotIn("SET SESSION sql_mode = @@SESSION.sql_mode", transport.packets[1][1])
+                self.assertTrue(transport.packets[1][1].endswith(probe_sql))
+                self.assertNotIn("SET SESSION sql_mode = @@SESSION.sql_mode", transport.packets[2][1])
                 self.assertIn(accounts.TAG + account, [sql for unused, sql in transport.executed])
                 self.assertFalse(any(sql.startswith("DROP USER") for unused, sql in transport.executed))
         ordinary = accounts._with_password_mode("ALTER USER 'app'@'%' IDENTIFIED BY 'ordinary'")
         self.assertNotIn("SET SESSION sql_mode = @@SESSION.sql_mode", ordinary)
+        self.assertNotIn("mf_probe", ordinary)
+
+    def test_ga_probe_framing_differs_without_helper_under_stale_nbe_bit(self):
+        # The previous GA probe hid its ';' inside a '-- ' line comment under
+        # target_guarded_script's DELIMITER $$, so a stale NBE client sent the
+        # same bytes either way. \C outside the string under stale NBE removes
+        # the rest of the line in every client even inside DELIMITER $$.
+        old_probe = "SELECT 'a\\'; SELECT 1 AS hidden; -- ' AS probe"
+        versions = (("mysql", ("5.7.44", "8.0.46", "8.1.0", "8.4.0", "9.7.0")),
+                    ("mariadb", ("10.11.16", "11.8.9", "12.0.1")))
+        for engine, server_version, guard in (("mysql", "8.4.0", dbops.target_session_guard("mysql", MYSQL)),
+                                              ("mariadb", "11.8.9-MariaDB", dbops.target_session_guard("mariadb", MARIA))):
+            for family, client_versions in versions:
+                plan, unused = self.plan(GA_STATUS_PROBE, engine, server_version, "", family)
+                self.assertEqual(ed._review_statements(plan["units"]), [SYNC, GA_STATUS_PROBE])
+                self.assertTrue(plan["units"][0]["client_status_sync"])
+                probe_script, unused = dbops.target_guarded_script(
+                    guard, [GA_STATUS_PROBE], sql_mode="", engine=engine, server_version=server_version,
+                    client_engine=family, defer_status_sync=True)
+                old_script, unused = dbops.target_guarded_script(
+                    guard, [old_probe], sql_mode="", engine=engine, server_version=server_version,
+                    client_engine=family, defer_status_sync=True)
+                for client_version in client_versions:
+                    with self.subTest(engine=engine, family=family, client_version=client_version):
+                        restored = client_packets(probe_script, family, delimiter=";",
+                                                  client_version=client_version, append_delimiter=False,
+                                                  backslash_escapes=True)
+                        stale = client_packets(probe_script, family, delimiter=";",
+                                               client_version=client_version, append_delimiter=False,
+                                               backslash_escapes=False)
+                        self.assertEqual(restored[1:], ("", ["DELIMITER"]))
+                        self.assertEqual(len(restored[0]), 1)
+                        self.assertTrue(restored[0][0].endswith(GA_STATUS_PROBE))
+                        self.assertEqual(stale[1:], ("", ["DELIMITER", "C"]))
+                        self.assertEqual(len(stale[0]), 1)
+                        self.assertNotEqual(stale[0], restored[0])
+                        self.assertTrue(stale[0][0].endswith("SELECT 'x\\', \n, 'y' AS b"))
+                        # Contrast with the old probe, which did not differ under DELIMITER $$.
+                        self.assertEqual(
+                            client_packets(old_script, family, delimiter=";", client_version=client_version,
+                                           append_delimiter=False, backslash_escapes=False),
+                            client_packets(old_script, family, delimiter=";", client_version=client_version,
+                                           append_delimiter=False, backslash_escapes=True))
 
 
 # Synthetic replies only. sql_mode and the reply bits are deliberately separate,
@@ -191,12 +249,16 @@ STATUS_FAKE = r'''
             if os.path.exists(os.path.join(STATE, "sync-fails")):
                 self.error(line, 1231, "42000", "synthetic status sync failure")
                 return
-            self.o3_client_nbe = "NO_BACKSLASH_ESCAPES" in self.sql_mode
-            self.o3_client_ansi = ENGINE == "mariadb" and "ANSI_QUOTES" in self.sql_mode
+            if not os.path.exists(os.path.join(STATE, "stale-after-sync")):
+                self.o3_client_nbe = "NO_BACKSLASH_ESCAPES" in self.sql_mode
+                self.o3_client_ansi = ENGINE == "mariadb" and "ANSI_QUOTES" in self.sql_mode
             self.o3_syncs = getattr(self, "o3_syncs", 0) + 1
             self.ok()
             return
-        if getattr(self, "o3_client_nbe", None) is not None and text.startswith("SELECT ") and "\\" in text:
+        if "AS mf_probe" in text and os.path.exists(os.path.join(STATE, "wrong-probe")):
+            self.result(statement, ["mf_probe"], [["wrong"]])
+            return
+        if getattr(self, "o3_client_nbe", None) is not None and text.startswith("SELECT ") and "\\" in text and "AS mf_probe" not in text:
             matched = (self.o3_client_nbe == ("NO_BACKSLASH_ESCAPES" in self.sql_mode) and
                        self.o3_client_ansi == (ENGINE == "mariadb" and "ANSI_QUOTES" in self.sql_mode))
             with open(os.path.join(STATE, "status-wire.log"), "a") as handle:
@@ -222,6 +284,17 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
         fixtures.ProcessTests.setUp(self)
         script = Path(os.environ["PATH"].split(os.pathsep)[0]) / "mysql"
         source = script.read_text(encoding="utf-8")
+        probe_split = (
+            '        if "AS mf_probe" in wire and getattr(self, "o3_client_nbe", None) is not None:\n'
+            '            nbe_srv = "NO_BACKSLASH_ESCAPES" in self.route_sql_mode.upper().split(",")\n'
+            '            ansi_srv = ENGINE == "mariadb" and "ANSI_QUOTES" in self.route_sql_mode.upper().split(",")\n'
+            '            if self.o3_client_nbe != nbe_srv or (\'1 AS "\' in wire and self.o3_client_ansi != ansi_srv):\n'
+            '                self.error(line, 1064, "42000", "You have an error in your SQL syntax; stale quote probe split")\n'
+            '                return\n'
+        )
+        source = source.replace(
+            '        statement = re.sub(r"/\\*myflames:editor:[0-9a-f]{32}\\*/ ", "", wire)\n',
+            '        statement = re.sub(r"/\\*myflames:editor:[0-9a-f]{32}\\*/ ", "", wire)\n' + probe_split)
         source = source.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + STATUS_FAKE)
         script.write_text(source, encoding="utf-8")
 
@@ -247,9 +320,14 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
                     session = self.stale(mode, ansi=sql in (ANSI_TEXT, ANSI_ON_TEXT))
                     session.client_engine = client
                     before = len(self.packets())
+                    probe_ansi = (None if ("NO_BACKSLASH_ESCAPES" in mode or client == "mysql") else
+                                  ("ANSI_QUOTES" in mode if (self.engine == "mariadb" and client == "mariadb")
+                                   else (False if "ANSI_QUOTES" not in mode else None)))
+                    probe = ed.TAG + dbops.client_status_probe(
+                        "$$", "NO_BACKSLASH_ESCAPES" not in mode, ansi_quotes=probe_ansi, client_engine=client)[0]
                     review = self.call("/api/editor/run", sql=sql, require_confirmation=True)
                     self.assertEqual(review["status"], "needs_confirmation", review)
-                    self.assertEqual(review["confirmation"]["statements"], [SYNC, sql])
+                    self.assertEqual(review["confirmation"]["statements"], [SYNC, probe, sql])
                     self.assertEqual(len(self.packets()), before, "review must not send its helper")
                     result = self.call("/api/editor/run", sql=sql, require_confirmation=True, confirmed=True,
                                        confirm_token=review["confirmation"]["token"])
@@ -259,13 +337,15 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
                     self.assertEqual(results[0]["rows"], [["single"]])
                     packets = [p[2] for p in self.packets()[before:]]
                     at = next(i for i, packet in enumerate(packets) if packet.endswith(session.statement_tag + sql))
-                    self.assertTrue(packets[at - 1].endswith(SYNC), packets)
+                    self.assertTrue(packets[at - 2].endswith(SYNC), packets)
+                    self.assertTrue(packets[at - 1].endswith(probe), packets)
+                    self.assertNotIn(sql, packets[at - 2])
                     self.assertNotIn(sql, packets[at - 1])
                     records = [json.loads(line) for line in (self.state / "status-wire.log").read_text().splitlines()]
                     self.assertEqual(records[-1], [mode, "NO_BACKSLASH_ESCAPES" in mode,
                                                   "ANSI_QUOTES" in mode, 1, sql])
                     audit = self.store.audit_records()[0]
-                    self.assertEqual(audit["statements"], [SYNC, sql])
+                    self.assertEqual(audit["statements"], [SYNC, probe, sql])
 
     def test_unbound_and_unknown_mode_send_nothing(self):
         for failure in ("routed", "mode"):
@@ -339,7 +419,7 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
 
         def route_after_reply(send, *args, **kwargs):
             step = helper(send, *args, **kwargs)
-            if send == SYNC:
+            if "AS mf_probe" in send:
                 (self.state / "packet-routes.json").write_text(
                     json.dumps([{"sql_mode": "NO_BACKSLASH_ESCAPES"}]), encoding="utf-8")
             return step
@@ -352,6 +432,44 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
         self.assertFalse((self.state / "status-wire.log").exists(), "the server guard must stop the user SQL")
         self.assertFalse(any("SELECT 987" in p[2] for p in self.packets()[before:]))
         self.assertTrue(session.ended)
+
+    def test_stale_client_bits_after_sync_ok_split_probe_and_never_send_unit(self):
+        cases = [("", LAB_TEXT, False), ("NO_BACKSLASH_ESCAPES", REVIEWER_TEXTS[1][1], False)]
+        if self.engine == "mariadb":
+            cases.extend((("", ANSI_TEXT, True), ("ANSI_QUOTES", ANSI_ON_TEXT, True)))
+        for mode, sql, ansi in cases:
+            with self.subTest(mode=mode, ansi=ansi):
+                self.setUp()
+                session = self.stale(mode, ansi=ansi)
+                (self.state / "stale-after-sync").write_text("yes", encoding="utf-8")
+                before = len(self.packets())
+                result = self.run_sql(sql + "\n; SELECT 987", on_error="continue")
+                self.assertEqual(result["status"], "session_ended", result)
+                self.assertEqual(session.ended_reason, "client_status_sync_failed")
+                self.assertIn("The client's quote status could not be confirmed. Nothing was sent.",
+                              session.end_message or "")
+                self.assertEqual([u["status"] for u in result["run"]["statements"]], ["not_run", "not_run"])
+                self.assertEqual(result["run"]["counts"]["run"], 0)
+                packets = [p[2] for p in self.packets()[before:]]
+                self.assertTrue(any(dbops.CLIENT_STATUS_SYNC in p for p in packets))
+                self.assertTrue(any("AS mf_probe" in p for p in packets))
+                self.assertFalse(any(sql in p or "SELECT 987" in p for p in packets), packets)
+                self.assertFalse((self.state / "status-wire.log").exists())
+
+    def test_wrong_probe_value_ends_session_and_never_sends_unit(self):
+        session = self.stale()
+        (self.state / "wrong-probe").write_text("yes", encoding="utf-8")
+        before = len(self.packets())
+        result = self.run_sql(LAB_TEXT + "\n; SELECT 987", on_error="continue")
+        self.assertEqual(result["status"], "session_ended", result)
+        self.assertEqual(session.ended_reason, "client_status_sync_failed")
+        self.assertIn("The client's quote status could not be confirmed. Nothing was sent.",
+                      session.end_message or "")
+        self.assertEqual([u["status"] for u in result["run"]["statements"]], ["not_run", "not_run"])
+        self.assertEqual(result["run"]["counts"]["run"], 0)
+        packets = [p[2] for p in self.packets()[before:]]
+        self.assertFalse(any(LAB_TEXT in p or "SELECT 987" in p for p in packets), packets)
+        self.assertFalse((self.state / "status-wire.log").exists())
 
 
 class MariaDBStatusO3ProcessTests(EditorStatusO3ProcessTests):

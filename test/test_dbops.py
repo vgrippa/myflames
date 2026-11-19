@@ -267,6 +267,7 @@ class TestSelectFunctionSafety(unittest.TestCase):
             "SELECT 'mutate_rows()', `mutate_rows`, 'COUNT (1)' /* mutate_rows() */",
             'SELECT CONNECTION_ID(), USER(), CURRENT_USER(), VERSION(), DATABASE()',
             'SELECT LAST_INSERT_ID()',
+            'SELECT ROW_COUNT()',
         )
         for sql in queries:
             with self.subTest(sql=sql):
@@ -1893,3 +1894,21 @@ class TestReadysetClassificationAndRedaction(unittest.TestCase):
         clean = dbops.redact(raw)
         self.assertNotIn("s3cr3t!pw", clean)
         self.assertIn("mysql://readyset_user:[redacted]@db-primary.internal:3306/shop", clean)
+
+    def test_client_status_probe_formats_and_validation(self):
+        self.assertEqual(dbops.client_status_probe("$$", True),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("//", False),
+                         ("SELECT '\\''//' /* ' */ AS mf_probe", "\\'//"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\""$$" /* " */', "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\"$$" /* " */', "'$$"))
+        # MySQL clients ignore ANSI_QUOTES; NBE makes all quotes literal.
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mysql"),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", False, ansi_quotes=True, client_engine="mariadb"),
+                         ("SELECT '\\''$$' /* ' */ AS mf_probe", "\\'$$"))
+        for bad in ("", None, "'", '"', "\\", "a b", "/*"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                dbops.client_status_probe(bad, True)

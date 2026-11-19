@@ -59,6 +59,7 @@ const statement = (overrides) => ({
 });
 const SAMPLE_1 = "SELECT * FROM orders WHERE status = 'new' ORDER BY total DESC LIMIT 10";
 const SAMPLE_4 = "SELECT name FROM customers WHERE country = 'US'";
+const DDL = "CREATE INDEX `idx_orders_status` ON `shop`.`orders` (`status`);";
 const top = {
   schema_version: "top-1.0",
   engine: "mysql",
@@ -145,21 +146,24 @@ const captureFor = (request) => {
   };
 };
 
-// Mocked editor session API. Only Explain runs in this suite: its reply has
-// the shape of editor_session's run (the statement as typed and the EXPLAIN
-// sent, one rows result). The mock does not bind :name values; the request
-// assertions check what reaches the server.
+// Mocked editor session API. Explain and one reviewed CREATE INDEX run in
+// this suite: the replies have the shape of editor_session's run (the
+// statement as typed and what was sent). The mock does not bind :name values;
+// the request assertions check what reaches the server.
 const editorRuns = [];
 const sessions = new Map();
+const reviews = new Map();
 // The session names the connection it was opened with, as editor_session's
-// status() does (profile_id and name included).
+// status() does (profile_id and name included), and its current default
+// database (DATABASE()): the connection's on open, the new schema after a
+// USE, null when it has none.
 const editorSession = (tab, c = {}) => {
   if (!sessions.has(tab)) sessions.set(tab, { schema_version: "editor-session-1.0", tab_id: tab, state: "idle",
     connection: { profile_id: c.profile_id || null, name: c.name || null, host: c.host, port: c.port, user: c.user,
       type: c.type || "production", read_only: !!c.read_only },
     engine: "mysql", server_version: "8.4.3", connection_id: 100 + sessions.size, autocommit: true, in_transaction: false,
     sql_mode: "", backslash_escapes: true, safe_updates: true, safe_updates_default: true,
-    read_only_transactions: false, ended: false, notes: [], run: null });
+    read_only_transactions: false, database_name: c.database || null, ended: false, notes: [], run: null });
   return sessions.get(tab);
 };
 function explainReply(body) {
@@ -189,10 +193,40 @@ const mock = { busyOnce: false, hang: false, busyReplies: 0 };
 function respond(pathname, body) {
   if (pathname === "/api/editor/run") {
     editorRuns.push(body);
-    // A plain run would reach a database: refused, and asserted absent below.
-    if (!body.explain_format) return [400, { error: "Only Explain is mocked in this suite." }];
-    return [200, explainReply(body)];
+    if (body.explain_format) return [200, explainReply(body)];
+    // The suggested-index write: reviewed, then run, as editor_session does.
+    if (/^\s*CREATE\s+INDEX/i.test(body.sql)) {
+      const session = editorSession(body.tab_id, body.connection);
+      if (!body.confirmed) {
+        const token = `review-${reviews.size + 1}`;
+        reviews.set(token, { sql: body.sql, tab_id: body.tab_id });
+        return [200, { status: "needs_confirmation", session, confirmation: {
+          token, expires_in: 300, title: "Production connection", text: "Review this CREATE INDEX before it runs.",
+          tone: "primary", kind: "write", category: "ddl", reasons: [], warnings: [], in_transaction: false,
+          statements: [body.sql], count: 1, connection_type: "production", connection: session.connection } }];
+      }
+      const reviewed = reviews.get(body.confirm_token);
+      assert.deepEqual(reviewed, { sql: body.sql, tab_id: body.tab_id }, "confirmation preserves the reviewed SQL and tab");
+      return [200, { status: "complete", session, run: { schema_version: "editor-run-1.0", id: `run-${editorRuns.length}`,
+        kind: "run", state: "complete", scope: "statement", duration_ms: 2,
+        statements: [{ index: 0, text: body.sql, sent: body.sql, start: 0, end: body.sql.length, verb: "CREATE",
+          kind: "write", category: "ddl", status: "ok", duration_ms: 2 }],
+        results: [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 2 }],
+        error: null, counts: { statements: 1, run: 1, rows: 0, errors: 0, affected_rows: 0, warnings: 0 } } }];
+    }
+    // Any other plain run would reach a database: refused, and asserted absent below.
+    return [400, { error: "Only Explain is mocked in this suite." }];
   }
+  if (pathname === "/api/editor/preview")
+    return [200, { status: "ready", statements: [{ index: 0, kind: "write", action_keys: [], state: "unknown",
+      missing: [], reason: "Privileges are unverified." }],
+      aggregate: { state: "unknown", missing: [], reason: "Privileges are unverified.", warning: "" },
+      policy: { action: "confirm", text: "Review before running." } }];
+  if (pathname === "/api/editor/open")
+    return [200, { status: "idle", session: editorSession(body.tab_id, body.connection) }];
+  if (pathname === "/api/live/index-suggestion")
+    return [200, { status: "suggestion", ddl: DDL, reason: "Full scan on orders with filter on status.",
+      caveats: "Indexes add write cost." }];
   if (pathname === "/api/editor/status")
     return [200, { status: sessions.has(body.tab_id) ? "idle" : "none", session: sessions.get(body.tab_id) || null, run: null }];
   if (pathname === "/api/editor/use") {
@@ -472,7 +506,7 @@ try {
   );
   await nav("Query editor");
   assert.equal(await activeTab(), "Top #1 · orders");
-  assert.match(await text(".tab-source"), /From Top statements, digest aaaaaaaaaaaa · runs in shop, the schema it was recorded in/);
+  assert.match(await text(".tab-source"), /From Top statements, digest aaaaaaaaaaaa · runs in shop, the open session's current schema/);
 
   // 2b. The schema note says what the run will use and why: the tab's
   // Database picker choice on a tab without a session, then a USE applied to
@@ -492,8 +526,8 @@ try {
   // The open session of the Top #1 tab follows the USE the picker sends.
   await page.locator('.query-tablist [role="tab"] ::-p-text(Top #1 · orders)').click();
   assert.equal(await activeTab(), "Top #1 · orders");
-  assert.match(await text(".tab-source"), /runs in shop, the schema it was recorded in/,
-    "the session opened by Explain reports no current schema yet");
+  assert.match(await text(".tab-source"), /runs in shop, the open session's current schema/,
+    "the session opened by Explain reports the schema it opened in");
   await page.select('select[data-action="database"]', "analytics");
   await page.waitForFunction(() =>
     document.querySelector(".tab-source")?.textContent.includes("runs in analytics, the open session's current schema"),
@@ -692,6 +726,113 @@ try {
   assert.equal(starts.length, beforeKept, "Use values runs nothing");
   assert.equal(editorRuns.length, runsBeforeKept, "Use values runs nothing");
 
+  // 4d. One schema rule (runSchema) for the note, Run, Explain and Run
+  // analysis, matching the Database picker: an open session of this tab's
+  // connection runs in its current schema, a session without a default schema
+  // runs without one, a session of another connection is ignored, and a
+  // measurement keeps the schema its statement was recorded in.
+  // (b) Top #1's open session had the 2b USE to analytics: the note says so,
+  // and Run analysis opens its capture connection in analytics, not in the
+  // recorded schema connectionFor names.
+  await nav("Query editor");
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #1 · orders)').click();
+  assert.match(await text(".tab-source"), /runs in analytics, the open session's current schema/);
+  let startsBeforeCase = starts.length;
+  await clickExact(".editor-actions button", "Run analysis");
+  await page.waitForSelector("dialog.confirm-sheet[open] .confirm-sql");
+  await page.locator("dialog.confirm-sheet button ::-p-text(Run analysis)").click();
+  for (const end = Date.now() + 20000; starts.length === startsBeforeCase && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(starts.length, startsBeforeCase + 1);
+  assert.equal(starts.at(-1).mode, "analyze");
+  assert.equal(starts.at(-1).connection.database, "analytics",
+    "Run analysis opens its capture connection in the open session's current schema");
+  await page.waitForFunction(() => document.querySelector(".plan-pane")?.textContent.includes("Measured:"), { timeout: 20000 });
+
+  // (c) Top #4's session lost its default schema (the database was dropped,
+  // so the next reply reports database_name null): the note says the run has
+  // no default schema, and the capture connection opens without one.
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #4 · customers)').click();
+  assert.match(await text(".tab-source"), /runs in shop, the schema it was recorded in/);
+  const runsBeforeCase = editorRuns.length;
+  await clickExact(".editor-actions button", "Explain");
+  await page.waitForSelector('.results-tabs [data-key="result:0"]');
+  const droppedTab = editorRuns.at(-1).tab_id;
+  sessions.get(droppedTab).database_name = null;
+  await clickExact(".editor-actions button", "Explain");
+  await page.waitForFunction(() => document.querySelector(".tab-source")?.textContent.includes("runs without a default schema"));
+  assert.equal(editorRuns.length, runsBeforeCase + 2);
+  startsBeforeCase = starts.length;
+  await clickExact(".editor-actions button", "Run analysis");
+  await page.waitForSelector("dialog.confirm-sheet[open] .confirm-sql");
+  await page.locator("dialog.confirm-sheet button ::-p-text(Run analysis)").click();
+  for (const end = Date.now() + 20000; starts.length === startsBeforeCase && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(starts.length, startsBeforeCase + 1);
+  assert.equal(starts.at(-1).connection.database, "",
+    "a session without a default schema captures without one");
+  await page.waitForFunction(() => document.querySelector(".plan-pane")?.textContent.includes("Measured:"), { timeout: 20000 });
+
+  // (a) The Database picker set to None on a tab without a session runs
+  // without a default schema.
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #2 · shop)').click();
+  await page.select('select[data-action="database"]', "");
+  await page.waitForFunction(() => document.querySelector(".tab-source")?.textContent.includes("runs without a default schema"));
+
+  // (d) A session of another connection is ignored: with a second connection
+  // in use (its default database is analytics), Top #4's note names the
+  // connection's schema, never the foreign session's. Without a session (the
+  // tab opened next) the connection's schema is the answer too.
+  const analyticsProfile = await page.evaluate(async () => {
+    const token = (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token;
+    const response = await fetch("/api/profiles/save", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token },
+      body: JSON.stringify({ value: { name: "Analytics MySQL", host: "127.0.0.1", port: 3307, user: "tester", database: "analytics", ssl_mode: "PREFERRED" } }) });
+    return (await response.json()).id;
+  });
+  // The picker lists the connections read at page load; a reload also
+  // restores the tabs, whose sessions the server still holds.
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved", { timeout: 15000 });
+  await page.reload({ waitUntil: "networkidle0" });
+  await chooseConnection(page, analyticsProfile);
+  await nav("Query editor");
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #4 · customers)').click();
+  await page.waitForFunction(() => document.querySelector(".tab-source")?.textContent.includes("runs in analytics, the connection's schema"));
+  assert.match(await text(".tab-source"), /runs in analytics, the connection's schema/,
+    "the foreign session (no default schema) is ignored on another connection");
+  await nav("Workload");
+  await page.waitForSelector(".server-view tbody tr");
+  await row(5);
+  await page.locator('[aria-label="Open in Query editor: statement 5"]').click();
+  await page.waitForSelector(".main-nav button.active ::-p-text(Query editor)");
+  await page.waitForFunction(() => document.querySelector(".tab-source")?.textContent.includes("runs in analytics, the connection's schema"));
+  assert.match(await text(".tab-source"), /runs in analytics, the connection's schema/,
+    "no session: the connection's default schema wins over the recorded one");
+  await chooseConnection(page, privilegeProfile);
+
+  // (e) A measurement runs in the schema its statement was recorded in: the
+  // suggested index is reviewed and applied, then measured again; the note
+  // and the capture connection keep the recorded schema.
+  await nav("Workload");
+  await page.waitForSelector(".server-view tbody tr");
+  await row(1);
+  const readSuggestion = await page.$('.view-inspector [data-action="read-index-suggestion"]');
+  if (readSuggestion) await readSuggestion.click();
+  await page.locator('.view-inspector [data-action="open-index-suggestion"]').click();
+  await page.waitForFunction((sql) => document.querySelector('[aria-label="SQL editor"]')?.value === sql, {}, DDL);
+  await page.click('[data-action="run"]');
+  await page.waitForSelector(".editor-confirm[open]");
+  assert.match(await text(".editor-confirm .sheet-statements"), /CREATE INDEX/);
+  await page.locator('.editor-confirm button ::-p-text(Run statement)').click();
+  await page.waitForFunction(() => !document.querySelector(".editor-confirm") && !document.querySelector(".results-running"));
+  await page.waitForSelector('[data-action="measure-again"]');
+  await page.click('[data-action="measure-again"]');
+  await page.waitForSelector("dialog.confirm-sheet[open] .confirm-sql");
+  startsBeforeCase = starts.length;
+  await page.locator("dialog.confirm-sheet button ::-p-text(Run analysis)").click();
+  for (const end = Date.now() + 20000; starts.length === startsBeforeCase && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(starts.length, startsBeforeCase + 1);
+  assert.equal(starts.at(-1).connection.database, "shop", "a measurement captures in the recorded schema");
+  await page.waitForFunction(() => document.querySelector(".plan-pane")?.textContent.includes("Measured:"), { timeout: 20000 });
+  assert.match(await text(".tab-source"), /runs in shop, the schema it was recorded in/);
+
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
   await nav("Workload");
@@ -846,7 +987,8 @@ try {
   await heading("Top #3 · orders");
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: bbbbbbbbbbbb/);
 
-  assert.ok(editorRuns.every((r) => r.explain_format), "every editor run in this suite was an Explain");
+  assert.ok(editorRuns.every((r) => r.explain_format || /^\s*CREATE\s+INDEX/i.test(r.sql)),
+    "every editor run in this suite was an Explain or the reviewed CREATE INDEX");
   assert.deepEqual(errors, []);
   console.log("Digest actions passed. " + directory);
 } finally {
