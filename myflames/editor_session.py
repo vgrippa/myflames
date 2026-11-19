@@ -406,6 +406,60 @@ def _literal_sql_mode(unit):
     return literal.group(1) if literal else None
 
 
+def _next_sql_mode(unit, saved_modes, engine=None, identity_bound=True):
+    """Predict one unit, retaining only exact mode saves within this run.
+
+    A user variable is evidence only after a direct save of the session mode.
+    Opaque assignments and indirect execution discard that evidence. Callers
+    still keep the sticky possible-ORACLE check for Continue on error, and
+    guarded packets verify each predicted mode before executing user SQL.
+    """
+    from . import dbops
+    code, idents = unit["code"], unit.get("idents") or []
+    current = unit.get("sql_mode")
+    if not identity_bound:
+        saved_modes.clear()
+        return None if _unit_changes_mode(unit, engine) else current
+    tokens = list(_MASKED_TOKEN.finditer(code))
+    if any(_MODE_CHANGE.fullmatch(token.group()) for token in tokens):
+        saved_modes.clear()
+        return None
+
+    system = r"@\s*@\s*(?:(?:SESSION|LOCAL)\s*\.\s*)?"
+    target = r"(?:(?:SESSION|LOCAL)\s+)?(?:" + system + r")?"
+    save = re.fullmatch(
+        r"SET\s+@\s*(?P<variable>" + _MASKED_NAME + r")\s*(?::=|=)\s*" + system +
+        r"(?P<mode>" + _MASKED_NAME + r")\s*(?:,\s*" + target + _MASKED_NAME +
+        r"\s*=\s*'')?\s*;?", code, re.I | re.ASCII)
+    literal = _literal_sql_mode(unit)
+    if (save and dbops._name(save.group("mode"), idents).lower() == "sql_mode" and
+            ("," not in code or literal is not None)):
+        name = dbops._name(save.group("variable"), idents).lower()
+        saved_modes[name] = current
+        return literal if literal is not None else current
+
+    restore = re.fullmatch(
+        r"SET\s+" + target + r"(?P<mode>" + _MASKED_NAME + r")\s*(?::=|=)\s*"
+        r"@\s*(?P<variable>" + _MASKED_NAME + r")\s*;?", code, re.I | re.ASCII)
+    if restore and dbops._name(restore.group("mode"), idents).lower() == "sql_mode":
+        return saved_modes.get(dbops._name(restore.group("variable"), idents).lower())
+
+    # Invalidate writes even when they do not themselves change sql_mode:
+    # SET @v=..., SELECT @v:=..., SELECT/EXECUTE ... INTO @v, compound
+    # bodies and opaque quoted variable names. Ordinary @v reads preserve it.
+    into = any(token.group().upper() == "INTO" for token in tokens)
+    for token in tokens:
+        word = token.group()
+        if word.startswith("@") and not re.match(r"@\s*@", word):
+            if into or re.match(r"\s*(?::=|=)", code[token.end():]):
+                name = word[1:].strip()
+                if "''" in name:
+                    saved_modes.clear()
+                else:
+                    saved_modes.pop(dbops._name(name, idents).lower(), None)
+    return literal if _unit_changes_mode(unit, engine) else current
+
+
 _PLAN_MODE_UNSET = object()
 
 
@@ -445,8 +499,9 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                     identity_bound=None, wsrep_on=None, sql_mode=_PLAN_MODE_UNSET, client_engine=None):
     """Plan exact client units, classifying each under its server SQL mode.
 
-    A literal SET can supply the later mode. Indirect changes keep later
-    units unknown, and every modelled reading must agree before execution.
+    A literal SET or an unchanged saved mode can supply the later mode.
+    Indirect changes keep later units unknown, and every modelled reading
+    must agree before execution.
     Re-split the remaining suffix only when its mode changes, so ordinary
     dumps are scanned once between their mode-setting headers and trailers.
     """
@@ -455,7 +510,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
     # callers always supply sql_mode, including None when it is unknown.
     if sql_mode is _PLAN_MODE_UNSET:
         sql_mode = None if backslash_escapes is None else ("" if backslash_escapes else "NO_BACKSLASH_ESCAPES")
-    units, offset, pending = [], 0, []
+    units, offset, pending, saved_modes = [], 0, [], {}
     current_mode, current_backslash = sql_mode, backslash_escapes
     # No session yet: _run_api must re-plan on the opened session before
     # sending. False identifies an existing unbound session and still refuses.
@@ -591,6 +646,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             raise EditorError("Stored-program definitions in MariaDB ORACLE mode are not supported by the "
                               "Query editor. " + guidance, "invalid_statement")
         units.append(unit)
+        next_mode = _next_sql_mode(unit, saved_modes, engine, identity_bound)
         if _unit_changes_mode(unit, engine):
             # A custom-delimiter packet can change mode before its own next
             # server statement. Do not infer a mode halfway through a packet.
@@ -598,7 +654,6 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                 raise EditorError("Statement %d may change sql_mode within a unit with ambiguous "
                                   "NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MSSQL quoting. Run them separately."
                                   % number, "invalid_statement")
-            next_mode = _literal_sql_mode(unit) if identity_bound else None
             oracle_possible = oracle_possible or (engine != "mysql" and
                                                    (next_mode is None or dbops.oracle_mode(next_mode, "mariadb")))
             if next_mode != current_mode or current_backslash is not None:
@@ -2305,6 +2360,7 @@ class EditorSession(EditorInsights):
                                       "busy")
             context = _lexer_session_context(self)
             mode_unknown = context["sql_mode"] is None
+            saved_modes = {}
             for unit in run.units:
                 mode = None if mode_unknown else self.backslash_escapes
                 checked = plan_statements(unit["send"], mode, delimiter=unit.get("delimiter") or ";", **context)
@@ -2314,9 +2370,9 @@ class EditorSession(EditorInsights):
                 unit["mode_unknown"] = mode_unknown
                 unit["sql_mode"] = checked[0]["sql_mode"]
                 unit["conditional_sql"] = checked[0]["conditional_sql"]
-                if _unit_changes_mode(unit, context["engine"]):
-                    context["sql_mode"] = _literal_sql_mode(unit) if context["identity_bound"] else None
-                    mode_unknown = context["sql_mode"] is None
+                context["sql_mode"] = _next_sql_mode(unit, saved_modes, context["engine"],
+                                                      context["identity_bound"])
+                mode_unknown = context["sql_mode"] is None
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
                 statements = [u["send"] for u in run.units]
                 try:
@@ -4038,6 +4094,7 @@ def _check_oracle_compounds(units, engine, sql_mode, identity_bound=None):
         return
     from . import dbops
     possible = engine != "mysql" and (sql_mode is None or dbops.oracle_mode(sql_mode, engine))
+    saved_modes = {}
     for unit in units:
         if possible and not _ROUTINE_CREATE.match(unit["code"]) and _COMPOUND_START.search(unit["code"]):
             guidance = ("Use a session with a known mode without ORACLE." if identity_bound else
@@ -4045,8 +4102,8 @@ def _check_oracle_compounds(units, engine, sql_mode, identity_bound=None):
                         "Open a tab with a confirmed session before running this SQL.")
             raise EditorError("Anonymous compound blocks in MariaDB ORACLE mode are not supported by the "
                               "Query editor. " + guidance, "invalid_statement")
+        mode = _next_sql_mode(unit, saved_modes, engine, identity_bound)
         if engine != "mysql" and _unit_changes_mode(unit, engine):
-            mode = _literal_sql_mode(unit)
             # With Continue on error, a later assignment cannot prove that
             # a previously possible ORACLE mode has gone away.
             possible = possible or mode is None or dbops.oracle_mode(mode, engine)

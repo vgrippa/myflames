@@ -61,6 +61,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Query editor tracks SQL-mode saves and restores within a run, so routine sections copied from mariadb-dump can be reviewed without a false ORACLE-mode refusal. Reassigned or unknown saved values remain unknown. The mariadb-dump sandbox-line refusal explains how to remove that client command or use Maintenance > Restore for a whole dump.
 - Query editor runs SHOW CREATE statements without a DDL refusal, including when grouped with other reads under a custom delimiter.
 - Query editor accepts ordinary comment lines before standalone DELIMITER commands and balanced quoted values in one-line optimizer hints, including SET_VAR and quoted table names. Explain keeps its engine-specific format on tabs without a confirmed server binding and lets the server report unsupported Explain statements as ordinary errors. Executable-comment refusals on those tabs explain the missing binding.
 - Query editor accepts the SQL-mode save-and-set headers and routine preambles emitted by mysqldump and mariadb-dump. Reading or saving the current mode leaves it unchanged; restoring a mode from a variable still requires unambiguous later SQL.

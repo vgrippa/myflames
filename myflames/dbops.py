@@ -452,6 +452,10 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             pos = code_start = end
             continue
         if sql.startswith("/*", pos):
+            # mariadb-11.8.9:client/mysqldump.cc:798;
+            # mariadb-10.11.16:client/mysqldump.c:750.
+            if sql.startswith("/*M!999999\\- enable the sandbox mode */", pos):
+                issues.append((pos, REASON_DUMP_SANDBOX))
             special = sql.startswith("/*!", pos) or (sql.startswith("/*M!", pos) and
                                                        (not client or client_engine == "mariadb"))
             if client and active is not None:
@@ -663,6 +667,8 @@ _CODE_SPACE = re.compile("[%s]+" % re.escape(_CLIENT_SPACE))
 WRITE_CLIENT_FLAGS = ("--comments", "--binary-mode")
 REASON_CLIENT_COMMAND = ("Client backslash commands (\\%s) are not supported outside SQL strings and comments. "
                          "Remove the command before running this SQL.")
+REASON_DUMP_SANDBOX = ("Found the mariadb-dump sandbox line, a mariadb client command; "
+                       "delete that line to run the rest here, or use Maintenance > Restore for a whole dump.")
 REASON_NAMED_CLIENT_COMMAND = ("The client command %s is not supported here. "
                                "Put DELIMITER on its own line at the script start or after a complete statement, "
                                "with only whitespace or ordinary comments on earlier lines; use SQL instead of other client commands.")

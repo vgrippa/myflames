@@ -3742,14 +3742,30 @@ planner, write gate and session engine from the CLI.
   the optional leading assignment must only save the current session mode
   to a user variable. SESSION/LOCAL qualification is supported. The separate
   routine preamble `SET @saved_sql_mode=@@sql_mode` preserves the current
-  mode until its following literal assignment. Arbitrary multi-assignments,
-  expressions and restores such as `SET sql_mode=@OLD_SQL_MODE` remain
-  unknown; no saved-variable value is inferred. Sources:
+  mode until its following literal assignment. Within one run, these exact
+  saves track the mode known at the save point. A later
+  `SET [SESSION|LOCAL] sql_mode=@saved_sql_mode` or
+  `SET SQL_MODE=@OLD_SQL_MODE` restores that prediction only for the same
+  user variable, compared case-insensitively, with no intervening reassignment.
+  Quoted variable names and executed version comments use the same rules.
+  Planning and pre-send revalidation each track saves afresh for that run;
+  no saved value carries into another run or comes from an unbound session.
+  Assignment from any other expression, an unknown saved mode, opaque
+  variable assignments, and intervening CALL/EXECUTE/SOURCE cannot supply
+  a known restore. Arbitrary multi-assignments and mode expressions still
+  leave the mode unknown. Sources:
   `mysql-9.7.0:client/mysqldump.cc:995,1588–1597`;
   `mariadb-11.8.9:client/mysqldump.cc:839,1830–1839`;
   `mariadb-10.11.16:client/mysqldump.c:796,1733–1746`. Planning a dump does not bypass the
-  separate confirmation required for each DDL statement. A nonliteral assignment or
-  indirect change leaves later units mode-unknown. Every unknown reading
+  separate confirmation required for each DDL statement. Whole dumps belong in
+  **Maintenance > Restore**. The `/*M!999999\- enable the sandbox mode */`
+  first line emitted by mariadb-dump is a mariadb client command and stays
+  refused; the message explains that it can be deleted to run the remaining
+  SQL in the editor, or that Restore handles a whole dump. Sources:
+  `mariadb-11.8.9:client/mysqldump.cc:798` and
+  `mariadb-10.11.16:client/mysqldump.c:750`.
+  A nonliteral assignment without a tracked save, or an
+  indirect change, leaves later units mode-unknown. Every unknown reading
   must agree on boundaries and classified effect, including unguarded reads
   and executable comments. Quoted identifiers and strings have distinct token
   roles even with identical spans and read effects. The cached execution mode is still invalidated
@@ -3758,7 +3774,7 @@ planner, write gate and session engine from the CLI.
   checks that predicted quote mode on its executing server session. If a
   literal assignment fails under Continue on error, a later mode-sensitive
   packet refuses when its predicted mode does not match; no intervening
-  state read resets the user's diagnostics. Nonliteral and indirect changes
+  state read resets the user's diagnostics. Other nonliteral and indirect changes
   retain the unknown-mode validation until refresh.
   MariaDB `ORACLE` quoting is modelled, but CREATE/ALTER stored-program units
   refuse with an explanation that the editor does not support that PL/SQL
@@ -3774,7 +3790,7 @@ planner, write gate and session engine from the CLI.
   the grammar is supported before any user SQL is sent. A planning error or a
   `refuse` decision there returns without starting a run, even after provisional
   confirmation. A bound session with a known non-ORACLE mode can review a definition.
-  A later literal cannot rule out an earlier possible ORACLE mode in that run,
+  A later literal or tracked restore cannot rule out an earlier possible ORACLE mode in that run,
   because the assignment could fail under Continue on error; use a separate run
   after the session mode has been refreshed.
   `bound_oracle_mode(session)` exposes True/False for a bound mode, or None
