@@ -174,8 +174,13 @@ def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_ve
     else:
         dialects = ("mysql", "mysql_legacy", "mariadb")
     clients = (client_engine,) if client_engine in ("mysql", "mariadb") else ("mysql", "mariadb")
-    readings = [dict(mode, comment_dialect=dialect, client_engine=family)
-                for mode in modes for dialect in dialects for family in clients]
+    # A proxy can acknowledge SET sql_mode without forwarding MariaDB's
+    # SERVER_STATUS_ANSI_QUOTES bit. Knowing the server mode therefore does
+    # not tell us how that client frames double quotes. Keep both complete
+    # client readings, independently of the server's token roles.
+    readings = [dict(mode, comment_dialect=dialect, client_engine=family, client_ansi_quotes=status)
+                for mode in modes for dialect in dialects for family in clients
+                for status in ((False, True) if family == "mariadb" and mode["ansi_quotes"] else (False,))]
     if sql is None:
         return readings
     # Do not rescan a long unquoted statement for modes with no applicable
@@ -191,7 +196,8 @@ def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_ve
                reading["ansi_quotes"] if has_double else None,
                reading["mssql"] if has_bracket else None,
                reading["comment_dialect"] if dialect_matters else None,
-               reading["client_engine"] if client_matters else None)
+               reading["client_engine"] if client_matters else None,
+               reading["client_ansi_quotes"] if has_backslash and has_double else None)
         if key not in seen:
             seen.add(key)
             unique.append(reading)
@@ -242,10 +248,33 @@ def _comment_header(sql, at, engine, version_id, wsrep_on, comment_dialect=None)
             "maria": maria, "required": required}
 
 
+def _hint_quotes_closed(body):
+    """Hint quotes must close before the first */, with doubling as escape.
+
+    mysql-5.7.44 sql/sql_lex_hints.h:150-188 (quoted identifiers);
+    mysql-8.0.46:110-147 (also quoted text). Clients do not see hint
+    quotes, so comment markers and backslashes are checked separately,
+    including inside otherwise balanced spans.
+    """
+    pos, quote = 0, None
+    while pos < len(body):
+        char = body[pos]
+        if quote is None:
+            if char in "'\"`":
+                quote = char
+        elif char == quote:
+            if body[pos + 1:pos + 2] == quote:
+                pos += 1
+            else:
+                quote = None
+        pos += 1
+    return quote is None
+
+
 def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             dollar_quotes=False, client=False, unknown_execute=True, wsrep_on=None,
             client_delimiter=None, framing=(), ansi_quotes=False, mssql=False,
-            sql_mode=None, comment_dialect=None, client_engine=None):
+            sql_mode=None, comment_dialect=None, client_engine=None, client_ansi_quotes=False):
     """Read SQL once, preserving source spans and every lexical uncertainty.
 
     Tokens are (kind, start, end). Executed comment openers/closers are
@@ -273,12 +302,11 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
     # (mariadb-10.11.16 client/mysql.cc:2630-2634). MySQL ignores ANSI_QUOTES
     # (mysql-8.4.0 client/mysql.cc:2771-2785). Neither knows MSSQL brackets.
     # Only MariaDB servers advertise the ANSI status bit (mariadb-11.8.9
-    # sql/sys_vars.cc:4002-4009; mysql-8.4.0:4710-4718). For an unknown
-    # server, the complete dialect readings include both status behaviors.
-    # This function scans one reading; callers enumerate unknown families.
+    # sql/sys_vars.cc:4002-4009; mysql-8.4.0:4710-4718), but a proxy can
+    # consume that reply. This function scans one explicit status reading;
+    # lexer_readings enumerates both even with a known server and mode.
     if client:
-        ansi_status = engine == "mariadb" or (engine not in ("mysql", "mariadb") and comment_dialect == "mariadb")
-        ansi_quotes = ansi_quotes and client_engine == "mariadb" and ansi_status
+        ansi_quotes = client_engine == "mariadb" and client_ansi_quotes
         mssql = False
     version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb", default=None)
     version_id = None if version is None else version[0] * 10000 + version[1] * 100 + version[2]
@@ -286,6 +314,7 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
     n, pos, code_start = len(sql), 0, 0
     active, pending = None, False
     command_start = 0
+    consumed_delimiters = set()
     framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
 
     def token(kind, start, end):
@@ -318,14 +347,26 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             continue
         if client:
             line_start = pos == 0 or sql[pos - 1] == "\n"
+            if pos == command_start:
+                # MySQL 8.2+ also looks past earlier lines containing only
+                # block comments, including executed /*! SQL */. Inspect
+                # this raw prefix once per unit before its SQL body can set
+                # pending or open a quote. A DELIMITER consumed by our own
+                # splitter is removed from these issues below: it never
+                # reaches the client's input as part of a SQL unit.
+                command = _client_named_command(sql, pos, client_delimiter, across_lines=True)
+                if command is not None and command[2]:
+                    issues.append((command[0], REASON_NAMED_CLIENT_COMMAND % command[1]))
             if client_delimiter is not None and line_start and not pending and active is None:
                 command = _DELIMITER_COMMAND.match(sql, pos)
                 if command:
                     value, end = _delimiter_argument(sql, command.end())
+                    consumed_delimiters.add(command.start(1))
                     if value and "\\" not in value:
                         client_delimiter = value
                     token("delimiter_command", pos, end)
                     pos = code_start = end
+                    command_start = end
                     continue
             if active is None and (line_start or pos == command_start):
                 # MySQL 8.4.0/HEAD looks past leading /* ... */ before
@@ -452,15 +493,27 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             if sql.startswith("/*+", pos) and "\\" in sql[pos:end]:
                 at = sql.index("\\", pos, end)
                 issues.append((at, REASON_CLIENT_COMMAND % sql[at + 1:at + 2]))
+            if sql.startswith("/*+", pos):
+                body = sql[pos + 3:end - 2 if closed else end]
+                # Nested /*! changes SSC_HINT to SSC_CONDITIONAL even on
+                # one line. Older MySQL clients also recognize # / -- in
+                # hints. Reject hazardous hint bodies on every client rather
+                # than relying on a particular patch release's state machine.
+                if (any(mark in body for mark in ("/*", "#", "\\")) or re.search(r"--(?:\s|$)", body) or
+                        not _hint_quotes_closed(body)):
+                    issues.append((pos, REASON_HINT))
             # MySQL's ss_comment is local to add_line, so after the first
             # newline a hint's quotes/comments/delimiters become client code.
             # Refuse those forms instead of guessing how the private frame
-            # survives them. MariaDB keeps a persistent comment/hint state.
-            if client and client_engine != "mariadb" and sql.startswith("/*+", pos):
+            # survives them. The all-client hint restriction above also
+            # covers the one-line nested/comment cases.
+            if sql.startswith("/*+", pos):
                 body = sql[pos + 3:end - 2 if closed else end]
-                if "\n" in body and (any(mark in body for mark in ("'", '"', "`", "/*", "--", "#")) or
-                                        re.search(r"(?<![\w$\x80-\U0010ffff])\$[\w\x80-\U0010ffff]*\$", body) or
-                                        (client_delimiter is not None and client_delimiter in body)):
+                multiline = "\n" in body or "\r" in body
+                if multiline and (any(quote in body for quote in "'\"`") or
+                                  (client_delimiter is not None and client_delimiter in body) or
+                                  (client and client_engine != "mariadb" and
+                                   re.search(r"(?<![\w$\x80-\U0010ffff])\$[\w\x80-\U0010ffff]*\$", body))):
                     issues.append((pos, REASON_MULTILINE_HINT))
             if (client and client_engine != "mariadb" and sql.startswith("/*+", pos) and closed and client_delimiter is not None and
                     sql.startswith(client_delimiter, end - 1)):
@@ -483,6 +536,11 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
         active["end"] = n
         active["problem"] = "unterminated executable comment"
         unclosed.append((active["start"], n))
+    # Only this exact command was consumed. An earlier executable comment
+    # keeps SQL pending, leaving its DELIMITER in the sent unit (JG2).
+    # Other named commands, and issues in the discarded prefix, still refuse.
+    issues = [(at, reason) for at, reason in issues
+              if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER")]
     return {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
 
 
@@ -519,19 +577,27 @@ _CLIENT_SPACE = " \t\n\r\f\v"
 _NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
 
 
-def _client_named_command(sql, start, delimiter):
+def _client_named_command(sql, start, delimiter, across_lines=False):
     """A command at a line/unit head, conservatively skipping block comments.
 
     mysql-8.4.0 client/mysql.cc:2453-2464,2577-2593 runs this lookup
     before reading any quotes in the comments. The older MySQL and MariaDB
     clients do not skip the prefix, but the editor refuses it on both.
-    Never cross a newline *between* comments and a command: a DELIMITER
-    on its own next line keeps the editor's existing handling.
+    The unit-head check crosses newlines too: executable comments count as
+    comments here, whatever the server does with their bodies. Line-local
+    checks keep their bounded lookahead while a statement is pending.
     """
     at, after_comment = start, False
     while True:
-        while at < len(sql) and sql[at] in " \t\r\f\v":
+        while at < len(sql) and sql[at] in (_CLIENT_SPACE if across_lines else " \t\r\f\v"):
             at += 1
+        if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
+                (at + 2 == len(sql) or sql[at + 2] in _CLIENT_SPACE))):
+            end = sql.find("\n", at)
+            if end < 0:
+                return None
+            at, after_comment = end + 1, True
+            continue
         if not sql.startswith("/*", at):
             break
         end = sql.find("*/", at + 2)
@@ -564,8 +630,8 @@ WRITE_CLIENT_FLAGS = ("--comments", "--binary-mode")
 REASON_CLIENT_COMMAND = ("Client backslash commands (\\%s) are not supported outside SQL strings and comments. "
                          "Remove the command before running this SQL.")
 REASON_NAMED_CLIENT_COMMAND = ("The client command %s is not supported here. "
-                               "Put DELIMITER at the start of its own line, without leading comments; "
-                               "use SQL instead of other client commands.")
+                               "Put DELIMITER on its own line at the script start or after a complete statement, "
+                               "with only whitespace or ordinary comments before it; use SQL instead of other client commands.")
 REASON_DASH_CONTROL = ("'--' before a control character is code to the client and a comment to the server, so the "
                        "statement boundaries are uncertain.")
 REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
@@ -578,6 +644,9 @@ REASON_QUOTE_FRAMING = ("A client delimiter splits a server string or quoted ide
                         "Use quoting that the client and server can frame together.")
 REASON_NESTED_CLIENT_COMMENT = ("A nested /* inside an executable comment changes the client's comment state. "
                                 "Use SQL without nested executable comments.")
+REASON_HINT = ("An optimizer hint (/*+ ... */) contains a comment marker "
+               "(/*, # or -- followed by whitespace or a line ending), a backslash, or an unclosed quote. "
+               "Close quoted values before */ and remove comment markers and backslashes, including inside quotes.")
 REASON_MULTILINE_HINT = ("A multi-line optimizer hint contains quotes, comment markers or the client delimiter. "
                          "Keep this hint on one line or remove those characters.")
 REASON_TRAILING_BACKSLASH = ("A line ends with a backslash inside a string or quoted identifier. "
@@ -637,7 +706,8 @@ def _masked_fragment(sql, scan, start, end):
 
 def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
                      engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
-                     ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None):
+                     ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
+                     client_ansi_quotes=False):
     """Client statement boundaries with code masked by the server's SQL lexer.
 
     ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
@@ -657,7 +727,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
         raise ValueError("Pass a delimiter of one or more characters without a backslash.")
     framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
                       client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
-                      client_engine=client_engine, comment_dialect=comment_dialect)
+                      client_engine=client_engine, comment_dialect=comment_dialect,
+                      client_ansi_quotes=client_ansi_quotes)
     scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
                    unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
                    ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
@@ -713,6 +784,12 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
         if kind == "delimiter_command":
             command = _DELIMITER_COMMAND.match(sql, left)
             value, line_end = _delimiter_argument(sql, command.end())
+            # Keep non-command refusals in the discarded prefix. The lexer
+            # has already removed the named-command issue for this exact
+            # consumed DELIMITER, whose text will never be sent as SQL.
+            for at, reason in scan["issues"] + framing["issues"]:
+                if state["start"] <= at < line_end:
+                    issue(reason)
             if value and "\\" not in value:
                 delimiter = value
             else:
@@ -833,7 +910,7 @@ def _verb(upper):
 _READ_FUNCTIONS = frozenset("""
 ABS ACOS ASIN ATAN ATAN2 AVG BIT_AND BIT_OR BIT_XOR CEIL CEILING CHAR
 CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS CONNECTION_ID CONV
-CONVERT COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME
+CONVERT CONVERT_TZ COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME
 CURRENT_TIMESTAMP CURRENT_USER CURTIME DATABASE DATE DATE_ADD DATE_FORMAT
 DATE_SUB DATEDIFF DAY DAYNAME DAYOFMONTH DAYOFWEEK DAYOFYEAR DEGREES EXP EXTRACT
 FIELD FIND_IN_SET FLOOR FORMAT FOUND_ROWS FROM_BASE64 FROM_DAYS FROM_UNIXTIME
@@ -883,7 +960,28 @@ _ADMIN_FUNCTION_PREFIXES = ("GROUP_REPLICATION_", "ASYNCHRONOUS_CONNECTION_FAILO
                             "KEYRING_", "VERSION_TOKENS_", "SERVICE_GET_", "SERVICE_RELEASE_")
 
 
-def _select_function_checks(upper, idents):
+def _native_read_functions(engine, server_version):
+    """Version-specific readers stay unknown until server facts establish them.
+
+    CURRENT_ROLE: mysql-8.0.11 sql/item_create.cc:1316 and mariadb-10.11.1
+    sql/sql_yacc.yy:9850. JSON_VALUE: mysql-8.4.0 sql/sql_yacc.yy:10528
+    and mariadb-10.11.1 sql/item_create.cc:5787. These deliberately conservative
+    floors are versions checked in source, not claims about first releases.
+    """
+    version = parse_version_tuple(server_version, leading=True,
+                                  prefer_mariadb=engine == "mariadb", default=None)
+    names = set(_READ_FUNCTIONS)
+    if version is not None:
+        if ((engine == "mysql" and version >= (8, 0, 11)) or
+                (engine == "mariadb" and version >= (10, 11, 1))):
+            names.add("CURRENT_ROLE")
+        if ((engine == "mysql" and version >= (8, 4, 0)) or
+                (engine == "mariadb" and version >= (10, 11, 1))):
+            names.add("JSON_VALUE")
+    return names
+
+
+def _select_function_checks(upper, idents, native_functions=None):
     """Inspect calls in the shared scanner's code, never strings/comments.
 
     Parenthesis pairs make CTE column declarations cheap to recognize without
@@ -934,7 +1032,7 @@ def _select_function_checks(upper, idents):
                     continue
                 found.append(_verdict("write", "session", "LAST_INSERT_ID with an argument changes session state."))
                 continue
-            if name in _READ_FUNCTIONS and (name not in _SPACE_SENSITIVE_FUNCTIONS or
+            if name in (native_functions or _READ_FUNCTIONS) and (name not in _SPACE_SENSITIVE_FUNCTIONS or
                                            matches[i].end() == matches[i + 1].start()):
                 continue
         if not qualified and not quoted and name.startswith(_ADMIN_FUNCTION_PREFIXES):
@@ -947,10 +1045,10 @@ def _select_function_checks(upper, idents):
     return found
 
 
-def _select_checks(upper, idents, into=True):
+def _select_checks(upper, idents, into=True, native_functions=None):
     """The SELECT expression checks; *into* False skips INTO (an explained
     INSERT INTO or SELECT ... INTO writes nothing)."""
-    found = _select_function_checks(upper, idents)
+    found = _select_function_checks(upper, idents, native_functions)
     if into and re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
         found.append(_verdict("write", "file", "INTO OUTFILE or DUMPFILE writes a file on the database server host "
                                                "(it needs the FILE privilege)."))
@@ -1212,7 +1310,7 @@ def _set_checks(upper, idents):
 _REPLICATION_WORDS = r"(?:REPLICA|SLAVE|SLAVES|GROUP_REPLICATION|ALL)"
 
 
-def _classify_code(upper, idents, key_columns):
+def _classify_code(upper, idents, key_columns, native_functions=None):
     """Verdict for one statement's masked code, upper-cased."""
     upper = upper.strip()
     text = upper
@@ -1225,19 +1323,19 @@ def _classify_code(upper, idents, key_columns):
     second = nxt.group(1) if nxt else ""
 
     if word in ("SELECT", "TABLE", "VALUES"):
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "WITH":
         flat = _flat(text)
         main = re.search(r"\b(SELECT|TABLE|VALUES|UPDATE|DELETE|INSERT|REPLACE)\b", flat[lead.end():])
         if not main:
-            return _select_checks(upper, idents)
+            return _select_checks(upper, idents, native_functions=native_functions)
         verb = main.group(1)
         at = lead.end() + main.start()
         if verb in ("UPDATE", "DELETE"):
             return _update_delete(verb, text[at:], idents, key_columns)
         if verb in ("INSERT", "REPLACE"):
             return _verdict("write", "dml", "%s adds rows." % verb)
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "HANDLER":
         # Both engines retain OPEN's MDL ticket with MDL_EXPLICIT duration
         # (sql/sql_handler.cc). Match the operation after the table name,
@@ -1249,13 +1347,13 @@ def _classify_code(upper, idents, key_columns):
                                             "HANDLER CLOSE or the session ends")
         # HANDLER READ evaluates its WHERE expression on the server; apply
         # the SELECT expression checks (functions, :=, named locks) to it.
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "SHOW":
         # SHOW's WHERE and expression parts are evaluated by the server
         # (sql/sql_show.cc evaluates the condition like a SELECT WHERE), so
         # SHOW TABLES WHERE GET_LOCK('x', 0) would take a named lock. Apply
         # the SELECT expression checks instead of trusting the verb.
-        return _select_checks(upper, idents)
+        return _select_checks(upper, idents, native_functions=native_functions)
     if word == "GET":
         # GET DIAGNOSTICS only assigns variables (session state).
         return _verdict("write", "session", "GET DIAGNOSTICS assigns condition information to variables.")
@@ -1276,7 +1374,7 @@ def _classify_code(upper, idents, key_columns):
                 return _verdict("write", "session", "EXPLAIN ... INTO assigns the plan to a user variable.")
             rest = rest[m.end():]
         if analyzed and rest.strip():
-            inner = _classify_code(rest, idents, key_columns)
+            inner = _classify_code(rest, idents, key_columns, native_functions)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
             return inner
         # Plain EXPLAIN does not run the statement, but planning evaluates
@@ -1297,7 +1395,7 @@ def _classify_code(upper, idents, key_columns):
             close = rest.index(")", target.end())
             if "(" not in rest[target.end():close]:
                 rest = rest[:target.end() - 1] + " " + rest[close + 1:]
-        verdict = _select_checks(rest, idents, into=False)
+        verdict = _select_checks(rest, idents, into=False, native_functions=native_functions)
         if verdict["kind"] != "read":
             verdict["reasons"] = ["EXPLAIN evaluates constant expressions and derived tables while it plans "
                                   "the statement."] + verdict["reasons"]
@@ -1305,7 +1403,7 @@ def _classify_code(upper, idents, key_columns):
     if word == "ANALYZE":
         if re.match(r"\s*(?:SELECT|UPDATE|DELETE|INSERT|REPLACE|WITH|FORMAT\b|\()", after):
             inner_text = re.sub(r"^\s*FORMAT\s*=\s*[A-Z_]+", "", after)
-            inner = _classify_code(inner_text, idents, key_columns)
+            inner = _classify_code(inner_text, idents, key_columns, native_functions)
             inner["reasons"] = ["MariaDB ANALYZE runs the statement."] + inner["reasons"]
             return inner
         return _verdict("write", "maintenance", "ANALYZE TABLE updates index statistics.")
@@ -1434,7 +1532,7 @@ REASON_MULTI = ("The client sends this as one request and the server runs each '
                 "the worst one counts.")
 
 
-def _classify_statement(stmt, key_columns):
+def _classify_statement(stmt, key_columns, native_functions=None):
     """Verdict for one client statement. Under a DELIMITER other than ';' the
     text can hold several server statements (the client connects with
     CLIENT_MULTI_STATEMENTS), so each ';'-separated part is judged."""
@@ -1445,7 +1543,7 @@ def _classify_statement(stmt, key_columns):
         category = "server" if not stmt["unclosed"] and reasons == [REASON_READYSET_HINT] else "unknown"
         return {"kind": "risky", "category": category, "reasons": reasons}
     parts = [p for p in stmt["code"].upper().split(";") if p.strip()]
-    verdicts = [_classify_code(p, stmt["idents"], key_columns) for p in parts]
+    verdicts = [_classify_code(p, stmt["idents"], key_columns, native_functions) for p in parts]
     verdict = _worst(verdicts)
     if len(parts) > 1:
         verdict["reasons"].append(REASON_MULTI)
@@ -1457,8 +1555,9 @@ def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_v
     units = split_statements(sql, backslash_escapes, engine=engine, server_version=server_version,
                             unknown_execute=unknown_execute, wsrep_on=wsrep_on, **quote_args)
     statements = []
+    native_functions = _native_read_functions(engine, server_version)
     for stmt in units:
-        verdict = _classify_statement(stmt, key_columns)
+        verdict = _classify_statement(stmt, key_columns, native_functions)
         statements.append({"text": stmt["text"], "start": stmt["start"], "end": stmt["end"],
                            "verb": _verb(stmt["code"].upper()), "kind": verdict["kind"],
                            "category": verdict["category"], "reasons": verdict["reasons"]})

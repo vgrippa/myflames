@@ -235,16 +235,18 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertEqual(sum(p[2].endswith(sql) for p in self.packets()), 3)
         self.assertEqual(len(self.store.audit_records()), audits, 'allowed reads create no new review')
 
-    def test_first_run_newly_visible_alter_has_preflight_before_review(self):
+    def test_uncertain_create_wrapper_refuses_then_bound_alter_has_preflight(self):
         sql = '/*!999999 CREATE */ ALTER TABLE d.tt ADD COLUMN c INT'
         provisional = ed._plan_run({'sql': sql}, None)
+        self.assertEqual(provisional['units'][0]['code'], 'CREATE ALTER TABLE d.tt ADD COLUMN c INT')
         self.assertIsNone(ed._alter_unit(provisional))
         initial = self.call('/api/editor/run', sql=sql)
-        self.assertEqual(initial['status'], 'needs_confirmation', initial)
-        self.assertIsNone(initial['confirmation']['alter_preflight'])
+        self.assertEqual(initial['status'], 'refused', initial)
+        self.assertNotIn('confirmation', initial)
         self.assertIsNone(self.registry.get('tab1'))
-        review = self.call('/api/editor/run', sql=sql, confirmed=True,
-                           confirm_token=initial['confirmation']['token'])
+        self.assertFalse(self.registry.tokens)
+        self.call('/api/editor/open')
+        review = self.call('/api/editor/run', sql=sql)
         self.assertEqual(review['status'], 'needs_confirmation', review)
         self.assertEqual(review['confirmation']['statements'], [ed.ALTER_LOCK_WAIT, sql])
         preflight = review['confirmation']['alter_preflight']

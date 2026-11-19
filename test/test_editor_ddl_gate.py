@@ -12,7 +12,6 @@ import os
 import sys
 import threading
 import unittest
-import types
 from pathlib import Path
 from unittest import mock
 
@@ -82,9 +81,8 @@ class EditorDdlGateTests(unittest.TestCase):
         ast.parse(source, **({"feature_version": 7} if sys.version_info >= (3, 8) else {}))
 
     def decision(self, sql, engine="mysql"):
-        session = types.SimpleNamespace(engine=engine, server_version="8.4.11" if engine == "mysql" else "11.8.9-MariaDB",
-                                        sql_mode="", backslash_escapes=True, in_transaction=False,
-                                        connection_id=1, server_identity={})
+        from test_sql_lexer import session as bound_session
+        session = bound_session(engine, "8.4.11" if engine == "mysql" else "11.8.9-MariaDB", client_engine=engine)
         plan = ed._plan_run({"sql": "DELIMITER //\n" + sql + "//"}, session)
         return ed._decision(plan, {"type": "production", "read_only": False}, session)
 
@@ -301,9 +299,8 @@ class EditorDdlGateTests(unittest.TestCase):
                 self.assertNotEqual(decision["kind"], "read")
 
     def test_oracle_anonymous_blocks_refuse_including_after_possible_mode_change(self):
-        session = types.SimpleNamespace(engine="mariadb", server_version="11.8.9-MariaDB",
-                                        sql_mode="ORACLE", backslash_escapes=True, in_transaction=False,
-                                        connection_id=1, server_identity={})
+        from test_sql_lexer import session as bound_session
+        session = bound_session("mariadb", "11.8.9-MariaDB", "ORACLE", client_engine="mariadb")
         for prefix in ("", "SET sql_mode='';//\n"):
             for block in ("BEGIN NULL; END", "DECLARE n INT; BEGIN n := 1; END",
                           "IF 1 THEN NULL; END IF"):

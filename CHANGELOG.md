@@ -25,7 +25,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- The Query editor now refuses client commands hidden by comment or quote differences, including DELIMITER after leading comments. SQL with an unknown quote mode can no longer hide an ALTER TABLE target from its preflight and metadata-lock wait guard.
+- Query editor refuses optimizer hints containing comment markers, backslashes, unclosed quotes, or quotes and delimiters in multi-line hints. Client commands after comment-only prefixes across lines refuse when they remain in the SQL sent to the client. It checks both MariaDB client ANSI_QUOTES states, including when a proxy acknowledges a mode change without forwarding the status flag, so hidden statement boundaries cannot bypass review.
+- Server analysis tools now reject SELECT statements that write files, assign variables, acquire locks or call functions with unknown effects. Native functions that vary by server version require verified engine and version facts.
+- Query editor checks compound blocks and database-drop targets even after a leading DDL statement or DROP PREPARE. A unit that drops more than one database refuses review. Tabs without a confirmed server session treat displayed engine, version and SQL-mode values as unknown when deciding what SQL can run.
+
+- The Query editor now refuses client commands hidden by comment or quote differences, including DELIMITER left inside a statement after an executable comment. SQL with an unknown quote mode can no longer hide an ALTER TABLE target from its preflight and metadata-lock wait guard.
 
 - Query editor refuses DDL inside MariaDB anonymous compound blocks and asks for each change as standalone SQL. Anonymous blocks in ORACLE mode are refused alongside stored-program definitions.
 - Query editor interprets executable comments and quote modes using the server version and selected MySQL or MariaDB client, including MySQL 5.7 and 8.0 comment digits and MySQL 5.7 compatibility modes. Writes exposed by those rules require review. It explains refusals for multi-line hints or line-ending backslashes that can change what the client sends.
@@ -48,6 +52,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Query editor Stop and Close on MariaDB Galera also confirm the node UUID, preventing an interrupt from reaching another node with the same server name, id and port.
 
 ### Bug fixes
+
+- Query editor accepts ordinary comment lines before standalone DELIMITER commands and balanced quoted values in one-line optimizer hints, including SET_VAR and quoted table names. Explain keeps its engine-specific format on tabs without a confirmed server binding and lets the server report unsupported Explain statements as ordinary errors. Executable-comment refusals on those tabs explain the missing binding.
+- Query editor accepts the SQL-mode save-and-set headers and routine preambles emitted by mysqldump and mariadb-dump. Reading or saving the current mode leaves it unchanged; restoring a mode from a variable still requires unambiguous later SQL.
+- Query editor accepts END and DO identifiers after INTERVAL, BINARY and event schedule keywords, while keeping SQL after the definition in a separate confirmation.
 
 - Fixed an issue where the Query editor asked to confirm text that runs as several statements on the server but as one for the client. It now refuses before review and asks for each statement on its own, ending with the delimiter.
 - Query editor runs statements after a literal SQL-mode change using the reviewed mode, while checking that mode on the server before sending guarded statements.

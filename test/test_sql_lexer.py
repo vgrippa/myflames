@@ -24,6 +24,23 @@ CHARSET_MARIA_COMMENT_ATTACK = "SELECT 1 /*M! ' */ \\C utf8mb4 /*\n; DELETE FROM
 CHARSET_ANSI_ATTACK = 'SELECT 1 AS "a\\" \\C utf8mb4 /*\n; DELETE FROM t ; /* */ -- "'
 CHARSET_MSSQL_ATTACK = "SELECT 1 AS [a'] \\C utf8mb4 /*\n; DELETE FROM t ; /* */ -- '"
 COMMENT_DELIMITER_ATTACK = "/*!40101 SELECT 1 */ DELIMITER xx /*\nxx DELETE FROM t xx */"
+J1_HINT_NESTED = "SELECT /*+ /*! ' */ ' \\C utf8mb4 ' /*\n' ; DROP DATABASE prod ; /* ' */"
+J1_HINT_HASH = "SELECT /*+ BKA(t) # */ 'x' AS a, '\n\\C gbk\n' AS b -- '\n;\nSELECT 1"
+J1_COMMENT_DELIMITER = "/*!40101 SELECT 1 */\nDELIMITER //\nDELETE FROM t//\nSELECT 1;"
+J1_ANSI_PROXY = 'SELECT 1 AS "a\\"; SELECT "second" AS x; -- "'
+J3_PROCEDURE = "CREATE PROCEDURE p() BEGIN SELECT 1; END"
+J3_COMMENT_SCRIPTS = (
+    ("cmtDELIM", "-- make the procedure\nDELIMITER //\n" + J3_PROCEDURE + "//\nDELIMITER ;\nCALL p();",
+     (J3_PROCEDURE, "CALL p()")),
+    ("blkDELIM", "/* setup */\nDELIMITER //\n" + J3_PROCEDURE + "//\nDELIMITER ;", (J3_PROCEDURE,)),
+    ("stmtCmt", "SELECT 1;\n-- next\nDELIMITER //\n" + J3_PROCEDURE + "//", ("SELECT 1", J3_PROCEDURE)),
+)
+# The restriction is deliberately independent of client version. Include the
+# client bug/fix release boundaries as server facts, with both client families.
+J1_SERVERS = tuple(("mysql", version) for version in (
+    "5.7.44", "8.0.42", "8.0.43", "8.0.46", "8.1.0", "8.4.0", "8.4.5", "8.4.6", "8.4.13",
+    "9.0.0", "9.1.0", "9.2.0", "9.7.2")) + tuple(("mariadb", version + "-MariaDB") for version in (
+        "10.11.16", "11.4.10", "11.8.9", "12.0.1"))
 SAFETY = {"type": "production", "read_only": False, "profile_name": "prod"}
 
 
@@ -271,6 +288,59 @@ class ClientCommandLexerTests(unittest.TestCase):
     The editor deliberately refuses those disabled spellings as well.
     """
 
+    def test_round_j_hints_and_comment_commands_cannot_classify_as_reads(self):
+        for engine, version in J1_SERVERS:
+            for client in ("mysql", "mariadb"):
+                for sql in (J1_HINT_NESTED, J1_HINT_HASH, J1_HINT_HASH.replace("# */", "-- */"),
+                            J1_COMMENT_DELIMITER):
+                    with self.subTest(engine=engine, version=version, client=client, sql=sql):
+                        verdict = dbops.classify(sql, engine=engine, server_version=version,
+                                                 sql_mode="", client_engine=client)
+                        self.assertEqual(verdict["kind"], "risky")
+                        with self.assertRaises(ValueError):
+                            dbops.target_statement(sql, engine=engine, server_version=version,
+                                                   sql_mode="", client_engine=client)
+
+    def test_only_consumed_delimiter_commands_lose_the_named_command_issue(self):
+        for engine, version in SERVERS:
+            for client in ("mysql", "mariadb"):
+                for label, sql, expected in J3_COMMENT_SCRIPTS:
+                    with self.subTest(engine=engine, client=client, label=label):
+                        units = dbops.split_statements(sql, engine=engine, server_version=version,
+                                                       sql_mode="", client_engine=client)
+                        self.assertEqual(tuple(unit["text"] for unit in units), expected)
+                        self.assertFalse(any(unit["issues"] or unit["unclosed"] for unit in units))
+                for prefix in ("-- heading\n", "# heading\n", "/* heading */\n"):
+                    for command in ("charset utf8mb4", "sandbox"):
+                        sql = prefix + command
+                        with self.subTest(engine=engine, client=client, sql=sql):
+                            with self.assertRaisesRegex(ed.EditorError, "client command"):
+                                ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
+                # Executed SQL stays pending; its DELIMITER is sent as text,
+                # so the MySQL 8.2+ comment-skipping command lookup is unsafe.
+                for opener in ("/*!40101", "/*M!100100"):
+                    sql = J1_COMMENT_DELIMITER.replace("/*!40101", opener)
+                    with self.subTest(engine=engine, client=client, opener=opener):
+                        if opener == "/*M!100100" and client == "mysql":
+                            continue  # This client consumes an ordinary comment, then DELIMITER.
+                        with self.assertRaisesRegex(ed.EditorError, "client command DELIMITER"):
+                            ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
+
+    def test_round_j_ansi_status_is_independent_of_server_mode(self):
+        for engine, version in J1_SERVERS:
+            for mode in ("ANSI_QUOTES", "ANSI", None):
+                with self.subTest(engine=engine, version=version, mode=mode):
+                    readings = dbops.lexer_readings(None, engine, mode, version, "mariadb", J1_ANSI_PROXY)
+                    statuses = {reading.get("client_ansi_quotes") for reading in readings
+                                if reading["ansi_quotes"]}
+                    self.assertEqual(statuses, {False, True})
+                    verdict = dbops.classify(J1_ANSI_PROXY, engine=engine, server_version=version,
+                                             sql_mode=mode, client_engine="mariadb")
+                    self.assertTrue(verdict["ambiguous"])
+                    with self.assertRaises(ValueError):
+                        dbops.target_statement(J1_ANSI_PROXY, engine=engine, server_version=version,
+                                               sql_mode=mode, client_engine="mariadb")
+
     def test_inline_backslash_commands_are_detected_by_the_client_pass(self):
         for engine, version in SERVERS:
             for client in ("mysql", "mariadb"):
@@ -361,7 +431,7 @@ class ClientCommandLexerTests(unittest.TestCase):
                                                                     sql_mode=mode, client_engine=client), sql)
 
     def test_standalone_delimiter_lines_keep_their_existing_behavior(self):
-        sql = "/* header */\nDELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT '\\C';"
+        sql = "\nDELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT '\\C';"
         for engine, version in SERVERS:
             for client in ("mysql", "mariadb"):
                 for mode in ("", None):
@@ -370,6 +440,29 @@ class ClientCommandLexerTests(unittest.TestCase):
                                                    identity_bound=True, sql_mode=mode, client_engine=client)
                         self.assertEqual([u["send"] for u in units], ["SELECT 1; SELECT 2", "SELECT '\\C'"])
                         self.assertEqual([u["delimiter"] for u in units], ["//", ";"])
+
+    def test_comment_prefix_only_allows_delimiter_consumed_before_send(self):
+        for prefix in ("/* header */\n", "/*!40101 SELECT 1 */\n", "/*!999999 ' */\n",
+                       "/*M! SELECT 1 */\n", "/*+ BKA(t) */\n", "# header\n", "-- header\n",
+                       "/* first */\n \t/* second */\n\n", "/*myflames:editor:tag*/ /*!40101 SELECT 1 */\n"):
+            for client in ("mysql", "mariadb"):
+                for command in ("DELIMITER //", "delimiterSuffix //", "charset utf8mb4", "sandbox"):
+                    for initial in ("", "SELECT 0;\n", "DELIMITER //\nSELECT 0//\n"):
+                        sql = initial + prefix + command + "\nDELETE FROM t//\nSELECT 1;"
+                        with self.subTest(client=client, prefix=prefix, command=command, initial=initial):
+                            units = dbops.split_statements(sql, sql_mode="", client_engine=client)
+                            pending_sql = "/*!" in prefix or ("/*M!" in prefix and client == "mariadb")
+                            if command.lower().startswith("delimiter") and not pending_sql:
+                                # J3 narrows J1: this whole command line is
+                                # consumed, so it cannot change client framing.
+                                self.assertFalse(any(unit["issues"] for unit in units))
+                                plan = ed._plan_run({"sql": sql}, session(client_engine=client))
+                                expected = (["SELECT 0"] if initial else []) + ["DELETE FROM t", "SELECT 1;"]
+                                self.assertEqual([unit["send"] for unit in plan["units"]], expected)
+                                continue
+                            self.assertTrue(any("client command" in reason for unit in units for reason in unit["issues"]))
+                            with self.assertRaises(ed.EditorError):
+                                ed._plan_run({"sql": sql}, session(client_engine=client))
 
     def test_unknown_mode_distinguishes_identifiers_from_strings_and_names(self):
         for engine, version in SERVERS:
@@ -466,18 +559,19 @@ class VersionAndClientLexerTests(unittest.TestCase):
             self.assertTrue(dbops.sql_mode_flags("ANSI", "mysql", version)["ansi_quotes"])
             self.assertFalse(dbops.sql_mode_flags("TRADITIONAL", "mysql", version)["ansi_quotes"])
 
-    def test_client_ansi_quotes_follows_binary_not_server(self):
+    def test_client_ansi_quotes_requires_an_explicit_status_reading(self):
         # mariadb-10.11.16 client/mysql.cc:2630-2634;
         # mysql-8.4.0 client/mysql.cc:2771-2785.
         sql = 'SELECT "a\\"; SELECT 2 -- "'
         for engine, version in SERVERS:
             for client in ("mysql", "mariadb"):
                 with self.subTest(engine=engine, client=client):
-                    units = dbops.split_statements(sql, engine=engine, server_version=version,
-                                                   sql_mode="ANSI_QUOTES", client_engine=client)
-                    # MySQL servers do not advertise SERVER_STATUS_ANSI_QUOTES.
-                    self.assertEqual(len(units), 2 if engine == client == "mariadb" else 1)
-                    self.assertTrue(all(not u["unclosed"] and not u["issues"] for u in units))
+                    for status in (False, True):
+                        units = dbops.split_statements(sql, engine=engine, server_version=version,
+                                                       sql_mode="ANSI_QUOTES", client_engine=client,
+                                                       client_ansi_quotes=status)
+                        self.assertEqual(len(units), 2 if client == "mariadb" and status else 1)
+                        self.assertTrue(all(not u["unclosed"] and not u["issues"] for u in units))
                     self.assertEqual(len(dbops.split_statements(sql, engine=engine, server_version=version,
                                                                 sql_mode="", client_engine=client)), 1)
         with self.assertRaisesRegex(ed.EditorError, "client family is unknown"):
@@ -501,9 +595,24 @@ class VersionAndClientLexerTests(unittest.TestCase):
                     with self.assertRaises(ed.EditorError):
                         ed._plan_run({"sql": sql}, session(client_engine=client))
 
-    def test_multiline_hint_hazards_refuse_mysql_framing(self):
+    def test_hint_unclosed_quotes_and_comment_markers_refuse_every_client(self):
+        for body in ("'x", '"x', "`t", "/* inner", "/*! SELECT", "#", "--", "-- ", "--\t", "--\n",
+                     "'x#y'", '"x/*y"', "`x-- y`", "'x\\y'"):
+            for newline in ("", "\n"):
+                sql = "SELECT /*+ BKA(t) " + newline + body + "*/ 1"
+                for client in ("mysql", "mariadb"):
+                    with self.subTest(body=body, newline=newline, client=client):
+                        verdict = dbops.classify(sql, sql_mode="", client_engine=client)
+                        self.assertEqual(verdict["kind"], "risky")
+                        self.assertIn(dbops.REASON_HINT, verdict["reasons"])
+                        with self.assertRaisesRegex(ed.EditorError, "optimizer hint"):
+                            ed._plan_run({"sql": sql}, session(client_engine=client))
+                        with self.assertRaises(ValueError):
+                            dbops.target_statement(sql, sql_mode="", client_engine=client)
+
+    def test_multiline_hint_dollar_quotes_refuse_mysql_framing(self):
         # mysql-8.4.0 client/mysql.cc:2741,2895-2947: ss_comment is line-local.
-        for body in ("\n'", '\n"', "\n`", "\n$tag$", "\n$$", "\n/* inner", "\n-- comment", "\n# comment", "\n;"):
+        for body in ("\n$tag$", "\n$$"):
             sql = "SELECT /*+ " + body + " */ 1"
             with self.subTest(body=body):
                 verdict = dbops.classify(sql, engine="mysql", server_version="8.4.0",
@@ -518,11 +627,43 @@ class VersionAndClientLexerTests(unittest.TestCase):
                 # state both keep these characters out of the client lexer.
                 self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
                     "units"][0]["send"], sql)
-        for sql in ("SELECT /*+\n BKA(t)\n */ 1", "SELECT /*+ ' */ 1"):
-            self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
+        for sql in ("SELECT /*+ BKA(t) */ 1", "SELECT /*+\n BKA(t)\n */ 1", "SELECT /*+ x--y */ 1"):
+            for engine, version in J1_SERVERS:
+                for client in ("mysql", "mariadb"):
+                    self.assertEqual(ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))[
+                        "units"][0]["send"], sql)
         sql = "DELIMITER //\nSELECT /*+\n //\n */ 1//"
         with self.assertRaisesRegex(ed.EditorError, "multi-line optimizer hint"):
             ed._plan_run({"sql": sql}, session())
+
+    def test_balanced_one_line_hint_quotes_keep_the_exact_statement(self):
+        hints = ("SET_VAR(optimizer_switch = 'mrr_cost_based=off')", "BKA(`t1`)",
+                 'BKA("t1")', "QB_NAME(`a``b`)", "SET_VAR(x='a''b')",
+                 'SET_VAR(x="a""b")', "SET_VAR(x='a\"`b')", "BKA(t1) NO_BKA(t2)", "QB_NAME(qb1)")
+        for engine, version in J1_SERVERS:
+            for client in ("mysql", "mariadb"):
+                for hint in hints:
+                    sql = "SELECT /*+ " + hint + " */ 1"
+                    with self.subTest(engine=engine, version=version, client=client, hint=hint):
+                        plan = ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
+                        self.assertEqual(plan["units"][0]["send"], sql)
+                        self.assertEqual(plan["verdict"]["kind"], "read")
+                        self.assertFalse(dbops.lex_sql(sql, client=True, client_engine=client)["issues"])
+
+    def test_multiline_hint_quotes_and_delimiters_refuse_every_client(self):
+        for engine, version in J1_SERVERS:
+            for client in ("mysql", "mariadb"):
+                for body in ("\n'x'", '\n"x"', "\n`t`", "'x'\n", "\n;", "\r\n'x'"):
+                    sql = "SELECT /*+ BKA(t) " + body + " */ 1"
+                    with self.subTest(engine=engine, version=version, client=client, body=body):
+                        with self.assertRaisesRegex(ed.EditorError, "multi-line optimizer hint"):
+                            ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
+                        with self.assertRaises(ValueError):
+                            dbops.target_statement(sql, engine=engine, server_version=version,
+                                                   sql_mode="", client_engine=client)
+                sql = "DELIMITER //\nSELECT /*+\n //\n */ 1//"
+                with self.assertRaisesRegex(ed.EditorError, "multi-line optimizer hint"):
+                    ed._plan_run({"sql": sql}, session(engine, version, client_engine=client))
 
     def test_trailing_backslash_cannot_change_reviewed_text(self):
         # mysql-8.4.0 client/mysql.cc:2776-2785 drops an unpaired end-of-line
@@ -544,8 +685,8 @@ class VersionAndClientLexerTests(unittest.TestCase):
                         self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
                             "units"][0]["send"], sql)
                     if quote == '"':
-                        self.assertEqual(ed._plan_run({"sql": sql}, session("mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))[
-                            "units"][0]["send"], sql)
+                        with self.assertRaisesRegex(ed.EditorError, "ANSI_QUOTES"):
+                            ed._plan_run({"sql": sql}, session("mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))
         sql = "SELECT 'a\\\\\nb'"
         self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
 

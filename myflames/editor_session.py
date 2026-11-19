@@ -198,9 +198,7 @@ _READ_WRITE = re.compile(
     _SQL_BOUNDARY + r"READ\s+WRITE" + _SQL_BOUNDARY +
     r"|(?<![" + _SQL_ID_CHARS + r"@.])(?:@@\s*)?(?:(?:SESSION|LOCAL|GLOBAL)\s*\.\s*)?"
     r"(?:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _SQL_BOUNDARY + r"\s*(?::=|=)", re.I | re.ASCII)
-_MODE_CHANGE = re.compile(r"(?:SQL_MODE|CALL|EXECUTE|SOURCE|"
-                          r"@\s*@\s*(?:(?:SESSION|LOCAL|GLOBAL|PERSIST|PERSIST_ONLY)\s*\.\s*)?"
-                          r"(?:SQL_MODE|''))", re.I | re.ASCII)
+_MODE_CHANGE = re.compile(r"(?:CALL|EXECUTE|SOURCE)", re.I | re.ASCII)
 
 
 class EditorError(ValueError):
@@ -334,8 +332,13 @@ def _lexer_session_context(session):
     wsrep_value = str(wsrep).upper()
     wsrep_on = (True if wsrep_value in ("ON", "1", "TRUE") else
                 False if wsrep_value in ("OFF", "0", "FALSE") else None)
-    return {"engine": session.engine, "server_version": getattr(session, "server_version", None),
-            "identity_bound": bound, "wsrep_on": wsrep_on, "sql_mode": getattr(session, "sql_mode", None),
+    # Hello/status facts may describe another backend after routed startup
+    # or a failed identity step. They are display facts until bound, and
+    # must not exclude a server dialect, quote mode or wsrep interpretation.
+    return {"engine": session.engine if bound else None,
+            "server_version": getattr(session, "server_version", None) if bound else None,
+            "identity_bound": bound, "wsrep_on": wsrep_on if bound else None,
+            "sql_mode": getattr(session, "sql_mode", None) if bound else None,
             "client_engine": getattr(session, "client_engine", None)}
 
 
@@ -347,9 +350,14 @@ def _check_executable_comments(sql, engine, server_version, backslash_escapes, i
         scan = dbops.lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
         for comment in scan["comments"]:
             reason = comment.get("problem")
-            if not reason and (not identity_bound or engine not in ("mysql", "mariadb") or
-                               parse_version_tuple(server_version, leading=True,
-                                                   prefer_mariadb=engine == "mariadb", default=None) is None):
+            if not identity_bound:
+                # An unbound tab intentionally supplies no server facts.
+                # Explain that cause instead of the lexer's resulting
+                # unknown-engine/version symptom, without trusting display facts.
+                reason = "the server engine and version are not bound to this session"
+            elif not reason and (engine not in ("mysql", "mariadb") or
+                                 parse_version_tuple(server_version, leading=True,
+                                                     prefer_mariadb=engine == "mariadb", default=None) is None):
                 reason = "the server engine and version are not bound to this session"
             if reason:
                 # Only a lexer-generated opener appears here, never SQL text.
@@ -368,16 +376,28 @@ def bound_oracle_mode(session):
 
 
 def _literal_sql_mode(unit):
-    """A single literal session assignment; expressions and multi-SETs stay unknown.
+    """A literal session assignment, optionally preceded by a dump's mode save.
 
     Mode names contain only ASCII letters, underscores, digits, commas and
     spaces. Accept that grammar directly, without interpreting an expression
     or an escape sequence under a mode that the expression might change.
+    Only the dump's exact save-then-set form extends the single assignment;
+    arbitrary expressions and other multi-SETs still leave the mode unknown.
     """
-    code = restore_idents(unit["code"], unit.get("idents") or [])
-    if not re.fullmatch(r"SET\s+(?:(?:SESSION|LOCAL)\s+)?"
-                        r"(?:@@\s*(?:(?:SESSION|LOCAL)\s*\.\s*)?)?"
-                        r"`?sql_mode`?\s*=\s*''\s*;?", code, re.I | re.ASCII):
+    # mysql-server/client/mysqldump.cc:995,1588-1589; MariaDB:835,1812-1813.
+    # Match masked identifiers first. Restoring a whole quoted name before
+    # parsing could turn punctuation inside that name into assignment syntax.
+    system = r"@\s*@\s*(?:(?:SESSION|LOCAL)\s*\.\s*)?"
+    assignment = re.fullmatch(
+        r"SET\s+(?:@\s*" + _MASKED_NAME + r"\s*=\s*" + system +
+        r"(?P<saved_mode>" + _MASKED_NAME + r")\s*,\s*)?"
+        r"(?:(?:SESSION|LOCAL)\s+)?(?:" + system + r")?"
+        r"(?P<mode>" + _MASKED_NAME + r")\s*=\s*''\s*;?", unit["code"], re.I | re.ASCII)
+    if not assignment:
+        return None
+    idents = unit.get("idents") or []
+    if any(restore_idents(name, idents).lower() != "sql_mode"
+           for name in (assignment.group("saved_mode"), assignment.group("mode")) if name is not None):
         return None
     values = [unit["send"][start:end] for kind, start, end in unit.get("_tokens", ()) if kind == "string"]
     literal = re.fullmatch(r"'([A-Za-z0-9_, ]*)'", values[0]) if len(values) == 1 else None
@@ -462,7 +482,8 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             key = reading["comment_dialect"] if provisional else None
             if meaning != meanings.setdefault(key, meaning) or frame != first_frame:
                 raise EditorError("The session quote mode is unknown, the server version is unknown or the "
-                                  "client family is unknown, and this SQL reads differently under "
+                                  "client family is unknown, or the MariaDB client's ANSI_QUOTES status is uncertain. "
+                                  "This SQL reads differently under "
                                   "NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MariaDB MSSQL mode. "
                                   "Use single quotes for strings and backticks for identifiers, or run with a "
                                   "known sql_mode and client family.", "invalid_statement")
@@ -471,6 +492,8 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             # semicolons in an intentional custom-delimiter group or stored
             # body do not make that group a client/server framing mismatch.
             # This count never replaces the server code used to classify it.
+            # readings includes MariaDB with and without its ANSI status bit;
+            # a proxy can omit that bit even with a known server sql_mode.
             count_mismatch = count_mismatch or any(
                 _server_unit_count(stmt["text"], unit) > 1 for unit in checked)
         if stmt["unclosed"] or stmt.get("issues"):
@@ -567,15 +590,12 @@ def _unit_changes_mode(unit):
     # Inspect SETs inside wrappers/blocks too, before sending any of the run.
     # Walk once rather than repeatedly scanning the rest of a large routine.
     assignment_pattern = re.compile(dbops._SET_ITEM.pattern, re.I | re.ASCII)
+    equals = re.compile(r"\s*(?::=|=)")
     depth, setting_depth, target = 0, None, False
     for token in _MASKED_TOKEN.finditer(code):
         word = token.group()
         word = word.upper() if word.isascii() else word
-        # A quoted system-variable name can be part of an atomic @@ token,
-        # with whitespace between its grammar tokens (MySQL sql_yacc.yy:
-        # 16674-16689). A single @ is always a user variable, including @''.
-        system = word.startswith("@") and re.match(r"@\s*@", word, re.ASCII)
-        if _MODE_CHANGE.fullmatch(restore_idents(word, unit.get("idents") or []) if system else word):
+        if _MODE_CHANGE.fullmatch(word):
             return True
         if word == "SET":
             setting_depth, target = depth, True
@@ -585,7 +605,15 @@ def _unit_changes_mode(unit):
             if word == "STATEMENT":
                 continue
             target = False
-            assignment = assignment_pattern.match(code, token.start())
+            # MySQL sql_yacc.yy:16674-16689 and MariaDB:17661-17756:
+            # @@ and its scope may have spaces between grammar tokens.
+            # A read of this token on the RHS is never a mode assignment.
+            if re.match(r"@\s*@", word, re.ASCII):
+                operator = equals.match(code, token.end())
+                candidate = re.sub(r"^@\s*@\s*", "@@", word, count=1)
+                assignment = assignment_pattern.match(candidate + operator.group()) if operator else None
+            else:
+                assignment = assignment_pattern.match(code, token.start())
             if assignment and not assignment.group(4):
                 name = dbops._name(re.split(r"\s*\.\s*", assignment.group(5))[-1], unit.get("idents") or [])
                 if name.lower() in ("sql_mode", "''"):
@@ -2227,8 +2255,8 @@ class EditorSession(EditorInsights):
                 if self.run is not None and not self.run.done.is_set():
                     raise EditorError("A statement is already running in this tab. Wait for it or press Stop.",
                                       "busy")
-            mode_unknown = self.sql_mode is None
             context = _lexer_session_context(self)
+            mode_unknown = context["sql_mode"] is None
             for unit in run.units:
                 mode = None if mode_unknown else self.backslash_escapes
                 checked = plan_statements(unit["send"], mode, delimiter=unit.get("delimiter") or ";", **context)
@@ -2239,7 +2267,7 @@ class EditorSession(EditorInsights):
                 unit["sql_mode"] = checked[0]["sql_mode"]
                 unit["conditional_sql"] = checked[0]["conditional_sql"]
                 if _unit_changes_mode(unit):
-                    context["sql_mode"] = _literal_sql_mode(unit)
+                    context["sql_mode"] = _literal_sql_mode(unit) if context["identity_bound"] else None
                     mode_unknown = context["sql_mode"] is None
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
                 statements = [u["send"] for u in run.units]
@@ -3523,10 +3551,12 @@ class _DdlBoundaryScanner:
         # END and DO are non-reserved identifiers in expression positions.
         # Track the positions needed to distinguish those names from a CASE
         # closer or WHILE's DO, without interpreting an expression's value.
+        # MySQL sql_yacc.yy:3657-3727,10592-10600,10738-10744;
+        # MariaDB:3213-3268,10198-10216,10624-10628.
         return word in ("(", ",", "+", "-", "*", "/", "%", "=", "<", ">", "!", "~", "^", "|", "&",
                         "CASE", "WHEN", "THEN", "ELSE", "AND", "OR", "XOR", "NOT", "IS", "IN", "LIKE",
                         "REGEXP", "RLIKE", "BETWEEN", "DIV", "MOD", "COLLATE", "AS", "SELECT", "RETURN",
-                        "DEFAULT", "TO")
+                        "DEFAULT", "TO", "INTERVAL", "BINARY", "AT", "EVERY", "STARTS", "ENDS")
 
     def expression(self, stops, allow_empty=False):
         """Consume an expression up to a structural keyword at depth zero."""
@@ -3901,8 +3931,30 @@ def _embedded_compound_ddl(unit):
     MariaDB sql/sql_yacc.yy:18696-18703,20812-20895.
     """
     code = unit["code"]
-    if _DDL_START.match(code) or not (_COMPOUND_START.search(code) or
-                                    re.search(r"(?:^|;)\s*SET\s+STATEMENT" + _SQL_BOUNDARY, code, re.I | re.ASCII)):
+    if _ROUTINE_CREATE.match(code):
+        # The DDL gate separately proves that this is exactly one definition.
+        return False
+    # A leading DDL verb, especially DROP PREPARE, says nothing about later
+    # statements in a custom-delimiter unit. Standalone DDL fragments are
+    # counted by _ddl_parts; a DDL verb after other code in a fragment must
+    # not evade review merely because its wrapper is not in our grammar.
+    for match in re.finditer(
+            _SQL_BOUNDARY + r"(?:ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE|"
+            r"DROP\s+(?:DATABASE|SCHEMA|(?:TEMPORARY\s+)?TABLE)|"
+            r"CREATE\s+(?:TEMPORARY\s+)?TABLE|RENAME\s+TABLE|TRUNCATE\s+TABLE)" + _SQL_BOUNDARY,
+            code, re.I | re.ASCII):
+        prefix = code[code.rfind(";", 0, match.start()) + 1:match.start()].strip()
+        # A plain EXPLAIN target is not executed DDL. Check only this
+        # fragment's exact prefix, never exempt a whole unit: later blocks
+        # and EXPLAIN ANALYZE still need the ordinary checks. Both engines
+        # reject explained DDL with a syntax error (dbops._classify_code).
+        if re.fullmatch(r"(?:EXPLAIN|DESCRIBE|DESC)(?:\s+(?:EXTENDED|PARTITIONS|FORMAT\s*=\s*[A-Z_]+))*",
+                        prefix, re.I | re.ASCII):
+            continue
+        if prefix:
+            return True
+    if not (_COMPOUND_START.search(code) or
+            re.search(r"(?:^|;)\s*SET\s+STATEMENT" + _SQL_BOUNDARY, code, re.I | re.ASCII)):
         return False
     scan = _DdlBoundaryScanner(code, 0, unit.get("idents") or [])
     try:
@@ -3924,12 +3976,12 @@ def _embedded_compound_ddl(unit):
 def _check_oracle_compounds(units, engine, sql_mode):
     """Anonymous PL/SQL has the same unsupported grammar as stored bodies."""
     from . import dbops
-    possible = engine == "mariadb" and (sql_mode is None or dbops.oracle_mode(sql_mode, engine))
+    possible = engine != "mysql" and (sql_mode is None or dbops.oracle_mode(sql_mode, engine))
     for unit in units:
-        if possible and not _DDL_START.match(unit["code"]) and _COMPOUND_START.search(unit["code"]):
+        if possible and not _ROUTINE_CREATE.match(unit["code"]) and _COMPOUND_START.search(unit["code"]):
             raise EditorError("Anonymous compound blocks in MariaDB ORACLE mode are not supported by the "
                               "Query editor. Use a session with a known mode without ORACLE.", "invalid_statement")
-        if engine == "mariadb" and _unit_changes_mode(unit):
+        if engine != "mysql" and _unit_changes_mode(unit):
             mode = _literal_sql_mode(unit)
             # With Continue on error, a later assignment cannot prove that
             # a previously possible ORACLE mode has gone away.
@@ -4207,13 +4259,11 @@ def _plan_run(payload, session):
     if len(sql) > MAX_SQL:
         raise EditorError("SQL text is limited to 1,000,000 characters.", "too_long")
     offsets = Offsets(sql)
-    backslash = (True if session is None else
-                 session.backslash_escapes if session.sql_mode is not None else None)
     context = _lexer_session_context(session)
+    backslash = session.backslash_escapes if context["identity_bound"] and context["sql_mode"] is not None else None
     start, end, scope, delimiter = _selection(payload, sql, offsets, backslash, context)
     text = sql[start:end]
-    engine = session.engine if session is not None else None
-    version = getattr(session, "server_version", None)
+    engine, version = context["engine"], context["server_version"]
     units = plan_statements(text, backslash, base=start, delimiter=delimiter, **context)
     _check_oracle_compounds(units, engine, context["sql_mode"])
     explain_format = payload.get("explain_format")
@@ -4231,11 +4281,16 @@ def _plan_run(payload, session):
         unit = units[0]
         if re.match(r"\s*(?:(?:FORMAT\s*=\s*\w+|EXTENDED|PARTITIONS)\s+)*ANALYZE" + _SQL_BOUNDARY, unit["code"], re.I | re.ASCII):
             raise EditorError("ANALYZE runs the statement. Use Run analysis or Run.", "invalid_statement")
+        # Explain spelling is a presentation choice: the server reports an
+        # ordinary error if the displayed dialect/version is stale. Keep
+        # these facts out of the lexer and every safety decision above.
+        format_engine = getattr(session, "engine", engine)
+        format_version = getattr(session, "server_version", version)
         if explain_format == "tree" and session is not None:
-            explain_version = parse_version_tuple(session.server_version or "", leading=True, default=None)
-            if engine != "mysql" or explain_version is None or explain_version < (8, 0, 16):
+            explain_version = parse_version_tuple(format_version or "", leading=True, default=None)
+            if format_engine != "mysql" or explain_version is None or explain_version < (8, 0, 16):
                 raise EditorError("Tree format needs MySQL 8.0.16 or later. Choose Table or JSON.", "invalid")
-        prefix = ("EXPLAIN " if engine == "mariadb" and explain_format == "table"
+        prefix = ("EXPLAIN " if format_engine == "mariadb" and explain_format == "table"
                   else "EXPLAIN FORMAT=%s " % {"table": "TRADITIONAL", "tree": "TREE", "json": "JSON"}[explain_format])
         # :name placeholders (a Top statements digest) take their Parameters
         # values as the literals Run analysis uses; a statement without one
@@ -4282,7 +4337,7 @@ def _plan_run(payload, session):
     units = guarded
     for index, unit in enumerate(units):
         unit["index"] = index
-    verdict = classify_units(units, None if session is None or session.sql_mode is None else backslash, text,
+    verdict = classify_units(units, backslash, text,
                              engine, version, context["wsrep_on"])
     return {"sql": sql, "text": text, "offsets": offsets, "scope": scope, "units": units, "verdict": verdict}
 
@@ -4507,19 +4562,11 @@ def _decision(plan, safety, session=None):
         problem = _read_only_problem(plan["units"])
         if problem:
             decision = dict(decision, action="refuse", title="Read-only connection", text=problem)
-    embedded = any(_embedded_compound_ddl(u) or
-                   (u.get("kind") != "read" and not _DDL_START.match(u["code"]) and
-                   re.search(_SQL_BOUNDARY + r"(?:ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE|"
-                             r"DROP\s+(?:DATABASE|SCHEMA|(?:TEMPORARY\s+)?TABLE)|"
-                             r"CREATE\s+(?:TEMPORARY\s+)?TABLE|RENAME\s+TABLE|TRUNCATE\s+TABLE)" + _SQL_BOUNDARY,
-                             u["code"], re.I | re.ASCII)) for u in plan["units"])
+    embedded = any(_embedded_compound_ddl(u) for u in plan["units"])
     if embedded and decision["action"] != "refuse":
         decision.update(action="refuse", text="DDL inside a compound statement cannot be reviewed safely; "
                         "submit it as standalone SQL so its target and lock safeguards can be reviewed. Nothing was sent.")
-    if embedded:
-        return dict(decision, warnings=_commit_warnings(plan["units"], session),
-                    in_transaction=session.in_transaction if session is not None else False)
-    ddl = list(_ddl_parts(plan["units"]))
+    ddl = [] if embedded else list(_ddl_parts(plan["units"]))
     if decision["action"] != "refuse":
         if len(ddl) > 1 or any(len(_ddl_codes(u)) > 1 for u, _ in ddl):
             decision.update(action="refuse", title="One DDL per confirmation",
@@ -4536,13 +4583,11 @@ def _decision(plan, safety, session=None):
             decision["typed_target"] = restore_idents(match.group(1), unit["idents"])
         elif re.match(r"\s*DROP\s+(?:DATABASE|SCHEMA)" + _SQL_BOUNDARY, code, re.I | re.ASCII) and decision["action"] != "refuse":
             decision.update(action="refuse", text="The DROP database target could not be verified; nothing was sent.")
-    # Independent of block counting: creating a stored program must never
-    # hide a destructive database target. The current confirmation has one
+    # Independent of block counting or the first verb: no unit may hide a
+    # destructive database target. The current confirmation has one
     # typed field, so distinct targets cannot share a review.
     targets = set()
     for unit in plan["units"]:
-        if not _ROUTINE_CREATE.search(unit["code"]):
-            continue
         tokens = [match.group() for match in _MASKED_TOKEN.finditer(unit["code"])]
         keywords = [word.upper() if word.isascii() else word for word in tokens]
         for index in range(len(tokens) - 1):
@@ -4557,7 +4602,7 @@ def _decision(plan, safety, session=None):
                 targets.add(restore_idents(tokens[target], unit["idents"]))
     if len(targets) > 1:
         decision.update(action="refuse", title="One database target per confirmation",
-                        text="This definition drops more than one database. Review each DROP separately; nothing was sent.")
+                        text="This run drops more than one database. Review each DROP separately; nothing was sent.")
     elif targets:
         decision["typed_target"] = next(iter(targets))
     alter = _alter_unit(plan)

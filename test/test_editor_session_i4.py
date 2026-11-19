@@ -44,20 +44,22 @@ class EditorRunPredictionTests(unittest.TestCase):
                 log = self.session_log(tab)
                 tokens = dict(self.registry.tokens)
                 review = self.call('/api/editor/run', tab=tab, sql=sql)
-                if mode == 'ANSI_QUOTES' and self.engine == 'mysql':
-                    # The mysql client ignores ANSI_QUOTES. Its one unit
-                    # contains two server statements, so even SET must wait.
+                if mode == 'ANSI_QUOTES':
+                    # MySQL ignores ANSI_QUOTES; MariaDB may not receive its
+                    # status bit through a proxy. Neither framing is trusted.
                     self.assertEqual((review['status'], review.get('code')), ('invalid', 'invalid_statement'), review)
-                    self.assertIn('several statements on the server', review['message'])
-                    self.assertIn('one for the client', review['message'])
-                    self.assertIn('ending with the delimiter', review['message'])
+                    if self.engine == 'mysql':
+                        self.assertIn('several statements on the server', review['message'])
+                        self.assertIn('one for the client', review['message'])
+                        self.assertIn('ending with the delimiter', review['message'])
+                    else:
+                        self.assertIn("MariaDB client's ANSI_QUOTES status is uncertain", review['message'])
                     self.assertNotIn('confirmation', review)
                     self.assertEqual(len(self.packets()), before)
                     self.assertEqual(self.session_log(tab), log)
                     self.assertEqual(self.registry.tokens, tokens)
                     continue
-                following_statements = ([r'SELECT 1 AS "a\"', 'DELETE FROM t']
-                                        if mode == 'ANSI_QUOTES' else [following])
+                following_statements = [following]
                 statements = ["SET sql_mode='%s'" % mode] + following_statements
                 self.assertEqual(review['status'], 'needs_confirmation', review)
                 self.assertEqual(review['confirmation']['statements'], statements)
@@ -70,9 +72,6 @@ class EditorRunPredictionTests(unittest.TestCase):
                 # executable SQL must still appear exactly once and intact.
                 for statement in statements:
                     self.assertEqual(self.session_log(tab).count(statement), 1, statement)
-                if mode == 'ANSI_QUOTES':
-                    self.assertEqual([unit['kind'] for unit in result['run']['statements']],
-                                     ['write', 'read', 'risky'])
                 tag = self.registry.get(tab).statement_tag
                 for statement in following_statements:
                     packet = next(p[2] for p in reversed(self.packets()) if statement in p[2].replace(tag, ''))
@@ -161,18 +160,21 @@ class EditorRunPredictionTests(unittest.TestCase):
         self.assertEqual(result['confirmation']['statements'], [ed.ALTER_LOCK_WAIT, sql])
         self.assertNotIn(sql, self.session_log())
 
-    def test_alter_revealed_after_startup_needs_a_new_bound_review(self):
+    def test_future_create_wrapper_refuses_until_bound_alter_can_be_reviewed(self):
         sql = '/*!999999 CREATE */ ALTER TABLE tt ADD COLUMN c INT'
+        # With no server yet, CREATE may execute: J2 refuses the resulting
+        # CREATE ALTER wrapper. Once bound, the skipped comment is not code.
         initial = self.call('/api/editor/run', sql=sql)
-        self.assertEqual(initial['status'], 'needs_confirmation', initial)
+        self.assertEqual(initial['status'], 'refused', initial)
+        self.assertIn('DDL inside a compound statement', initial['message'])
+        self.assertNotIn('confirmation', initial)
         self.assertIsNone(self.registry.get('tab1'))
-        self.assertEqual(initial['confirmation']['statements'], [sql])
+        self.assertFalse(self.registry.tokens)
+        self.call('/api/editor/open')
         with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}) as review:
-            result = self.call('/api/editor/run', sql=sql, confirmed=True,
-                               confirm_token=initial['confirmation']['token'])
+            result = self.call('/api/editor/run', sql=sql)
         self.assertEqual(result['status'], 'needs_confirmation', result)
         review.assert_called_once()
-        self.assertNotEqual(initial['confirmation']['token'], result['confirmation']['token'])
         self.assertEqual(result['confirmation']['statements'], [ed.ALTER_LOCK_WAIT, sql])
         self.assertNotIn(sql, self.session_log())
 

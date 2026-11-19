@@ -3393,9 +3393,9 @@ class RunScopeTests(unittest.TestCase):
     backslashes, the client's \\g terminator, executable comments and DELIMITER."""
 
     @staticmethod
-    def session(backslash=True):
+    def session(backslash=True, engine="mysql", version="8.4.11"):
         from test_sql_lexer import session as bound_session
-        return bound_session(mode="" if backslash else "NO_BACKSLASH_ESCAPES")
+        return bound_session(engine, version, mode="" if backslash else "NO_BACKSLASH_ESCAPES")
 
     def sends(self, payload, backslash=True):
         return [u["send"] for u in ed._plan_run(payload, self.session(backslash))["units"]]
@@ -3403,8 +3403,7 @@ class RunScopeTests(unittest.TestCase):
     def test_native_explain_scoping_formats_and_error_offsets(self):
         sql = "SELECT 1;\nUPDATE t SET name = '😀';\nDELETE FROM t"
         for engine, version in (("mysql", "8.0.16"), ("mariadb", "11.4.13")):
-            session = self.session(False)
-            session.engine, session.server_version = engine, version
+            session = self.session(False, engine, version)
             for fmt in ("table", "json", "tree"):
                 payload = {"sql": sql, "cursor": sql.index("UPDATE") + 2, "explain_format": fmt}
                 if fmt == "tree" and engine == "mariadb":
@@ -3419,8 +3418,7 @@ class RunScopeTests(unittest.TestCase):
                 position = ed.error_position("Syntax error near 'name' at line 1", unit, plan["offsets"])
                 self.assertEqual(position["offset"], sql.index("name"))
                 self.assertEqual((position["line"], position["column"]), (2, 14))
-        session = self.session()
-        session.server_version = "8.0.15"
+        session = self.session(version="8.0.15")
         with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
             ed._plan_run({"sql": "SELECT 1", "explain_format": "tree"}, session)
         with self.assertRaisesRegex(ed.EditorError, "Choose Table"):
@@ -3741,11 +3739,14 @@ class AlterPreflightTests(unittest.TestCase):
                     "ALTER /*+ SET_VAR(lock_wait_timeout=100) */ TABLE t ADD COLUMN c INT",
                     "DELIMITER $$\nSELECT 1; ALTER TABLE t ADD COLUMN c INT$$",
                     "CREATE TABLE a AS SELECT function(); DROP TABLE b",
-                    "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$",
                     "SET STATEMENT lock_wait_timeout=100 FOR ALTER TABLE t ADD COLUMN c INT"):
             with self.subTest(sql=sql):
                 plan = ed._plan_run({"sql": sql}, None)
                 self.assertEqual(ed._decision(plan, safety)["action"], "refuse")
+        # J2 treats a missing session's mode as unknown, including ORACLE;
+        # this is refused during planning, before a policy decision exists.
+        with self.assertRaisesRegex(ed.EditorError, "Anonymous compound blocks in MariaDB ORACLE mode"):
+            ed._plan_run({"sql": "DELIMITER $$\nBEGIN NOT ATOMIC DROP DATABASE d; END$$"}, None)
 
     def test_review_suggestion_is_version_gated_and_never_instant_none(self):
         for engine, version in (("mysql", "8.4.0"), ("mysql", "9.7.0"), ("mariadb", "10.11.1"), ("mariadb", "13.0.0")):
