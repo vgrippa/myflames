@@ -137,6 +137,35 @@ class ExplainP1PlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(ed.EditorError, "Explain one statement at a time"):
             ed._plan_run({"sql": "DELIMITER //\nSELECT 'a;b'; SELECT 2//", "explain_format": "table"}, mssql)
 
+    def test_explain_parameters_cannot_complete_custom_delimiter(self):
+        # Finding 3: filled values completing a custom delimiter must refuse.
+        cases = (
+            'DELIMITER "1 FOR UPDATE"\nSELECT * FROM t WHERE id = :x FOR UPDATE1 FOR UPDATE',
+            'DELIMITER 1+SLEEP(5)\nSELECT :x+SLEEP(5)1+SLEEP(5)',
+            'DELIMITER 1,@a:=2\nSELECT :x,@a:=21,@a:=2',
+            'DELIMITER 1,NEXTVAL(s)\nSELECT :x,NEXTVAL(s)1,NEXTVAL(s)',
+        )
+        for engine, version in (("mysql", "8.4.0"), ("mariadb", "11.4.10-MariaDB")):
+            session = bound_session(engine, version, "")
+            for sql in cases:
+                with self.subTest(engine=engine, sql=sql):
+                    with self.assertRaisesRegex(ed.EditorError, "Explain one statement at a time"):
+                        ed._plan_run({"sql": sql, "explain_format": "table", "parameters": {"x": 1}}, session)
+
+    def test_explain_prefix_cannot_collide_with_custom_delimiter(self):
+        # Finding 4: prepending EXPLAIN / ANALYZE must keep one unchanged unit.
+        cases = (
+            'DELIMITER "N SELECT @a:=1"\nSELECT @a:=1N SELECT @a:=1',
+            'DELIMITER "N SELECT f()"\nSELECT f()N SELECT f()',
+            'DELIMITER "N /* */"\n/* */ SELECT 1N /* */',
+        )
+        for engine, version in (("mysql", "8.4.0"), ("mariadb", "11.4.10-MariaDB")):
+            session = bound_session(engine, version, "")
+            for sql in cases:
+                with self.subTest(engine=engine, sql=sql):
+                    with self.assertRaisesRegex(ed.EditorError, "Explain one statement at a time"):
+                        ed._plan_run({"sql": sql, "explain_format": "json"}, session)
+
 
 @unittest.skipIf(os.name == "nt", "the fake client is a POSIX script")
 class ExplainP1ProcessTests(unittest.TestCase):
@@ -221,6 +250,17 @@ class ExplainP1ProcessTests(unittest.TestCase):
         session = self.registry.get("tab1")
         with self.assertRaisesRegex(ed.EditorError, "exactly one SQL statement"):
             session.run_plan("DELIMITER //\nSELECT 'a;b'; SELECT 2//", "explain")
+        for bad_sql in (
+            'DELIMITER "N SELECT @a:=1"\nSELECT @a:=1N SELECT @a:=1',
+            'DELIMITER "N SELECT f()"\nSELECT f()N SELECT f()',
+            'DELIMITER "N /* */"\n/* */ SELECT 1N /* */',
+        ):
+            for plan_mode in ("explain", "analyze"):
+                with self.subTest(bad_sql=bad_sql, plan_mode=plan_mode):
+                    before = len(self.packets())
+                    with self.assertRaisesRegex(ed.EditorError, "exactly one SQL statement"):
+                        session.run_plan(bad_sql, plan_mode)
+                    self.assertEqual(len(self.packets()), before)
 
     def check_cancel_during_sync(self, by):
         self.call("/api/editor/open")

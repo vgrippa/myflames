@@ -1909,6 +1909,17 @@ class TestReadysetClassificationAndRedaction(unittest.TestCase):
                          ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
         self.assertEqual(dbops.client_status_probe("$$", False, ansi_quotes=True, client_engine="mariadb"),
                          ("SELECT '\\''$$' /* ' */ AS mf_probe", "\\'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb",
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*!99999 "\\"$$" */ /* " */', "'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine=None,
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*M!999999 "\\""$$" */ /* " */', "'$$"))
+        with self.assertRaises(ValueError):
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb",
+                                      server_ansi_quotes=False)
         for bad in ("", None, "'", '"', "\\", "a b", "/*"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 dbops.client_status_probe(bad, True)

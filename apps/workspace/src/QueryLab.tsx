@@ -2626,11 +2626,20 @@ export const QueryLab = forwardRef<
   // The schema a run of this tab uses, and why: runSchema is the one rule the
   // note, Run, Explain and Run analysis share, matching the Database picker.
   const tabRunSchema = runSchema(tab, rt);
+  // A measurement runs in its recorded schema on its own capture connection,
+  // while Run and Explain use this tab's open session: say so when the
+  // session has moved to another schema (a USE, or its database dropped).
+  const tabSession = session && !session.ended && rt.sessionKey === connectionKey(tabConnection) ? session : null;
+  const measureSessionSchema = rt.measureBefore && tabSession && (tabSession.database_name || "") !== tabRunSchema.schema
+    ? tabSession.database_name || "" : null;
   const tabSchemaNote = !tab.source
     ? ""
-    : tabRunSchema.schema
+    : (tabRunSchema.schema
       ? ` · runs in ${tabRunSchema.schema}, ${tabRunSchema.why}`
-      : " · runs without a default schema";
+      : " · runs without a default schema") +
+      (measureSessionSchema === null ? ""
+        : measureSessionSchema ? `; Run and Explain use this tab's session, now in ${measureSessionSchema}`
+        : "; Run and Explain use this tab's session, now without a default schema");
   const running = rt.running;
   const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
   const sessionBusy = !!rt.operation || rt.stopping;
@@ -2667,7 +2676,9 @@ export const QueryLab = forwardRef<
   const fileDirty = !!rt.file && rt.file.savedSql !== tab.sql;
   // The default database the picker shows: the live session's DATABASE(),
   // else the tab's choice (or the connection's) for the next session.
-  const databaseShown = session && !session.ended ? session.database_name ?? "" : connectionFor(tab).database || "";
+  // Only a session of this tab's connection (statusSession) names the
+  // schema; after a connection switch the picker shows the new connection's.
+  const databaseShown = statusSession && !statusSession.ended ? statusSession.database_name ?? "" : connectionFor(tab).database || "";
   const databaseNames = (schemaCatalog?.schemas || []).map((s) => s.name);
   const databaseOptions = databaseShown && !databaseNames.includes(databaseShown)
     ? [databaseShown, ...databaseNames]

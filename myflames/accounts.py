@@ -1630,7 +1630,7 @@ def _run_stdin(conn, sql, passwords=()):
                        re.match(r'^SET\b', unit['code'], re.I) for unit in units):
                     raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
                 staging = (parts[0], parts[1]) + ((dbops.CLIENT_STATUS_SYNC,) if sync else ())
-                bodies = ([staging, ('SELECT 1',), (parts[0], parts[1], account, restore)] if sync
+                bodies = ([staging, (parts[0], parts[1], 'SELECT 1'), (parts[0], parts[1], account, restore)] if sync
                           else [staging, (parts[0], parts[1], account, restore)])
                 # Password literals are generated for this asserted mode;
                 # ORACLE wrappers carry no password and retain both readings.
@@ -1652,9 +1652,9 @@ def _run_stdin(conn, sql, passwords=()):
                 # without making the chooser switch away from it.
                 header, rest = script.split('\n', 1)
                 chosen_delim = header[len('DELIMITER '):]
-                placeholder = "SELECT '" + packet_lines.markers[1] + "'; SELECT 1\n" + chosen_delim + "\n"
-                replacement = "SELECT '" + packet_lines.markers[1] + "'; " + probe_sql + "\n" + chosen_delim + "\n"
-                if chosen_delim != probe_delimiter or placeholder not in rest:
+                placeholder = "\n;\nSELECT 1\n" + chosen_delim + "\n"
+                replacement = "\n;\n" + probe_sql + "\n" + chosen_delim + "\n"
+                if chosen_delim != probe_delimiter or rest.count(placeholder) != 1:
                     raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
                 script = header + '\n' + rest.replace(placeholder, replacement, 1)
         except ValueError as exc:

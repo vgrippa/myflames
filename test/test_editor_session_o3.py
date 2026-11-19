@@ -91,6 +91,102 @@ class EditorStatusO3Tests(unittest.TestCase):
                                         client_status_synced=True)
         self.assertEqual({r["client_ansi_quotes"] for r in readings}, {False})
 
+    def test_ansi_probe_tests_every_narrowed_client_bit(self):
+        # Finding 1: every MariaDB client ANSI bit narrowed after sync must be
+        # tested by the probe against stale proxy states.
+        mysql_attack = r'SELECT 1 /*!99999 "\" \C /* */ ; DROP TABLE victim -- " */'
+        mysql_open = r'SELECT 1 /*!99999 "\"" */'
+        for client in ("mariadb", None):
+            for sql in (mysql_attack, mysql_open):
+                with self.subTest(engine="mysql", client=client, sql=sql):
+                    plan, session = self.plan(sql, "mysql", "8.4.0", "ANSI_QUOTES", client)
+                    probe = plan["units"][0]["client_status_probe"]
+                    self.assertTrue(probe)
+                    # Healthy MariaDB client on MySQL server receives ANSI=0,
+                    # and MySQL clients ignore ANSI_QUOTES.
+                    for fam, ansi in (("mariadb", False),) + ((("mysql", False),) if client is None else ()):
+                        pkts, res, cmds = client_packets(probe, fam, delimiter="$$",
+                                                         backslash_escapes=True, ansi_quotes=ansi)
+                        self.assertEqual((pkts, res, cmds), ([probe], "", []))
+                    # Stale MariaDB client with ANSI=1 must split and fail the probe.
+                    stale_pkts, res, _ = client_packets(probe, "mariadb", delimiter="$$",
+                                                        backslash_escapes=True, ansi_quotes=True)
+                    self.assertEqual(res, "")
+                    self.assertGreaterEqual(len(stale_pkts), 2)
+                    broken = dbops.split_statements(stale_pkts[0], backslash_escapes=True,
+                                                    ansi_quotes=True, engine="mysql", server_version="8.4.0")
+                    self.assertTrue(broken[0]["unclosed"], stale_pkts)
+
+        maria_split = r'SELECT /*M!999999 "\""$$ DROP TABLE victim # " */ 1'
+        maria_open = r'SELECT 1 /*M!999999 "\" */'
+        for sql in (maria_split, maria_open):
+            with self.subTest(engine="mariadb", client=None, sql=sql):
+                plan, session = self.plan(sql, "mariadb", "11.4.10-MariaDB", "ANSI_QUOTES", None)
+                probe = plan["units"][0]["client_status_probe"]
+                self.assertTrue(probe)
+                # Healthy MySQL client and healthy MariaDB client (ANSI=1) pass.
+                for fam, ansi in (("mysql", False), ("mariadb", True)):
+                    pkts, res, cmds = client_packets(probe, fam, delimiter="$$",
+                                                     backslash_escapes=True, ansi_quotes=ansi)
+                    self.assertEqual((pkts, res, cmds), ([probe], "", []))
+                # Stale MariaDB client with ANSI=0 must split and fail the probe.
+                stale_pkts, res, _ = client_packets(probe, "mariadb", delimiter="$$",
+                                                    backslash_escapes=True, ansi_quotes=False)
+                self.assertEqual(res, "")
+                self.assertGreaterEqual(len(stale_pkts), 2)
+                broken = dbops.split_statements(stale_pkts[0], backslash_escapes=True,
+                                                ansi_quotes=True, engine="mariadb",
+                                                server_version="11.4.10-MariaDB")
+                self.assertTrue(broken[0]["unclosed"], stale_pkts)
+
+    def test_review_statements_and_probe_delimiter_stay_consistent(self):
+        # Finding 5: direct plan_statements preserves engine/version for probe,
+        # and guard delimiter collisions select the same fallback as _send.
+        units = ed.plan_statements('SELECT "a\\"', True, engine="mariadb",
+                                   server_version="11.4.10-MariaDB", identity_bound=True,
+                                   sql_mode="ANSI_QUOTES", client_engine="mariadb")
+        expected_probe = ed.TAG + dbops.client_status_probe(
+            "$$", True, ansi_quotes=True, client_engine="mariadb")[0]
+        self.assertEqual(ed._review_statements(units), [SYNC, expected_probe, 'SELECT "a\\"'])
+
+        sess = bound_session("mysql", "8.4.0", "")
+        sess.statement_tag = "/*tag$$*/ "
+        plan = ed._plan_run({"sql": LAB_TEXT}, sess)
+        probe_slash = ed.TAG + dbops.client_status_probe("//", True, client_engine="mysql")[0]
+        self.assertEqual(ed._review_statements(plan["units"]), [SYNC, probe_slash, LAB_TEXT])
+
+        # Mode change between review and start_run on MariaDB changes probe and must refuse.
+        maria = bound_session("mariadb", "11.4.10-MariaDB", "")
+        maria.client_engine = "mariadb"
+        write_plan = ed._plan_run({"sql": "INSERT INTO t VALUES ('a\\'', 'b')"}, maria)
+        run = ed.Run(write_plan["units"], 1000, {}, write_plan["text"], write_plan["offsets"], "all")
+        maria.sql_mode = "ANSI_QUOTES"
+        real_session = ed.EditorSession("r5", "test", {})
+        for attr in ("engine", "server_version", "sql_mode", "client_engine",
+                     "connection_id", "server_identity", "_kill_identity", "_routed_startup"):
+            setattr(real_session, attr, getattr(maria, attr))
+        real_session.state = "ready"
+        with self.assertRaisesRegex(ed.EditorError, r"The session changed after the review\. Review again\."):
+            real_session.start_run(run)
+
+        # Session/probe change reaching _send directly after start_run also refuses before sending.
+        maria.sql_mode = ""
+        write_plan2 = ed._plan_run({"sql": "INSERT INTO t VALUES ('a\\'', 'b')"}, maria)
+        run2 = ed.Run(write_plan2["units"], 1000, {}, write_plan2["text"], write_plan2["offsets"], "all")
+        real_session2 = ed.EditorSession("r5b", "test", {})
+        for attr in ("engine", "server_version", "sql_mode", "client_engine",
+                     "connection_id", "server_identity", "_kill_identity", "_routed_startup"):
+            setattr(real_session2, attr, getattr(maria, attr))
+        real_session2.state = "ready"
+        real_session2.run = run2
+        real_session2.client_engine = "mysql"
+        with mock.patch.object(real_session2, "_helper") as helper_mock, \
+                self.assertRaisesRegex(ed.ConnectorError, r"The session changed after the review\. Review again\."):
+            real_session2._send("user", write_plan2["units"][0]["send"], unit=0,
+                                guard=real_session2._write_session_guard(),
+                                sql_mode=write_plan2["units"][0]["sql_mode"])
+        helper_mock.assert_not_called()
+
     def test_unbound_or_unknown_mode_refuses_including_cursor_and_selection(self):
         for mode, sql in REVIEWER_TEXTS + (("", ANSI_TEXT), ("", LAB_TEXT)):
             for failure in ("routed", "identity", "mode"):
@@ -292,7 +388,8 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
             '        if "AS mf_probe" in wire and getattr(self, "o3_client_nbe", None) is not None:\n'
             '            nbe_srv = "NO_BACKSLASH_ESCAPES" in self.route_sql_mode.upper().split(",")\n'
             '            ansi_srv = ENGINE == "mariadb" and "ANSI_QUOTES" in self.route_sql_mode.upper().split(",")\n'
-            '            if self.o3_client_nbe != nbe_srv or (\'1 AS "\' in wire and self.o3_client_ansi != ansi_srv):\n'
+            '            tests_ansi = (\'1 AS "\' in wire or \'/*!99999 "\' in wire or \'/*M!999999 "\' in wire)\n'
+            '            if self.o3_client_nbe != nbe_srv or (tests_ansi and self.o3_client_ansi != ansi_srv):\n'
             '                self.error(line, 1064, "42000", "You have an error in your SQL syntax; stale quote probe split")\n'
             '                return\n'
         )

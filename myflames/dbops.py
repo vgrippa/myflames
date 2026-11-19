@@ -147,6 +147,32 @@ def oracle_mode(sql_mode, engine):
         name.strip().upper() for name in sql_mode.split(",")}
 
 
+def _synced_mariadb_ansi_quotes(engine, server_ansi_quotes):
+    """Expected MariaDB-client ANSI_QUOTES status bit after sync, or None.
+
+    MariaDB servers advertise SERVER_STATUS_ANSI_QUOTES when the mode is active
+    (mariadb-11.8.9 sql/sys_vars.cc:4002-4009). MySQL servers never define or
+    send that bit (mysql-8.4.0 include/mysql_com.h:838, sql/sys_vars.cc:4710-4718),
+    so a MariaDB client talking to MySQL always holds False after sync.
+    """
+    if engine == "mariadb":
+        return bool(server_ansi_quotes)
+    if engine == "mysql":
+        return False
+    return None
+
+
+def _client_ansi_statuses(family, engine, server_ansi_quotes, synced):
+    """Possible client_ansi_quotes readings; single value only when testable."""
+    if family == "mysql":
+        return (False,)
+    if synced:
+        expected = _synced_mariadb_ansi_quotes(engine, server_ansi_quotes)
+        if expected is not None:
+            return (expected,)
+    return (False, True)
+
+
 def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_version=None,
                    client_engine=None, sql=None, client_status_synced=False):
     """Bounded complete readings, never a mixture of independently masked tokens.
@@ -189,9 +215,7 @@ def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_ve
     readings = [dict(mode, comment_dialect=dialect, client_engine=family, client_ansi_quotes=status,
                      client_backslash_escapes=client_backslash)
                 for mode in modes for dialect in dialects for family in clients
-                for status in ((False,) if family == "mysql" else
-                               ((mode["ansi_quotes"] if engine == "mariadb" else False,)
-                                if client_status_synced and engine in ("mysql", "mariadb") else (False, True)))
+                for status in _client_ansi_statuses(family, engine, mode["ansi_quotes"], client_status_synced)
                 for client_backslash in ((mode["backslash_escapes"],) if client_status_synced else (True, False))]
     if sql is None:
         return readings
@@ -226,7 +250,8 @@ CLIENT_STATUS_SYNC_REQUIRED = ("The session quote mode is unknown or the session
                                "Open a bound session with a known sql_mode before running it.")
 
 
-def client_status_probe(delimiter, backslash_escapes, ansi_quotes=None, client_engine=None):
+def client_status_probe(delimiter, backslash_escapes, ansi_quotes=None, client_engine=None,
+                        server_ansi_quotes=None):
     """Build (sql, expected_value) to confirm the client's active quote bits.
 
     Under the expected bits the client reads one SELECT; under any stale bit
@@ -242,11 +267,38 @@ def client_status_probe(delimiter, backslash_escapes, ansi_quotes=None, client_e
         return "SELECT '\\''" + delimiter + "' /* ' */ AS mf_probe", "\\'" + delimiter
     sql = "SELECT '\\'" + delimiter + "' /* ' */ AS mf_probe"
     if ansi_quotes is not None and client_engine != "mysql":
-        if ansi_quotes:
+        srv_ansi = ansi_quotes if server_ansi_quotes is None else bool(server_ansi_quotes)
+        if ansi_quotes and not srv_ansi:
+            raise ValueError("Invalid client status probe ANSI mode.")
+        if ansi_quotes and client_engine is None:
+            sql += ' /*M!999999 "\\""' + delimiter + '" */ /* " */'
+        elif not ansi_quotes and srv_ansi:
+            sql += ' /*!99999 "\\"' + delimiter + '" */ /* " */'
+        elif ansi_quotes:
             sql += ", 1 AS \"\\\"\"" + delimiter + "\" /* \" */"
         else:
             sql += ", 1 AS \"\\\"" + delimiter + "\" /* \" */"
     return sql, "'" + delimiter
+
+
+def client_status_probe_spec(engine, server_version, sql_mode, client_engine, delimiter):
+    """Return (probe_sql, expected_columns, expected_row) using the synced-bit rule."""
+    flags = sql_mode_flags(sql_mode, engine, server_version)
+    if flags is None:
+        return None, None, None
+    backslash = flags["backslash_escapes"]
+    probe_ansi = (_synced_mariadb_ansi_quotes(engine, flags["ansi_quotes"])
+                  if backslash and client_engine != "mysql" else None)
+    probe_sql, expected_value = client_status_probe(
+        delimiter, backslash, ansi_quotes=probe_ansi, client_engine=client_engine,
+        server_ansi_quotes=flags["ansi_quotes"])
+    expected_columns = ["mf_probe"]
+    expected_row = [expected_value]
+    if backslash and probe_ansi is not None and client_engine != "mysql" and (
+            not flags["ansi_quotes"] or (engine == "mariadb" and client_engine == "mariadb")):
+        expected_columns.append(('\\"' + delimiter) if probe_ansi else ('"' + delimiter))
+        expected_row.append("1")
+    return probe_sql, expected_columns, expected_row
 
 
 def client_status_sensitive(sql, delimiter=";", client_engine=None):

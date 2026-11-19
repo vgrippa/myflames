@@ -112,18 +112,16 @@ class RoutingTransport(object):
                 if 'AS mf_probe' not in payload:
                     assert delimiter not in client_units[0]['text'], payload
             self.packets.append((backend, payload))
-            server_escaping = 'NO_BACKSLASH_ESCAPES' not in session['mode']
-            parse_check = dbops.split_statements(payload, backslash_escapes=server_escaping)
-            if any(u['unclosed'] for u in parse_check):
-                error = ConnectorError('ERROR 1064 (42000) at line %d: You have an error in your SQL syntax' % line)
-                error.guard_markers = tuple(self.markers)
-                raise error
             remaining = payload
             while remaining.strip():
                 unit, remaining = StrictPacketServer.next_unit(
                     remaining, 'NO_BACKSLASH_ESCAPES' not in session['mode'], line, self.markers)
                 if unit is None:
                     break
+                if unit['unclosed']:
+                    error = ConnectorError('ERROR 1064 (42000) at line %d: You have an error in your SQL syntax' % line)
+                    error.guard_markers = tuple(self.markers)
+                    raise error
                 sql = unit['text'].strip().rstrip(';')
                 if sql.startswith('SET @myflames_target = '):
                     differences = []
@@ -375,6 +373,35 @@ class PacketTests(unittest.TestCase):
                 self.assertEqual(len(writer.packets), 2)
                 self.assertFalse(any("ALTER USER" in s for _, s in writer.executed))
                 self.assertFalse(any("DROP USER" in s for _, s in writer.executed))
+
+    def test_account_nbe_probe_runs_with_mode_setup_across_two_pooled_sessions(self):
+        # Finding 2: behind a two-session pool on the same server, packet 1
+        # (probe) lands on session 2 and must carry parts[0], parts[1] so
+        # NO_BACKSLASH_ESCAPES is active on session 2 when the probe parses.
+        for engine, identity in (("mysql", MYSQL), ("mariadb", MARIA)):
+            for password in ('ends-with-backslash\\', "x\\'; DROP USER victim; -- "):
+                with self.subTest(engine=engine, password=password):
+                    writer = RoutingTransport([identity, dict(identity)])
+                    writer.run_stdin = writer.run_write
+                    guard = dbops.target_session_guard(engine, identity)
+                    statement = 'ALTER USER `app`@`%` IDENTIFIED BY ' + accounts._password(password)
+                    accounts._run_stdin(writer, guard[0] + '\n' + accounts._with_password_mode(statement),
+                                        (password,))
+                    self.assertEqual(len(writer.packets), 3)
+                    self.assertIn('SET SESSION sql_mode = CONCAT_WS', writer.packets[1][1])
+                    self.assertIn('AS mf_probe', writer.packets[1][1])
+                    self.assertIn(accounts.TAG + statement, [s for unused, s in writer.executed])
+                    self.assertFalse(any(s.startswith("DROP USER") for unused, s in writer.executed))
+
+                    stale = RoutingTransport([identity, dict(identity)])
+                    stale.run_stdin = stale.run_write
+                    stale.stale_after_sync = True
+                    with self.assertRaisesRegex(ConnectorError, "quote status could not be confirmed. Nothing was sent."):
+                        accounts._run_stdin(stale, guard[0] + '\n' + accounts._with_password_mode(statement),
+                                            (password,))
+                    self.assertEqual(len(stale.packets), 2)
+                    self.assertFalse(any("ALTER USER" in s for _, s in stale.executed))
+                    self.assertFalse(any("DROP USER" in s for _, s in stale.executed))
 
     def test_proxy_change_after_password_setup_never_sends_the_account_change(self):
         other = dict(MYSQL, server_uuid='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')

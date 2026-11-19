@@ -454,6 +454,45 @@ class ClientCommentParityTests(unittest.TestCase):
                                         packets[0], backslash_escapes=exp_backslash,
                                         ansi_quotes=bool(exp_ansi), engine=family)
                                     self.assertTrue(broken[0]["unclosed"], packets)
+                # Server ANSI_QUOTES variants: MySQL + MariaDB/unknown client
+                # (expected ansi=False) and MariaDB + unknown client (expected
+                # ansi=True for MariaDB client, ignored by MySQL client).
+                for delimiter in delimiters:
+                    mysql_ansi_probe, _ = dbops.client_status_probe(
+                        delimiter, True, ansi_quotes=False, client_engine="mariadb",
+                        server_ansi_quotes=True)
+                    for actual_backslash, actual_ansi in actual_states:
+                        with self.subTest(case="mysql_srv_ansi", family=family, version=client_version,
+                                          delimiter=delimiter, actual=(actual_backslash, actual_ansi)):
+                            pkts, res, cmds = client_packets(
+                                mysql_ansi_probe, family, delimiter=delimiter, client_version=client_version,
+                                backslash_escapes=actual_backslash, ansi_quotes=actual_ansi)
+                            self.assertEqual((res, cmds), ("", []))
+                            if actual_backslash and not actual_ansi:
+                                self.assertEqual(pkts, [mysql_ansi_probe])
+                            else:
+                                self.assertGreaterEqual(len(pkts), 2)
+                                self.assertTrue(dbops.split_statements(
+                                    pkts[0], backslash_escapes=True, ansi_quotes=True,
+                                    engine="mysql", server_version="8.4.0")[0]["unclosed"], pkts)
+                    maria_unknown_probe, _ = dbops.client_status_probe(
+                        delimiter, True, ansi_quotes=True, client_engine=None,
+                        server_ansi_quotes=True)
+                    for actual_backslash, actual_ansi in actual_states:
+                        with self.subTest(case="maria_srv_ansi_unknown_client", family=family,
+                                          version=client_version, delimiter=delimiter,
+                                          actual=(actual_backslash, actual_ansi)):
+                            pkts, res, cmds = client_packets(
+                                maria_unknown_probe, family, delimiter=delimiter, client_version=client_version,
+                                backslash_escapes=actual_backslash, ansi_quotes=actual_ansi)
+                            self.assertEqual((res, cmds), ("", []))
+                            if actual_backslash and (family == "mysql" or actual_ansi):
+                                self.assertEqual(pkts, [maria_unknown_probe])
+                            else:
+                                self.assertGreaterEqual(len(pkts), 2)
+                                self.assertTrue(dbops.split_statements(
+                                    pkts[0], backslash_escapes=True, ansi_quotes=True,
+                                    engine="mariadb", server_version="11.4.10-MariaDB")[0]["unclosed"], pkts)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 - Query editor checks both client escape-status values and MariaDB quote-status values, then refreshes them before affected SQL on a verified session. This prevents stale status after a stored function or procedure from changing the reviewed statement. The helper appears in review and audit; ordinary statements keep their existing diagnostics. Unverified sessions and unknown SQL modes refuse affected text.
   - Both Query editor and Users and roles verify the client's active quote and backslash-escape status with a delimiter-splitting probe right after refreshing it, ending before any protected SQL is read or sent if an intermediary keeps stale status bits or returns an unexpected probe result.
+  - Query editor status probes now verify MariaDB's ANSI_QUOTES client status bit on MySQL ANSI_QUOTES sessions and on MariaDB ANSI_QUOTES sessions when the client family is unknown, preventing stale status bits from changing statement boundaries.
+  - Users and roles now sets NO_BACKSLASH_ESCAPES inside its quote-status probe packet as well as its setup and account packets, so pooled backend sessions evaluate the probe in the expected mode.
+  - Query editor Explain with Parameters now verifies that filled parameter values keep a single unchanged statement under its custom delimiter before running.
 - Query editor detects client dollar-quote boundaries hidden inside skipped comments or quoted identifiers, including closing lines whose newline the client removes. Statements that could change after review refuse before execution.
 - Query editor handles quote-containing delimiters at doubled quotes, so every statement the client would split out appears in the review and receives its required confirmation.
 - Query editor refuses delimiters longer than 15 UTF-8 bytes and DELIMITER command lines longer than 255 UTF-8 bytes. MySQL and MariaDB clients truncate these values, which can change the statements that run.
@@ -74,6 +77,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 - Fixed an issue where Query editor Explain with Parameters refused statements containing double-quoted text, MariaDB `MSSQL` brackets or backslash-escaped quotes even when the tab's SQL mode was known, and preserved a custom `DELIMITER` when Explain and Explore recheck a single statement. Explain still refuses ambiguous quoting when the session mode is unknown.
 - Fixed an issue where Query editor Explain refused a single statement on MariaDB with `ANSI_QUOTES` or a mode that includes it. Stopping Explain or Run analysis while preparing the statement now reports cancellation instead of an internal error.
+- Query editor Explain and Run plan now confirm that prepending EXPLAIN or ANALYZE keeps a single unchanged statement under a custom delimiter, refusing collisions before touching the session.
+- Query editor reviews now construct the quote-status probe with the same delimiter and session facts used when sending, and refuse to run if the session's quote mode or client family changed after review.
 - Users and roles again accepts passwords containing backslashes on NO_BACKSLASH_ESCAPES sessions, using its reviewed mode-setting reply before the client reads the password.
 - Fixed an issue where the Query editor could review SQL without a space the client would insert inside a string, identifier or skipped comment. Statements with those conflicting comment boundaries now refuse before review.
 - Fixed an issue where comment formatting could create an extra statement boundary. Query editor rejects delimiters with leading or trailing whitespace and checks the formatted SQL before review.

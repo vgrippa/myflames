@@ -392,7 +392,11 @@ class Client(object):
                 self.error(line, 1064, "42000", "You have an error in your SQL syntax")
                 return
             rest = text[pos + len(" /* ' */ AS mf_probe"):]
-            if not rest:
+            if not rest or (ansi and re.fullmatch(r' /\*(?:!\d{5}|M!\d{5,6}) "(?:""|[^"])*" \*/ /\* " \*/', rest)):
+                self.result(statement, ["mf_probe"], [[val]])
+                return
+            if (not ansi and
+                    re.fullmatch(r' /\*(?:!\d{5}|M!\d{5,6}) "(?:\\.|[^"\\])*" \*/ /\* " \*/', rest)):
                 self.result(statement, ["mf_probe"], [[val]])
                 return
             if not rest.startswith(", 1 AS "):

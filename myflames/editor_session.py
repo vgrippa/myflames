@@ -528,7 +528,8 @@ def _check_discarded_delimiters(readings, before=None):
 
 
 def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=";", server_version=None,
-                    identity_bound=None, wsrep_on=None, sql_mode=_PLAN_MODE_UNSET, client_engine=None):
+                    identity_bound=None, wsrep_on=None, sql_mode=_PLAN_MODE_UNSET, client_engine=None,
+                    probe_delimiter=None):
     """Plan exact client units, classifying each under its server SQL mode.
 
     A literal SET or an unchanged saved mode can supply the later mode.
@@ -729,10 +730,13 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         sensitive = any(dbops._mode_reading(dbops.split_statements(
             send, delimiter=stmt["delimiter"], **dict(lexer_args, **reading))) != first_mode
                         for reading in all_modes[1:])
+        probe_sql = (_status_probe_spec(engine, server_version, current_mode, client_engine,
+                                        probe_delimiter or _probe_delimiter())[0]
+                     if status_sync else None)
         unit = {"index": len(units), "text": stmt["text"], "start": base + send_offset,
                 "end": base + offset + stmt["end"], "send": send, "lead": lead, "code": code,
                 "mode_sensitive": sensitive, "delimiter": stmt["delimiter"],
-                "client_status_sync": status_sync,
+                "client_status_sync": status_sync, "client_status_probe": probe_sql,
                 "idents": idents, "sql_mode": current_mode, "client_engine": client_engine,
                 "_tokens": tokens, "_comment_spaces": inserted,
                 "mode_unknown": current_mode is None and current_backslash is None,
@@ -840,30 +844,43 @@ def _unit_changes_mode(unit, engine=None):
 _CLIENT_STATUS_PROBE_REASON = "A probe SELECT confirms the client's quote status immediately after refreshing it."
 
 
+def _probe_delimiter(guard=(), statement_tag=""):
+    """Choose the packet delimiter for client status probes using _send's rule."""
+    from . import dbops
+    avoid = list(guard or ()) + [statement_tag, TAG]
+    return next((d for d in dbops._TARGET_DELIMITERS if all(d not in item for item in avoid)),
+                dbops._TARGET_DELIMITERS[0])
+
+
+def _session_probe_delimiter(session):
+    """Resolve the session's probe delimiter matching _send's guard/tag avoidance."""
+    if session is None:
+        return _probe_delimiter()
+    guard = ()
+    if callable(getattr(session, "_write_session_guard", None)):
+        try:
+            guard = session._write_session_guard()
+        except ValueError:
+            guard = ()
+    elif getattr(session, "server_identity", None):
+        from . import dbops
+        try:
+            guard = dbops.target_session_guard(
+                getattr(session, "engine", None),
+                getattr(session, "_kill_identity", None) or session.server_identity)
+        except ValueError:
+            guard = ()
+    return _probe_delimiter(guard, getattr(session, "statement_tag", ""))
+
+
 def _status_probe_spec(engine, server_version, sql_mode, client_engine, delimiter):
     """Return (probe_sql, expected_columns, expected_row) for an active packet delimiter."""
     from . import dbops
-    flags = dbops.sql_mode_flags(sql_mode, engine, server_version)
-    if flags is None:
-        return None, None, None
-    backslash = flags["backslash_escapes"]
-    if not backslash or client_engine == "mysql":
-        probe_ansi = None
-    elif engine == "mariadb":
-        probe_ansi = flags["ansi_quotes"] if client_engine == "mariadb" else (False if not flags["ansi_quotes"] else None)
-    else:
-        probe_ansi = False if not flags["ansi_quotes"] else None
-    probe_sql, expected_value = dbops.client_status_probe(
-        delimiter, backslash, ansi_quotes=probe_ansi, client_engine=client_engine)
-    expected_columns = ["mf_probe"]
-    expected_row = [expected_value]
-    if backslash and probe_ansi is not None and client_engine != "mysql":
-        expected_columns.append(('\\"' + delimiter) if probe_ansi else ('"' + delimiter))
-        expected_row.append("1")
-    return probe_sql, expected_columns, expected_row
+    return dbops.client_status_probe_spec(engine, server_version, sql_mode, client_engine, delimiter)
 
 
-def classify_units(units, backslash_escapes, sql, engine=None, server_version=None, wsrep_on=None):
+def classify_units(units, backslash_escapes, sql, engine=None, server_version=None, wsrep_on=None,
+                   probe_delimiter=None):
     """A dbops verdict for the run: the worst statement, with ``statements``
     being exactly what will be sent (for the confirmation)."""
     from . import dbops
@@ -877,9 +894,9 @@ def classify_units(units, backslash_escapes, sql, engine=None, server_version=No
         if unit.get("client_status_sync"):
             statements.append({"text": TAG + dbops.CLIENT_STATUS_SYNC, "kind": "read", "category": "read",
                                "reasons": [dbops.CLIENT_STATUS_SYNC_REASON]})
-            probe_sql = _status_probe_spec(
+            probe_sql = unit.get("client_status_probe") or _status_probe_spec(
                 engine, server_version, unit.get("sql_mode"), unit.get("client_engine"),
-                dbops._TARGET_DELIMITERS[0])[0]
+                probe_delimiter or _probe_delimiter())[0]
             if probe_sql:
                 unit["client_status_probe"] = probe_sql
                 statements.append({"text": TAG + probe_sql, "kind": "read", "category": "read",
@@ -924,9 +941,11 @@ def _review_statements(units):
     for unit in units:
         if unit.get("client_status_sync"):
             statements.append(TAG + dbops.CLIENT_STATUS_SYNC)
-            probe_sql = unit.get("client_status_probe") or _status_probe_spec(
-                None, None, unit.get("sql_mode"), unit.get("client_engine"),
-                dbops._TARGET_DELIMITERS[0])[0]
+            probe_sql = unit.get("client_status_probe")
+            if probe_sql is None:
+                probe_sql = _status_probe_spec(
+                    None, None, unit.get("sql_mode"), unit.get("client_engine"),
+                    _probe_delimiter())[0]
             if probe_sql:
                 statements.append(TAG + probe_sql)
         statements.append(unit["send"])
@@ -1566,6 +1585,21 @@ class EditorSession(EditorInsights):
                 script, packet_lines = self._guarded_statement(guard, packet, delimiter, sql_mode=sql_mode)
             if any(packet_lines.sync_before):
                 from . import dbops
+                context = _lexer_session_context(self)
+                probe_mode = context["sql_mode"] if sql_mode is _PLAN_MODE_UNSET else sql_mode
+                probe_delim = _probe_delimiter(guard, self.statement_tag)
+                probe_sql, expected_cols, expected_row = _status_probe_spec(
+                    self.engine, self.server_version, probe_mode, context["client_engine"], probe_delim)
+                if probe_sql is None:
+                    message = "The client's quote status could not be confirmed. Nothing was sent."
+                    self.end("client_status_sync_failed", message + " " + SESSION_ENDED_TEXT)
+                    raise ConnectorError(message)
+                if (self.run is not None and unit is not None and 0 <= unit < len(self.run.units) and
+                        "client_status_probe" in self.run.units[unit] and
+                        probe_sql != self.run.units[unit]["client_status_probe"]):
+                    message = "The session changed after the review. Review again."
+                    self.end("client_status_sync_failed", message + " " + SESSION_ENDED_TEXT)
+                    raise ConnectorError(message)
                 sync = self._helper(TAG + dbops.CLIENT_STATUS_SYNC, results=0, guard=guard, sql_mode=sql_mode)
                 if not sync.marker or sync.real_errors() or self.ended:
                     message = self._helper_problem(sync) or "The client's quote status could not be refreshed."
@@ -1576,17 +1610,6 @@ class EditorSession(EditorInsights):
                 with self.lock:
                     if kind != "helper" and self.run is not None and self.run.stop_requested:
                         return None
-                context = _lexer_session_context(self)
-                probe_mode = context["sql_mode"] if sql_mode is _PLAN_MODE_UNSET else sql_mode
-                probe_delim = next((d for d in dbops._TARGET_DELIMITERS
-                                    if all(d not in g for g in guard) and d not in self.statement_tag and d not in TAG),
-                                   dbops._TARGET_DELIMITERS[0])
-                probe_sql, expected_cols, expected_row = _status_probe_spec(
-                    self.engine, self.server_version, probe_mode, context["client_engine"], probe_delim)
-                if probe_sql is None:
-                    message = "The client's quote status could not be confirmed. Nothing was sent."
-                    self.end("client_status_sync_failed", message + " " + SESSION_ENDED_TEXT)
-                    raise ConnectorError(message)
                 self._pending_probe = (TAG + probe_sql, probe_delim, probe_sql)
                 try:
                     probe = self._helper(TAG + probe_sql, results=1, guard=guard, sql_mode=sql_mode)
@@ -2466,6 +2489,12 @@ class EditorSession(EditorInsights):
             prefix = ("ANALYZE FORMAT=JSON " if self.engine == "mariadb" else
                       "EXPLAIN ANALYZE FORMAT=JSON ") if mode == "analyze" else "EXPLAIN FORMAT=JSON "
             statement = prefix + inner
+            probe_delim = _session_probe_delimiter(self)
+            units = plan_statements(statement, backslash, delimiter=unit_delimiter,
+                                    probe_delimiter=probe_delim, **context)
+            if (len(units) != 1 or units[0]["send"] != statement or
+                    len([part for part in units[0]["code"].split(";") if part.strip()]) != 1):
+                raise EditorError("A plan requires exactly one SQL statement.", "invalid_statement")
             # EXPLAIN does not execute its inner statement. ANALYZE does, so
             # use the editor's existing classifier and policy on the inner SQL.
             gated = plan if mode == "analyze" else _plan_run({"sql": statement}, self, default_delimiter=unit_delimiter)
@@ -2490,7 +2519,13 @@ class EditorSession(EditorInsights):
                 raise EditorError("Commit or roll back the tab's transaction and enable autocommit before "
                                   "planning. The transaction must be known to be closed; nothing was sent.",
                                   "transaction_open")
-            units = plan_statements(statement, backslash, delimiter=unit_delimiter, **context)
+            context = _lexer_session_context(self)
+            backslash = self.backslash_escapes if context["identity_bound"] and context["sql_mode"] is not None else None
+            units = plan_statements(statement, backslash, delimiter=unit_delimiter,
+                                    probe_delimiter=probe_delim, **context)
+            if (len(units) != 1 or units[0]["send"] != statement or
+                    len([part for part in units[0]["code"].split(";") if part.strip()]) != 1):
+                raise EditorError("A plan requires exactly one SQL statement.", "invalid_statement")
             options = {key: getattr(self._conn, key) for key in (
                 "host", "port", "user", "password", "database", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key",
                 "ssl_cipher", "connect_timeout", "query_timeout", "ssh_host", "ssh_user", "ssh_port")}
@@ -2540,8 +2575,9 @@ class EditorSession(EditorInsights):
             except (ValueError, TypeError):
                 raise EditorError(self._helper_problem(step) or "The server did not return valid JSON.", "plan_failed")
             units[0]["status"] = "ok"
-        except (EditorError, ConnectorError) as exc:
-            problem = exc
+        except (EditorError, ConnectorError, ValueError) as exc:
+            problem = (exc if isinstance(exc, (EditorError, ConnectorError))
+                       else EditorError(str(exc), "invalid_statement"))
         finally:
             if timer is not None:
                 timer.cancel()
@@ -2594,15 +2630,20 @@ class EditorSession(EditorInsights):
             context = _lexer_session_context(self)
             mode_unknown = context["sql_mode"] is None
             saved_modes = {}
+            probe_delim = _session_probe_delimiter(self)
             for unit in run.units:
                 mode = None if mode_unknown else self.backslash_escapes
-                checked = plan_statements(unit["send"], mode, delimiter=unit.get("delimiter") or ";", **context)
+                checked = plan_statements(unit["send"], mode, delimiter=unit.get("delimiter") or ";",
+                                          probe_delimiter=probe_delim, **context)
                 if len(checked) != 1 or any(checked[0].get(key) != unit.get(key) for key in ("code", "idents")):
                     raise EditorError("The server's SQL interpretation changed after planning. Nothing was sent. "
                                       "Run again with this session's facts.", "invalid_statement")
                 if bool(checked[0].get("client_status_sync")) != bool(unit.get("client_status_sync")):
                     raise EditorError("The required quote-status helper changed after planning. Nothing was sent. "
                                       "Run again to review it.", "invalid_statement")
+                if (unit.get("client_status_sync") and
+                        checked[0].get("client_status_probe") != unit.get("client_status_probe")):
+                    raise EditorError("The session changed after the review. Review again.", "invalid_statement")
                 unit["mode_unknown"] = mode_unknown
                 unit["sql_mode"] = checked[0]["sql_mode"]
                 unit["conditional_sql"] = checked[0]["conditional_sql"]
@@ -4786,7 +4827,8 @@ def _plan_run(payload, session, default_delimiter=";"):
         delimiter = default_delimiter
     text = sql[start:end]
     engine, version = context["engine"], context["server_version"]
-    units = plan_statements(text, backslash, base=start, delimiter=delimiter, **context)
+    probe_delim = _session_probe_delimiter(session)
+    units = plan_statements(text, backslash, base=start, delimiter=delimiter, probe_delimiter=probe_delim, **context)
     _check_oracle_compounds(units, engine, context["sql_mode"], context["identity_bound"])
     explain_format = payload.get("explain_format")
     if explain_format is not None:
@@ -4800,7 +4842,8 @@ def _plan_run(payload, session, default_delimiter=";"):
         unit = units[0]
         unit_delimiter = unit.get("delimiter") or ";"
         if (len([part for part in unit["code"].split(";") if part.strip()]) != 1 or
-                len(plan_statements(unit["send"], backslash, delimiter=unit_delimiter, **context)) != 1):
+                len(plan_statements(unit["send"], backslash, delimiter=unit_delimiter,
+                                    probe_delimiter=probe_delim, **context)) != 1):
             raise EditorError("Explain one statement at a time.", "invalid_statement")
         if re.match(r"\s*(?:(?:FORMAT\s*=\s*\w+|EXTENDED|PARTITIONS)\s+)*ANALYZE" + _SQL_BOUNDARY, unit["code"], re.I | re.ASCII):
             raise EditorError("ANALYZE runs the statement. Use Run analysis or Run.", "invalid_statement")
@@ -4822,17 +4865,28 @@ def _plan_run(payload, session, default_delimiter=";"):
         if parameters is not None:
             filled = _fill_explain_parameters(unit["send"], parameters, context, backslash, unit_delimiter)
             if filled != unit["send"]:
-                unit["send"] = filled
-                filled_units = plan_statements(filled, backslash, delimiter=unit_delimiter, **context)
-                if len(filled_units) != 1:
+                filled_units = plan_statements(filled, backslash, delimiter=unit_delimiter,
+                                               probe_delimiter=probe_delim, **context)
+                if (len(filled_units) != 1 or filled_units[0]["send"] != filled or
+                        len([part for part in filled_units[0]["code"].split(";") if part.strip()]) != 1):
                     raise EditorError("Explain one statement at a time.", "invalid_statement")
-                for key in ("code", "idents", "mode_sensitive", "conditional_sql", "client_status_sync", "_tokens"):
+                unit["send"] = filled
+                for key in ("code", "idents", "mode_sensitive", "conditional_sql",
+                            "client_status_sync", "client_status_probe", "_tokens"):
                     unit[key] = filled_units[0][key]
         # Only prepend EXPLAIN: no SELECT projection, transaction wrapper or
         # session setting changes. The server decides whether the statement
         # can be explained.
-        unit["send"] = prefix + unit["send"]
-        unit["code"] = prefix + unit["code"]
+        statement = prefix + unit["send"]
+        prefixed_units = plan_statements(statement, backslash, delimiter=unit_delimiter,
+                                         probe_delimiter=probe_delim, **context)
+        if (len(prefixed_units) != 1 or prefixed_units[0]["send"] != statement or
+                len([part for part in prefixed_units[0]["code"].split(";") if part.strip()]) != 1):
+            raise EditorError("Explain one statement at a time.", "invalid_statement")
+        unit["send"] = statement
+        for key in ("code", "idents", "mode_sensitive", "conditional_sql",
+                    "client_status_sync", "client_status_probe", "_tokens"):
+            unit[key] = prefixed_units[0][key]
         unit["explain_prefix"] = len(prefix)
     # The setup remains visible and audited, but shares the guarded packet
     # with ALTER so a proxy cannot separate the setting from its use.
@@ -4849,7 +4903,7 @@ def _plan_run(payload, session, default_delimiter=";"):
     for index, unit in enumerate(units):
         unit["index"] = index
     verdict = classify_units(units, backslash, text,
-                             engine, version, context["wsrep_on"])
+                             engine, version, context["wsrep_on"], probe_delimiter=probe_delim)
     return {"sql": sql, "text": text, "offsets": offsets, "scope": scope, "units": units, "verdict": verdict}
 
 
