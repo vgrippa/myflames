@@ -25,6 +25,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor checks both client escape-status values and MariaDB quote-status values, then refreshes them before affected SQL on a verified session. This prevents stale status after a stored function or procedure from changing the reviewed statement. The helper appears in review and audit; ordinary statements keep their existing diagnostics. Unverified sessions and unknown SQL modes refuse affected text.
+- Query editor detects client dollar-quote boundaries hidden inside skipped comments or quoted identifiers, including closing lines whose newline the client removes. Statements that could change after review refuse before execution.
+- Query editor handles quote-containing delimiters at doubled quotes, so every statement the client would split out appears in the review and receives its required confirmation.
+- Query editor refuses delimiters longer than 15 UTF-8 bytes and DELIMITER command lines longer than 255 UTF-8 bytes. MySQL and MariaDB clients truncate these values, which can change the statements that run.
+- Query editor requires an ASCII first character in custom delimiters. MySQL and MariaDB clients skip a multibyte first character before checking for the delimiter, which can merge statements the editor had separated.
 - Query editor refuses SQL continuation lines starting with `DELIMITER` at column zero, including identifiers such as `delimiter_x`. MySQL and MariaDB clients can remove that line's newline and change which SQL runs; indenting or quoting the identifier keeps it usable.
 - Query editor refuses client commands at the start of a line inside multi-line comments, including optimizer hints and versioned comments. It also explains overlapping executable-comment closers that clients can read differently from the server.
 - Query editor recognizes MariaDB ORACLE assignments inside `SET STATEMENT ... FOR` when checking the SQL mode of later statements. These assignments no longer trigger an incorrect embedded-DDL refusal.
@@ -65,10 +70,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Users and roles again accepts passwords containing backslashes on NO_BACKSLASH_ESCAPES sessions, using its reviewed mode-setting reply before the client reads the password.
 - Fixed an issue where the Query editor could review SQL without a space the client would insert inside a string, identifier or skipped comment. Statements with those conflicting comment boundaries now refuse before review.
 - Fixed an issue where comment formatting could create an extra statement boundary. Query editor rejects delimiters with leading or trailing whitespace and checks the formatted SQL before review.
 - Fixed an issue where quoted `DELIMITER` arguments could differ from the selected MySQL or MariaDB client's interpretation. An unknown client family refuses arguments the clients read differently.
-- Fixed an issue where saved SQL modes remained trusted after a function or trigger could change the saved variable. Call-free `SET` statements and standalone stored-program definitions preserve dump routine save/restore sequences.
+- Fixed an issue where saved SQL modes remained trusted after a function or trigger could change the saved variable. Saves also expire after `CREATE EVENT` schedules containing variables, identifiers, subqueries or other function calls, and after `SET` subqueries or table reads. Literal event schedules, interval arithmetic and CURRENT_TIMESTAMP or NOW() preserve saves, allowing dump routines after events to plan again. Simple `SET` statements and standalone procedure, function, trigger and package definitions preserve dump routine save/restore sequences.
 - Query editor accepts inline block comments touching following SQL by showing the client's separating space in the reviewed text. Quoted data and editor error locations retain their original text and positions.
 - InnoDB Cluster action guidance now shows the required MySQL Shell 8.0.32 minimum consistently.
 

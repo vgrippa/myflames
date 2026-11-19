@@ -446,6 +446,43 @@ class _GAWritesBase(object):
             self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
 
 
+    def test_06_editor_resynchronizes_status_after_stored_function(self):
+        """A stored SET leaves NBE set in the reply after sql_mode is restored.
+
+        Exercise the real editor and client on every running GA server. The
+        vulnerable read contains an apparent second SELECT inside its string;
+        the helper must restore client framing without changing these bytes.
+        """
+        from myflames import dbops, editor_session
+        schema = _unique("mf_gbits_")
+        sql = "SELECT 'a\\'; SELECT 'SPLIT-AFTER' AS marker; -- ' AS probe"
+        try:
+            for setup in ("CREATE DATABASE %s" % schema, "SET SESSION sql_mode = ''",
+                          "DELIMITER //\nCREATE FUNCTION %s.f_nbe() RETURNS INT "
+                          "DETERMINISTIC NO SQL BEGIN SET sql_mode='NO_BACKSLASH_ESCAPES'; "
+                          "RETURN 1; END//\nDELIMITER ;" % schema):
+                result = self._confirmed_run(setup)
+                self.assertEqual(result.get("status"), "complete", redact(str(result)))
+            called = self._confirmed_run("SELECT %s.f_nbe()" % schema)
+            self.assertEqual(called.get("status"), "complete", redact(str(called)))
+            self.assertEqual(called["session"]["sql_mode"], "", "stored-function mode must be restored")
+            review = self._editor("/api/editor/run", sql=sql, require_confirmation=True, wait=30)
+            self.assertEqual(review.get("status"), "needs_confirmation", redact(str(review)))
+            self.assertEqual(review["confirmation"]["statements"],
+                             [editor_session.TAG + dbops.CLIENT_STATUS_SYNC, sql])
+            result = self._editor("/api/editor/run", sql=sql, require_confirmation=True, confirmed=True,
+                                  confirm_token=review["confirmation"]["token"], wait=30)
+            self.assertEqual(result.get("status"), "complete", redact(str(result)))
+            run = result.get("run") or {}
+            self.assertEqual(len(run.get("statements", [])), 1)
+            rows = [part for part in run.get("results", []) if part.get("type") == "rows"]
+            self.assertEqual(len(rows), 1, "the client must not expose a hidden second result")
+            self.assertEqual([column["name"] for column in rows[0]["columns"]], ["probe"])
+            self.assertEqual(rows[0]["rows"], [["a'; SELECT 'SPLIT-AFTER' AS marker; -- "]])
+        finally:
+            dropped = self._confirmed_run("DROP DATABASE IF EXISTS %s" % schema)
+            self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
+
 class MySQL57WritesTest(_GAWritesBase, unittest.TestCase):
     """MySQL 5.7 (the last 5.7 release): the GA matrix's mysql-5.7."""
 

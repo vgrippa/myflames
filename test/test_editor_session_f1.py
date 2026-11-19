@@ -77,6 +77,12 @@ class SQLModePlanningTests(unittest.TestCase):
                     for mode in (known_mode, None):
                         with self.subTest(engine=engine, version=version, client=client, mode=mode, sql=sql):
                             bound = bound_session(engine, version, mode, client_engine=client)
+                            if sql == J1_ANSI_PROXY and mode is not None and engine == client == "mariadb":
+                                plan = ed._plan_run({"sql": sql}, bound)
+                                self.assertEqual([u["send"] for u in plan["units"]],
+                                                 ['SELECT 1 AS "a\\"', 'SELECT "second" AS x'])
+                                self.assertTrue(plan["units"][0]["client_status_sync"])
+                                continue
                             with self.assertRaises(ed.EditorError):
                                 ed._plan_run({"sql": sql}, bound)
 
@@ -87,8 +93,16 @@ class SQLModePlanningTests(unittest.TestCase):
                 for scope in ({}, {"cursor": 1}, {"cursor": J1_ANSI_PROXY.index("SELECT \"second\"")},
                               {"selection": {"start": 0, "end": len(J1_ANSI_PROXY)}}):
                     with self.subTest(engine=engine, client=client, scope=scope):
-                        with self.assertRaises(ed.EditorError):
-                            ed._plan_run(dict(sql=J1_ANSI_PROXY, **scope), bound)
+                        if engine == client == "mariadb":
+                            plan = ed._plan_run(dict(sql=J1_ANSI_PROXY, **scope), bound)
+                            expected = (['SELECT 1 AS "a\\"'] if scope.get("cursor") == 1 else
+                                        ['SELECT "second" AS x'] if "cursor" in scope else
+                                        ['SELECT 1 AS "a\\"', 'SELECT "second" AS x'])
+                            self.assertEqual([u["send"] for u in plan["units"]], expected)
+                            self.assertEqual(plan["verdict"]["kind"], "read")
+                        else:
+                            with self.assertRaises(ed.EditorError):
+                                ed._plan_run(dict(sql=J1_ANSI_PROXY, **scope), bound)
                 # A custom delimiter intentionally groups server statements;
                 # both client status readings agree on this complete packet.
                 sql = "DELIMITER //\n" + J1_ANSI_PROXY + "\n//"
@@ -195,16 +209,26 @@ class SQLModePlanningTests(unittest.TestCase):
                 # An escaped closing quote changes closure when the client
                 # did not receive the ANSI bit, including through a proxy.
                 for client in ("mysql", "mariadb"):
-                    with self.assertRaises(ed.EditorError):
-                        ed._plan_run({"sql": 'SELECT "a\\"'},
-                                     bound_session(engine, version, "ANSI_QUOTES", client_engine=client))
+                    quoted = bound_session(engine, version, "ANSI_QUOTES", client_engine=client)
+                    if engine == client == "mariadb":
+                        plan = ed._plan_run({"sql": 'SELECT "a\\"'}, quoted)
+                        self.assertEqual(ed._review_statements(plan["units"]),
+                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, 'SELECT "a\\"'])
+                    else:
+                        with self.assertRaises(ed.EditorError):
+                            ed._plan_run({"sql": 'SELECT "a\\"'}, quoted)
 
     def test_cursor_selection_uses_selected_client_family(self):
         sql = 'SELECT "a\\"; SELECT 2 -- "'
         for engine, version in VERSIONS:
             bound = bound_session(engine, version, "ANSI_QUOTES", client_engine="mariadb")
-            with self.assertRaisesRegex(ed.EditorError, "ANSI_QUOTES"):
-                ed._plan_run({"sql": sql, "cursor": sql.index("SELECT 2") + 2}, bound)
+            if engine == "mariadb":
+                plan = ed._plan_run({"sql": sql, "cursor": sql.index("SELECT 2") + 2}, bound)
+                self.assertEqual([u["send"] for u in plan["units"]], ['SELECT 2 -- "'])
+                self.assertFalse(plan["units"][0]["client_status_sync"])
+            else:
+                with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                    ed._plan_run({"sql": sql, "cursor": sql.index("SELECT 2") + 2}, bound)
 
     def test_custom_delimiter_cannot_match_an_invented_identifier_mask(self):
         # The server mask represents "a" as `0`. Those invented backticks
@@ -229,15 +253,19 @@ class SQLModePlanningTests(unittest.TestCase):
                 for suffix in ("", ",NO_BACKSLASH_ESCAPES"):
                     with self.subTest(engine=engine, mode=mode + suffix):
                         session = bound_session(engine, version, mode + suffix, client_engine=engine)
-                        if not suffix:
-                            with self.assertRaisesRegex(ed.EditorError, "several statements on the server|ANSI_QUOTES"):
+                        if engine == "mysql" and not suffix:
+                            # MySQL's client ignores ANSI_QUOTES even after
+                            # synchronization; SET cannot fix that mismatch.
+                            with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
                                 ed._plan_run({"sql": ANSI_ATTACK}, session)
-                            continue
-                        plan = ed._plan_run({"sql": ANSI_ATTACK}, session)
-                        self.assertEqual(plan["verdict"]["kind"], "risky")
-                        self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
-                        self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), session)["action"], "refuse")
-                        self.assertIn("DELETE FROM t", " ".join(u["code"] for u in plan["units"]))
+                        else:
+                            plan = ed._plan_run({"sql": ANSI_ATTACK}, session)
+                            self.assertEqual([u["send"] for u in plan["units"]],
+                                             ['SELECT 1 AS "a\\"', 'DELETE FROM t'])
+                            self.assertTrue(plan["units"][0]["client_status_sync"])
+                            self.assertEqual(ed._decision(plan, SAFETY, session)["action"], "confirm")
+                            self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), session)["action"],
+                                             "refuse")
         session = bound_session("mariadb", "11.8.9-MariaDB", "MSSQL")
         with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
             ed._plan_run({"sql": MSSQL_ATTACK}, session)
@@ -279,8 +307,16 @@ class SQLModePlanningTests(unittest.TestCase):
             for assignment in ("SET sql_mode='ANSI_QUOTES'", "SET SESSION sql_mode='ANSI_QUOTES'",
                                "SET @@SESSION.`sql_mode`='ANSI_QUOTES'"):
                 bound = bound_session(engine, version, client_engine=engine)
-                with self.assertRaisesRegex(ed.EditorError, "several statements on the server|ANSI_QUOTES"):
-                    ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
+                if engine == "mysql":
+                    with self.assertRaisesRegex(ed.EditorError, "several statements on the server"):
+                        ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
+                else:
+                    plan = ed._plan_run({"sql": assignment + "; " + ANSI_ATTACK}, bound)
+                    self.assertEqual(ed._review_statements(plan["units"]),
+                                     [assignment, ed.TAG + dbops.CLIENT_STATUS_SYNC,
+                                      'SELECT 1 AS "a\\"', 'DELETE FROM t'])
+                    self.assertEqual(ed._decision(plan, SAFETY, bound)["action"], "confirm")
+                    self.assertEqual(ed._decision(plan, dict(SAFETY, read_only=True), bound)["action"], "refuse")
                 plan = ed._plan_run({"sql": assignment + '; SELECT "name"'}, bound)
                 self.assertEqual(plan["units"][1]["sql_mode"], "ANSI_QUOTES")
                 self.assertEqual([unit["kind"] for unit in plan["units"]], ["write", "read"])
@@ -586,15 +622,20 @@ class EditorF1ProcessTests(unittest.TestCase):
                 self.assertIn(message, result["message"])
                 self.assertEqual(len(self.packets()), before)
 
-    def test_ansi_proxy_status_disagreement_sends_no_packets(self):
-        self.assertEqual(self.run_sql("SELECT 7")["status"], "complete")
+    def test_ansi_status_helper_is_reviewed_before_sending(self):
+        self.assertEqual(self.run_sql("SET SESSION sql_mode='ANSI_QUOTES'")["status"], "complete")
         session = self.registry.get("tab1")
         session.sql_mode = "ANSI_QUOTES"
         for client in ("mysql", "mariadb"):
             session.client_engine = client
             before = len(self.packets())
-            result = self.call("/api/editor/run", sql=J1_ANSI_PROXY)
-            self.assertEqual(result["status"], "invalid", result)
+            result = self.call("/api/editor/run", sql=J1_ANSI_PROXY, require_confirmation=True)
+            if self.engine == client == "mariadb":
+                self.assertEqual(result["status"], "needs_confirmation", result)
+                self.assertEqual(result["confirmation"]["statements"],
+                                 [ed.TAG + dbops.CLIENT_STATUS_SYNC, 'SELECT 1 AS "a\\"', 'SELECT "second" AS x'])
+            else:
+                self.assertEqual(result["status"], "invalid", result)
             self.assertEqual(len(self.packets()), before)
 
     def test_client_commands_and_unknown_alter_targets_send_no_packets(self):

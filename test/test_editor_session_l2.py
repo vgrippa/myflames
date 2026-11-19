@@ -33,9 +33,9 @@ class EditorDumpL2Tests(unittest.TestCase):
         session = bound_session(engine, version, mode)
         return ed._plan_run(dict(payload, sql=sql), session), session
 
-    def test_real_dumps_plan_but_keep_one_ddl_per_confirmation(self):
+    def test_real_mysql_dumps_plan_but_keep_one_ddl_per_confirmation(self):
         for name, (engine, version) in zip(
-                ("mysql57.sql", "mysql84.sql", "mariadb1011-nosb.sql", "mariadb118-nosb.sql"), SERVERS):
+                ("mysql57.sql", "mysql84.sql"), SERVERS[:2]):
             with self.subTest(name=name):
                 sql = (DUMPS / name).read_text(encoding="utf-8")
                 plan, session = self.plan(sql, engine, version)
@@ -44,6 +44,24 @@ class EditorDumpL2Tests(unittest.TestCase):
                 decision = ed._decision(plan, SAFETY, session)
                 self.assertEqual((decision["action"], decision["title"]),
                                  ("refuse", "One DDL per confirmation"))
+
+    def test_real_mariadb_dump_literal_events_keep_later_routine_mode_known(self):
+        # These captured dumps create EVENT before PROCEDURE. Their literal
+        # schedules cannot change @saved_sql_mode, so later routines plan.
+        # The independent one-DDL policy still refuses executing a full dump.
+        for name, version in (("mariadb1011-nosb.sql", "10.11.19-MariaDB"),
+                              ("mariadb118-nosb.sql", "11.8.9-MariaDB")):
+            sql = (DUMPS / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertLess(sql.index("-- Dumping events"), sql.index("-- Dumping routines"))
+                for on_error in ("stop", "continue"):
+                    plan, session = self.plan(sql, "mariadb", version, on_error=on_error)
+                    routines = [u for u in plan["units"] if "CREATE" in u["code"] and "PROCEDURE" in u["code"]]
+                    self.assertTrue(routines)
+                    self.assertTrue(all(u["sql_mode"] is not None for u in routines))
+                    decision = ed._decision(plan, SAFETY, session)
+                    self.assertEqual((decision["action"], decision["title"]),
+                                     ("refuse", "One DDL per confirmation"))
 
     def test_mariadb_originals_refuse_with_actionable_sandbox_message(self):
         message = ("the mariadb-dump sandbox line, a mariadb client command; delete that line "

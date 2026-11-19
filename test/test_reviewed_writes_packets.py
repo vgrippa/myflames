@@ -148,9 +148,11 @@ class PacketTests(unittest.TestCase):
                    'test_replication', 'test_locks', 'test_cluster_actions', 'test_editor_process',
                    'test_editor_session', 'test_editor_session_identity', 'test_reviewed_writes_guard',
                    'test_reviewed_writes_packets', 'test_reviewed_writes_evidence', 'test_reviewed_writes_e1',
+                   'test_editor_session_o3',
                    'test_accounts', 'test_cluster_privileges',
                    'test_cli_live_regressions', 'test_sql_cli', 'test_backend_kill_review')]
         paths.append(root / 'test' / 'live' / 'live_writes.py')
+        paths.append(root / 'test' / 'live' / 'live_writes_ga.py')
         for path in paths:
             with self.subTest(file=path.name):
                 ast.parse(path.read_text(encoding='utf-8'),
@@ -235,10 +237,10 @@ class PacketTests(unittest.TestCase):
         writer.run_write(script)
         self.assertEqual(writer.executed, [(MYSQL, 'SET @only = 1')])
 
-    def test_account_client_quote_rules_follow_acknowledged_mode_for_backslash_passwords(self):
+    def test_account_client_quote_rules_keep_agreeing_backslash_passwords(self):
         # Model the client's parser, not just the server's SQL. Mode changes
         # take effect for parsing subsequent packets only after their replies.
-        for password in ('ends-with-backslash\\', "x\\'; DROP USER root; --"):
+        for password in (r'C:\logs', "x'; DROP USER root; --"):
             with self.subTest(password=password):
                 writer = Writer()
                 guard = dbops.target_session_guard('mysql', MYSQL)
@@ -274,6 +276,24 @@ class PacketTests(unittest.TestCase):
                     escaping = server_escaping
                 self.assertEqual(writes, [accounts.TAG + statement])
                 self.assertTrue(escaping, 'the original SQL mode was not restored')
+
+    def test_account_nbe_password_boundaries_follow_staged_mode_reply(self):
+        # The mode SET's reply supplies the NBE bit before password bytes.
+        for engine, identity in (("mysql", MYSQL), ("mariadb", MARIA)):
+            for password in ('ends-with-backslash\\', "x\\'; DROP USER root; --"):
+                with self.subTest(engine=engine, password=password):
+                    writer = RoutingTransport([identity])
+                    writer.run_stdin = writer.run_write
+                    writer.sessions[0]["mode"] = "NO_BACKSLASH_ESCAPES"
+                    writer.client_escaping = True
+                    guard = dbops.target_session_guard(engine, identity)
+                    statement = 'ALTER USER `app`@`%` IDENTIFIED BY ' + accounts._password(password)
+                    accounts._run_stdin(writer, guard[0] + '\n' + accounts._with_password_mode(statement),
+                                        (password,))
+                    self.assertEqual(len(writer.packets), 2)
+                    self.assertNotIn(statement, writer.packets[0][1])
+                    self.assertIn(accounts.TAG + statement, [s for unused, s in writer.executed])
+                    self.assertFalse(any(s.startswith("DROP USER") for unused, s in writer.executed))
 
     def test_proxy_change_after_password_setup_never_sends_the_account_change(self):
         other = dict(MYSQL, server_uuid='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
@@ -425,7 +445,7 @@ class PacketTests(unittest.TestCase):
             with self.subTest(sql=bad), self.assertRaises(ValueError):
                 dbops.target_guarded_script(guard, [bad], backslash_escapes=True, delimiter='//')
         # Knowing the delimiter never waives the unknown-mode token check.
-        with self.assertRaisesRegex(ValueError, 'ambiguous quote boundaries'):
+        with self.assertRaisesRegex(ValueError, 'known sql_mode'):
             dbops.target_guarded_script(guard, [r"DELETE FROM t WHERE name = 'x\' # ' OR 1=1"], delimiter='//')
 
     def test_closed_multiline_statements_share_the_apply_and_builder_contract(self):
@@ -465,7 +485,7 @@ class PacketTests(unittest.TestCase):
                     writer = RoutingTransport([identity, dict(identity)])
                     writer.sessions[1]['mode'] = 'STRICT_TRANS_TABLES'
                     writer.run_stdin = writer.run_write
-                    password = "x\\'; DROP USER root; --"
+                    password = r'C:\logs'
                     statement = ("ALTER USER app IDENTIFIED BY " + accounts._password(password)
                                  if wrapper is accounts._with_password_mode else
                                  'GRANT EXECUTE ON PACKAGE shop.pkg TO app')

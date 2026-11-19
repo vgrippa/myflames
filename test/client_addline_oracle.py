@@ -4,8 +4,9 @@ This is a test-only transcription of the state transitions, not a SQL parser
 or a replacement for live client tests. Inputs are ASCII, --comments and
 noninteractive --binary-mode are enabled, sql_mode is empty, and the private
 delimiter has already been selected. The binary-mode DELIMITER command is
-modelled; other named commands are disabled by those flags. Dollar quotes,
-charset conversion and SQL execution are outside this oracle's domain.
+modelled; other named commands are disabled by those flags. MySQL 8.1+
+dollar quotes are modelled with the server capability probe enabled.
+Charset conversion and SQL execution are outside this oracle's domain.
 
 Client sources (the branch order matters):
   mysql-8.4.0:client/mysql.cc:2735-2741,2771-2823,2824-2986;
@@ -59,10 +60,16 @@ def delimiter_command(line, family):
     are SQL text. mysql-8.4.0:client/mysql.cc:2640-2685,4615-4635,4861-4900;
     mariadb-11.8.9:client/mysql.cc:2580-2584,4881-4905,5023-5080.
     Return (recognized, usable value). CR is retained in an unquoted value.
+    com_delimiter first copies 255 bytes of the command, then 15 bytes of
+    the parsed argument: mysql-8.4.0:237,4617-4632;
+    mariadb-11.8.9:302,4883-4902. The oracle's input is ASCII, so character
+    and byte offsets coincide. Unlike the production guard, model actual
+    truncation here so an overlong argument cannot silently pass the test.
     """
     command = line.lstrip(SPACE)
     if not command[:9].lower() == "delimiter":
         return False, None
+    command = line[:255].lstrip(SPACE)
     pos = 0
     while pos < len(command) and command[pos] not in SPACE:
         pos += 1
@@ -89,10 +96,11 @@ def delimiter_command(line, family):
         pos += 1
     if not value or "\\" in value or (family == "mariadb" and not closed):
         return True, None
-    return True, value
+    return True, value[:15]
 
 
-def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=False):
+def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=False,
+                   dollar_quote_supported=True, append_delimiter=True):
     """Return COM_QUERY texts, remaining buffer, and executed short commands.
 
     Feed the editor's <send> without its statement tag, followed by newline,
@@ -101,21 +109,25 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
     ASCII whitespace before COM_QUERY
     (mysql-8.4.0:client/mysql.cc:3639-3641,5454-5458;
     mariadb-11.8.9:client/mysql.cc:3614,5522-5529).
+    append_delimiter=False instead reads an already terminated user script,
+    including its DELIMITER commands, without adding a private frame.
     """
-    if family not in ("mysql", "mariadb") or not sql.isascii() or "$" in sql:
+    if family not in ("mysql", "mariadb") or not sql.isascii():
         raise ValueError("Outside the ASCII comment oracle's domain")
     version = tuple(int(part) for part in (client_version or
                     ("8.4.0" if family == "mysql" else "11.8.9")).split("."))
     comment_lookup = family == "mysql" and version >= (8, 2, 0)
     persistent_special = family == "mariadb" and version >= (12, 0, 1)
+    dollars = family == "mysql" and version >= (8, 1, 0) and dollar_quote_supported
     hints = family == "mysql" or persistent_special
     # MariaDB 12.0.1:2694-2708 has no SSC_HINT exclusion here.
     hint_line_guard = family == "mysql" and (
                       (version >= (9, 2, 0) or (8, 0, 43) <= version < (8, 1, 0) or
                        (8, 4, 6) <= version < (9, 0, 0)))
     buffer, packets, commands = "", [], []
-    ml_comment, in_string, ss_comment = False, "", 0
-    for line in (sql + "\n" + delimiter + "\n").split("\n")[:-1]:
+    ml_comment, in_string, ss_comment, dollar_tag = False, "", 0, ""
+    stream = sql + "\n" + (delimiter + "\n" if append_delimiter else "")
+    for line in stream.split("\n")[:-1]:
         # binary-mode batch_readline keeps CR on Unix and in MariaDB.
         # MySQL Windows removes one CR before LF in every checked tag:
         # mysql-8.4.0:client/readline.cc:75-95; MariaDB 11.8.9:38-44.
@@ -246,9 +258,29 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                     pos += 2
                     continue
             if ch == in_string:
-                in_string = ""
-            elif not ml_comment and not in_string and ss_comment != 2 and ch in "'\"`":
-                in_string = ch
+                if ch != "$":
+                    in_string = ""
+                elif line.startswith(dollar_tag, pos):
+                    in_string = ""
+                    buffer += dollar_tag[:-1]
+                    pos += len(dollar_tag) - 1
+            elif not ml_comment and not in_string and ss_comment != 2:
+                if ch in "'\"`":
+                    in_string = ch
+                elif ch == "$" and dollars:
+                    # check_for_dollar_quote rejects an identifier prefix
+                    # and scans the tag on this physical line only. The
+                    # closing tag is case-sensitive. Copy all but its last
+                    # byte before need_space, as add_line actually does.
+                    # mysql-8.1.0:2541-2577,2764-2798;
+                    # mysql-8.4.0:2701-2733,2931-2962;
+                    # mysql-9.7.0:2715-2747,2949-2981.
+                    prefix = line[pos - 1:pos] if pos else ""
+                    tag = re.match(r"\$[a-zA-Z0-9_]*\$", tail)
+                    if tag and not (prefix and (prefix.isalnum() or prefix in "_$")):
+                        dollar_tag, in_string = tag.group(), "$"
+                        buffer += dollar_tag[:-1]
+                        pos += len(dollar_tag) - 1
             if need_space and ch not in SPACE:
                 buffer += " "
             need_space = False

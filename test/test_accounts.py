@@ -1338,7 +1338,8 @@ class AccountsTest(unittest.TestCase):
         self.assertNotEqual(data['env'].get('HOME'), os.environ.get('HOME'))
         self.assertIn('NO_BACKSLASH_ESCAPES', data['stdin'])
         statements = dbops.split_statements(data['stdin'], backslash_escapes=False)
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 5)
+        self.assertEqual(statements[2]['text'], 'SET SESSION sql_mode = @@SESSION.sql_mode')
         self.assertFalse(any('DROP USER' in s['code'] for s in statements))
 
     def test_transport_errors_never_echo_credentials(self):

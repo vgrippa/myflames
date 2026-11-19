@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest import mock
 
-from client_addline_oracle import (client_packets, delimiter_command, server_statement_count,
+from client_addline_oracle import (SPACE, client_packets, delimiter_command, server_statement_count,
                                   skip_over_comments_and_space)
 from myflames import editor_session as ed
 from test_editor_session_j2 import SAFETY, bound_session
@@ -53,7 +53,172 @@ def generated_lines():
         yield "SELECT " + opener + " 1 */* " + SUFFIX
 
 
+def generated_delimiters(family):
+    """Cross argument syntax, buffer boundaries and quote-adjacent framing.
+
+    The independent get_arg transcription supplies the client's delimiter,
+    including truncation. The app must refuse or recover those exact units.
+    This tests original user input as well as the private send frame: merely
+    replaying a wrongly merged planned unit would miss the hidden DELETE.
+    """
+    values = (";", "//", "??", "'a", '"a', "`a", "a'b", 'a"b', "a`b",
+              "/ +", "a b", "a\tb", " +", "+ ", "\\+", "a\\b",
+              "x" * 15, "x" * 16, "x" * 31, "123456789012345;")
+    arguments = list(values)
+    for value in values:
+        arguments.extend(quote + value + quote for quote in ("'", '"', "`"))
+    for argument in arguments:
+        command = "DELIMITER " + argument
+        unused_found, parsed = delimiter_command(command, family)
+        delimiter = parsed or ";"  # A rejected command retains the old value.
+        for atom in ("1 AS a", "'1'", '"1"', "`a`", "'1''2'", "1 /*a*/+2"):
+            yield command + "\nSELECT " + atom + delimiter + "DELETE FROM t" + delimiter + "SELECT 2" + delimiter
+    # 15/16-byte values, a quote straddling byte 255, trailing text and
+    # whitespace. Literal line lengths, not arbitrarily 'long' examples.
+    for length in (254, 255, 256, 257, 300):
+        for argument in ("//", "'/;'", '"\'a"', "'" + "x" * 16 + "'"):
+            command = "DELIMITER " + " " * (length - 10 - len(argument)) + argument
+            unused_found, parsed = delimiter_command(command, family)
+            delimiter = parsed or ";"
+            yield command + "\nSELECT '1'" + delimiter + "DELETE FROM t" + delimiter
+        command = "DELIMITER '//'" + " " * (length - len("DELIMITER '//'") - 1) + "x"
+        yield command + "\nSELECT 1//SELECT 2//"
+
+
+def generated_dollars():
+    """Bounded tags, token bodies, identifier prefixes and physical lines."""
+    for tag in ("$$", "$q$", "$Q_1$", "$1$"):
+        atoms = ("'", '"', "`", "/*", "*/", "\\", ";", "\n", "x", tag)
+        for size in range(3):
+            for parts in itertools.product(atoms, repeat=size):
+                body = "".join(parts)
+                for before, after in (("SELECT ", ""), ("SELECT 1 /*!999999 ", " */"),
+                                      ("SELECT [", "]"), ("SELECT id", "")):
+                    yield before + tag + body + tag + after
+        for prefix in ("delimiter", "DeLiMiTeR_x", " delimiter", "x"):
+            for ending in ("/\n*", "-\n-", "+\n+"):
+                for effect in ("INTO OUTFILE '/tmp/out'", "; DELETE FROM t;"):
+                    yield ("SELECT 1 /*!999999 '/*' " + tag + " */ ' /* " + tag + " */ " + tag +
+                           "\n" + prefix + tag + " */ + 1 " + ending + " /*!999999 " + tag +
+                           " ' /* " + tag + " */ " + effect + " -- */")
+        yield "SELECT [" + tag + " ' " + tag + "] + [/*a*/x] + [" + tag + " ' " + tag + "]"
+        yield "SELECT 1 /*!999999 '/*' " + tag + " */ ' /* " + tag + " */ /*a*/x " + tag + " ' " + tag + " */"
+
+
 class ClientCommentParityTests(unittest.TestCase):
+    def test_oracle_dollar_quotes_follow_client_version_and_capability(self):
+        sql = "SELECT $q$first\ndelimiter$q$ -\n- 1"
+        changed = sql.replace(" -\n-", " --")
+        for family, versions in CLIENT_VERSIONS.items():
+            for version in versions:
+                modern = family == "mysql" and tuple(map(int, version.split("."))) >= (8, 1, 0)
+                with self.subTest(family=family, version=version):
+                    self.assertEqual(client_packets(sql, family, client_version=version),
+                                     ([changed], "", []))
+                    # A delimiter and quote inside a dollar body stay data
+                    # only in the capable MySQL clients.
+                    text = "SELECT $q$' ; DELETE FROM t$q$"
+                    packets, remaining, unused = client_packets(text, family, client_version=version)
+                    self.assertEqual(packets, [text] if modern else [])
+                    self.assertEqual(bool(remaining), not modern)
+                    self.assertEqual(client_packets(text, family, client_version=version,
+                                                    dollar_quote_supported=False)[0], [])
+        self.assertEqual(client_packets("SELECT '$q$'", "mysql"), (["SELECT '$q$'"], "", []))
+        self.assertEqual(client_packets("SELECT id$q$;SELECT 2", "mysql", delimiter=";"),
+                         (["SELECT id$q$", "SELECT 2"], "", []))
+
+    def test_oracle_quote_delimiters_and_byte_truncation(self):
+        for family in CLIENT_VERSIONS:
+            self.assertEqual(client_packets('DELIMITER "\'a"\nSELECT \'1\'\'aDELETE FROM t\'aSELECT \'2\' \'a',
+                                            family, delimiter=";", append_delimiter=False),
+                             (["SELECT '1'", "DELETE FROM t", "SELECT '2'"], "", ["DELIMITER"]))
+            for size in (15, 16, 40):
+                self.assertEqual(delimiter_command("DELIMITER " + "x" * size, family), (True, "x" * 15))
+            # The reviewer used 244 spaces: byte 255 is already the opening
+            # quote, so both clients reject the empty truncated argument.
+            # With 243 spaces the retained '/ differs by client family.
+            for padding in (243, 244):
+                command = "DELIMITER " + " " * padding + "'/;'"
+                self.assertEqual(delimiter_command(command, family),
+                                 (True, "/" if family == "mysql" and padding == 243 else None))
+
+    def test_generated_delimiter_input_and_send_parity(self):
+        started, count, accepted, comparisons, failures = time.monotonic(), 0, 0, 0, []
+        for engine, version in (("mysql", "8.4.0"), ("mariadb", "11.8.9")):
+            for family, versions in CLIENT_VERSIONS.items():
+                session = bound_session(engine, version, "")
+                session.client_engine = family
+                for sql in generated_delimiters(family):
+                    count += 1
+                    try:
+                        plan = ed._plan_run({"sql": sql}, session)
+                    except ed.EditorError:
+                        continue
+                    if ed._decision(plan, SAFETY, session)["action"] == "refuse":
+                        continue
+                    accepted += 1
+                    expected = [unit["send"] for unit in plan["units"]]
+                    for client_version in versions:
+                        comparisons += 1
+                        actual, residual, commands = client_packets(sql, family, delimiter=";",
+                                                                   client_version=client_version,
+                                                                   append_delimiter=False)
+                        # Input splitting deliberately trims each unit's
+                        # edge whitespace. add_line's need_space can carry
+                        # a leading space into the next raw packet after a
+                        # delimiter. Compare that documented input mapping,
+                        # then require byte-exact equality for each private
+                        # send below, without any trimming of sent text.
+                        if [packet.strip(SPACE) for packet in actual] != expected or residual or commands != ["DELIMITER"]:
+                            failures.append((engine, family, client_version, sql, expected, actual, residual, commands))
+                        for unit in plan["units"]:
+                            actual, residual, commands = client_packets(unit["send"], family,
+                                                                       client_version=client_version)
+                            if actual != [unit["send"]] or residual or commands:
+                                failures.append((engine, family, client_version, sql, unit["send"],
+                                                 actual, residual, commands))
+        print("Delimiter differential: %d inputs (%d accepted), %d client comparisons, %.3fs, %d mismatches" %
+              (count, accepted, comparisons, time.monotonic() - started, len(failures)), flush=True)
+        for failure in failures[:20]:
+            print("Delimiter mismatch (server, client, version, SQL, planned, packets, residual, commands): %r" %
+                  (failure,), flush=True)
+        self.assertGreater(count, 2000)
+        self.assertGreater(accepted, 100)
+        self.assertFalse(bool(failures), "First mismatch: %r" % (failures[:1],))
+
+    def test_generated_dollar_quote_send_parity(self):
+        started, count, accepted, comparisons, failures = time.monotonic(), 0, 0, 0, []
+        for engine, version, mode in (("mysql", "8.4.0", ""), ("mariadb", "11.8.9", ""),
+                                     ("mariadb", "11.8.9", "MSSQL")):
+            for family, versions in CLIENT_VERSIONS.items():
+                session = bound_session(engine, version, mode)
+                session.client_engine = family
+                for sql in generated_dollars():
+                    count += 1
+                    try:
+                        plan = ed._plan_run({"sql": sql}, session)
+                    except ed.EditorError:
+                        continue
+                    if ed._decision(plan, SAFETY, session)["action"] == "refuse":
+                        continue
+                    accepted += 1
+                    for client_version in versions:
+                        comparisons += 1
+                        for unit in plan["units"]:
+                            actual, residual, commands = client_packets(unit["send"], family,
+                                                                       client_version=client_version)
+                            if actual != [unit["send"]] or residual or commands:
+                                failures.append((engine, mode, family, client_version, sql, unit["send"],
+                                                 actual, residual, commands))
+        print("Dollar differential: %d inputs (%d accepted), %d client comparisons, %.3fs, %d mismatches" %
+              (count, accepted, comparisons, time.monotonic() - started, len(failures)), flush=True)
+        for failure in failures[:20]:
+            print("Dollar mismatch (server, mode, client, version, SQL, planned, packets, residual, commands): %r" %
+                  (failure,), flush=True)
+        self.assertGreater(count, 10000)
+        self.assertGreater(accepted, 100)
+        self.assertFalse(bool(failures), "First mismatch: %r" % (failures[:1],))
+
     def test_oracle_delimiter_newlines_can_form_comments_and_remove_predicates(self):
         cases = (
             ("DELETE FROM t WHERE flag =\ndelimiter -\n- 1 AND id = 5",

@@ -457,7 +457,12 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(result['ambiguous'])
         self.assertEqual(result['kind'], 'risky')
         self.assertIn(dbops.AMBIGUOUS_REASON, result['reasons'])
-        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'read')
+        # A server backslash reading alone does not bind the client's status
+        # even when sql_mode is known. Only a mode-setting reply permits the
+        # synchronized non-NBE reading used by the bound editor.
+        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='')['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='', client_status_synced=True)['kind'], 'read')
         self.assertEqual(dbops.classify(sql, backslash_escapes=False)['kind'], 'risky')
         self.assertFalse(dbops.classify("SELECT 'it''s'; SELECT 2")['ambiguous'])
 

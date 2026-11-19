@@ -695,9 +695,10 @@ def _with_password_mode(statement):
     follow the server's status flag before parsing the next line (verified
     live on MySQL 8.0, 8.4, 9.7 and MariaDB 10.11, 11.4 with the mysql 8.0
     client: a password ending in a backslash logs in)."""
+    sync = dbops.CLIENT_STATUS_SYNC + ';\n' if dbops.client_status_sensitive(statement) else ''
     return ("SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;\n"
             "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES');\n" +
-            TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
+            sync + TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
 
 
 def _with_package_mode(statement):
@@ -1591,21 +1592,35 @@ def _run_stdin(conn, sql, passwords=()):
             escaping = None
             if known_mode:
                 account = parts[2][:-len(ending)]
+                sync_prefix = dbops.CLIENT_STATUS_SYNC + ';\n'
+                sync = account.startswith(sync_prefix)
+                if sync:
+                    account = account[len(sync_prefix):]
+                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
+                if sync != (escaping is False and dbops.client_status_sensitive(account)):
+                    raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
                 # The account body itself cannot smuggle in another mode
                 # change, or additional statements, under this trusted shape.
                 units = dbops.split_statements(account, backslash_escapes=False)
                 if any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
                        re.match(r'^SET\b', unit['code'], re.I) for unit in units):
                     raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
-                bodies = [(parts[0], parts[1]), (parts[0], parts[1], account, restore)]
+                staging = (parts[0], parts[1]) + ((dbops.CLIENT_STATUS_SYNC,) if sync else ())
+                bodies = [staging, (parts[0], parts[1], account, restore)]
                 # Password literals are generated for this asserted mode;
                 # ORACLE wrappers carry no password and retain both readings.
-                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
             elif any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
                      re.match(r'^SET\b', unit['code'], re.I)
                      for unit in dbops.split_statements(statement, backslash_escapes=False)):
                 raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
-            script, packet_lines = dbops.target_guarded_script([first], bodies, backslash_escapes=escaping)
+            # The first packet ends with the reviewed status helper when the
+            # password needs it. Keep it with the mode setup: an extra packet
+            # could route the no-op to a backend with a different old mode.
+            # The client reads this reply before scanning the password bytes.
+            # Each account packet still asserts its own mode before the body.
+            script, packet_lines = dbops.target_guarded_script(
+                [first], bodies, backslash_escapes=escaping,
+                client_status_synced=known_mode and escaping is False)
         except ValueError as exc:
             refusal = ConnectorError(str(exc))
             refusal.identity_outcome = 'identity_unavailable'

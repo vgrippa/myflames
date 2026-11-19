@@ -35,10 +35,13 @@ class LiveExpectedTests(unittest.TestCase):
         changed["servers"][0]["settings"]["max_connections"] = 300
         self.assertNotEqual(normalized, expected.normalize(changed))
 
-    def test_saved_proxysql_report_already_uses_the_pool_counter_mask(self):
-        path = Path(__file__).parent / "live" / "expected" / "proxysql-3.0.11-797-g7c91137.json"
-        report = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(report, expected.normalize(report))
+    def test_every_saved_report_is_already_normalized(self):
+        paths = sorted((Path(__file__).parent / "live" / "expected").glob("*.json"))
+        self.assertTrue(paths, "No expected reports were checked")
+        for path in paths:
+            with self.subTest(report=path.name):
+                report = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(report, expected.normalize(report))
 
 
 if __name__ == "__main__":

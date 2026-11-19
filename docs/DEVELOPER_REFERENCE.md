@@ -2500,6 +2500,43 @@ With a bound session, planning can infer a later mode from a single literal `SET
 leave it unknown. Execution still invalidates cached mode after a possible
 change, and independent helpers validate under every modelled mode. The packet
 builder rechecks closure, client commands, dollar bodies and delimiter collisions.
+SQL-mode saves expire after CREATE EVENT unless every schedule expression
+belongs to the literal/clock subset described below, and after SET expressions containing a subquery or table read
+because a view can call a function that changes the saved user variable.
+Standalone PROCEDURE, FUNCTION, TRIGGER and PACKAGE definitions retain saves;
+their bodies run later. The Query editor sessions section specifies the full
+save/restore contract and its conservative limits.
+Client quote status is independent of the server's SQL mode. Every unit is
+checked with both values of `SERVER_STATUS_NO_BACKSLASH_ESCAPES`; MariaDB
+clients also check both values of `SERVER_STATUS_ANSI_QUOTES`, including when
+the corresponding mode is off. Unknown client families check all combinations.
+Stored-program exit can restore `@@SESSION.sql_mode` without restoring these
+bits, even on a direct connection. When client readings differ, a bound session
+with a known mode sends `SET SESSION sql_mode = @@SESSION.sql_mode` as a
+separate client statement immediately before the affected unit. Its reply
+updates the bits before the client reads that unit. Planning and classification
+then use the synchronized bits, while retaining every possible client family.
+An unbound session or unknown mode refuses; family, delimiter or dollar-grammar
+disagreements that remain after synchronization still refuse.
+The helper is named in editor review and audit, including for an allowed read;
+its results are internal. Both packets assert the target and expected mode.
+A failed helper stops before the unit, including with Continue on error.
+No helper is inserted for units whose client readings agree. A resynchronized
+unit follows a helper SET, so its diagnostics describe that helper rather than
+the preceding user statement. Ordinary intervening `ROW_COUNT()`, `FOUND_ROWS()`,
+`SHOW WARNINGS` and `GET DIAGNOSTICS` units retain their existing behavior.
+Users and roles names the same status helper in its reviewed password wrapper
+when the literal's client readings differ. Its staging packet sets the password
+mode and ends with the helper, so the reply precedes the password bytes without
+another routing decision between the mode setup and helper. The account packet
+repeats its mode setup for server parsing, preserving backslash passwords even
+when a proxy routes packets to separate sessions. Agreeing literals add no helper.
+Sources: `mysql-8.4.0:client/mysql.cc:2771–2784`,
+`mysql-8.4.0:sql/sys_vars.cc:4710–4718`,
+`mysql-8.4.0:sql/sp_head.cc:2106–2107,2305`,
+`mariadb-11.8.9:client/mysql.cc:2659–2663`,
+`mariadb-11.8.9:sql/sys_vars.cc:3997–4011` and
+`mariadb-11.8.9:sql/sp_head.cc:1114–1115,1193–1194,1476,1489`.
 A caller-supplied DELIMITER command cannot bypass these checks.
 Mode-sensitive reads also require the guarded packet. A literal mode assignment
 is only a planning prediction: it can fail while Continue on error leaves the
@@ -2990,6 +3027,13 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   token spans, including hint and executable-comment closers. Before inserting,
   every possible client-family and ANSI-status reading must agree with the
   server about any comment closer where the client could add a space.
+  This includes the dollar-quote reading used by capable MySQL 8.1+ clients.
+  The editor binds the client family, not its version or the result of its
+  dollar-quote capability probe, so MySQL and unknown families check both
+  dollar settings; the MariaDB closer scan keeps dollar quotes disabled.
+  Comparing readings retains the client's token spans as well as the server's
+  spans, boundaries, issues and code. A skipped server comment or MSSQL bracket
+  identifier cannot hide a changed client string or comment boundary.
   A client-only closer inside a server string, identifier or skipped comment
   refuses: normalization must not modify that data, and the client must not
   insert an unreviewed space. This covers MariaDB MSSQL bracket identifiers,
@@ -3039,9 +3083,15 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   refuses a column-zero `delimiter` prefix outside strings and comments in
   sent SQL, unless myflames consumes it as a standalone DELIMITER command.
   A line beginning inside a quoted token also refuses when it starts with
-  that prefix and closes the token before its newline. A line that stays
+  that prefix and closes the token before its newline, including the closing
+  line of a `$tag$` body in MySQL 8.1+ clients. A line that stays
   inside the quoted token keeps its newline and remains supported.
   Indenting or quoting a `delimiter_x` identifier preserves its newline.
+  For string data, avoid the line break just before DELIMITER. Dollar-quote
+  recognition and closing are source-checked in `client/mysql.cc` at
+  `mysql-8.1.0:2541–2577,2764–2798`,
+  `mysql-8.4.0:2701–2733,2931–2962` and
+  `mysql-9.7.0:2715–2747,2949–2981`.
   Sources (`client/mysql.cc`): `mysql-5.7.44:1179–1189,2786–2800`,
   `mysql-8.0.46:1203–1214,2667–2680`, `mysql-8.1.0:1217–1228,2802–2815`,
   `mysql-8.4.0:1233–1244,2966–2982`, `mysql-9.7.0:1235–1246,2987–3000`,
@@ -3091,10 +3141,21 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   MariaDB 12.0.1's persistent special-comment state and two-byte closer for
   `/*!` and `/*+`, but not `/*M!`. The unknown client family is not exercised
   by this line enumeration; explicit regressions check family disagreements.
-  Characters outside the alphabets, including `#`, `--`, backticks, double
-  quotes, digits and tabs, are not enumerated as fragments; executable-comment
-  version digit rules and the trimming of all trailing non-graphic bytes are
-  outside this oracle's coverage. Explicit regressions and live checks cover
+  A separate bounded corpus crosses custom delimiters containing single,
+  double and backtick quotes, backslashes, internal and edge whitespace,
+  15/16/31-byte values, and 254/255/256/257/300-byte command lines. It compares
+  original script packets with planned units after the editor's documented
+  edge-whitespace trimming, then requires exact bytes for each private send.
+  Another corpus crosses dollar tags, short quote/comment bodies, identifier
+  prefixes, column-zero continuation lines and MSSQL bracket identifiers.
+  The oracle enables dollar quotes only for MySQL 8.1+ with a successful
+  capability probe; its explicit tests also cover a disabled probe.
+  These corpora cover both server and client families and all eight client
+  tags above. They do not enumerate arbitrary SQL, non-ASCII client charset
+  behavior or server execution. Production limit regressions separately check
+  UTF-8 byte counts. Executable-comment version digit rules and the trimming
+  of all trailing non-graphic bytes are outside this oracle's coverage.
+  Explicit regressions and live checks cover
   further cases without making this enumeration exhaustive for arbitrary SQL.
   Nested `/*` inside an executable comment refuses because `ml_comment` and
   `ss_comment` interact at the closing markers. Executable
@@ -3114,6 +3175,30 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   remaining backslash, carriage return, or leading/trailing ASCII whitespace
   refuses. The whitespace restriction prevents comment-space normalization
   from creating the active delimiter, including `DELIMITER ' +'`.
+  The parsed delimiter must fit 15 UTF-8 bytes, including when supplied by
+  an internal caller. The entire physical DELIMITER command line must fit
+  255 UTF-8 bytes, including indentation and ignored trailing text, excluding
+  LF. Both client families truncate those buffers; myflames refuses instead.
+  The common limits were checked in every client tag above. Representative
+  sources (`client/mysql.cc`): `mysql-8.4.0:237,4617–4632` and
+  `mariadb-11.8.9:302,4883–4902`.
+  The first delimiter character must be ASCII. Both clients copy a UTF-8
+  multibyte character and continue before checking the delimiter, so a
+  delimiter starting with that character cannot match. Multibyte characters
+  after an ASCII first character still count toward the 15-byte limit.
+  Sources (`client/mysql.cc`): `mysql-8.4.0:2759–2770` and
+  `mariadb-11.8.9:2643–2657`; the same ordering holds in all tags above.
+  Quote-containing delimiters remain supported. Inside a quoted token,
+  a doubled quote is not consumed as an escape when the active delimiter
+  starts at its second quote: the client closes the token at the first quote
+  and checks the delimiter before reopening at the second. The server token
+  pass preserves that packet boundary. For example, `DELIMITER "'a"` followed
+  by `SELECT '1''aDELETE FROM t'aSELECT '2' 'a` plans three units, including
+  the DELETE that requires confirmation. Sources (`client/mysql.cc`):
+  `mysql-5.7.44:2638–2640,2757–2765`,
+  `mysql-8.4.0:2824–2825,2931–2947`,
+  `mariadb-10.11.16:2700,2827–2831` and
+  `mariadb-11.8.9:2729,2857–2863`.
   Normalized text is split again before review so an internal space cannot
   create a delimiter across a comment closer either (`/ +` across `*/+2`).
   Unknown families require equal parsed arguments as well as equal discarded
@@ -3712,8 +3797,12 @@ planner, write gate and session engine from the CLI.
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
   followed by ...` on stderr without contacting the server; N is the line
-  myflames wrote it on, so it ends the statement exactly and adds no server
-  statement between user statements. Diagnostic reads following a user write
+  myflames wrote it on, so it ends the statement exactly. Units whose client
+  readings agree add no server statement between user statements.
+  A status-sensitive unit on a bound session with known mode instead follows
+  its reviewed `SET SESSION sql_mode = @@SESSION.sql_mode` helper in a separate
+  client packet; the editor checks that reply before sending the unit's bytes.
+  Diagnostic reads following an ordinary user write
   still describe that write; a guarded write that itself reads diagnostics
   (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's SET.
   MySQL's SET calls `my_ok`, which sets ROW_COUNT to zero
@@ -3756,9 +3845,18 @@ planner, write gate and session engine from the CLI.
   mode. Planning also refuses SQL whose selected delimiter exposes more
   statements in the server's reading than in the client's reading before
   offering confirmation, asking for each statement on its own, ending with
-  the delimiter. For MariaDB clients this checks both possible ANSI status
-  readings even with a known server `sql_mode`; proxy replies can omit that
-  status bit. Every client family refuses hint bodies containing comment
+  the delimiter. Both client families check both possible backslash status
+  readings independently of the server mode, including when the mode is empty.
+  MariaDB clients also check both ANSI status values; an unknown family checks
+  every combination. A stored function or procedure can leave stale bits after
+  restoring its caller's SQL mode. Different readings require the separate
+  quote-status helper described under Write safety and audit, and an unbound
+  session or unknown mode refuses. Cursor and selection planning use the bound
+  mode, then review the helper with the selected unit. Ordinary units never get
+  this helper, preserving diagnostics between them. Unit and process coverage:
+  `test/test_editor_session_o3.py`; the stored-function regression for each GA
+  server is in `test/live/live_writes_ga.py`.
+  Every client family refuses hint bodies containing comment
   markers (`/*`, `#`, `--` followed by whitespace or a line ending),
   backslashes or unclosed quotes, including hazards inside quotes. Balanced
   single, double and backtick spans with doubled-quote escapes are allowed
@@ -3895,18 +3993,43 @@ planner, write gate and session engine from the CLI.
   `SET [SESSION|LOCAL] sql_mode=@saved_sql_mode` or
   `SET SQL_MODE=@OLD_SQL_MODE` restores that prediction only for the same
   user variable, compared case-insensitively, with no intervening reassignment.
-  Saves remain evidence only across call-free SET statements and standalone
-  CREATE PROCEDURE, FUNCTION, TRIGGER, EVENT or PACKAGE definitions. A stored
-  body is not executed when it is defined. Any other intervening statement,
+  Saves remain evidence only across SET statements without calls, subqueries
+  or table references, and standalone CREATE PROCEDURE, FUNCTION, TRIGGER or
+  PACKAGE definitions. A stored body is not executed when it is defined.
+  Standalone CREATE EVENT preserves saves only when its AT, EVERY, STARTS and
+  ENDS expressions contain literals, parenthesized `+`/`-` arithmetic, INTERVAL
+  quantities and units, or the built-in CURRENT_TIMESTAMP and NOW() clock
+  expressions (including literal precision 0–6). Typed DATE, TIME and TIMESTAMP
+  literals are supported. No user/system variables, identifiers, subqueries
+  or other calls are allowed in this subset, including inside interval
+  quantities or clock arguments. Unsupported or excessively nested expressions
+  invalidate saves. The event's DO body is deferred and does not invalidate
+  them; a trailing executing statement in the same unit still does.
+  Schedule expressions execute during creation
+  (`mysql-8.4.0:sql/events.cc:350`,
+  `mysql-8.4.0:sql/event_parse_data.cc:183–192,245–249,343–347,393–399`,
+  `mariadb-11.8.9:sql/event_parse_data.cc:211–230,287–301,396–405,457–471`).
+  Any other intervening statement,
   including `SELECT @v`, `SELECT f()`, DO or an INSERT that could fire a
   trigger, invalidates saved values. Function-like calls in SET expressions
   also invalidate them, including qualified or quoted function names.
+  A SET subquery or table expression invalidates saves even without a visible
+  call: `SET @other=(SELECT c FROM v)` and `SET @other=(TABLE v LIMIT 1)` may
+  read a view that calls a stored function. This conservatively includes
+  constant subqueries. Quoted data, quoted identifiers and variable names
+  such as `@table` do not count as query keywords; arithmetic SETs still work.
   `SET STATEMENT ... FOR` is checked by its wrapped statement, so a wrapped
   UPDATE or SELECT also invalidates saves even without an explicit call.
   A definition followed by executing SQL in the same client unit cannot
   preserve a save. This deliberately gives up predictions for harmless reads
   to avoid trusting user variables that stored functions or triggers may change
   (`mariadb-11.8.9:sql/item_func.cc:4775–4779,5624–5628`).
+  Captured MySQL and MariaDB dumps with literal event schedules preserve
+  event mode saves before later routines, so their SQL plans again. The
+  one-DDL-per-confirmation policy still refuses executing a complete dump;
+  use Maintenance > Restore. MariaDB's sandbox command line still requires
+  removal before running the remaining SQL in the editor. Isolated procedure
+  save/restore sections still run through confirmation.
   Quoted variable names and executed version comments use the same rules.
   Planning and pre-send revalidation each track saves afresh for that run;
   no saved value carries into another run or comes from an unbound session.

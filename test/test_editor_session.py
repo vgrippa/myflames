@@ -994,14 +994,18 @@ class PlanTests(unittest.TestCase):
         # A single statement is parsed entirely with the known current mode;
         # reading sql_mode beside an escaped quote must remain valid.
         sql = "SELECT @@sql_mode, 'a\\'b'"
-        self.assertEqual(ed.plan_statements(sql)[0]["send"], sql)
+        unit = ed.plan_statements(sql, engine="mysql", server_version="8.4.0",
+                                  identity_bound=True, sql_mode="", client_engine="mysql")[0]
+        self.assertEqual(unit["send"], sql)
+        self.assertTrue(unit["client_status_sync"])
 
     def test_backslash_reading(self):
-        # Under NO_BACKSLASH_ESCAPES 'a\' is a whole string.
-        self.assertEqual([u["send"] for u in ed.plan_statements("SELECT 'a\\'; SELECT 2", False)],
-                         ["SELECT 'a\\'", "SELECT 2"])
-        with self.assertRaises(ed.EditorError):
-            ed.plan_statements("SELECT 'a\\'; SELECT 2", True)
+        # NBE on the server does not establish the client's status bit.
+        for escaping in (False, True):
+            with self.assertRaises(ed.EditorError):
+                ed.plan_statements("SELECT 'a\\'; SELECT 2", escaping)
+        self.assertEqual([u["send"] for u in ed.plan_statements(r"SELECT 'C:\logs'; SELECT 2", False)],
+                         [r"SELECT 'C:\logs'", "SELECT 2"])
 
     def test_offsets_are_utf16_for_the_ui(self):
         text = "SELECT '\U0001F600'; SELECT 2"
@@ -3457,9 +3461,13 @@ class RunScopeTests(unittest.TestCase):
         self.assertEqual(explain("SELECT 'it''s', :a", {"a": 1}, backslash=False),
                          ["EXPLAIN FORMAT=TRADITIONAL SELECT 'it''s', 1"])
 
-    def test_cursor_uses_the_sessions_backslash_reading(self):
+    def test_bound_cursor_uses_mode_and_resynchronizes_selected_unit(self):
         sql = "SELECT 'a\\'; INSERT INTO t VALUES (1); SELECT 'c';"
         self.assertEqual(self.sends({"sql": sql, "cursor": 3}, backslash=False), ["SELECT 'a\\'"])
+        self.assertEqual(self.sends({"sql": sql, "cursor": sql.index("INSERT") + 3}, backslash=False),
+                         ["INSERT INTO t VALUES (1)"])
+        sql = r"SELECT 'C:\logs'; INSERT INTO t VALUES (1); SELECT 'c';"
+        self.assertEqual(self.sends({"sql": sql, "cursor": 3}, backslash=False), [r"SELECT 'C:\logs'"])
         self.assertEqual(self.sends({"sql": sql, "cursor": sql.index("INSERT") + 3}, backslash=False),
                          ["INSERT INTO t VALUES (1)"])
 

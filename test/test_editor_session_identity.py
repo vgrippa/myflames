@@ -389,9 +389,9 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertEqual(self.session_log().count(ed.SAFE_UPDATES_OFF), 1)
         self.assertEqual(self.store.audit_records()[0]['status'], 'unknown')
 
-    def test_confirmed_backslash_quote_uses_the_known_session_mode(self):
+    def test_confirmed_quote_uses_known_mode_when_client_boundaries_agree(self):
         for mode, sql in (('', r"SET @note = 'it\'s'"),
-                          ('NO_BACKSLASH_ESCAPES', r"SET @note = 'ends\'")):
+                          ('NO_BACKSLASH_ESCAPES', r"SET @note = 'C:\logs'")):
             tab = 'mode-' + (mode or 'default')
             self.run_sql("SET SESSION sql_mode = '%s'" % mode, tab=tab)
             result = self.run_sql(sql, tab=tab)
@@ -400,7 +400,9 @@ class EditorIdentityTests(unittest.TestCase):
             self.assertTrue(any(sql in p[2] and 'SET @myflames_target = ' in p[2] for p in self.packets()))
 
     def test_routed_state_cannot_authorize_a_write_under_another_quote_mode(self):
-        sql = r"DELETE FROM t WHERE id = 1 AND note = 'tail\' OR id = 2 -- '"
+        # Identical client boundaries keep this test focused on the packet's
+        # server-mode guard; a trailing backslash-quote now refuses in planning.
+        sql = r"DELETE FROM t WHERE id = 1 AND note = 'C:\logs'"
         for index, actual in enumerate(('', 'NO_BACKSLASH_ESCAPES')):
             tab = 'routed-mode-%d' % index
             self.route_packets()

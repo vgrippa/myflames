@@ -133,7 +133,7 @@ class EditorPlanningN1Tests(unittest.TestCase):
             safe = "SET @v=@@sql_mode; SET @other=@v; SET @x=(1+2); SET sql_mode=@v; SELECT 1"
             self.assertEqual(self.plan(safe, engine, version, engine)["units"][-1]["sql_mode"], "")
 
-    def test_stored_definitions_preserve_saves_without_executing_the_body(self):
+    def test_stored_definitions_and_literal_event_schedules_preserve_saves(self):
         definitions = ("CREATE PROCEDURE p() BEGIN SET @v='ORACLE'; CALL f(); END",
                        "CREATE FUNCTION f() RETURNS INT RETURN 1",
                        "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET @v='ORACLE'",
@@ -145,6 +145,8 @@ class EditorPlanningN1Tests(unittest.TestCase):
                        "//\nDELIMITER ;\nSET sql_mode=@v; SELECT 1")
                 with self.subTest(engine=engine, definition=definition):
                     plan = self.plan(sql, engine, version, engine)
+                    # Literal schedules cannot change saved variables;
+                    # the DO body remains deferred even when it assigns one.
                     self.assertEqual(plan["units"][-1]["sql_mode"], "")
                     self.assertEqual(ed._decision(plan, SAFETY)["action"], "confirm")
 

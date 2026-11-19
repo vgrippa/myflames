@@ -411,16 +411,6 @@
   },
   "topology_tiers": {
     "live_footprint": {
-      "clients": [
-        {
-          "host": "192.168.80.5",
-          "program": "proxysql_monitor"
-        },
-        {
-          "host": "192.168.80.5",
-          "program": "proxysql"
-        }
-      ],
       "known": true,
       "notes": [],
       "proxysql_connected": true,

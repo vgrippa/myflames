@@ -420,27 +420,37 @@ def _next_sql_mode(unit, saved_modes, engine=None, identity_bound=True):
     if not identity_bound:
         saved_modes.clear()
         return None if _unit_changes_mode(unit, engine) else current
-    # Definitions store their bodies without executing them. Keep the
+    # Routine definitions store their bodies without executing them. Keep the
     # saved value only for a complete, standalone CREATE definition: a
     # trailing SELECT/CALL in the same client packet can still change it.
-    if saved_modes and re.match(r"CREATE\b", code, re.I | re.ASCII) and _ROUTINE_CREATE.match(code):
+    # EVENT's AT/EVERY/STARTS/ENDS expressions execute while creating it.
+    # Keep saves only for the bounded, side-effect-free schedule subset.
+    # mysql-8.4.0:sql/events.cc:350,sql/event_parse_data.cc:183-192,245-249;
+    # mariadb-11.8.9:sql/event_parse_data.cc:211-230,287-301,396-405,457-471.
+    definition = _ROUTINE_CREATE.match(code)
+    if saved_modes and re.match(r"CREATE\b", code, re.I | re.ASCII) and definition:
         try:
-            if len(_ddl_codes(unit)) == 1:
+            if (len(_ddl_codes(unit)) == 1 and
+                    (definition.group(2).upper() != "EVENT" or _literal_event_schedule(unit, definition))):
                 return current
         except EditorError:
             pass  # Unsupported boundaries cannot establish provenance.
     # A SELECT can invoke a stored function; DML can fire a trigger. Both
     # may assign user variables without an assignment visible in this SQL.
-    # Preserve saves only across SETs without any function-like call. This
+    # Preserve saves only across SETs without a call, subquery or table read.
+    # A view may call a function without name(...) appearing in this SET.
+    # Match whole masked tokens so @table, `select` and string data do not
+    # invent a query. This
     # deliberately includes innocent reads among the invalidating statements.
     # Quoted strings/identifiers are already masked, so text in a value
     # cannot invent a call. Parenthesized arithmetic remains supported.
     # mariadb-11.8.9:sql/item_func.cc:4775-4779 (stored-function/trigger saves).
+    tokens = list(_MASKED_TOKEN.finditer(code))
+    table_read = any(token.group().upper() in ("SELECT", "TABLE", "FROM", "JOIN", "WITH") for token in tokens)
     parts = [_unwrap_set_statement(part) for part in code.split(";") if part.strip()]
     if (not parts or not all(re.match(r"\s*SET\b", part, re.I | re.ASCII) for part in parts) or
-            re.search(_MASKED_QUALIFIED + r"\s*\(", code)):
+            table_read or re.search(_MASKED_QUALIFIED + r"\s*\(", code)):
         saved_modes.clear()
-    tokens = list(_MASKED_TOKEN.finditer(code))
     if any(_MODE_CHANGE.fullmatch(token.group()) for token in tokens):
         saved_modes.clear()
         return None
@@ -545,7 +555,8 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
     while offset < len(sql) or pending:
         if not pending:
             readings = dbops.lexer_readings(current_backslash, engine, current_mode, server_version, client_engine,
-                                            sql[offset:])
+                                            sql[offset:], client_status_synced=bool(identity_bound and
+                                                                                   current_mode is not None))
             discarded = []
             pending = dbops.split_statements(sql[offset:], delimiter=delimiter, discarded_prefixes=discarded,
                                              **dict(lexer_args, **readings[0]))
@@ -572,6 +583,9 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         _check_discarded_delimiters(discarded_readings, before=stmt["next_start"])
         number = len(units) + 1
         send_offset = offset + stmt["start"]
+        status_sync = dbops.client_status_sensitive(stmt["text"], stmt["delimiter"], client_engine)
+        if status_sync and (not identity_bound or current_mode is None):
+            raise EditorError(dbops.CLIENT_STATUS_SYNC_REQUIRED, "invalid_statement")
         # Compare this unit independently. Do not let initial quote settings
         # mask a later unit after a literal SET changes them.
         meanings, first_frame, count_mismatch = {}, None, False
@@ -590,18 +604,20 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             key = reading["comment_dialect"] if provisional else None
             if meaning != meanings.setdefault(key, meaning) or frame != first_frame:
                 raise EditorError("The session quote mode is unknown, the server version is unknown or the "
-                                  "client family is unknown, or the MariaDB client's ANSI_QUOTES status is uncertain. "
+                                  "client family is unknown, the client's NO_BACKSLASH_ESCAPES status is uncertain, "
+                                  "or the MariaDB client's ANSI_QUOTES status is uncertain. "
                                   "This SQL reads differently under "
                                   "NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MariaDB MSSQL mode. "
-                                  "Use single quotes for strings and backticks for identifiers, or run with a "
-                                  "known sql_mode and client family.", "invalid_statement")
+                                  "Use doubled quotes instead of backslash-quote escapes, single quotes for "
+                                  "strings and backticks for identifiers, or run with a known sql_mode and "
+                                  "client family.", "invalid_statement")
             # The server tokens can expose delimiters hidden inside a client
             # string. Compare each client unit at its selected delimiter:
             # semicolons in an intentional custom-delimiter group or stored
             # body do not make that group a client/server framing mismatch.
             # This count never replaces the server code used to classify it.
-            # readings includes MariaDB with and without its ANSI status bit;
-            # a proxy can omit that bit even with a known server sql_mode.
+            # Client NBE and MariaDB ANSI status readings are independent:
+            # a proxy can omit these bits even with a known server sql_mode.
             count_mismatch = count_mismatch or any(
                 _server_unit_count(stmt["text"], unit) > 1 for unit in checked)
         if stmt["unclosed"] or stmt.get("issues"):
@@ -643,16 +659,24 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         # mysql-8.4.0:client/mysql.cc:2907-2921,2959-2962;
         # mariadb-11.8.9:client/mysql.cc:2834-2851,2865-2870.
         for reading in readings:
-            client_scan = dbops.lex_sql(send, client=True, client_delimiter=stmt["delimiter"],
-                                       **dict(lexer_args, **reading))
-            for kind, start, end in client_scan["tokens"]:
-                if (kind == "comment" and send[start:start + 2] == "/*" and
-                        send[end - 2:end] == "*/" and end < len(send) and
-                        send[end] not in dbops._CLIENT_SPACE and not send.startswith(stmt["delimiter"], end) and
-                        end not in spaces):
-                    raise EditorError("The client and server disagree about a comment closer where the client "
-                                      "can insert a space. Separate the closer from following text or remove "
-                                      "the comment-like text before running this SQL.", "invalid_statement")
+            # MySQL 8.1+ check_for_dollar_quote can expose a closer hidden
+            # inside a quote in the older reading. A known family does not
+            # bind the client version or its server capability probe, so
+            # require both MySQL readings. MariaDB has no dollar bodies.
+            # mysql-8.1.0:client/mysql.cc:2541-2577,2764-2798;
+            # mysql-8.4.0:client/mysql.cc:2701-2733,2931-2962.
+            dollar_readings = (False, True) if reading["client_engine"] != "mariadb" and "$" in send else (False,)
+            for dollar_quotes in dollar_readings:
+                client_scan = dbops.lex_sql(send, client=True, client_delimiter=stmt["delimiter"],
+                                           dollar_quotes=dollar_quotes, **dict(lexer_args, **reading))
+                for kind, start, end in client_scan["tokens"]:
+                    if (kind == "comment" and send[start:start + 2] == "/*" and
+                            send[end - 2:end] == "*/" and end < len(send) and
+                            send[end] not in dbops._CLIENT_SPACE and not send.startswith(stmt["delimiter"], end) and
+                            end not in spaces):
+                        raise EditorError("The client and server disagree about a comment closer where the client "
+                                          "can insert a space. Separate the closer from following text or remove "
+                                          "the comment-like text before running this SQL.", "invalid_statement")
         inserted = tuple(at + index for index, at in enumerate(spaces))
         code, idents = stmt["code"], list(stmt.get("idents") or [])
         if spaces:
@@ -708,6 +732,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         unit = {"index": len(units), "text": stmt["text"], "start": base + send_offset,
                 "end": base + offset + stmt["end"], "send": send, "lead": lead, "code": code,
                 "mode_sensitive": sensitive, "delimiter": stmt["delimiter"],
+                "client_status_sync": status_sync,
                 "idents": idents, "sql_mode": current_mode, "client_engine": client_engine,
                 "_tokens": tokens, "_comment_spaces": inserted,
                 "mode_unknown": current_mode is None and current_backslash is None,
@@ -820,7 +845,11 @@ def classify_units(units, backslash_escapes, sql, engine=None, server_version=No
     for unit in units:
         verdict = dbops.classify(unit["send"], None if unit.get("mode_unknown") else backslash_escapes,
                                  engine=engine, server_version=server_version, wsrep_on=wsrep_on,
-                                 sql_mode=unit.get("sql_mode"), client_engine=unit.get("client_engine"))
+                                 sql_mode=unit.get("sql_mode"), client_engine=unit.get("client_engine"),
+                                 client_status_synced=bool(unit.get("client_status_sync")))
+        if unit.get("client_status_sync"):
+            statements.append({"text": TAG + dbops.CLIENT_STATUS_SYNC, "kind": "read", "category": "read",
+                               "reasons": [dbops.CLIENT_STATUS_SYNC_REASON]})
         # BEGIN/START TRANSACTION and enabling autocommit can commit work
         # already in this tab. Apply exactly COMMIT's policy and audit class,
         # even when the shared classifier calls the control a read.
@@ -851,7 +880,18 @@ def _needs_session_guard(unit):
     """Stateful and mode-sensitive reads need the same bound facts as writes."""
     return (unit.get("kind") != "read" or unit.get("session_control") or
             unit.get("category") in ("session", "transaction") or unit.get("conditional_sql") or
-            unit.get("mode_sensitive"))
+            unit.get("mode_sensitive") or unit.get("client_status_sync"))
+
+
+def _review_statements(units):
+    """Exact user units and any separate quote-status helper, in wire order."""
+    from . import dbops
+    statements = []
+    for unit in units:
+        if unit.get("client_status_sync"):
+            statements.append(TAG + dbops.CLIENT_STATUS_SYNC)
+        statements.append(unit["send"])
+    return statements
 
 
 def error_position(message, unit, offsets):
@@ -1455,19 +1495,35 @@ class EditorSession(EditorInsights):
                                           server_version=self.server_version,
                                           wsrep_on=context["wsrep_on"],
                                           sql_mode=context["sql_mode"],
-                                          client_engine=context["client_engine"])
+                                          client_engine=context["client_engine"], defer_status_sync=True)
 
     def _send(self, kind, send, unit=None, limit=None, results=None, kill_ok=False, guard=None, delimiter=";",
               setup=None, sql_mode=_PLAN_MODE_UNSET):
         """Write one statement; returns its Step. Holds send_lock so a KILL in
         flight is never followed by a new statement."""
+        # Validate the entire user packet before any helper is sent. The
+        # helper has its own client boundary and is awaited before writing
+        # the affected bytes; putting SET inside this packet is too late.
+        if guard is not None:
+            packet = (setup["send"], send) if setup is not None else send
+            script, packet_lines = self._guarded_statement(guard, packet, delimiter, sql_mode=sql_mode)
+            if any(packet_lines.sync_before):
+                from . import dbops
+                sync = self._helper(TAG + dbops.CLIENT_STATUS_SYNC, results=0, guard=guard, sql_mode=sql_mode)
+                if not sync.marker or sync.real_errors() or self.ended:
+                    message = self._helper_problem(sync) or "The client's quote status could not be refreshed."
+                    self.end("client_status_sync_failed", message + " " + SESSION_ENDED_TEXT)
+                    raise ConnectorError(message)
+                # Stop during a helper cannot KILL it and must not start the
+                # protected statement after its reply arrives.
+                with self.lock:
+                    if kind != "helper" and self.run is not None and self.run.stop_requested:
+                        return None
         with self.send_lock:
             with self.lock:
                 if self.ended:
                     raise ConnectorError(self.end_message or SESSION_ENDED_TEXT)
             if guard is not None:
-                packet = (setup["send"], send) if setup is not None else send
-                script, packet_lines = self._guarded_statement(guard, packet, delimiter, sql_mode=sql_mode)
                 header, body = script.split("\n", 1)
                 self.delimiter = header[len("DELIMITER "):]
                 wire = body[:-(len(self.delimiter) + 2)]
@@ -1521,8 +1577,8 @@ class EditorSession(EditorInsights):
                 self.cond.wait(0.5 if remaining is None else min(0.5, remaining))
             return True
 
-    def _helper(self, send, results=1, timeout=HELPER_TIMEOUT, guard=None):
-        step = self._send("helper", send, results=results, guard=guard)
+    def _helper(self, send, results=1, timeout=HELPER_TIMEOUT, guard=None, sql_mode=_PLAN_MODE_UNSET):
+        step = self._send("helper", send, results=results, guard=guard, sql_mode=sql_mode)
         ok = self._wait(lambda: step.marker and (step.closed or bool(step.real_errors()) or results == 0),
                         timeout)
         if not ok and not self.ended:
@@ -2453,6 +2509,9 @@ class EditorSession(EditorInsights):
                 if len(checked) != 1 or any(checked[0].get(key) != unit.get(key) for key in ("code", "idents")):
                     raise EditorError("The server's SQL interpretation changed after planning. Nothing was sent. "
                                       "Run again with this session's facts.", "invalid_statement")
+                if bool(checked[0].get("client_status_sync")) != bool(unit.get("client_status_sync")):
+                    raise EditorError("The required quote-status helper changed after planning. Nothing was sent. "
+                                      "Run again to review it.", "invalid_statement")
                 unit["mode_unknown"] = mode_unknown
                 unit["sql_mode"] = checked[0]["sql_mode"]
                 unit["conditional_sql"] = checked[0]["conditional_sql"]
@@ -2460,7 +2519,7 @@ class EditorSession(EditorInsights):
                                                       context["identity_bound"])
                 mode_unknown = context["sql_mode"] is None
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
-                statements = [u["send"] for u in run.units]
+                statements = _review_statements(run.units)
                 try:
                     run.target_guard = self._write_session_guard()
                     # Refuse delimiter collisions before any user unit runs.
@@ -2617,6 +2676,9 @@ class EditorSession(EditorInsights):
                                   limit=run.limit, kill_ok=kill_ok,
                                   guard=run.target_guard if _needs_session_guard(unit) else None,
                                   delimiter=unit.get("delimiter") or ";", setup=setup, sql_mode=unit["sql_mode"])
+                if step is None:
+                    unit["status"] = "not_run"
+                    break
                 if _unit_changes_mode(unit, self.engine):
                     # A CALL or multi-statement unit can change the mode
                     # before failing. Invalidate after sending, even on an
@@ -2688,6 +2750,12 @@ class EditorSession(EditorInsights):
         finally:
             if timer is not None:
                 timer.cancel()
+            # A failed status helper can end the session before _send creates
+            # a user Step. Report those units as unsent, not still running.
+            sent = {step.unit for step in run.steps if step.kind != "helper"}
+            for unit in run.units:
+                if unit.get("status") in ("pending", "running") and unit["index"] not in sent:
+                    unit["status"] = "not_run"
             self._finish(run)
 
     def _finish(self, run):
@@ -3614,21 +3682,26 @@ def _selection(payload, sql, offsets, backslash=True, context=None):
     rules (and the session's backslash reading) the server will split with."""
     from . import dbops
     lexer_args = {key: value for key, value in (context or {}).items() if key != "identity_bound"}
-    escaping = True if backslash is None else backslash
+    readings = dbops.lexer_readings(backslash, lexer_args.get("engine"), lexer_args.get("sql_mode"),
+                                    lexer_args.get("server_version"), lexer_args.get("client_engine"), sql,
+                                    client_status_synced=bool((context or {}).get("identity_bound") and
+                                                             lexer_args.get("sql_mode") is not None))
+    # Cursor and selection choose the intended unit under the bound mode.
+    # plan_statements then names any required status helper for that unit.
+    primary = dict(lexer_args, **readings[0])
     selection = payload.get("selection")
     total = offsets.to_js(len(sql))
     if selection is None and payload.get("cursor") is not None:
         cursor = _offset(payload, "cursor", offsets, total)
-        stmt = statement_at(sql, dbops_split(sql, escaping, **lexer_args), cursor)
-        for reading in dbops.lexer_readings(backslash, lexer_args.get("engine"), lexer_args.get("sql_mode"),
-                                           lexer_args.get("server_version"), lexer_args.get("client_engine"), sql):
+        stmt = statement_at(sql, dbops_split(sql, **primary), cursor)
+        for reading in readings:
             other = statement_at(sql, dbops_split(sql, **dict(lexer_args, **reading)), cursor)
             if dbops._mode_reading([stmt] if stmt else []) != dbops._mode_reading([other] if other else []):
                 raise EditorError("The session quote mode is unknown and the statement at the cursor reads "
                                   "differently under NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MSSQL.", "invalid_statement")
         if "$" in sql:
             from . import dbops
-            dollar_stmt = statement_at(sql, dbops.split_statements(sql, escaping, dollar_quotes=True, **lexer_args), cursor)
+            dollar_stmt = statement_at(sql, dbops.split_statements(sql, dollar_quotes=True, **primary), cursor)
             if dbops._target_reading([stmt] if stmt else []) != dbops._target_reading(
                     [dollar_stmt] if dollar_stmt else []):
                 raise EditorError("Dollar-quoted text ($...$) changes which statement is at the cursor. "
@@ -3644,9 +3717,8 @@ def _selection(payload, sql, offsets, backslash=True, context=None):
     end = _offset(selection, "end", offsets, total)
     if end <= start:
         raise ValueError("The selection is empty.")
-    delimiter = delimiter_at(sql, start, escaping, **lexer_args)
-    for reading in dbops.lexer_readings(backslash, lexer_args.get("engine"), lexer_args.get("sql_mode"),
-                                       lexer_args.get("server_version"), lexer_args.get("client_engine"), sql):
+    delimiter = delimiter_at(sql, start, **primary)
+    for reading in readings:
         if delimiter != delimiter_at(sql, start, **dict(lexer_args, **reading)):
             raise EditorError("The session quote mode is unknown and the selection has ambiguous delimiters.",
                               "invalid_statement")
@@ -3682,6 +3754,111 @@ _MASKED_VARIABLE = (r"@(?:[ \t\r\n\f\v]*@)?[ \t\r\n\f\v]*" + _MASKED_VARIABLE_NA
 # mariadb-11.8.9:sql/sql_lex.cc:2548-2563.
 _MASKED_TOKEN = re.compile(_MASKED_VARIABLE + r"|" +
                            _MASKED_QUALIFIED + r"|''|:=|[^ \t\r\n\f\v]")
+
+
+_EVENT_INTERVAL_UNITS = frozenset((
+    "YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE", "SECOND", "MICROSECOND",
+    "YEAR_MONTH", "DAY_HOUR", "DAY_MINUTE", "DAY_SECOND", "HOUR_MINUTE", "HOUR_SECOND",
+    "MINUTE_SECOND", "DAY_MICROSECOND", "HOUR_MICROSECOND", "MINUTE_MICROSECOND", "SECOND_MICROSECOND"))
+_EVENT_NUMBER = r"(?:0[xX][0-9a-fA-F]+|0[bB][01]+|(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+_EVENT_EXPR_TOKEN = re.compile(_EVENT_NUMBER + r"|''|[a-zA-Z_]+|[^ \t\r\n\f\v]")
+
+
+def _literal_event_expression(code, every=False):
+    """Recognize only literal arithmetic, intervals and the built-in clock.
+
+    This is a provenance allowlist, not a SQL validator. Reject identifiers,
+    variables, subqueries and every other call, including in an INTERVAL
+    quantity or a clock precision. The server still validates date values.
+    Sources: mysql-8.4.0:sql/sql_yacc.yy:12257-12282,sql/lex.h:182,838;
+    mariadb-11.8.9:sql/sql_yacc.yy:12345-12370,sql/lex.h:163,778.
+    """
+    words = [match.group().upper() for match in _EVENT_EXPR_TOKEN.finditer(code)]
+    if every:
+        if not words or words.pop() not in _EVENT_INTERVAL_UNITS:
+            return False
+    pos = [0]
+
+    def take(word):
+        if pos[0] < len(words) and words[pos[0]] == word:
+            pos[0] += 1
+            return True
+        return False
+
+    def expression(depth=0):
+        # Bound recursive parentheses/INTERVAL quantities independently of
+        # request size. Excessive nesting loses prediction, never consent.
+        if depth > 64:
+            return False
+        while True:
+            while take("+") or take("-"):
+                pass
+            if pos[0] >= len(words):
+                return False
+            word = words[pos[0]]
+            pos[0] += 1
+            if word == "(":
+                if not expression(depth + 1) or not take(")"):
+                    return False
+            elif word == "INTERVAL":
+                if not expression(depth + 1) or pos[0] >= len(words) or words[pos[0]] not in _EVENT_INTERVAL_UNITS:
+                    return False
+                pos[0] += 1
+            elif word in ("CURRENT_TIMESTAMP", "NOW"):
+                if take("("):
+                    if not take(")"):
+                        if pos[0] >= len(words) or words[pos[0]] not in ("0", "1", "2", "3", "4", "5", "6"):
+                            return False
+                        pos[0] += 1
+                        if not take(")"):
+                            return False
+                elif word == "NOW":
+                    return False
+            elif word in ("DATE", "TIME", "TIMESTAMP"):
+                if not take("''"):
+                    return False
+            elif word not in ("''", "NULL", "TRUE", "FALSE") and not re.fullmatch(_EVENT_NUMBER, word):
+                return False
+            if pos[0] >= len(words) or words[pos[0]] not in ("+", "-"):
+                return True
+            pos[0] += 1
+
+    return expression() and pos[0] == len(words)
+
+
+def _literal_event_schedule(unit, definition):
+    """Check every immediately evaluated expression before the deferred DO."""
+    scan = _DdlBoundaryScanner(unit["code"], definition.end(), unit.get("idents") or [])
+    if scan.take("IF"):
+        scan.need("NOT")
+        scan.need("EXISTS")
+    scan.name()
+    scan.need("ON")
+    scan.need("SCHEDULE")
+    every = scan.take("EVERY")
+    if not every:
+        scan.need("AT")
+    stops = {"STARTS", "ENDS", "ON", "ENABLE", "DISABLE", "COMMENT", "DO"}
+    while True:
+        start = scan.pos
+        scan.expression(stops)
+        expression = scan.code[scan.tokens[start].start():scan.tokens[scan.pos - 1].end()]
+        if not _literal_event_expression(expression, every):
+            return False
+        every = False
+        if not (scan.take("STARTS") or scan.take("ENDS")):
+            break
+    if scan.take("ON"):
+        scan.need("COMPLETION")
+        scan.take("NOT")
+        scan.need("PRESERVE")
+    if not scan.take("ENABLE") and scan.take("DISABLE") and scan.take("ON"):
+        if not scan.take("SLAVE"):
+            scan.need("REPLICA")
+    if scan.take("COMMENT"):
+        scan.need("''")
+    scan.need("DO")
+    return True
 
 
 class _DdlBoundaryScanner:
@@ -4524,7 +4701,7 @@ def _plan_run(payload, session):
                 filled_units = plan_statements(filled, backslash, delimiter=unit.get("delimiter") or ";", **context)
                 if len(filled_units) != 1:
                     raise EditorError("Explain one statement at a time.", "invalid_statement")
-                for key in ("code", "idents", "mode_sensitive", "conditional_sql"):
+                for key in ("code", "idents", "mode_sensitive", "conditional_sql", "client_status_sync"):
                     unit[key] = filled_units[0][key]
         # Only prepend EXPLAIN: no SELECT projection, transaction wrapper or
         # session setting changes. The server decides whether the statement
@@ -5105,7 +5282,7 @@ def _run_review_state(plan, decision):
     """
     decision_fields = ("action", "kind", "category", "connection_type", "read_only", "session_guard",
                        "typed_target", "alter_preflight", "alter_binding")
-    fields = ("send", "kind", "category", "verb", "single", "session_control", "conditional_sql")
+    fields = ("send", "kind", "category", "verb", "single", "session_control", "conditional_sql", "client_status_sync")
     return ({key: decision.get(key) for key in decision_fields},
             {key: plan["verdict"].get(key) for key in ("kind", "category")},
             [{key: unit.get(key) for key in fields} for unit in plan["units"]])
@@ -5152,10 +5329,10 @@ def _run_api(payload, workspace, fill_password):
         from .live import connection_options
         full_options = connection_options(filled.get("connection"))
         full_options = _group_options(full_options, payload, store, identity, safety, audit,
-                                      [u['send'] for u in plan['units']])
+                                      _review_statements(plan['units']))
         password = password or full_options.get("password")
         audit.password = password
-        changed = _policy_changed(payload, store, identity, safety, audit, [u["send"] for u in plan["units"]])
+        changed = _policy_changed(payload, store, identity, safety, audit, _review_statements(plan["units"]))
         if changed:
             return changed
         if session is None:
@@ -5171,8 +5348,8 @@ def _run_api(payload, workspace, fill_password):
             decision["alter_preflight"] = review
             decision["alter_binding"] = _alter_binding(session, review)
             decision["warnings"] += review.get("warnings", [])
-    statements = [u["send"] for u in plan["units"]]
-    writes = [u["send"] for u in plan["units"] if u.get("kind") != "read"]
+    statements = _review_statements(plan["units"])
+    writes = [u["send"] for u in plan["units"] if u.get("kind") != "read" or u.get("client_status_sync")]
     digest = _review_digest(tab_id, identity, statements, decision, on_error, session, plan)
     audit = _audit_trail(store, "editor_run", safety, options, password, decision)
     blocked = _gate(registry, decision, payload, digest, audit, statements, writes, name, options)
@@ -5219,7 +5396,7 @@ def _run_api(payload, workspace, fill_password):
             decision["alter_preflight"] = review
             decision["alter_binding"] = _alter_binding(session, review)
             decision["warnings"] += review.get("warnings", [])
-        again = [u["send"] for u in plan["units"]]
+        again = _review_statements(plan["units"])
         audit = _audit_trail(store, "editor_run", safety, options, password, decision)
         if decision["action"] != "allow" and (
                 decision["action"] == "refuse" or started.get("session") is not session
@@ -5229,11 +5406,11 @@ def _run_api(payload, workspace, fill_password):
             # preflight needs its own bound review; an allowed read runs.
             digest = _review_digest(tab_id, identity, again, decision, on_error, session, plan)
             blocked = _gate(registry, decision, dict(payload, confirmed=False), digest, audit, again,
-                            [u["send"] for u in plan["units"] if u.get("kind") != "read"], name, options)
+                            [u["send"] for u in plan["units"] if u.get("kind") != "read" or u.get("client_status_sync")], name, options)
             if blocked is not None:
                 blocked["session"] = session.status()
                 return blocked
-    has_write = any(u.get("kind") != "read" for u in plan["units"])
+    has_write = any(u.get("kind") != "read" or u.get("client_status_sync") for u in plan["units"])
     # History must replay EXPLAIN, never the underlying UPDATE/DELETE.
     history_sql = plan["units"][0]["send"] if payload.get("explain_format") is not None else plan["text"]
     run = Run(plan["units"], limit, full_options, history_sql, plan["offsets"], plan["scope"],
@@ -5241,7 +5418,7 @@ def _run_api(payload, workspace, fill_password):
               history={"record": _history_recorder(store, session, password)},
               alter_context=decision.get("alter_preflight"),
               continue_on_error=on_error == "continue" and plan["scope"] == "all")
-    changed = _policy_changed(payload, store, identity, safety, audit, [u["send"] for u in plan["units"]])
+    changed = _policy_changed(payload, store, identity, safety, audit, _review_statements(plan["units"]))
     if changed:
         # Nothing was sent. A session this request started (under the old
         # policy) is ended instead of being left open until Close; an

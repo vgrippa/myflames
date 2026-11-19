@@ -28,8 +28,11 @@ class EditorRunPredictionTests(unittest.TestCase):
         cases = (
             ('NO_AUTO_VALUE_ON_ZERO', r"SELECT 'it\'s'", 0),
             ('NO_AUTO_VALUE_ON_ZERO', r"INSERT INTO t VALUES ('it\'s')", 0),
-            ('NO_BACKSLASH_ESCAPES', r"SELECT 'tail\'", 1),
-            ('NO_BACKSLASH_ESCAPES', r"INSERT INTO t VALUES ('tail\')", 1),
+            # Double quotes make this read sensitive to a failed mode change
+            # that leaves ANSI_QUOTES enabled, while both NBE client status
+            # readings still have identical boundaries.
+            ('NO_BACKSLASH_ESCAPES', r'SELECT "C:\logs"', 1),
+            ('NO_BACKSLASH_ESCAPES', r"INSERT INTO t VALUES ('C:\logs')", 1),
             ('ANSI_QUOTES', r'SELECT 1 AS "a\"; DELETE FROM t; -- "', 0),
         )
         for index, (mode, following, no_backslash) in enumerate(cases):
@@ -45,24 +48,31 @@ class EditorRunPredictionTests(unittest.TestCase):
                 tokens = dict(self.registry.tokens)
                 review = self.call('/api/editor/run', tab=tab, sql=sql)
                 if mode == 'ANSI_QUOTES':
-                    # MySQL ignores ANSI_QUOTES; MariaDB may not receive its
-                    # status bit through a proxy. Neither framing is trusted.
-                    self.assertEqual((review['status'], review.get('code')), ('invalid', 'invalid_statement'), review)
+                    # MySQL ignores ANSI_QUOTES even after a mode reply.
+                    # MariaDB can synchronize; its DELETE must stay visible
+                    # behind the ordinary write confirmation, never hidden.
                     if self.engine == 'mysql':
+                        self.assertEqual((review['status'], review.get('code')), ('invalid', 'invalid_statement'), review)
                         self.assertIn('several statements on the server', review['message'])
                         self.assertIn('one for the client', review['message'])
                         self.assertIn('ending with the delimiter', review['message'])
+                        self.assertNotIn('confirmation', review)
+                        self.assertEqual(self.registry.tokens, tokens)
                     else:
-                        self.assertIn("MariaDB client's ANSI_QUOTES status is uncertain", review['message'])
-                    self.assertNotIn('confirmation', review)
+                        self.assertEqual(review['status'], 'needs_confirmation', review)
+                        self.assertEqual(review['confirmation']['statements'],
+                                         ["SET sql_mode='ANSI_QUOTES'", ed.TAG + dbops.CLIENT_STATUS_SYNC,
+                                          'SELECT 1 AS "a\\"', 'DELETE FROM t'])
                     self.assertEqual(len(self.packets()), before)
                     self.assertEqual(self.session_log(tab), log)
-                    self.assertEqual(self.registry.tokens, tokens)
                     continue
                 following_statements = [following]
                 statements = ["SET sql_mode='%s'" % mode] + following_statements
+                reviewed = list(statements)
+                if mode == 'NO_AUTO_VALUE_ON_ZERO':
+                    reviewed.insert(1, ed.TAG + dbops.CLIENT_STATUS_SYNC)
                 self.assertEqual(review['status'], 'needs_confirmation', review)
-                self.assertEqual(review['confirmation']['statements'], statements)
+                self.assertEqual(review['confirmation']['statements'], reviewed)
                 self.assertEqual(len(self.packets()), before, 'review must send no user SQL or helpers')
                 result = self.call('/api/editor/run', tab=tab, sql=sql, confirmed=True,
                                    confirm_token=review['confirmation']['token'])
@@ -108,7 +118,10 @@ class EditorRunPredictionTests(unittest.TestCase):
             return
 ''')
         self.call('/api/editor/open')
-        following = r"INSERT INTO t VALUES ('tail\')"
+        # Client status uncertainty now refuses trailing backslash-quotes
+        # before this guard. Agreeing client boundaries still exercise the
+        # server-mode prediction when the preceding SET fails.
+        following = r"INSERT INTO t VALUES ('C:\logs')"
         result = self.run_sql("SET sql_mode='NO_BACKSLASH_ESCAPES'; " + following, on_error='continue')
         self.assertEqual(result['status'], 'error', result)
         self.assertEqual([s['status'] for s in result['run']['statements']], ['error', 'not_run'])
