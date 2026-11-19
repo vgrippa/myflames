@@ -175,7 +175,11 @@ def lexer_readings(backslash_escapes=None, engine=None, sql_mode=None, server_ve
         dialects = ("mysql", "mysql_legacy", "mariadb")
     clients = (client_engine,) if client_engine in ("mysql", "mariadb") else ("mysql", "mariadb")
     # Stored programs restore sql_mode without refreshing the reply's quote
-    # bits. Either bit can therefore disagree with either value of the mode,
+    # bits. MariaDB's SET STATEMENT sql_mode=... FOR does the same: its reply
+    # is sent before the restore runs the sql_mode update hook
+    # (mariadb-11.8.9 sql/sql_parse.cc:2467-2468,1934-1935, before the
+    # restore at 2536 and 1967). Either bit can therefore disagree with
+    # either value of the mode,
     # on direct connections too. Only a preceding sql_mode update reply lets
     # a caller select the synchronized reading. MySQL never advertises ANSI.
     # mysql-8.4.0:client/mysql.cc:2771-2784,sql/sys_vars.cc:4710-4718,
@@ -822,7 +826,8 @@ def _usable_delimiter(value):
     if (not isinstance(value, str) or not value or any(ch in value for ch in "\\\r\n\x00") or
             value[0] in _CLIENT_SPACE or value[-1] in _CLIENT_SPACE or ord(value[0]) >= 128):
         return False
-    # add_line copies a multibyte character before checking the delimiter,
+    # add_line copies a multibyte character before checking the delimiter
+    # when the client character set is multibyte (use_mb(charset_info)),
     # so a UTF-8 delimiter must start with ASCII to be recognized.
     # mysql-8.4.0:client/mysql.cc:2759-2770;
     # mariadb-11.8.9:client/mysql.cc:2643-2657.

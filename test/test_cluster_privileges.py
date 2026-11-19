@@ -13,7 +13,7 @@ import _cluster_fixtures as F
 from _perf_replay import batch
 from _grants_fixtures import grants_batch
 from _reviewed_replay import guarded_packets
-from myflames import cluster as m, dbops, privileges, reviewed_writes
+from myflames import cluster as m, cluster_shell, dbops, privileges, reviewed_writes
 from myflames.connector import ConnectorError
 
 
@@ -320,7 +320,8 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                 report = m.read_status(conn)
                 # Deliberately disagree with the earlier monitoring login.
                 conn.variables['partial_revokes'] = 'ON' if enabled else 'OFF'
-                checks = m.action_checks(conn, report, 'switch_to_multi_primary')
+                with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
+                    checks = m.action_checks(conn, report, 'switch_to_multi_primary')
                 action = self.action(report, 'switch_to_multi_primary', checks)
                 expected = statement(['INSERT'], METADATA[0], True, partial_revokes=enabled)
                 self.assert_missing(action, [['INSERT ON `mysql_innodb_cluster_metadata`.* WITH GRANT OPTION']],
@@ -358,7 +359,8 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
     def test_unknown_partial_revokes_never_produces_an_ambiguous_grant(self):
         conn = GrantsClient('ic-8.4-healthy', grants=[statement(['SUPER'])], variables={'partial_revokes': None})
         report = m.read_status(conn)
-        checks = m.action_checks(conn, report, 'switch_to_multi_primary')
+        with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
+            checks = m.action_checks(conn, report, 'switch_to_multi_primary')
         action = self.action(report, 'switch_to_multi_primary', checks)
         self.assertFalse(action['enabled'])
         self.assertTrue(action['missing_privileges'])

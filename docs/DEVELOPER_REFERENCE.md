@@ -2511,7 +2511,10 @@ checked with both values of `SERVER_STATUS_NO_BACKSLASH_ESCAPES`; MariaDB
 clients also check both values of `SERVER_STATUS_ANSI_QUOTES`, including when
 the corresponding mode is off. Unknown client families check all combinations.
 Stored-program exit can restore `@@SESSION.sql_mode` without restoring these
-bits, even on a direct connection. When client readings differ, a bound session
+bits, even on a direct connection. MariaDB's `SET STATEMENT sql_mode=... FOR`
+has the same effect: its reply is sent before the restore runs the sql_mode
+update hook (`mariadb-11.8.9:sql/sql_parse.cc:2467–2468,1934–1935`, before the
+restore at `2536` and `1967`). When client readings differ, a bound session
 with a known mode sends `SET SESSION sql_mode = @@SESSION.sql_mode` as a
 separate client statement immediately before the affected unit. Its reply
 updates the bits before the client reads that unit. Planning and classification
@@ -2521,9 +2524,30 @@ disagreements that remain after synchronization still refuse.
 The helper is named in editor review and audit, including for an allowed read;
 its results are internal. Both packets assert the target and expected mode.
 A failed helper stops before the unit, including with Continue on error.
-No helper is inserted for units whose client readings agree. A resynchronized
-unit follows a helper SET, so its diagnostics describe that helper rather than
-the preceding user statement. Ordinary intervening `ROW_COUNT()`, `FOUND_ROWS()`,
+The helper can raise server warnings without changing what it sends: MySQL
+raises warning 3135 when strict mode and its sub-modes are only partly set
+(`mysql-8.4.0:sql/sys_vars.cc:4629–4648`), MySQL 8.0+ warns that
+`PAD_CHAR_TO_FULL_LENGTH` is deprecated (`mysql-8.4.0:sql/sys_vars.cc:4700–4704`),
+and MySQL 5.7 warns about its deprecated modes
+(`mysql-5.7.44:sql/sys_vars.cc:3861–3876`); MariaDB's check raises none
+(`mariadb-11.8.9:sql/sys_vars.cc:3991–3996`). The helper never commits: an
+implicit commit from a SET statement happens only for its committing forms
+(`mysql-8.4.0:sql/sql_parse.cc:426–428`;
+`mariadb-11.8.9:sql/sql_parse.cc:453–454`), never for a plain
+`SET SESSION sql_mode`.
+Through a statement-routing proxy the helper's reply may come from the proxy
+rather than the server. The lab check against ProxySQL 3.0.11 showed that
+ProxySQL cannot track `SET SESSION sql_mode = @@SESSION.sql_mode`: it locks
+the connection to its hostgroup and later reads fail with error 9006, so
+nothing runs. Editor tabs through ProxySQL are unbound (the routed start-up
+fallback) and refuse status-dependent units.
+No helper is inserted for units whose client readings agree. Every
+resynchronized unit is guarded, and its packet runs the guard's marker SELECT
+just before the unit's statement, so its diagnostics describe that marker
+(a following `ROW_COUNT()` reads -1: a result set's end sets the row count to
+-1, `mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+`mariadb-11.8.9:sql/sql_class.h:6311–6313`), not the helper SET or the
+preceding user statement. Ordinary intervening `ROW_COUNT()`, `FOUND_ROWS()`,
 `SHOW WARNINGS` and `GET DIAGNOSTICS` units retain their existing behavior.
 Users and roles names the same status helper in its reviewed password wrapper
 when the literal's client readings differ. Its staging packet sets the password
@@ -2549,7 +2573,12 @@ and multibyte characters), and closes only with the identical case-sensitive
 tag. An unterminated body refuses before sending, so it cannot swallow the
 packet delimiter. Quotes, comments and dollar signs inside identifiers do
 not open a body. Source: `mysql-9.7.0:client/mysql.cc:2715–2746,2953–2974` (the client enables this grammar after its server probe at
-`mysql-9.7.0:client/mysql.cc:1288–1291`).
+`mysql-9.7.0:client/mysql.cc:1288–1291`). Inside a dollar-quoted body,
+MySQL 8.1+ clients still treat a backslash as an escape unless the
+NO_BACKSLASH_ESCAPES status bit is set (`mysql-8.4.0:client/mysql.cc:2771–2783`,
+the escape branch that runs before the dollar-body closer at `2936`). The
+editor refuses dollar-quoted text because the two client readings (with and
+without the grammar) differ.
 The classifier compares the legacy reading, where dollar tags can be
 identifiers, with the dollar-body reading. Differences in unit spans,
 delimiters, executable code, quoted identifiers, closure or parser issues
@@ -3089,7 +3118,7 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   Indenting or quoting a `delimiter_x` identifier preserves its newline.
   For string data, avoid the line break just before DELIMITER. Dollar-quote
   recognition and closing are source-checked in `client/mysql.cc` at
-  `mysql-8.1.0:2541–2577,2764–2798`,
+  `mysql-8.1.0:2541–2572,2764–2798`,
   `mysql-8.4.0:2701–2733,2931–2962` and
   `mysql-9.7.0:2715–2747,2949–2981`.
   Sources (`client/mysql.cc`): `mysql-5.7.44:1179–1189,2786–2800`,
@@ -3182,9 +3211,11 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   The common limits were checked in every client tag above. Representative
   sources (`client/mysql.cc`): `mysql-8.4.0:237,4617–4632` and
   `mariadb-11.8.9:302,4883–4902`.
-  The first delimiter character must be ASCII. Both clients copy a UTF-8
-  multibyte character and continue before checking the delimiter, so a
-  delimiter starting with that character cannot match. Multibyte characters
+  The first delimiter character must be ASCII. When the client character
+  set is multibyte (`use_mb(charset_info)` guards the copy), both clients
+  copy a UTF-8 multibyte character and continue before checking the
+  delimiter, so a delimiter starting with that character cannot match.
+  Multibyte characters
   after an ASCII first character still count toward the 15-byte limit.
   Sources (`client/mysql.cc`): `mysql-8.4.0:2759–2770` and
   `mariadb-11.8.9:2643–2657`; the same ordering holds in all tags above.
@@ -3195,10 +3226,10 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   pass preserves that packet boundary. For example, `DELIMITER "'a"` followed
   by `SELECT '1''aDELETE FROM t'aSELECT '2' 'a` plans three units, including
   the DELETE that requires confirmation. Sources (`client/mysql.cc`):
-  `mysql-5.7.44:2638–2640,2757–2765`,
+  `mysql-5.7.44:2638–2640,2768–2772`,
   `mysql-8.4.0:2824–2825,2931–2947`,
-  `mariadb-10.11.16:2700,2827–2831` and
-  `mariadb-11.8.9:2729,2857–2863`.
+  `mariadb-10.11.16:2700,2831–2835` and
+  `mariadb-11.8.9:2729,2860–2864`.
   Normalized text is split again before review so an internal space cannot
   create a delimiter across a comment closer either (`/ +` across `*/+2`).
   Unknown families require equal parsed arguments as well as equal discarded
@@ -3804,9 +3835,11 @@ planner, write gate and session engine from the CLI.
   client packet; the editor checks that reply before sending the unit's bytes.
   Diagnostic reads following an ordinary user write
   still describe that write; a guarded write that itself reads diagnostics
-  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's SET.
-  MySQL's SET calls `my_ok`, which sets ROW_COUNT to zero
-  (`mysql-9.7.0:sql/sql_parse.cc:3833–3852`, `mysql-9.7.0:sql/sql_class.cc:3845–3847`). Server errors carry the line
+  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's marker
+  SELECT, which its packet runs just before the write. `ROW_COUNT()` then
+  reads -1: a result set's end sets the row count to -1
+  (`mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+  `mariadb-11.8.9:sql/sql_class.h:6311–6313`). Server errors carry the line
   their statement started on, which attributes them. stdout and stderr are
   separate pipes, each read by its own thread: the MariaDB client writes an
   error before flushing stdout, so a merged stream could misorder them. On

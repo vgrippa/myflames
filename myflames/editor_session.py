@@ -663,7 +663,7 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
             # inside a quote in the older reading. A known family does not
             # bind the client version or its server capability probe, so
             # require both MySQL readings. MariaDB has no dollar bodies.
-            # mysql-8.1.0:client/mysql.cc:2541-2577,2764-2798;
+            # mysql-8.1.0:client/mysql.cc:2541-2572,2764-2798;
             # mysql-8.4.0:client/mysql.cc:2701-2733,2931-2962.
             dollar_readings = (False, True) if reading["client_engine"] != "mariadb" and "$" in send else (False,)
             for dollar_quotes in dollar_readings:

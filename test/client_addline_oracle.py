@@ -272,7 +272,7 @@ def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=Fa
                     # and scans the tag on this physical line only. The
                     # closing tag is case-sensitive. Copy all but its last
                     # byte before need_space, as add_line actually does.
-                    # mysql-8.1.0:2541-2577,2764-2798;
+                    # mysql-8.1.0:2541-2572,2764-2798;
                     # mysql-8.4.0:2701-2733,2931-2962;
                     # mysql-9.7.0:2715-2747,2949-2981.
                     prefix = line[pos - 1:pos] if pos else ""
