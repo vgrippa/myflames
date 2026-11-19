@@ -77,10 +77,24 @@ function harness() {
     newer() { env.openDialogs.push(note => newerNotes.push(note)); },
   };
 }
+const apiSource = source('../src/api.ts');
+const formatNumber = run(`(${named(apiSource, 'formatNumber')})`, { numberFormats: new Map() });
+const number = run(`(${named(apiSource, 'number')})`, { formatNumber });
+const killStatusWord = run(`(${named(locks, 'killStatusWord')})`, {});
+const killTransactionEvidence = run(`(${named(locks, 'killTransactionEvidence')})`, {});
+const killRollingBack = run(`(${named(locks, 'killRollingBack')})`, { killTransactionEvidence });
+const killHeld = run(`(${named(locks, 'killHeld')})`, { killTransactionEvidence });
+const clipStatement = run(`(${named(locks, 'clipStatement')})`, {});
+const outcomeText = run(`(${named(locks, 'outcomeText')})`, {
+  list: run(`(${named(locks, 'list')})`, {}),
+});
+const killHeadline = run(`(${named(locks, 'killHeadline')})`, { killStatusWord });
+const killStateLine = run(`(${named(locks, 'killStateLine')})`, {
+  killRollingBack, killHeld, number, list: run(`(${named(locks, 'list')})`, {}),
+});
+const killEvidence = run(`(${named(locks, 'killEvidence')})`, { killTransactionEvidence, clipStatement, number });
 const renderNote = note => run(`(${named(locks, 'KillResultNote')})`, {
-  React, killHeadline: run(`(${named(locks, 'killHeadline')})`, {
-    killStatusWord: run(`(${named(locks, 'killStatusWord')})`, {}),
-  }),
+  React, killHeadline, killStateLine, killEvidence, killHeld, outcomeText,
 })({ note, currentKey: 'another connection', noteRef: {}, onDismiss() {}, onRefresh() {} });
 
 for (const departure of ['open', 'close', 'unmount']) for (const newer of departure === 'open' ? [false] : [false, true]) {

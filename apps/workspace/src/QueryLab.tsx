@@ -1525,12 +1525,17 @@ export const QueryLab = forwardRef<
     }, id);
     setError("");
   }
+  /** The group member a member-bound tab runs on, when that member is
+   * available; null otherwise. */
+  function boundMember(t: Tab): Connection | null {
+    return t.member && group && memberConnection ? memberConnection(t.member) : null;
+  }
   /** The connection a run of *t* uses: a tab bound to a group member runs on
    * that member (the session request carries its profile id and the group
    * name); a Top statements tab runs in the schema it was recorded in when
    * the connection names none. */
   function connectionFor(t: Tab): Connection {
-    const bound = t.member && group && memberConnection ? memberConnection(t.member) : null;
+    const bound = boundMember(t);
     // Keep an unavailable binding disconnected even if a future caller misses
     // its UI guard. Port 0 is refused before any login, as in a cleared picker.
     if (t.member && !bound) return unavailableMemberConnection(t.member, t.member_name);
@@ -2592,6 +2597,10 @@ export const QueryLab = forwardRef<
   const pendingFill = unfilled(tab, tab.sql, parseParameters(tab.parameters));
   const unbound = bindingProblem(tab);
   const tabSchema = tab.source ? connectionFor(tab).database : "";
+  // The connection the tab runs on before the source-schema fallback, as in
+  // connectionFor: its available group member, else the connection in use.
+  const tabBound = boundMember(tab);
+  const tabBaseDatabase = tab.member && !tabBound ? "" : (tabBound || connection).database || "";
   const session = rt.session;
   const running = rt.running;
   const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
@@ -3314,7 +3323,7 @@ export const QueryLab = forwardRef<
                   {shortDigest(tab.source.digest)}
                 </code>
                 {tabSchema &&
-                  (!rt.measureBefore && tabConnection.database
+                  (!rt.measureBefore && tabBaseDatabase
                     ? ` · runs in ${tabSchema}, the connection's schema`
                     : ` · runs in ${tabSchema}, the schema it was recorded in`)}
                 {rt.measureBefore && !tabSchema && " · runs without a default schema"}
