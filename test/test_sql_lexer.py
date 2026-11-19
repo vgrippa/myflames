@@ -830,7 +830,10 @@ class EditorLexerTests(unittest.TestCase):
         for opener in ("/*!", "/*M!"):
             for space in ("", " "):
                 sql = ("DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; " + opener + "100000" +
-                       space + "END*/; DROP DATABASE prod; END//")
+                       space + "END*/ ; DROP DATABASE prod; END//")
+                # Keep whitespace after the closer so this reaches the DDL
+                # check on a MySQL client too. Without it, /*M! is ordinary
+                # to that client and the exact-wire spacing guard refuses.
                 plan = self.plan(sql, "mariadb", "11.8.9-MariaDB")
                 self.assertEqual(ed._decision(plan, SAFETY)["action"], "refuse")
                 self.assertTrue(any("DROP DATABASE prod" in part for part in ed._ddl_codes(plan["units"][0])))

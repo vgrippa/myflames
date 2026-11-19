@@ -385,6 +385,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 pending = False
                 continue
         if active is not None and sql.startswith("*/", pos):
+            if client and pos and sql[pos - 1] == "/":
+                issues.append((pos - 1, REASON_COMMENT_OVERLAP))
             # The conditional-comment branch in add_line clears ss_comment
             # at '*', then examines '/' on the next iteration. A delimiter
             # can start at that slash (client/mysql.cc:2946-2948).
@@ -482,6 +484,24 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             nested = bool(header and not (engine == "mysql" and header["maria"]))
             end, closed = consume_comment(pos + 2, nested and not client)
             token("comment", pos, end)
+            if client and closed:
+                # add_line's ordinary opener has no !ml_comment guard:
+                # /*/ consumes the '*' before the closer can see it.
+                # mysql-5.7.44:client/mysql.cc:2721-2738; mysql-8.0.46:2616-2628;
+                # mysql-8.4.0:2895-2908; mysql-9.7.0:2913-2926;
+                # mariadb-10.11.16:2788-2805; mariadb-11.8.9:2817-2834;
+                # mariadb-12.0.1:2739-2758. A hint's closing slash can
+                # also start another /* (mysql-8.4.0:2928-2930).
+                if sql[end - 3:end] == "/*/" or sql[end - 1:end + 1] == "/*":
+                    issues.append((pos, REASON_COMMENT_OVERLAP))
+                # Ordinary closers set need_space; the next non-whitespace
+                # byte can acquire a space on the wire. The differential
+                # oracle checks exact sent text, including this insertion.
+                # mysql-8.4.0:2921,2959-2962; mariadb-11.8.9:2851,2868-2873.
+                ordinary_client = not sql.startswith("/*+", pos) or client_engine == "mariadb"
+                if (ordinary_client and end < n and sql[end] not in _CLIENT_SPACE and
+                        not (client_delimiter and sql.startswith(client_delimiter, end))):
+                    issues.append((pos, REASON_COMMENT_SPACE))
             if client and header is None and not sql.startswith("/*+", pos):
                 # mysql-8.4.0:client/mysql.cc:2907-2930 sets ss_comment for
                 # /*! or /*+ even while ml_comment is open. The first */
@@ -491,7 +511,7 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # set ss_comment there. Refuse all three special openers on
                 # every client, across lines too, without modelling version-
                 # specific state. Quotes and #/-- inside this body are data.
-                body = sql[pos + 2:end - 2 if closed else end]
+                body = sql[pos + 2:end - 1 if closed else end]
                 if any(opener in body for opener in ("/*!", "/*+", "/*M!")):
                     issues.append((pos, REASON_NESTED_ORDINARY_COMMENT))
             if header is not None:
@@ -505,14 +525,20 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 issues.append((at, REASON_CLIENT_COMMAND % sql[at + 1:at + 2]))
             if sql.startswith("/*+", pos):
                 body = sql[pos + 3:end - 2 if closed else end]
+                # Include the closer's '*' only for the opener check. Keep
+                # the actual body for quotes and the conservative '--' at
+                # body-end check; the closing marker is not hint content.
+                marker_body = sql[pos + 3:end - 1 if closed else end]
                 # Nested /*! changes MySQL's SSC_HINT to SSC_CONDITIONAL
                 # even on one line. It also sets conditional state in
                 # MariaDB 10.11-11.8 ordinary /*+ comments. The # / -- hint
                 # bug affects MySQL 5.7.44, 8.0.42, 8.1.0, 8.4.0, 8.4.5 and
-                # 9.1.0; fixed in 8.0.43, 8.4.6 and 9.2.0 (514931dba1e,
-                # Bug#30875669). Refuse hazardous bodies on every client,
+                # 9.1.0; fixed in 9.2.0 (514931dba1e, Bug#30875669) and
+                # 8.0.43/8.4.6 (94a29a8a117, Bug#37572191).
+                # Refuse hazardous bodies on every client,
                 # independent of its patch release.
-                if (any(mark in body for mark in ("/*", "#", "\\")) or re.search(r"--(?:\s|$)", body) or
+                if ("/*" in marker_body or any(mark in body for mark in ("#", "\\")) or
+                        re.search(r"--(?:\s|$)", body) or
                         not _hint_quotes_closed(body)):
                     issues.append((pos, REASON_HINT))
             # MySQL's ss_comment is local to add_line, so after the first
@@ -653,8 +679,12 @@ REASON_QUOTE_FRAMING = ("A client delimiter splits a server string or quoted ide
 REASON_NESTED_CLIENT_COMMENT = ("A nested /* inside an executable comment changes the client's comment state. "
                                 "Use SQL without nested executable comments.")
 REASON_NESTED_ORDINARY_COMMENT = ("An ordinary comment contains a nested /*!, /*+ or /*M! opener. "
-                                  "The client can end this comment differently from the server. "
+                                  "Some clients can end this comment differently from the server. "
                                   "Remove the nested opener before running this SQL.")
+REASON_COMMENT_OVERLAP = ("A /* opener overlaps a comment's closing */ marker. "
+                          "Some clients read a different comment boundary. Separate these markers with whitespace.")
+REASON_COMMENT_SPACE = ("A block comment touches following SQL that the client may separate with an inserted space. "
+                        "Add whitespace after */ so the reviewed and sent text agree.")
 REASON_HINT = ("An optimizer hint (/*+ ... */) contains a comment marker "
                "(/*, # or -- followed by whitespace or a line ending), a backslash, or an unclosed quote. "
                "Close quoted values before */ and remove comment markers and backslashes, including inside quotes.")
@@ -718,7 +748,7 @@ def _masked_fragment(sql, scan, start, end):
 def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
                      engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
                      ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
-                     client_ansi_quotes=False):
+                     client_ansi_quotes=False, discarded_prefixes=None):
     """Client statement boundaries with code masked by the server's SQL lexer.
 
     ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
@@ -731,6 +761,9 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     DELIMITER/get_arg: mysql-server/client/mysql.cc:2661-2682,4652-4671,4897-4935;
     delimiter and line-comment recognition: :2838-2912; MariaDB :2746-2833.
     Dollar bodies use the optional newer client grammar (:2715-2746).
+    If supplied, ``discarded_prefixes`` collects original (start, end)
+    ranges dropped by consumed DELIMITER lines. The editor compares these
+    across readings before any prefix disappears from a planned unit.
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
@@ -809,6 +842,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                 comment["end"] > state["start"] for comment in scan["comments"])
             if ignored:
                 consumed_delimiters.add(command.start(1))
+                if discarded_prefixes is not None:
+                    discarded_prefixes.append((state["start"], line_end))
             else:
                 issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
                       "before changing DELIMITER.")

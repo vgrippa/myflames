@@ -428,6 +428,19 @@ def _server_unit_count(text, unit):
     return count + int(pending)
 
 
+def _check_discarded_delimiters(readings, before=None):
+    """Require agreement before a DELIMITER command loses original text."""
+    reference = None
+    for discarded in readings:
+        ranges = discarded if before is None else [span for span in discarded if span[0] < before]
+        if reference is None:
+            reference = ranges
+        elif ranges != reference:
+            raise EditorError("The possible client readings discard different SQL before DELIMITER. "
+                              "Use ordinary comments before DELIMITER or select a known client family.",
+                              "invalid_statement")
+
+
 def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=";", server_version=None,
                     identity_bound=None, wsrep_on=None, sql_mode=_PLAN_MODE_UNSET, client_engine=None):
     """Plan exact client units, classifying each under its server SQL mode.
@@ -456,7 +469,15 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         if not pending:
             readings = dbops.lexer_readings(current_backslash, engine, current_mode, server_version, client_engine,
                                             sql[offset:])
-            pending = dbops.split_statements(sql[offset:], delimiter=delimiter, **dict(lexer_args, **readings[0]))
+            discarded = []
+            pending = dbops.split_statements(sql[offset:], delimiter=delimiter, discarded_prefixes=discarded,
+                                             **dict(lexer_args, **readings[0]))
+            discarded_readings = [discarded]
+            for reading in readings[1:]:
+                alternative_discarded = []
+                dbops.split_statements(sql[offset:], delimiter=delimiter,
+                                       discarded_prefixes=alternative_discarded, **dict(lexer_args, **reading))
+                discarded_readings.append(alternative_discarded)
             if "$" in sql[offset:]:
                 dollars = dbops.split_statements(sql[offset:], delimiter=delimiter, dollar_quotes=True,
                                                  **dict(lexer_args, **readings[0]))
@@ -464,8 +485,14 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                     raise EditorError("Dollar-quoted text ($...$) changes how the client reads this run. "
                                       "The Query editor does not run dollar-quoted text yet.", "invalid_statement")
             if not pending:
+                _check_discarded_delimiters(discarded_readings)
                 break
         stmt = pending.pop(0)
+        # Check the original source, not only stmt['text']: the first
+        # reading may have discarded a /*M! prefix that another keeps.
+        # Compare only up to this unit; a mode-changing unit causes the
+        # remaining suffix to be read again under its new mode below.
+        _check_discarded_delimiters(discarded_readings, before=stmt["next_start"])
         number = len(units) + 1
         send_offset = offset + stmt["start"]
         # Compare this unit independently. Do not let initial quote settings
@@ -558,10 +585,13 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                 r"(?:DEFINER\s*=\s*[^;]+?\s+)?(?:AGGREGATE\s+)?"
                 r"(?:PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)\b",
                 code, re.I | re.ASCII):
+            guidance = ("Use a session with a known mode without ORACLE." if identity_bound else
+                        "The server engine and SQL mode are not bound to this session. "
+                        "Open a tab with a confirmed session before running this SQL.")
             raise EditorError("Stored-program definitions in MariaDB ORACLE mode are not supported by the "
-                              "Query editor. Use a session with a known mode without ORACLE.", "invalid_statement")
+                              "Query editor. " + guidance, "invalid_statement")
         units.append(unit)
-        if _unit_changes_mode(unit):
+        if _unit_changes_mode(unit, engine):
             # A custom-delimiter packet can change mode before its own next
             # server statement. Do not infer a mode halfway through a packet.
             if ";" in code and sensitive:
@@ -575,20 +605,32 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
                 delimiter = stmt["delimiter"]
                 offset += stmt["next_start"]
                 pending = []
-            elif not pending:
-                break
+                current_mode, current_backslash = next_mode, None
+                continue
             current_mode, current_backslash = next_mode, None
-        elif not pending:
+        if not pending:
+            # Commands after the final statement also discard source text,
+            # even though they do not produce another unit to compare.
+            _check_discarded_delimiters(discarded_readings)
             break
     if not units:
         raise EditorError("There is no statement to run.", "empty")
     return units
 
 
-def _unit_changes_mode(unit):
+def _unit_changes_mode(unit, engine=None):
     """Conservatively include indirect changes and quoted sql_mode names."""
     from . import dbops
     code = unit["code"]
+    # ORACLE's top-level set_assign has no SET keyword. Without a known
+    # non-ORACLE MariaDB mode, do not infer which name (or qualified name)
+    # LEX::set_variable resolves. These assignments leave later mode unknown.
+    # mariadb-11.8.9:sql/sql_yacc.yy:19225-19230,19513-19547;
+    # sql/sql_lex.cc:9042-9050.
+    if engine != "mysql" and (unit.get("sql_mode") is None or dbops.oracle_mode(unit["sql_mode"], "mariadb")):
+        name = r"(?:" + _MASKED_NAME + r"|'')"
+        if re.search(r"(?:^|;)\s*" + name + r"(?:\s*\.\s*" + name + r")?\s*:=", code):
+            return True
     # Recognize each lvalue/operator pair independently of earlier values.
     # CHARACTER SET inside CAST, nested expressions and SET NAMES must not
     # replace the context of the enclosing assignment list. SET statements
@@ -1889,7 +1931,7 @@ class EditorSession(EditorInsights):
 
         mysql-9.7.0:sql/sql_show.cc:3846-3854,5705 supplies ID/INFO even
         without Performance Schema. Its P_S processlist is empty when OFF
-        (storage/perfschema/ha_perfschema.cc:111-112,1759-1762).
+        (mysql-9.7.0:storage/perfschema/ha_perfschema.cc:111-112,1759-1762).
         mysql-8.4.0:sql/sql_show.cc:3232,5094 registers the same table.
         mariadb-11.8.9:sql/sql_show.cc:3461,3512-3515,10433-10443 supplies ID/INFO.
         The leading token fits even a truncated INFO. Binary comparison
@@ -2272,7 +2314,7 @@ class EditorSession(EditorInsights):
                 unit["mode_unknown"] = mode_unknown
                 unit["sql_mode"] = checked[0]["sql_mode"]
                 unit["conditional_sql"] = checked[0]["conditional_sql"]
-                if _unit_changes_mode(unit):
+                if _unit_changes_mode(unit, context["engine"]):
                     context["sql_mode"] = _literal_sql_mode(unit) if context["identity_bound"] else None
                     mode_unknown = context["sql_mode"] is None
             if run.audit is not None or any(_needs_session_guard(u) for u in run.units):
@@ -2433,7 +2475,7 @@ class EditorSession(EditorInsights):
                                   limit=run.limit, kill_ok=kill_ok,
                                   guard=run.target_guard if _needs_session_guard(unit) else None,
                                   delimiter=unit.get("delimiter") or ";", setup=setup, sql_mode=unit["sql_mode"])
-                if _unit_changes_mode(unit):
+                if _unit_changes_mode(unit, self.engine):
                     # A CALL or multi-statement unit can change the mode
                     # before failing. Invalidate after sending, even on an
                     # error; only refresh_state may establish a new cached
@@ -3938,7 +3980,7 @@ def _embedded_compound_ddl(unit):
     Use statement positions, not keyword substrings: a string, column name,
     qualified name or user variable must not become an executed DDL verb.
     An unsupported compound boundary cannot establish standalone safety.
-    MariaDB sql/sql_yacc.yy:18696-18703,20812-20895.
+    mariadb-11.8.9:sql/sql_yacc.yy:18212-18219,20174-20179.
     """
     # The shared classifier judges every server statement in the unit.
     # Only an entirely read-only unit is exempt: a read before a block or
@@ -4003,7 +4045,7 @@ def _check_oracle_compounds(units, engine, sql_mode, identity_bound=None):
                         "Open a tab with a confirmed session before running this SQL.")
             raise EditorError("Anonymous compound blocks in MariaDB ORACLE mode are not supported by the "
                               "Query editor. " + guidance, "invalid_statement")
-        if engine != "mysql" and _unit_changes_mode(unit):
+        if engine != "mysql" and _unit_changes_mode(unit, engine):
             mode = _literal_sql_mode(unit)
             # With Continue on error, a later assignment cannot prove that
             # a previously possible ORACLE mode has gone away.

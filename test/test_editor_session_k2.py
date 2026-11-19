@@ -21,7 +21,7 @@ class EditorPlanningK2Tests(unittest.TestCase):
 
     def test_show_create_is_a_read_on_both_engines(self):
         # mysql-9.7.0:sql/sql_yacc.yy:14343-14444;
-        # mariadb-11.8.9:sql/sql_yacc.yy:14437-14629.
+        # mariadb-11.8.9:sql/sql_yacc.yy:14438-14629.
         for engine, version in SERVERS:
             for object_type in ("TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER",
                                 "EVENT", "DATABASE", "SCHEMA"):

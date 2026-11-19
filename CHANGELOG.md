@@ -25,6 +25,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Query editor refuses overlapping comment openers and closers, including `/*/`, that could make the database client expose SQL hidden from review. Comment boundaries that change the sent text also refuse.
+- The deprecated SQL command rechecks all consent requirements after connecting. A database name revealed by the bound server still requires an exact typed confirmation, and ALTER preflight follows the bound statement.
+- Query editor refuses DELIMITER changes when an unknown client family could discard different comment-prefixed SQL.
+- Query editor detects MariaDB ORACLE assignments without SET, including qualified names, before reviewing later SQL with mode-dependent quoting.
 - Query editor refuses ordinary comments containing nested executable-comment or optimizer-hint openers that could make the database client send SQL different from the reviewed statement.
 - Query editor detects SQL-mode assignments after CAST, CONVERT, charset clauses and nested expressions, so later SQL with ambiguous quoting cannot bypass review.
 - Query editor refuses DELIMITER changes that would discard SQL the server executes, including MariaDB executable comments read by a MySQL client.
