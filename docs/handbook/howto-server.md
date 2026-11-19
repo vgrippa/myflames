@@ -42,6 +42,8 @@ Use this when statements pile up behind one session: find the blocker in Locks a
 4. In the sheet, check **Statement to send**, then under **What to end** keep **Kill connection** or choose **Kill query only**.
 5. Click **Kill connection <id>** to confirm.
 
+![Open Server > Locks, select blocker connection 53 in Blocking tree, click Kill… in the inspector, review KILL CONNECTION 53 in the sheet, and click Kill connection 53 to confirm and show the ended outcome.](../screenshots/howto-kill-blocking.gif)
+
 What you see: before sending anything, myflames reads the session again and stops if it has changed or ended. Afterwards the view shows whether each blocked session still waits.
 
 Good to know:
@@ -57,6 +59,8 @@ Use this when the server is slow and you do not know which statements to look at
 2. Pick a **Schema** and choose the order in **Rank by**: **Total time**, **Average time**, **Rows examined** or **Full scans of the first table**.
 3. Select a row to inspect its normalized SQL, example statement and metrics.
 4. Click **Explain top 5** in the toolbar to capture estimated plans for the first five runnable SELECTs at once, or use a row's **Explain** for one statement.
+
+![Open Workload > Top statements, click Refresh, select a statement row to inspect its details, return with Back to statements, and click Explain top 5 in the toolbar to add plans to the open plans.](../screenshots/howto-top-statements.gif)
 
 What you see: each plan is added to the open plans with its plan-shape findings as badges, ready to inspect as a flame graph or tree. For a measured plan, use a row's **Run analysis** and confirm with **Execute and analyze**.
 
@@ -75,6 +79,8 @@ Use this when many sessions at once need to end, for example a pile of long-runn
 4. Under **Presets**, click **Runaway queries (> 30s)** or **Lock waiters** to select the matching sessions, or set your own filters.
 5. Review every selected session and its SQL in the list, then click **Kill N queries** or **Kill N connections**.
 6. Check the statements and click **Send N statements**.
+
+![Open Workload > Processlist, click Kill sessions…, choose Kill query, select the Runaway queries (> 30s) preset to preview matching sessions, click the Kill queries button to review the KILL QUERY statements, and click Send to execute them.](../screenshots/howto-kill-sessions.gif)
 
 What you see: before sending, myflames reads each session again and stops for any that changed or ended. The Processlist note then shows whether the killed sessions and their waiters are gone.
 
@@ -110,6 +116,8 @@ Use this when a table needs a schema change, or when deleted rows left space the
 4. Click **Add column…**, **Remove column…** or **Optimize table…**.
 5. Review the exact DDL and its algorithm in the sheet, then confirm.
 
+![Open Server > Tables, filter by Fragmentation, select a table, click Table structure in the inspector to view its columns and definition, close the sheet, click Optimize table…, review the OPTIMIZE TABLE statement, and confirm.](../screenshots/howto-optimize-table.gif)
+
 What you see: the change runs as the reviewed statements, and the outcome is recorded in the Audit log.
 
 Good to know:
@@ -127,6 +135,8 @@ Use this to stage a tuning change with review, or to find configuration drift be
 4. Click **Review and apply**, check the exact statements and confirm.
 5. To compare two servers, open the **Compare** tab, pick the second saved connection and click **Compare**. Differences are listed by default; check **Show identical** to see every parameter.
 
+![Open Server > Parameters, filter Show by Recommendations, select a parameter, return to the list, click Edit, enter a new value, click Review and apply (1) and confirm. Switch to Compare, select Prod MySQL in Target, and click Compare.](../screenshots/howto-parameters-compare.gif)
+
 What you see: the apply runs the reviewed statements, and a parameter's inspector shows the change under **Changed through myflames**. The comparison lists each differing parameter with both values.
 
 Good to know:
@@ -142,6 +152,8 @@ Use this when a view reports missing data because the matching instruments or co
 2. Choose a bundle in **Preset** and read its summary and cost.
 3. Click **Show statements** to preview the UPDATE statements on the performance_schema setup tables, then confirm to apply the preset.
 4. For finer control, browse **Features**, **Instruments**, **Consumers** and **Actors and objects**, select rows and click **Enable**, **Enable without timing** or **Disable**.
+
+![Open Server > Instruments, choose Wait analysis in Preset, click Show statements to preview the performance_schema updates in the inspector, click Apply Wait analysis…, and confirm.](../screenshots/howto-instruments-preset.gif)
 
 What you see: the chosen rows change state, and views that needed them start reporting data on their next read.
 
@@ -188,6 +200,8 @@ Use this to add an account or change what an account may do, with the GRANT and 
 3. For a scoped level, click **Add scope** and name the database, table, column or routine.
 4. Toggle the privileges in the matrix, then click **Review changes**.
 5. Check the statements, type the account name to confirm and apply.
+
+![Open Server > Users and roles, select app@%, choose Databases in Grant level, click Add scope for shop, tick CREATE ROUTINE, click Review changes to inspect the GRANT statement, type app@% to confirm, and apply.](../screenshots/howto-users-grants.gif)
 
 What you see: the account or its grants change as reviewed, and the change appears in the Audit log.
 

@@ -17,6 +17,8 @@ Use this when Replication, Cluster, ProxySQL or Readyset should draw the whole e
 3. In the **Create a connection group** sheet, name the **Group**: the connection in use joins it (marked "This connection"). To add other saved connections, open **Review…** from the bar instead and tick the ones that belong to this environment.
 4. Click **Add N to <group>**.
 
+![Open Cluster on a connection with no connection group, click Create a group… in the group bar, name the group shop-pipeline, and click Add 1 to shop-pipeline so the group bar displays the new group.](../screenshots/howto-connection-group.gif)
+
 What you see: the place re-reads and draws the full topology, and the group bar lists which group members were read, which were not reached and which failed. When the connection you opened belongs to another group's topology, the bar instead offers **Add to <group>** and **Not now**.
 
 Good to know:
@@ -37,6 +39,8 @@ Use this when your saved connections belong to one cluster or replication group 
 4. In the **Server:** picker in the view header or the **Query editor** tab bar, keep the default server (it starts on the primary or replication source, or the first member when none is marked primary or source) or choose another member of the group.
 5. In **Query editor**, click **+** (**New query tab**) to open a tab bound to the member chosen in **Server:**; each tab shows ` · <connection>` after its name and keeps running on that server even if you later change **Server:** for new tabs.
 
+![Open the Connection in use picker, choose a group under Group connections to open it as one Group connection, open a single-server place or Query editor, and use the Server: picker and New query tab to work on individual members of the group.](../screenshots/howto-group-open.gif)
+
 What you see: the top bar and window status bar show `Group connection <group> · <N> servers` under the strictest write safety of the group's members, and every single-server view header shows **Server:** alongside the member it reads (`<connection> · <host>:<port> · <ROLE>` when the role is known). **Server** views and **Query editor** keep their own **Server:** choice while the group stays open.
 
 Good to know:
@@ -55,6 +59,8 @@ Use this to rename a connection group, add or remove saved connections, or delet
 2. In **Edit group `<group>`**, edit **Group name** if you want to rename the group.
 3. Check or uncheck saved connections in the list to add or remove members (a connection that belongs to another group notes `Moves it from group <other>`), then click **Save group**. To add topology suggestions with the matching servers pre-ticked and their evidence shown, open **Replication**, **Cluster**, **ProxySQL** or **Readyset**, click **Review…** in the connection group bar above **Topology**, and click **Add `<N>` to `<group>`**.
 4. To remove the group itself, click **Delete group…** at the bottom of **Edit group `<group>`**, then click **Delete group** in **Delete group `<group>`?**.
+
+![Open Edit group… from Group connections in the Connection in use picker, the window status bar or Home, update Group name or check and uncheck saved connections in the list, and choose Save group or Delete group….](../screenshots/howto-group-edit.gif)
 
 What you see: saving updates the group at once across the picker, **Home** and any open **Group connection**. Deleting the group removes only the group; its saved connections and their saved passwords stay on this computer, and if the group was open, its active member stays in use as a plain connection.
 
@@ -96,6 +102,8 @@ Use this to bring connections you already keep in another client into myflames, 
 3. In **From**, choose **MySQL Workbench** or **DBeaver**.
 4. Review the preview: each connection's name, endpoint, default database and SSH settings, with a note where something needs attention.
 5. Tick the connections to import and click **Import N connections**.
+
+![Open Home, open the Connections menu, choose Import from MySQL Workbench or DBeaver…, review the preview showing Reports MariaDB, click Import 2 connections, and click Done to list the imported connections.](../screenshots/howto-import-connections.gif)
 
 What you see: the imported connections appear in the Connections table, ready to open; passwords are asked when you first connect.
 

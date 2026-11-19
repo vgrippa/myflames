@@ -19,7 +19,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chooseConnection } from "./chrome-helpers.mjs";
+import { chooseConnection, openConnectionPicker } from "./chrome-helpers.mjs";
 import { EDITOR, editorSelection, setEditorText } from "./editor-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
 
@@ -556,8 +556,14 @@ async function pickCompletion(page, text) {
   await handle.dispose();
 }
 
-async function boot() {
-  const h = await open("/api/live/health", "howto-recordings", extra, {
+// Guides that need the connection group (and, for the cluster pair, the grant
+// report): their mocks sit on top of the shared extra, fresh per boot.
+const GROUP_GUIDES = new Set(["group-open", "group-edit", "cluster-reasons", "cluster-grant"]);
+async function boot(id) {
+  const mocks = { ...extra };
+  if (GROUP_GUIDES.has(id)) Object.assign(mocks, groupMocks());
+  if (id === "cluster-reasons" || id === "cluster-grant") mocks["/api/live/cluster"] = ok(clusterGrant);
+  const h = await open("/api/live/health", "howto-recordings", mocks, {
     fallback: ok(health), seed, beforeGoto: fixPage, viewport: SIZE,
     refuse: /^\/api\/editor\/(?!saved\/)/,
     offline: true,
@@ -875,8 +881,8 @@ const GUIDES = [
     await page.click('input[aria-label="status for r1"]', { clickCount: 3 });
     await page.keyboard.type("paid", { delay: 80 });
     await rec.hold(1200);
-    await rec.caption("Review 1 changes");
-    await clickButton(page, "Review 1 changes", ".table-data-panel ");
+    await rec.caption("Review 1 change");
+    await clickButton(page, "Review 1 change", ".table-data-panel ");
     await page.waitForSelector(".confirm-sheet");
     await rec.hold(3500);
     await rec.caption("Apply changes");
@@ -1329,6 +1335,100 @@ const readysetExplain = await load("readyset-explain-both.json");
 const readysetPlan = await load("readyset-plan-create-cache.json");
 const readysetDone = await load("readyset-result-create-done.json");
 const readysetProgress = await load("readyset-progress-sending.json");
+
+// Connection groups (guides: group-open, group-edit; the picker for the
+// cluster-reasons and cluster-grant connections): release-shots.mjs's group,
+// three saved connections in mf-ic (db-2 the primary) beside solo-db, with
+// Dev MySQL and Prod MySQL standing in for the seeded list.
+const groupBase = {
+  port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "",
+  read_only: false, remember_password: true, has_saved_password: true,
+  secret_backend: "vault", secret_backend_label: "myflames encrypted vault",
+};
+const GROUP_PRIMARY = "p-ic-2";
+// Cluster actions with a disabled action's reason, fix and GRANT (guides:
+// cluster-reasons, cluster-grant): release-shots.mjs's grant report.
+const clusterGrant = JSON.parse(JSON.stringify(clusterHealthy));
+{
+  const action = clusterGrant.actions.find((a) => a.id === "switch_to_single_primary");
+  action.enabled = false;
+  action.why_not = "This account lacks GROUP_REPLICATION_ADMIN.";
+  action.fix = "Grant it on the primary, then Refresh.";
+  action.missing_privileges = [["GROUP_REPLICATION_ADMIN", "*.*"]];
+  action.grant_sql = "GRANT GROUP_REPLICATION_ADMIN ON *.* TO 'dba'@'%';";
+}
+/** The group mocks, fresh per recording so group-edit's save never leaks into
+ * another guide: release-shots.mjs's profiles, /api/connect with a group and
+ * group-connections.mjs's /api/profiles/groups/save over the same list. */
+function groupMocks() {
+  const profiles = [
+    { ...groupBase, id: "p-ic-1", name: "db-1", host: "10.0.0.11", type: "development", group: "mf-ic" },
+    { ...groupBase, id: "p-ic-2", name: "db-2", host: "10.0.0.12", type: "production", group: "mf-ic" },
+    { ...groupBase, id: "p-ic-3", name: "db-3", host: "10.0.0.13", type: "development", group: "mf-ic" },
+    { ...groupBase, id: "p-solo", name: "solo-db", host: "10.0.0.99", type: "development", group: "" },
+    { ...groupBase, id: "p-dev", name: "Dev MySQL", host: "dev.example", type: "development", group: "" },
+    { ...groupBase, id: "p-prod", name: "Prod MySQL", host: "prod.example", type: "production", group: "" },
+  ];
+  const groupList = () => {
+    const byName = new Map();
+    for (const p of profiles) {
+      const g = (p.group || "").trim();
+      if (!g) continue;
+      if (!byName.has(g)) byName.set(g, []);
+      byName.get(g).push(p);
+    }
+    return [...byName.entries()]
+      .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()) || a.localeCompare(b))
+      .map(([name, members]) => ({ name, profile_ids: members.map((m) => m.id), count: members.length,
+        type: members.some((m) => m.type !== "development") ? "production" : "development",
+        read_only: members.every((m) => m.read_only === true) }));
+  };
+  return {
+    "/api/profiles/list": () => ok({ items: profiles,
+      secret_store: { backend: "vault", label: "myflames encrypted vault", available: true } }),
+    // Opening a Group connection: the backend picks the primary as the active
+    // member, or keeps the member a group save asks for.
+    "/api/connect": (body) => {
+      const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
+      const members = profiles.filter((p) => (p.group || "") === name);
+      if (!members.length) return { status: 400, body: { error: "No saved connection belongs to this connection group." } };
+      const primary = members.find((m) => m.id === GROUP_PRIMARY) || null;
+      let active = null;
+      if (body.active_member_profile_id) {
+        active = members.find((m) => m.id === body.active_member_profile_id) || null;
+        if (!active) return { status: 400, body: { error: "That saved connection is not a member of this connection group." } };
+      }
+      if (!active) active = primary || members[0];
+      const type = members.some((m) => m.type !== "development") ? "production" : "development";
+      return ok({
+        version: "8.4.3", engine: "mysql", flavor: "mysql", product: "MySQL",
+        databases: ["shop"], schemas: ["shop"],
+        group_connection: {
+          group_name: name,
+          effective_safety: { type, read_only: false },
+          active_member_profile_id: active.id,
+          primary_profile_id: primary ? primary.id : null,
+          members: members.map((m) => ({
+            profile_id: m.id, profile_name: m.name, host: m.host, port: m.port,
+            safety: { type: m.type, read_only: false }, server_uuid: null,
+            role: m.id === GROUP_PRIMARY ? "PRIMARY" : "SECONDARY", state: null, reachable: true,
+          })),
+        },
+      });
+    },
+    "/api/profiles/groups/save": (body) => {
+      const name = (body.name || "").trim();
+      const previous = (body.previous_name || "").trim() || name;
+      const ids = new Set(body.profile_ids || []);
+      if (!name || !ids.size) return { status: 400, body: { error: "Enter a connection group name." } };
+      for (const p of profiles) {
+        if (ids.has(p.id)) p.group = name;
+        else if ((p.group || "") === previous) p.group = "";
+      }
+      return ok({ group: name, name, profile_ids: [...ids], updated: [...ids], groups: groupList(), profiles });
+    },
+  };
+}
 
 // Accounts (Users and roles), shaped as accounts.mjs builds them.
 const accountDetail = {
@@ -1926,6 +2026,59 @@ GUIDES.push(
     await rec.caption("");
     await rec.hold(2600);
   }],
+  ["group-open", async (h, rec) => {
+    const { page } = h;
+    await page.click('.main-nav button[data-place="query"]');
+    await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
+    await rec.restart();
+    await rec.hold(1200);
+    await rec.caption("open the connection picker");
+    await openConnectionPicker(page);
+    await page.waitForSelector('.picker-panel .group-connection-row[data-group="mf-ic"]', { visible: true });
+    await rec.caption("");
+    await rec.hold(2800);
+    await rec.caption("Open group connection mf-ic");
+    await page.click('button[aria-label="Open group connection mf-ic"]');
+    await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-ic · 3 servers"));
+    await rec.caption("");
+    await rec.hold(2400);
+    await rec.caption("Server: starts on the primary");
+    await h.server();
+    await page.waitForSelector('.server-view[data-view="health"] .group-server-picker', { visible: true });
+    await page.waitForFunction(() => document.querySelector('.server-view[data-view="health"] .view-server-name')?.textContent.includes("db-2"));
+    await rec.caption("");
+    await rec.hold(3400);
+  }],
+  ["group-edit", async (h, rec) => {
+    const { page } = h;
+    await page.click('.main-nav button[data-place="query"]');
+    await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
+    await openConnectionPicker(page);
+    await page.click('button[aria-label="Open group connection mf-ic"]');
+    await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-ic · 3 servers"));
+    await rec.restart();
+    await rec.hold(700);
+    await rec.caption("Edit group…");
+    await openConnectionPicker(page);
+    await page.click('.picker-panel button[aria-label="Edit group mf-ic"]');
+    await page.waitForSelector("dialog.group-editor-sheet[open]", { visible: true });
+    await page.waitForFunction(() => document.querySelector('dialog.group-editor-sheet input[aria-label="Group name"]')?.value === "mf-ic");
+    await rec.caption("");
+    await rec.hold(2500);
+    await rec.caption("untick db-3");
+    await page.click('dialog.group-editor-sheet .group-editor-item[data-profile-id="p-ic-3"] input[type="checkbox"]');
+    await rec.hold(1300);
+    await rec.caption("rename the group");
+    await page.click('dialog.group-editor-sheet input[aria-label="Group name"]', { clickCount: 3 });
+    await page.keyboard.type("mf-ic-eu", { delay: 70 });
+    await rec.hold(1000);
+    await rec.caption("Save group");
+    await page.click("dialog.group-editor-sheet .sheet-buttons button.primary");
+    await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+    await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-ic-eu · 2 servers"));
+    await rec.caption("");
+    await rec.hold(3600);
+  }],
   ["import-connections", async (h, rec) => {
     const { page } = h;
     await rec.caption("Home: Connections menu");
@@ -2015,6 +2168,52 @@ GUIDES.push(
     await rec.caption("");
     await rec.hold(1600);
   }],
+  ["cluster-reasons", async (h, rec) => {
+    const { page } = h;
+    await page.click('.main-nav button[data-place="query"]');
+    await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
+    await chooseConnection(page, "p-ic-1");
+    await openPlace(h, "cluster");
+    const view = '.server-view[data-view="cluster"]';
+    await page.waitForSelector(`${view} .cluster-actions .review-actions > button`, { visible: true });
+    await page.evaluate((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), `${view} .cluster-actions`);
+    await rec.restart();
+    await rec.hold(1000);
+    await rec.caption("Changes · the whole cluster");
+    await rec.hold(3000);
+    await rec.caption("a disabled action: the reason and the fix");
+    await rec.hold(2800);
+    await rec.caption("a member page");
+    await h.select(`${view} .cluster-card[data-row-key="${clusterHealthy.members[1].key}"]`);
+    await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+      .some((b) => b.textContent.trim() === "Stop Group Replication…"));
+    await page.evaluate(() => document.querySelector(".view-inspector .review-actions")?.scrollIntoView({ block: "center" }));
+    await rec.caption("");
+    await rec.hold(3200);
+  }],
+  ["cluster-grant", async (h, rec) => {
+    const { page } = h;
+    // The clipboard permission a desktop browser grants on a click, so Copy
+    // shows "Copied." instead of the fallback (misestimates.mjs does the same).
+    await page.browserContext().overridePermissions(new URL(page.url()).origin,
+      ["clipboard-read", "clipboard-write", "clipboard-sanitized-write"]);
+    await page.click('.main-nav button[data-place="query"]');
+    await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
+    await chooseConnection(page, "p-ic-1");
+    await openPlace(h, "cluster");
+    const view = '.server-view[data-view="cluster"]';
+    await page.waitForSelector(`${view} .cluster-actions .cluster-action-why .ops-pre`, { visible: true });
+    await page.evaluate((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), `${view} .cluster-actions`);
+    await rec.restart();
+    await rec.hold(1200);
+    await rec.caption("the GRANT for the missing privilege");
+    await rec.hold(3600);
+    await rec.caption("Copy");
+    await page.click(`${view} .cluster-action-why button[aria-label="Copy: Grant for Switch to single-primary"]`);
+    await page.waitForSelector(`${view} .cluster-action-why .ops-commands [role="status"]`, { visible: true });
+    await rec.caption("");
+    await rec.hold(4600);
+  }],
   ["proxysql-offline", async (h, rec) => {
     const { page } = h;
     await rec.caption("ProxySQL");
@@ -2101,7 +2300,7 @@ if (!chosen.length) throw new Error(`Unknown guide "${only}". Known: ${GUIDES.ma
 const results = [];
 for (const [id, steps] of chosen) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-howto-${id}-`));
-  const h = await boot();
+  const h = await boot(id);
   const rec = new Recorder(h.page, directory);
   try {
     rec.start();

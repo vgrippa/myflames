@@ -141,6 +141,8 @@ Use this when you need to change a row in a supported base table and inspect the
 6. Choose **Apply changes**.
 7. After the operation completes, choose **Reload rows** to read the saved values.
 
+![In Query editor under Schemas, right-click the orders table and choose Edit table data…. Change the status cell in the first row from new to paid, choose Review 1 change to inspect the UPDATE statement in Apply table changes?, click Apply changes to commit, and click Reload rows to confirm paid is saved.](../screenshots/howto-edit-table-rows.gif)
+
 What you see: the panel reports the operation's outcome and reloads the table page with the applied value.
 
 Good to know:
@@ -161,6 +163,8 @@ Use this when you want to inspect an InnoDB row change before keeping or discard
 6. Choose **Roll back** to discard the changes, or **Commit** to keep them.
 7. If **Commit** opens a review, confirm the reviewed COMMIT with **Commit**.
 
+![In Query editor, place the cursor inside START TRANSACTION; and press Command+Return on macOS or Ctrl+Enter on Windows and Linux to show the Transaction open pill. Run the UPDATE and SELECT statements in the same tab to see status changed to paid, then open Transaction open above the editor and choose Roll back to display Rolled back. in the status bar.](../screenshots/howto-transaction.gif)
+
 What you see: the editor reports **Rolled back** or **Committed** while keeping the query results available.
 
 Good to know:
@@ -178,6 +182,8 @@ Use this when you want to inspect a SELECT's estimated operators without running
 3. Choose **Explain**.
 4. Choose **Explore** above the Explain result.
 5. In **Plans** > **Explore**, choose **Visual Explain** or **Execution tree** to inspect the operators.
+
+![In Query editor with the cursor inside the SELECT statement, choose JSON in Explain format and click Explain. Click Explore in the Explain result to open Plans and switch the chart view to Execution tree.](../screenshots/howto-explain-plans.gif)
 
 What you see: the query opens as an estimated visual plan in **Plans**. **Stats** shows the available counts and estimates.
 
@@ -197,6 +203,8 @@ Use this when a loaded result contains rows you want to narrow down and save to 
 4. Open **Export result 1** above that result; the button shows the filtered row count.
 5. Choose **CSV**, **JSON** or **Markdown**.
 
+![In Query editor, run a SELECT returning 24 rows, enter new in Filter loaded rows… to narrow the table to 8 of 24 loaded rows, and click the total column heading to sort. Open Export result 1 and choose CSV to export myflames-result.csv.](../screenshots/howto-results-export.gif)
+
 What you see: the app downloads a file containing the rows that match the filter.
 
 Good to know:
@@ -214,6 +222,8 @@ Use this when you want to supply literal values for `:name` placeholders while k
 3. Expand **Parameters and execution conditions**.
 4. Enter `{"id": 42}` in **Named parameters · JSON object**.
 5. Choose **Explain**.
+
+![In Query editor with SELECT id FROM orders WHERE id = :id;, open Run analysis options, expand Parameters and execution conditions, enter {"id": 42} in Named parameters · JSON object, and click Explain to produce the Explain result with Explore while keeping :id in the editor.](../screenshots/howto-named-parameters.gif)
 
 What you see: Explain uses the supplied value for `:id` and leaves the placeholder in the editor text.
 
@@ -236,6 +246,8 @@ Use this when you want to see which statement digests are new or have grown sinc
 8. Open **Refresh options** > **Compare with baseline…**.
 9. Select the saved reading in **Choose a baseline**.
 10. Choose **Compare**.
+
+![Open Query digest in the sidebar, click Refresh to load 30 statements, open Refresh options > Save baseline…, enter Before deploy and click Save baseline. Click Refresh again to load 32 statements, open Refresh options > Compare with baseline…, select Before deploy and click Compare to list new and grown statements under Since the baseline.](../screenshots/howto-digest-baseline.gif)
 
 What you see: **Since the baseline** lists new or grown digests with before and after measurements.
 

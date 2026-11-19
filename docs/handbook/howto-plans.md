@@ -22,6 +22,8 @@ Use this when you have two plans for the same query and want to assess a change.
 5. Choose the changed plan in **After**.
 6. Select a row under **Operator changes** to highlight the matched operators.
 
+![Open Plans in the sidebar, open the sample plan, click Import plan to add a second plan, and click Compare in the top bar. Choose the plans in Before and After and select a changed row under Operator changes to highlight the matched operators.](../screenshots/howto-compare-plans.gif)
+
 What you see: the comparison shows both plans, their available measurements and the operators that were added, removed or changed.
 
 Good to know:
@@ -38,6 +40,8 @@ Use this when a measured plan has many operators and you need to locate where it
 3. Read **Self time** in the selected operator's **Measurements**.
 4. Choose **Stats** in the chart view controls.
 5. Compare the **Self time** columns in **Time per table** and **Time per operator type**.
+
+![With the sample plan open in Plans > Explore, open Go to and choose Largest self time to jump to the slowest operator and inspect its Self time, then click Stats in the chart view controls to compare Time per table and Time per operator type.](../screenshots/howto-slowest-operator.gif)
 
 What you see: the jump selects the operator with the largest self time; Stats groups self time across the plan by table and operator type.
 
@@ -59,6 +63,8 @@ Use this when you want to keep open plans, notes and a baseline together for lat
 6. Open **Investigations** in the sidebar.
 7. Select the saved investigation.
 8. Choose **Open all**.
+
+![With the sample plan open in Plans, click Save investigation in the top bar, enter Orders index review as the Investigation name, select the Baseline plan, enter notes, and click Save. Open Investigations in the sidebar, select the saved investigation, and click Open all to reopen the plan.](../screenshots/howto-investigation.gif)
 
 What you see: the investigation's plans reopen together with its saved notes and baseline.
 
@@ -98,6 +104,8 @@ Use this when you need to load a delimited file into an existing table or create
 9. Inspect the target, session statements, row summary and data example; a new table also shows its CREATE TABLE.
 10. Choose **Import**.
 
+![In Query editor > Schemas, right-click the orders table, choose Import CSV…, and click Choose file… to preview the CSV rows. Advance with Next through Target and columns and Check, click Review…, and click Import to commit the rows.](../screenshots/howto-import-csv.gif)
+
 What you see: the import reports progress, then the committed and skipped row counts or the failure that stopped it.
 
 Good to know:
@@ -117,6 +125,8 @@ Use this when you want to inspect table relationships and save the diagram for l
 5. Click a table heading to read its **Relationships** in the inspector.
 6. Open **Export**.
 7. Choose **Editable JSON** to preserve metadata and positions, or **SVG image** for an image.
+
+![Open Database diagram in the sidebar, choose shop in Database and click Load, search for orders in Find a table or column, and click the orders table heading to inspect its foreign-key relationships. Close the inspector, open Export, and choose Editable JSON.](../screenshots/howto-diagram.gif)
 
 What you see: the inspector lists the supplied relationships and column mappings, and Export downloads a copy of the diagram.
 
@@ -153,6 +163,8 @@ Use this when you want to find differences from a saved schema and prepare SQL t
 5. Choose **Sync script**.
 6. If **Review before running** appears, read its warnings and items that were not generated.
 7. Choose **Download .sql**, or **Open in Query editor** when it is available.
+
+![Open Schema versions > Saved versions, select the saved version, and click Compare with the database now. Select customers to inspect its differences, click Back to differences, switch to Sync script, and click Open in Query editor.](../screenshots/howto-schema-compare.gif)
 
 What you see: the comparison and script describe changes to **Target** that would make it match **Source**. Comparing and generating the script leave the server unchanged.
 

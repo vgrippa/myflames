@@ -18,6 +18,8 @@ Use this when a replica's applier stopped on one transaction you can safely skip
 3. Click **Skip this transaction…** to skip the one failing transaction, or **Skip until stopped…** to keep skipping each failure until you stop the loop.
 4. Check the exact statements in the sheet, then click **Skip transaction** (or **Start skipping**).
 
+![Open Replication, switch to Recovery, select the stopped channel showing error 1062, click Skip this transaction…, review the skip statement in the sheet, and click Skip transaction.](../screenshots/howto-replication-skip.gif)
+
 What you see: the sheet re-reads the failure before it opens and is planned again when the server or the statements changed, so what you confirm is what runs. Afterwards the channel's applier starts again and the view shows it catching up.
 
 Good to know:
@@ -32,6 +34,10 @@ Use this for a planned switchover before maintenance, or to change between singl
 1. Open **Cluster** in the sidebar. **Topology** shows the members and their states; **Members** (**Nodes** on Galera and Percona XtraDB Cluster) lists each one; **Routers** appears for InnoDB Cluster. Below the summary line, a sentence says which server this connection reaches (`You are connected to <member>…`), and that server is marked **This connection** on its card, in the table and in its inspector.
 2. To move the primary to another server, select an `ONLINE` secondary member on **Topology** or in **Members** to open its inspector, click **Make primary…**, check the statement or MySQL Shell call in the sheet, and click **Make `<member>` primary**. The current primary becomes a read-only secondary once its running transactions finish.
 3. To change the mode of the cluster or run an InnoDB ClusterSet change, scroll to **Changes · the whole cluster** on the **Cluster** overview below the tab content, click **Switch to multi-primary…** or **Switch to single-primary…** (or in a ClusterSet, **Make `<cluster>` the primary cluster…**, **Fail over to this cluster…** or **Rejoin `<cluster>` to the ClusterSet…**), type the cluster or member name to confirm, and click **Switch to multi-primary** or **Switch to single-primary**.
+
+![Open Cluster, switch to Members, select an ONLINE secondary member, click Make primary… in the inspector, review the group_replication_set_as_primary statement, confirm, and close the result sheet.](../screenshots/howto-cluster-primary.gif)
+
+![In Cluster, view cluster-wide actions under Changes · the whole cluster on the overview and member actions in a member's inspector, showing disabled actions with their reason and fix in plain words beneath them.](../screenshots/howto-cluster-reasons.gif)
 
 What you see: every action for the cluster kind stays visible on the overview under **Changes · the whole cluster** or in each member's or node's inspector (**Make primary…**, **Stop Group Replication…**, **Start Group Replication…** and **Rejoin to the cluster…**, or on MariaDB Galera **Desync this node…**, **Resync this node…** and **Bootstrap a Primary component…**). Any action that cannot run now stays visible and disabled with the reason and the fix in plain words under it. After a confirmed change runs, the **What changed** table shows the state before and after, explaining in plain words why any value was not reported instead of saying "Not readable".
 
@@ -71,6 +77,8 @@ Use this when a cluster action is disabled because the connected account (or the
 4. Grant the privilege as an administrator on that server: either switch to an administrator connection and run the copied `GRANT` in **Query editor** (or grant the privilege in **Server** > **Users and roles** under **Grants** and click **Review changes**), or run it in another SQL client.
 5. Return to **Cluster** on the original connection and click **Refresh** in the toolbar.
 
+![In Cluster, find a disabled action under Changes · the whole cluster or in a member's inspector whose reason names a missing privilege, and click Copy beside its GRANT statement to copy the statement to run as an administrator before clicking Refresh.](../screenshots/howto-cluster-grant.gif)
+
 What you see: after **Refresh**, myflames re-reads `SHOW GRANTS` for the account that runs the action; once the required privileges are present, the action button becomes enabled so you can click it to review and confirm the change.
 
 Good to know:
@@ -92,6 +100,8 @@ Use this to drain a backend before restarting it, or to check where the query ru
 5. On the **Configuration of servers** line, click **Save servers to disk…** so the change survives a ProxySQL restart.
 6. Open **Query digests** to see which rule evaluated each statement and where it was routed.
 
+![Open ProxySQL, switch to Servers, select a backend, click Set OFFLINE_SOFT… in the inspector, review the ProxySQL statements, confirm, and close the outcome sheet.](../screenshots/howto-proxysql-offline.gif)
+
 What you see: an OFFLINE_SOFT backend gets no new traffic while queries and transactions already on it finish; the Servers list shows it out of the runtime pool.
 
 Good to know:
@@ -108,6 +118,8 @@ Use this when a frequent proxied query should be served from Readyset instead of
 3. In the **Configure Readyset cache** sheet the support check runs as soon as the sheet opens with the query pre-filled; the **Check support (EXPLAIN)** button re-runs it after you edit the query. Read the **Shallow** and **Deep** verdicts with their reasons.
 4. Choose the **Cache type**: **Shallow cache (TTL & refresh)** or **Deep cache (streaming dataflow)**. For a shallow cache, set **TTL (seconds)** and optional refresh and coalesce values.
 5. Click **Review CREATE CACHE…**, check the exact statement and confirm.
+
+![Open Readyset, switch to Proxied, select a proxied query, click Create cache…, wait for Check support (EXPLAIN) to show Shallow: Supported, click Review CREATE CACHE…, confirm Create shallow cache, and close the outcome sheet.](../screenshots/howto-readyset-cache.gif)
 
 What you see: the cache is created and appears on the **Caches** tab with its type and status; matching queries stop being proxied to the upstream for reads the cache serves.
 
