@@ -337,6 +337,20 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 at += 1
         return n, False
 
+    def check_comment_commands(start, end):
+        # read_and_execute checks each physical line before add_line. MySQL
+        # 8.2+ can discard an unclosed special-comment buffer as comment-only
+        # (mysql-8.4.0:client/mysql.cc:2455-2481,2577-2593). Older MySQL
+        # and MariaDB require an empty buffer, but refuse command-looking
+        # lines in every comment kind on every client. Inspect raw comment
+        # text, including quotes: the pre-line lookup is not the SQL lexer.
+        for match in _COMMENT_COMMAND_LINE.finditer(sql, start + 2, end):
+            name = match.group(1).upper()
+            after = sql[match.end():match.end() + 1]
+            if (name in ("DELIMITER", "\\") or not after or after in _CLIENT_SPACE + ";" or
+                    (client_delimiter and sql.startswith(client_delimiter, match.end()))):
+                issues.append((match.start(1), REASON_COMMENT_COMMAND))
+
     while pos < n:
         ch = sql[pos]
         if pos in framing_at:
@@ -385,11 +399,16 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 pending = False
                 continue
         if active is not None and sql.startswith("*/", pos):
-            if client and pos and sql[pos - 1] == "/":
-                issues.append((pos - 1, REASON_COMMENT_OVERLAP))
+            if client:
+                check_comment_commands(active["start"], pos)
+                if (pos and sql[pos - 1] == "/") or sql[pos + 2:pos + 3] == "*":
+                    issues.append((pos, REASON_COMMENT_OVERLAP))
             # The conditional-comment branch in add_line clears ss_comment
             # at '*', then examines '/' on the next iteration. A delimiter
             # can start at that slash (client/mysql.cc:2946-2948).
+            # A following '*' can instead reopen /*. Servers and MariaDB
+            # 12.0.1 consume both closer bytes, so refuse that overlap for
+            # all clients (mariadb-12.0.1:client/mysql.cc:2786-2792).
             close_end = pos + (1 if client else 2)
             token("executable_close", pos, close_end)
             active["end"] = pos + 2
@@ -488,6 +507,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             nested = bool(header and not (engine == "mysql" and header["maria"]))
             end, closed = consume_comment(pos + 2, nested and not client)
             token("comment", pos, end)
+            if client:
+                check_comment_commands(pos, end - 2 if closed else end)
             if client and closed:
                 # add_line's ordinary opener has no !ml_comment guard:
                 # /*/ consumes the '*' before the closer can see it.
@@ -498,14 +519,6 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # also start another /* (mysql-8.4.0:2928-2930).
                 if sql[end - 3:end] == "/*/" or sql[end - 1:end + 1] == "/*":
                     issues.append((pos, REASON_COMMENT_OVERLAP))
-                # Ordinary closers set need_space; the next non-whitespace
-                # byte can acquire a space on the wire. The differential
-                # oracle checks exact sent text, including this insertion.
-                # mysql-8.4.0:2921,2959-2962; mariadb-11.8.9:2851,2868-2873.
-                ordinary_client = not sql.startswith("/*+", pos) or client_engine == "mariadb"
-                if (ordinary_client and end < n and sql[end] not in _CLIENT_SPACE and
-                        not (client_delimiter and sql.startswith(client_delimiter, end))):
-                    issues.append((pos, REASON_COMMENT_SPACE))
             if client and header is None and not sql.startswith("/*+", pos):
                 # mysql-8.4.0:client/mysql.cc:2907-2930 sets ss_comment for
                 # /*! or /*+ even while ml_comment is open. The first */
@@ -576,6 +589,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
     if code_start < n:
         tokens.append(("code", code_start, n))
     if active is not None:
+        if client:
+            check_comment_commands(active["start"], n)
         active["end"] = n
         active["problem"] = "unterminated executable comment"
         unclosed.append((active["start"], n))
@@ -613,6 +628,14 @@ def skipped_executable_comments(sql, engine, server_version, backslash_escapes=N
 _DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n]*)", re.I)
 _CLIENT_SPACE = " \t\n\r\f\v"
 _NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
+# Union of named commands in the supported client command tables, used only
+# for command-looking lines *inside* block comments. Ordinary SQL keeps the
+# narrower checks above. mysql-8.4.0:client/mysql.cc:404-452;
+# mariadb-12.0.1:client/mysql.cc:381-429 (also costs and sandbox).
+_COMMENT_COMMAND_LINE = re.compile(
+    r"\n[ \t\r\f\v]*(\\|delimiter|charset|sandbox|clear|connect|edit|ego|exit|go|help|"
+    r"nopager|notee|pager|print|prompt|quit|rehash|source|status|system|tee|use|warnings|"
+    r"nowarning|resetconnection|query_attributes|ssl_session_data_print|costs|\?)", re.I | re.ASCII)
 
 
 def _client_named_command(sql, start, delimiter, across_lines=False):
@@ -672,10 +695,14 @@ REASON_DUMP_SANDBOX = ("Found the mariadb-dump sandbox line, a mariadb client co
 REASON_NAMED_CLIENT_COMMAND = ("The client command %s is not supported here. "
                                "Put DELIMITER on its own line at the script start or after a complete statement, "
                                "with only whitespace or ordinary comments on earlier lines; use SQL instead of other client commands.")
+REASON_COMMENT_COMMAND = ("A multi-line comment contains a line starting with a client command. "
+                          "Move the command outside the comment or reword that line before running this SQL.")
 REASON_DASH_CONTROL = ("'--' before a control character is code to the client and a comment to the server, so the "
                        "statement boundaries are uncertain.")
-REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
-                    "statement boundaries uncertain.")
+REASON_DELIMITER = ("A DELIMITER line needs a nonempty delimiter without backslashes or carriage returns. "
+                    "Quote the delimiter on a CRLF line, or use LF line endings.")
+REASON_CRLF_TRANSPORT = ("The MySQL client on Windows removes carriage returns from CRLF lines. "
+                         "Use LF line endings in this statement so the reviewed and sent text agree.")
 REASON_COMMENT_FRAMING = ("A client delimiter splits a comment the server skips, so its SQL cannot be read "
                           "as one complete server comment.")
 REASON_EXECUTED_FRAMING = ("A client delimiter splits an executable comment before it closes. "
@@ -689,8 +716,6 @@ REASON_NESTED_ORDINARY_COMMENT = ("An ordinary comment contains a nested /*!, /*
                                   "Remove the nested opener before running this SQL.")
 REASON_COMMENT_OVERLAP = ("A /* opener overlaps a comment's closing */ marker. "
                           "Some clients read a different comment boundary. Separate these markers with whitespace.")
-REASON_COMMENT_SPACE = ("A block comment touches following SQL that the client may separate with an inserted space. "
-                        "Add whitespace after */ so the reviewed and sent text agree.")
 REASON_HINT = ("An optimizer hint (/*+ ... */) contains a comment marker "
                "(/*, # or -- followed by whitespace or a line ending), a backslash, or an unclosed quote. "
                "Close quoted values before */ and remove comment markers and backslashes, including inside quotes.")
@@ -705,7 +730,15 @@ _READYSET_CREATE_HINT = re.compile(r"^/\*rs\+.*\bcreate\b", re.I | re.S)
 def _delimiter_argument(sql, at):
     """The argument of a DELIMITER command line starting at *at*, read like
     the client's get_arg: (delimiter or None, end of line). A quoted argument
-    ends at its closing quote; an unquoted one at a space (not a tab)."""
+    ends at its closing quote; an unquoted one at a space (not a tab).
+
+    In binary mode, batch_readline keeps a CR before LF on Unix and in
+    MariaDB, while MySQL Windows removes it. get_arg keeps CR in an unquoted
+    argument. Refuse CR-bearing delimiters instead of silently stripping CR
+    and choosing another platform's boundary. Keep offsets in the original
+    text. mysql-8.4.0:client/readline.cc:75-95,client/mysql.cc:4861-4900;
+    mariadb-11.8.9:client/readline.cc:38-44,client/mysql.cc:5023-5080.
+    """
     newline = sql.find("\n", at)
     stop = len(sql) if newline < 0 else newline
     rest = sql[at:stop]
@@ -719,7 +752,7 @@ def _delimiter_argument(sql, at):
     else:
         space = rest.find(" ", i)
         value = rest[i:] if space < 0 else rest[i:space]
-    return value, stop
+    return (None if "\r" in value else value), stop
 
 
 # ---- splitting -----------------------------------------------------------------------
@@ -773,8 +806,10 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     """
     if not isinstance(sql, str):
         raise ValueError("Pass SQL text.")
-    if not isinstance(delimiter, str) or not delimiter or "\\" in delimiter:
-        raise ValueError("Pass a delimiter of one or more characters without a backslash.")
+    # add_line scans physical lines independently. A caller-supplied
+    # delimiter must not cross a line or depend on CRLF translation either.
+    if not isinstance(delimiter, str) or not delimiter or any(ch in delimiter for ch in "\\\r\n"):
+        raise ValueError("Pass a delimiter of one or more characters without backslashes or line endings.")
     framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
                       client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
                       client_engine=client_engine, comment_dialect=comment_dialect,
@@ -820,6 +855,13 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             raw = sql[start:end]
             lead = len(raw) - len(raw.lstrip())
             text = raw.strip()
+            # MySQL's Windows batch reader changes even CRLF inside quoted
+            # data. MariaDB's binary reader preserves it. Command lines and
+            # whitespace between units are already outside this sent span;
+            # refuse remaining changes instead of rewriting SQL literals.
+            # mysql-8.4.0:client/readline.cc:75-95.
+            if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
+                issue(REASON_CRLF_TRANSPORT)
             out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
                         "code": code, "idents": idents, "token_spans": tokens,
                         "unclosed": bool(unclosed), "issues": list(state["issues"]), "delimiter": delimiter,

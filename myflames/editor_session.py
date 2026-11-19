@@ -597,6 +597,33 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         send = client_rstrip(rest)
         if not send:
             continue
+        # With --comments, add_line can insert a space after an ordinary
+        # comment's closing */ (mysql-8.4.0:client/mysql.cc:2921,2959-2962;
+        # mariadb-11.8.9:client/mysql.cc:2851,2865-2870). Normalize every
+        # complete block closer in server code before review, including
+        # hints/conditional comments whose client treatment varies by version.
+        # Server tokens keep apparent closers inside quoted data untouched.
+        # Source coordinates still refer to the editor's original text.
+        tokens = tuple((kind, start - stmt["start"] - lead, end - stmt["start"] - lead)
+                       for kind, start, end in stmt["token_spans"]
+                       if start >= stmt["start"] + lead and end <= stmt["end"])
+        spaces = sorted({end for kind, start, end in tokens
+                         if (kind == "executable_close" or
+                             (kind == "comment" and send[start:start + 2] == "/*"))
+                         and send[end - 2:end] == "*/" and end < len(send)
+                         and send[end] not in dbops._CLIENT_SPACE
+                         and not send.startswith(stmt["delimiter"], end)})
+        inserted = tuple(at + index for index, at in enumerate(spaces))
+        code, idents = stmt["code"], list(stmt.get("idents") or [])
+        if spaces:
+            parts, start = [], 0
+            for end in spaces:
+                parts.extend((send[start:end], " "))
+                start = end
+            parts.append(send[start:])
+            send = "".join(parts)
+            scan = dbops.lex_sql(send, **dict(lexer_args, **readings[0]))
+            code, idents, tokens = dbops._masked_fragment(send, scan, 0, len(send))
         if "\x00" in send:
             raise EditorError("Statement %d contains a NUL character, which the client cannot send." % number,
                               "invalid_statement")
@@ -605,7 +632,6 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         except UnicodeEncodeError:
             raise EditorError("Statement %d contains characters that are not valid Unicode." % number,
                               "invalid_statement")
-        code = stmt["code"]
         if re.match(r"\s*delimiter", code, re.I):
             raise EditorError("Statement %d starts with the word DELIMITER, which the client reads as its own "
                               "command. Put DELIMITER on its own line." % number, "invalid_statement")
@@ -629,10 +655,8 @@ def plan_statements(sql, backslash_escapes=True, engine=None, base=0, delimiter=
         unit = {"index": len(units), "text": stmt["text"], "start": base + send_offset,
                 "end": base + offset + stmt["end"], "send": send, "lead": lead, "code": code,
                 "mode_sensitive": sensitive, "delimiter": stmt["delimiter"],
-                "idents": list(stmt.get("idents") or []), "sql_mode": current_mode, "client_engine": client_engine,
-                "_tokens": tuple((kind, start - stmt["start"] - lead, end - stmt["start"] - lead)
-                                 for kind, start, end in stmt["token_spans"]
-                                 if start >= stmt["start"] + lead and end <= stmt["end"]),
+                "idents": idents, "sql_mode": current_mode, "client_engine": client_engine,
+                "_tokens": tokens, "_comment_spaces": inserted,
                 "mode_unknown": current_mode is None and current_backslash is None,
                 "conditional_sql": bool(dbops.lex_sql(send, **dict(lexer_args, **readings[0]))["comments"])}
         if not provisional and oracle_possible and re.search(
@@ -684,7 +708,13 @@ def _unit_changes_mode(unit, engine=None):
     # sql/sql_lex.cc:9042-9050.
     if engine != "mysql" and (unit.get("sql_mode") is None or dbops.oracle_mode(unit["sql_mode"], "mariadb")):
         name = r"(?:" + _MASKED_NAME + r"|'')"
-        if re.search(r"(?:^|;)\s*" + name + r"(?:\s*\.\s*" + name + r")?\s*:=", code):
+        # SET STATEMENT ... FOR accepts directly_executable_statement,
+        # including ORACLE's set_assign. Check each server statement after
+        # unwrapping its FOR boundary, without interpreting RHS expressions
+        # as assignment targets. mariadb-11.8.9:sql/sql_yacc.yy:2087-2091,
+        # 17009-17020,19225-19230,19513-19547.
+        if any(re.match(r"\s*" + name + r"(?:\s*\.\s*" + name + r")?\s*:=",
+                        _unwrap_set_statement(part)) for part in code.split(";")):
             return True
     # Recognize each lvalue/operator pair independently of earlier values.
     # CHARACTER SET inside CAST, nested expressions and SET NAMES must not
@@ -795,7 +825,10 @@ def error_position(message, unit, offsets):
                 at = send.find(probe)
             found = at if at >= 0 else cut
     # Explain adds a prefix to the wire statement, not to the editor text.
-    offset = start + max(0, (found or 0) - unit.get("explain_prefix", 0))
+    send_offset = max(0, (found or 0) - unit.get("explain_prefix", 0))
+    # Normalized spaces exist only on the wire, not in the editor source.
+    source_offset = send_offset - sum(at < send_offset for at in unit.get("_comment_spaces", ()))
+    offset = start + source_offset
     line, column = offsets.line_col(offset)
     return {"offset": offsets.to_js(offset), "line": line, "column": column, "exact": found is not None}
 
@@ -2712,7 +2745,7 @@ class EditorSession(EditorInsights):
                      "duration_ms": unit.get("duration_ms")}
             if "server_stats" in unit:
                 entry["server_stats"] = unit["server_stats"]
-            if unit["lead"] or unit.get("explain_prefix"):
+            if unit["lead"] or unit.get("explain_prefix") or unit.get("_comment_spaces"):
                 entry["sent"] = unit["send"]
             statements.append(entry)
             step = by_unit.get(unit["index"])
@@ -3592,8 +3625,10 @@ _MASKED_QUALIFIED = _MASKED_NAME + r"(?:[ \t\r\n\f\v]*\.[ \t\r\n\f\v]*" + _MASKE
 _MASKED_VARIABLE_NAME = r"(?:" + _MASKED_NAME + r"|'')"
 _MASKED_VARIABLE = (r"@(?:[ \t\r\n\f\v]*@)?[ \t\r\n\f\v]*" + _MASKED_VARIABLE_NAME +
                     r"(?:[ \t\r\n\f\v]*\.[ \t\r\n\f\v]*" + _MASKED_VARIABLE_NAME + r")*")
+# := is SET_VAR, not a label colon followed by '=':
+# mariadb-11.8.9:sql/sql_lex.cc:2548-2563.
 _MASKED_TOKEN = re.compile(_MASKED_VARIABLE + r"|" +
-                           _MASKED_QUALIFIED + r"|''|[^ \t\r\n\f\v]")
+                           _MASKED_QUALIFIED + r"|''|:=|[^ \t\r\n\f\v]")
 
 
 class _DdlBoundaryScanner:
@@ -3657,7 +3692,7 @@ class _DdlBoundaryScanner:
         # closer or WHILE's DO, without interpreting an expression's value.
         # mysql-9.7.0:sql/sql_yacc.yy:3657-3727,10592-10600,10738-10744;
         # mariadb-11.8.9:sql/sql_yacc.yy:3036-3092,9870-9895,10289.
-        return word in ("(", ",", "+", "-", "*", "/", "%", "=", "<", ">", "!", "~", "^", "|", "&",
+        return word in ("(", ",", "+", "-", "*", "/", "%", "=", ":=", "<", ">", "!", "~", "^", "|", "&",
                         "CASE", "WHEN", "THEN", "ELSE", "AND", "OR", "XOR", "NOT", "IS", "IN", "LIKE",
                         "REGEXP", "RLIKE", "BETWEEN", "DIV", "MOD", "COLLATE", "AS", "SELECT", "RETURN",
                         "DEFAULT", "TO", "INTERVAL", "BINARY", "AT", "EVERY", "STARTS", "ENDS")
@@ -4604,7 +4639,7 @@ def _may_enable_autocommit(code, idents):
 
 
 def _unwrap_set_statement(code):
-    """Expose a MariaDB SET STATEMENT's executable SQL for transaction checks.
+    """Expose a MariaDB SET STATEMENT's SQL for mode and transaction checks.
 
     Use the shared classifier's FOR boundary: expressions may contain a
     parenthesized FOR or NEXT/PREVIOUS VALUE FOR. MariaDB sql_yacc.yy:17472-17486

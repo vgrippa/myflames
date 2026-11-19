@@ -32,7 +32,9 @@ live_writes.py does:
   must come back for confirmation as a write with nothing sent; the canary
   must still be there. A CREATE DATABASE with a versioned ENCRYPTION comment
   (mysqldump's clause) is accepted on every server, with confirmation, then
-  dropped.
+  dropped. A procedure dumped by that server's own dump tool is recreated
+  through one editor confirmation, including the saved-mode preamble,
+  DELIMITER lines and restores; the throwaway schema is always dropped.
 
 Credentials come only from the matrix's 0600 credentials file (read by
 _lab.ga_passwords for redaction, never printed). The saved profiles come
@@ -44,12 +46,14 @@ Run: scripts/live-tests.sh ga   (or MYFLAMES_LIVE_LABS=1 with the matrix up)
 """
 import os
 import re
+import subprocess
 import sys
 import unittest
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _lab import Lab, LabError, conn_for, ga_servers, make_ga_home, redact, require_live  # noqa: E402
+from _lab import (Lab, LabError, conn_for, ga_passwords, ga_servers,
+                  make_ga_home, redact, require_live)  # noqa: E402
 
 
 def setUpModule():
@@ -65,6 +69,28 @@ def _secret_password(tag):
     """A password with a backslash and a single quote: the quoting the unit
     tests' fake server never checked."""
     return "mf\\'%s-%s" % (tag, uuid.uuid4().hex[:8])
+
+
+def _routine_section(dump):
+    """Keep one dump routine's original preamble, definition and restores.
+
+    The shape is recorded in test/fixtures/dumps. MySQL saves character
+    settings before sql_mode; MariaDB saves sql_mode first. Copy both orders
+    completely, excluding DROP so review contains exactly one DDL. The dump's
+    global header, including MariaDB's sandbox command, is outside this slice.
+    """
+    marker = dump.index("-- Dumping routines for database")
+    preamble = re.search(r"/\*!50003 SET @saved_(?:cs_client|sql_mode)\s*=", dump[marker:])
+    if preamble is None:
+        raise ValueError("The dump has no routine session-setting preamble.")
+    start = marker + preamble.start()
+    restore = re.search(r"/\*!50003 SET collation_connection\s*=\s*@saved_col_connection\s*\*/\s*;",
+                        dump[start:])
+    if restore is None:
+        raise ValueError("The dump has no routine collation restore.")
+    section = dump[start:start + restore.end()]
+    return "\n".join(line for line in section.splitlines()
+                     if not re.fullmatch(r"/\*!50003 DROP PROCEDURE IF EXISTS `(?:``|[^`])+` \*/;", line))
 
 
 #: Editor run answers that mean nothing was sent.
@@ -91,6 +117,7 @@ class _GAWritesBase(object):
             raise unittest.SkipTest("GA server %s is not running (scripts/ga-matrix.sh up %s)"
                                     % (cls.SERVER, cls.SERVER))
         cls.home = make_ga_home("writes-ga")
+        cls.ga_server = entry
         cls.lab = Lab()
         cls.profile = cls.lab.profile("ga-" + cls.SERVER)
         cls.conn = conn_for(cls.profile)
@@ -175,10 +202,12 @@ class _GAWritesBase(object):
         self.assertEqual(first.get("status"), "needs_confirmation",
                          "the write did not come back for review: %s"
                          % redact(first.get("message") or first.get("status")))
-        token = (first.get("confirmation") or {}).get("token")
+        confirmation = first.get("confirmation") or {}
+        token = confirmation.get("token")
         self.assertTrue(token, "no confirmation token issued")
         return self._editor("/api/editor/run", sql=sql, require_confirmation=True,
-                            confirmed=True, confirm_token=token, wait=wait)
+                            confirmed=True, confirm_token=token,
+                            typed_target=confirmation.get("typed_target"), wait=wait)
 
     def _run_with_confirmation(self, sql, wait=30):
         """One editor run, confirmed when it comes back for review; the answer."""
@@ -357,6 +386,64 @@ class _GAWritesBase(object):
         self.assertEqual(created.get("status"), "complete",
                          "CREATE DATABASE with a versioned comment did not complete: %s"
                          % redact(created.get("message") or created.get("status")))
+
+    def test_05_editor_dump_routine(self):
+        """A same-server dump section reviews once and restores a real routine."""
+        schema, routine = _unique("mf_gdump_"), "dump_procedure"
+        try:
+            for sql in ("CREATE DATABASE `%s`" % schema, "USE `%s`" % schema,
+                        "DELIMITER ;;\nCREATE PROCEDURE `%s`() "
+                        "BEGIN SELECT 1 /* note */; END;;\nDELIMITER ;" % routine):
+                result = self._confirmed_run(sql)
+                self.assertEqual(result.get("status"), "complete", redact(str(result)))
+
+            # Use the binary installed inside this existing GA container,
+            # matching its server version. No service is started or stopped.
+            engine = self.ga_server["engine"]
+            tool = "mariadb-dump" if engine == "mariadb" else "mysqldump"
+            args = ["docker", "exec", "-e", "MYSQL_PWD", self.ga_server["container"],
+                    tool, "--no-defaults", "--user=mf_admin", "--no-data", "--no-create-info",
+                    "--skip-triggers", "--routines", "--skip-add-drop-table"]
+            if engine == "mysql":
+                args.append("--set-gtid-purged=OFF")
+            args.extend(("--databases", schema))
+            env = dict(os.environ, MYSQL_PWD=ga_passwords()["MF_ADMIN_PASSWORD"])
+            dumped = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    universal_newlines=True, env=env, timeout=25)
+            self.assertEqual(dumped.returncode, 0, redact(dumped.stderr))
+            section = _routine_section(dumped.stdout)
+            for expected in ("SET @saved_sql_mode", "DELIMITER ;;", "PROCEDURE `%s`" % routine,
+                             "DELIMITER ;", "= @saved_sql_mode", "= @saved_cs_client"):
+                self.assertIn(expected, section)
+            dropped = self._confirmed_run("DROP PROCEDURE `%s`.`%s`" % (schema, routine))
+            self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
+
+            def routine_count():
+                result = self._editor("/api/editor/run", sql=(
+                    "SELECT COUNT(*) FROM information_schema.ROUTINES "
+                    "WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_NAME='%s' AND ROUTINE_TYPE='PROCEDURE'"
+                    % (schema, routine)), wait=30)
+                self.assertEqual(result.get("status"), "complete", redact(str(result)))
+                return [row for part in (result.get("run") or {}).get("results", [])
+                        if part.get("type") == "rows" for row in part.get("rows", [])]
+
+            self.assertEqual(routine_count(), [["0"]])
+            first = self._editor("/api/editor/run", sql=section, require_confirmation=True, wait=30)
+            self.assertEqual(first.get("status"), "needs_confirmation", redact(str(first)))
+            self.assertNotIn("run", first, "unconfirmed dump SQL was executed")
+            confirmation = first.get("confirmation") or {}
+            token = confirmation.get("token")
+            self.assertTrue(token, "the complete dump section needs one confirmation token")
+            statements = confirmation.get("statements") or []
+            self.assertEqual(sum("CREATE" in sql and "PROCEDURE" in sql for sql in statements), 1)
+            self.assertEqual(routine_count(), [["0"]], "the unconfirmed routine already exists")
+            result = self._editor("/api/editor/run", sql=section, require_confirmation=True,
+                                  confirmed=True, confirm_token=token, wait=30)
+            self.assertEqual(result.get("status"), "complete", redact(str(result)))
+            self.assertEqual(routine_count(), [["1"]], "the confirmed dump did not recreate the routine")
+        finally:
+            dropped = self._confirmed_run("DROP DATABASE IF EXISTS `%s`" % schema)
+            self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
 
 
 class MySQL57WritesTest(_GAWritesBase, unittest.TestCase):

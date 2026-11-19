@@ -267,7 +267,10 @@ class SQLModePlanningTests(unittest.TestCase):
                 sql = ";\n".join(statements) + ";"
                 with self.subTest(engine=engine, header=header):
                     plan = ed._plan_run({"sql": sql}, bound_session(engine, version))
-                    self.assertEqual([u["send"] for u in plan["units"]], statements)
+                    expected = statements[:]
+                    expected[3] = "CREATE TABLE t (id int, CHECK (id > 0) /*!80016 NOT ENFORCED */ )"
+                    self.assertEqual([u["send"] for u in plan["units"]], expected)
+                    self.assertEqual([u["text"] for u in plan["units"]], statements)
                     self.assertEqual(plan["verdict"]["kind"], "risky")
                     self.assertEqual("NOT ENFORCED" in plan["units"][3]["code"], engine == "mysql")
 

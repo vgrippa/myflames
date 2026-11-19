@@ -25,10 +25,13 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
-- Query editor refuses overlapping comment openers and closers, including `/*/`, that could make the database client expose SQL hidden from review. Comment boundaries that change the sent text also refuse.
+- Query editor refuses client commands at the start of a line inside multi-line comments, including optimizer hints and versioned comments. It also explains overlapping executable-comment closers that clients can read differently from the server.
+- Query editor recognizes MariaDB ORACLE assignments inside `SET STATEMENT ... FOR` when checking the SQL mode of later statements. These assignments no longer trigger an incorrect embedded-DDL refusal.
+- Query editor explains when a CRLF line puts a carriage return into a DELIMITER argument. Quote the delimiter or follow it with a space; with MySQL on Windows, use LF inside multi-line statements so the reviewed text stays unchanged.
+- Query editor refuses overlapping comment openers and closers, including `/*/`, that could make the database client expose SQL hidden from review.
 - The deprecated SQL command rechecks all consent requirements after connecting. A database name revealed by the bound server still requires an exact typed confirmation, and ALTER preflight follows the bound statement.
 - Query editor refuses DELIMITER changes when an unknown client family could discard different comment-prefixed SQL.
-- Query editor detects MariaDB ORACLE assignments without SET, including qualified names, before reviewing later SQL with mode-dependent quoting.
+- Query editor detects MariaDB ORACLE assignments without SET before reviewing later SQL with mode-dependent quoting. A one-part name can assign sql_mode; qualified targets conservatively leave the later mode unknown.
 - Query editor refuses ordinary comments containing nested executable-comment or optimizer-hint openers that could make the database client send SQL different from the reviewed statement.
 - Query editor detects SQL-mode assignments after CAST, CONVERT, charset clauses and nested expressions, so later SQL with ambiguous quoting cannot bypass review.
 - Query editor refuses DELIMITER changes that would discard SQL the server executes, including MariaDB executable comments read by a MySQL client.
@@ -60,6 +63,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Query editor Stop and Close on MariaDB Galera also confirm the node UUID, preventing an interrupt from reaching another node with the same server name, id and port.
 
 ### Bug fixes
+
+- Query editor accepts inline block comments touching following SQL by showing the client's separating space in the reviewed text. Quoted data and editor error locations retain their original text and positions.
+- InnoDB Cluster action guidance now shows the required MySQL Shell 8.0.32 minimum consistently.
 
 - Query editor tracks SQL-mode saves and restores within a run, so routine sections copied from mariadb-dump can be reviewed without a false ORACLE-mode refusal. Reassigned or unknown saved values remain unknown. The mariadb-dump sandbox-line refusal explains how to remove that client command or use Maintenance > Restore for a whole dump.
 - Query editor runs SHOW CREATE statements without a DDL refusal, including when grouped with other reads under a custom delimiter.

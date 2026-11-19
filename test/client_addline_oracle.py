@@ -3,14 +3,18 @@
 This is a test-only transcription of the state transitions, not a SQL parser
 or a replacement for live client tests. Inputs are ASCII, --comments and
 noninteractive --binary-mode are enabled, sql_mode is empty, and the private
-delimiter has already been selected. Named commands, dollar quotes, charset
-conversion and SQL execution are outside this oracle's domain.
+delimiter has already been selected. The binary-mode DELIMITER command is
+modelled; other named commands are disabled by those flags. Dollar quotes,
+charset conversion and SQL execution are outside this oracle's domain.
 
 Client sources (the branch order matters):
   mysql-8.4.0:client/mysql.cc:2735-2741,2771-2823,2824-2986;
   mariadb-11.8.9:client/mysql.cc:2613-2620,2659-2727,2729-2900.
 Both reset ss_comment on each line but retain ml_comment and in_string.
-MySQL has SSC_HINT; MariaDB 11.8 treats /*+ as an ordinary comment.
+MySQL has SSC_HINT; MariaDB 11.8 treats /*+ as an ordinary comment. The
+optional client_version also selects MySQL's pre-8.2 empty-buffer command
+lookup and MariaDB 12.0.1's persistent special-comment state and atomic
+closer. See the source references beside those transitions below.
 
 Server sources for the separate statement counter:
   mysql-8.4.0:sql/sql_lex.cc:1037-1066,1311-1344,1900-2017;
@@ -25,7 +29,70 @@ SPACE = " \t\r\n\f\v"
 FRAME = "__oracle_end__"
 
 
-def client_packets(sql, family, delimiter=FRAME):
+def skip_over_comments_and_space(text):
+    """Transcribe the MySQL 8.2+ lookup, including its unusual loop bounds.
+
+    mysql-8.4.0:client/mysql.cc:2577-2593;
+    mysql-9.7.0:client/mysql.cc:2591-2607. Do not replace this with a SQL
+    comment parser: an unclosed opener followed by trailing whitespace can
+    consume the whole buffer, while a '*' or '/' can stop the inner loop.
+    """
+    pos, end = 0, len(text)
+    while True:
+        while pos < end and text[pos] in SPACE:
+            pos += 1
+        if pos + 2 < end and text.startswith("/*", pos):
+            pos += 2
+            while pos + 2 < end and text[pos] != "*" and text[pos + 1] != "/":
+                pos += 1
+            if pos + 2 < end and text.startswith("*/", pos):
+                pos += 2
+        if not (pos < end and (text[pos] in SPACE or
+                               (pos + 2 < end and text.startswith("/*", pos)))):
+            return pos
+
+
+def delimiter_command(line, family):
+    """Binary-mode find_command + get_arg, independent of the app lexer.
+
+    Only DELIMITER is a named command with these flags; charset and sandbox
+    are SQL text. mysql-8.4.0:client/mysql.cc:2640-2685,4615-4635,4861-4900;
+    mariadb-11.8.9:client/mysql.cc:2519-2568,4767-4787,5023-5080.
+    Return (recognized, usable value). CR is retained in an unquoted value.
+    """
+    command = line.lstrip(SPACE)
+    if not command[:9].lower() == "delimiter":
+        return False, None
+    pos = 0
+    while pos < len(command) and command[pos] not in SPACE:
+        pos += 1
+    while pos < len(command) and command[pos] in SPACE:
+        pos += 1
+    quote = command[pos:pos + 1]
+    quote = quote if quote in ("'", '"', "`") else ""
+    pos += bool(quote)
+    value, closed = "", not quote
+    while pos < len(command):
+        ch = command[pos]
+        if (ch == "\\" and pos + 1 < len(command) and
+                (not quote if family == "mysql" else quote != "`")):
+            pos += 1
+            value += command[pos]
+        elif quote and ch == quote and family == "mariadb" and command[pos + 1:pos + 2] == quote:
+            value += ch
+            pos += 1
+        elif ch == (quote or " "):
+            closed = True
+            break
+        else:
+            value += ch
+        pos += 1
+    if not value or "\\" in value or (family == "mariadb" and not closed):
+        return True, None
+    return True, value
+
+
+def client_packets(sql, family, delimiter=FRAME, client_version=None, windows=False):
     """Return COM_QUERY texts, remaining buffer, and executed short commands.
 
     Feed exactly the editor's <send> newline <private delimiter> newline
@@ -35,10 +102,40 @@ def client_packets(sql, family, delimiter=FRAME):
     """
     if family not in ("mysql", "mariadb") or not sql.isascii() or "$" in sql:
         raise ValueError("Outside the ASCII comment oracle's domain")
+    version = tuple(int(part) for part in (client_version or
+                    ("8.4.0" if family == "mysql" else "11.8.9")).split("."))
+    comment_lookup = family == "mysql" and version >= (8, 2, 0)
+    persistent_special = family == "mariadb" and version >= (12, 0, 1)
+    hints = family == "mysql" or persistent_special
+    hint_line_guard = persistent_special or (family == "mysql" and
+                      (version >= (9, 2, 0) or (8, 0, 43) <= version < (8, 1, 0) or
+                       (8, 4, 6) <= version < (9, 0, 0)))
     buffer, packets, commands = "", [], []
-    ml_comment, in_string = False, ""
+    ml_comment, in_string, ss_comment = False, "", 0
     for line in (sql + "\n" + delimiter + "\n").split("\n")[:-1]:
-        ss_comment, need_space, pos = 0, False, 0
+        # binary-mode batch_readline keeps CR on Unix and in MariaDB.
+        # MySQL Windows removes one CR before LF in every checked tag:
+        # mysql-8.4.0:client/readline.cc:75-95; MariaDB 11.8.9:38-44.
+        if windows and family == "mysql" and line.endswith("\r"):
+            line = line[:-1]
+        # read_and_execute runs BEFORE add_line resets its local ss_comment.
+        # MySQL 8.4.0:2455-2481; 5.7.44:2355-2369; 8.0.46:2318-2329;
+        # 8.1.0:2387-2398; MariaDB 10.11.16:2403-2414; 11.8.9:2432-2443;
+        # 12.0.1:2352-2363. ml_comment and in_string still guard dispatch.
+        only_comments = comment_lookup and skip_over_comments_and_space(buffer) == len(buffer)
+        if not ml_comment and not in_string and (not buffer or only_comments):
+            head = skip_over_comments_and_space(line) if comment_lookup else 0
+            found, value = delimiter_command(line[head:], family)
+            if found:
+                commands.append("DELIMITER")
+                if only_comments:
+                    buffer = ""
+                if value:
+                    delimiter = value
+                continue
+        if not persistent_special:
+            ss_comment = 0
+        need_space, pos = False, 0
         while pos < len(line):
             ch = line[pos]
             tail = line[pos:]
@@ -81,14 +178,20 @@ def client_packets(sql, family, delimiter=FRAME):
                 if rest.startswith("#") or (rest.startswith("--") and rest[2:3] in SPACE and rest[2:3]):
                     buffer += rest
                     pos = len(line)
-                if buffer.rstrip(SPACE):
+                head = skip_over_comments_and_space(buffer) if comment_lookup else 0
+                found, value = delimiter_command(buffer[head:], family)
+                if found:
+                    commands.append("DELIMITER")
+                    if value:
+                        delimiter = value
+                elif buffer.rstrip(SPACE):
                     packets.append(buffer.rstrip(SPACE))
                 buffer = ""
                 continue
             # mysql:2859-2894 predates the hint #/-- fix. MariaDB:2772-2815.
             dash = tail.startswith("--") and (len(tail) == 2 or tail[2] in SPACE or
                                                (family == "mariadb" and not buffer))
-            if not ml_comment and not in_string and (ch == "#" or dash):
+            if not ml_comment and not in_string and not (hint_line_guard and ss_comment == 2) and (ch == "#" or dash):
                 empty = not buffer
                 buffer += tail
                 if empty:
@@ -99,9 +202,9 @@ def client_packets(sql, family, delimiter=FRAME):
             # */ in /*/ from the next iteration. mysql:2895-2906;
             # mariadb:2817-2833. Do not "correct" this client behavior.
             ordinary = tail.startswith("/*") and not tail.startswith("/*!")
-            if family == "mysql":
+            if hints:
                 ordinary = ordinary and not tail.startswith("/*+") and ss_comment != 2
-            else:
+            if family == "mariadb":
                 ordinary = ordinary and not tail.startswith("/*M!")
             if not in_string and ordinary:
                 buffer += "/*"
@@ -118,10 +221,16 @@ def client_packets(sql, family, delimiter=FRAME):
             # examines one byte per iteration, unlike ordinary comments.
             if not in_string and tail.startswith("/*!"):
                 ss_comment = 1
-            elif not in_string and tail.startswith("/*+") and family == "mysql":
+            elif not in_string and tail.startswith("/*+") and hints:
                 ss_comment = 2
             elif not in_string and ss_comment and tail.startswith("*/"):
                 ss_comment = 0
+                # MariaDB 12.0.1:2786-2792 consumes both closer bytes.
+                # Older clients reexamine '/', which may reopen a comment.
+                if persistent_special:
+                    buffer += "*/"
+                    pos += 2
+                    continue
             if ch == in_string:
                 in_string = ""
             elif not ml_comment and not in_string and ss_comment != 2 and ch in "'\"`":

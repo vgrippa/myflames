@@ -37,14 +37,19 @@ class EditorPlanningL1Tests(unittest.TestCase):
                         plan = self.plan(sql, engine, client=client)
                         self.assertEqual(ed._decision(plan, SAFETY)["action"], "allow")
 
-    def test_closing_slash_cannot_reopen_a_hint_or_change_sent_spacing(self):
+    def test_closing_slash_cannot_reopen_a_hint_and_spacing_is_reviewed(self):
         for engine in ("mysql", "mariadb"):
             for client in ("mysql", "mariadb"):
-                for sql in ("SELECT /*+ */*/ 1 , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '",
-                            "SELECT 1 /* note */+2", "SELECT 1 /* note */'x'"):
+                for sql in ("SELECT /*+ */*/ 1 , ' /* z */ \\C utf8mb4 '\n, '; DELETE FROM t; -- '",):
                     with self.subTest(engine=engine, client=client, sql=sql):
                         with self.assertRaises(ed.EditorError):
                             self.plan(sql, engine, client=client)
+                for sql, expected in (("SELECT 1 /* note */+2", "SELECT 1 /* note */ +2"),
+                                      ("SELECT 1 /* note */'x'", "SELECT 1 /* note */ 'x'")):
+                    with self.subTest(engine=engine, client=client, sql=sql):
+                        plan = self.plan(sql, engine, client=client)
+                        self.assertEqual(plan["units"][0]["send"], expected)
+                        self.assertEqual(ed._decision(plan, SAFETY)["action"], "allow")
                 for sql in ("SELECT 1 /* note */ +2", "SELECT 1 /* note */;", "SELECT 1 /* note */\n+2"):
                     self.assertEqual(ed._decision(self.plan(sql, engine, client=client), SAFETY)["action"], "allow")
 
@@ -90,7 +95,9 @@ class EditorPlanningL1Tests(unittest.TestCase):
 
     def test_oracle_assignment_invalidates_later_mode(self):
         # mariadb-11.8.9:sql/sql_yacc.yy:19225-19230,19513-19547;
-        # sql/sql_lex.cc:9042-9050 falls back to set_system_variable.
+        # sql/sql_lex.cc:9042-9050: one-part names fall back to a system
+        # variable. Qualified sql_mode cannot be assigned (9058-9136 and
+        # sql/item_func.cc:62-69); keep those targets unknown conservatively.
         for mode in ("ORACLE", None):
             for target in ("sql_mode", "`sql_mode`", "session.sql_mode", "session . `sql_mode`"):
                 sql = target + " := 'NO_BACKSLASH_ESCAPES'"
