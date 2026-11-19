@@ -2,7 +2,7 @@
  "schema_version": "cluster-action-1.1",
  "action": "switchover",
  "status": "done",
- "message": "Sent. The primary is now mf-ic-2:3306.",
+ "message": "Sent. The primary is now mf-ic-1:3306.",
  "statements": [
   "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"
  ],
