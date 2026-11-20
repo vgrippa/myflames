@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mysql",
+ "flavor": "percona",
+ "server_product": "Percona XtraDB Cluster",
  "server_version": "8.4.11-11.1",
  "version_comment": "Percona XtraDB Cluster (GPL), Release rel11, Revision 33f7510, WSREP version 26.1.4.3",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -181,5 +183,13 @@
   "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH STATUS) or since start.",
   "The other nodes' states come from performance_schema.pxc_cluster_view on this node; this node's own from wsrep_local_state_comment."
- ]
+ ],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": "mf_pxc"
+ },
+ "actions": []
 }

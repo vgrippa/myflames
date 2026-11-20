@@ -1,0 +1,1592 @@
+{
+  "actions": [
+    {
+      "danger": false,
+      "description": "Loads the servers configuration in memory into runtime (LOAD MYSQL SERVERS TO RUNTIME).",
+      "id": "servers_load",
+      "label": "Load servers to runtime\u2026"
+    },
+    {
+      "danger": false,
+      "description": "Saves the servers configuration in memory to ProxySQL's disk database (SAVE MYSQL SERVERS TO DISK), which it loads at its next start.",
+      "id": "servers_save",
+      "label": "Save servers to disk\u2026"
+    },
+    {
+      "danger": false,
+      "description": "Loads the query rules configuration in memory into runtime (LOAD MYSQL QUERY RULES TO RUNTIME).",
+      "id": "query_rules_load",
+      "label": "Load query rules to runtime\u2026"
+    },
+    {
+      "danger": false,
+      "description": "Saves the query rules configuration in memory to ProxySQL's disk database (SAVE MYSQL QUERY RULES TO DISK), which it loads at its next start.",
+      "id": "query_rules_save",
+      "label": "Save query rules to disk\u2026"
+    }
+  ],
+  "available": true,
+  "captured_at": "<timestamp>",
+  "config_readable": true,
+  "connection_group": {
+    "join": [],
+    "name": "",
+    "read": [],
+    "suggested_name": "proxysql-admin",
+    "suggestions": []
+  },
+  "fingerprints": {
+    "query_rules_disk": "9a5436fcb605602e34232ccd869a1d3a1448716f7316cfcdac48483ca2c1c6b4",
+    "query_rules_memory": "9a5436fcb605602e34232ccd869a1d3a1448716f7316cfcdac48483ca2c1c6b4",
+    "query_rules_runtime": "9a5436fcb605602e34232ccd869a1d3a1448716f7316cfcdac48483ca2c1c6b4",
+    "servers_disk": "f78bf1d0dca7ff04c4175b2d9e315177989a59ca8ec887908c9e0cb8596a45bf",
+    "servers_memory": "f78bf1d0dca7ff04c4175b2d9e315177989a59ca8ec887908c9e0cb8596a45bf",
+    "servers_runtime": "47f929406ab7acd1c31779b0d9b7da7ba9934e0cc41995c4d64282ff24b28a0e"
+  },
+  "hostgroups": [
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 10,
+      "monitor": "galera",
+      "queries": "<volatile>",
+      "role": "writer",
+      "servers": 3,
+      "standby": 2,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 1,
+        "SHUNNED": 2
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 11,
+      "monitor": "galera",
+      "queries": "<volatile>",
+      "role": "backup writer",
+      "servers": 2,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 2,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 12,
+      "monitor": "galera",
+      "queries": "<volatile>",
+      "role": "reader",
+      "servers": 2,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 2,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 19,
+      "monitor": "galera",
+      "queries": "<volatile>",
+      "role": "offline",
+      "servers": 0,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 0,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 30,
+      "monitor": "group_replication",
+      "queries": "<volatile>",
+      "role": "writer",
+      "servers": 1,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 1,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 31,
+      "monitor": "group_replication",
+      "queries": "<volatile>",
+      "role": "backup writer",
+      "servers": 0,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 0,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 32,
+      "monitor": "group_replication",
+      "queries": "<volatile>",
+      "role": "reader",
+      "servers": 2,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 2,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "conn_err": "<volatile>",
+      "conn_free": "<volatile>",
+      "conn_used": "<volatile>",
+      "id": 39,
+      "monitor": "group_replication",
+      "queries": "<volatile>",
+      "role": "offline",
+      "servers": 0,
+      "standby": 0,
+      "status": {
+        "OFFLINE_HARD": 0,
+        "OFFLINE_SOFT": 0,
+        "ONLINE": 0,
+        "SHUNNED": 0
+      },
+      "tone": "ok",
+      "why": []
+    }
+  ],
+  "is_proxysql": true,
+  "message": null,
+  "metrics": {
+    "Active_Transactions": "<volatile>",
+    "Client_Connections_aborted": "<volatile>",
+    "Client_Connections_connected": "<volatile>",
+    "Client_Connections_created": "<volatile>",
+    "ConnPool_get_conn_failure": "<volatile>",
+    "ConnPool_get_conn_immediate": "<volatile>",
+    "ConnPool_get_conn_success": "<volatile>",
+    "MyHGM_myconnpoll_get": "<volatile>",
+    "MyHGM_myconnpoll_reset": "<volatile>",
+    "ProxySQL_Uptime": "<volatile>",
+    "Questions": "<volatile>",
+    "Server_Connections_aborted": "<volatile>",
+    "Server_Connections_connected": "<volatile>",
+    "Server_Connections_created": "<volatile>",
+    "Slow_queries": "<volatile>",
+    "mysql_backend_buffers_bytes": "<volatile>",
+    "mysql_frontend_buffers_bytes": "<volatile>"
+  },
+  "monitors": [
+    {
+      "active": true,
+      "backup_writer_hostgroup": 11,
+      "comment": "mf_galera: one writer; the backup writers also read",
+      "kind": "galera",
+      "max_transactions_behind": 100,
+      "max_writers": 1,
+      "offline_hostgroup": 19,
+      "reader_hostgroup": 12,
+      "source": "runtime",
+      "writer_hostgroup": 10,
+      "writer_is_also_reader": 2
+    },
+    {
+      "active": true,
+      "backup_writer_hostgroup": 31,
+      "comment": "mfcluster: the primary writes; the secondaries read",
+      "kind": "group_replication",
+      "max_transactions_behind": 100,
+      "max_writers": 1,
+      "offline_hostgroup": 39,
+      "reader_hostgroup": 32,
+      "source": "runtime",
+      "writer_hostgroup": 30,
+      "writer_is_also_reader": 0
+    }
+  ],
+  "notes": [],
+  "pending": {
+    "query_rules": {
+      "disk": [],
+      "runtime": []
+    },
+    "servers": {
+      "disk": [],
+      "runtime": []
+    }
+  },
+  "query_rules": [
+    {
+      "actions": [
+        {
+          "danger": true,
+          "description": "Sets active = 0 on rule 10 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup.",
+          "id": "rule_disable",
+          "label": "Disable rule\u2026"
+        }
+      ],
+      "active": true,
+      "apply": true,
+      "comment": "statements tagged /* galera */ go to the Galera writer",
+      "destination_hostgroup": 10,
+      "fields": {
+        "OK_msg": null,
+        "active": "1",
+        "apply": "1",
+        "attributes": "",
+        "cache_empty_result": null,
+        "cache_timeout": null,
+        "cache_ttl": null,
+        "client_addr": null,
+        "comment": "statements tagged /* galera */ go to the Galera writer",
+        "delay": null,
+        "destination_hostgroup": "10",
+        "digest": null,
+        "error_msg": null,
+        "flagIN": "0",
+        "flagOUT": null,
+        "gtid_from_hostgroup": "<volatile>",
+        "log": null,
+        "match_digest": null,
+        "match_pattern": "^/\\* galera \\*/",
+        "mirror_flagOUT": null,
+        "mirror_hostgroup": null,
+        "multiplex": null,
+        "negate_match_pattern": "0",
+        "next_query_flagIN": null,
+        "proxy_addr": null,
+        "proxy_port": "<volatile>",
+        "re_modifiers": "CASELESS",
+        "reconnect": null,
+        "replace_pattern": null,
+        "retries": null,
+        "rule_id": "10",
+        "schemaname": null,
+        "sticky_conn": null,
+        "timeout": null,
+        "username": null
+      },
+      "hits": "<volatile>",
+      "match_digest": null,
+      "match_pattern": "^/\\* galera \\*/",
+      "negate_match_pattern": false,
+      "rule_id": 10,
+      "runtime_active": true,
+      "schemaname": null,
+      "username": null
+    },
+    {
+      "actions": [
+        {
+          "danger": true,
+          "description": "Sets active = 0 on rule 20 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup.",
+          "id": "rule_disable",
+          "label": "Disable rule\u2026"
+        }
+      ],
+      "active": true,
+      "apply": true,
+      "comment": "locking reads go to the InnoDB Cluster primary",
+      "destination_hostgroup": 30,
+      "fields": {
+        "OK_msg": null,
+        "active": "1",
+        "apply": "1",
+        "attributes": "",
+        "cache_empty_result": null,
+        "cache_timeout": null,
+        "cache_ttl": null,
+        "client_addr": null,
+        "comment": "locking reads go to the InnoDB Cluster primary",
+        "delay": null,
+        "destination_hostgroup": "30",
+        "digest": null,
+        "error_msg": null,
+        "flagIN": "0",
+        "flagOUT": null,
+        "gtid_from_hostgroup": "<volatile>",
+        "log": null,
+        "match_digest": "^SELECT .* FOR UPDATE",
+        "match_pattern": null,
+        "mirror_flagOUT": null,
+        "mirror_hostgroup": null,
+        "multiplex": null,
+        "negate_match_pattern": "0",
+        "next_query_flagIN": null,
+        "proxy_addr": null,
+        "proxy_port": "<volatile>",
+        "re_modifiers": "CASELESS",
+        "reconnect": null,
+        "replace_pattern": null,
+        "retries": null,
+        "rule_id": "20",
+        "schemaname": null,
+        "sticky_conn": null,
+        "timeout": null,
+        "username": null
+      },
+      "hits": "<volatile>",
+      "match_digest": "^SELECT .* FOR UPDATE",
+      "match_pattern": null,
+      "negate_match_pattern": false,
+      "rule_id": 20,
+      "runtime_active": true,
+      "schemaname": null,
+      "username": null
+    },
+    {
+      "actions": [
+        {
+          "danger": true,
+          "description": "Sets active = 0 on rule 30 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup.",
+          "id": "rule_disable",
+          "label": "Disable rule\u2026"
+        }
+      ],
+      "active": true,
+      "apply": true,
+      "comment": "other reads go to the InnoDB Cluster secondaries",
+      "destination_hostgroup": 32,
+      "fields": {
+        "OK_msg": null,
+        "active": "1",
+        "apply": "1",
+        "attributes": "",
+        "cache_empty_result": null,
+        "cache_timeout": null,
+        "cache_ttl": null,
+        "client_addr": null,
+        "comment": "other reads go to the InnoDB Cluster secondaries",
+        "delay": null,
+        "destination_hostgroup": "32",
+        "digest": null,
+        "error_msg": null,
+        "flagIN": "0",
+        "flagOUT": null,
+        "gtid_from_hostgroup": "<volatile>",
+        "log": null,
+        "match_digest": "^SELECT",
+        "match_pattern": null,
+        "mirror_flagOUT": null,
+        "mirror_hostgroup": null,
+        "multiplex": null,
+        "negate_match_pattern": "0",
+        "next_query_flagIN": null,
+        "proxy_addr": null,
+        "proxy_port": "<volatile>",
+        "re_modifiers": "CASELESS",
+        "reconnect": null,
+        "replace_pattern": null,
+        "retries": null,
+        "rule_id": "30",
+        "schemaname": null,
+        "sticky_conn": null,
+        "timeout": null,
+        "username": null
+      },
+      "hits": "<volatile>",
+      "match_digest": "^SELECT",
+      "match_pattern": null,
+      "negate_match_pattern": false,
+      "rule_id": 30,
+      "runtime_active": true,
+      "schemaname": null,
+      "username": null
+    }
+  ],
+  "routing": {
+    "active_rules": 3,
+    "evaluated": true,
+    "fast_routing_read": true,
+    "iterations": 0,
+    "note": null,
+    "regex_engine": "PCRE",
+    "regex_variable": "1",
+    "track_hostname": false,
+    "users_read": true
+  },
+  "schema_version": "proxysql-1.0",
+  "servers": [
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-1:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 1000,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-1",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-1",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 1000
+      },
+      "config_key": [
+        10,
+        "mf-galera-1",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 10,
+      "hostname": "mf-galera-1",
+      "key": "rt|10|mf-galera-1|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "writer",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "galera-1",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 1000
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-2:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-2",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-2",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 10,
+      "hostname": "mf-galera-2",
+      "key": "rt|10|mf-galera-2|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "SHUNNED"
+      },
+      "port": "<volatile>",
+      "role": "writer",
+      "runtime_status": "SHUNNED",
+      "settings": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": "standby writer",
+      "tone": "ok",
+      "why": [
+        "SHUNNED in writer hostgroup 10 and ONLINE in backup writer hostgroup 11: the Galera monitor keeps the writers above max_writers (1) there."
+      ]
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-3:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-3",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-3",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 10,
+      "hostname": "mf-galera-3",
+      "key": "rt|10|mf-galera-3|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "SHUNNED"
+      },
+      "port": "<volatile>",
+      "role": "writer",
+      "runtime_status": "SHUNNED",
+      "settings": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": "standby writer",
+      "tone": "ok",
+      "why": [
+        "SHUNNED in writer hostgroup 10 and ONLINE in backup writer hostgroup 11: the Galera monitor keeps the writers above max_writers (1) there."
+      ]
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-2:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-2",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-2",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 11,
+      "hostname": "mf-galera-2",
+      "key": "rt|11|mf-galera-2|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "backup writer",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-3:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-3",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-3",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 11,
+      "hostname": "mf-galera-3",
+      "key": "rt|11|mf-galera-3|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "backup writer",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-2:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-2",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-2",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 12,
+      "hostname": "mf-galera-2",
+      "key": "rt|12|mf-galera-2|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "reader",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "galera-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+        "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-galera-3:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 10,
+        "hostname": "mf-galera-3",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "config_key": [
+        10,
+        "mf-galera-3",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 12,
+      "hostname": "mf-galera-3",
+      "key": "rt|12|mf-galera-3|3306",
+      "monitor": "galera",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "reader",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "galera-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 0,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": false,
+          "description": "No new traffic goes to mf-ic-1:<port>; queries and transactions already on it finish.",
+          "id": "server_offline_soft",
+          "label": "Set OFFLINE_SOFT\u2026"
+        },
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-ic-1:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "ic-1",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 30,
+        "hostname": "mf-ic-1",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "config_key": [
+        30,
+        "mf-ic-1",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 30,
+      "hostname": "mf-ic-1",
+      "key": "rt|30|mf-ic-1|3306",
+      "monitor": "group_replication",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "writer",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "ic-1",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": false,
+          "description": "No new traffic goes to mf-ic-2:<port>; queries and transactions already on it finish.",
+          "id": "server_offline_soft",
+          "label": "Set OFFLINE_SOFT\u2026"
+        },
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-ic-2:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "ic-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 30,
+        "hostname": "mf-ic-2",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "config_key": [
+        30,
+        "mf-ic-2",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 32,
+      "hostname": "mf-ic-2",
+      "key": "rt|32|mf-ic-2|3306",
+      "monitor": "group_replication",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "reader",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "ic-2",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    },
+    {
+      "action_notes": [
+        "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+      ],
+      "actions": [
+        {
+          "danger": false,
+          "description": "No new traffic goes to mf-ic-3:<port>; queries and transactions already on it finish.",
+          "id": "server_offline_soft",
+          "label": "Set OFFLINE_SOFT\u2026"
+        },
+        {
+          "danger": true,
+          "description": "ProxySQL stops using mf-ic-3:<port> at once: free connections close and a connection a client holds closes when it is used next.",
+          "id": "server_offline_hard",
+          "label": "Set OFFLINE_HARD\u2026"
+        },
+        {
+          "danger": false,
+          "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+          "id": "server_weight",
+          "label": "Change weight\u2026",
+          "value": {
+            "current": 100,
+            "label": "Weight",
+            "max": 10000000,
+            "min": 0
+          }
+        }
+      ],
+      "config": {
+        "comment": "ic-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "hostgroup_id": 30,
+        "hostname": "mf-ic-3",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "port": "<volatile>",
+        "status": "ONLINE",
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "config_key": [
+        30,
+        "mf-ic-3",
+        3306
+      ],
+      "config_note": null,
+      "hostgroup_id": 32,
+      "hostname": "mf-ic-3",
+      "key": "rt|32|mf-ic-3|3306",
+      "monitor": "group_replication",
+      "pool": {
+        "bytes_recv": "<volatile>",
+        "bytes_sent": "<volatile>",
+        "conn_err": "<volatile>",
+        "conn_free": "<volatile>",
+        "conn_ok": "<volatile>",
+        "conn_used": "<volatile>",
+        "latency_us": "<volatile>",
+        "max_conn_used": "<volatile>",
+        "queries": "<volatile>",
+        "status": "ONLINE"
+      },
+      "port": "<volatile>",
+      "role": "reader",
+      "runtime_status": "ONLINE",
+      "settings": {
+        "comment": "ic-3",
+        "compression": 0,
+        "gtid_port": "<volatile>",
+        "max_connections": 1000,
+        "max_latency_ms": "<volatile>",
+        "max_replication_lag": 0,
+        "use_ssl": 1,
+        "weight": 100
+      },
+      "status_detail": null,
+      "tone": "ok",
+      "why": []
+    }
+  ],
+  "statements": [
+    "SELECT admin-version",
+    "SELECT @@version",
+    "SELECT * FROM stats_mysql_global",
+    "SELECT * FROM main.mysql_servers",
+    "SELECT * FROM main.runtime_mysql_servers",
+    "SELECT * FROM disk.mysql_servers",
+    "SELECT * FROM main.mysql_replication_hostgroups",
+    "SELECT * FROM main.runtime_mysql_replication_hostgroups",
+    "SELECT * FROM disk.mysql_replication_hostgroups",
+    "SELECT * FROM main.mysql_group_replication_hostgroups",
+    "SELECT * FROM main.runtime_mysql_group_replication_hostgroups",
+    "SELECT * FROM disk.mysql_group_replication_hostgroups",
+    "SELECT * FROM main.mysql_galera_hostgroups",
+    "SELECT * FROM main.runtime_mysql_galera_hostgroups",
+    "SELECT * FROM disk.mysql_galera_hostgroups",
+    "SELECT * FROM main.mysql_aws_aurora_hostgroups",
+    "SELECT * FROM main.runtime_mysql_aws_aurora_hostgroups",
+    "SELECT * FROM disk.mysql_aws_aurora_hostgroups",
+    "SELECT * FROM main.mysql_hostgroup_attributes",
+    "SELECT * FROM main.runtime_mysql_hostgroup_attributes",
+    "SELECT * FROM disk.mysql_hostgroup_attributes",
+    "SELECT * FROM main.mysql_servers_ssl_params",
+    "SELECT * FROM main.runtime_mysql_servers_ssl_params",
+    "SELECT * FROM disk.mysql_servers_ssl_params",
+    "SELECT * FROM main.mysql_query_rules",
+    "SELECT * FROM main.runtime_mysql_query_rules",
+    "SELECT * FROM disk.mysql_query_rules",
+    "SELECT * FROM main.mysql_query_rules_fast_routing",
+    "SELECT * FROM main.runtime_mysql_query_rules_fast_routing",
+    "SELECT * FROM disk.mysql_query_rules_fast_routing",
+    "SELECT * FROM stats_mysql_connection_pool",
+    "SELECT * FROM stats_mysql_query_rules",
+    "SELECT * FROM stats_mysql_query_digest ORDER BY sum_time DESC LIMIT 100",
+    "SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name IN ('mysql-query_processor_regex', 'mysql-query_processor_iterations', 'mysql-query_digests', 'mysql-query_digests_track_hostname', 'mysql-select_version_forwarding')",
+    "SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM runtime_mysql_users"
+  ],
+  "status": "ok",
+  "status_why": [
+    "Every hostgroup in use has an ONLINE server."
+  ],
+  "summary": {
+    "OFFLINE_HARD": 0,
+    "OFFLINE_SOFT": 0,
+    "ONLINE": 8,
+    "SHUNNED": 2,
+    "backends": 10,
+    "not_in_runtime": 0
+  },
+  "topology": {
+    "database_nodes": [
+      {
+        "address": "mf-galera-1:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-1",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-1",
+        "hostgroup_id": 10,
+        "hostgroup_roles": [
+          "writer"
+        ],
+        "key": "db:rt|10|mf-galera-1|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|10|mf-galera-1|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 1000
+      },
+      {
+        "address": "mf-galera-2:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-2",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-2",
+        "hostgroup_id": 10,
+        "hostgroup_roles": [
+          "writer"
+        ],
+        "key": "db:rt|10|mf-galera-2|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|10|mf-galera-2|3306",
+        "status": "SHUNNED",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-galera-3:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-3",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-3",
+        "hostgroup_id": 10,
+        "hostgroup_roles": [
+          "writer"
+        ],
+        "key": "db:rt|10|mf-galera-3|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|10|mf-galera-3|3306",
+        "status": "SHUNNED",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-galera-2:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-2",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-2",
+        "hostgroup_id": 11,
+        "hostgroup_roles": [
+          "backup writer"
+        ],
+        "key": "db:rt|11|mf-galera-2|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|11|mf-galera-2|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-galera-3:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-3",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-3",
+        "hostgroup_id": 11,
+        "hostgroup_roles": [
+          "backup writer"
+        ],
+        "key": "db:rt|11|mf-galera-3|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|11|mf-galera-3|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-galera-2:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-2",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-2",
+        "hostgroup_id": 12,
+        "hostgroup_roles": [
+          "reader"
+        ],
+        "key": "db:rt|12|mf-galera-2|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|12|mf-galera-2|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-galera-3:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "galera-3",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-galera-3",
+        "hostgroup_id": 12,
+        "hostgroup_roles": [
+          "reader"
+        ],
+        "key": "db:rt|12|mf-galera-3|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|12|mf-galera-3|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-ic-1:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "ic-1",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-ic-1",
+        "hostgroup_id": 30,
+        "hostgroup_roles": [
+          "writer"
+        ],
+        "key": "db:rt|30|mf-ic-1|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|30|mf-ic-1|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-ic-2:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "ic-2",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-ic-2",
+        "hostgroup_id": 32,
+        "hostgroup_roles": [
+          "reader"
+        ],
+        "key": "db:rt|32|mf-ic-2|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|32|mf-ic-2|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      },
+      {
+        "address": "mf-ic-3:<port>",
+        "cluster_kind": null,
+        "cluster_name": null,
+        "comment": "ic-3",
+        "conn_free": "<volatile>",
+        "conn_used": "<volatile>",
+        "evidence": null,
+        "host": "mf-ic-3",
+        "hostgroup_id": 32,
+        "hostgroup_roles": [
+          "reader"
+        ],
+        "key": "db:rt|32|mf-ic-3|3306",
+        "kind": "database",
+        "latency_us": "<volatile>",
+        "port": "<volatile>",
+        "product": null,
+        "profile_id": null,
+        "profile_name": null,
+        "queries": "<volatile>",
+        "read_only": null,
+        "server_key": "rt|32|mf-ic-3|3306",
+        "status": "ONLINE",
+        "verified": false,
+        "version": null,
+        "weight": 100
+      }
+    ],
+    "has_readyset": false,
+    "notes": [],
+    "querypilot_rule_count": "<volatile>",
+    "querypilot_rule_ids": [],
+    "readyset_nodes": []
+  },
+  "uptime_s": "<volatile>",
+  "version": "3.0.11-797-g7c91137"
+}

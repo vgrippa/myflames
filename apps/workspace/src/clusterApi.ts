@@ -131,6 +131,10 @@ export type ClusterReport = {
   readyset_hint?: boolean;
   topology_tiers?: DatabaseTopologyTiers | null;
   connection_group?: ConnectionGroup | null;
+  /** Cluster-wide changes the overview offers (the workspace endpoint adds
+   * them; cluster.py overview_actions): mode switches and, in a ClusterSet,
+   * the ClusterSet changes, each enabled or with its reason and fix. */
+  actions?: ClusterAction[];
 };
 
 /** An instance of another cluster of the ClusterSet, from the shared
@@ -289,11 +293,72 @@ export function failureText(error: string): string {
   return line.length > 180 ? `${line.slice(0, 177)}…` : line || "The read failed.";
 }
 
-/** A reviewed change a member offers (cluster.py available_actions). */
-export type ClusterAction = { id: string; label: string; danger: boolean; description: string };
+/** A reviewed change the cluster offers (docs/schemas/cluster-1.0.json
+ * #/$defs/action, cluster-action-1.1; cluster.py _evaluate_action). Every
+ * action is listed, enabled or not; a disabled one keeps its reason
+ * (why_not), the way to make it runnable (fix) and, when a privilege is
+ * missing, the GRANT to run. */
+export type ClusterAction = {
+  schema_version: "cluster-action-1.1";
+  /** A fixed id, or set_primary_cluster[:<cluster>] / rejoin_cluster[:<cluster>]. */
+  id: string;
+  label: string;
+  /** overview: the Cluster overview band; member: that member's page. */
+  scope: "overview" | "member";
+  /** dbops classification; the cluster changes are risky. */
+  kind: "write" | "risky";
+  /** sql on the target member, a Group Replication UDF, or MySQL Shell. */
+  via: "sql" | "udf" | "mysqlsh";
+  danger: boolean;
+  description: string;
+  member_key: string | null;
+  member_name: string | null;
+  member_uuid: string | null;
+  cluster_name: string | null;
+  enabled: boolean;
+  why_not: string | null;
+  fix: string | null;
+  /** [privilege, scope] pairs the account lacks (filled by the backend when it can read them). */
+  missing_privileges: string[][];
+  grant_sql: string | null;
+  privileges_unreadable: boolean;
+  /** Where the change runs. In a Group connection, profile_id is the
+   * backend's saved route, or null when none is usable. confirm marks an
+   * address suggestion whose identity Review must prove before issuing a token. */
+  target: { self: boolean; member_name: string | null; profile_id?: string | null; confirm?: boolean; note?: string };
+};
 
-export const planClusterAction = (connection: Connection, action: string, memberKey: string) =>
-  api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey });
+/** The member-scope actions that change only the server they run on
+ * (cluster.py _LOCAL_ACTIONS): the identity line names them. */
+export const LOCAL_ACTION_IDS = new Set(["stop_member", "start_member", "desync_node", "resync_node", "bootstrap_pc"]);
 
-export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string) =>
-  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId });
+/** The identity sentence under the Cluster summary: the server read here,
+ * then either the Group connection's saved routes or the connected server's
+ * local actions. A missing report field drops its part of the sentence. */
+export function identityText(report: ClusterReport, groupName = ""): string {
+  const route = groupName ? `Each member's actions run through its own saved connection in ${groupName}.` : "";
+  const me = report.members.find((m) => m.local);
+  if (!me) return route;
+  const server = report.server || {};
+  const address = me.host ? (me.port ? `${me.host.includes(":") ? `[${me.host}]` : me.host}:${me.port}` : me.host)
+    : me.address || (server.hostname ? `${server.hostname}${server.port ? `:${server.port}` : ""}` : "");
+  let text = `You are connected to ${me.name}${address && address !== me.name ? ` (${address})` : ""}`;
+  const detail = [me.role ? `a ${me.role}` : "", me.state || ""].filter(Boolean).join(", ");
+  text += `${detail ? `, ${detail}` : ""}.`;
+  if (route) return `${text} ${route}`;
+  const verbs = (me.actions || []).filter((a) => LOCAL_ACTION_IDS.has(a.id))
+    .map((a) => a.label.replace(/[….]+$/, "").split(" ")[0]).filter(Boolean);
+  if (verbs.length) {
+    const list = verbs.length === 1 ? verbs[0] : `${verbs.slice(0, -1).join(", ")} and ${verbs[verbs.length - 1]}`;
+    text += ` ${list} act${verbs.length === 1 ? "s" : ""} on this server only.`;
+  }
+  return text;
+}
+
+export const planClusterAction = (connection: Connection, action: string, memberKey: string | null, targetProfileId: string | null = null) =>
+  api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey,
+    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}) });
+
+export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string, targetProfileId: string | null = null) =>
+  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId,
+    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}) });

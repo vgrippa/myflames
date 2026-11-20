@@ -343,13 +343,8 @@ try {
   assert.doesNotMatch(connText, /secret@/);
   assert.match(connText, /\[redacted\]@/);
 
-  const depthToggle = `${view} .readyset-topology .topology-presentation-controls button:first-child`;
-  await page.click(`${view} .readyset-topology .topology-motion-toggle`);
-  assert.equal(await page.$eval(`${view} .readyset-topology`, (e) => e.dataset.motion), "off");
-  await page.click(depthToggle);
-  assert.equal(await page.$eval(`${view} .readyset-topology`, (e) => e.dataset.depth), "off");
-  await page.click(`${view} .readyset-topology .topology-motion-toggle`);
-  await page.click(depthToggle);
+  assert.equal(await page.$(`${view} .readyset-topology .topology-presentation-controls`), null, "no presentation controls");
+  assert.equal(await page.$eval(`${view} .readyset-topology`, (e) => e.dataset.motion), "on");
 
   // Clicking an upstream card opens the 320 px right-pane inspector.
   await page.click(`${view} .readyset-topology button[data-row-key="upstream:mysql-primary:3306"]`);

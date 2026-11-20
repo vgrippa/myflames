@@ -559,10 +559,11 @@ test('the packaged backend never receives the update test hooks', () => {
   // environment allowlist must keep them out of the packaged backend too.
   for (const platform of ['darwin', 'win32', 'linux']) {
     const env = backendEnvironment('/desktop', { PATH: '/usr/bin', MYFLAMES_TEST_UPDATE: '99.0.0',
-      MYFLAMES_TEST_UPDATE_FILE: '/tmp/evil.zip', MYFLAMES_UPDATES_DIR: '/tmp/elsewhere' }, platform, { readdirSync() { throw new Error('none'); } });
+      MYFLAMES_TEST_UPDATE_FILE: '/tmp/evil.zip', MYFLAMES_UPDATES_DIR: '/tmp/elsewhere', MYFLAMES_TOOLS_DIR: '/tmp/evil-tools' }, platform, { readdirSync() { throw new Error('none'); } });
     assert.equal(env.MYFLAMES_TEST_UPDATE, undefined, platform);
     assert.equal(env.MYFLAMES_TEST_UPDATE_FILE, undefined, platform);
     assert.equal(env.MYFLAMES_UPDATES_DIR, undefined, 'main.cjs sets it, never the inherited environment');
+    assert.equal(env.MYFLAMES_TOOLS_DIR, undefined, 'main.cjs supplies the checked tools folder');
   }
 });
 
@@ -582,4 +583,63 @@ test('Windows passes the folders a chosen database client may live in to the bac
 test('main.cjs names the real profile for the backend (a chosen client may live under it)', () => {
   const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.cjs'), 'utf8');
   assert.match(main, /env\.MYFLAMES_USER_PROFILE = os\.homedir\(\);/);
+});
+
+
+test('main prepares private tools without blocking startup on an unusable folder', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  const source = main.slice(main.indexOf('function prepareToolsDirectory('), main.indexOf('const toolsDirectory ='));
+  const prepare = vm.runInNewContext(source + '\nprepareToolsDirectory', { fs, path, process });
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'myflames-tools-'));
+  try {
+    const tools = prepare(root);
+    assert.equal(tools, path.join(root, 'tools'));
+    assert.ok(fs.lstatSync(tools).isDirectory());
+    assert.equal(prepare(root), tools);
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(tools).mode & 0o777, 0o700);
+      fs.chmodSync(tools, 0o755);
+      assert.equal(prepare(root), tools);
+      assert.equal(fs.statSync(tools).mode & 0o777, 0o700);
+      fs.rmdirSync(tools);
+      const target = fs.mkdtempSync(path.join(root, 'target-'));
+      fs.chmodSync(target, 0o755);
+      fs.symlinkSync(target, tools);
+      assert.equal(prepare(root), tools);
+      assert.ok(fs.lstatSync(tools).isSymbolicLink());
+      assert.equal(fs.statSync(target).mode & 0o777, 0o755, 'a link target is never chmodded');
+      fs.unlinkSync(tools);
+      fs.writeFileSync(tools, 'keep');
+      assert.equal(prepare(root), tools);
+      assert.equal(fs.readFileSync(tools, 'utf8'), 'keep');
+    }
+    assert.match(main, /env\.MYFLAMES_TOOLS_DIR = toolsDirectory;/);
+    assert.match(main, /process\.platform === 'win32' && process\.env\.MYFLAMES_DESKTOP_DATA/);
+    assert.match(main, /env\.MYFLAMES_DESKTOP_DATA = dataDirectory;/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('optional tools storage errors and foreign ownership never throw at startup', () => {
+  const vm = require('node:vm');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  const source = main.slice(main.indexOf('function prepareToolsDirectory('), main.indexOf('const toolsDirectory ='));
+  for (const cause of ['lstat', 'mkdir', 'chmod', 'owner']) {
+    const calls = [];
+    const denied = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    const fileSystem = {
+      lstatSync: () => {
+        if (cause === 'lstat') denied();
+        if (cause === 'mkdir') throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return { isSymbolicLink: () => false, isDirectory: () => true, uid: cause === 'owner' ? 1001 : 1000 };
+      },
+      mkdirSync: () => { calls.push('mkdir'); denied(); },
+      chmodSync: () => { calls.push('chmod'); denied(); },
+    };
+    const prepare = vm.runInNewContext(source + '\nprepareToolsDirectory', {
+      fs: fileSystem, path, process: { platform: 'darwin', geteuid: () => 1000 },
+    });
+    assert.equal(prepare('/data'), path.join('/data', 'tools'), cause);
+    assert.deepEqual(calls, cause === 'mkdir' ? ['mkdir'] : cause === 'chmod' ? ['chmod'] : [], cause);
+  }
 });

@@ -82,7 +82,7 @@
 .pv-value code,
 .pv-version code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .pv-value { min-width: 0; }
 .pv-pair {
@@ -174,7 +174,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pv-option code { font-family: var(--font-mono); font-size: var(--text-sm); }
+.pv-option code { font-family: var(--font-mono); font-size: var(--text-code-sm); }
 .pv-option[aria-selected="true"] {
   background: var(--accent-soft);
   color: var(--accent-text);

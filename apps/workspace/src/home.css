@@ -1,8 +1,9 @@
 /* Home exposes useful entry points without filling the workspace with cards. */
 /* Check for updates (UpdateCheck.tsx): the outcome and its time as one calm
-   line beside the version; each phrase stays whole when a narrow window wraps
-   the footer. The dot is drawn, so the words read cleanly to assistive
-   technology. About stacks the outcome over its time. */
+   line beside the version in Settings > Updates and news; each phrase stays
+   whole when a narrow window wraps the line. The dot is drawn, so the words
+   read cleanly to assistive technology. About stacks the outcome over its
+   time. */
 .update-check { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 var(--space-2); min-width: 0; }
 .update-check:empty { display: none; }
 .update-check > * { white-space: nowrap; }

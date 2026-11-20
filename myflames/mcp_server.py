@@ -130,7 +130,11 @@ def explain_query_tool(query, host, port=3306, user=None, password=None,
     return analyze_plan_tool(plan_json)
 
 
-def _read_sql(sql):
+class _NativeReadContextRequired(ValueError):
+    """Only known native-reader calls remain undecided; obtain server facts."""
+
+
+def _read_sql(sql, engine=None, server_version=None):
     """Adapt the SYSTEM-zone transaction reads (Sessions, InnoDB, Locks) without issuing SET.
 
     INNODB_TRX dates use the server's OS zone; the client session can inherit
@@ -138,7 +142,14 @@ def _read_sql(sql):
     the session. Starting from UTC also avoids ambiguous local times at a
     daylight-saving transition. Only exact module-owned prefixes are rewritten.
     """
-    from .live import TOKEN
+    from . import dbops
+    # MySQL 5.7 can resolve CURRENT_ROLE as a stored function. For the
+    # module's exact identity projection it has no roles to report, so use
+    # NULL rather than attempting that call and relying on a server error.
+    version = dbops.parse_version_tuple(server_version, leading=True, default=None)
+    if engine == "mysql" and version is not None and version < (8, 0, 0):
+        identity = "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), "
+        sql = sql.replace(identity + "CURRENT_ROLE(), VERSION()", identity + "NULL, VERSION()")
     for tag in ("/*myflames:sessions*/ ", "/*myflames:innodb*/ ", "/*myflames:locks*/ "):
         prefix = tag + "SET SESSION time_zone = 'SYSTEM'; "
         if sql.startswith(prefix):
@@ -149,9 +160,26 @@ def _read_sql(sql):
     # script, so a future module change cannot add SET or a write here.
     if re.search(r"/\*rs\+", sql, re.I):
         raise ValueError("MCP server analysis does not permit Readyset optimizer hints.")
-    statements = [part.strip() for part in TOKEN.sub(" ", sql).split(";") if part.strip()]
-    if not statements or any(not re.match(r"^(SELECT|SHOW)\b", part, re.I) for part in statements):
-        raise ValueError("MCP server analysis permits only SELECT and SHOW statements.")
+    if dbops.skipped_executable_comments(sql, None, None):
+        raise ValueError("MCP server analysis cannot establish the server conditions of executable comments.")
+    for reading in dbops.lexer_readings():
+        units = dbops.split_statements(sql, **reading)
+        # DELIMITER frames a client packet, not a single server statement.
+        # Its masked code preserves every executable semicolon, including
+        # SQL in executable comments, without splitting quoted data.
+        statements = [part.strip() for unit in units for part in unit["code"].split(";") if part.strip()]
+        if (not statements or any(unit["issues"] or unit["unclosed"] for unit in units) or
+                any(not re.match(r"^(SELECT|SHOW)\b", part, re.I) for part in statements)):
+            raise ValueError("MCP server analysis permits only SELECT and SHOW statements.")
+    # A SELECT prefix alone permits file writes, variable assignments, locks
+    # and calls with unknown effects. Use the shared effect classifier even
+    # though the current tools only pass module-owned SQL to this adapter.
+    if dbops.classify(sql, engine=engine, server_version=server_version)["kind"] != "read":
+        if engine is None and server_version is None and any(
+                dbops.classify(sql, engine=family, server_version=version)["kind"] == "read"
+                for family, version in (("mysql", "8.4.0"), ("mariadb", "10.11.16"))):
+            raise _NativeReadContextRequired("MCP server analysis must verify this native reader's server version.")
+        raise ValueError("MCP server analysis permits only statements classified as reads.")
     return sql
 
 
@@ -159,8 +187,16 @@ class _ReadConnection(object):
     def __init__(self, conn):
         self._conn = conn
 
-    def run(self, sql, extra_flags=None, timeout=None):
-        return self._conn.run(_read_sql(sql), extra_flags=extra_flags, timeout=timeout)
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
+        try:
+            sql = _read_sql(sql)
+        except _NativeReadContextRequired:
+            from .server_info import detect_flavor
+            # The connector's fixed SELECT @@version is itself a classified
+            # read. Unknown/unsupported versions still fail closed below.
+            version = self._conn.server_version()
+            sql = _read_sql(sql, engine=detect_flavor(version), server_version=version)
+        return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)

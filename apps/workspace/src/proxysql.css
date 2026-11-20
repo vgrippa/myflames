@@ -48,7 +48,7 @@
 }
 .proxysql-code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -136,7 +136,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .proxysql-links .hint { font-size: var(--text-sm); color: var(--ink-muted); overflow-wrap: anywhere; }
 .proxysql-jump { margin-top: var(--space-2); }

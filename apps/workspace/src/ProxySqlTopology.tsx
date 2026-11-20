@@ -1,8 +1,7 @@
 // Multi-tier topology diagram for the ProxySQL place:
 // ProxySQL Admin (this connection) -> [Readyset cache & mirror tier] -> [Hostgroups & MySQL/MariaDB backends].
-import { useState } from "react";
 import { Pill, type Tone } from "./kit";
-import { ServerGlyph, TopologyControls } from "./TopologyPresentation";
+import { ServerGlyph } from "./TopologyPresentation";
 import type { ProxySqlReport, ProxySqlReadysetNode, ProxySqlTopologyBackendNode } from "./proxysqlApi";
 
 const RS_MODE_LABEL: Record<string, string> = {
@@ -54,8 +53,6 @@ export function ProxySqlTopologyDiagram({
   onOpenCluster?: () => void;
   onOpenReplication?: () => void;
 }) {
-  const [motion, setMotion] = useState(true);
-  const [depth, setDepth] = useState(true);
   const tiers = report.topology;
   const rsNodes: ProxySqlReadysetNode[] = tiers?.readyset_nodes || [];
   const dbNodes: ProxySqlTopologyBackendNode[] =
@@ -95,18 +92,8 @@ export function ProxySqlTopologyDiagram({
     <section
       className="readyset-topology proxysql-topology"
       aria-label="ProxySQL routing topology"
-      data-depth={depth ? "on" : "off"}
-      data-motion={motion && current ? "on" : "off"}
+      data-motion={current ? "on" : "off"}
     >
-      <div className="topology-presentation-bar">
-        <TopologyControls
-          motion={motion}
-          depth={depth}
-          onMotion={() => setMotion(!motion)}
-          onDepth={() => setDepth(!depth)}
-        />
-      </div>
-
       <div className="readyset-tier-stack">
         <div className="readyset-tier" role="group" aria-label="ProxySQL instance">
           <div className="readyset-tier-label">ProxySQL routing layer</div>

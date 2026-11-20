@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { backendEnvironment, startBackend, sameOrigin, externalLink, dataPath, isolatedBackendHome, toolGroupsFile } = require('./backend.cjs');
+const { SmokePhases } = require('./smoke-timing.cjs');
 const updater = require('./updater.cjs');
 
 app.setName('myflames');
@@ -23,6 +24,24 @@ fs.mkdirSync(updatesDirectory, { recursive: true, mode: 0o700 });
 // mkdir leaves an existing folder's mode alone; updater.checkFolder refuses
 // one that is shared, owned by someone else or a link.
 try { if (!fs.lstatSync(updatesDirectory).isSymbolicLink()) fs.chmodSync(updatesDirectory, 0o700); } catch { /* checked before use */ }
+// Managed tools are optional: storage problems must not prevent app startup.
+// Never follow a tools link or chmod a folder owned by another user. The
+// backend checks the path again and reports the reason before any download.
+function prepareToolsDirectory(dataDirectory) {
+  const directory = path.join(dataDirectory, 'tools');
+  try {
+    const info = fs.lstatSync(directory);
+    if (!info.isSymbolicLink() && info.isDirectory() && process.platform !== 'win32' && info.uid === process.geteuid()) {
+      fs.chmodSync(directory, 0o700);
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      try { fs.mkdirSync(directory, { mode: 0o700 }); } catch { /* checked by the backend before use */ }
+    }
+  }
+  return directory;
+}
+const toolsDirectory = prepareToolsDirectory(dataDirectory);
 let backend, launching, window, quitting = false, exiting = false, fatal = false, blockedSmokeRequests = 0;
 // The update the person chose to install ({ version, relaunch }), and the
 // macOS restart that lets Squirrel.Mac quit the app itself.
@@ -140,6 +159,12 @@ async function start() {
   // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
   env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
   env.MYFLAMES_UPDATES_DIR = updatesDirectory;
+  env.MYFLAMES_TOOLS_DIR = toolsDirectory;
+  // Windows custom data folders have no checked ownership/DACL guarantee.
+  // Preserve this trusted desktop choice for the managed install guard.
+  if (process.platform === 'win32' && process.env.MYFLAMES_DESKTOP_DATA) {
+    env.MYFLAMES_DESKTOP_DATA = dataDirectory;
+  }
   // The packaged backend entry stops itself if this process dies uncleanly.
   env.MYFLAMES_DESKTOP_PARENT = String(process.pid);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
@@ -285,9 +310,15 @@ async function start() {
 }
 async function smokeWindow(origin) {
   // Explicit local test mode, never a renderer-controlled IPC channel.
+  const timing = new SmokePhases(Date.now, (name, ms) => process.stdout.write(`Desktop smoke phase: ${name} at ${ms} ms\n`));
+  // The 20 s budget measures the workspace becoming ready and authenticated,
+  // before and after the reload. Time in the tools probe is excluded from it,
+  // so a slow first-run program scan cannot consume the readiness budget; the
+  // 45 s kill in scripts/smoke.cjs stays the hard limit for the whole smoke.
   const deadline = Date.now() + 20000;
   let reloaded = false, mysqlClient = null, last = null;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline + timing.elapsed('tools')) {
+    timing.begin('ready');
     const status = await window.webContents.executeJavaScript(`(() => {
       const homeStart = !!document.querySelector('.home-start');
       const alertText = Array.from(document.querySelectorAll('.home [role=alert]'), element => (element.innerText || element.textContent || '').trim()).filter(Boolean).join(' ').slice(0, 200);
@@ -298,20 +329,27 @@ async function smokeWindow(origin) {
     last = status;
     if (status.ready && status.secretGone) {
       if (status.node !== 'undefined' || status.origin !== origin) throw new Error('Desktop isolation smoke failed.');
+      timing.begin('cookie');
       const cookies = await window.webContents.session.cookies.get({ url: origin + '/api/' });
       if (!cookies.some(cookie => cookie.httpOnly)) {
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
       }
+      timing.begin('session');
       const authenticated = await window.webContents.executeJavaScript(`fetch('/api/session/load', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof') || ''}, body:'{}'}).then(response => response.ok)`);
       if (!authenticated) throw new Error('Authenticated workspace request failed.');
       if (!reloaded) {
         // Which mysql client the backend found (the bundled one when nothing is installed).
+        timing.begin('tools');
         mysqlClient = await window.webContents.executeJavaScript(`fetch('/api/lifecycle/tools', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof') || ''}, body:'{}'}).then(response => response.json()).then(report => { const tool = (report.tools || {}).mysql || {}; return { available: tool.available === true, path: tool.path || null, version: tool.version || null }; })`);
+        timing.begin('reload');
         reloaded = true;
         await window.loadURL(origin + '/'); // No launch secret on a normal reload.
         continue;
       }
+      // Readiness and authentication are proven; the interaction steps below
+      // keep their own waitForSmoke labels and bounds.
+      timing.end();
       const externalBlocked = await window.webContents.executeJavaScript(`fetch('http://127.0.0.1:65534/').then(() => false, () => true)`);
       // The preload is packaged and exposes the Files place's dropped-file
       // paths and the update bridge, which answers from the workspace page.
@@ -346,6 +384,7 @@ async function smokeWindow(origin) {
       await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       fs.writeFileSync(path.join(dataDirectory, 'smoke.png'), (await window.webContents.capturePage()).toPNG());
       fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, undoRedo: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
+      process.stdout.write('Desktop smoke timings: ' + timing.format() + '\n');
       process.stdout.write('Desktop smoke passed: authenticated workspace, sandboxed renderer, isolated data.\n');
       app.quit(); return;
     }
@@ -355,7 +394,7 @@ async function smokeWindow(origin) {
     ? `home-start present=${last.homeStart}, alert text present=${!!last.alertText}, still opening=${last.stillOpening}, secret still in the hash=${!last.secretGone}` +
       (last.alertText ? `; alert: ${last.alertText}` : '')
     : 'no renderer status';
-  throw new Error(`The workspace did not finish authenticating (${detail}).`);
+  throw new Error(`The workspace did not finish authenticating (${detail}). ${timing.describeTimeout(20000)}`);
 }
 
 async function waitForSmoke(expression, label = expression) {

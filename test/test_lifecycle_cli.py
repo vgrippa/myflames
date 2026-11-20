@@ -703,8 +703,8 @@ class Endpoints(Isolated):
     def test_clone_donor_policy_is_recorded_before_saved_secret_is_read(self):
         original = dbops.connection_safety
         seen = []
-        def safety(profile, connection):
-            result = original(profile, connection)
+        def safety(profile=None, connection=None, store=None, target_profile=None):
+            result = original(profile, connection, store=store, target_profile=target_profile)
             seen.append(result)
             return result
         saved = self.workspace.store.connection_with_saved_password

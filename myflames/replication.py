@@ -207,7 +207,8 @@ LOOP_HISTORY = 20
 EXTRA_VARIABLES = ("enforce_gtid_consistency", "gtid_current_pos", "gtid_domain_id", "gtid_mode",
                    "gtid_slave_pos", "gtid_strict_mode", "read_only", "replica_parallel_workers",
                    "replica_preserve_commit_order", "slave_parallel_threads", "slave_parallel_workers",
-                   "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter")
+                   "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter",
+                   "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
 
 _PS_HEARTBEAT_SQL = ("SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM "
                      "performance_schema.replication_connection_configuration")
@@ -475,14 +476,23 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     and the replica's @@hostname is this computer's. Status reads for
     skips and the skip loop leave it off.
     """
-    reader = Reader(conn, REPLICATION_TAG)
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
     try:
-        server = preflight(reader, EXTRA_VARIABLES)
+        return _read_status(conn, source_versions, profiles, open_profile, replica_host,
+                            current_profile_id, topology_tiers, _identity)
     except ConnectorError as exc:
-        if not _fatal(exc) and not denied(exc):
+        # denied() covers statement privileges, but a refused login (1045)
+        # and replication's other denial codes must not trigger a new probe.
+        if conn.variables is None and not _fatal(exc) and not denied(exc) and \
+                dbops.error_code(str(exc)) not in _DENIED:
             try:
                 from . import readyset
-                rs_ok, rs_ver = readyset.identify(conn)
+                # Readyset cannot execute the MySQL identity prefix. This
+                # diagnostic has no channels or write evidence, and never
+                # clears the failed scope or borrows a prior server identity.
+                rs_ok, rs_ver = readyset.identify(conn.connection)
+            except ProfileReadError:
+                raise
             except Exception:
                 rs_ok, rs_ver = False, None
             if rs_ok:
@@ -500,6 +510,14 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
                     "notes": [], "summary": _summary(),
                 }
         raise
+
+
+@dbops.target_evidence
+def _read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
+                 current_profile_id=None, topology_tiers=False, _identity=None):
+    """Read MySQL/MariaDB status entirely within the caller's evidence scope."""
+    reader = Reader(conn, REPLICATION_TAG)
+    server = preflight(reader, EXTRA_VARIABLES)
     show_sql = status_statement(server.engine, server.version_tuple)
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -524,6 +542,10 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
         "notes": [],
         "summary": _summary(),
     }
+    # Keep the report's established schema: settings already holds the
+    # server's global variables, and the skip plan copies this review evidence.
+    report["settings"]["server_identity"] = {key: server.variables.get(key) for key in
+        (("server_id", "hostname", "port") if server.engine == "mariadb" else ("server_uuid",))}
     try:
         rows = reader.named(show_sql)
     except ConnectorError as exc:
@@ -534,6 +556,10 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             report["message"] = _privilege_message(server, exc)
             return report
         raise ValueError("Could not read replication status: " + reason(exc))
+    if server.engine == "mariadb" and server.variables.get("wsrep_node_name"):
+        report["settings"]["server_identity"]["wsrep_node_name"] = server.variables["wsrep_node_name"]
+    report["settings"]["server_identity"] = dbops.target_galera_identity(
+        conn, server.engine, report["settings"]["server_identity"], server.variables, REPLICATION_TAG)
     # Group Replication's own channels (group_replication_applier and
     # group_replication_recovery, reserved names in M/sql/rpl_msr.cc:38-39)
     # are the group's, not asynchronous replication. SHOW REPLICA STATUS walks
@@ -1605,7 +1631,7 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
     return report
 
 
-def profile_opener(store, current_profile_id=None, expected_current=None):
+def profile_opener(store, current_profile_id=None, expected_current=None, group_name=None, connection=None):
     """``open_profile(profile)`` for :func:`attach_source_versions`: a client
     for one saved connection with its own saved password (filled by
     ``store.connection_with_saved_password``, which checks the endpoint),
@@ -1615,47 +1641,124 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
     (a new one on every password save; keyed for this process), read from
     the workspace store without the secret store, and a function that looks
     the password up and opens it."""
+    from .connection_groups import current_profile, request_profiles, validate_group
     from .connector import MySQLConnection
     from .live import connection_options
     from .workspace_store import _same_endpoint
 
+    if isinstance(current_profile_id, dict):
+        if connection is None:
+            connection = current_profile_id
+        if expected_current is None:
+            expected_current = current_profile_id
+        if group_name is None and 'group_name' in current_profile_id:
+            group_name = current_profile_id.get('group_name')
+        current_profile_id = current_profile_id.get('profile_id') or current_profile_id.get('id')
+    if isinstance(expected_current, dict):
+        if connection is None:
+            connection = expected_current
+        if group_name is None and 'group_name' in expected_current:
+            group_name = expected_current.get('group_name')
+        if current_profile_id is None:
+            current_profile_id = expected_current.get('profile_id') or expected_current.get('id')
+    if isinstance(connection, dict):
+        if group_name is None and 'group_name' in connection:
+            group_name = connection.get('group_name')
+        if current_profile_id is None:
+            current_profile_id = connection.get('profile_id') or connection.get('id')
+
     try:
-        selected = expected_current or (store.get('profile', current_profile_id) if current_profile_id else None)
+        initial = (store.get('profile', current_profile_id)
+                   if isinstance(current_profile_id, str) and 0 < len(current_profile_id) <= 200 else None)
+    except Exception:
+        initial = None
+    if isinstance(connection, dict):
+        req_conn = dict(connection)
+        if current_profile_id and not req_conn.get('profile_id'):
+            req_conn['profile_id'] = current_profile_id
+        if group_name is not None:
+            req_conn['group_name'] = group_name
+    elif isinstance(initial, dict):
+        req_conn = dict(initial, profile_id=current_profile_id)
+        if group_name is not None:
+            req_conn['group_name'] = group_name
+    else:
+        req_conn = None
+    try:
+        if req_conn is not None:
+            _, selected = request_profiles(store, req_conn)
+            if selected is None and group_name is None and isinstance(expected_current, dict):
+                selected = expected_current
+            elif selected is not None and isinstance(expected_current, dict) and 'group' in expected_current:
+                if expected_current.get('group') != selected.get('group'):
+                    selected = None
+        else:
+            selected = expected_current if isinstance(expected_current, dict) else initial
     except Exception:
         selected = None
 
+    def _as_profile(profile):
+        if isinstance(profile, str):
+            return {'id': profile}, True
+        if isinstance(profile, dict):
+            return profile, False
+        return {}, False
+
     def consent(profile):
+        prof, by_id = _as_profile(profile)
+        target_id = prof.get('id')
+        if not isinstance(target_id, str) or not (0 < len(target_id) <= 200):
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        if not isinstance(current_profile_id, str) or not (0 < len(current_profile_id) <= 200):
+            raise ProfileReadError('This saved connection is outside the current connection group.')
         try:
-            current = store.get('profile', current_profile_id) if current_profile_id else None
-            target = store.get('profile', profile.get('id'))
+            current = store.get('profile', current_profile_id)
+            target = store.get('profile', target_id)
         except Exception:
             raise ProfileReadError('Saved connection group consent could not be read; no saved connection was opened.') from None
         if not target:
-            raise ProfileReadError('The saved connection %s no longer exists, so it was not read.' % _profile_name(profile))
-        if not selected or not current or not _same_endpoint(selected, current) or \
-                current.get('group') != selected.get('group') or not current.get('group') or \
-                not target or target.get('id') == current_profile_id or \
-                target.get('group') != current.get('group') or profile.get('group') != current.get('group'):
+            raise ProfileReadError('The saved connection %s no longer exists, so it was not read.' % _profile_name(prof))
+        want_group = None
+        if group_name is not None:
+            try:
+                want_group = validate_group(group_name)
+            except ValueError:
+                want_group = ''
+            if not want_group:
+                raise ProfileReadError('This saved connection is outside the current connection group.')
+        profiles, req_current = request_profiles(store, req_conn) if req_conn is not None else ([], None)
+        req_target = current_profile(profiles, target_id)
+        active_group = want_group if want_group is not None else (selected.get('group') if isinstance(selected, dict) else None)
+        if (not selected or not current or not req_current or not req_target or
+                not _same_endpoint(selected, current) or not _same_endpoint(req_current, current) or
+                not active_group or current.get('group') != active_group or req_current.get('group') != active_group or
+                target.get('id') == current_profile_id or
+                target.get('group') != active_group or req_target.get('group') != active_group or
+                (not by_id and 'group' in prof and prof.get('group') != active_group)):
             raise ProfileReadError('This saved connection is outside the current connection group.')
+        if (want_group is not None or by_id) and (not target.get('remember_password') or not req_target.get('remember_password')):
+            raise ProfileReadError('The saved connection %s has no saved password, so it was not read.' % _profile_name(prof))
 
     def prepare(profile):
+        prof, by_id = _as_profile(profile)
         consent(profile)
+        target_id = prof.get("id")
         # One current record, including its save time and password reference;
         # a stale request must never recreate an earlier fingerprint.
-        stored = store._profile(profile.get("id"), include_updated=True)
+        stored = store._profile(target_id, include_updated=True)
         if stored is None:
             raise ProfileReadError("The saved connection %s no longer exists, so it was not read."
-                             % _profile_name(profile))
+                             % _profile_name(prof))
         fields = ("host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port")
-        if any(profile.get(k) != stored.get(k) for k in fields):
+        if not by_id and any(k in prof for k in fields) and any(prof.get(k) != stored.get(k) for k in fields):
             raise ProfileReadError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
-                             "current settings." % _profile_name(profile))
+                             "current settings." % _profile_name(prof))
         fingerprint = _stored_fingerprint(stored)
 
         def login_consent():
             consent(profile)
             try:
-                current = store._profile(profile.get('id'), include_updated=True)
+                current = store._profile(target_id, include_updated=True)
                 unchanged = (current is not None and _same_endpoint(stored, current) and
                              _stored_fingerprint(current) == fingerprint)
             except Exception:
@@ -1665,20 +1768,25 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
 
         def connect():
             consent(profile)
+            if not stored.get("remember_password"):
+                raise ProfileReadError("The saved connection %s has no saved password, so it was not read."
+                                 % _profile_name(prof))
             value = {k: stored.get(k) for k in fields if stored.get(k) not in (None, "")}
-            value["profile_id"] = profile.get("id")
+            value["profile_id"] = target_id
+            if group_name is not None:
+                value["group_name"] = group_name
             options = connection_options(store.connection_with_saved_password(value))
             # The secret lookup reads the store again and may wait. A save
             # during it must not send new credentials under an old claim.
-            current = store._profile(profile.get("id"), include_updated=True)
+            current = store._profile(target_id, include_updated=True)
             current_fingerprint = _stored_fingerprint(current) if current else None
             if current_fingerprint != fingerprint:
                 raise ProfileReadError("Not checked: the saved connection %s changed while its password was being "
-                                 "read. Refresh to check its current settings." % _profile_name(profile))
+                                 "read. Refresh to check its current settings." % _profile_name(prof))
             consent(profile)
             if not options.get("password"):
                 raise ProfileReadError("The saved connection %s has no saved password, so it was not read."
-                                 % _profile_name(profile))
+                                 % _profile_name(prof))
             options.update(connect_timeout=SOURCE_CONNECT_TIMEOUT_S, query_timeout=SOURCE_QUERY_TIMEOUT_S)
             conn = MySQLConnection(**options)
             conn._login_guard = login_consent
@@ -1688,8 +1796,10 @@ def profile_opener(store, current_profile_id=None, expected_current=None):
 
     def open_profile(profile):
         return prepare(profile)[1]()
+    open_profile.consent = consent
     open_profile.prepare = prepare
     open_profile.current_profile = selected
+    open_profile.group_name = group_name
     return open_profile
 
 
@@ -1895,6 +2005,7 @@ def plan_skip(report, channel):
         "statements": [],
         "identity": {
             "channel": found["name"], "method": None,
+            "server_identity": dict(report.get("server_identity") or (report.get("settings") or {}).get("server_identity") or {}),
             "last_sql_errno": error["errno"], "last_sql_error": error.get("message"),
             "last_sql_error_timestamp": error.get("timestamp"), "gtid": gtid,
             "position": {k: position.get(k) for k in ("relay_log_file", "relay_log_pos", "exec_file", "exec_pos")},
@@ -1937,6 +2048,12 @@ def plan_skip(report, channel):
         plan["message"] = ("The global skip counter is armed or unreadable. Nothing is planned: inspect "
                            "@@GLOBAL.sql_replica_skip_counter and resolve it manually before any START.")
     plan["identity"]["method"] = plan["method"]
+    try:
+        plan["session_guard"] = dbops.target_session_guard(engine, plan["identity"]["server_identity"])
+    except ValueError as exc:
+        plan["session_guard"] = []
+        plan["available"] = False
+        plan["message"] = str(exc)
     return plan
 
 
@@ -2064,7 +2181,7 @@ def check_expect(expect):
     message = ("Send the complete identity you confirmed: channel, method, failure fields, source, and a "
                "validated GTID or complete relay and applied file-and-position identity.")
     required = ("channel", "method", "last_sql_errno", "last_sql_error", "last_sql_error_timestamp",
-                "gtid", "position", "source")
+                "gtid", "position", "source", "server_identity")
     if not isinstance(expect, dict) or any(k not in expect for k in required):
         raise ValueError(message)
     if not isinstance(expect["channel"], str) or len(expect["channel"]) > 256:
@@ -2105,7 +2222,9 @@ def check_expect(expect):
         raise ValueError(message)
     if not valid_gtid and not all(position[k] is not None and position[k] != "" for k in pkeys):
         raise ValueError(message)
-    return {k: dict(expect[k]) if k in ("position", "source") else expect[k] for k in required}
+    if not isinstance(expect["server_identity"], dict):
+        raise ValueError(message)
+    return {k: dict(expect[k]) if k in ("position", "source", "server_identity") else expect[k] for k in required}
 
 
 def verify_identity(channel, plan, expect):
@@ -2121,6 +2240,7 @@ def verify_identity(channel, plan, expect):
             verified.append(label)
     if channel["sql"]["running"] == "Yes":
         diffs.append("the applier is running again")
+    compare("the server identity", current.get("server_identity"), expect.get("server_identity"))
     compare("the skip method", current["method"], expect.get("method"))
     compare("the error number", current["last_sql_errno"], expect["last_sql_errno"])
     compare("the error message", current["last_sql_error"], expect.get("last_sql_error"))
@@ -2143,6 +2263,18 @@ def _tagged(statements):
     return [SKIP_TAG + s for s in statements]
 
 
+def _skip_packets(plan):
+    """Keep every session setting with all statements that depend on it.
+
+    GTID_NEXT, BEGIN, COMMIT and AUTOMATIC must use one backend session.
+    MariaDB selects the counter's channel through default_master_connection.
+    START names its channel explicitly and can use another guarded packet.
+    """
+    statements = _tagged(plan["statements"])
+    dependent = 4 if plan["method"] == "empty_gtid_transaction" else 2 if plan["engine"] == "mariadb" else 0
+    return [tuple(statements[:dependent])] + statements[dependent:] if dependent else statements
+
+
 def _script(statements):
     """One client call, one statement per line, so the client's "at line N"
     names the statement that failed."""
@@ -2159,7 +2291,9 @@ def _server_error(exc, statements, privileges):
     code = dbops.error_code(str(exc))
     line = _LINE.search(str(exc))
     ran = ""
-    if line and 1 < int(line.group(1)) <= len(statements):
+    if getattr(exc, "guarded_group", False):
+        ran = " The error identifies a packet containing several statements; which of them completed is unknown."
+    elif line and 1 < int(line.group(1)) <= len(statements):
         done = statements[:int(line.group(1)) - 1]
         ran = " These statements ran before it: %s." % "; ".join(done)
     elif line and int(line.group(1)) == 1:
@@ -2342,7 +2476,12 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     if blocked:
         return _unsent(result, audit, "refused" if blocked[0] == "refused" else "needs_confirmation",
                        "read_only" if blocked[0] == "refused" else "needs_confirmation", blocked[1], expect)
+    # Status, permission and the final status recheck must describe one
+    # node, even if a proxy routes each read packet independently.
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
+    conn.check()
     report = status_reader(conn)
+    conn.check()
     result["engine"], result["server_version"] = report.get("engine"), report.get("server_version")
     if audit is not None:
         audit.server(report.get("engine"), report.get("server_version"))
@@ -2371,10 +2510,15 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     if problem:
         return _unsent(result, audit, "refused", "identity", problem, expect, verified)
     result["verified"] = verified
-    script = _script(plan["statements"])
+    try:
+        session_guard = dbops.target_session_guard(report["engine"], expect.get("server_identity"))
+        script, packet_lines = dbops.target_guarded_script(session_guard, _skip_packets(plan))
+    except ValueError as exc:
+        return _unsent(result, audit, "refused", "identity_unavailable", str(exc), expect, verified)
+    result["session_guard"] = session_guard
     if audit is not None:
         try:
-            result["audit_id"] = audit.attempt(_tagged(plan["statements"]), target=expect, verified=verified)
+            result["audit_id"] = audit.attempt(session_guard + _tagged(plan["statements"]), target=expect, verified=verified)
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     # Privilege checks cover the WHOLE script, including START after COMMIT/SET.
@@ -2413,23 +2557,48 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
         blocked = before_send() if before_send is not None else None
         if blocked:
             return _unsent(result, audit, "refused", blocked, STOP_REASONS[blocked][0], expect)
+        conn.check()
         result["sent"] = send_state["sent"] = True
     try:
-        conn.run(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+        conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+    except ProfileReadError as exc:
+        # The connector rejected consent before the client process started.
+        # An armed send boundary is not evidence that SQL reached the server.
+        send_state["sent"] = False
+        return _unsent(result, audit, "refused", "changed", str(exc), expect, verified)
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
-        if _fatal(exc):
-            unknown = dbops.may_have_run(exc)
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
+        if guard_failure:
+            password = getattr(conn, "password", None) or getattr(audit, "password", None)
+            index = guard_failure["statement_index"]
+            result.update(status="failed" if index else "refused", outcome=guard_failure["outcome"],
+                          sent=True if index else [],
+                          stop_reason=guard_failure["outcome"],
+                          message=dbops.redact(guard_failure["message"], password))
+            send_state["sent"] = bool(index)
+            if index:
+                result["residual_state"] = _residual_state(dbops.shift_guard_error(exc, packet_lines), plan, None)
+                result["message"] += " " + result["residual_state"]["message"]
+            if audit is not None:
+                audit.complete("error" if index else "refused", outcome=result["outcome"], error=dbops.redact(dbops.target_error_text(exc), password),
+                               message=result["message"],
+                               after={"residual_state": result["residual_state"]} if index else None)
+            return result
+        exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
+                                       getattr(conn, "password", None) or getattr(audit, "password", None))
+        unknown = bool(getattr(exc, "guarded_unknown", False)) or (_fatal(exc) and dbops.may_have_run(exc))
+        if unknown or _fatal(exc):
             message = ("Could not skip the transaction: %s.%s" % (
                 reason(exc), " The statements may have reached the server, so the outcome is unknown; read "
                              "the channel again." if unknown else ""))
             residual = _residual_state(exc, plan, None)
             message += " " + residual["message"]
             if audit is not None:
-                audit.complete("unknown" if unknown else "error", outcome="timeout" if unknown else "error",
+                audit.complete("unknown" if unknown else "error", outcome="unknown" if unknown else "error",
                                error=str(exc), message=message, after={"residual_state": residual})
             raise ConnectorError(message) from exc
         result["status"], result["message"] = _server_error(exc, plan["statements"], plan["privileges"])
@@ -2449,6 +2618,9 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     result["status"] = "skipped"
     try:
         result["after"] = _read_after(conn, channel, plan, settle_s, sleep)
+    except ProfileReadError:
+        result["after"] = {"present": None, "passed": None,
+                           "diagnostic": "Connection group consent changed after the script succeeded."}
     except BaseException as exc:
         if audit is not None:
             audit.complete("unknown", outcome="unverified", message="Script succeeded; verification failed: " + str(exc))
@@ -2472,7 +2644,8 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
 def _residual_state(exc, plan, after):
     """Report irreversible partial effects without attempting automatic rollback."""
     line = _LINE.search(str(exc))
-    count = int(line.group(1)) - 1 if line and 1 <= int(line.group(1)) <= len(plan["statements"]) else None
+    count = (int(line.group(1)) - 1 if line and not getattr(exc, "guarded_group", False)
+             and 1 <= int(line.group(1)) <= len(plan["statements"]) else None)
     done = plan["statements"][:count] if count is not None else []
     committed = "COMMIT" in done if count is not None else None
     armed = any(s.startswith("SET GLOBAL") for s in done) if count is not None else None
@@ -2590,6 +2763,7 @@ def _receiver_details(engine, identity=None, problem=None, version=None):
             "receiver_guard_instrument": instrument, "receiver_guard_note": note}
 
 
+@dbops.target_evidence
 def receiver_guard_plan(conn, report):
     """Read-only reconnect coverage for a loop confirmation; never enables it.
 
@@ -2599,6 +2773,7 @@ def receiver_guard_plan(conn, report):
     try:
         identity = read_receiver_identity(conn, report)
     except (ConnectorError, ValueError) as exc:
+        conn.check()
         if isinstance(exc, ConnectorError) and _fatal(exc):
             raise
         return _receiver_details(report.get("engine"), problem=str(exc), version=report.get("server_version"))
@@ -2700,7 +2875,10 @@ class SkipLoop(object):
                  receiver_required=False):
         if not isinstance(channel, str) or len(channel) > 256:
             raise ValueError("Choose the channel to watch by its name.")
-        self.conn = conn
+        # Receiver checks run from status-guard callbacks as well as between
+        # skips. Keep those reads in the same node scope as status and grants;
+        # otherwise a callback could silently inspect another proxy backend.
+        self.conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
         self.channel = channel
         self.codes = check_codes(codes)
         self.max_skips = check_max_skips(max_skips)
@@ -2755,8 +2933,10 @@ class SkipLoop(object):
         """
         try:
             report = self._read_status(self.conn)
+            self.conn.check()
             self._engine, self._server_version = report.get("engine"), report.get("server_version")
             problem = self._receiver_guard(report)
+            self.conn.check()
         except (ConnectorError, ValueError) as exc:
             problem = ("connection_lost", str(exc))
         except Exception as exc:
@@ -2911,6 +3091,7 @@ class SkipLoop(object):
         baseline = {"source": dict(channel.get("source") or {}), "gtid_mode": (report.get("gtid") or {}).get("mode"),
                     "agat": channel.get("agat"), "engine": report.get("engine"),
                     "settings": dict(report.get("settings") or {}),
+                    "server_identity": dict(report.get("server_identity") or (report.get("settings") or {}).get("server_identity") or {}),
                     "using_gtid": (channel.get("position") or {}).get("using_gtid"),
                     "parallel_mode": (channel.get("position") or {}).get("parallel_mode")}
         if self._baseline is None:
@@ -2949,7 +3130,7 @@ class SkipLoop(object):
         except ReceiverUnstable as exc:
             problem, unstable = str(exc), True
         except (ConnectorError, ValueError) as exc:
-            if isinstance(exc, ConnectorError) and _fatal(exc):
+            if isinstance(exc, ConnectorError) and (_fatal(exc) or getattr(exc, "identity_outcome", None)):
                 return "connection_lost", str(exc)
             problem = str(exc)
         details = _receiver_details(report.get("engine"), identity,

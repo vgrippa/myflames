@@ -11,6 +11,236 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(
   path.join(os.tmpdir(), "myflames-investigation-"),
 );
+// Exercise first-use chunk races in fresh pages with independent module
+// registries in the authenticated browser context. Session reads/saves are
+// mocked, but a closing page can still flush a final keepalive save past
+// interception, so these scenarios run after the main workflow has finished
+// with the store.
+async function lazyPlanRegressions(browser, launchUrl) {
+  const raw = await fs.readFile(path.join(root, "apps/workspace/src/example.json"), "utf8");
+  const origin = new URL(launchUrl).origin;
+  const saveButton = '.topbar button[aria-label="Save investigation"]';
+  const sheet = 'dialog.notebook-sheet[open]';
+  const chunkOf = (request) => new URL(request.url()).pathname
+    .match(/^\/assets\/(PlanScreen|PlanChart|ContextPanel)-[^/]+\.js$/)?.[1];
+  async function scenario({ plan = true, fail = [], hold = [] }, check) {
+    const page = await browser.newPage();
+    const failed = new Set(fail), delayed = new Set(hold), requested = new Set();
+    const held = [], errors = [], interceptionErrors = [];
+    const state = {
+      schema_version: "session-1.0", mode: plan ? "inspect" : "home",
+      view: "workbench", metric: "self_time", active_plan_id: plan ? "lazy-plan" : "",
+      plans: plan ? [{ id: "lazy-plan", name: "Lazy plan", raw, origin: "sample" }] : [],
+      investigation: { name: "Lazy investigation", notes: "Keep these notes", tags: "lazy", dirty: false },
+    };
+    let revision = 0;
+    const json = (request, body) => request.respond({
+      status: 200, contentType: "application/json", body: JSON.stringify(body),
+    });
+    const failChunk = (request) => request.respond({
+      status: 404, contentType: "text/javascript", body: "// Simulated stale chunk.",
+    });
+    async function intercept(request) {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/session/load") return json(request, {
+        revision, saved_at: "2026-11-17T12:00:00Z", restore: true, skip_restore: false, state,
+      });
+      if (pathname === "/api/session/save") return json(request, {
+        revision: ++revision, saved_at: "2026-11-17T12:00:01Z",
+      });
+      if (pathname === "/api/investigations/list") return json(request, {
+        schema_version: "investigation-list-1.0", items: [], next_cursor: null,
+      });
+      const chunk = chunkOf(request);
+      if (chunk) {
+        requested.add(chunk);
+        if (delayed.has(chunk)) { held.push(request); return; }
+        if (failed.has(chunk)) return failChunk(request);
+      }
+      return request.continue();
+    }
+    const requestListener = (request) => {
+      void intercept(request).catch((error) => interceptionErrors.push(String(error)));
+    };
+    const chunkRequested = async (name) => {
+      if (!requested.has(name)) await page.waitForRequest((request) => chunkOf(request) === name);
+    };
+    const release = async (name, reject = false) => {
+      delayed.delete(name);
+      const matching = held.filter((request) => chunkOf(request) === name);
+      assert.ok(matching.length, `${name} was actually delayed`);
+      for (const request of matching) {
+        held.splice(held.indexOf(request), 1);
+        if (reject) await failChunk(request);
+        else await request.continue();
+      }
+    };
+    const place = (label) => page.locator(`.main-nav button ::-p-text(${label})`).click();
+    const expanded = () => page.$eval(saveButton, (button) => button.getAttribute("aria-expanded"));
+    try {
+      page.on("pageerror", (error) => errors.push(String(error)));
+      await page.setViewport({ width: 1440, height: 1000 });
+      await page.setCacheEnabled(false);
+      await page.setRequestInterception(true);
+      page.on("request", requestListener);
+      // Held requests intentionally keep the network busy. Wait for the
+      // shell, not networkidle, before interacting with its controls.
+      await page.goto(origin, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector(plan ? saveButton : '.workspace[data-place="home"] .home');
+      await check({ page, place, release, chunkRequested, expanded, failed, requested });
+      assert.deepEqual(interceptionErrors, [], "all intercepted requests were handled");
+      assert.deepEqual(errors, [], "chunk failures do not escape their loading boundary");
+    } finally {
+      // Resolve paused requests before closing, including after an assertion.
+      await Promise.allSettled(held.splice(0).map((request) => request.abort("aborted")));
+      await page.close();
+    }
+  }
+
+  // 1. A failed Plans chunk keeps its failure and Reload in view. Saving
+  // opens an eager notebook on every press, including after a cached failure.
+  await scenario({ fail: ["PlanScreen"] }, async ({ page, expanded, failed }) => {
+    await page.waitForSelector('#main [role="alert"] button');
+    assert.match(await page.$eval('#main [role="alert"]', (el) => el.textContent), /did not load/);
+    for (let press = 0; press < 2; press++) {
+      await page.click(saveButton);
+      await page.waitForSelector(sheet);
+      assert.equal(await expanded(), "true");
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+      assert.equal(await expanded(), "false");
+      assert.equal(await page.$eval('#main [role="alert"] button', (el) => el.textContent), "Reload");
+    }
+    // A page reload really retries the failed module, rather than merely
+    // toggling aria-expanded on React.lazy's cached fallback.
+    failed.delete("PlanScreen");
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle0" }),
+      page.click('#main [role="alert"] button'),
+    ]);
+    await page.waitForSelector('.plan-heading');
+    assert.equal(await page.$('#main > .view-status [role="alert"]'), null);
+  });
+  await scenario({ hold: ["PlanScreen"] }, async ({ page, place, chunkRequested, release }) => {
+    await chunkRequested("PlanScreen");
+    await place("Investigations");
+    await page.locator('.library button ::-p-text(Save 1 open plan as an investigation)').click();
+    await page.waitForSelector(sheet);
+    await release("PlanScreen", true);
+    // The sheet has no chunk dependency, so a failed idle/pending Plans
+    // request cannot close it or remove its fields and save controls.
+    await page.waitForNetworkIdle();
+    assert.equal(await page.$eval('.investigation-notes textarea', (el) => el.value), "Keep these notes");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+    await page.locator('.library button ::-p-text(Save 1 open plan as an investigation)').click();
+    await page.waitForSelector(sheet);
+  });
+
+  // 2. Each chart dependency can fail without taking down the empty Plans
+  // screen, its Import control or the notebook for an already-open plan.
+  for (const chunk of ["PlanChart", "ContextPanel"]) {
+    await scenario({ plan: false, fail: [chunk] }, async ({ page, place, chunkRequested }) => {
+      await place("Plans");
+      await chunkRequested(chunk);
+      await page.waitForSelector('#plans-empty-title');
+      assert.equal(await page.$eval('#plans-empty-title', (el) => el.textContent), "No plan is open");
+      assert.equal(await page.$('#main [role="alert"]'), null);
+      await page.click('.topbar .plans-import');
+      await page.waitForSelector('dialog.import-dialog[open]');
+    });
+    await scenario({ fail: [chunk] }, async ({ page, chunkRequested, expanded }) => {
+      await chunkRequested(chunk);
+      await page.waitForSelector('.plan-heading');
+      await page.waitForSelector('.plan-fold [role="alert"] button');
+      assert.equal(await page.$('#main > .view-status [role="alert"]'), null,
+        `${chunk} fails only inside its chart/inspector area`);
+      await page.click(saveButton);
+      await page.waitForSelector(sheet);
+      assert.equal(await expanded(), "true");
+    });
+  }
+
+  // 3. Release the screen after another dialog has opened. Dispatch both
+  // actions in one turn to cover a request made just before React commits.
+  await scenario({ hold: ["PlanScreen", "PlanChart", "ContextPanel"] },
+    async ({ page, chunkRequested, release, expanded }) => {
+      for (const name of ["PlanScreen", "PlanChart", "ContextPanel"]) await chunkRequested(name);
+      // An ordinary press opens immediately even while all three chunks wait.
+      await page.click(saveButton);
+      await page.waitForSelector(sheet);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+      await page.evaluate(() => {
+        document.querySelector('.topbar .window-save').click();
+        document.querySelector('.topbar .plans-import').click();
+      });
+      await page.waitForSelector('dialog.import-dialog[open]');
+      await page.focus('.import-dialog textarea');
+      const focus = await page.evaluate(() => document.activeElement.tagName);
+      for (const name of ["PlanScreen", "PlanChart", "ContextPanel"]) await release(name);
+      await page.waitForSelector('.plan-heading');
+      await page.waitForNetworkIdle();
+      assert.equal(await page.$$eval('dialog[open]', (els) => els.length), 1);
+      assert.equal(await page.$(sheet), null);
+      assert.equal(await expanded(), "false");
+      assert.equal(await page.evaluate(() => document.activeElement.tagName), focus);
+      assert.ok(await page.evaluate(() => document.querySelector('.import-dialog').contains(document.activeElement)));
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('dialog[open]'));
+      assert.equal(await page.$('dialog.notebook-sheet'), null, "closing Import does not replay the notebook request");
+    });
+  await scenario({ hold: ["PlanScreen"] }, async ({ page, chunkRequested, release }) => {
+    await chunkRequested("PlanScreen");
+    await page.evaluate(() => {
+      document.querySelector('.topbar .window-save').click();
+      [...document.querySelectorAll('.main-nav button')]
+        .find((button) => button.textContent.trim() === "Investigations").click();
+    });
+    await page.waitForSelector('.workspace[data-place="investigations"] .library');
+    await release("PlanScreen");
+    await page.waitForNetworkIdle();
+    assert.equal(await page.$('dialog.notebook-sheet'), null, "leaving Plans cancels the request, including a trip to Investigations");
+  });
+
+  // 4. Drop before the empty-state component exists. Check hit testing so
+  // this exercises the full loading surface, not just a synthetic main node.
+  await scenario({ plan: false, hold: ["PlanScreen", "PlanChart", "ContextPanel"] },
+    async ({ page, place, chunkRequested, release }) => {
+      let analyses = 0;
+      const analyzed = (request) => { if (new URL(request.url()).pathname === "/api/analyze") analyses++; };
+      page.on("request", analyzed);
+      await place("Plans");
+      for (const name of ["PlanScreen", "PlanChart", "ContextPanel"]) await chunkRequested(name);
+      assert.equal(await page.$('.plans-empty'), null, "the lazy drop target has not mounted");
+      const accepted = await page.evaluate((raw) => {
+        const main = document.querySelector('#main'), box = main.getBoundingClientRect();
+        const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        if (!main.contains(target)) throw Error("The loading area is not a drop target");
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(new File([raw], "dropped-before-plans.json", { type: "application/json" }));
+        const drag = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer });
+        target.dispatchEvent(drag);
+        target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+        return drag.defaultPrevented;
+      }, raw);
+      assert.equal(accepted, true, "the shell accepts the file drop");
+      await page.waitForFunction(() => [...document.querySelectorAll('.plan-item')]
+        .some((el) => el.textContent.includes("dropped-before-plans")));
+      assert.equal(analyses, 1, "the drop is imported exactly once while the screen waits");
+      await release("PlanScreen");
+      // The plan header renders while both chart dependencies still wait.
+      await page.waitForSelector('.plan-heading');
+      assert.match(await page.$eval('.plan-heading h1', (el) => el.textContent), /dropped-before-plans/);
+      for (const name of ["PlanChart", "ContextPanel"]) await release(name);
+      await page.waitForNetworkIdle();
+      assert.equal((await page.$$('.plan-item')).length, 1);
+      assert.equal(analyses, 1, "mounting PlanScreen neither loses nor reimports the dropped file");
+      page.off("request", analyzed);
+    });
+  console.log("Lazy Plans chunk failures, modal ownership and loading-area drops passed.");
+}
+
 const server = spawn(
   process.env.PYTHON || "python3",
   [
@@ -36,7 +266,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -641,6 +871,7 @@ try {
   page.off("request", restoreRequest);
   await page.setRequestInterception(false);
   assert.deepEqual(errors, []);
+  await lazyPlanRegressions(browser, url);
   console.log("Investigation workflow passed. " + directory);
 } finally {
   if (browser) await browser.close();

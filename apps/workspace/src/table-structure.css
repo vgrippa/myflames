@@ -104,8 +104,8 @@
   overflow: auto;
   padding: var(--space-2) var(--space-3);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre;
   background: var(--surface);
   border: 1px solid var(--line);

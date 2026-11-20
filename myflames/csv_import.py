@@ -41,8 +41,11 @@ Statements
 Identifiers are backquoted with backquotes doubled (no backslash rules
 apply). Text literals do not depend on NO_BACKSLASH_ESCAPES unless the mode
 is known (:func:`sql_text`): plain quotes with ``'`` doubled when the value
-has no backslash and no control character, escapes when the mode is known,
-otherwise ``CONVERT(X'..' USING utf8mb4)``; binary values are ``X'..'``.
+has no backslash and no control character; a value with a backslash is
+always ``CONVERT(X'..' USING utf8mb4)``, because the client's view of the
+mode can be stale and a raw backslash can change how it splits the
+statement; escapes for the other control characters when the mode is known,
+otherwise hex; binary values are ``X'..'``.
 :class:`Batches` groups rows into multi-row INSERT statements of at most
 1,000 rows and a byte budget below ``max_allowed_packet``, never across a
 commit boundary. :func:`load_data_sql` builds LOAD DATA LOCAL INFILE with
@@ -1076,14 +1079,17 @@ def sql_text(value, backslash_escapes=None):
     """A string literal for *value* whose meaning does not depend on
     NO_BACKSLASH_ESCAPES unless *backslash_escapes* says which it is (True:
     backslashes escape, False: NO_BACKSLASH_ESCAPES is on, None: unknown).
-    Control characters other than the escapable ones go as hex."""
+    A value with a backslash always goes as hex: the client's view of the
+    mode can be stale, and a raw backslash can change how the client splits
+    the statement. Control characters other than the escapable ones go as
+    hex."""
     has_control = bool(_CONTROL.search(value))
     if not has_control and "\\" not in value:
         return "'" + value.replace("'", "''") + "'"
+    if "\\" in value:
+        return hex_text(value)
     if backslash_escapes is True and not re.search(r"[\x01-\x08\x0b\x0c\x0e-\x19\x1b-\x1f\x7f]", value):
         return "'" + "".join(_ESCAPES.get(c, c) for c in value) + "'"
-    if backslash_escapes is False and not has_control:
-        return "'" + value.replace("'", "''") + "'"
     return hex_text(value)
 
 

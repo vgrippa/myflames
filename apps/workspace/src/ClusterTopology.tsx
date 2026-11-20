@@ -15,7 +15,7 @@
 // each replica cluster (broken for an invalidated one), the other clusters'
 // instances as the shared metadata lists them (their state is read on them,
 // so none is drawn), and the channel's state when this member runs it.
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { Profile } from "./api";
 import { moveRowFocus, type Selection, type Tone } from "./kit";
 import { engineName } from "./OpsShared";
@@ -26,7 +26,7 @@ import {
 } from "./clusterApi";
 import "./cluster.css";
 import "./readyset.css";
-import { TopologyControls, ServerGlyph } from "./TopologyPresentation";
+import { ServerGlyph } from "./TopologyPresentation";
 import { UpstreamTopologyTiers } from "./UpstreamTopologyTiers";
 
 const ROLE_WORD: Record<string, string> = { PRIMARY: "Primary", SECONDARY: "Secondary", READ_REPLICA: "Read replica" };
@@ -76,12 +76,25 @@ export function memberFlow(report: ClusterReport, m: ClusterMember): string {
   return `Queue ${count(mt.transactions_in_queue)} · applier ${count(mt.applier_queue)}`;
 }
 
-/** A saved connection whose host and port match a non-connected member. */
-export function matchingProfile(m: ClusterMember, profiles?: Profile[]): Profile | undefined {
+/** A saved connection whose host and port match a non-connected member. On a
+ * Group connection (*groupName*) only the group's own members are suggested:
+ * another saved connection at the same address is outside the group's consent. */
+export function matchingProfile(m: ClusterMember, profiles?: Profile[], groupName?: string): Profile | undefined {
   if (m.local || !m.host || !profiles?.length) return undefined;
   const host = m.host.trim().toLowerCase();
   const port = m.port || 3306;
-  return profiles.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
+  const candidates = groupName ? profiles.filter((p) => (p.group || "").trim() === groupName) : profiles;
+  return candidates.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
+}
+
+/** On a Group connection, an action's reason names the saved login to use.
+ * Addresses can belong to routers or several profiles, so they cannot choose
+ * that Group action's link. */
+export function namedGroupProfile(reason: string, groupName?: string, profiles?: Profile[]): Profile | undefined {
+  if (!groupName) return undefined;
+  const named = profiles?.filter((p) => (p.group || "").trim() === groupName &&
+    reason.includes(`Connect to ${p.name} to `)) || [];
+  return named.length === 1 ? named[0] : undefined;
 }
 
 /** The engine and version a card or row names: the member's own (Group
@@ -317,13 +330,13 @@ function MemberCard({ report, m, selection, marker, hasUse = false }: {
   );
 }
 
-export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection, onOpenReadyset, onOpenProxySql }: {
+export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection, onOpenReadyset, onOpenProxySql, groupName }: {
   report: ClusterReport; selection?: Selection; marker?: LocalMarker;
   profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
   onOpenReadyset?: () => void; onOpenProxySql?: () => void;
+  /** A Group connection: a card's Use suggestion names only the group's members. */
+  groupName?: string;
 }) {
-  const [motion, setMotion] = useState(true);
-  const [depth, setDepth] = useState(true);
   const line = groupLine(report);
   const routers = report.kind === "innodb_cluster" ? report.routers : [];
   const group = report.members.filter((m) => !isReadReplica(m));
@@ -332,8 +345,7 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
   const noun = memberNoun(report);
   const current = marker.word === "This connection";
   return (
-    <figure data-motion={motion && current ? "on" : "off"} data-depth={depth ? "on" : "off"} className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
-      <div className="topology-presentation-bar"><TopologyControls motion={motion} depth={depth} onMotion={() => setMotion(!motion)} onDepth={() => setDepth(!depth)} /></div>
+    <figure data-motion={current ? "on" : "off"} className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
       <UpstreamTopologyTiers
         tiers={report.topology_tiers}
         onSwitchConnection={current ? onSwitchConnection : undefined}
@@ -347,7 +359,7 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
         <div className="cluster-group">
           <ul className="cluster-members" aria-label={`${noun}s`}>
             {group.map((m) => {
-              const match = !m.local && onSwitchConnection ? matchingProfile(m, profiles) : undefined;
+              const match = !m.local && onSwitchConnection ? matchingProfile(m, profiles, groupName) : undefined;
               return (
                 <li key={m.key} className={`cluster-node${memberDetached(m) ? " is-detached" : ""}`}>
                   <MemberCard report={report} m={m} selection={selection} marker={marker} hasUse={!!match} />

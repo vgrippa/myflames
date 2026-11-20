@@ -1550,9 +1550,9 @@ export function HealthView({
                 <div className="tile-section-head">
                   <h3 id={`health-${group.key}`}>{group.label}</h3>
                   {(() => {
-                    // 900 px and below the tiles form a strip that scrolls:
-                    // the heading carries the group's share of the summary's
-                    // count, a dot plus words, so a tile out of view still adds up.
+                    // 900 px and below the tiles form a strip: the heading
+                    // carries the group's share of the summary's count, a dot
+                    // plus words, so a tile out of view still adds up.
                     const statuses = group.metrics.map((m) => m.status);
                     const words = groupStatusText(statuses);
                     return words ? (

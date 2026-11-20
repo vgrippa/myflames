@@ -457,11 +457,12 @@ def _quote_name(name):
     return "'%s'" % name
 
 
+@dbops.target_evidence
 def _read(conn, name):
     """Everything known about *name* on this server (not yet the public shape)."""
     name = check_name(name)
     extra = ("version", "version_comment", "persisted_globals_load", "version_compile_os",
-             "server_uuid", "server_id", "hostname")
+             "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
     if name == "innodb_buffer_pool_size":
         extra += ("innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances", "innodb_buffer_pool_size_max")
     names = ", ".join(_quote_name(n) for n in sorted(set(extra + (name,))))
@@ -479,10 +480,14 @@ def _read(conn, name):
     comment = global_rows.get("version_comment") or ""
     product = product_identity(version, comment)
     engine = product["engine"]
-    identity_keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
+    identity_keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     server_identity = {key: global_rows.get(key) for key in identity_keys}
+    if engine == "mariadb" and global_rows.get("wsrep_node_name"):
+        server_identity["wsrep_node_name"] = global_rows["wsrep_node_name"]
     if not all(server_identity.values()):
         server_identity = None
+    else:
+        server_identity = dbops.target_galera_identity(conn, engine, server_identity, global_rows, TAG)
     if name == "character_set_results":
         rows = parts.get("nullable") or []
         if not rows or len(rows[0]) != 4:
@@ -1298,9 +1303,16 @@ def build_plan(v, value, mode, grants=None):
                       "source_metadata": plan["before"]["source_metadata"],
                       "engine": v["engine"], "server_version": v["server_version"],
                       "server_identity": v.get("server_identity")}
+    try:
+        plan["session_guard"] = dbops.target_session_guard(v["engine"], v.get("server_identity"))
+    except ValueError as exc:
+        plan["session_guard"] = []
+        plan["problems"].append(_problem("identity_unavailable", str(exc)))
+        plan["status"] = "refused"
     return plan
 
 
+@dbops.target_evidence
 def plan_change(conn, name, value, mode, grants=True):
     """Read the variable (and the account's grants unless *grants* is False)
     and return the ``variable-plan-1.0``. Reads only."""
@@ -1518,6 +1530,7 @@ def _result(plan, status, message, **extra):
            "name": plan.get("name"), "mode": plan.get("mode"), "statement": None, "status": status,
            "message": message, "requested": plan.get("requested"), "value": plan.get("value"),
            "before": plan.get("before"), "after": None, "adjusted": False, "verified": [], "plan": plan}
+    out.update(sent=[], session_guard=list(plan.get("session_guard") or []))
     out.update(extra)
     return out
 
@@ -1528,7 +1541,7 @@ def _unsent(plan, audit, status, outcome, message, expect, verified=None):
         statement = plan.get("statement") or (expect or {}).get("statement")
         if not statement and plan.get("name") and plan.get("mode") in MODES:
             statement = typed_statement(plan["name"], plan["mode"], plan.get("requested"))
-        result["audit_id"] = audit.outcome([TAG + statement] if statement else [],
+        result["audit_id"] = audit.outcome(list(plan.get("session_guard") or []) + ([TAG + statement] if statement else []),
                                            status if status in ("declined", "refused") else "refused",
                                            outcome=outcome, message=message, target=expect, verified=verified)
     return result
@@ -1562,7 +1575,12 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     if blocked:
         return _unsent(stub, audit, "refused" if blocked[0] == "refused" else "needs_confirmation",
                        "read_only" if blocked[0] == "refused" else "needs_confirmation", blocked[1], expect)
-    v = read_variable(conn, name)
+    try:
+        v = read_variable(conn, name)
+    except ConnectorError as exc:
+        if getattr(exc, "identity_outcome", None):
+            return _unsent(stub, audit, "refused", exc.identity_outcome, str(exc), expect)
+        raise
     if audit is not None:
         audit.server(v["engine"], v["server_version"])
     fresh = build_plan(v, requested, mode)
@@ -1597,27 +1615,47 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     if problem:
         return _unsent(fresh, audit, "refused", "changed", problem, expect, verified)
     statement = fresh["statement"]
+    try:
+        guard = dbops.target_session_guard(expect["engine"], expect["server_identity"])
+        body = TAG + statement
+        if mode == "session":
+            # The readback must stay with this SET, in its guarded packet.
+            body = tuple(TAG + s for s in [statement, "SELECT '%safter'" % _MARK,
+                            _nullable_read(name, session=True) if v.get("nullable") else
+                            "SHOW SESSION VARIABLES WHERE Variable_name = %s" % _quote_name(name)])
+        script, packet_lines = dbops.target_guarded_script(guard, [body])
+    except ValueError as exc:
+        return _unsent(fresh, audit, "refused", "identity_unavailable", str(exc), expect, verified)
     result = _result(fresh, None, None, statement=statement, verified=verified)
     if audit is not None:
         try:
-            result["audit_id"] = audit.attempt([TAG + statement], target=expect, verified=verified)
+            result["audit_id"] = audit.attempt(guard + [TAG + statement], target=expect, verified=verified)
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     session_text = None
     try:
         if mode == "session":
             # One client call, so the read sees the same session.
-            session_text = conn.run(_script([statement, "SELECT '%safter'" % _MARK,
-                                             _nullable_read(name, session=True) if v.get("nullable") else
-                                             "SHOW SESSION VARIABLES WHERE Variable_name = %s" % _quote_name(name)]),
-                                    extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            session_text = dbops.strip_target_guard_markers(
+                conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)), packet_lines.markers)
         else:
-            conn.run(TAG + statement, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+            conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())
         raise
     except ConnectorError as exc:
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
+        if guard_failure:
+            password = getattr(conn, "password", None) or getattr(audit, "password", None)
+            result.update(status="refused", outcome=guard_failure["outcome"], sent=[],
+                          message=dbops.redact(guard_failure["message"], password))
+            if audit is not None:
+                audit.complete("refused", outcome=result["outcome"], error=dbops.redact(dbops.target_error_text(exc), password),
+                               message=result["message"])
+            return result
+        exc = dbops.redact_target_error(dbops.shift_guard_error(exc, packet_lines),
+                                       getattr(conn, "password", None) or getattr(audit, "password", None))
         code = dbops.error_code(str(exc))
         if code is None or code >= 2000 or dbops.may_have_run(exc):
             # A client error (connection refused or lost, a time limit): no server answer to map.
@@ -1633,6 +1671,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         if audit is not None:
             audit.complete("error", outcome=result["status"], error=str(exc), message=result["message"])
         return result
+    result["sent"] = [statement]
     try:
         after = _after(conn, name, mode, session_text)
     except (ConnectorError, ValueError):

@@ -176,10 +176,53 @@
 .settings-panel .settings-action-row .button svg {
   color: var(--ink-muted);
 }
+/* The installed version, update status and actions at the top of Updates and
+   news (moved out of the window status bar): one wrapping line, the version
+   in secondary ink. */
+.settings-panel .settings-update-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.settings-update-status > strong { font-weight: 500; color: var(--ink-secondary); }
+.settings-update-status a { color: var(--accent-text); }
 /* An update waiting is its own row at the end of Updates and news. */
 .settings-panel .update-menu-item {
   border-top: 1px solid var(--line);
   border-radius: 0;
+}
+/* The Text group (Appearance): the one-line previews show the chosen fonts
+   and sizes the moment they apply. */
+.settings-text-group {
+  margin-top: var(--space-4);
+}
+.settings-text-group > .section-label {
+  display: block;
+  margin: 0 0 var(--space-1);
+}
+.settings-text-preview {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-code-preview {
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+}
+.settings-code-preview code {
+  font-size: inherit;
 }
 @media (max-width: 720px) {
   /* The compact list above the controls; the page keeps scrolling in the

@@ -1,0 +1,429 @@
+{
+  "actions": [],
+  "available": true,
+  "captured_at": "<timestamp>",
+  "cluster": {
+    "component": "Primary",
+    "expected_size": 3,
+    "expected_source": "wsrep_cluster_address",
+    "failures_tolerated": 1,
+    "name": "mf_galera",
+    "provider": {
+      "name": "Galera",
+      "vendor": "Codership Oy <info@codership.com>",
+      "version": "26.4.27(rf032a460)"
+    },
+    "quorum": true,
+    "size": 3,
+    "topology": null,
+    "uuid": "<volatile>"
+  },
+  "connection_group": {
+    "join": [],
+    "name": "",
+    "read": [],
+    "suggested_name": "mf_galera",
+    "suggestions": []
+  },
+  "engine": "mariadb",
+  "findings": [],
+  "flavor": "mariadb",
+  "galera": {
+    "address_names_this_node": true,
+    "address_nodes": 3,
+    "cluster_address": "gcomm://mf-galera-1,mf-galera-2,mf-galera-3",
+    "desync": "OFF",
+    "gcomm_uuid": "<volatile>",
+    "incoming_addresses": [
+      "<ip>:0",
+      "<ip>:0",
+      "<ip>:0"
+    ],
+    "incomplete": [],
+    "members_source": "wsrep_cluster_members",
+    "metrics": {
+      "cert_deps_distance": "<volatile>",
+      "cluster_conf_id": "<volatile>",
+      "cluster_weight": "<volatile>",
+      "connected": "<volatile>",
+      "desync_count": "<volatile>",
+      "evs_state": "<volatile>",
+      "flow_control_active": "<volatile>",
+      "flow_control_paused": "<volatile>",
+      "flow_control_recv": "<volatile>",
+      "flow_control_sent": "<volatile>",
+      "last_committed": "<volatile>",
+      "local_bf_aborts": "<volatile>",
+      "local_cert_failures": "<volatile>",
+      "local_index": "<volatile>",
+      "local_recv_queue": "<volatile>",
+      "local_recv_queue_avg": "<volatile>",
+      "local_send_queue": "<volatile>",
+      "local_send_queue_avg": "<volatile>",
+      "local_state": "<volatile>",
+      "local_state_comment": "<volatile>",
+      "ready": "<volatile>"
+    },
+    "missing": [],
+    "node_address": null,
+    "node_name": "galera-1",
+    "pxc_maint_mode": null,
+    "pxc_strict_mode": null,
+    "wsrep_on": "ON"
+  },
+  "group_replication": null,
+  "kind": "galera",
+  "local": "node:<uuid>",
+  "members": [
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Takes this node out of flow control (wsrep_desync = ON), for example for a backup.",
+          "enabled": true,
+          "fix": null,
+          "grant_sql": null,
+          "id": "desync_node",
+          "kind": "risky",
+          "label": "Desync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-1",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-1",
+            "self": true
+          },
+          "via": "sql",
+          "why_not": null
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Puts this node back in flow control (wsrep_desync = OFF).",
+          "enabled": false,
+          "fix": "Resync only a node desynced with wsrep_desync; let a state transfer or backup finish on its own.",
+          "grant_sql": null,
+          "id": "resync_node",
+          "kind": "risky",
+          "label": "Resync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-1",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-1",
+            "self": true
+          },
+          "via": "sql",
+          "why_not": "wsrep_desync is not ON on this node."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes.",
+          "enabled": false,
+          "fix": "Bootstrap only after verifying this component has lost its Primary status.",
+          "grant_sql": null,
+          "id": "bootstrap_pc",
+          "kind": "risky",
+          "label": "Bootstrap a Primary component\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-1",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-1",
+            "self": true
+          },
+          "via": "sql",
+          "why_not": "This node is not in a non-Primary component."
+        }
+      ],
+      "address": "<ip>:0",
+      "host": "<ip>",
+      "key": "node:<uuid>",
+      "local": true,
+      "metrics": {
+        "cert_deps_distance": "<volatile>",
+        "cluster_conf_id": "<volatile>",
+        "cluster_weight": "<volatile>",
+        "connected": "<volatile>",
+        "desync_count": "<volatile>",
+        "evs_state": "<volatile>",
+        "flow_control_active": "<volatile>",
+        "flow_control_paused": "<volatile>",
+        "flow_control_recv": "<volatile>",
+        "flow_control_sent": "<volatile>",
+        "last_committed": "<volatile>",
+        "local_bf_aborts": "<volatile>",
+        "local_cert_failures": "<volatile>",
+        "local_index": "<volatile>",
+        "local_recv_queue": "<volatile>",
+        "local_recv_queue_avg": "<volatile>",
+        "local_send_queue": "<volatile>",
+        "local_send_queue_avg": "<volatile>",
+        "local_state": "<volatile>",
+        "local_state_comment": "<volatile>",
+        "ready": "<volatile>"
+      },
+      "name": "galera-1",
+      "port": "<volatile>",
+      "role": null,
+      "state": "Synced",
+      "state_source": "wsrep_local_state_comment",
+      "status": "ok",
+      "status_why": [
+        "A full member, applying and accepting writes."
+      ],
+      "uuid": "<volatile>",
+      "version": null
+    },
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Takes this node out of flow control (wsrep_desync = ON), for example for a backup.",
+          "enabled": false,
+          "fix": "Connect to galera-2 to desync it.",
+          "grant_sql": null,
+          "id": "desync_node",
+          "kind": "risky",
+          "label": "Desync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-2",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-2",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Desync runs on the node it changes, galera-2; this connection is to galera-1."
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Puts this node back in flow control (wsrep_desync = OFF).",
+          "enabled": false,
+          "fix": "Connect to galera-2 to resync it.",
+          "grant_sql": null,
+          "id": "resync_node",
+          "kind": "risky",
+          "label": "Resync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-2",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-2",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Resync runs on the node it changes, galera-2; this connection is to galera-1."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes.",
+          "enabled": false,
+          "fix": "Connect to galera-2 to bootstrap its component.",
+          "grant_sql": null,
+          "id": "bootstrap_pc",
+          "kind": "risky",
+          "label": "Bootstrap a Primary component\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-2",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-2",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Bootstrap runs on the node it changes, galera-2; this connection is to galera-1."
+        }
+      ],
+      "address": "<ip>:0",
+      "host": "<ip>",
+      "key": "node:<uuid>",
+      "local": false,
+      "metrics": {},
+      "name": "galera-2",
+      "port": "<volatile>",
+      "role": null,
+      "state": null,
+      "state_source": null,
+      "status": "unknown",
+      "status_why": [
+        "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
+      ],
+      "uuid": "<volatile>",
+      "version": null
+    },
+    {
+      "actions": [
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Takes this node out of flow control (wsrep_desync = ON), for example for a backup.",
+          "enabled": false,
+          "fix": "Connect to galera-3 to desync it.",
+          "grant_sql": null,
+          "id": "desync_node",
+          "kind": "risky",
+          "label": "Desync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-3",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-3",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Desync runs on the node it changes, galera-3; this connection is to galera-1."
+        },
+        {
+          "cluster_name": null,
+          "danger": false,
+          "description": "Puts this node back in flow control (wsrep_desync = OFF).",
+          "enabled": false,
+          "fix": "Connect to galera-3 to resync it.",
+          "grant_sql": null,
+          "id": "resync_node",
+          "kind": "risky",
+          "label": "Resync this node\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-3",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-3",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Resync runs on the node it changes, galera-3; this connection is to galera-1."
+        },
+        {
+          "cluster_name": null,
+          "danger": true,
+          "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes.",
+          "enabled": false,
+          "fix": "Connect to galera-3 to bootstrap its component.",
+          "grant_sql": null,
+          "id": "bootstrap_pc",
+          "kind": "risky",
+          "label": "Bootstrap a Primary component\u2026",
+          "member_key": "node:<uuid>",
+          "member_name": "galera-3",
+          "member_uuid": "<volatile>",
+          "missing_privileges": [],
+          "privileges_unreadable": false,
+          "schema_version": "cluster-action-1.1",
+          "scope": "member",
+          "target": {
+            "member_name": "galera-3",
+            "self": false
+          },
+          "via": "sql",
+          "why_not": "Bootstrap runs on the node it changes, galera-3; this connection is to galera-1."
+        }
+      ],
+      "address": "<ip>:0",
+      "host": "<ip>",
+      "key": "node:<uuid>",
+      "local": false,
+      "metrics": {},
+      "name": "galera-3",
+      "port": "<volatile>",
+      "role": null,
+      "state": null,
+      "state_source": null,
+      "status": "unknown",
+      "status_why": [
+        "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
+      ],
+      "uuid": "<volatile>",
+      "version": null
+    }
+  ],
+  "message": null,
+  "metadata": null,
+  "notes": [
+    "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+    "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+    "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH GLOBAL STATUS) or since start.",
+    "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to inspect it."
+  ],
+  "performance_schema": true,
+  "routers": [],
+  "schema_version": "cluster-1.0",
+  "server": {
+    "hostname": "mf-galera-1",
+    "port": "<volatile>",
+    "report_host": null,
+    "server_uuid": "<volatile>"
+  },
+  "server_product": "MariaDB",
+  "server_version": "11.8.9-MariaDB-ubu2404-log",
+  "statements": [
+    "SHOW GLOBAL VARIABLES",
+    "SHOW GLOBAL STATUS (wsrep_%)",
+    "SELECT mysql.wsrep_cluster_members"
+  ],
+  "status": "ok",
+  "status_why": [
+    "Every judged member is healthy and the cluster has quorum."
+  ],
+  "summary": {
+    "members": 3,
+    "ok": 1,
+    "problem": 0,
+    "unknown": 2,
+    "watch": 0
+  },
+  "topology_tiers": {
+    "live_footprint": {
+      "known": true,
+      "notes": [],
+      "proxysql_connected": true,
+      "readyset_connected": false,
+      "readyset_heartbeat_table": false,
+      "readyset_programs": []
+    },
+    "notes": [
+      "ProxySQL client sessions are connected to this server; save a ProxySQL Admin connection to link routing."
+    ],
+    "proxysql": [],
+    "readyset": []
+  },
+  "uptime_s": "<volatile>",
+  "version_comment": "mariadb.org binary distribution"
+}

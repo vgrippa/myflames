@@ -139,7 +139,27 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
     def server(self):
         server = object.__new__(WorkspaceServer)
         server._worker_slots = threading.BoundedSemaphore(server.MAX_REQUEST_WORKERS)
+        server._refusal_drain_slots = threading.BoundedSemaphore(server.MAX_REFUSAL_DRAINS)
         return server
+
+    def test_server_close_stops_lifecycle_before_bounded_shell_shutdown(self):
+        from myflames import managed_shell, ui
+        server = self.server()
+        server.lifecycle, server.jobs, server.editor = mock.Mock(), mock.Mock(), mock.Mock()
+        calls = mock.Mock()
+        calls.attach_mock(server.lifecycle.shutdown, 'lifecycle')
+        with mock.patch.object(managed_shell, 'shutdown') as shutdown, \
+                mock.patch.object(ui.ThreadingHTTPServer, 'server_close'):
+            calls.attach_mock(shutdown, 'shell')
+            server.server_close()
+        self.assertEqual(calls.mock_calls, [mock.call.lifecycle(), mock.call.shell(timeout=1.0)])
+
+    @staticmethod
+    def immediate_thread(**kwargs):
+        # Run the mocked socket's drain deterministically, without a thread.
+        thread = mock.Mock()
+        thread.start.side_effect = lambda: kwargs['target'](*kwargs['args'])
+        return thread
 
     def test_handler_socket_has_timeout(self):
         self.assertEqual(WorkspaceHandler.timeout, 30)
@@ -194,17 +214,21 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
         from http.server import ThreadingHTTPServer
         server = self.server()
         with mock.patch.object(ThreadingHTTPServer, 'process_request') as dispatch, \
-                mock.patch.object(server, 'shutdown_request') as shutdown:
+                mock.patch.object(server, 'shutdown_request') as shutdown, \
+                mock.patch('myflames.ui.threading.Thread', side_effect=self.immediate_thread):
             for unused in range(server.MAX_REQUEST_WORKERS):
                 server.process_request(mock.Mock(), ('127.0.0.1', 1234))
             self.assertEqual(dispatch.call_count, server.MAX_REQUEST_WORKERS)
             for error in (False, True):
                 request = mock.Mock()
+                request.recv.return_value = b''
                 if error:
                     request.sendall.side_effect = OSError('peer closed')
                 server.process_request(request, ('127.0.0.1', 1234))
                 shutdown.assert_called_with(request)
-                request.settimeout.assert_called_with(1)
+                self.assertEqual(request.settimeout.call_args_list[0], mock.call(0))
+                if not error:
+                    request.shutdown.assert_called_once_with(socket.SHUT_WR)
             self.assertEqual(dispatch.call_count, server.MAX_REQUEST_WORKERS)
         # Complete one admitted handler; the next request can now be admitted.
         with mock.patch.object(ThreadingHTTPServer, 'process_request_thread'):
@@ -231,6 +255,10 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
 
     def test_idle_requests_never_start_more_than_the_worker_cap(self):
         server = self.server()
+        # Isolate request-worker admission from the separate drain pool,
+        # whose thread cap is exercised in test_ui_backlog.py.
+        for unused in range(server.MAX_REFUSAL_DRAINS):
+            server._refusal_drain_slots.acquire()
         release, full = threading.Event(), threading.Event()
         workers, lock = [], threading.Lock()
         def handle(request, address):
@@ -240,6 +268,8 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
                     full.set()
             release.wait(5)
         requests = [mock.Mock() for unused in range(200)]
+        for request in requests:
+            request.recv.return_value = b''
         with mock.patch.object(server, 'finish_request', side_effect=handle), \
                 mock.patch.object(server, 'shutdown_request') as shutdown:
             try:
@@ -1750,7 +1780,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         self.assertEqual(self.workspace.jobs.payloads[-1]['query'], 'SELECT 1')
         for path in ('/api/live/top', '/api/live/running', '/api/live/explain-connection'):
             with self.subTest(path=path), mock.patch.object(ui, '_discover_response',
-                                                            side_effect=lambda p, payload: payload) as discover:
+                                                            side_effect=lambda p, payload, **kwargs: payload) as discover:
                 payload = self.call(path, {'connection': self.connect(profile_id), 'limit': 5})
                 self.assertEqual(payload['connection']['password'], self.PASSWORD)
                 self.assertEqual(payload['limit'], 5)
@@ -1870,6 +1900,21 @@ class TestProfilePasswordAPI(unittest.TestCase):
         status, body = post('/api/profiles/group', {'profile_ids': [profile_id], 'group': ' G '})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {'updated': [profile_id], 'group': 'G'})
+        status, body = post('/api/profiles/groups/save',
+                            {'name': 'H', 'previous_name': 'G', 'profile_ids': [profile_id]})
+        self.assertEqual(status, 200)
+        self.assertNotIn(self.PASSWORD, body)
+        self.assertEqual([g['name'] for g in json.loads(body)['groups']], ['H'])
+        status, body = post('/api/profiles/groups/delete', {'name': 'H', 'id': profile_id})
+        self.assertEqual(status, 400)
+        self.assertEqual(server.store.get('profile', profile_id)['group'], 'H')
+        status, body = post('/api/profiles/groups/delete', {'name': 'H'})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['groups'], [])
+        self.assertEqual(server.store.get('profile', profile_id)['group'], '')
+        self.assertTrue(server.store.get('profile', profile_id)['has_saved_password'])
+        status, _ = post('/api/profiles/groups/other', {'name': 'H'})
+        self.assertEqual(status, 404)
         status, body = post('/api/profiles/forget-password', {'id': profile_id})
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)['has_saved_password'])

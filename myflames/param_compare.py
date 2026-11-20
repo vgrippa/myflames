@@ -38,12 +38,12 @@ class BoundedConnection(object):
     def __getattr__(self, name):
         return getattr(self.conn, name)
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise ConnectorError('The comparison read time budget expired.')
         return self.conn.run(sql, extra_flags=extra_flags,
-                             timeout=min(remaining, timeout or getattr(self.conn, 'query_timeout', 30) or 30))
+                             timeout=min(remaining, timeout or getattr(self.conn, 'query_timeout', 30) or 30), **kwargs)
 
     def server_version(self):
         # Do not delegate to the underlying method: it would bypass the budget.

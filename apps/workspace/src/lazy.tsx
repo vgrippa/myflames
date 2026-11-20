@@ -51,13 +51,28 @@ type Loadable = ComponentType<any> | ExoticComponent<any>;
  * form it started with: before the chunk arrived it renders through Suspense
  * (the fallback, then the component), after it the component directly, so a
  * mounted part is never remounted, and never loses state, because its chunk
- * arrived. Refs are forwarded (the Query editor's handle). */
+ * arrived. Refs are forwarded (the Query editor's handle). A failed load keeps
+ * its failure notice and Reload control mounted in the part's own boundary. */
 export function lazyComponent<T extends Loadable>(load: () => Promise<T>): T & { preload: () => Promise<T> } {
   let loaded: T | null = null;
   let pending: Promise<T> | null = null;
   const preload = () => {
     if (!pending) {
-      pending = load().then(
+      // A transient read failure (the local server reset a connection under
+      // load) gets two retries; a chunk gone after an update fails again and
+      // the mount shows LoadFailed, as before.
+      pending = (async () => {
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            return await load();
+          } catch (error) {
+            lastError = error;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+        throw lastError;
+      })().then(
         (component) => (loaded = component),
         (error) => {
           pending = null;

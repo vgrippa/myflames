@@ -89,6 +89,7 @@ const bundled = await build({
       export class EditorView extends RealView {
         constructor({ state }) {
           const view = { state, contentDOM: {}, scrollDOM: { scrollTop: 0, scrollLeft: 0 },
+            inputState: { tabFocusMode: -1 }, setTabFocusMode: RealView.prototype.setTabFocusMode,
             dispatch(...specs) {
               const startState = view.state, tr = startState.update(...specs);
               view.state = tr.state;
@@ -225,6 +226,89 @@ for (const [before, after] of [["", "SELECT 1"], ["SELECT 1", ""], ["abc", "ab"]
   }
 }
 
+// The handle and shortcuts share dispatch and live feature gates. No menu
+// action may bypass a setting or fall through to an object's prototype.
+{
+  let changes = 0;
+  const props = { docId: "menu-dispatch", docIds: ["menu-dispatch"], value: "SELECT id FROM t;",
+    settings: allSettings, onChange() { changes++; } };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  let focused = 0;
+  mounted.view.focus = () => { focused++; };
+  const handle = mounted.handle;
+  try {
+    assert.equal(handle.runCommand("comment"), true);
+    assert.equal(handle.getValue(), "-- SELECT id FROM t;", "the handle runs the real SQL-comment command");
+    assert.equal(changes, 1);
+    assert.equal(focused, 1, "a command returns focus to the editor");
+    assert.equal(cm.undo(mounted.view), true);
+    const binding = cm.editorKeymap(allSettings).find(binding => binding.key === "Mod-/");
+    assert.equal(binding.run(mounted.view), true);
+    assert.equal(handle.getValue(), "-- SELECT id FROM t;", "keys and handle make the same edit");
+    for (const id of ["missing", "constructor", "toString", "__proto__"]) {
+      assert.equal(handle.runCommand(id), false, `unknown ID ${id} is inert`);
+    }
+    assert.equal(focused, 1, "unknown commands do not take focus");
+    const settings = { ...allSettings, multi_cursor: false, problem_warnings: false };
+    mounted.render({ ...props, settings });
+    for (const row of cm.EDITOR_SHORTCUTS.filter(row => row.setting)) {
+      assert.equal(handle.runCommand(row.id), false, `${row.id} obeys the latest setting`);
+      assert.equal(cm.editorCommands(settings).has(row.id), false);
+    }
+    assert.equal(focused, 1, "disabled commands do not take focus");
+    mounted.render({ ...props, settings: { ...allSettings, completion_auto: false } });
+    assert.equal(handle.runCommand("allOccurrences"), true, "turning Multiple cursors back on restores commands");
+    assert.equal(focused, 2);
+    assert.equal(handle.runCommand("complete"), true, "manual suggestions work while typing suggestions are off");
+    assert.equal(focused, 3);
+  } finally { mounted.unmount(); }
+  assert.equal(handle.runCommand("comment"), false, "an unmounted editor cannot run commands");
+}
+
+// Every visible action and its aliases come from the same shortcut table;
+// setting gates filter both keys and the imperative map in table order.
+{
+  assert.deepEqual(cm.EDITOR_ACTIONS.map(row => row.id), ["complete", "comment", "moveUp", "moveDown",
+    "copyUp", "copyDown", "deleteLine", "nextOccurrence", "allOccurrences", "cursorAbove", "cursorBelow",
+    "goToLine", "find", "replace", "nextMatch", "previousMatch", "problems", "nextProblem", "previousProblem", "tabFocus"]);
+  assert.equal(new Set(cm.EDITOR_ACTIONS.map(row => row.label)).size, cm.EDITOR_ACTIONS.length);
+  assert.deepEqual(cm.editorActionShortcuts("complete", true), ["Ctrl-Space", "Shift-Ctrl-Space"]);
+  assert.deepEqual(cm.editorActionShortcuts("replace", true), ["Mod-Alt-f"]);
+  assert.deepEqual(cm.editorActionShortcuts("replace", false), ["Ctrl-h", "Mod-Alt-f"]);
+  assert.deepEqual(cm.editorActionShortcuts("goToLine", true), ["Ctrl-g"]);
+  assert.deepEqual(cm.editorActionShortcuts("goToLine", false), ["Mod-g"]);
+  assert.deepEqual(cm.editorActionShortcuts("tabFocus", true), ["Shift-Alt-m"]);
+  assert.deepEqual(cm.editorActionShortcuts("tabFocus", false), ["Ctrl-m"]);
+  for (const mac of [true, false]) for (const row of cm.EDITOR_ACTIONS) {
+    assert.ok(cm.editorActionShortcuts(row.id, mac).length, `${row.id} shows a shortcut on ${mac ? "Mac" : "other platforms"}`);
+  }
+  for (const settings of [allSettings, { ...allSettings, multi_cursor: false, problem_warnings: false }]) {
+    const calls = [], overrides = Object.fromEntries(cm.EDITOR_SHORTCUTS.map(row =>
+      [row.id, () => { calls.push(row.id); return true; }]));
+    const commands = cm.editorCommands(settings, overrides), bindings = cm.editorKeymap(settings, overrides);
+    assert.deepEqual([...commands.keys()], cm.EDITOR_SHORTCUTS.filter(row => !row.setting || settings[row.setting]).map(row => row.id));
+    for (const [index, [id, run]] of [...commands.entries()].entries()) {
+      assert.equal(bindings[index].run, run, `${id} uses the shared dispatcher`);
+      assert.equal(run({}), true);
+      assert.equal(calls.at(-1), id);
+    }
+  }
+}
+
+// The menu's command uses CodeMirror's actual view mode, without editing SQL.
+{
+  const props = { docId: "tab-focus", docIds: ["tab-focus"], value: "SELECT 1;",
+    settings: allSettings, onChange() { assert.fail("changing Tab focus mode must not edit SQL"); } };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  try {
+    assert.equal(mounted.view.inputState.tabFocusMode, -1);
+    assert.equal(mounted.handle.runCommand("tabFocus"), true);
+    assert.equal(mounted.view.inputState.tabFocusMode, 0, "the menu command enables persistent Tab focus mode");
+    assert.equal(mounted.handle.runCommand("tabFocus"), true);
+    assert.equal(mounted.view.inputState.tabFocusMode, -1, "choosing the command again restores Tab editing");
+  } finally { mounted.unmount(); }
+}
+
 // Exercise the private display formatter as written in QueryLab, without
 // mounting the full workspace or starting a browser. Keep the shortcut table real.
 {
@@ -239,7 +323,8 @@ for (const [before, after] of [["", "SELECT 1"], ["SELECT 1", ""], ["abc", "ab"]
       ["Shift-Alt-ArrowDown", MAC ? "⌥⇧↓" : "Alt+Shift+↓"],
       ["ArrowLeft", "←"], ["ArrowRight", "→"], ["Ctrl-Space", MAC ? "⌃Space" : "Ctrl+Space"],
       ["Mod-Enter", MAC ? "⌘Return" : "Ctrl+Enter"], ["Escape", "Esc"], ["Tab", "Tab"],
-      ["Shift-F8", MAC ? "⇧F8" : "Shift+F8"], ["Mod-f", MAC ? "⌘F" : "Ctrl+F"]]) {
+      ["Shift-F8", MAC ? "⇧F8" : "Shift+F8"], ["Mod-f", MAC ? "⌘F" : "Ctrl+F"],
+      ["Shift-Alt-m", MAC ? "⌥⇧M" : "Alt+Shift+M"], ["Ctrl-m", MAC ? "⌃M" : "Ctrl+M"]]) {
       assert.equal(editorKeyText(name), expected);
     }
     for (const row of cm.EDITOR_SHORTCUTS) {
@@ -562,4 +647,4 @@ for (const [sql, carets, expected] of [
   detach();
   assert.equal(Object.hasOwn(element, "value"), false);
 }
-console.log("Editor core: CRLF mount/sync/offsets, large-document visual gates, bidi config, external undo, document histories, shortcut labels, phrase vocabulary, Problems close focus, marks, tokenizer spy and automation passed.");
+console.log("Editor core: shared handle/keymap commands, live settings gates, unknown IDs, menu actions and aliases, CRLF mount/sync/offsets, large-document visual gates, bidi config, external undo, document histories, shortcut labels, phrase vocabulary, Problems close focus, marks, tokenizer spy and automation passed.");

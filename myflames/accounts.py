@@ -37,6 +37,7 @@ import time
 import uuid
 
 from . import dbops, privileges
+from .connection_groups import ProfileReadError
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import Reader, literal
 from .server_info import detect_flavor
@@ -219,6 +220,7 @@ def _default_roles_clause(create, engine):
     return []
 
 
+@dbops.target_evidence
 def read_account(conn, name, host='%', role=False, engine=None, version=None, include_catalog=True):
     """``account-1.0``: the account's own grants (credential-free), its
     roles and default roles, non-secret attributes, the grants it inherits
@@ -693,9 +695,14 @@ def _with_password_mode(statement):
     follow the server's status flag before parsing the next line (verified
     live on MySQL 8.0, 8.4, 9.7 and MariaDB 10.11, 11.4 with the mysql 8.0
     client: a password ending in a backslash logs in)."""
+    sync = ''
+    if dbops.client_status_sensitive(statement):
+        delimiter = next((d for d in dbops._TARGET_DELIMITERS if d not in statement), dbops._TARGET_DELIMITERS[0])
+        probe_sql, _ = dbops.client_status_probe(delimiter, False)
+        sync = dbops.CLIENT_STATUS_SYNC + ';\n' + probe_sql + ';\n'
     return ("SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;\n"
             "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES');\n" +
-            TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
+            sync + TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
 
 
 def _with_package_mode(statement):
@@ -1163,13 +1170,17 @@ def _request(operation, name, host, role, options):
     return clean
 
 
+@dbops.target_evidence
 def plan_change(conn, operation, name, host='%', role=False, actor=None, connection=None, profile=None,
-                change_set_id=None, **options):
+                change_set_id=None, safety=None, **options):
     """Build one account change set from a fresh read. Never sends a write.
 
     Dynamic privilege names come from SHOW PRIVILEGES on the server, never
-    from the request. ``actor`` (a privileges-1.0 report) may be passed by an
-    internal caller; otherwise it is read.
+    from the request. ``actor`` is retained for internal call compatibility;
+    privileges are always re-read with node evidence before planning.
+    ``safety`` is the caller's
+    connection safety when it already computed one (the workspace passes the
+    group connection's effective safety); otherwise it is judged here.
     """
     if operation not in OPERATIONS:
         raise ValueError('Unknown account operation: choose one of %s.' % ', '.join(OPERATIONS))
@@ -1180,7 +1191,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
     a = _name(name, host, engine, role)
     if role and engine == 'mariadb' and name.upper() == 'PUBLIC' and operation in ('create', 'drop'):
         raise ValueError('PUBLIC is built in and cannot be created or dropped.')
-    actor = actor or privileges.read_privileges(conn)
+    actor = privileges.read_privileges(conn)
     actor_model = actor.get('model') if isinstance(actor.get('model'), dict) else actor
     if not actor_model.get('checked'):
         raise ValueError('The connected account\'s privileges could not be read, so no change can be planned.')
@@ -1450,7 +1461,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
                    own_account=own, roles=options.get('roles', []))
     hint = privileges.can(actor_model if 'account' in actor_model else dict(actor_model, account=actor.get('account')),
                           action, **context)
-    safety = dbops.connection_safety(profile, connection or _connection(conn))
+    safety = safety or dbops.connection_safety(profile, connection or _connection(conn))
     bound = dbops.connection_identity(connection or _connection(conn), safety)
     display = []
     for sql in statements:
@@ -1465,13 +1476,18 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
               'engine': engine, 'version': version, 'account': a, 'action': action, 'before': before,
               'expect': before['fingerprint'], 'connection_identity': bound,
               'actor': actor.get('account'),
-              'actor_server': {k: (actor_model.get('variables') or {}).get(k, '') for k in ('server_uuid', 'server_id',
-                                                                                             'hostname', 'port')},
+              'actor_server': _actor_server(conn, engine, actor_model),
               'statements': display, 'warnings': list(dict.fromkeys(warnings)), 'guards': guards, 'privileges': hint,
               'effects': effects, 'dependencies': dependencies, 'generates_password': random_result,
               'classification': {'kind': 'risky', 'category': 'account'},
               'policy': {k: decision.get(k) for k in ('action', 'tone', 'title', 'text', 'connection_type', 'read_only')},
               'status': 'blocked' if guards['blocked'] or hint['allowed'] is False else 'ready'}
+    try:
+        public['session_guard'] = dbops.target_session_guard(engine, public['actor_server'])
+    except ValueError as exc:
+        public['session_guard'] = []
+        public['guards']['blocked'].append(str(exc))
+        public['status'] = 'blocked'
     plan = Plan(public, statements, passwords)
     plan._options = {k: copy.deepcopy(v) for k, v in options.items() if k not in ('password', 'current_password')}
     plan._context = context
@@ -1532,6 +1548,8 @@ def _safe_error(exc, passwords):
     text = str(exc)
     code = dbops.error_code(text)
     if dbops.may_have_run(exc):
+        if getattr(exc, 'guarded_group', False) and code is not None and code < 2000:
+            return code, 'The packet failed before its completed statements could be identified (ERROR %s).' % code
         return code, 'The client stopped before the outcome was known (%s).' % (
             'time limit' if 'timed out' in text else 'connection lost')
     if code in _SAFE_ERROR_TEXT:
@@ -1540,38 +1558,194 @@ def _safe_error(exc, passwords):
     return code, 'ERROR %s: the server refused the statement.' % (code or 'unknown')
 
 
+def _actor_server(conn, engine, actor):
+    variables = actor.get('variables') or {}
+    keys = ('server_uuid', 'server_id', 'hostname', 'port')
+    if engine == 'mariadb' and variables.get('wsrep_node_name'):
+        keys += ('wsrep_node_name',)
+    return dbops.target_galera_identity(conn, engine, {k: variables.get(k, '') for k in keys}, variables, TAG)
+
+
 def _run_stdin(conn, sql, passwords=()):
     """Send one account statement (or a password script) on stdin, with the
     write flags; errors come back without secrets."""
+    passwords = tuple(passwords) + (getattr(conn, 'password', None),)
+    first, separator, statement = sql.partition('\n')
+    packet_lines = None
+    known_mode = False
+    sync = False
+    probe_expected = None
+    script = sql.rstrip().rstrip(';') + ';\n'
+    if separator and first.startswith('SET @myflames_target = '):
+        # apply supplies the derived guard on the first line. The client
+        # must receive the mode-setting reply before scanning a password
+        # literal: it parses quotes with SERVER_STATUS_NO_BACKSLASH_ESCAPES
+        # (MySQL client/mysql.cc:2785-2787; MariaDB client/mysql.cc:2677-2679).
+        # Stage the fixed wrapper for the CLIENT's quote scanner. A proxy can
+        # route the next packet to another session, even on the same server:
+        # save that session's mode and assert the required mode again inside
+        # the account packet, then restore it there. Never depend on a user
+        # variable or SET SESSION from the staging packet for server parsing.
+        bodies = [statement]
+        parts = statement.split('\n', 2)
+        modes = tuple("SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), '%s');" % mode
+                      for mode in ('NO_BACKSLASH_ESCAPES', 'ORACLE'))
+        try:
+            restore = 'SET SESSION sql_mode = @myflames_accounts_sql_mode'
+            ending = ';\n' + restore
+            known_mode = (len(parts) == 3 and parts[0] == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;'
+                          and parts[1] in modes and parts[2].endswith(ending))
+            escaping = None
+            probe_delimiter, probe_sql = None, None
+            if known_mode:
+                account = parts[2][:-len(ending)]
+                sync_prefix = dbops.CLIENT_STATUS_SYNC + ';\n'
+                sync = account.startswith(sync_prefix)
+                if sync:
+                    after_sync = account[len(sync_prefix):]
+                    for candidate in dbops._TARGET_DELIMITERS:
+                        candidate_sql, candidate_expected = dbops.client_status_probe(candidate, False)
+                        probe_prefix = candidate_sql + ';\n'
+                        if after_sync.startswith(probe_prefix):
+                            probe_delimiter = candidate
+                            probe_sql, probe_expected = candidate_sql, candidate_expected
+                            account = after_sync[len(probe_prefix):]
+                            break
+                    if probe_delimiter is None:
+                        raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
+                if sync != (escaping is False and dbops.client_status_sensitive(account)):
+                    raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                if sync:
+                    actual_delimiter = next(
+                        (d for d in dbops._TARGET_DELIMITERS
+                         if all(d not in s for s in (first, parts[0], parts[1], account, restore))),
+                        None)
+                    if actual_delimiter != probe_delimiter:
+                        raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                # The account body itself cannot smuggle in another mode
+                # change, or additional statements, under this trusted shape.
+                units = dbops.split_statements(account, backslash_escapes=False)
+                if any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
+                       re.match(r'^SET\b', unit['code'], re.I) for unit in units):
+                    raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
+                staging = (parts[0], parts[1]) + ((dbops.CLIENT_STATUS_SYNC,) if sync else ())
+                bodies = ([staging, (parts[0], parts[1], 'SELECT 1'), (parts[0], parts[1], account, restore)] if sync
+                          else [staging, (parts[0], parts[1], account, restore)])
+                # Password literals are generated for this asserted mode;
+                # ORACLE wrappers carry no password and retain both readings.
+            elif any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
+                     re.match(r'^SET\b', unit['code'], re.I)
+                     for unit in dbops.split_statements(statement, backslash_escapes=False)):
+                raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
+            # The first packet ends with the reviewed status helper when the
+            # password needs it, so its reply updates the client's quote bits
+            # before the client scans the second packet's probe or the third
+            # packet's password bytes. Each account packet still asserts its
+            # own mode before the body.
+            script, packet_lines = dbops.target_guarded_script(
+                [first], bodies, backslash_escapes=escaping,
+                client_status_synced=known_mode and escaping is False)
+            if sync:
+                # Replace the placeholder probe after target_guarded_script picks
+                # the packet delimiter so the probe embeds the active delimiter
+                # without making the chooser switch away from it.
+                header, rest = script.split('\n', 1)
+                chosen_delim = header[len('DELIMITER '):]
+                placeholder = "\n;\nSELECT 1\n" + chosen_delim + "\n"
+                replacement = "\n;\n" + probe_sql + "\n" + chosen_delim + "\n"
+                if chosen_delim != probe_delimiter or rest.count(placeholder) != 1:
+                    raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                script = header + '\n' + rest.replace(placeholder, replacement, 1)
+        except ValueError as exc:
+            refusal = ConnectorError(str(exc))
+            refusal.identity_outcome = 'identity_unavailable'
+            refusal.server_error_code = None
+            raise refusal from None
     try:
-        return conn.run_stdin(sql.rstrip().rstrip(';') + ';\n', extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+        output = dbops.strip_target_guard_markers(
+            conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
+            getattr(packet_lines, 'markers', ()))
     except ConnectorError as exc:
+        if getattr(exc, 'identity_outcome', None):
+            raise
+        # Inspect the original client error before safe-error redaction drops
+        # the line number (or MariaDB echoes SQL containing a credential).
+        guard_failure = dbops.target_guard_failed(exc, packet_lines)
+        location = re.search(r'\bat line (\d+)\b', dbops.target_error_text(exc))
+        staging_lines = ((packet_lines[0], packet_lines[1]) if sync else (packet_lines[0],)) if packet_lines is not None else ()
+        staging_failed = known_mode and packet_lines is not None and location and int(location.group(1)) in staging_lines
+        error_code = dbops.error_code(str(exc))
+        if (sync and staging_failed and error_code is not None and error_code != 1242 and
+                not (2000 <= error_code <= 2999) and (guard_failure is None or error_code in (1064, 1231))):
+            refusal = ConnectorError("The client's quote status could not be confirmed. Nothing was sent.")
+            refusal.identity_outcome = 'identity_unavailable'
+            refusal.server_error_code = error_code
+            raise refusal from None
+        if guard_failure:
+            # Only disposable session setup can precede this invocation's
+            # account change. A guard refusal therefore sent no account SQL.
+            guard_message = guard_failure['message'].replace(
+                'Earlier statements ran; this statement and the remaining statements were not sent.', 'Nothing was sent.')
+            refusal = ConnectorError(privileges.redact(dbops.TARGET_IDENTITY_MISMATCH if packet_lines is not None and
+                                                       guard_failure['outcome'] == 'identity_mismatch'
+                                                       else guard_message, passwords))
+            refusal.identity_outcome = guard_failure['outcome']
+            refusal.server_error_code = dbops.error_code(str(exc))
+            raise refusal from None
+        exc = dbops.shift_guard_error(exc, packet_lines)
+        if staging_failed:
+            # A server error in the disposable client-mode setup precedes
+            # the account packet, so no account change can have run yet.
+            exc.guarded_group = False
         code, message = _safe_error(exc, passwords)
         if dbops.may_have_run(exc):
-            raise ConnectorError('Account statement timed out; outcome unknown. ' + message) from None
+            error = ConnectorError(('Account statement timed out; outcome unknown. ' if 'timed out' in str(exc)
+                                    else 'Account statement outcome unknown. ') + message)
+            error.guarded_unknown = True
+            raise error from None
         raise ConnectorError(message if message.startswith('ERROR') else 'ERROR %s: %s' % (code, message)) from None
+    if sync:
+        rows = output.split('\n')
+        probe_index = next((idx for idx, row in enumerate(rows) if row), None)
+        if probe_index is None or unescape_mysql(rows[probe_index]) != probe_expected:
+            # The client ran the whole script without an error, so the account
+            # packet after the probe was sent: the outcome is unknown.
+            unknown = ConnectorError("The client's quote status could not be confirmed after the account statement "
+                                     "was sent; the outcome is unknown. Check the account before trying again.")
+            unknown.guarded_unknown = True
+            raise unknown
+        output = '\n'.join(rows[:probe_index] + rows[probe_index + 1:])
+    return output
 
 
 def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surface='ui',
-          connection=None, profile=None):
+          connection=None, profile=None, safety=None, before_send=None):
     """Apply an intact plan after the write policy and fresh re-reads.
 
     ``store`` implements the WorkspaceStore audit methods; every attempt,
     declined and refused ones included, gets a record. The caller must also
     gate before opening *conn* (the endpoint and CLI do); this is a second
-    enforcement point. Returns ``account-change-1.0``.
+    enforcement point. ``safety`` is the caller's connection safety when it
+    already computed one (the workspace passes the group connection's
+    effective safety); otherwise it is judged here. ``before_send`` (the
+    workspace passes it on a Group connection) returns a refusal message when
+    group consent or the strictest write policy no longer holds, and is asked
+    again right before the first statement; the connection's login guard
+    re-checks it before every client. Returns ``account-change-1.0``.
     """
     if not isinstance(plan, Plan) or plan._consumed or _json(dict(plan)) != plan._seal:
         raise ValueError('Use an intact account plan built by myflames.')
     if store is None:
         raise ValueError('An audit store is required; nothing was sent.')
     connection = connection or _connection(conn)
-    safety = dbops.connection_safety(profile, connection)
+    safety = safety or dbops.connection_safety(profile, connection)
     decision = dbops.decide(dict(plan['classification'], statements=plan['statements']), safety['type'],
                             safety['read_only'], safety.get('profile_name'))
     out = {'schema_version': CHANGE_SCHEMA, 'change_set_id': plan['change_set_id'], 'operation': plan['operation'],
            'account': plan['account'], 'status': 'refused', 'message': '', 'statements': [],
-           'before': plan['before'], 'after': {}, 'diff': {}, 'warnings': [], 'audit_ids': []}
+           'before': plan['before'], 'after': {}, 'diff': {}, 'warnings': [], 'audit_ids': [], 'sent': [],
+           'session_guard': list(plan.get('session_guard') or [])}
 
     def trail():
         audit = dbops.AuditTrail(store, 'accounts.' + plan['operation'], surface, connection, safety,
@@ -1585,61 +1759,107 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                    statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
                                for i, s in enumerate(plan['statements'])])
         audit = trail()
-        out['audit_ids'].append(audit.outcome(list(plan['statements']), 'declined' if status in (
-            'declined', 'needs_confirmation', 'needs_typed_name') else 'refused', outcome=status, message=message,
+        out['audit_ids'].append(audit.outcome(out['session_guard'] + list(plan['statements']), 'declined' if status in (
+            'declined', 'needs_confirmation', 'needs_typed_name') else 'refused',
+            outcome=out.get('outcome') or status, message=message,
             target=target))
         plan._consumed = True
         return out
     gated = dbops.gate(decision, confirmed)
     if gated:
         return refuse(gated[0], gated[1])
+    try:
+        session_guard = dbops.target_session_guard(plan['engine'], plan['actor_server'])
+    except ValueError as exc:
+        out['outcome'] = 'identity_unavailable'
+        return refuse('refused', str(exc))
     if dbops.connection_identity(connection, safety) != plan['connection_identity'] or expect != plan['expect']:
         return refuse('stale', 'The connection or the account changed since the review; nothing was sent.')
     if not _same_sql_connection(conn, plan._connection):
         return refuse('stale', 'The SQL connection differs from the reviewed one; nothing was sent.')
-    engine, version = _server(conn)
-    if engine != plan['engine'] or version != plan['version']:
-        return refuse('stale', 'The server version changed; nothing was sent.')
-    actor = privileges.read_privileges(conn)
-    if actor.get('account') != plan['actor'] or not actor.get('checked'):
-        return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
-    server = {k: (actor.get('variables') or {}).get(k, '') for k in plan['actor_server']}
-    if server != plan['actor_server']:
-        return refuse('stale', 'The server identity changed; nothing was sent.')
-    for dependency in plan['dependencies']:
-        current_role = read_account(conn, dependency['name'], dependency['host'] or '%', True, engine, version, include_catalog=False)
-        if fingerprint(current_role) != dependency['fingerprint']:
-            return refuse('stale', 'A role changed since the review; nothing was sent.')
-    before = read_account(conn, plan['name'], plan['host'] or '%', plan['role'], engine, version, include_catalog=False)
-    if fingerprint(before) != expect:
-        return refuse('stale', 'The account\'s grants or attributes changed since the review; nothing was sent.')
-    if plan['operation'] == 'rename':
-        destination = read_account(conn, plan._options['new_name'], plan._options.get('new_host', plan['host']), False,
-                                   engine, version, include_catalog=False)
-        if destination['exists']:
-            return refuse('stale', 'An account with the new name now exists; nothing was sent.')
-    guard_op = 'revoke_roles' if plan['operation'] == 'roles' and plan._options.get('mode') == 'revoke' else \
-        plan['operation']
-    guards = _guards(before, actor, guard_op, plan._context.get('privileges', []),
-                     plan._options.get('level', 'global'), plan._options, conn=conn)
-    if guards['blocked']:
-        return refuse('refused', ' '.join(guards['blocked']) + ' Nothing was sent.')
-    if guards['typed_name'] and typed_name != guards['typed_name']:
-        return refuse('needs_typed_name', 'Type %s to proceed; nothing was sent.' % guards['typed_name'])
-    hint = privileges.can(actor, plan['action'], **plan._context)
-    if hint['allowed'] is False:
-        return refuse('denied', hint['reason'] + ' Nothing was sent.')
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
+    try:
+        engine, version = _server(conn)
+        conn.check()
+        if engine != plan['engine'] or version != plan['version']:
+            return refuse('stale', 'The server version changed; nothing was sent.')
+        actor = privileges.read_privileges(conn)
+        conn.check()
+        if actor.get('account') != plan['actor'] or not actor.get('checked'):
+            return refuse('stale', 'The connected account could not be confirmed; nothing was sent.')
+        server = _actor_server(conn, plan['engine'], actor)
+        conn.check()
+        if server != plan['actor_server']:
+            return refuse('stale', 'The server identity changed; nothing was sent.')
+        for dependency in plan['dependencies']:
+            current_role = read_account(conn, dependency['name'], dependency['host'] or '%', True, engine, version, include_catalog=False)
+            conn.check()
+            if fingerprint(current_role) != dependency['fingerprint']:
+                return refuse('stale', 'A role changed since the review; nothing was sent.')
+        before = read_account(conn, plan['name'], plan['host'] or '%', plan['role'], engine, version, include_catalog=False)
+        conn.check()
+        if fingerprint(before) != expect:
+            return refuse('stale', 'The account\'s grants or attributes changed since the review; nothing was sent.')
+        if plan['operation'] == 'rename':
+            destination = read_account(conn, plan._options['new_name'], plan._options.get('new_host', plan['host']), False,
+                                       engine, version, include_catalog=False)
+            conn.check()
+            if destination['exists']:
+                return refuse('stale', 'An account with the new name now exists; nothing was sent.')
+        guard_op = 'revoke_roles' if plan['operation'] == 'roles' and plan._options.get('mode') == 'revoke' else \
+            plan['operation']
+        guards = _guards(before, actor, guard_op, plan._context.get('privileges', []),
+                         plan._options.get('level', 'global'), plan._options, conn=conn)
+        conn.check()
+        if guards['blocked']:
+            return refuse('refused', ' '.join(guards['blocked']) + ' Nothing was sent.')
+        if guards['typed_name'] and typed_name != guards['typed_name']:
+            return refuse('needs_typed_name', 'Type %s to proceed; nothing was sent.' % guards['typed_name'])
+        hint = privileges.can(actor, plan['action'], **plan._context)
+        if hint['allowed'] is False:
+            return refuse('denied', hint['reason'] + ' Nothing was sent.')
+        conn.check()
+    except ConnectorError:
+        if conn.problem:
+            out['outcome'] = 'identity_unavailable'
+            return refuse('refused', conn.problem)
+        raise
+    if before_send is not None:
+        message = before_send()
+        if message:
+            out['outcome'] = 'changed'
+            return refuse('refused', message)
     out['before'] = before
     generated = plan._generated
+    generated_applied = False
+    readback_audit = None
     try:
         for i, (sql, display) in enumerate(zip(plan._statements, plan['statements'])):
             audit = trail()
-            audit_id = audit.attempt([display], target=target,
+            audit_id = audit.attempt(session_guard + [display], target=target,
                                      verified=['policy', 'connection', 'server', 'actor', 'account', 'guards'])
             out['audit_ids'].append(audit_id)
             try:
-                result = _run_stdin(conn, sql, plan._passwords)
+                result = _run_stdin(conn, '\n'.join(session_guard) + '\n' + sql, plan._passwords)
+            except ProfileReadError as exc:
+                # Group consent or the write policy ended after the review.
+                message = str(exc)
+                audit.complete('refused', outcome='changed', message=message)
+                out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
+                out.update(status='refused' if i == 0 else 'partial', outcome='changed',
+                           message=message if i == 0 else
+                           message + ' Earlier statements ran; the remaining statements were not sent.')
+                break
             except (ConnectorError, KeyboardInterrupt) as exc:
+                if getattr(exc, 'identity_outcome', None):
+                    message = str(exc)
+                    audit.complete('refused', outcome=exc.identity_outcome, error=getattr(exc, 'server_error_code', None),
+                                   message=message)
+                    out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
+                    out.update(status='refused' if i == 0 else 'partial', outcome=exc.identity_outcome,
+                               message=message if i == 0 else message.replace(' Nothing was sent.', '') +
+                               ' Earlier statements ran; the remaining statements were not sent.')
+                    break
                 code = dbops.error_code(str(exc))
                 if isinstance(exc, KeyboardInterrupt) or dbops.may_have_run(exc):
                     status = 'unknown'
@@ -1666,7 +1886,18 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                             for line in result.split('\n') if line]
                     if rows and len(rows[0]) >= 3:
                         generated = rows[0][2]
-                audit.complete('ok', outcome='sent')
+                # MariaDB create sets the final password in its second
+                # statement, after CREATE USER and before ACCOUNT UNLOCK.
+                if generated and (engine == 'mysql' or plan['operation'] == 'password' or i == 1):
+                    generated_applied = True
+                # Keep the final accepted attempt pending until its readback
+                # validates. Finished audit rows deliberately cannot be
+                # rewritten, including from sent to an unknown outcome.
+                if i == len(plan['statements']) - 1:
+                    readback_audit = audit
+                else:
+                    audit.complete('ok', outcome='sent')
+                out['sent'].append(display)
                 out['statements'].append({'index': i, 'statement': display, 'status': 'ok'})
         else:
             out.update(status='applied', message='The server accepted every statement; the effect below is a '
@@ -1682,21 +1913,40 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
     if out['status'] == 'partial' and plan['operation'] == 'create' and engine == 'mariadb':
         out['warnings'].append('The account was created but stays locked: set a password that the server accepts, '
                                'then unlock it, or drop it.')
+    if generated_applied:
+        # Keep the only copy available to the user even when the next login's
+        # identity guard refuses. Never attach it to an audit or after-state.
+        out['generated_password'] = generated
+    if out.get('outcome') in ('identity_mismatch', 'identity_unavailable'):
+        return out
+    if not out['sent']:
+        # Nothing was sent (a consent or server refusal): there is no write
+        # to verify, and a failed readback must not replace the refusal with
+        # an unknown verdict.
+        return out
     try:
         renamed = plan['operation'] == 'rename' and out['status'] == 'applied'
         name = plan._options.get('new_name', plan['name']) if renamed else plan['name']
         host = plan._options.get('new_host', plan['host']) if renamed else plan['host']
         after = read_account(conn, name, host or '%', plan['role'], engine, version, include_catalog=False)
+        conn.check()
         out['after'], out['diff'] = after, grant_diff(before, after)
-        if out['audit_ids'] and out['status'] == 'applied':
-            try:
-                dbops.complete(store, out['audit_ids'][-1], 'ok', outcome='applied',
-                               after={'grants': after.get('grants', []), 'attributes': after.get('attributes', {}),
-                                      'exists': after.get('exists')})
-            except Exception:
-                out['warnings'].append('The after-state could not be attached to the audit record.')
+        if readback_audit is not None:
+            readback_audit.complete('ok', outcome='applied',
+                                    after={'grants': after.get('grants', []), 'attributes': after.get('attributes', {}),
+                                           'exists': after.get('exists')})
     except (ConnectorError, ValueError):
         out['warnings'].append('The statements may have changed the account, but it could not be read afterwards.')
-    if generated and out['status'] in ('applied', 'partial'):
-        out['generated_password'] = generated  # Returned once; never audited or stored.
+        if conn.problem:
+            # Statements were already accepted. Failed readback evidence must
+            # not report a stale account or claim a verified final effect.
+            message = 'The statements were sent, but the account could not be verified afterwards; the outcome is unknown.'
+            out.update(status='unknown', outcome='unverified', message=message, after={}, diff={})
+            if readback_audit is not None:
+                readback_audit.complete('unknown', outcome='unverified', message=message)
+    finally:
+        if readback_audit is not None:
+            # An ordinary optional read error still leaves an accepted write
+            # recorded as sent. complete() cannot replace a finished verdict.
+            readback_audit.complete('ok', outcome='sent')
     return out

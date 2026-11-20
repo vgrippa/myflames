@@ -27,7 +27,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from _perf_replay import FakeFactory, ReplayConn, fixture, run_cli  # noqa: E402
+from _reviewed_replay import ReplayConn, recorded_body
 from myflames import dbops, variables as V  # noqa: E402
+from _reviewed_replay import evidence_options
 
 TAG = V.TAG
 
@@ -73,7 +75,7 @@ def mariadb_variable(name, **catalog):
     info = {'name': name, 'engine': 'mariadb', 'server_version': '11.4.9-MariaDB', 'version_tuple': (11, 4, 9),
             'in_global': row['scope'] != 'SESSION ONLY', 'in_session': True, 'global_value': row['global_value'],
             'session_value': row['session_value'], 'persisted_globals_load': None, 'related': {}, 'catalog': row,
-            'server_identity': {'server_id': '1', 'hostname': 'fixture-db', 'version': '11.4.9-MariaDB'},
+            'server_identity': {'server_id': '1', 'hostname': 'fixture-db', 'version': '11.4.9-MariaDB', 'port': '3306'},
             'info': None, 'persisted': None, 'metadata': None, 'notes': []}
     return V.describe(info)
 
@@ -625,7 +627,8 @@ class TestApply(unittest.TestCase):
         return dbops.audit_report(self.store)['records']
 
     def sent(self, conn):
-        return [(sql, flags) for sql, flags in conn.calls if not sql.startswith((TAG + 'SHOW', TAG + 'SELECT'))]
+        return [(recorded_body(sql), flags) for sql, flags in conn.calls
+                if sql.startswith('DELIMITER ')]
 
     def test_global_on_both_engines(self):
         for server in ('mysql-8.4', 'mariadb-11.4'):
@@ -643,7 +646,7 @@ class TestApply(unittest.TestCase):
                 self.assertEqual(sent, [(TAG + 'SET GLOBAL max_connections = 300', list(dbops.WRITE_CLIENT_FLAGS))])
         record = self.records()[0]
         self.assertEqual((record['status'], record['outcome'], record['operation']), ('ok', 'changed', 'set_global'))
-        self.assertEqual(record['statements'], [TAG + 'SET GLOBAL max_connections = 300'])
+        self.assertEqual(record['statements'], plan['session_guard'] + [TAG + 'SET GLOBAL max_connections = 300'])
 
     def test_persist_then_restart_keeps_the_value(self):
         conn, _plan, result = self.apply('mysql-8.4', 'persist')
@@ -738,7 +741,7 @@ class TestApply(unittest.TestCase):
         self.assertEqual(self.sent(conn), [])
         record = self.records()[0]
         self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
-        self.assertEqual(record['statements'], [TAG + 'SET GLOBAL max_connections = 250'])
+        self.assertEqual(record['statements'][-1:], [TAG + 'SET GLOBAL max_connections = 250'])
 
     def test_statement_mismatch_sends_nothing(self):
         conn, plan, _data = plan_from('mysql-8.4', 'global')
@@ -996,6 +999,7 @@ class TestApply(unittest.TestCase):
         conn, plan, _data = plan_from('mysql-8.4', 'global')
         original = conn.run
 
+        @evidence_options
         def run(sql, extra_flags=None, timeout=None):
             if 'SET GLOBAL' in sql:
                 raise ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection to MySQL server')

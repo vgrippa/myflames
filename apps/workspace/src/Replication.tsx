@@ -76,15 +76,18 @@ function time(iso: Json | undefined) {
  * the last one, and Stop while it runs. Used in this view and in Server's
  * persistent status area. Stop cancels a loop the person already authorized,
  * so it never goes through the write policy or a second prompt. */
-export function ReplicationLoopBanner({ loops, disabled, stopping, onStop }: {
+export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server }: {
   loops: SkipLoop[]; disabled?: boolean; stopping?: string; onStop: (loop: SkipLoop) => void;
+  /** Names the server the loops run on, when it is not the member on screen
+   * (a Group connection's Server: control showing another member). */
+  server?: string;
 }) {
   return <>{loops.map(loop => <ReplicationLoopRow key={loop.job_id || loop.channel} loop={loop}
-    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} />)}</>;
+    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server} />)}</>;
 }
 
-function ReplicationLoopRow({ loop, disabled, stopping, onStop }: {
-  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void;
+function ReplicationLoopRow({ loop, disabled, stopping, onStop, server }: {
+  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string;
 }) {
   const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
   const active = loopActive(loop);
@@ -102,6 +105,7 @@ function ReplicationLoopRow({ loop, disabled, stopping, onStop }: {
       role="status" data-loop={loop.state}>
       <div className="ops-loop-copy">
         <strong>{loop.message}</strong>
+        {server && <span className="ops-last">on {server}</span>}
         {active && loop.receiver_guard === "off" && <span className="ops-last" title={loop.receiver_guard_reason || loop.receiver_guard_note}>Reconnect detection off</span>}
         {last && <span className="ops-last">
           Last skip: {factText(last.gtid || last.exec_pos)}
@@ -309,7 +313,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     const live = captureScope();
     let sent = false;
     try {
-      const checked = policy ? await policy.check() : c.connection;
+      const checked = policy ? await policy.check(c.connection) : c.connection;
       if (!live() || connectionKey(checked) !== c.key) throw new Error("The connection or its write policy changed. Nothing was sent. Refresh and confirm again.");
       // An old or changed plan is shown again and needs another click. Python
       // repeats this check immediately before sending the script.
@@ -597,7 +601,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           ]}
         />
       ) : undefined}
-      info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Seconds behind the source alone does not show that a replica is caught up: compare heartbeats, receiver and worker lag in the inspector.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
+      info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Seconds behind the source alone does not show that a replica is caught up: compare heartbeats, receiver and worker lag in the inspector.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p><p>Motion on the topology shows channels that were running when last read; it does not measure traffic or throughput. Stopped, failed and unknown channels stay still, and your system’s reduced motion setting turns motion off.</p></>}
       status={<div ref={viewRef}><ViewStatus loading={checkingInInspector ? undefined : reads.loading} error={error} errorCode={failure?.key === key && !failure.write ? "" : reads.errorCode} startedAt={readSince ?? undefined}
         onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt}>
         {failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}

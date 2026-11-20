@@ -754,7 +754,11 @@ class TestProfilePasswords(IsolatedHome):
         def run_second():
             if not state['done']:
                 state['done'] = True
-                WorkspaceStore(self.db).save('profile', second[0], key, password=second[1], remember=True)
+                try:
+                    WorkspaceStore(self.db).save('profile', second[0], key, password=second[1], remember=True)
+                except Exception as exc:  # reported after the join, never swallowed
+                    state['error'] = exc
+                    raise
 
         def save_secret(ref, password):
             backend = real_save(ref, password)
@@ -778,7 +782,10 @@ class TestProfilePasswords(IsolatedHome):
             self.store.save('profile', first[0], key, password=first[1], remember=True)
         if 'thread' in state:
             state['thread'].join(30)
+            self.assertFalse(state['thread'].is_alive(), 'the second save did not finish')
         self.assertTrue(state['done'])
+        if 'error' in state:
+            self.fail('the second save failed instead of waiting for the first: %r' % (state['error'],))
         return key
 
     def test_interleaved_saves_never_pair_one_endpoint_with_the_other_password(self):

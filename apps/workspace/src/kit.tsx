@@ -27,10 +27,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { appVersion } from "./api";
 import { currentUiPreferences, setUiPreference, INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT } from "./uiPreferences";
 export { INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT };
-import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
 import { shortcut } from "./platform";
@@ -40,6 +38,10 @@ import "./kit.css";
 // Only the innermost open surface owns keyboard navigation. A drawer may
 // contain Settings, and a popover may be opened from a confirmation sheet.
 const focusScopes: HTMLElement[] = [];
+/** Each open scope's opener, so a scope whose opener was removed from the DOM
+ * (a menu that closed on blur while the palette held focus) can return focus
+ * to the opener of the scope that contained it. */
+const scopeOpeners = new WeakMap<HTMLElement, HTMLElement | null>();
 const FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]';
 /** The items a menu's arrow keys move between: actions and the choices
  * that apply to them (an Export menu's "Hide literal values"). */
@@ -64,6 +66,7 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     const dialog = root instanceof HTMLDialogElement ? root : null;
     if (dialog && !dialog.open) dialog.showModal();
     focusScopes.push(root);
+    scopeOpeners.set(root, opener);
     // aria-disabled actions remain focusable so their restriction can be read.
     const visible = (el: HTMLElement) => !el.matches(':disabled') &&
       !el.closest('[hidden], [inert], [aria-hidden="true"]') && !!el.getClientRects().length &&
@@ -119,7 +122,17 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
       const restore = wasTop && (root.contains(focused) || focused === document.body || !focused?.isConnected);
       if (dialog?.open) dialog.close();
       // Do not steal focus from an action that deliberately opened a new surface.
-      if (restore && opener?.isConnected && visible(opener)) opener.focus({ preventScroll: true });
+      if (!restore || !opener) return;
+      // An opener removed with its surface (a menu that closed on blur) still
+      // knows its scope: walk the detached subtree to the nearest scope root
+      // and use that scope's opener instead, bounded against cycles.
+      let target: HTMLElement | null = opener;
+      for (let depth = 0; target && !target.isConnected && depth < 8; depth++) {
+        let scope: HTMLElement | null = target.parentElement;
+        while (scope && !scopeOpeners.has(scope)) scope = scope.parentElement;
+        target = scope ? scopeOpeners.get(scope) ?? null : null;
+      }
+      if (target?.isConnected && visible(target)) target.focus({ preventScroll: true });
     };
   }, [ref, options.open]);
 }
@@ -1245,25 +1258,21 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
   const refreshed = stamp(value.refreshedAt);
   const ran = stamp(value.lastRunAt);
   const knownNumber = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
-  return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
+  const hasFacts = !!(lead || value.engineVersion || value.connectionState || value.sessionState || value.transaction
+    || ran || knownNumber(value.durationMs) || knownNumber(value.rows) || value.refreshing || refreshed);
+  return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={hasFacts ? 0 : undefined}>
     <div className="window-statusbar-facts">
       {lead}
-      {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
-      {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
-      {value.sessionState && <span data-status="session">{value.sessionState}</span>}
-      {value.transaction && <span data-status="transaction">{value.transaction}</span>}
-      {ran && <span data-status="last-run">Last run {ran}</span>}
-      {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
-      {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
+      {value.engineVersion && <span data-status="engine" title={value.engineVersion}>{value.engineVersion}</span>}
+      {value.connectionState && <span data-status="connection" title={value.connectionState}>{value.connectionState}</span>}
+      {value.sessionState && <span data-status="session" title={value.sessionState}>{value.sessionState}</span>}
+      {value.transaction && <span data-status="transaction" title={value.transaction}>{value.transaction}</span>}
+      {ran && <span data-status="last-run" title={`Last run ${new Date(value.lastRunAt!).toLocaleString()}`}>Last run {ran}</span>}
+      {knownNumber(value.durationMs) && <span data-status="duration" title={`${value.durationMs.toLocaleString()} ms`}>{value.durationMs.toLocaleString()} ms</span>}
+      {knownNumber(value.rows) && <span data-status="rows" title={`${value.rows.toLocaleString()} ${value.rows === 1 ? "row" : "rows"}`}>{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
       {/* Drawn, not announced: the view's own status line announces its read. */}
-      {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
-      {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
-    </div>
-    <div className="window-statusbar-updates" aria-label="Application version">
-      <strong>myflames {appVersion() || "development"}</strong>
-      <UpdateCheckStatus />
-      <CheckForUpdatesButton />
-      <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+      {value.refreshing && <span data-status="refreshing" title="Refreshing…">Refreshing…</span>}
+      {refreshed && <span className="window-statusbar-refresh" data-status="refreshed" title={`Refreshed ${new Date(value.refreshedAt!).toLocaleString()}`}>Refreshed {refreshed}</span>}
     </div>
   </footer>;
 }
@@ -1596,7 +1605,7 @@ export type TableContextAction =
   | { divider: true };
 
 /** Row and cell actions share measured placement, dismissal and keyboard focus. */
-export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
+export function ContextMenu({ x, y, label, header, opener, actions, onClose, className = "", portal = false, closeOnBlur = false }: {
   x: number;
   y: number;
   label: string;
@@ -1604,6 +1613,11 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
   opener: HTMLElement | null;
   actions: TableContextAction[];
   onClose: () => void;
+  className?: string;
+  /** Escape a toolbar's stacking context without changing other menus. */
+  portal?: boolean;
+  /** Dismiss when another control or surface takes keyboard focus. */
+  closeOnBlur?: boolean;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ left: 8, top: 8, visibility: "hidden" });
@@ -1644,7 +1658,8 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
     };
   }, [open, x, y, actions]);
   if (!open) return null;
-  return <div ref={panel} className="context-menu" role="menu" aria-label={label} tabIndex={-1}
+  const menu = <div ref={panel} className={`context-menu ${className}`.trim()} role="menu" aria-label={label} tabIndex={-1}
+    onBlur={closeOnBlur ? event => { if (!event.currentTarget.contains(event.relatedTarget)) onClose(); } : undefined}
     style={{ ...style, minWidth: "min(220px, calc(100vw - 16px))", maxWidth: "min(380px, calc(100vw - 16px))" }}>
     {header && <div className="context-menu-header">{header}</div>}
     {items.map((action, index) => {
@@ -1660,6 +1675,7 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
       </button>;
     })}
   </div>;
+  return portal ? createPortal(menu, document.body) : menu;
 }
 
 /** Marks *marker* with data-more-left / data-more-right while *scroller* has
@@ -3313,6 +3329,11 @@ export const RefreshAllContext = createContext<{
   run: () => void;
 } | null>(null);
 
+/** With a Group connection, the server this place works on: the Server:
+ * picker and the member's name, address and role, drawn in every view's
+ * header (ViewLayout). Null without a Group connection. */
+export const ViewServerContext = createContext<ReactNode>(null);
+
 /** The anatomy every data view shares: a toolbar (title, ⓘ, controls,
  * Refresh), then the content, and the inspector for the selection. Escape
  * closes the inspector and returns focus to the selected row. */
@@ -3381,6 +3402,8 @@ export function ViewLayout({
   // the narrow layout, where Back returns to the list, or for a hidden title).
   const offered = useContext(ViewSwitcherContext);
   const switcher = offered && !onBack && !hideTitle ? offered : null;
+  // A Group connection names the member this view reads, next to its title.
+  const viewServer = useContext(ViewServerContext);
   useEffect(() => {
     reportActivity?.(id, !!loading);
     return () => reportActivity?.(id, false);
@@ -3434,6 +3457,7 @@ export function ViewLayout({
             </h2>
           )}
           {info && <InfoPopover label={`About ${title}`}>{info}</InfoPopover>}
+          {viewServer}
         </div>
         <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
         <div className="toolbar-end">

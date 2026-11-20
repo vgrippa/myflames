@@ -112,7 +112,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));

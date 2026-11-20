@@ -11,7 +11,7 @@
 // cluster. A report that is not the connection in use's current one (from
 // another connection, or kept after a failed read) is greyed and never marks
 // a member "This connection".
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
@@ -22,16 +22,16 @@ import {
   SummaryLine, TileGrid, ToolbarButton, ViewLayout, ViewStatus, useWindowStatus,
   type Column, type InspectorContent, type InspectorShared, type Selection, type Tone,
 } from "./kit";
-import { useOpenRead } from "./viewOnScreen";
-import { engineName, plural } from "./OpsShared";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
+import { Commands, engineName, plural } from "./OpsShared";
 import {
-  ageText, blindMember, checkInText, failureText, flowPercent, isGalera, isReadReplica, kindLabel, memberNoun, readCluster,
-  stateWord, utcText, planClusterAction, sendClusterAction,
+  ageText, blindMember, checkInText, failureText, flowPercent, identityText, isGalera, isReadReplica, kindLabel,
+  memberNoun, readCluster, stateWord, utcText, planClusterAction, sendClusterAction,
   type ClusterAction, type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
 } from "./clusterApi";
 import {
-  ClusterMark, ClusterTopology, GLOSSARY, memberAddress, memberEngine, memberEngineFull, memberFlow, memberKey, routerKey,
-  type LocalMarker,
+  ClusterMark, ClusterTopology, GLOSSARY, matchingProfile, namedGroupProfile, memberAddress, memberEngine, memberEngineFull, memberFlow,
+  memberKey, routerKey, type LocalMarker,
 } from "./ClusterTopology";
 import "./cluster.css";
 
@@ -113,7 +113,7 @@ export function summaryText(report: ClusterReport, stale = false): string {
   return parts.join(" · ");
 }
 
-export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection }: {
+export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision = 0 }: {
   connection: Connection;
   disabled?: boolean;
   /** Owned by the shell so Server's Refresh all feeds this place and the sidebar. */
@@ -126,6 +126,9 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   onOpenReadyset?: () => void;
   profiles?: Profile[];
   onSwitchConnection?: (id: string) => void;
+  onEditGroup?: (name: string) => void;
+  /** A successful edit of the active group invalidates its action catalog. */
+  groupRevision?: number;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -153,7 +156,8 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
       <div className="cluster-place">
         <ClusterView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab} onTab={setTab}
-          onOpenProxySql={onOpenProxySql} onOpenReadyset={onOpenReadyset} profiles={profiles} onSwitchConnection={onSwitchConnection} />
+          onOpenProxySql={onOpenProxySql} onOpenReadyset={onOpenReadyset} profiles={profiles} onSwitchConnection={onSwitchConnection}
+          onEditGroup={onEditGroup} groupRevision={groupRevision} />
       </div>
     </InspectorContext.Provider>
   );
@@ -212,11 +216,91 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
   );
 }
 
-function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection }: {
+/** One action group (cluster-wide on the overview, or a member's on its
+ * page): every action the backend lists, always. A disabled action stays
+ * visible, focusable and muted with aria-disabled, its why_not and fix as
+ * visible text under the group (its accessible description), the GRANT to run
+ * when a privilege is missing, and a Use <connection> link when the fix is to
+ * connect to a member this workspace already knows. A Group member without
+ * a saved route offers the shared group editor. Clicking a disabled action
+ * opens nothing. */
+function ActionGroup({ list, label, blocked, planning, busy, onStart, report, profiles, onSwitchConnection, groupName, onEditGroup }: {
+  list: ClusterAction[];
+  label: string;
+  /** Why every change is blocked regardless of eligibility (a stale report, a read-only connection). */
+  blocked: string;
+  planning: string;
+  busy: boolean;
+  onStart: (a: ClusterAction) => void;
+  report: ClusterReport;
+  profiles?: Profile[];
+  onSwitchConnection?: (id: string) => void;
+  groupName?: string;
+  onEditGroup?: (name: string) => void;
+}) {
+  const base = useId();
+  return (
+    <div className="review-actions" role="group" aria-label={label}>
+      {list.map((a, i) => {
+        const off = !!blocked || busy || !a.enabled;
+        const reasonId = `${base}-why-${i}`;
+        const hasReason = !a.enabled && !!(a.why_not || a.fix || a.grant_sql || a.privileges_unreadable);
+        const note = a.enabled ? a.target?.note : undefined;
+        const explanation = [...new Set([a.why_not, a.fix].filter(Boolean))].join(" ");
+        const editGroup = !a.enabled && a.scope === "member" && a.target?.profile_id === null && groupName && onEditGroup
+          ? () => onEditGroup(groupName) : undefined;
+        const member = !a.target?.self ? report.members.find((m) => m.key === a.member_key) : undefined;
+        // Group hints name a consenting saved login. A single connection can
+        // suggest switching to any saved login at the member's address.
+        const use = !a.enabled && member && onSwitchConnection
+          ? groupName ? namedGroupProfile(a.fix || "", groupName, profiles) : matchingProfile(member, profiles)
+          : undefined;
+        return (
+          <Fragment key={a.id}>
+            <button type="button" className={`button${a.danger ? " danger" : ""}`} title={blocked || a.description}
+              aria-disabled={off} aria-describedby={hasReason || note ? reasonId : undefined}
+              onClick={() => { if (!off) onStart(a); }}>
+              {planning === a.id ? "Reading…" : a.label}
+            </button>
+            {note && <div className="cluster-action-why" id={reasonId}><p>{note}</p></div>}
+            {hasReason && (
+              <div className="cluster-action-why" id={reasonId}>
+                {explanation && <p>{explanation}</p>}
+                {editGroup && (
+                  <button type="button" className="text-button cluster-edit-group" onClick={editGroup}>
+                    Edit group…
+                  </button>
+                )}
+                {use && onSwitchConnection && (
+                  <button type="button" className="text-button cluster-use-node" onClick={() => onSwitchConnection(use.id)}>
+                    Use {use.name}
+                  </button>
+                )}
+                {a.grant_sql && (
+                  <>
+                    <Commands text={a.grant_sql} label={`Grant for ${a.label.replace(/[….]+$/, "")}`} />
+                    <p className="hint">Run it as an administrator, then Refresh.</p>
+                  </>
+                )}
+                {a.privileges_unreadable && (
+                  <p className="hint">Privileges could not be read; the server refuses the change if one is missing.</p>
+                )}
+              </div>
+            )}
+          </Fragment>
+        );
+      })}
+      {blocked && <p className="hint">{blocked}</p>}
+    </div>
+  );
+}
+
+function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision }: {
   connection: Connection; disabled: boolean; report: Bound<ClusterReport> | null;
   onReport: (report: Bound<ClusterReport>) => void; failure: ClusterFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ClusterTab; onTab: (tab: ClusterTab) => void;
   onOpenProxySql?: () => void; onOpenReadyset?: () => void; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
+  onEditGroup?: (name: string) => void; groupRevision: number;
 }) {
   const reads = useConnectionReads(connection);
   const report = bound?.report || null;
@@ -235,11 +319,26 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
     await reads.run("cluster", "Reading the cluster…", readCluster, onReport, { force, onError: (message) => onFailure?.(reads.key, message) });
   }
   const policy = useWritePolicy();
+  // ActionReview strips the token into a separate send argument. Keep the
+  // clicked catalog route with that token, outside the signed plan, so a
+  // refresh or another selection cannot redirect the reviewed action.
+  const reviewedTarget = useRef<{ token: string; profileId: string | null } | null>(null);
   const actions = useReviewedActions({
-    connection, operation: "cluster_action", send: sendClusterAction, onSent: () => { void load(true); },
+    connection, operation: "cluster_action",
+    send: (c, plan, token, typed, progressId) => sendClusterAction(c, plan, token, typed, progressId,
+      reviewedTarget.current?.token === token ? reviewedTarget.current.profileId : null),
+    onSent: () => { void load(true); },
   });
+  const onScreen = useViewOnScreen();
+  const seenGroupRevision = useRef(0);
+  const groupChanged = seenGroupRevision.current !== groupRevision;
+  useEffect(() => {
+    if (!groupChanged || !onScreen || disabled) return;
+    seenGroupRevision.current = groupRevision;
+    void load(true);
+  }, [groupRevision, groupChanged, onScreen, disabled, reads.key]);
   // Reads when the place opens on screen, once per connection (viewOnScreen.ts).
-  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!reads.loading || reads.running(), read: () => { void load(); } });
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: groupChanged || !!reads.loading || reads.running(), read: () => { void load(); } });
 
   const isCluster = !!report && report.available && report.kind !== "none";
   const routersTab = !!report && report.kind === "innodb_cluster";
@@ -257,20 +356,20 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const changeBlock = stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
     : disabled ? "Reads are paused." : policy?.blocked ? policy.blocked
       : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "";
-  function start(a: ClusterAction, m: ClusterMember) {
-    if (changeBlock || actions.busy) return;
-    void actions.review(a.id, (c) => planClusterAction(c, a.id, m.key));
+  function start(a: ClusterAction) {
+    if (changeBlock || actions.busy || !a.enabled) return;
+    void actions.review(a.id, async (c) => {
+      const profileId = a.target?.profile_id ?? null;
+      const plan = await planClusterAction(c, a.id, a.member_key ?? null, profileId);
+      reviewedTarget.current = { token: plan.review_token || "", profileId };
+      return plan;
+    });
   }
-  const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length ? (
-    <div className="review-actions" role="group" aria-label={`Changes for ${m.name}`}>
-      {(m.actions || []).map((a) => (
-        <button key={a.id} type="button" className={`button${a.danger ? " danger" : ""}`} title={changeBlock || a.description}
-          aria-disabled={!!changeBlock || actions.busy} onClick={() => start(a, m)}>
-          {actions.planning === a.id ? "Reading…" : a.label}
-        </button>
-      ))}
-      {changeBlock && <p className="hint">{changeBlock}</p>}
-    </div>
+  const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length && report ? (
+    <ActionGroup list={m.actions || []} label={`Changes for ${m.name}`} blocked={changeBlock} planning={actions.planning}
+      busy={actions.busy} onStart={start} report={report} profiles={stale ? undefined : profiles}
+      onSwitchConnection={stale ? undefined : onSwitchConnection} groupName={connection.group_name}
+      onEditGroup={stale ? undefined : onEditGroup} />
   ) : undefined;
   const content: InspectorContent | null = report && chosenMember ? memberInspector(report, chosenMember, stale ? bound?.label || "" : null, memberActions(chosenMember))
     : report && chosenRouter ? routerInspector(chosenRouter, routerKey(chosenRouter, routerIndex)) : null;
@@ -353,6 +452,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         <p>Galera exposes only the connected node's own state, so the other nodes are listed in the component without a verdict: connect to a node to inspect it. Percona XtraDB Cluster names every node's state.</p>
         <p>OK: quorum, and every expected member present and healthy. Watch: quorum holds but a member is missing or in transition, or one more failure would stop the cluster. Problem: no quorum, a member in error, or the connected member cannot see the group.</p>
         <p>Opening it reads; nothing changes. A member's inspector offers the changes that do what they say on that server: make a secondary the primary, stop or start Group Replication on the connected member, and on MariaDB Galera desync, resync or bootstrap a Primary component on the connected node. Each one shows the exact statement, asks first, and is recorded in the Audit log.</p>
+        <p>Motion on the topology shows healthy group membership as last read; it does not measure traffic or throughput. Members that are not healthy stay still, and your system’s reduced motion setting turns motion off.</p>
       </>}
       status={<>
         <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error}
@@ -372,6 +472,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           notesTitle="Notes: where the values come from, what this server cannot see, and engine differences">
           {summaryText(report, stale)}
         </SummaryLine>
+        {isCluster && !stale && !!identityText(report, connection.group_name) && <p className="cluster-identity">{identityText(report, connection.group_name)}</p>}
         {!report.available ? (
           <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
         ) : report.kind === "none" ? (
@@ -423,7 +524,8 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
               />
               <ClusterTopology report={report} selection={selection} marker={marker}
                 profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
-                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined} />
+                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined}
+                groupName={!stale ? connection.group_name : undefined} />
             </>
           ) : shownTab === "members" ? (
             <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
@@ -431,6 +533,20 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
             routers.length ? (
               <DataTable key="cluster.routers" id="cluster.routers" label="Routers" columns={routerColumns} rows={routers} rowKey={(r) => routerKey(r, routers.indexOf(r))} selection={selection} />
             ) : <EmptyState icon="cluster" title="No routers registered">No MySQL Router is registered for this cluster in the InnoDB Cluster metadata.</EmptyState>
+          )}
+          {/* Every cluster-wide change, always: the mode switches and, in a
+              ClusterSet, the ClusterSet changes, each enabled or with its
+              reason and fix. Below the tab content so the first screen stays
+              the cluster's state. */}
+          {(report.actions || []).length > 0 && (
+            <section className="cluster-actions" aria-label="Cluster changes">
+              <span className="cluster-row-label">Changes · the whole cluster</span>
+              <ActionGroup list={report.actions || []} label="Changes for the cluster" blocked={changeBlock}
+                planning={actions.planning} busy={actions.busy} onStart={start} report={report}
+                profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection}
+                groupName={connection.group_name}
+                onEditGroup={stale ? undefined : onEditGroup} />
+            </section>
           )}
         </>}
       </> : reads.loading ? null : failed ? (
