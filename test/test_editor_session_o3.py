@@ -572,6 +572,22 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
         self.assertFalse(any(LAB_TEXT in p or "SELECT 987" in p for p in packets), packets)
         self.assertFalse((self.state / "status-wire.log").exists())
 
+    def test_probe_failure_after_an_earlier_statement_never_says_nothing_was_sent(self):
+        # Security gate F1: a DBA told "Nothing was sent" could repeat writes
+        # that already ran earlier in the same run.
+        session = self.stale()
+        (self.state / "wrong-probe").write_text("yes", encoding="utf-8")
+        result = self.run_sql("SELECT 987;\n" + LAB_TEXT, on_error="continue")
+        self.assertEqual(session.ended_reason, "client_status_sync_failed")
+        statuses = [u["status"] for u in result["run"]["statements"]]
+        self.assertEqual(statuses, ["ok", "not_run"], result)
+        message = result["run"].get("message") or ""
+        self.assertNotIn("Nothing was sent", message, result)
+        self.assertIn("Earlier statements were sent; this statement and later statements were not sent.",
+                      message, result)
+        packets = [p[2] for p in self.packets()]
+        self.assertFalse(any(LAB_TEXT in p for p in packets), packets)
+
 
 class MariaDBStatusO3ProcessTests(EditorStatusO3ProcessTests):
     engine = "mariadb"

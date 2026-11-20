@@ -2528,7 +2528,17 @@ as a following packet using the packet's active delimiter so any stale client qu
 or backslash-escape bit splits at the embedded delimiter and fails on the server
 before later units are read, and verify the probe result before proceeding or
 returning output. Both packets assert the target and expected mode.
-A failed helper or probe stops before the unit, including with Continue on error.
+A failed helper or probe stops before the unit, including with Continue on error;
+when earlier units of the run already ran, the message says so ("Earlier
+statements were sent; this statement and later statements were not sent.")
+instead of "Nothing was sent.".
+The probe confirms the bits the client used to read the probe, which the
+helper's reply set; the unit is read with the bits of the probe's own reply.
+On a direct server these are the same: helper, probe and unit carry one guard
+bound to `CONNECTION_ID()` and nothing between them runs a stored program. They
+can differ only when an intermediary rewrites the probe reply's status (or
+serves it from a cache that invents one); anything that can rewrite replies
+already controls the session, so this is an accepted assumption, not a check.
 The helper can raise server warnings without changing what it sends: MySQL
 raises warning 3135 when strict mode and its sub-modes are only partly set
 (`mysql-8.4.0:sql/sys_vars.cc:4629–4648`), MySQL 8.0+ warns that

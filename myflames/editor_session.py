@@ -2876,7 +2876,15 @@ class EditorSession(EditorInsights):
             # Every user block is closed by the helper echo; wait briefly otherwise.
             self._wait(lambda: all(s.closed for s in run.steps if s.kind != "helper"), 2.0)
         except ConnectorError as exc:
-            run.message = str(exc)
+            message = str(exc)
+            # A helper or probe failure before a later unit says "Nothing was
+            # sent." for that unit; earlier units of this run may have run, and
+            # a DBA told otherwise could repeat their writes.
+            if (message.endswith(" Nothing was sent.") and
+                    any(u.get("status") in ("ok", "error", "stopped") for u in run.units)):
+                message = (message[:-len(" Nothing was sent.")] +
+                           " Earlier statements were sent; this statement and later statements were not sent.")
+            run.message = message
         except Exception as exc:  # never leave a run running
             run.message = "The run failed: %s" % exc
         finally:
