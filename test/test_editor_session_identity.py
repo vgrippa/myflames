@@ -16,8 +16,6 @@ from myflames.connector import ConnectorError
 from myflames import dbops, editor_session as ed
 
 
-@unittest.skipIf(os.name == 'nt', 'the fake client is a POSIX script')
-
 def _read_if_present(path):
     """The fake client removes its active-statement file between polls;
     an exists() check followed by a read can race with that."""
@@ -26,6 +24,8 @@ def _read_if_present(path):
     except FileNotFoundError:
         return ''
 
+
+@unittest.skipIf(os.name == 'nt', 'the fake client is a POSIX script')
 class EditorIdentityTests(unittest.TestCase):
     engine = 'mysql'
     setUp = fixtures.ProcessTests.setUp
