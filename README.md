@@ -14,7 +14,7 @@
 
 **myflames** is an open-source performance workspace for MySQL, MariaDB, and Percona Server for MySQL. Follow a question from the query plan to the SQL, schema, and server behind it. Inspect operator timings, compare before and after plans, and share the evidence with your team.
 
-Use the desktop app on macOS or the Windows x64 preview. Visual Explain diagrams, flame graphs, execution trees, and bar charts make plans easier to read, and server diagnostics carry the investigation further.
+Use the desktop app on macOS or the Windows x64 preview. The former Python command line and `myflames-mcp` agent tools are deprecated: they keep working for existing users but are no longer developed or documented. Visual Explain diagrams, flame graphs, execution trees, and bar charts make plans easier to read, and server diagnostics carry the investigation further.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
