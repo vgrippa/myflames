@@ -172,6 +172,41 @@ class SQLTests(unittest.TestCase):
         log = self.log()
         self.assertLess(log.index(editor.ALTER_LOCK_WAIT), log.index(sql))
 
+    def test_bound_database_target_requires_typed_guard_even_with_yes(self):
+        sql = "DELIMITER //\nDROP /*!999999 TEMPORARY */ DATABASE prod//"
+        for target in (None, "wrong", "prod "):
+            args = [] if target is None else ["--confirm-target", target]
+            with self.subTest(target=target):
+                code, out, err = self.invoke(["-e", sql, "--yes"] + args)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(out, "")
+                self.assertNotIn("DROP /*!999999 TEMPORARY */", self.log())
+                self.assertIn(self.store.audit_records()[0]["outcome"], ("no_target", "target_mismatch"))
+        code, out, err = self.invoke(["-e", sql, "--yes", "--confirm-target", "prod"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("DROP /*!999999 TEMPORARY */ DATABASE prod", self.log())
+
+    def test_bound_alter_header_gets_preflight_and_lock_wait_guard(self):
+        # TEMPORARY hides the ALTER TABLE header in the provisional plan;
+        # the bound server skips it and reveals the need for a preflight.
+        sql = "ALTER /*!999999 TEMPORARY */ TABLE test.tt ADD COLUMN c INT"
+        review = {"schema": "test", "table": "tt", "approx_bytes": 1024,
+                  "warnings": [], "suggestion": None}
+        with mock.patch.object(editor, "_alter_review", return_value=review) as preflight:
+            code, out, err = self.invoke(["-e", sql, "--yes"])
+        self.assertEqual(code, 0, err)
+        preflight.assert_called_once()
+        self.assertIn("ALTER preflight", err)
+        self.assertLess(self.log().index(editor.ALTER_LOCK_WAIT), self.log().index(sql))
+
+    def test_bound_skipped_alter_needs_no_preflight_or_lock_wait_guard(self):
+        sql = "DELIMITER //\n/*!999999 ALTER TABLE test.tt ADD COLUMN c INT */ SELECT 1//"
+        with mock.patch.object(editor, "_alter_review", side_effect=AssertionError("skipped ALTER")):
+            code, out, err = self.invoke(["-e", sql, "--yes"])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(editor.ALTER_LOCK_WAIT, self.log())
+        self.assertIn(sql.split("\n", 1)[1][:-2], self.log())
+
     def test_review_insert_table_rejects_invalid_input_before_execution(self):
         for name in ("", "x" * 257):
             code, out, err = self.invoke(["-e", "INSERT INTO t VALUES (1)", "--yes",

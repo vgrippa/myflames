@@ -695,9 +695,14 @@ def _with_password_mode(statement):
     follow the server's status flag before parsing the next line (verified
     live on MySQL 8.0, 8.4, 9.7 and MariaDB 10.11, 11.4 with the mysql 8.0
     client: a password ending in a backslash logs in)."""
+    sync = ''
+    if dbops.client_status_sensitive(statement):
+        delimiter = next((d for d in dbops._TARGET_DELIMITERS if d not in statement), dbops._TARGET_DELIMITERS[0])
+        probe_sql, _ = dbops.client_status_probe(delimiter, False)
+        sync = dbops.CLIENT_STATUS_SYNC + ';\n' + probe_sql + ';\n'
     return ("SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;\n"
             "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES');\n" +
-            TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
+            sync + TAG + statement + ';\nSET SESSION sql_mode = @myflames_accounts_sql_mode')
 
 
 def _with_package_mode(statement):
@@ -1568,6 +1573,8 @@ def _run_stdin(conn, sql, passwords=()):
     first, separator, statement = sql.partition('\n')
     packet_lines = None
     known_mode = False
+    sync = False
+    probe_expected = None
     script = sql.rstrip().rstrip(';') + ';\n'
     if separator and first.startswith('SET @myflames_target = '):
         # apply supplies the derived guard on the first line. The client
@@ -1589,35 +1596,92 @@ def _run_stdin(conn, sql, passwords=()):
             known_mode = (len(parts) == 3 and parts[0] == 'SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;'
                           and parts[1] in modes and parts[2].endswith(ending))
             escaping = None
+            probe_delimiter, probe_sql = None, None
             if known_mode:
                 account = parts[2][:-len(ending)]
+                sync_prefix = dbops.CLIENT_STATUS_SYNC + ';\n'
+                sync = account.startswith(sync_prefix)
+                if sync:
+                    after_sync = account[len(sync_prefix):]
+                    for candidate in dbops._TARGET_DELIMITERS:
+                        candidate_sql, candidate_expected = dbops.client_status_probe(candidate, False)
+                        probe_prefix = candidate_sql + ';\n'
+                        if after_sync.startswith(probe_prefix):
+                            probe_delimiter = candidate
+                            probe_sql, probe_expected = candidate_sql, candidate_expected
+                            account = after_sync[len(probe_prefix):]
+                            break
+                    if probe_delimiter is None:
+                        raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
+                if sync != (escaping is False and dbops.client_status_sensitive(account)):
+                    raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                if sync:
+                    actual_delimiter = next(
+                        (d for d in dbops._TARGET_DELIMITERS
+                         if all(d not in s for s in (first, parts[0], parts[1], account, restore))),
+                        None)
+                    if actual_delimiter != probe_delimiter:
+                        raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
                 # The account body itself cannot smuggle in another mode
                 # change, or additional statements, under this trusted shape.
                 units = dbops.split_statements(account, backslash_escapes=False)
                 if any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
                        re.match(r'^SET\b', unit['code'], re.I) for unit in units):
                     raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
-                bodies = [(parts[0], parts[1]), (parts[0], parts[1], account, restore)]
+                staging = (parts[0], parts[1]) + ((dbops.CLIENT_STATUS_SYNC,) if sync else ())
+                bodies = ([staging, (parts[0], parts[1], 'SELECT 1'), (parts[0], parts[1], account, restore)] if sync
+                          else [staging, (parts[0], parts[1], account, restore)])
                 # Password literals are generated for this asserted mode;
                 # ORACLE wrappers carry no password and retain both readings.
-                escaping = False if 'NO_BACKSLASH_ESCAPES' in parts[1] else None
             elif any(re.search(r'\bSQL_MODE\b', unit['code'] + ' ' + ' '.join(unit['idents']), re.I) and
                      re.match(r'^SET\b', unit['code'], re.I)
                      for unit in dbops.split_statements(statement, backslash_escapes=False)):
                 raise ValueError('The account SQL mode wrapper is invalid. Nothing was sent. Review again.')
-            script, packet_lines = dbops.target_guarded_script([first], bodies, backslash_escapes=escaping)
+            # The first packet ends with the reviewed status helper when the
+            # password needs it, so its reply updates the client's quote bits
+            # before the client scans the second packet's probe or the third
+            # packet's password bytes. Each account packet still asserts its
+            # own mode before the body.
+            script, packet_lines = dbops.target_guarded_script(
+                [first], bodies, backslash_escapes=escaping,
+                client_status_synced=known_mode and escaping is False)
+            if sync:
+                # Replace the placeholder probe after target_guarded_script picks
+                # the packet delimiter so the probe embeds the active delimiter
+                # without making the chooser switch away from it.
+                header, rest = script.split('\n', 1)
+                chosen_delim = header[len('DELIMITER '):]
+                placeholder = "\n;\nSELECT 1\n" + chosen_delim + "\n"
+                replacement = "\n;\n" + probe_sql + "\n" + chosen_delim + "\n"
+                if chosen_delim != probe_delimiter or rest.count(placeholder) != 1:
+                    raise ValueError('The account quote-status helper changed. Nothing was sent. Review again.')
+                script = header + '\n' + rest.replace(placeholder, replacement, 1)
         except ValueError as exc:
             refusal = ConnectorError(str(exc))
             refusal.identity_outcome = 'identity_unavailable'
             refusal.server_error_code = None
             raise refusal from None
     try:
-        return dbops.strip_target_guard_markers(conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
-                                               getattr(packet_lines, 'markers', ()))
+        output = dbops.strip_target_guard_markers(
+            conn.run_stdin(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)),
+            getattr(packet_lines, 'markers', ()))
     except ConnectorError as exc:
+        if getattr(exc, 'identity_outcome', None):
+            raise
         # Inspect the original client error before safe-error redaction drops
         # the line number (or MariaDB echoes SQL containing a credential).
         guard_failure = dbops.target_guard_failed(exc, packet_lines)
+        location = re.search(r'\bat line (\d+)\b', dbops.target_error_text(exc))
+        staging_lines = ((packet_lines[0], packet_lines[1]) if sync else (packet_lines[0],)) if packet_lines is not None else ()
+        staging_failed = known_mode and packet_lines is not None and location and int(location.group(1)) in staging_lines
+        error_code = dbops.error_code(str(exc))
+        if (sync and staging_failed and error_code is not None and error_code != 1242 and
+                not (2000 <= error_code <= 2999) and (guard_failure is None or error_code in (1064, 1231))):
+            refusal = ConnectorError("The client's quote status could not be confirmed. Nothing was sent.")
+            refusal.identity_outcome = 'identity_unavailable'
+            refusal.server_error_code = error_code
+            raise refusal from None
         if guard_failure:
             # Only disposable session setup can precede this invocation's
             # account change. A guard refusal therefore sent no account SQL.
@@ -1629,8 +1693,6 @@ def _run_stdin(conn, sql, passwords=()):
             refusal.identity_outcome = guard_failure['outcome']
             refusal.server_error_code = dbops.error_code(str(exc))
             raise refusal from None
-        location = re.search(r'\bat line (\d+)\b', dbops.target_error_text(exc))
-        staging_failed = known_mode and location and int(location.group(1)) == packet_lines[0]
         exc = dbops.shift_guard_error(exc, packet_lines)
         if staging_failed:
             # A server error in the disposable client-mode setup precedes
@@ -1643,6 +1705,18 @@ def _run_stdin(conn, sql, passwords=()):
             error.guarded_unknown = True
             raise error from None
         raise ConnectorError(message if message.startswith('ERROR') else 'ERROR %s: %s' % (code, message)) from None
+    if sync:
+        rows = output.split('\n')
+        probe_index = next((idx for idx, row in enumerate(rows) if row), None)
+        if probe_index is None or unescape_mysql(rows[probe_index]) != probe_expected:
+            # The client ran the whole script without an error, so the account
+            # packet after the probe was sent: the outcome is unknown.
+            unknown = ConnectorError("The client's quote status could not be confirmed after the account statement "
+                                     "was sent; the outcome is unknown. Check the account before trying again.")
+            unknown.guarded_unknown = True
+            raise unknown
+        output = '\n'.join(rows[:probe_index] + rows[probe_index + 1:])
+    return output
 
 
 def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surface='ui',

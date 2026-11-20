@@ -35,9 +35,9 @@
     "desync": "OFF",
     "gcomm_uuid": "<volatile>",
     "incoming_addresses": [
-      "192.168.80.2:0",
-      "192.168.80.4:0",
-      "192.168.80.3:0"
+      "<ip>:0",
+      "<ip>:0",
+      "<ip>:0"
     ],
     "incomplete": [],
     "members_source": "wsrep_cluster_members",
@@ -150,8 +150,8 @@
           "why_not": "This node is not in a non-Primary component."
         }
       ],
-      "address": "192.168.80.2:0",
-      "host": "192.168.80.2",
+      "address": "<ip>:0",
+      "host": "<ip>",
       "key": "node:<uuid>",
       "local": true,
       "metrics": {
@@ -264,8 +264,8 @@
           "why_not": "Bootstrap runs on the node it changes, galera-2; this connection is to galera-1."
         }
       ],
-      "address": "192.168.80.3:0",
-      "host": "192.168.80.3",
+      "address": "<ip>:0",
+      "host": "<ip>",
       "key": "node:<uuid>",
       "local": false,
       "metrics": {},
@@ -356,8 +356,8 @@
           "why_not": "Bootstrap runs on the node it changes, galera-3; this connection is to galera-1."
         }
       ],
-      "address": "192.168.80.4:0",
-      "host": "192.168.80.4",
+      "address": "<ip>:0",
+      "host": "<ip>",
       "key": "node:<uuid>",
       "local": false,
       "metrics": {},
@@ -411,16 +411,6 @@
   },
   "topology_tiers": {
     "live_footprint": {
-      "clients": [
-        {
-          "host": "192.168.80.5",
-          "program": "proxysql_monitor"
-        },
-        {
-          "host": "192.168.80.5",
-          "program": "proxysql"
-        }
-      ],
       "known": true,
       "notes": [],
       "proxysql_connected": true,

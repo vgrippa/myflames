@@ -224,7 +224,9 @@ class SQLLexerTests(unittest.TestCase):
                         self.assertEqual(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version,
                                                        sql_mode=mode + suffix)["kind"], "risky")
             self.assertEqual(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version,
-                                           sql_mode="")["kind"], "read")
+                                           sql_mode="")["kind"], "risky")
+            self.assertEqual(dbops.classify(ANSI_ATTACK, engine=engine, server_version=version,
+                                           sql_mode="", client_status_synced=True)["kind"], "read")
         unit = dbops.split_statements('SELECT [a]]b], [c\\]', engine="mariadb", sql_mode="MSSQL")[0]
         self.assertEqual(unit["idents"], ["a]b", "c\\"])
         self.assertEqual(unit["code"], "SELECT `0`, `1`")
@@ -499,7 +501,9 @@ class ClientCommandLexerTests(unittest.TestCase):
                  "SELECT 1 /* \\C utf8mb4 */", "SELECT 1 # \\C utf8mb4\n",
                  "SELECT 1 -- \\C utf8mb4\n", "SELECT '/* x */ DELIMITER //\ncharset utf8mb4'",
                  "SELECT CHARSET('x'), delimiter FROM t", "SET NAMES utf8mb4", "SET CHARSET utf8mb4",
-                 "CREATE TABLE t (\ncharset INT,\ndelimiter INT\n)")
+                 # A column-zero delimiter prefix loses its newline in
+                 # add_line; indentation keeps this identifier as SQL.
+                 "CREATE TABLE t (\ncharset INT,\n delimiter INT\n)")
         for engine, version in SERVERS:
             for client in ("mysql", "mariadb"):
                 for mode in ("", "ANSI_QUOTES", "NO_BACKSLASH_ESCAPES", None):
@@ -659,7 +663,7 @@ class VersionAndClientLexerTests(unittest.TestCase):
                     self.assertEqual(flags["ansi_quotes"], version == "5.7.44")
                     self.assertFalse(flags["mssql"], "MySQL's MSSQL alias does not enable brackets")
                     result = dbops.classify(ANSI_ATTACK, engine="mysql", server_version=version,
-                                            sql_mode=mode, client_engine="mysql")
+                                            sql_mode=mode, client_engine="mysql", client_status_synced=True)
                     self.assertEqual(result["kind"], "risky" if version == "5.7.44" else "read")
             for version in (None, "custom"):
                 self.assertEqual(dbops.classify(ANSI_ATTACK, engine="mysql", server_version=version,
@@ -789,14 +793,22 @@ class VersionAndClientLexerTests(unittest.TestCase):
                         ed._plan_run({"sql": sql}, session())
                     with self.assertRaises(ValueError):
                         dbops.target_statement(sql, sql_mode="", client_engine="mysql")
-                    self.assertEqual(ed._plan_run({"sql": sql}, session(mode="NO_BACKSLASH_ESCAPES"))[
-                        "units"][0]["send"], sql)
+                    # A bound NBE mode permits refreshing the stale escape
+                    # bit before the client reads this otherwise intact text.
+                    plan = ed._plan_run({"sql": sql}, session(mode="NO_BACKSLASH_ESCAPES"))
+                    nbe_probe = ed.TAG + dbops.client_status_probe("$$", False)[0]
+                    self.assertEqual(ed._review_statements(plan["units"]),
+                                     [ed.TAG + dbops.CLIENT_STATUS_SYNC, nbe_probe, sql])
                     if quote == "`":
                         self.assertEqual(ed._plan_run({"sql": sql}, session(client_engine="mariadb"))[
                             "units"][0]["send"], sql)
                     if quote == '"':
-                        with self.assertRaisesRegex(ed.EditorError, "ANSI_QUOTES"):
-                            ed._plan_run({"sql": sql}, session("mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))
+                        plan = ed._plan_run({"sql": sql}, session(
+                            "mariadb", "11.4.10", "ANSI_QUOTES", client_engine="mariadb"))
+                        ansi_probe = ed.TAG + dbops.client_status_probe(
+                            "$$", True, ansi_quotes=True, client_engine="mariadb")[0]
+                        self.assertEqual(ed._review_statements(plan["units"]),
+                                         [ed.TAG + dbops.CLIENT_STATUS_SYNC, ansi_probe, sql])
         sql = "SELECT 'a\\\\\nb'"
         self.assertEqual(ed._plan_run({"sql": sql}, session())["units"][0]["send"], sql)
 
@@ -830,7 +842,10 @@ class EditorLexerTests(unittest.TestCase):
         for opener in ("/*!", "/*M!"):
             for space in ("", " "):
                 sql = ("DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; " + opener + "100000" +
-                       space + "END*/; DROP DATABASE prod; END//")
+                       space + "END*/ ; DROP DATABASE prod; END//")
+                # Keep whitespace after the closer so this reaches the DDL
+                # check on a MySQL client too. Without it, /*M! is ordinary
+                # to that client and the exact-wire spacing guard refuses.
                 plan = self.plan(sql, "mariadb", "11.8.9-MariaDB")
                 self.assertEqual(ed._decision(plan, SAFETY)["action"], "refuse")
                 self.assertTrue(any("DROP DATABASE prod" in part for part in ed._ddl_codes(plan["units"][0])))
@@ -846,12 +861,14 @@ class EditorLexerTests(unittest.TestCase):
         self.assertEqual(plan["verdict"]["kind"], "read")
         self.assertTrue(ed._needs_session_guard(plan["units"][0]))
 
-    def test_g8b_literal_mode_exposes_drop_and_nonliteral_mode_refuses(self):
+    def test_g8b_literal_mode_resynchronizes_but_nonliteral_mode_refuses(self):
         for engine, version in SERVERS:
             sql = "DELIMITER //\nSET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'//\n" + G8 + "//"
             plan = self.plan(sql, engine, version)
+            self.assertTrue(plan["units"][-1]["client_status_sync"])
+            self.assertEqual(plan["units"][-1]["send"], G8)
             self.assertEqual(plan["verdict"]["kind"], "risky")
-            self.assertIn("DROP DATABASE prod", plan["units"][1]["code"])
+            self.assertEqual(ed._decision(plan, SAFETY)["action"], "refuse")
             with self.assertRaisesRegex(ed.EditorError, "NO_BACKSLASH_ESCAPES"):
                 self.plan(sql.replace("'NO_BACKSLASH_ESCAPES'", "@mode"), engine, version)
 

@@ -145,9 +145,13 @@ class EditorDecisionJ2Tests(unittest.TestCase):
             self.assertEqual(ed._lexer_session_context(session), {
                 "engine": engine, "server_version": version, "sql_mode": "NO_BACKSLASH_ESCAPES",
                 "identity_bound": True, "wsrep_on": False, "client_engine": engine})
-            plan = ed._plan_run({"sql": r"SELECT 'tail\'"}, session)
+            plan = ed._plan_run({"sql": "SELECT 'tail'"}, session)
             self.assertFalse(plan["units"][0]["mode_unknown"])
-            self.assertTrue(plan["units"][0]["mode_sensitive"])
+            # Bound facts permit a separate helper to refresh stale client
+            # status before any backslash-sensitive bytes are read.
+            plan = ed._plan_run({"sql": r"SELECT 'tail\'"}, session)
+            self.assertTrue(plan["units"][0]["client_status_sync"])
+            self.assertEqual(plan["units"][0]["send"], r"SELECT 'tail\'")
 
     def test_comments_and_executable_markers_before_standalone_ddl_are_not_wrappers(self):
         for engine, version in SERVERS:
@@ -284,6 +288,9 @@ DELIMITER ;
                 self.assertEqual(len(ed._ddl_codes(routine)), 1)
                 self.assertIn(r"""SELECT 'it\'s', "x";""", routine["send"])
                 self.assertEqual(ed._decision(plan, SAFETY)["action"], "refuse")
+                # The routine's own preamble/restore remains predictable,
+                # but earlier DDL and DML invalidate @OLD_SQL_MODE: a
+                # trigger could have assigned that user variable.
                 self.assertTrue(plan["units"][-1]["mode_unknown"])
                 self.assertIsNone(plan["units"][-1]["sql_mode"])
 

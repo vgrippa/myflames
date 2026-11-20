@@ -235,6 +235,7 @@ def _run(args, payload):
             blocked, decision, audit = _authorize(plan, safety, options, args, registry, audit)
         if blocked:
             return 1, _envelope(blocked["status"], message=blocked["message"], audit_id=blocked.get("audit_id")), password
+        initial_review = editor._run_review_state(plan, decision)
         full = connection_options(_resolve_connection(args))
         password = full.get("password")
         audit.password = password
@@ -253,9 +254,9 @@ def _run(args, payload):
         again = editor._plan_run(payload, session)
         writes = [u["send"] for u in again["units"] if u["kind"] != "read"]
         new_decision = editor._decision(again, safety, session)
+        alter = editor._alter_unit(again) is not None and new_decision["action"] != "refuse"
         review = editor._alter_review(again, session) if alter else None
-        if (alter or [u["send"] for u in again["units"]] != [u["send"] for u in plan["units"]]
-                or any(new_decision[k] != decision[k] for k in ("action", "kind"))):
+        if alter or editor._run_review_state(again, new_decision) != initial_review:
             blocked, decision, audit = _authorize(again, safety, options, args, registry, audit, session, review)
             if blocked:
                 return 1, _envelope(blocked["status"], message=blocked["message"],

@@ -610,7 +610,7 @@
    "cluster_name": null,
    "enabled": false,
    "why_not": "MySQL Shell was not found on this computer.",
-   "fix": "Install MySQL Shell 8.0.14 or later, then Refresh.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
    "target": {
     "self": true,
     "member_name": "mf-rr-1:3306"
@@ -634,7 +634,7 @@
    "cluster_name": null,
    "enabled": false,
    "why_not": "MySQL Shell was not found on this computer.",
-   "fix": "Install MySQL Shell 8.0.14 or later, then Refresh.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
    "target": {
     "self": true,
     "member_name": "mf-rr-1:3306"

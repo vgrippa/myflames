@@ -267,6 +267,7 @@ class TestSelectFunctionSafety(unittest.TestCase):
             "SELECT 'mutate_rows()', `mutate_rows`, 'COUNT (1)' /* mutate_rows() */",
             'SELECT CONNECTION_ID(), USER(), CURRENT_USER(), VERSION(), DATABASE()',
             'SELECT LAST_INSERT_ID()',
+            'SELECT ROW_COUNT()',
         )
         for sql in queries:
             with self.subTest(sql=sql):
@@ -457,7 +458,12 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(result['ambiguous'])
         self.assertEqual(result['kind'], 'risky')
         self.assertIn(dbops.AMBIGUOUS_REASON, result['reasons'])
-        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'read')
+        # A server backslash reading alone does not bind the client's status
+        # even when sql_mode is known. Only a mode-setting reply permits the
+        # synchronized non-NBE reading used by the bound editor.
+        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='')['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='', client_status_synced=True)['kind'], 'read')
         self.assertEqual(dbops.classify(sql, backslash_escapes=False)['kind'], 'risky')
         self.assertFalse(dbops.classify("SELECT 'it''s'; SELECT 2")['ambiguous'])
 
@@ -510,9 +516,11 @@ class TestReviewGate(unittest.TestCase):
                 self.assertEqual([p['text'] for p in parts], ['SELECT 1', 'DROP TABLE t'])
                 self.assertEqual(self.kind(sql), 'risky')
         # An unquoted argument ends at a space; the client keeps the old
-        # delimiter when it has a backslash or is missing.
+        # delimiter when the parsed value still has a backslash or is
+        # missing. get_arg unescapes pairs in unquoted values first.
         self.assertEqual(dbops.split_statements('DELIMITER // ignored\nSELECT 1//')[0]['delimiter'], '//')
-        for sql in ('DELIMITER /\\/\nSELECT 1/\\/', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
+        self.assertEqual(dbops.split_statements('DELIMITER /\\/\nSELECT 1//')[0]['delimiter'], '//')
+        for sql in ('DELIMITER /\\\\/\nSELECT 1', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
             with self.subTest(sql=sql):
                 result = dbops.classify(sql)
                 self.assertEqual(result['kind'], 'risky')
@@ -1886,3 +1894,32 @@ class TestReadysetClassificationAndRedaction(unittest.TestCase):
         clean = dbops.redact(raw)
         self.assertNotIn("s3cr3t!pw", clean)
         self.assertIn("mysql://readyset_user:[redacted]@db-primary.internal:3306/shop", clean)
+
+    def test_client_status_probe_formats_and_validation(self):
+        self.assertEqual(dbops.client_status_probe("$$", True),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("//", False),
+                         ("SELECT '\\''//' /* ' */ AS mf_probe", "\\'//"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\""$$" /* " */', "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\"$$" /* " */', "'$$"))
+        # MySQL clients ignore ANSI_QUOTES; NBE makes all quotes literal.
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mysql"),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", False, ansi_quotes=True, client_engine="mariadb"),
+                         ("SELECT '\\''$$' /* ' */ AS mf_probe", "\\'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb",
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*!99999 "\\"$$" */ /* " */', "'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine=None,
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*M!999999 "\\""$$" */ /* " */', "'$$"))
+        with self.assertRaises(ValueError):
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb",
+                                      server_ansi_quotes=False)
+        for bad in ("", None, "'", '"', "\\", "a b", "/*"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                dbops.client_status_probe(bad, True)

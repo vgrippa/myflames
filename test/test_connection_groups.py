@@ -585,9 +585,10 @@ class TestPeerIdentityRecording(GroupCase):
             self.assertEqual(after['topology_identity']['server_uuid'], CF.SERVER_UUIDS[i])
             after.pop('topology_identity')
             self.assertEqual(after, before[profile['id']])
-        calls = {call.args[0]: call for call in record.call_args_list}
+        # call[0] and call[1] (not .args/.kwargs, which need Python 3.8).
+        calls = {call[0][0]: call for call in record.call_args_list}
         for profile in self.profiles[1:]:
-            self.assertEqual(calls[profile['id']].kwargs['expected'], profile)
+            self.assertEqual(calls[profile['id']][1]['expected'], profile)
         for index in (1, 2):
             member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
             action = next(a for a in member['actions'] if a['id'] == 'stop_member')
@@ -699,7 +700,7 @@ class TestPeerIdentityRecording(GroupCase):
                 identity = self.store._profile('db-2')['topology_identity']
                 self.assertEqual(identity['wsrep_node_uuid'], CF.SERVER_UUIDS[1])
                 self.assertNotIn('server_uuid', identity)
-                self.assertEqual(sum(tl._WSREP_STATUS_SQL in call.args[0] for call in run.call_args_list), 1)
+                self.assertEqual(sum(tl._WSREP_STATUS_SQL in call[0][0] for call in run.call_args_list), 1)
                 self.assertEqual(len(tl._probe_attempts), 2)
 
     def test_endpoint_edit_or_group_removal_after_probe_prevents_persistence(self):

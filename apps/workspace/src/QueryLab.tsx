@@ -1525,12 +1525,17 @@ export const QueryLab = forwardRef<
     }, id);
     setError("");
   }
+  /** The group member a member-bound tab runs on, when that member is
+   * available; null otherwise. */
+  function boundMember(t: Tab): Connection | null {
+    return t.member && group && memberConnection ? memberConnection(t.member) : null;
+  }
   /** The connection a run of *t* uses: a tab bound to a group member runs on
    * that member (the session request carries its profile id and the group
    * name); a Top statements tab runs in the schema it was recorded in when
    * the connection names none. */
   function connectionFor(t: Tab): Connection {
-    const bound = t.member && group && memberConnection ? memberConnection(t.member) : null;
+    const bound = boundMember(t);
     // Keep an unavailable binding disconnected even if a future caller misses
     // its UI guard. Port 0 is refused before any login, as in a cleared picker.
     if (t.member && !bound) return unavailableMemberConnection(t.member, t.member_name);
@@ -1540,6 +1545,24 @@ export const QueryLab = forwardRef<
     // default database wins over the connection's and the source statement's.
     const database = measurement ? measurement.statement.schema ?? "" : t.database ?? (base.database || t.source?.schema || "");
     return database === base.database ? base : { ...base, database };
+  }
+  /** The schema a run of tab *t* uses, and why, as the Database picker shows
+   * it: one rule for the schema note, Run, Explain and Run analysis. A
+   * measurement runs in the schema its statement was recorded in. An open
+   * session of this tab's connection (the statusSession check) runs in its
+   * current schema, null or "" meaning no default schema. Otherwise the tab's
+   * Database picker choice wins over the connection's default schema and the
+   * schema the statement was recorded in. */
+  function runSchema(t: Tab, rt: Runtime): { schema: string; why: string } {
+    if (rt.measureBefore) return { schema: rt.measureBefore.statement.schema ?? "", why: "the schema it was recorded in" };
+    const session = rt.session;
+    if (session && !session.ended && rt.sessionKey === connectionKey(connectionFor(t)))
+      return { schema: session.database_name || "", why: "the open session's current schema" };
+    if (t.database != null) return { schema: t.database, why: "picked in this tab" };
+    const bound = boundMember(t);
+    const baseDatabase = t.member && !bound ? "" : (bound || connection).database || "";
+    if (baseDatabase) return { schema: baseDatabase, why: "the connection's schema" };
+    return { schema: t.source?.schema || "", why: "the schema it was recorded in" };
   }
   /** Start one capture of *sql* for tab *t* with the lab's settings. */
   async function startCapture(
@@ -1591,8 +1614,16 @@ export const QueryLab = forwardRef<
       setSessionFallback(null);
       const via = connectionFor(t);
       jobConnection.current = via;
+      // An open session of this tab runs Run, Explain and Run analysis in its
+      // current schema (a USE, or a dropped database), which connectionFor
+      // cannot see: the capture connection opens in the schema runSchema
+      // names, as the note and the Database picker show it. connectionFor
+      // itself is unchanged: editor/open and the session keys keep its rule.
+      const now = runtimeRef.current[t.id];
+      const sessionOpen = !!now && !!now.session && !now.session.ended && now.sessionKey === connectionKey(connectionFor(t));
+      const captureConnection = sessionOpen && now ? { ...via, database: runSchema(t, now).schema } : via;
       const result = await api<{ id: string }>("live/start", {
-        connection: via,
+        connection: captureConnection,
         query: sql,
         parameters,
         mode,
@@ -2591,8 +2622,24 @@ export const QueryLab = forwardRef<
 
   const pendingFill = unfilled(tab, tab.sql, parseParameters(tab.parameters));
   const unbound = bindingProblem(tab);
-  const tabSchema = tab.source ? connectionFor(tab).database : "";
   const session = rt.session;
+  // The schema a run of this tab uses, and why: runSchema is the one rule the
+  // note, Run, Explain and Run analysis share, matching the Database picker.
+  const tabRunSchema = runSchema(tab, rt);
+  // A measurement runs in its recorded schema on its own capture connection,
+  // while Run and Explain use this tab's open session: say so when the
+  // session has moved to another schema (a USE, or its database dropped).
+  const tabSession = session && !session.ended && rt.sessionKey === connectionKey(tabConnection) ? session : null;
+  const measureSessionSchema = rt.measureBefore && tabSession && (tabSession.database_name || "") !== tabRunSchema.schema
+    ? tabSession.database_name || "" : null;
+  const tabSchemaNote = !tab.source
+    ? ""
+    : (tabRunSchema.schema
+      ? ` · runs in ${tabRunSchema.schema}, ${tabRunSchema.why}`
+      : " · runs without a default schema") +
+      (measureSessionSchema === null ? ""
+        : measureSessionSchema ? `; Run and Explain use this tab's session, now in ${measureSessionSchema}`
+        : "; Run and Explain use this tab's session, now without a default schema");
   const running = rt.running;
   const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
   const sessionBusy = !!rt.operation || rt.stopping;
@@ -2629,7 +2676,9 @@ export const QueryLab = forwardRef<
   const fileDirty = !!rt.file && rt.file.savedSql !== tab.sql;
   // The default database the picker shows: the live session's DATABASE(),
   // else the tab's choice (or the connection's) for the next session.
-  const databaseShown = session && !session.ended ? session.database_name ?? "" : connectionFor(tab).database || "";
+  // Only a session of this tab's connection (statusSession) names the
+  // schema; after a connection switch the picker shows the new connection's.
+  const databaseShown = statusSession && !statusSession.ended ? statusSession.database_name ?? "" : connectionFor(tab).database || "";
   const databaseNames = (schemaCatalog?.schemas || []).map((s) => s.name);
   const databaseOptions = databaseShown && !databaseNames.includes(databaseShown)
     ? [databaseShown, ...databaseNames]
@@ -3313,11 +3362,7 @@ export const QueryLab = forwardRef<
                 <code title={tab.source.digest}>
                   {shortDigest(tab.source.digest)}
                 </code>
-                {tabSchema &&
-                  (!rt.measureBefore && tabConnection.database
-                    ? ` · runs in ${tabSchema}, the connection's schema`
-                    : ` · runs in ${tabSchema}, the schema it was recorded in`)}
-                {rt.measureBefore && !tabSchema && " · runs without a default schema"}
+                {tabSchemaNote}
                 {tab.target && !unbound && ` · on ${tab.target.label}`}
               </p>
             )}

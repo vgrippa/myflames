@@ -25,11 +25,18 @@ DRIFT_DIR = os.path.join(REPO, "local", "live-evidence", "drift")
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
 _HOSTPORT = re.compile(r":\d{2,5}\b")
+#: Lab container addresses: Docker assigns them anew (and in another order)
+#: whenever the lab restarts, so two healthy runs can differ.
+_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 # Volatile keys: values that legitimately differ between two healthy runs.
+# ProxySQL's hostgroup aggregates and each server's pool contain ConnFree,
+# ConnOK, ConnUsed, ConnERR and MaxConnUsed. Those are observed counters,
+# unlike configured max_connections, weight or the pool's status.
 _VOLATILE_KEY = re.compile(
     r"(uuid|guid|^ports?$|_ports?$|timestamp|taken_at|recorded_at|first_seen|last_seen|"
-    r"duration|elapsed|connection_ids?|thread_ids?|processlist|gtid|xid|"
+    r"duration|elapsed|connection_ids?|thread_ids?|processlist|gtid|xid|view_id|"
     r"position|log_file|relay_log|_file$|count|counter|bytes|queries|questions|uptime|hits|"
+    r"^(?:max_)?conn_(?:free|ok|used|err)$|"
     r"^rate_|^rows_|_time$|_s$|_ms$|_us$)", re.I)
 #: Counter blocks: every value moves between two healthy runs (Group
 #: Replication cumulative counters, ProxySQL stats); only the shape is stable.
@@ -85,6 +92,7 @@ def normalize(value, key=""):
         value = _UUID.sub("<uuid>", value)
         value = _DATETIME.sub("<timestamp>", value)
         value = _HOSTPORT.sub(":<port>", value)
+        value = _IPV4.sub("<ip>", value)
         return value
     return value
 

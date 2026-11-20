@@ -499,6 +499,25 @@ class ApplyTest(Base):
         self.assertEqual(self.opened[0][0]['password'], 'conn-secret')
         self.assertFalse(self.opened[-1][1])
 
+    def test_backslash_values_go_as_hex_in_preview_and_sent(self):
+        # A value with a backslash is CONVERT(X'..' USING utf8mb4) whatever
+        # the session's NO_BACKSLASH_ESCAPES, and the reviewed sample is the
+        # statement that goes to the server.
+        for mode in (True, False):
+            self.server.backslash = mode
+            with self.subTest(mode=mode):
+                opened = self.open('id,name,bits\n1,"C:\\new",1\n2,plain,2\n', name='bs-%s.csv' % mode)
+                plan = self.plan(opened, format={'escape': ''})
+                self.assertTrue(plan['ready'], plan['blockers'])
+                sample = plan['statements']['data_sample']
+                self.assertIn("CONVERT(X'433A5C6E6577' USING utf8mb4)", sample)
+                self.assertIn("'plain'", sample)
+                self.assertNotIn('C:\\new', sample)
+                result = self.apply(plan)
+                self.assertEqual(result['outcome'], 'done', result['message'])
+                inserts = [s for s in self.server.writes() if 'INSERT' in s]
+                self.assertEqual(inserts[-1], sample)
+
     def test_token_is_used_once(self):
         plan = self.plan()
         self.apply(plan)

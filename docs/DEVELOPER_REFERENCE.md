@@ -2500,6 +2500,82 @@ With a bound session, planning can infer a later mode from a single literal `SET
 leave it unknown. Execution still invalidates cached mode after a possible
 change, and independent helpers validate under every modelled mode. The packet
 builder rechecks closure, client commands, dollar bodies and delimiter collisions.
+SQL-mode saves expire after CREATE EVENT unless every schedule expression
+belongs to the literal/clock subset described below, and after SET expressions containing a subquery or table read
+because a view can call a function that changes the saved user variable.
+Standalone PROCEDURE, FUNCTION, TRIGGER and PACKAGE definitions retain saves;
+their bodies run later. The Query editor sessions section specifies the full
+save/restore contract and its conservative limits.
+Client quote status is independent of the server's SQL mode. Every unit is
+checked with both values of `SERVER_STATUS_NO_BACKSLASH_ESCAPES`; MariaDB
+clients also check both values of `SERVER_STATUS_ANSI_QUOTES`, including when
+the corresponding mode is off. Unknown client families check all combinations.
+Stored-program exit can restore `@@SESSION.sql_mode` without restoring these
+bits, even on a direct connection. MariaDB's `SET STATEMENT sql_mode=... FOR`
+has the same effect: its reply is sent before the restore runs the sql_mode
+update hook (`mariadb-11.8.9:sql/sql_parse.cc:2467–2468,1934–1935`, before the
+restore at `2536` and `1967`). When client readings differ, a bound session
+with a known mode sends `SET SESSION sql_mode = @@SESSION.sql_mode` as a
+separate client statement immediately before the affected unit. Its reply
+updates the bits before the client reads that unit. Planning and classification
+then use the synchronized bits, while retaining every possible client family.
+An unbound session or unknown mode refuses; family, delimiter or dollar-grammar
+disagreements that remain after synchronization still refuse.
+The helper is named in editor review and audit, including for an allowed read;
+its results are internal. Immediately after that `SET` reply, both the Query editor
+and Users and roles (`_with_password_mode`) send `dbops.client_status_probe`
+as a following packet using the packet's active delimiter so any stale client quote
+or backslash-escape bit splits at the embedded delimiter and fails on the server
+before later units are read, and verify the probe result before proceeding or
+returning output. Both packets assert the target and expected mode.
+A failed helper or probe stops before the unit, including with Continue on error;
+when earlier units of the run already ran, the message says so ("Earlier
+statements were sent; this statement and later statements were not sent.")
+instead of "Nothing was sent.".
+The probe confirms the bits the client used to read the probe, which the
+helper's reply set; the unit is read with the bits of the probe's own reply.
+On a direct server these are the same: helper, probe and unit carry one guard
+bound to `CONNECTION_ID()` and nothing between them runs a stored program. They
+can differ only when an intermediary rewrites the probe reply's status (or
+serves it from a cache that invents one); anything that can rewrite replies
+already controls the session, so this is an accepted assumption, not a check.
+The helper can raise server warnings without changing what it sends: MySQL
+raises warning 3135 when strict mode and its sub-modes are only partly set
+(`mysql-8.4.0:sql/sys_vars.cc:4629–4648`), MySQL 8.0+ warns that
+`PAD_CHAR_TO_FULL_LENGTH` is deprecated (`mysql-8.4.0:sql/sys_vars.cc:4700–4704`),
+and MySQL 5.7 warns about its deprecated modes
+(`mysql-5.7.44:sql/sys_vars.cc:3861–3876`); MariaDB's check raises none
+(`mariadb-11.8.9:sql/sys_vars.cc:3991–3996`). The helper never commits: an
+implicit commit from a SET statement happens only for its committing forms
+(`mysql-8.4.0:sql/sql_parse.cc:426–428`;
+`mariadb-11.8.9:sql/sql_parse.cc:453–454`), never for a plain
+`SET SESSION sql_mode`.
+Through a statement-routing proxy the helper's reply may come from the proxy
+rather than the server. The lab check against ProxySQL 3.0.11 showed that
+ProxySQL cannot track `SET SESSION sql_mode = @@SESSION.sql_mode`: it locks
+the connection to its hostgroup and later reads fail with error 9006, so
+nothing runs. Editor tabs through ProxySQL are unbound (the routed start-up
+fallback) and refuse status-dependent units.
+No helper is inserted for units whose client readings agree. Every
+resynchronized unit is guarded, and its packet runs the guard's marker SELECT
+just before the unit's statement, so its diagnostics describe that marker
+(a following `ROW_COUNT()` reads -1: a result set's end sets the row count to
+-1, `mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+`mariadb-11.8.9:sql/sql_class.h:6311–6313`), not the helper SET or the
+preceding user statement. Ordinary intervening `ROW_COUNT()`, `FOUND_ROWS()`,
+`SHOW WARNINGS` and `GET DIAGNOSTICS` units retain their existing behavior.
+Users and roles names the same status helper in its reviewed password wrapper
+when the literal's client readings differ. Its staging packet sets the password
+mode and ends with the helper, so the reply precedes the password bytes without
+another routing decision between the mode setup and helper. The account packet
+repeats its mode setup for server parsing, preserving backslash passwords even
+when a proxy routes packets to separate sessions. Agreeing literals add no helper.
+Sources: `mysql-8.4.0:client/mysql.cc:2771–2784`,
+`mysql-8.4.0:sql/sys_vars.cc:4710–4718`,
+`mysql-8.4.0:sql/sp_head.cc:2106–2107,2305`,
+`mariadb-11.8.9:client/mysql.cc:2659–2663`,
+`mariadb-11.8.9:sql/sys_vars.cc:3997–4011` and
+`mariadb-11.8.9:sql/sp_head.cc:1114–1115,1193–1194,1476,1489`.
 A caller-supplied DELIMITER command cannot bypass these checks.
 Mode-sensitive reads also require the guarded packet. A literal mode assignment
 is only a planning prediction: it can fail while Continue on error leaves the
@@ -2512,7 +2588,12 @@ and multibyte characters), and closes only with the identical case-sensitive
 tag. An unterminated body refuses before sending, so it cannot swallow the
 packet delimiter. Quotes, comments and dollar signs inside identifiers do
 not open a body. Source: `mysql-9.7.0:client/mysql.cc:2715–2746,2953–2974` (the client enables this grammar after its server probe at
-`mysql-9.7.0:client/mysql.cc:1288–1291`).
+`mysql-9.7.0:client/mysql.cc:1288–1291`). Inside a dollar-quoted body,
+MySQL 8.1+ clients still treat a backslash as an escape unless the
+NO_BACKSLASH_ESCAPES status bit is set (`mysql-8.4.0:client/mysql.cc:2771–2783`,
+the escape branch that runs before the dollar-body closer at `2936`). The
+editor refuses dollar-quoted text because the two client readings (with and
+without the grammar) differ.
 The classifier compares the legacy reading, where dollar tags can be
 identifiers, with the dollar-body reading. Differences in unit spans,
 delimiters, executable code, quoted identifiers, closure or parser issues
@@ -2908,8 +2989,9 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `mariadb-10.11.16:client/mysql.cc:2805,2826–2830`,
   `mariadb-11.8.9:client/mysql.cc:2834,2855–2859`). MySQL clients 5.7.44,
   8.0.42, 8.1.0, 8.4.0, 8.4.5 and 9.1.0 also treat `#` and `-- ` inside
-  hints as line comments. This is fixed in 8.0.43, 8.4.6 and 9.2.0 by the
-  hint-state exclusion from commit `514931dba1e` (Bug#30875669)
+  hints as line comments. The hint-state exclusion is fixed in 9.2.0 by
+  commit `514931dba1e` (Bug#30875669), and in 8.0.43 and 8.4.6 by
+  commit `94a29a8a117` (Bug#37572191)
   (`mysql-5.7.44:client/mysql.cc:2681–2690`,
   `mysql-8.0.42:client/mysql.cc:2576–2586`,
   `mysql-8.1.0:client/mysql.cc:2692–2702`,
@@ -2931,7 +3013,10 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `mariadb-11.8.9:client/mysql.cc:2817–2818`.
   MariaDB 12.0.1+ keeps persistent hint and conditional-comment state
   (`mariadb-12.0.1:client/mysql.cc:2218,2366,2536,2779–2798`), but a nested
-  `/*!` can still replace hint state. Backslash commands in hints remain
+  `/*!` can still replace hint state. Its line-comment branch has no
+  `SSC_HINT` exclusion (`mariadb-12.0.1:client/mysql.cc:2694–2708`); the
+  oracle's hint line-comment guard applies only to the fixed MySQL ranges.
+  Backslash commands in hints remain
   conservatively refused across client versions.
   The client pass also refuses any ordinary `/* ... */` comment whose body
   contains a nested `/*!`, `/*+` or `/*M!` opener, on one line or across
@@ -2941,7 +3026,8 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   the server's closing marker. A later `\C` can then discard text that the
   server reading treated as quoted data, exposing an unreviewed statement.
   MariaDB 10.11–11.8 has this interaction for `/*!`; its `/*+` is ordinary
-  comment text. MariaDB HEAD also sets hint state for `/*+`. None of the
+  comment text. MariaDB 12.0.1+ also sets hint state for `/*+`
+  (`mariadb-12.0.1:client/mysql.cc:2782–2784`). None of the
   checked MariaDB clients sets `ss_comment` for `/*M!`; that opener is
   refused conservatively too. MySQL and MariaDB 10.11–11.8 keep `ss_comment`
   local to `add_line`; MariaDB 12.0.1+ keeps it across lines. Refusal avoids
@@ -2949,14 +3035,15 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
 
   | Source (`client/mysql.cc`) | State lifetime | Ordinary close and nested special openers |
   | --- | --- | --- |
-  | `mysql-5.7.44` | `2538` | `2738–2767` |
-  | `mysql-8.0.46` | `2470` | `2628–2651` |
-  | `mysql-8.4.0` | `2741` | `2907–2930` |
-  | `mysql-9.7.0` | `2755` | `2925–2948` |
-  | `mariadb-10.11.16` | `2591` | `2805–2830` |
-  | `mariadb-11.4.10` | `2599` | `2813–2838` |
-  | `mariadb-11.8.9` | `2620` | `2834–2859` |
-  | MariaDB `HEAD` at `3a2f8e27981b76b99d2b87cc3bcec5ef022b2b23` | `2313,2460–2462,2629–2631` | `2852–2887` |
+  | `mysql-5.7.44` | `2538` | `2721–2767` |
+  | `mysql-8.0.46` | `2470` | `2616–2651` |
+  | `mysql-8.4.0` | `2741` | `2895–2930` |
+  | `mysql-9.7.0` | `2755` | `2913–2948` |
+  | `mariadb-10.11.16` | `2591` | `2788–2830` |
+  | `mariadb-11.4.10` | `2599` | `2796–2838` |
+  | `mariadb-11.8.9` | `2620` | `2817–2859` |
+  | `mariadb-12.0.1` | `2218,2366,2536` | `2739–2789` |
+  | MariaDB `HEAD` at `3a2f8e27981b76b99d2b87cc3bcec5ef022b2b23` | `2313,2460–2462,2629–2631` | `2834–2887` |
 
   The server's ordinary comment consumes no nested level:
   `mysql-5.7.44:sql/sql_lex.cc:1969–1973`,
@@ -2966,12 +3053,154 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `mariadb-10.11.16:sql/sql_lex.cc:2471–2475`,
   `mariadb-11.4.10:sql/sql_lex.cc:2502–2506`,
   `mariadb-11.8.9:sql/sql_lex.cc:2505–2509`.
-  Ordinary comments without these nested openers retain their existing
-  handling. Strings, quoted identifiers and `#` or `-- ` line comments
+  The client pass refuses overlapping openers and closers for ordinary,
+  hint and executable comments. A closing `*/` preceded immediately by `/`
+  contains an overlapping `/*`. The clients' ordinary-opener branch has no
+  `!ml_comment` guard and consumes the closing `*`, keeping the comment
+  open after the server ends it. This also affects hints read as ordinary
+  comments by MariaDB 10.11–11.8 and hints after their first line in MySQL.
+  Body checks include the closing `*` so they cannot split that opener.
+  A `*` immediately after a closing `*/` also refuses: MySQL's hint close
+  processes one byte at a time, so its closing slash can open a new comment
+  (`mysql-8.4.0:client/mysql.cc:2928–2930`). When a block comment's closer
+  touches following SQL, the editor inserts one space in the reviewed `send`
+  text, unless the next byte is client whitespace or starts the active
+  delimiter. This anticipates the space an ordinary comment can acquire
+  via `need_space` (`mysql-8.4.0:client/mysql.cc:2921,2959–2962`;
+  `mariadb-11.8.9:client/mysql.cc:2851,2865–2870`). Normalization uses server
+  token spans, including hint and executable-comment closers. Before inserting,
+  every possible client-family and ANSI-status reading must agree with the
+  server about any comment closer where the client could add a space.
+  This includes the dollar-quote reading used by capable MySQL 8.1+ clients.
+  The editor binds the client family, not its version or the result of its
+  dollar-quote capability probe, so MySQL and unknown families check both
+  dollar settings; the MariaDB closer scan keeps dollar quotes disabled.
+  Comparing readings retains the client's token spans as well as the server's
+  spans, boundaries, issues and code. A skipped server comment or MSSQL bracket
+  identifier cannot hide a changed client string or comment boundary.
+  A client-only closer inside a server string, identifier or skipped comment
+  refuses: normalization must not modify that data, and the client must not
+  insert an unreviewed space. This covers MariaDB MSSQL bracket identifiers,
+  MariaDB executable comments read by a MySQL client, and nested comments in
+  server-skipped version comments. Token spans
+  for `send` are rebuilt after insertion; source ranges and error positions
+  still map to the original editor text. The confirmation shows the normalized
+  text, which must equal the client packet, including whitespace.
+  Strings, quoted identifiers and `#` or `-- ` line comments
   consume their complete contents first, so opener text there remains data.
   Quotes and line-comment markers inside an ordinary block comment do not
   protect a nested opener. Existing hint and executable-comment checks
   cover nested openers in those other comment kinds.
+  Every multi-line block comment (`/*`, `/*+`, `/*!` or `/*M!`) also refuses
+  when a later physical line starts, after ASCII whitespace, with a named
+  client command or a backslash command. This includes command-looking lines
+  after pending SQL and commands disabled by binary mode. Ordinary comments
+  without those lines remain supported; command text inside a SQL string
+  outside a block comment remains string data. The message asks the user to
+  move the command outside the comment or reword that line.
+  MySQL 8.2+ checks each input line for a named command before `add_line`.
+  `skip_over_comments_and_space` can treat an unclosed hint or conditional
+  comment followed by whitespace as an entirely skippable buffer; a later
+  DELIMITER line then discards that buffer. Its inner loop stops at either
+  `*` or a following `/`, so it is not a general SQL comment scanner.
+  The ordinary-comment and string flags still suppress this lookup.
+  MySQL 5.7, 8.0 and 8.1, and all checked MariaDB clients, require an empty
+  buffer instead. The shared refusal avoids depending on client versions.
+
+  | Client tag | Per-line dispatch (`client/mysql.cc`) | Comment-buffer scanner (`client/mysql.cc`) |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2355–2369` | Empty buffer required |
+  | `mysql-8.0.46` | `2318–2329` | Empty buffer required |
+  | `mysql-8.1.0` | `2387–2398` | Empty buffer required |
+  | `mysql-8.4.0` | `2455–2481` | `2577–2593` |
+  | `mysql-9.7.0` | `2469–2495` | `2591–2607` |
+  | `mariadb-10.11.16` | `2403–2414` | Empty buffer required |
+  | `mariadb-11.8.9` | `2432–2443` | Empty buffer required |
+  | `mariadb-12.0.1` | `2352–2363` | Empty buffer required |
+
+  Separately from command dispatch, `add_line` omits the trailing newline
+  when its unflushed output begins with the first nine bytes of `delimiter`,
+  case-insensitively, unless a string or ordinary multi-line comment remains
+  open. No word boundary is required; special-comment state does not protect
+  that newline. A column-zero SQL continuation such as `delimiter -` followed
+  by `- 1 AND id = 5` can therefore become a `--` comment. The client lexer
+  refuses a column-zero `delimiter` prefix outside strings and comments in
+  sent SQL, unless myflames consumes it as a standalone DELIMITER command.
+  A line beginning inside a quoted token also refuses when it starts with
+  that prefix and closes the token before its newline, including the closing
+  line of a `$tag$` body in MySQL 8.1+ clients. A line that stays
+  inside the quoted token keeps its newline and remains supported.
+  Indenting or quoting a `delimiter_x` identifier preserves its newline.
+  For string data, avoid the line break just before DELIMITER. Dollar-quote
+  recognition and closing are source-checked in `client/mysql.cc` at
+  `mysql-8.1.0:2541–2572,2764–2798`,
+  `mysql-8.4.0:2701–2733,2931–2962` and
+  `mysql-9.7.0:2715–2747,2949–2981`.
+  Sources (`client/mysql.cc`): `mysql-5.7.44:1179–1189,2786–2800`,
+  `mysql-8.0.46:1203–1214,2667–2680`, `mysql-8.1.0:1217–1228,2802–2815`,
+  `mysql-8.4.0:1233–1244,2966–2982`, `mysql-9.7.0:1235–1246,2987–3000`,
+  `mariadb-10.11.16:1178–1188,2849–2863`,
+  `mariadb-11.8.9:1185–1195,2878–2892`, `mariadb-12.0.1:1187–1197,2812–2826`.
+
+  The executable-comment closer has the same overlap refusal as ordinary
+  and hint closers, including `SELECT /*!40101 1 */*2`. A space before the
+  multiplication operator makes the boundary explicit. The checked MySQL
+  clients and MariaDB 10.11/11.8 clear special-comment state at `*` and
+  reexamine `/`; MariaDB 12.0.1 consumes both bytes for `/*!` and `/*+`.
+  It does not set special-comment state for `/*M!`, whose closing slash can
+  still reopen a comment (`mariadb-12.0.1:client/mysql.cc:2779–2792`). Every checked server
+  consumes both closer bytes. This difference is refused on all clients,
+  including an unknown family.
+
+  | Tag | Client special closer (`client/mysql.cc`) | Server closer (`sql/sql_lex.cc`) |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2766–2767` | `1997–2006` |
+  | `mysql-8.0.46` | `2649–2651` | `1967–1975` |
+  | `mysql-8.1.0` | `2761–2763` | `1986–1994` |
+  | `mysql-8.4.0` | `2928–2930` | `1994–2002` |
+  | `mysql-9.7.0` | `2946–2948` | `2050–2058` |
+  | `mariadb-10.11.16` | `2829–2830` | `2499–2510` |
+  | `mariadb-11.8.9` | `2858–2859` | `2533–2544` |
+  | `mariadb-12.0.1` | `2786–2792` | `2537–2548` |
+
+  `test/client_addline_oracle.py` independently transcribes the relevant
+  `add_line` states from `mysql-8.4.0` and `mariadb-11.8.9`, including the
+  per-line conditional/hint state, DELIMITER-prefix newline omission and
+  `\C` parameter removal. It feeds the planned `send` without the statement
+  tag; the transport adds that tag on the wire. Its separate
+  server scanner counts statements without using production lexer tokens.
+  `test/test_client_comment_parity.py` enumerates every fragment through
+  length three over `/`, `*`, `!`, `+`, `M`, single quote, newline, space and
+  `x`, in seven plain/comment templates, for both client and server families.
+  Every accepted input must preserve the planned text and reviewed statement
+  count. This bounded ASCII differential test supplements the explicit
+  regressions; it does not execute SQL or replace live client validation.
+  Its line-structured extension enumerates token sequences through length
+  three, including comment-initial lines, LF, CRLF, DELIMITER, charset and
+  backslash commands, with an envelope that closes comments on a later line.
+  Accepted plans must produce exactly the reviewed unit texts, with no
+  commands or residual client buffer, under all eight client tags in the
+  dispatch table and both Unix and Windows reader behavior. The oracle
+  includes MySQL's comment-buffer lookup and
+  MariaDB 12.0.1's persistent special-comment state and two-byte closer for
+  `/*!` and `/*+`, but not `/*M!`. The unknown client family is not exercised
+  by this line enumeration; explicit regressions check family disagreements.
+  A separate bounded corpus crosses custom delimiters containing single,
+  double and backtick quotes, backslashes, internal and edge whitespace,
+  15/16/31-byte values, and 254/255/256/257/300-byte command lines. It compares
+  original script packets with planned units after the editor's documented
+  edge-whitespace trimming, then requires exact bytes for each private send.
+  Another corpus crosses dollar tags, short quote/comment bodies, identifier
+  prefixes, column-zero continuation lines and MSSQL bracket identifiers.
+  The oracle enables dollar quotes only for MySQL 8.1+ with a successful
+  capability probe; its explicit tests also cover a disabled probe.
+  These corpora cover both server and client families and all eight client
+  tags above. They do not enumerate arbitrary SQL, non-ASCII client charset
+  behavior or server execution. Production limit regressions separately check
+  UTF-8 byte counts. Executable-comment version digit rules and the trimming
+  of all trailing non-graphic bytes are outside this oracle's coverage.
+  Explicit regressions and live checks cover
+  further cases without making this enumeration exhaustive for arbitrary SQL.
   Nested `/*` inside an executable comment refuses because `ml_comment` and
   `ss_comment` interact at the closing markers. Executable
   openers, closing markers and version digits are not atomic to the client;
@@ -2980,11 +3209,82 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   The server reading of each client unit still exposes every executable
   semicolon for classification, even when the client sees one quoted string.
   `DELIMITER` lines with nothing
-  pending are consumed as client commands; quotes are stripped from their
-  argument, and an unquoted argument ends at a space, not a tab. Missing
-  arguments or backslashes make boundaries uncertain. Sources: MySQL
+  pending are consumed as client commands. The argument follows the selected
+  client family's `get_arg`: both strip the opening quote and ignore text
+  after the closing quote; an unquoted argument ends at a space, not a tab.
+  MySQL accepts an unclosed quoted argument and stops at the first matching
+  quote. MariaDB requires closure and unescapes doubled quotes; it also
+  unescapes backslash pairs except inside backticks. MySQL unescapes
+  backslash pairs only for unquoted arguments. A missing or empty value,
+  remaining backslash, carriage return, or leading/trailing ASCII whitespace
+  refuses. The whitespace restriction prevents comment-space normalization
+  from creating the active delimiter, including `DELIMITER ' +'`.
+  The parsed delimiter must fit 15 UTF-8 bytes, including when supplied by
+  an internal caller. The entire physical DELIMITER command line must fit
+  255 UTF-8 bytes, including indentation and ignored trailing text, excluding
+  LF. Both client families truncate those buffers; myflames refuses instead.
+  The common limits were checked in every client tag above. Representative
+  sources (`client/mysql.cc`): `mysql-8.4.0:237,4617–4632` and
+  `mariadb-11.8.9:302,4883–4902`.
+  The first delimiter character must be ASCII. When the client character
+  set is multibyte (`use_mb(charset_info)` guards the copy), both clients
+  copy a UTF-8 multibyte character and continue before checking the
+  delimiter, so a delimiter starting with that character cannot match.
+  Multibyte characters
+  after an ASCII first character still count toward the 15-byte limit.
+  Sources (`client/mysql.cc`): `mysql-8.4.0:2759–2770` and
+  `mariadb-11.8.9:2643–2657`; the same ordering holds in all tags above.
+  Quote-containing delimiters remain supported. Inside a quoted token,
+  a doubled quote is not consumed as an escape when the active delimiter
+  starts at its second quote: the client closes the token at the first quote
+  and checks the delimiter before reopening at the second. The server token
+  pass preserves that packet boundary. For example, `DELIMITER "'a"` followed
+  by `SELECT '1''aDELETE FROM t'aSELECT '2' 'a` plans three units, including
+  the DELETE that requires confirmation. Sources (`client/mysql.cc`):
+  `mysql-5.7.44:2638–2640,2768–2772`,
+  `mysql-8.4.0:2824–2825,2931–2947`,
+  `mariadb-10.11.16:2700,2831–2835` and
+  `mariadb-11.8.9:2729,2860–2864`.
+  Normalized text is split again before review so an internal space cannot
+  create a delimiter across a comment closer either (`/ +` across `*/+2`).
+  Unknown families require equal parsed arguments as well as equal discarded
+  source ranges before a DELIMITER line is consumed. Sources: MySQL
   `mysql-9.7.0:client/mysql.cc:2661–2682,2838–2912,4652–4671,4897–4935`;
-  MariaDB `mariadb-11.8.9:client/mysql.cc:2729–2808`.
+  MariaDB `mariadb-11.8.9:client/mysql.cc:2580–2584,2729–2808,4881–4905,5023–5080`;
+  MySQL argument parsing: `mysql-8.4.0:client/mysql.cc:4861–4900`.
+  CRLF handling follows the binary-mode reader: Unix MySQL and all checked
+  MariaDB clients keep the carriage return before LF, whereas MySQL on
+  Windows removes it. `get_arg` therefore keeps that byte in an unquoted
+  `DELIMITER //` argument on Unix. The splitter refuses any delimiter
+  containing CR, including caller-supplied delimiters; it also refuses a
+  caller-supplied LF because `add_line` cannot match across physical lines.
+  On a CRLF script, use `DELIMITER '//'` or a space after the unquoted `//`.
+  The splitter keeps original source offsets and CRLF bytes in SQL and
+  comments; it does not strip CR from literals. On Windows, a MySQL or
+  unknown client family refuses CRLF inside a sent unit, since its reader
+  would change those bytes even inside a literal. CRLF between units and
+  on consumed command lines still works. MariaDB preserves the sent bytes.
+  Sources:
+  `mysql-5.7.44:client/readline.cc:73–95`,
+  `mysql-8.0.46:client/readline.cc:75–95`,
+  `mysql-8.1.0:client/readline.cc:74–94`,
+  `mysql-8.4.0:client/readline.cc:75–95`,
+  `mysql-9.7.0:client/readline.cc:75–95`,
+  `mariadb-10.11.16:client/readline.cc:38–44`,
+  `mariadb-11.8.9:client/readline.cc:38–44`,
+  `mariadb-12.0.1:client/readline.cc:65–71`.
+  Argument termination: `mysql-8.4.0:client/mysql.cc:4861–4900` and
+  `mariadb-11.8.9:client/mysql.cc:5023–5080`.
+  MariaDB ORACLE mode-change detection unwraps `SET STATEMENT ... FOR`
+  before checking a statement-initial `name := value`, including each
+  semicolon-separated part of a client unit. The DDL boundary scanner reads
+  `:=` as one operator, so a wrapped assignment is not mistaken for a label.
+  User-variable assignments and right-hand-side reads of `@@sql_mode`
+  retain their existing meaning. Grammar (`sql/sql_yacc.yy`):
+  `mariadb-10.11.16:2022–2026,16452,18521–18524,18725–18760`,
+  `mariadb-11.8.9:2087–2091,17009–17020,19225–19230,19513–19547`,
+  `mariadb-12.0.1:2087–2091,17080,19287–19290,19573–19607`;
+  operator lexer: `mariadb-11.8.9:sql/sql_lex.cc:2548–2563`.
   Binary mode does not disable every client command. Both client families
   retain `\C` and the long-form `DELIMITER`; the MariaDB clients also retain
   `\-` (sandbox). The short forms `\c`/`\d` and the long forms `charset` and
@@ -3031,6 +3331,11 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `DELIMITER` are allowed: `split_statements` consumes the command, and
   `plan_statements` builds each unit's `send` from its statement text only.
   Neither the command nor that preceding comment-only prefix is sent.
+  All possible readings must agree on the original source range each
+  consumed line discards. With an unknown client family, a server-skipped
+  `/*M! ... */` before DELIMITER refuses when the MySQL client reading drops
+  it but the MariaDB client reading keeps it as pending executable text.
+  Comparing only the remaining statement text would miss that difference.
   An executable comment that keeps SQL pending prevents that consumption;
   its following `DELIMITER` remains in the unit and refuses (the JG2 case).
   Inline comment-prefixed commands also refuse. `charset`, `sandbox` and
@@ -3317,8 +3622,14 @@ statement digest, expiring single-use token, and decline path. Every non-termina
 stderr with default No when the policy requires confirmation. `--yes` bypasses the prompt; read-only still refuses.
 A changed endpoint, default database or profile safety during password resolution
 refuses before opening a client. Once connected, the script is re-planned against
-the session's actual sql_mode; changed statements or policy need authorization
-again. `EditorSession.start_run(Run(...))` executes the script in one client,
+the session's actual sql_mode. The CLI compares `editor_session._run_review_state`
+before and after binding: changed typed targets, categories, per-unit guards,
+statements or policy need authorization again, even when the aggregate kind
+and action stay the same. `--yes` never supplies a newly revealed database
+name; `--confirm-target` must still match exactly. ALTER detection is recomputed
+from the bound plan, so a newly visible ALTER gets its preflight and lock-wait
+guard, while a skipped ALTER gets neither.
+`EditorSession.start_run(Run(...))` executes the script in one client,
 without helpers between user statements (the reviewed ALTER guard is an explicit
 statement, included in results and audit). Writes use `AuditTrail(operation="sql",
 surface="cli")`, including refused and declined attempts; no editor history entry
@@ -3532,12 +3843,18 @@ planner, write gate and session engine from the CLI.
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
   followed by ...` on stderr without contacting the server; N is the line
-  myflames wrote it on, so it ends the statement exactly and adds no server
-  statement between user statements. Diagnostic reads following a user write
+  myflames wrote it on, so it ends the statement exactly. Units whose client
+  readings agree add no server statement between user statements.
+  A status-sensitive unit on a bound session with known mode instead follows
+  its reviewed `SET SESSION sql_mode = @@SESSION.sql_mode` helper in a separate
+  client packet; the editor checks that reply before sending the unit's bytes.
+  Diagnostic reads following an ordinary user write
   still describe that write; a guarded write that itself reads diagnostics
-  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's SET.
-  MySQL's SET calls `my_ok`, which sets ROW_COUNT to zero
-  (`mysql-9.7.0:sql/sql_parse.cc:3833–3852`, `mysql-9.7.0:sql/sql_class.cc:3845–3847`). Server errors carry the line
+  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's marker
+  SELECT, which its packet runs just before the write. `ROW_COUNT()` then
+  reads -1: a result set's end sets the row count to -1
+  (`mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+  `mariadb-11.8.9:sql/sql_class.h:6311–6313`). Server errors carry the line
   their statement started on, which attributes them. stdout and stderr are
   separate pipes, each read by its own thread: the MariaDB client writes an
   error before flushing stdout, so a merged stream could misorder them. On
@@ -3576,9 +3893,18 @@ planner, write gate and session engine from the CLI.
   mode. Planning also refuses SQL whose selected delimiter exposes more
   statements in the server's reading than in the client's reading before
   offering confirmation, asking for each statement on its own, ending with
-  the delimiter. For MariaDB clients this checks both possible ANSI status
-  readings even with a known server `sql_mode`; proxy replies can omit that
-  status bit. Every client family refuses hint bodies containing comment
+  the delimiter. Both client families check both possible backslash status
+  readings independently of the server mode, including when the mode is empty.
+  MariaDB clients also check both ANSI status values; an unknown family checks
+  every combination. A stored function or procedure can leave stale bits after
+  restoring its caller's SQL mode. Different readings require the separate
+  quote-status helper described under Write safety and audit, and an unbound
+  session or unknown mode refuses. Cursor and selection planning use the bound
+  mode, then review the helper with the selected unit. Ordinary units never get
+  this helper, preserving diagnostics between them. Unit and process coverage:
+  `test/test_editor_session_o3.py`; the stored-function regression for each GA
+  server is in `test/live/live_writes_ga.py`.
+  Every client family refuses hint bodies containing comment
   markers (`/*`, `#`, `--` followed by whitespace or a line ending),
   backslashes or unclosed quotes, including hazards inside quotes. Balanced
   single, double and backtick spans with doubled-quote escapes are allowed
@@ -3595,7 +3921,10 @@ planner, write gate and session engine from the CLI.
   comments that the server ignores may be discarded. Executed or uncertain
   comment bodies stay in a refused unit, even when no SQL follows the command.
   This includes `/*M! ... */` read as an ordinary comment by the MySQL client
-  but executed by MariaDB. Only a command whose prefix passes this check loses
+  but executed by MariaDB. With an unknown client family, every reading must
+  also agree on the original source range discarded by each consumed
+  DELIMITER line, including commands after earlier units or mode changes.
+  Only a command whose prefix passes this check loses
   its named-client-command issue; other prefix issues remain. A DELIMITER left
   after pending executable-comment SQL also refuses. Sources:
   `mysql-8.4.0:client/mysql.cc:2455–2471,2895–2902` and
@@ -3618,6 +3947,19 @@ planner, write gate and session engine from the CLI.
   SET or nested expressions still invalidate the mode. User variables such as
   `@sql_mode` and right-hand-side reads or comparisons of `@@sql_mode` preserve
   it; an opaque assignment target cannot prove the mode is unchanged.
+  When MariaDB ORACLE mode is possible, a statement-initial `name := value`
+  also leaves later mode unknown. ORACLE's one-part `set_assign` omits SET,
+  and name resolution can fall back to a system-variable assignment
+  (`mariadb-11.8.9:sql/sql_yacc.yy:19225–19230,19513–19549`;
+  `mariadb-11.8.9:sql/sql_lex.cc:9042–9050`). The qualified form
+  `name.name := value` cannot assign `sql_mode`: it requires a structured
+  variable, and GLOBAL, LOCAL and SESSION are reserved qualifiers
+  (`mariadb-11.8.9:sql/sql_lex.cc:9058–9136`;
+  `mariadb-11.8.9:sql/item_func.cc:62–69`). The detector nevertheless treats
+  qualified targets conservatively as unknown. Detection includes quoted
+  names, spaces around the dot, and assignments after a semicolon in one unit.
+  User-variable assignments and assignment-like text in SELECT expressions,
+  strings or identifiers do not gain this statement-initial meaning.
   Grammar: `mysql-9.7.0:sql/sql_yacc.yy:13861–13864,16607–16731` and
   `mariadb-11.8.9:sql/sql_yacc.yy:13694–13697,17009–17319`. Lexer:
   `mysql-9.7.0:sql/sql_lex.cc:2117–2148`; `mariadb-11.8.9:sql/sql_lex.cc:2601–2631`.
@@ -3638,7 +3980,7 @@ planner, write gate and session engine from the CLI.
   revalidation treat the engine, server version, SQL mode and `wsrep_on` as
   unknown. Displayed hello/status values cannot narrow any lexer reading,
   cursor or selection boundary, classification or ORACLE-mode decision.
-  Unbound executable-comment and ORACLE anonymous-block refusals name the
+  Unbound executable-comment, ORACLE anonymous-block and stored-program refusals name the
   missing session binding instead of advising a known SQL mode or merely
   reporting the resulting unknown engine. Explain's
   statement prefix, format and Tree availability may use the displayed
@@ -3694,14 +4036,67 @@ planner, write gate and session engine from the CLI.
   the optional leading assignment must only save the current session mode
   to a user variable. SESSION/LOCAL qualification is supported. The separate
   routine preamble `SET @saved_sql_mode=@@sql_mode` preserves the current
-  mode until its following literal assignment. Arbitrary multi-assignments,
-  expressions and restores such as `SET sql_mode=@OLD_SQL_MODE` remain
-  unknown; no saved-variable value is inferred. Sources:
+  mode until its following literal assignment. Within one run, these exact
+  saves track the mode known at the save point. A later
+  `SET [SESSION|LOCAL] sql_mode=@saved_sql_mode` or
+  `SET SQL_MODE=@OLD_SQL_MODE` restores that prediction only for the same
+  user variable, compared case-insensitively, with no intervening reassignment.
+  Saves remain evidence only across SET statements without calls, subqueries
+  or table references, and standalone CREATE PROCEDURE, FUNCTION, TRIGGER or
+  PACKAGE definitions. A stored body is not executed when it is defined.
+  Standalone CREATE EVENT preserves saves only when its AT, EVERY, STARTS and
+  ENDS expressions contain literals, parenthesized `+`/`-` arithmetic, INTERVAL
+  quantities and units, or the built-in CURRENT_TIMESTAMP and NOW() clock
+  expressions (including literal precision 0–6). Typed DATE, TIME and TIMESTAMP
+  literals are supported. No user/system variables, identifiers, subqueries
+  or other calls are allowed in this subset, including inside interval
+  quantities or clock arguments. Unsupported or excessively nested expressions
+  invalidate saves. The event's DO body is deferred and does not invalidate
+  them; a trailing executing statement in the same unit still does.
+  Schedule expressions execute during creation
+  (`mysql-8.4.0:sql/events.cc:350`,
+  `mysql-8.4.0:sql/event_parse_data.cc:183–192,245–249,343–347,393–399`,
+  `mariadb-11.8.9:sql/event_parse_data.cc:211–230,287–301,396–405,457–471`).
+  Any other intervening statement,
+  including `SELECT @v`, `SELECT f()`, DO or an INSERT that could fire a
+  trigger, invalidates saved values. Function-like calls in SET expressions
+  also invalidate them, including qualified or quoted function names.
+  A SET subquery or table expression invalidates saves even without a visible
+  call: `SET @other=(SELECT c FROM v)` and `SET @other=(TABLE v LIMIT 1)` may
+  read a view that calls a stored function. This conservatively includes
+  constant subqueries. Quoted data, quoted identifiers and variable names
+  such as `@table` do not count as query keywords; arithmetic SETs still work.
+  `SET STATEMENT ... FOR` is checked by its wrapped statement, so a wrapped
+  UPDATE or SELECT also invalidates saves even without an explicit call.
+  A definition followed by executing SQL in the same client unit cannot
+  preserve a save. This deliberately gives up predictions for harmless reads
+  to avoid trusting user variables that stored functions or triggers may change
+  (`mariadb-11.8.9:sql/item_func.cc:4775–4779,5624–5628`).
+  Captured MySQL and MariaDB dumps with literal event schedules preserve
+  event mode saves before later routines, so their SQL plans again. The
+  one-DDL-per-confirmation policy still refuses executing a complete dump;
+  use Maintenance > Restore. MariaDB's sandbox command line still requires
+  removal before running the remaining SQL in the editor. Isolated procedure
+  save/restore sections still run through confirmation.
+  Quoted variable names and executed version comments use the same rules.
+  Planning and pre-send revalidation each track saves afresh for that run;
+  no saved value carries into another run or comes from an unbound session.
+  Assignment from any other expression, an unknown saved mode, opaque
+  variable assignments, and intervening CALL/EXECUTE/SOURCE cannot supply
+  a known restore. Arbitrary multi-assignments and mode expressions still
+  leave the mode unknown. Sources:
   `mysql-9.7.0:client/mysqldump.cc:995,1588–1597`;
   `mariadb-11.8.9:client/mysqldump.cc:839,1830–1839`;
   `mariadb-10.11.16:client/mysqldump.c:796,1733–1746`. Planning a dump does not bypass the
-  separate confirmation required for each DDL statement. A nonliteral assignment or
-  indirect change leaves later units mode-unknown. Every unknown reading
+  separate confirmation required for each DDL statement. Whole dumps belong in
+  **Maintenance > Restore**. The `/*M!999999\- enable the sandbox mode */`
+  first line emitted by mariadb-dump is a mariadb client command and stays
+  refused; the message explains that it can be deleted to run the remaining
+  SQL in the editor, or that Restore handles a whole dump. Sources:
+  `mariadb-11.8.9:client/mysqldump.cc:798` and
+  `mariadb-10.11.16:client/mysqldump.c:750`.
+  A nonliteral assignment without a tracked save, or an
+  indirect change, leaves later units mode-unknown. Every unknown reading
   must agree on boundaries and classified effect, including unguarded reads
   and executable comments. Quoted identifiers and strings have distinct token
   roles even with identical spans and read effects. The cached execution mode is still invalidated
@@ -3710,7 +4105,7 @@ planner, write gate and session engine from the CLI.
   checks that predicted quote mode on its executing server session. If a
   literal assignment fails under Continue on error, a later mode-sensitive
   packet refuses when its predicted mode does not match; no intervening
-  state read resets the user's diagnostics. Nonliteral and indirect changes
+  state read resets the user's diagnostics. Other nonliteral and indirect changes
   retain the unknown-mode validation until refresh.
   MariaDB `ORACLE` quoting is modelled, but CREATE/ALTER stored-program units
   refuse with an explanation that the editor does not support that PL/SQL
@@ -3726,7 +4121,7 @@ planner, write gate and session engine from the CLI.
   the grammar is supported before any user SQL is sent. A planning error or a
   `refuse` decision there returns without starting a run, even after provisional
   confirmation. A bound session with a known non-ORACLE mode can review a definition.
-  A later literal cannot rule out an earlier possible ORACLE mode in that run,
+  A later literal or tracked restore cannot rule out an earlier possible ORACLE mode in that run,
   because the assignment could fail under Continue on error; use a separate run
   after the session mode has been refreshed.
   `bound_oracle_mode(session)` exposes True/False for a bound mode, or None
@@ -4224,10 +4619,11 @@ planner, write gate and session engine from the CLI.
   explained statement (named locks, `:=`, sequences, locking clauses, and
   functions that are not verified native readers) without the INTO check; DDL
   after EXPLAIN stays a read because the server refuses it. An optional
-  `parameters` object fills `:name` placeholders with `live.fill_parameters`
-  (the literals of `bind_query`: hex strings, finite numbers, NULL, lists for
-  IN; refused when backslash and NO_BACKSLASH_ESCAPES readings disagree); a
-  statement without placeholders is sent as written, and Run never binds. No
+  `parameters` object fills `:name` placeholders in SQL code spans using the
+  session's bound mode (the literals of `bind_query`: hex strings, finite
+  numbers, NULL, lists for IN; refused when an unknown mode makes readings
+  disagree); a statement without placeholders is sent as written, and Run
+  never binds. No
   SELECT projection, transaction wrapper or session setting change. Messages
   and history show the exact `EXPLAIN …` sent (`statement.sent`). The UI's
   Explain format select (`explain_format` in the UI preferences store, with a one-time legacy `myflames.editor.explainFormat` localStorage fallback)
@@ -8458,7 +8854,13 @@ DELETE (a DELETE on the server's own reading of the executable comment)
 must come back for confirmation as a write with nothing sent and the canary
 intact, and a CREATE DATABASE with a versioned ENCRYPTION comment
 (mysqldump's clause) is accepted on every server, with confirmation, then
-dropped). The GA matrix lives in `GA_LAB` (default `local/ga-matrix`) and
+dropped. A procedure in a throwaway schema is dumped by that server's own
+`mysqldump` or `mariadb-dump` inside its existing container. Its routine
+section, including the saved SQL mode, `DELIMITER ;;`, CREATE PROCEDURE,
+`DELIMITER ;` and session restores, is replayed through one Query editor
+confirmation. The routine must be absent before confirmation and present
+after execution; the schema is dropped even on failure). The GA matrix lives
+in `GA_LAB` (default `local/ga-matrix`) and
 its credentials in `GA_CREDS_FILE` (default `$GA_LAB/credentials.env`); the
 variable is GA-only because `cluster-matrix.sh` reads `CREDS_FILE` too, so
 the file reaches `ga-matrix.sh` as `CREDS_FILE` in its environment only.
@@ -8911,7 +9313,10 @@ primary key.
 `/*myflames:import_csv*/` tag; identifiers are backquoted. Text literals use
 plain quotes when the value has no backslash or control character, escapes
 when the session's NO_BACKSLASH_ESCAPES state is known, and
-`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. Apply
+`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. A value
+with a backslash is always `CONVERT(X'..' USING utf8mb4)`, whatever the
+session's state: the client's view of NO_BACKSLASH_ESCAPES can be stale, and
+a raw backslash can change how the client splits the statement. Apply
 refuses when the session's NO_BACKSLASH_ESCAPES state differs from the
 plan's. INSERT batches hold at most 1,000 rows and 1 MiB per statement and
 never cross a commit boundary; a single larger row goes alone up to

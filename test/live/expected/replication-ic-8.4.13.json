@@ -53,20 +53,6 @@
   },
   "topology_tiers": {
     "live_footprint": {
-      "clients": [
-        {
-          "host": "192.168.48.6",
-          "program": "proxysql_monitor"
-        },
-        {
-          "host": "fda0:f59a:f4f:d::6",
-          "program": "proxysql_monitor"
-        },
-        {
-          "host": "192.168.48.6",
-          "program": "proxysql"
-        }
-      ],
       "known": true,
       "notes": [],
       "proxysql_connected": true,
