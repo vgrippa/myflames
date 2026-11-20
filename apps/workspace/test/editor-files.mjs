@@ -172,11 +172,12 @@ try {
   const consoleMessages = [];
   const failedRequests = [];
   const badResponses = [];
+  let expectedTeardown = false;
   page.on("console", (m) => { if (["error", "warn"].includes(m.type())) consoleMessages.push(m.text()); });
   page.on("requestfailed", (r) => {
     const pathname = new URL(r.url()).pathname, reason = r.failure()?.errorText || "";
     // The completion's parameter-name read is cancelled by its AbortSignal when the page reloads or the editor unmounts.
-    if (pathname === "/api/config/versions/names" && reason === "net::ERR_ABORTED") return;
+    if (expectedTeardown && pathname === "/api/config/versions/names" && reason === "net::ERR_ABORTED") return;
     failedRequests.push(`${pathname} ${reason}`.trim());
   });
   page.on("response", (r) => { if (r.status() >= 400) badResponses.push([new URL(r.url()).pathname, r.status()]); });
@@ -255,8 +256,10 @@ try {
   await page.waitForSelector('.confirm-sheet');
   const promptText = await page.$eval('.confirm-sheet', (e) => e.textContent);
   assert.match(promptText, /Save .* before closing/);
+  expectedTeardown = true;
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
+  expectedTeardown = false;
   assert.deepEqual(await tabNames(), ["Query 1"], "Don't save closes without a save request");
   assert.equal(calls("/api/editor/file/save").length, 2);
 
@@ -268,8 +271,10 @@ try {
   assert.equal((await tabNames())[1], "bad");
   assert.equal(calls("/api/editor/file/open").length, opensBefore + 1, "the backend owns the chooser and the read");
   // Close it again without edits: no prompt.
+  expectedTeardown = true;
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
+  expectedTeardown = false;
 
   // -- On error: Continue ------------------------------------------------------
   await setText("SELECT 1;\nSELECT 2;\nSELECT 3;");
@@ -368,8 +373,10 @@ try {
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelector(".confirm-sheet")?.textContent.includes("with a transaction open"));
+  expectedTeardown = true;
   await page.locator('.confirm-sheet button ::-p-text(Roll back and close)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
+  expectedTeardown = false;
 
   // Continue counts actual terminal statuses, including Stop before any
   // error and a lost connection whose outcome cannot be claimed as success.
@@ -425,10 +432,12 @@ try {
   await page.waitForFunction(() => document.querySelector('select[data-action="database"]')?.value === "app");
   await chooseConnection(page, B);
   const usesBeforeMismatch = calls("/api/editor/use").length;
-  await page.select(DATABASE, "shop");
+  const mismatchChoice = await page.$eval(DATABASE, e => [...e.options].map(option => option.value).find(value => value !== "shop" && value !== "") ?? "");
+  assert.notEqual(mismatchChoice, "shop", "exercise a different database during the mismatch");
+  await page.select(DATABASE, mismatchChoice);
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("This tab is still connected to A"));
   assert.equal(calls("/api/editor/use").length, usesBeforeMismatch, "database change cannot target the old server");
-  // During a connection mismatch the picker shows the database Run will use once the session closes: the toolbar connection's (B, shop), as 3.5.0 decided (QueryLab.tsx databaseShown reads statusSession). The refused choice changed nothing: no USE was sent (line 425) and the feedback names A.
+  // Refusing a different choice restores B's database, which Run will use once A's session closes.
   assert.equal(await page.$eval(DATABASE, (e) => e.value), "shop", "during a mismatch the picker shows the toolbar connection's database");
   await chooseConnection(page, A);
   await page.select(DATABASE, "");
@@ -447,7 +456,9 @@ try {
     const lab = saved.state?.query_lab;
     return lab?.tabs.find((t) => t.id === lab.tab_id)?.database === "";
   });
+  expectedTeardown = true;
   await page.reload({ waitUntil: "networkidle0" });
+  expectedTeardown = false;
   await page.waitForSelector(DATABASE, { visible: true });
   assert.equal(await page.$eval(DATABASE, (e) => e.value), "", "explicit None survives normalization and restore");
   const runBeforeNone = calls("/api/editor/run").length;

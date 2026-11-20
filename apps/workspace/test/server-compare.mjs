@@ -170,10 +170,15 @@ assert 'IDENTIFIED' not in f['export']['text']
       browser = await puppeteer.launch({ headless: "shell", pipe: true, userDataDir: path.join(temporary, "chromium"), env: { ...process.env, HOME: temporary, USERPROFILE: temporary } });
       const page = await browser.newPage();
       const errors = []; page.on("pageerror", error => errors.push(String(error)));
+      page.on("requestfailed", request => {
+        const pathname = new URL(request.url()).pathname;
+        if (pathname.endsWith(".woff2")) errors.push(`Font request failed: ${pathname} ${request.failure()?.errorText || "Unknown reason"}`);
+      });
       const seen = []; let sideError = false, compareDelay = 0;
       let snapshots = structuredClone(fixture.snapshot_list.items);
       const css = compiled.output.filter(o => o.type === "asset" && o.fileName.endsWith(".css")).map(o => o.source).join("\n");
       const js = compiled.output.find(o => o.type === "chunk").code;
+      const fonts = new Map(compiled.output.filter(o => o.type === "asset" && o.fileName.endsWith(".woff2")).map(o => [`/${o.fileName}`, Buffer.from(o.source)]));
       const config = JSON.parse(await fs.readFile(path.join(workspace, "test/fixtures/parameters-mysql.json"), "utf8"));
       const profiles = [{ id: "saved-db", name: "Saved target", host: "db2", port: 3306, user: "operator", database: "", ssl_mode: "DISABLED", has_saved_password: true }];
       await page.setRequestInterception(true);
@@ -184,6 +189,9 @@ assert 'IDENTIFIED' not in f['export']['text']
         if (pathname === "/favicon.ico") return void respond("", "text/plain");
         if (pathname === "/fixture.js") return void respond(js, "text/javascript");
         if (pathname === "/fixture.css") return void respond(css, "text/css");
+        if (request.method() === "GET" && /^\/assets\/[^/]+\.woff2$/.test(pathname) && fonts.has(pathname))
+          return void request.respond({ status: 200, contentType: "font/woff2", body: fonts.get(pathname) })
+            .catch(error => errors.push(`Font response failed: ${pathname} ${error}`));
         const body = JSON.parse(request.postData() || "{}"); seen.push({ pathname, body });
         if (pathname === "/api/auth/session") return void respond({ token: "fixture" });
         if (pathname === "/api/live/config") return void respond(config);
@@ -198,7 +206,6 @@ assert 'IDENTIFIED' not in f['export']['text']
           return void respond(data);
         }
         if (pathname === "/api/accounts/export") return void respond(fixture.export);
-        if (request.method() === "GET" && /^\/assets\/[^/]+\.woff2$/.test(pathname)) return void request.continue();
         errors.push(`Unexpected request: ${pathname}`); void request.abort();
       });
       await page.setViewport({ width: 1440, height: 1000 });

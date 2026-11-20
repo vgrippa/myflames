@@ -131,14 +131,19 @@ async function compileFixture() {
       return (await transformWithEsbuild(code, "fixture.tsx", { loader: "tsx", jsx: "automatic" })).code;
     } }], build: { write: false, target: "es2020", rollupOptions: { input: entry, output: { format: "iife", inlineDynamicImports: true } } } });
   return { css: compiled.output.filter(o => o.type === "asset" && o.fileName.endsWith(".css")).map(o => o.source).join("\n"),
+    fonts: new Map(compiled.output.filter(o => o.type === "asset" && o.fileName.endsWith(".woff2")).map(o => [`/${o.fileName}`, Buffer.from(o.source)])),
     js: compiled.output.find(o => o.type === "chunk").code };
 }
 
 async function browserSuite() {
-  const { css, js } = await compileFixture();
+  const { css, js, fonts } = await compileFixture();
   browser = await puppeteer.launch({ headless: "shell", pipe: true, userDataDir: path.join(temporary, "chromium"), env: { ...process.env, HOME: temporary, USERPROFILE: temporary } });
   const page = activePage = await browser.newPage();
   const errors = []; page.on("pageerror", error => errors.push(String(error)));
+  page.on("requestfailed", request => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith(".woff2")) errors.push(`Font request failed: ${pathname} ${request.failure()?.errorText || "Unknown reason"}`);
+  });
   const seen = []; let compareDelay = 0;
   const base = JSON.parse(await fs.readFile(path.join(workspace, "test/fixtures/parameters-mysql.json"), "utf8"));
   // db1 runs a cataloged MySQL release; db2 is a Percona Server newer than the catalog.
@@ -154,6 +159,9 @@ async function browserSuite() {
     if (pathname === "/favicon.ico") return void respond("", "text/plain");
     if (pathname === "/fixture.js") return void respond(js, "text/javascript");
     if (pathname === "/fixture.css") return void respond(css, "text/css");
+    if (request.method() === "GET" && /^\/assets\/[^/]+\.woff2$/.test(pathname) && fonts.has(pathname))
+      return void request.respond({ status: 200, contentType: "font/woff2", body: fonts.get(pathname) })
+        .catch(error => errors.push(`Font response failed: ${pathname} ${error}`));
     const body = JSON.parse(request.postData() || "{}"); seen.push({ pathname, body });
     if (pathname === "/api/auth/session") return void respond({ token: "fixture" });
     if (pathname === "/api/live/config") return void respond(configFor(body.connection.host));
@@ -168,7 +176,6 @@ async function browserSuite() {
     if (pathname === "/api/config/versions/history") return void respond(mock.history(body.engine, body.name));
     // The Parameters inspector reads the local change history (Changed through myflames).
     if (pathname === "/api/audit/object") return void respond({ schema_version: "audit-1.0", records: [] });
-    if (request.method() === "GET" && /^\/assets\/[^/]+\.woff2$/.test(pathname)) return void request.continue();
     errors.push(`Unexpected request: ${pathname}`); void request.abort();
   });
   await page.setViewport({ width: 1440, height: 900 });
