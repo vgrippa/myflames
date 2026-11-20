@@ -229,7 +229,10 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
+  browser = await puppeteer.launch({ headless: "shell", args: [
+    ...(process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : []),
+    ...(process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean),
+  ] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -963,13 +966,18 @@ try {
   assert.ok(names.every((n) => !n.clipped), "short column names take priority over types");
   // One line per column: the actions button shares the row and shows only on
   // the row being pointed at or focused.
+  // Expansion can put a column under the last click; park outside the tree.
+  await page.hover(".schema-browser .browser-head");
   const columnRows = await page.$$eval(".tree-row.kind-column", (els) => els.map((row) => {
     const box = row.getBoundingClientRect(), more = row.querySelector(".row-more")?.getBoundingClientRect();
     return { height: box.height, inline: !!more && more.top >= box.top && more.bottom <= box.bottom + 0.5,
       shown: getComputedStyle(row.querySelector(".row-more")).visibility === "visible", selected: row.getAttribute("aria-selected") === "true" };
   }));
   assert.ok(columnRows.every((r) => r.height <= 30 && r.inline), `column rows stay on one line: ${JSON.stringify(columnRows)}`);
-  assert.ok(columnRows.filter((r) => !r.selected).every((r) => !r.shown), "unfocused rows hide their actions button");
+  // A device without hover (headless Chrome on Linux) always shows the button.
+  const hoverDevice = await page.evaluate(() => matchMedia("(hover: hover)").matches);
+  assert.ok(columnRows.filter((r) => !r.selected).every((r) => r.shown !== hoverDevice),
+    hoverDevice ? "unfocused rows hide their actions button" : "without hover every row shows its actions button");
   assert.equal(calls("/api/live/catalog").at(-1).table, "users");
   const schemaOpener = await treeRow("table", "orders");
   const schemaMore = await schemaOpener.$('button[aria-label="More actions for orders"]');

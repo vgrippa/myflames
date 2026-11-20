@@ -142,7 +142,23 @@ and checks owned cleanup. Its readiness wait (`smokeWindow` in `main.cjs`)
 ignores empty `.home [role=alert]` live regions and never goes ready while
 any alert carries text; the timeout error lists the readiness flags
 (home-start present, alert text present, still opening, secret still in the
-hash) and up to 200 characters of the alert text.
+hash) and up to 200 characters of the alert text, plus the phase the smoke was
+in (ready, cookie, session, tools, reload) and the completed phases with their
+milliseconds (`smoke-timing.cjs`). The 20 s readiness budget covers the
+workspace becoming ready and authenticated before and after the reload; time
+in the first `/api/lifecycle/tools` probe does not count against it, and the
+45 s kill in `scripts/smoke.cjs` stays the hard limit for the whole smoke.
+Each phase change writes a `Desktop smoke phase: <name> at <ms> ms` line to
+stdout, and a successful run prints a `Desktop smoke timings:` line with each
+phase's milliseconds. Both child streams go through `scripts/smoke-output.cjs`,
+which buffers by line, scrubs each complete line as it arrives (web addresses,
+any `http` or `https` scheme in any letter case, become `[private URL]`, and a
+`#launch=<token>` becomes `#launch=[private]`) and keeps a bounded window: the
+last 20000 characters of stdout and the last 4000 of diagnostics, with the
+trailing partial line scrubbed when the stream ends. A successful run prints
+the scrubbed stdout. When the app exits non-zero, `scripts/smoke.cjs` puts
+the app's scrubbed stdout before its diagnostics in the error, and says when
+the 45 s limit is what stopped it.
 Run `node apps/desktop/scripts/editor-settings-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
 (`smoke:editor-settings` in `apps/desktop`) against that same built bundle for
 the two-launch Query editor settings check. It changes wrapping and multiple
@@ -1510,6 +1526,18 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 ### Bundle and lazy loading
 
+The workspace build stamps `myflames/ui_assets/index.html` with
+`<meta name="myflames-sources-sha256" content="<64 hex>">` covering every
+non-hidden file under `apps/workspace/src/` plus `index.html`, `vite.config.ts`,
+`tsconfig.json` and `package-lock.json` in `apps/workspace/`, and
+`docs/brand/myflames-app-logo.png`.
+SHA-256 consumes records sorted by the UTF-8 bytes of POSIX paths relative to
+the repository root, each containing the UTF-8 path, NUL, raw file bytes with CRLF
+byte pairs replaced by LF, and NUL; binary inputs are never decoded.
+`test/test_workspace_assets.py` requires the stamp and checks it against the
+current inputs; on failure, run `npm run build` in `apps/workspace` and commit
+the rebuilt assets.
+
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
 connections, the command palette, the investigation notebook and the shared
@@ -1644,6 +1672,13 @@ write-action home in the inspector's action bar, with row and context menus as
 contextual entry points. `indexes.css` is registered in `styles.ts` to keep the
 fixed stylesheet order.
 ### Local authentication and request limits
+
+On Windows, the workspace listener binds with `SO_EXCLUSIVEADDRUSE` and without
+`SO_REUSEADDR` so no other socket can bind its port; POSIX keeps `SO_REUSEADDR`
+(a restart can reuse a port in TIME_WAIT, and a listening port stays exclusive).
+`TestWorkspaceListenerPort` binds a second `SO_REUSEADDR` socket to the
+listener's address and checks both platforms' options; the Windows CI job runs
+it in its own step.
 
 `WorkspaceServer.launch_url` carries a random, one-use `#launch=` secret, valid
 for 30 minutes. `api.ts` removes the fragment before any API call and exchanges
@@ -8809,6 +8844,179 @@ or a discovered test that never ran without a fixture skip fails the run as
 an INVENTORY MISMATCH; tests a package's `__init__` or `load_tests` hook
 supplies cannot be isolated per file and require `JOBS=1`.
 
+**Workspace browser suites.** `npm run test:suites` in `apps/workspace`
+calls `scripts/run_workspace_suites.mjs` (Node 22 built-ins only). Local
+runs and CI use this same runner. Existing per-suite npm scripts keep their
+commands; the runner invokes `node test/<file>` directly with
+`apps/workspace` as the working directory. It first compares every immediate
+non-hidden, non-gitignored entry of `apps/workspace/test`, including directories,
+with `scripts/workspace-suites.json`. Unlisted entries and manifest entries
+missing from disk are both reported, and either list causes exit 2 before
+any build or suite starts. Selection and sharding never bypass this check.
+
+The manifest has `version: 1` and an `entries` object keyed by file name.
+Each entry has `kind`, `script` (an existing npm script name or `null`) and
+a nonempty, one-line `reason`. `suite` and `live` entries also require a
+positive `timeout` in seconds and must name regular `.mjs` files. `suite`
+entries run by default. `live` entries run only with `--kind live`; their
+server prerequisites must already be available. Each `live` entry requires
+a `needs` array of environment variable names. An empty array means the
+suite has no required environment settings (Import CSV starts its own lab).
+Its optional `env` array lists companion settings passed when present.
+Both arrays contain distinct names, never private-directory, credential-store,
+client-password or runtime overrides, and cannot overlap. Other kinds cannot
+declare either array. Before building or starting any selected live suite,
+the runner checks all selected `needs`; unset, empty or whitespace-only
+values cause exit 2 with the suite names and missing variable names.
+`--list` can inventory a lab before it is configured. `helper` entries support
+other suites, `generator` entries create artifacts, and `fixture` entries
+hold fixture files or directories. These three kinds are inventoried but
+never executed directly. A new test entry needs a manifest classification
+in the same change.
+
+Only `suite` entries may carry `quarantine`, a nonempty, one-line string
+stating the failure, the commit where it was seen and what tracks the fix.
+Use quarantine for known failures, never for any suite that asserts write
+safety, even when most of its assertions concern another feature.
+`action-feedback.mjs` includes assertions that cancelling a review sends
+no write, so its entire tour must stay gating. Fix its scenarios instead of
+quarantining it. A
+quarantined suite still runs, and its failure or timeout still prints the
+last 60 log lines under a separate "Quarantined failures" heading, but
+does not fail the run. A quarantined suite that passes is listed as
+"passed while quarantined; remove the quarantine".
+
+Only `suite` entries may also carry `safety`, a nonempty, one-line string
+describing the write-safety assertion the suite protects. Mark the whole
+suite when any assertion checks write safety. Safety suites never retry
+and must pass on their first attempt; a `quarantine` on the same entry
+cannot soften a safety failure.
+
+Pass runner flags after npm's `--`, for example
+`npm run test:suites -- --jobs 2 --shard 1/3 --receipt artifacts/workspace.json`:
+
+- `--jobs N` bounds parallel suite workers; the default is half the CPUs
+  rounded down, at least 1 and capped at 4. The workspace builds once with
+  `npm run build` before workers start; `--no-build` uses an existing build.
+  A failed or timed-out build fails the run and starts no suites.
+- `--retries N` permits N additional attempts after an ordinary suite fails
+  or times out (a nonnegative integer, default 0). CI opts in with
+  `--retries 1`; local runs do not retry by default. Each attempt gets a
+  fresh private HOME/TMPDIR, the same timeout and the same cleanup before
+  another attempt starts. Safety suites, quarantined suites, live suites
+  and the build never retry. Interruptions and runner/cleanup errors also
+  remain gating. A suite that passes on a retry reports `flaky`, exits
+  successfully and remains tracked in the receipt; the FLAKY section lists
+  each such suite with the first attempt's last 30 failure-log lines.
+  Exhausted retries retain the final `failed` or `timed_out` status.
+- `--timeout SECONDS` overrides every selected entry's timeout and the build
+  timeout (otherwise 900 s for the build). A timeout fails the run unless
+  the suite is quarantined or passes on a permitted retry. On macOS and Linux, after a worker exits
+  (success, failure, timeout or interruption), cleanup scans full command
+  lines with `ps -ww`. It stops every live process whose command or working
+  folder references that worker's unique private HOME/TMPDIR, including
+  detached children already reparented after their suite exited. Working
+  folders come from Linux procfs or macOS system `lsof` because macOS `ps`
+  does not expose cwd. Each candidate's command and, when needed, cwd are
+  read again immediately before signaling; a reused PID that no longer
+  references the path is left alone. Group cleanup is allowed only when
+  every current member still proves that ownership. There is no blind
+  process-group fallback when inspection fails: cleanup errors fail the
+  run. A warning naming the suite reports leftover processes as a suite
+  bug, even when cleanup succeeds. Windows retains `taskkill /F /T`, without
+  the private-path sweep. SIGINT/SIGTERM stop workers and prevent an
+  interrupted or incomplete run from passing. Processes that neither name
+  a private path nor work inside it cannot be discovered by this sweep;
+  a process can also fork or change identity between inspection and signaling.
+- `--durations PATH` reads file-to-seconds JSON for longest-first scheduling
+  (default `scripts/workspace_suite_durations.json`). Missing recordings
+  weigh 60 s. `--shard I/N` uses a deterministic longest-first assignment
+  to the lightest shard, with file-name and shard-index tie breaks; every
+  selected file belongs to exactly one shard for the same inventory and
+  duration file. Equal-weight shards prefer fewer entries before their
+  index, including when recorded durations are zero. `--only a.mjs,b.mjs`
+  selects distinct `suite` entries before sharding, rejects other kinds or
+  unknown names, and cannot be combined with `--kind live`.
+- `--list` validates the inventory and prints selected file names in their
+  execution order, then exits 0 without building, running, or writing
+  artifacts. An execution with an empty selection, including an empty
+  shard, exits 2.
+- `--log-dir PATH` chooses the parent of a fresh run directory. Without it,
+  a temporary run directory is created. Its path prints at the start;
+  `build.log` and `<file>.log` retain complete stdout/stderr. Retries retain
+  separate `<file>.attempt-2.log`, `<file>.attempt-3.log`, etc.; every
+  attempt's complete log remains available. The last 60
+  lines of each failed or timed-out worker print at the end. Logs remain
+  available after the run. A status line
+  (`[N/M done; Xs elapsed] running: a, b`) prints to stderr every 30 s,
+  including during the build.
+- `--durations-out PATH` atomically writes measured seconds for the suites
+  that ran, including failures and timeouts and the sum of all attempts
+  for a retried suite. Only this flag writes duration
+  data; ordinary runs never update the recorded scheduling input.
+- `--receipt PATH` atomically writes `commit` (full Git SHA), `clean_tree`
+  (boolean, captured before the build), `command`, ISO `started` and
+  `finished` timestamps, `node`, `counts` (`passed`, `flaky`, `failed`, `timed_out`,
+  `quarantined_failed`, `quarantined_passed`),
+  `suites` (`file`, cumulative `seconds`, `status`, integer `attempts`, plus
+  `safety: true` for safety suites), and `exit_status`. Suite statuses
+  are `passed`, `flaky`, `failed`, `timed_out`, `quarantined-failed` or
+  `quarantined-passed`; quarantined timeouts count as `quarantined_failed`.
+  Build failures have zero completed suites. A root without verifiable
+  Git provenance records `commit: null`
+  and `clean_tree: false`, warns, and cannot produce a successful execution
+  receipt. A receipt write failure also makes the command fail.
+- `--root PATH` points inventory, build and workers at another repository
+  root. The runner tests use it for a disposable fake workspace.
+
+Each build and suite receives a fresh temporary HOME/USERPROFILE and a
+private TMPDIR (also TMP/TEMP), with `MYFLAMES_SECRET_BACKEND=vault`. These
+directories are removed afterwards. The worker environment passes only
+PATH, CI, PYTHON, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
+parent, plus Windows system executable variables where needed. Headless
+Chrome may report no hover-capable pointer (on the Linux runners), where the
+touch-screen CSS (`@media (hover: none)`) shows row actions that the desktop
+hides; suites that check hover-only controls read `matchMedia("(hover: hover)")`
+and assert the matching behavior, and workspace.yml prints what its browser
+reports. Neither `--blink-settings` hover types nor DevTools media emulation
+changes that answer. It never
+inherits the user's HOME, client credentials or NODE_OPTIONS. Cached Chrome
+installations outside the private HOME can be named explicitly using
+PUPPETEER_EXECUTABLE_PATH or PUPPETEER_CACHE_DIR. This isolates configuration
+and temporary files; it is not an operating-system sandbox for test code.
+
+Live workers additionally receive exactly their own `needs` and `env`
+settings, never the other live suites' lab variables. The build receives no
+lab settings. The manifest lists:
+
+| Live suite | Required (`needs`) | Optional companions (`env`) |
+| --- | --- | --- |
+| `editor-explain-live.mjs` | `MYFLAMES_MYSQL_LAB`, `MYFLAMES_MYSQL_LAB_PORT` | `EXPLAIN_SHOTS` |
+| `editor-live.mjs` | `MYFLAMES_EDITOR_LAB`, `MYFLAMES_EDITOR_LAB_PORT` | `MYFLAMES_LAB_CLIENT`, `EDITOR_SHOTS` |
+| `files-live.mjs` | `MYFLAMES_SSH_LAB`, `MYFLAMES_SSH_LAB_USER`, `MYFLAMES_SSH_LAB_KEY` | `MYFLAMES_SSH_LAB_CONTAINER`, `FILES_SHOTS` |
+| `import-csv-live.mjs` | None; Docker and the client must be available | `IMPORT_CSV_LIVE_ENGINES`, `IMPORT_CSV_LIVE_MYSQL_IMAGE`, `IMPORT_CSV_LIVE_MARIADB_IMAGE`, `IMPORT_CSV_LIVE_BIG_ROWS`, `IMPORT_CSV_LIVE_SHOTS`, `IMPORT_CSV_LIVE_REPORT` |
+| `table-data-live.mjs` | `MYFLAMES_GRID_LIVE_CONFIG` | `TABLE_DATA_SHOTS` |
+
+Only the ordinary `action-feedback.mjs` worker also receives its documented
+`ACTION_FEEDBACK_ONLY`, `ACTION_FEEDBACK_WORKERS` and `ACTION_FEEDBACK_SHOTS`.
+For example, `ACTION_FEEDBACK_ONLY=home-test-connection npm run test:suites --
+--only action-feedback.mjs --no-build` runs that scenario in all three modes.
+`ACTION_FEEDBACK_ONLY` is comma-separated, unknown names fail, and the tour's
+own `--only` argument overrides it. The harness scrolls each action into
+the inspector's viewport before measuring and double-clicking it; a Group
+field and its consent hint may put Home's form actions below the scrollport.
+
+Execution exits 0 only if at least one selected suite ran and every selected
+non-quarantined suite passed or was flaky, with safety suites always
+requiring `passed` on their first attempt. A completed run containing only quarantined
+suites may exit 0, even if all of them failed. Non-quarantined suite failures,
+build, interruption, cleanup and output-write failures exit 1;
+inventory, manifest, duration-data, argument and empty-selection
+errors exit 2. `--list` and `--help` are dry-run exceptions. The runner's own
+socket-free regression tests are
+`node --test scripts/run_workspace_suites.test.mjs` and
+`node --test scripts/check_workspace_receipts.test.mjs`.
+
 **Live switches** (`test/_live_switches.py`, used by
 `test_connector_integration.py` and `test_schema_versions_live.py`).
 `MYFLAMES_LIVE_DOCKER=0` skips the live classes with the reason "live Docker
@@ -8933,7 +9141,8 @@ step fails.
 
 **Workflows** (`.github/workflows/`). Every workflow scopes its permissions
 (`contents: read`, except where noted); runs serialize per workflow and ref
-with in-progress pull-request runs cancelled, except publish, which groups
+with in-progress pull-request runs cancelled, except runner retry, which
+evaluates each completed desktop run separately, and publish, which groups
 per tag and never cancels.
 
 - `test.yml` (Test): push and pull requests to master. The matrix job runs
@@ -8953,6 +9162,38 @@ per tag and never cancels.
   themselves. The unit matrix in `test.yml` opts out of the live classes
   (`MYFLAMES_LIVE_DOCKER=0`); the `python37` job opts in with
   `MYFLAMES_REQUIRE_LIVE=1`.
+- `workspace.yml` (Workspace suites): push and pull requests to master, plus
+  manual runs, without path filters. Six duration-balanced shards on
+  ubuntu-24.04 use Node 22 and Python 3.14, with one suite at a time and one
+  build per shard. CI passes `--retries 1` to retry an ordinary failing or
+  timed-out suite once; write-safety and quarantined suites never retry.
+  Puppeteer's browser cache is keyed by its locked version.
+  Setting `kernel.apparmor_restrict_unprivileged_userns=0` permits Chrome's
+  sandbox to launch on Ubuntu 24.04. Per-shard receipts always upload and
+  logs upload on failure or when the receipt lists a flaky suite, preserving
+  every attempt's logs; both artifacts are retained for 14 days. The
+  aggregate `suites` check runs even after failure or cancellation and
+  downloads all `workspace-suites-receipt-*` artifacts with
+  `actions/download-artifact@v7`, retaining each artifact's directory. It
+  runs `scripts/check_workspace_receipts.mjs` against the checked-out
+  manifest and `GITHUB_SHA`: exactly six JSON receipts must have
+  `exit_status: 0` and the current commit, their `suites` must cover every
+  manifest `suite` entry exactly once (no extras, omissions or duplicates),
+  and every non-quarantined suite must report `passed` or non-safety `flaky`.
+  Every suite must report a positive integer `attempts`; a `flaky` suite
+  must have at least two attempts. A safety suite identified by the manifest
+  or receipt must report `passed` with exactly one attempt. The checker
+  independently rejects a manifest `safety` field unless it is a nonempty,
+  one-line string. Quarantine is
+  authorized only by the manifest, and each receipt's counts must agree
+  with its actual statuses. Missing or malformed artifacts fail this check.
+  The checker prints the flaky suite list and appends suite names and shard
+  numbers as inline code to `$GITHUB_STEP_SUMMARY`, replacing backticks and
+  keeping table separators inert, making intermittent failures visible on
+  the run page and tracked in the uploaded receipts. Parsed receipts
+  still contribute their flaky list when another shard fails validation.
+  The aggregate also requires `needs.shard.result` to be `success`; matrix
+  state alone cannot prove coverage.
 - `windows-desktop.yml` (Windows desktop): push and pull requests that touch
   `apps/desktop`, `myflames` or the workflow, plus manual runs;
   windows-latest with Python 3.14 and Node 22. It builds the PyInstaller
@@ -8966,13 +9207,27 @@ per tag and never cancels.
   records the commit, the installer name and SHA-256 and each step's outcome,
   failing the job when any step did not pass; the installer, its `.sha256`
   and the evidence upload as the `myflames-windows-x64` artifact.
-- `macos-desktop.yml` (macOS desktop): push and pull requests that touch
+- `macos-desktop.yml` (macOS desktop): pull requests to master that touch
   `apps/desktop`, `myflames`, `apps/workspace/package-lock.json`,
-  `apps/workspace/test/editor-helpers.mjs` or the workflow, plus manual runs;
-  macos-15 with Python 3.14 and Node 22. It builds the backend and the
-  unsigned app (`package:mac`, signing discovery off) and runs the three
+  `apps/workspace/test/editor-helpers.mjs` or the workflow, nightly on master
+  at 04:37 UTC, and manual runs. Push runs were dropped because they repeated
+  the PR build and scarce hosted Apple Silicon runner capacity could turn
+  master red without running a step. It uses macos-15 with Python 3.14 and
+  Node 22. It builds the backend and the unsigned app (`package:mac`, signing
+  discovery off) and runs the three
   packaged smokes: `smoke.cjs`, `editor-settings-smoke.cjs` and
   `preferences-smoke.cjs`.
+- `macos-retry.yml` (macOS runner retry): a completed `macOS desktop` run
+  triggers one ubuntu-24.04 job with a five-minute timeout. It reruns a
+  non-successful run only when every non-successful job in that attempt has
+  no started steps and a check-run annotation containing `not acquired`.
+  A real failure after a step started is never retried. Attempts below 4
+  allow at most three retries. Permissions are exactly `actions: write` for
+  `gh run rerun` and `contents: read`; there is no checkout or stored secret.
+  Event values enter the script through `env`, with only validated numeric
+  run IDs and attempt numbers used to select the run, so fork PR branch
+  names and titles cannot become shell code.
+  Fork pull requests are retried by hand.
 - `docs-sync.yml` (Docs and release sync): pull requests to master, release
   publication, and manual runs with a required `tag` input; the release job
   alone gets `contents: write`. The pull-request job fails user-facing
@@ -9005,6 +9260,17 @@ per tag and never cancels.
   them with twine; the publish job uploads through a Trusted Publisher
   (OpenID Connect, `id-token: write`, environment `pypi`), with no token
   stored anywhere.
+
+**Required checks**: master's branch protection requires `test (3.9)`,
+`test (3.11)`, `test (3.13)`, `test (3.14)`, `python37`, `windows`,
+`integration (mysql, TestLiveMySQL84, TestLiveSchemaVersionsMySQL84)`,
+`integration (mariadb, TestLiveMariaDB114, TestLiveSchemaVersionsMariaDB114)`
+and `changelog`, all pinned to GitHub Actions. Renaming one of these jobs or
+matrix entries leaves pull requests waiting for a check that never reports,
+so branch protection must change in the same change. Windows desktop and
+macOS desktop are not required because their workflows use path filters;
+macOS arm64 runners are also often unavailable. The workspace `suites`
+check is not required yet.
 
 **Consent canary** (`test/test_consent_canary.py`). Network-level proof that
 reading one connection group never logs in to a saved connection in another

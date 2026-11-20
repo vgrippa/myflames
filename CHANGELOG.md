@@ -9,3 +9,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Bug fixes
 
 - Fixed an issue where the **Software update** dialog showed release notes as raw Markdown, with `##` and `**` marks, instead of headings, lists and bold text.
+
+### Security fixes
+
+- Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.

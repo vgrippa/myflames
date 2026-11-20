@@ -606,7 +606,10 @@ try {
   const refreshed = Object.keys(replies);
   await openRefreshMenu(page);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false);
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Reads all 18 sections on .+ \(⌥⌘R\)/);
+  const mac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent));
+  assert.match(await page.$eval(refreshAll, (e) => e.title), mac
+    ? /Reads all 18 sections on .+ \(⌥⌘R\)/
+    : /Reads all 18 sections on .+ \(Ctrl\+Alt\+R\)/);
   await page.keyboard.press("Escape");
   // Hold every read: three start (the sampling views first), the rest wait.
   for (const p of refreshed) hold.add(p);

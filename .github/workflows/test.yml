@@ -88,6 +88,14 @@ jobs:
                    test_mcp_server.py test_workspace_store.py test_editor_session.py; do
             python -m unittest discover -s test -p "$t" -v || exit 1
           done
+      # test_ui.py as a whole is not run on Windows yet.
+      - name: Workspace listener port exclusivity tests
+        env:
+          MYFLAMES_SECRET_BACKEND: vault
+        run: |
+          export HOME="$(mktemp -d)"
+          export USERPROFILE="$HOME"
+          python -m unittest discover -s test -p "test_ui.py" -k TestWorkspaceListenerPort -v
       - name: CLI smoke test
         run: |
           python -m myflames --version

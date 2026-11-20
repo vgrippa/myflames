@@ -1168,6 +1168,30 @@ class TestUiPreferencesRoutes(unittest.TestCase):
         self.assertNotIn('/api/settings/ui', _CONNECTION_PATHS)
 
 
+class TestWorkspaceListenerPort(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.server = WorkspaceServer(store_path=str(Path(tmp.name) / 'workspace.db'))
+        self.addCleanup(self.server.server_close)
+
+    def test_second_socket_cannot_bind_the_workspace_port(self):
+        other = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(other.close)
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        with self.assertRaises(OSError):
+            other.bind(self.server.server_address)
+
+    def test_port_options_match_the_platform(self):
+        listener = self.server.socket
+        if os.name == "nt":
+            self.assertNotEqual(listener.getsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE), 0)
+            self.assertEqual(listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0)
+        else:
+            # POSIX keeps SO_REUSEADDR so a restart can reuse a port in TIME_WAIT.
+            self.assertNotEqual(listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0)
+
+
 class TestWorkspaceHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

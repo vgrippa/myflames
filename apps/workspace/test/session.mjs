@@ -222,10 +222,15 @@ try {
   await chart(page);
   await button(page, "Execution tree", ".chart-views ");
   await page.select('[aria-label="Operator metric"]', "rows");
-  await page.$$eval(".plan-fold .inspector-metrics .metric-row", (els) =>
-    els.find((e) => e.textContent.includes("Table scan [categories]")).click(),
-  );
-  await page.waitForSelector(".operator-detail");
+  // The metric change rebuilds the rows; on a slow runner a click can land
+  // before that rebuild and be undone by it, so click until the operator is
+  // selected (never twice within the time the detail takes to open).
+  await page.waitForFunction(() => {
+    if (document.querySelector(".operator-detail")) return true;
+    [...document.querySelectorAll(".plan-fold .inspector-metrics .metric-row")]
+      .find((e) => e.textContent.includes("Table scan [categories]"))?.click();
+    return false;
+  }, { polling: 1500, timeout: 30000 });
   // Notes are edited in the Save investigation sheet; Close keeps them unsaved.
   await page.locator('.topbar [aria-label="Save investigation"]').click();
   await page.waitForSelector("dialog.notebook-sheet[open]");

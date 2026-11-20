@@ -2830,6 +2830,7 @@ def api_response(path, payload, workspace=None):
 
 class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = os.name != "nt"
     MAX_REQUEST_WORKERS = 32
     # Refused sockets have their own small pool: slow bodies must not occupy
     # request workers or block the single accept loop while they are drained.
@@ -2842,6 +2843,12 @@ class WorkspaceServer(ThreadingHTTPServer):
     request_queue_size = 128
 
     def server_bind(self):
+        # On Windows SO_REUSEADDR lets a later socket bind this same port, so
+        # the server leaves it off there and binds exclusively instead.
+        if os.name == "nt":
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is not None:
+                self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         # HTTPServer.server_bind names the server with socket.getfqdn(host), a
         # reverse DNS lookup that can stall start-up for many seconds on some
         # Macs. This server listens only on 127.0.0.1 and never uses the name.
