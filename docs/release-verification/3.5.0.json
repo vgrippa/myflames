@@ -1,0 +1,1952 @@
+{
+ "version": "3.5.0",
+ "items": [
+  {
+   "entry": "Adds Group connections in the connection picker",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: connections, saved-connections, topology-groups, connection-binding, cluster",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_01_group_saved",
+       "outcome": "passed: group saved, member identities recorded, actions routed through each member's own saved connection, two connections claiming one member fail closed"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_02_identities_recorded",
+       "outcome": "passed: group saved, member identities recorded, actions routed through each member's own saved connection, two connections claiming one member fail closed"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_03_stop_and_start_member_routes_through_its_own_connection",
+       "outcome": "passed: group saved, member identities recorded, actions routed through each member's own saved connection, two connections claiming one member fail closed"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_04_two_connections_claiming_one_member_fail_closed",
+       "outcome": "passed: group saved, member identities recorded, actions routed through each member's own saved connection, two connections claiming one member fail closed"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_01_group_saved",
+       "outcome": "passed: group saved, node identities recorded, desync and resync routed through the peers"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_02_node_identities_recorded",
+       "outcome": "passed: group saved, node identities recorded, desync and resync routed through the peers"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_03_desync_and_resync_route_through_the_peers_own_connection",
+       "outcome": "passed: group saved, node identities recorded, desync and resync routed through the peers"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "group-picker (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-picker-1440-light.png",
+       "sha256": "8d5cbc464086c8b9357ad71738ed6864f2add22cd0fcea87ad78a4e1d6d1400d"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-picker-1440-dark.png",
+       "sha256": "58b2508a2e80554cd4c4aeca6106904bb172aa6552f22363493a033349ee5227"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-picker-720-light.png",
+       "sha256": "b219f76009c51fd8a30177ffc15c49c971a7373921a1a1cb10feb1d3be9028ad"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-picker-720-dark.png",
+       "sha256": "e519039414cae4d8be4f04c15617b29b4674a731f8ee3389c22418b455421c97"
+      }
+     ]
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "group-server-picker (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-server-picker-1440-light.png",
+       "sha256": "8c4d09dff8997f7d1044c7b0e495ae07dd3488f53a93023debc9dd040e3d89c2"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-server-picker-1440-dark.png",
+       "sha256": "2c7b17541c896eff8942f154264276647eadfb08b74fbe999c4101aa9242aac4"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-server-picker-720-light.png",
+       "sha256": "ee4f5621416f857b5c655c252b20023e2236dc05d8fa391a328e985742275e64"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-server-picker-720-dark.png",
+       "sha256": "6e165a9c56adc9c1fbe9b000e85380a1b37436a09252ffd0524af9be41179d33"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Adds Edit group",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: connections, saved-connections, topology-groups",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "group-editor-sheet (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-editor-sheet-1440-light.png",
+       "sha256": "67db105c4e9209526bf5e82103810665b33a8435d068ff9064826f6e4969d7e4"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-editor-sheet-1440-dark.png",
+       "sha256": "50303b2ffb1bcef7322bddb799f6949677b8acbd14d26cfb174d9cfaf9024424"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/group-editor-sheet-720-light.png",
+       "sha256": "7e78d19c5ae6ff74da12dbfbaa6839dfc675104da52a89aeadc1e239890bdd64"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/group-editor-sheet-720-dark.png",
+       "sha256": "ec183f860404d4c4479929cdb926893a9a14d5cc03a155a44076f5f8f3dae22e"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Adds Group connection support for Cluster member actions",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster, topology-groups, connection-binding",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_01_group_saved",
+       "outcome": "passed: Stop and Start Group Replication on a member ran through that member's saved connection"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_02_identities_recorded",
+       "outcome": "passed: Stop and Start Group Replication on a member ran through that member's saved connection"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_03_stop_and_start_member_routes_through_its_own_connection",
+       "outcome": "passed: Stop and Start Group Replication on a member ran through that member's saved connection"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_04_two_connections_claiming_one_member_fail_closed",
+       "outcome": "passed: Stop and Start Group Replication on a member ran through that member's saved connection"
+      },
+      {
+       "action": "live_shell.ShellLabTest.test_01_rejoin_through_the_group",
+       "outcome": "passed: rejoin through the group; an identity mismatch on line 1 stops before line 2"
+      },
+      {
+       "action": "live_shell.ShellLabTest.test_02_line1_identity_mismatch_stops_before_line2",
+       "outcome": "passed: rejoin through the group; an identity mismatch on line 1 stops before line 2"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_01_group_saved",
+       "outcome": "passed: desync and resync routed through the peers"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_02_node_identities_recorded",
+       "outcome": "passed: desync and resync routed through the peers"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_03_desync_and_resync_route_through_the_peers_own_connection",
+       "outcome": "passed: desync and resync routed through the peers"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "cluster-member-actions (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-1440-light.png",
+       "sha256": "f51cc9a7e5ac8cc4e25adac29d0f78b723de8d968a83b8c8fea10b472e18507e"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-1440-dark.png",
+       "sha256": "cf08ac80847a4769bc4b9ad94d7e4b37f3102b95cabe0ade13ee5bde689354e6"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-720-light.png",
+       "sha256": "5b453ca330fdcff188d80bac935a2a8f950832ac81139e38c7ca12537c92fe2f"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-720-dark.png",
+       "sha256": "38a5e452fc0eaad042396a24549e331ae2ff8dcbd0964459bf1dcc8d857e0b1a"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Adds a Text group to Settings > Appearance",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: settings-page, theme-picker, themes",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "settings-text (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/settings-text-1440-light.png",
+       "sha256": "687d7c9c6527ee18f60c1d9e1951fd239455fb5b70282ade7b878b28b45fe6c9"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/settings-text-1440-dark.png",
+       "sha256": "93eb0d9390e5fc18f99e4fc4e9af5bb312aa94d339fd5deeeeca4b3c463a91aa"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/settings-text-720-light.png",
+       "sha256": "4433692a2164364790dca69dabda9cf8790522a5bc770001cf806405dab8c8de"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/settings-text-720-dark.png",
+       "sha256": "376537862879ddff10d8bbbed235ccaf4c31274368abd9ee944c5186bebc31b0"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Adds Get MySQL Shell to Settings > Client tools",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: client-tools",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "client-tools-shell (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/client-tools-shell-1440-light.png",
+       "sha256": "389628045ec57fc605c5773696d568dfbe7c3b4c7fa00cffd62229784702068f"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/client-tools-shell-1440-dark.png",
+       "sha256": "64d0d5133be55ca5fd5ed49b8afc6564797de0bc0440250122a09e7601c882c8"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/client-tools-shell-720-light.png",
+       "sha256": "839c4d7f2468003cc4afa9cacffbd3f34e9e248fb447657925e425d3ed5d6d1f"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/client-tools-shell-720-dark.png",
+       "sha256": "59d223d6470a5fbb16d585b26a965c0faab02b9c7576f2af0289d7ee8a726418"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Cluster now keeps every action for the cluster kind visible on the Cluster overview",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster, topology-groups",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "passed: the live Cluster report matches the recorded expected report, every overview action present with enabled, why_not and fix"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_galera",
+       "outcome": "passed: the live Galera report matches the recorded expected report"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "cluster-actions (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-actions-1440-light.png",
+       "sha256": "9840547592275bb2ba4014350477cec11e1a6cdc0aad54ff6e4bf3ffef926b53"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-actions-1440-dark.png",
+       "sha256": "61f9a6ede88acf44783852497236c096702e5d18abd3793a79aa74f7d7bf41e9"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-actions-720-light.png",
+       "sha256": "c11faf4c18c69588cf57e1b53978d643cc129ab67b6a1dec039ac268bbf59e19"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-actions-720-dark.png",
+       "sha256": "166c4e4301d51fb4d2da5285bcf432bf297d461792e420361513c80b94f91e95"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Each member's or node's inspector in Cluster keeps every action",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "passed: member actions in the live report match the expected report"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_galera",
+       "outcome": "passed: node actions in the live report match the expected report"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "cluster-member-actions (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-1440-light.png",
+       "sha256": "f51cc9a7e5ac8cc4e25adac29d0f78b723de8d968a83b8c8fea10b472e18507e"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-1440-dark.png",
+       "sha256": "cf08ac80847a4769bc4b9ad94d7e4b37f3102b95cabe0ade13ee5bde689354e6"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-720-light.png",
+       "sha256": "5b453ca330fdcff188d80bac935a2a8f950832ac81139e38c7ca12537c92fe2f"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-member-actions-720-dark.png",
+       "sha256": "38a5e452fc0eaad042396a24549e331ae2ff8dcbd0964459bf1dcc8d857e0b1a"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Cluster actions that cannot run stay disabled with the reason and fix",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "passed: disabled actions carry why_not and fix, missing privileges and grant_sql as recorded"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "cluster-actions (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-actions-1440-light.png",
+       "sha256": "9840547592275bb2ba4014350477cec11e1a6cdc0aad54ff6e4bf3ffef926b53"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-actions-1440-dark.png",
+       "sha256": "61f9a6ede88acf44783852497236c096702e5d18abd3793a79aa74f7d7bf41e9"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/cluster-actions-720-light.png",
+       "sha256": "c11faf4c18c69588cf57e1b53978d643cc129ab67b6a1dec039ac268bbf59e19"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/cluster-actions-720-dark.png",
+       "sha256": "166c4e4301d51fb4d2da5285bcf432bf297d461792e420361513c80b94f91e95"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Cluster now shows InnoDB ClusterSet topology when connected to an InnoDB Cluster read replica",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "clusterset-band (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/clusterset-band-1440-light.png",
+       "sha256": "ea0a2fd718e6308c6af83198b345a75b35047429adc6aad6297faf145424d6db"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/clusterset-band-1440-dark.png",
+       "sha256": "a46634b7ea030ca6d0d8e3d1c9017e8a3e9311f49990079a699975709cabf5d4"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/clusterset-band-720-light.png",
+       "sha256": "a3f04bc00f8d3bba5fae68a8a6d0198eec4130de74cceda0248f7aa019e9621c"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/clusterset-band-720-dark.png",
+       "sha256": "dccc2102ca09aee6e5ffc253cc969ddf024ae3117197cc5d550326728b0f794e"
+      }
+     ]
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "throwaway ClusterSet lab (local/release-3.5.0/run.sh, cs.js, driver.py): myflames.ui.api_response /api/live/cluster from the lab-runner container on mf-cs-net, throwaway HOME; log local/release-3.5.0/clusterset-live.log",
+     "servers": [
+      "MySQL 8.4.13 InnoDB ClusterSet mfcs: primary cluster csa (mf-cs-a1) with read replica mf-cs-r1, replica cluster csb (mf-cs-b1, mf-cs-b2)"
+     ],
+     "tools": [
+      "MySQL Shell 8.4.10 (dba.createCluster, createClusterSet, createReplicaCluster, addReplicaInstance)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "Cluster read connected to the read replica mf-cs-r1",
+       "outcome": "ClusterSet mfcs with csa PRIMARY and csb REPLICA, local cluster csa, read from the replica's replicated metadata copy with the read-replica note"
+      },
+      {
+       "action": "Cluster read connected to mf-cs-a1 (primary cluster)",
+       "outcome": "ClusterSet mfcs with both clusters, read directly (not from a copy)"
+      },
+      {
+       "action": "Cluster read connected to mf-cs-b1 (replica cluster)",
+       "outcome": "ClusterSet mfcs with both clusters, local cluster csb REPLICA, the may-be-behind note"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "The Cluster, Replication, ProxySQL and Readyset topologies have a three-dimensional look",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster, topology-contrast-unit, theme-contrast",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "topology-cluster (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-cluster-1440-light.png",
+       "sha256": "37e4be0fa191b2837518f1b9aa9809f09b360b906f69ae07caf114f748563bb4"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-cluster-1440-dark.png",
+       "sha256": "3c4d5cd284fb47eff742d9a3f86b5e6c1d4c60509203a68b1bdfae0a4bfd2946"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-cluster-720-light.png",
+       "sha256": "06b1b358b9872f66a2cc439d55efd1c541dd71d6dd543f50d7464acb31060386"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-cluster-720-dark.png",
+       "sha256": "6c743e042dee004b97250b16a2f61c36900b6680a8609d38211e57daa6ebf6af"
+      }
+     ]
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "topology-replication (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-replication-1440-light.png",
+       "sha256": "6d081b4be76bb1888e80ca0b995d98e1b8b345dbcd6620e03f5da22c3871316e"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-replication-1440-dark.png",
+       "sha256": "05fa2697185ff7d37155146b522ae7401d303b1d481bda3fcada78e8179ec553"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-replication-720-light.png",
+       "sha256": "3bb2a4cecb06cb17e810218f3fe4a57052755b974b56981b8e0fd2fb7c1717da"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-replication-720-dark.png",
+       "sha256": "0b599fcf39ee57c51ec894c2eb4106ffec729b4254fcd4a5ef71a22c9e2c5a2a"
+      }
+     ]
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "topology-proxysql (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-proxysql-1440-light.png",
+       "sha256": "35f25c0f2e72be7db48bdafac253581efb0d11fec22f0ed748f3aaad20b54381"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-proxysql-1440-dark.png",
+       "sha256": "2597af91f0d72042a9dc84337918b8375630315331e8fbf1d5c0916202ef0845"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-proxysql-720-light.png",
+       "sha256": "c3124eb6e76c0e57a9c3c007a365e772aa8559642ec3dc38fb85f8efb4b0c462"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-proxysql-720-dark.png",
+       "sha256": "d28efc5d2cde151b088537e9a6993227ae4a60cec653f4188c45f4dd03ab11bd"
+      }
+     ]
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "topology-readyset (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-readyset-1440-light.png",
+       "sha256": "9ca272c2dc7f417cf05afa9851d6c946fe4ba3a01369cdfc54a857efcd717e73"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-readyset-1440-dark.png",
+       "sha256": "89dfa206c45970f16b673a53d65d30194635b3fca36d9949c691e928a2dc6f3b"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/topology-readyset-720-light.png",
+       "sha256": "48638d9ce4b41bc7e8dda877836f1dec8fc545a8e30b3eee235e93aa8fb8faae"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/topology-readyset-720-dark.png",
+       "sha256": "339be7f414096ee30c42c399934bb307ff11326e065b529e0eb766260fa05e69"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "The installed version moved from the window status bar to the top of the sidebar",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: navigation, update-check",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "version-badge (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/version-badge-1440-light.png",
+       "sha256": "4273767ade4d6098891ffdaecb05e4ff78e2c8c8b9f5a824dceba2ba7e017778"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/version-badge-1440-dark.png",
+       "sha256": "aaaa59cc684ef83f07df1366c159d44a2946ed2e60333f2ff3a2463c508bff9d"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/version-badge-720-light.png",
+       "sha256": "99c1866b2388a65b2b20d24f719e9ab43f003b76a2801504ec641b72557d6cb2"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/version-badge-720-dark.png",
+       "sha256": "3f43e20629879843cc4ce190bd89a88aaa6a253f43bafa88c4ea4a3c26bb8dfa"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "A badge beside the sidebar logo alerts you",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: update-check, update-install",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "version-badge (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/version-badge-1440-light.png",
+       "sha256": "4273767ade4d6098891ffdaecb05e4ff78e2c8c8b9f5a824dceba2ba7e017778"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/version-badge-1440-dark.png",
+       "sha256": "aaaa59cc684ef83f07df1366c159d44a2946ed2e60333f2ff3a2463c508bff9d"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/version-badge-720-light.png",
+       "sha256": "99c1866b2388a65b2b20d24f719e9ab43f003b76a2801504ec641b72557d6cb2"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/version-badge-720-dark.png",
+       "sha256": "3f43e20629879843cc4ce190bd89a88aaa6a253f43bafa88c4ea4a3c26bb8dfa"
+      }
+     ]
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "settings-updates (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/settings-updates-1440-light.png",
+       "sha256": "01c26d2ed266009598bd7c7c40cebee1d8cf1d9194553b34d0ea984ac3d2cb8f"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/settings-updates-1440-dark.png",
+       "sha256": "15a533c809573a2cc19b259686655708c9034890d149092f6595bdccfe6e159e"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/settings-updates-720-light.png",
+       "sha256": "5a6111c55d43a76d87ed24930fd77a5b1e0c877e82903a80e674a9a743383a15"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/settings-updates-720-dark.png",
+       "sha256": "5f77459cffef9a11ced0acb6301c7a80655523754e784bdf9984c6dd7b81da47"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "The Query editor toolbar has Find and Find and replace buttons",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: editor-find, editor-toolbar-layout, editor",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "editor-toolbar (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/editor-toolbar-1440-light.png",
+       "sha256": "3f7d85cf5d023fd091470f5061fffb5b891f8a9bb32eb849f3c13e077e344231"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/editor-toolbar-1440-dark.png",
+       "sha256": "6d5a647ba8f98e6c3b153acc25cf29fcf03b9c932418be80c6e6e03cf80c9ffa"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/editor-toolbar-720-light.png",
+       "sha256": "3c865e0468ab9c5baeef1f9dd321d846ca05d0202dc0d801f24b57c2be7d7d76"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/editor-toolbar-720-dark.png",
+       "sha256": "be828543ba715374a1fd5f7174fbb37fc1f3eac4226adb611b3dfc90845b5b26"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "The workspace now loads Plans and Learn on demand",
+   "section": "Improvements",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: bundle-split, perf-budgets",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where myflames could fail to open",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: desktop-shell",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    },
+    {
+     "commit": "e41a59c7eeb882d2da26e7dd7420aa6f8ae5ad6b",
+     "command": "npm test in apps/desktop (launcher tests, node --test)",
+     "result": "tests 82, pass 82, fail 0, including startup timeout and readiness cases",
+     "outcome": "pass",
+     "executed": 82,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the workspace could fail to load a view or the Query editor under load",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: bundle-split, editor, navigation",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Cluster offered MySQL Shell actions on MySQL Shell older than 8.0.32",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster, client-tools",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where a Cluster action run through MySQL Shell could report a wrong error",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: cluster",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members (scripts/cluster-matrix.sh)"
+     ],
+     "tools": [
+      "MySQL Router (lab ic-router)",
+      "mysqlsh   Ver 8.4.10 for Linux on aarch64"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_shell.ShellLabTest.test_01_rejoin_through_the_group",
+       "outcome": "passed: Shell actions report their own outcome; an identity mismatch on line 1 stops before line 2"
+      },
+      {
+       "action": "live_shell.ShellLabTest.test_02_line1_identity_mismatch_stops_before_line2",
+       "outcome": "passed: Shell actions report their own outcome; an identity mismatch on line 1 stops before line 2"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Query editor refused a MariaDB CREATE PACKAGE",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: editor, editor-abuse",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "real-client differential sweep of reviewed Query editor framing: mysql 8.4.8, 8.0.45 and the bundled 8.4.13 clients on this Mac; mariadb 11.8.9 client in Docker",
+     "result": "73404 host-client runs and 8534 MariaDB-client runs, 0 divergences",
+     "outcome": "pass",
+     "executed": 81938,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 5.7.44",
+      "MySQL 8.0.46",
+      "MySQL 8.4.8",
+      "MySQL 9.7.2",
+      "MariaDB 10.11.19",
+      "MariaDB 11.4.13",
+      "MariaDB 11.8.9 (scripts/ga-matrix.sh)"
+     ],
+     "tools": [
+      "the mysql and mariadb clients the app selects"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server: reviewed users and roles, expired password, SET GLOBAL, editor refusals, dump with routines and events replayed, status resync after a stored function"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where opening the Query editor, or running a script or a reviewed change, with an account whose MySQL password has expire",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: editor",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "driver": "scripts/live-tests.sh all (evidence local/release-3.5.0/ffcd08b25b085c420f0fbebc9effd2a7e4fd1369.json)",
+     "servers": [
+      "MySQL 5.7.44",
+      "MySQL 8.0.46",
+      "MySQL 8.4.8",
+      "MySQL 9.7.2",
+      "MariaDB 10.11.19",
+      "MariaDB 11.4.13",
+      "MariaDB 11.8.9 (scripts/ga-matrix.sh)"
+     ],
+     "tools": [
+      "the mysql and mariadb clients the app selects"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_01_users_and_roles",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_02_expired_password",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_03_variable_global",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_04_editor_refusals",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_05_editor_dump_routine",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "passed on every GA server, including test_02_expired_password"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the table data editor's review button read Review 1 changes",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: table-data",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "view": "table-data-review (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/table-data-review-1440-light.png",
+       "sha256": "6722fe27765a3a9f1980d2aff36cafabe7e2b1cdc73de22720ba2e9474e43d4e"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/table-data-review-1440-dark.png",
+       "sha256": "02b650e0530a422f317d150eea808eaa0153a20dace430fa7af64dacd9e36062"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.0/shots/table-data-review-720-light.png",
+       "sha256": "0bda06ba8273208f25960a5c60ba71c87f90d50c8e171751a7fa686779026ffe"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.0/shots/table-data-review-720-dark.png",
+       "sha256": "40b2bc6cdd0b8106100affb42365968b52d18ef1ecd42615a78241345aff7aaa"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Explain with Parameters refused statements",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: query-selection, editor",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "real-client differential sweep of reviewed Query editor framing: mysql 8.4.8, 8.0.45 and the bundled 8.4.13 clients on this Mac; mariadb 11.8.9 client in Docker",
+     "result": "73404 host-client runs and 8534 MariaDB-client runs, 0 divergences",
+     "outcome": "pass",
+     "executed": 81938,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "reviewer": "Gemini gemini-4-argon-high (read-only)",
+     "scope": "Review of ffcd08b2, the fixes for the final review of 87f3abff..d10dd8c0. The code up to 87f3abff passed review rounds J to S (round S: ship, no findings) and the Claude security gate (Opus, ship-with-follow-ups; its F1 and I1 follow-ups are in d10dd8c0).",
+     "verdict": "ship"
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the schema note on a Top statements tab",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 8487 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 8487,
+     "skipped": 18
+    },
+    {
+     "commit": "ffcd08b25b085c420f0fbebc9effd2a7e4fd1369",
+     "command": "node apps/workspace/test/<suite>.mjs for all 128 registered browser suites against the committed build; relevant here: digest-actions, query-digest-baselines",
+     "result": "128 of 128 browser suites pass",
+     "outcome": "pass",
+     "executed": 128,
+     "skipped": 0
+    }
+   ]
+  }
+ ]
+}
