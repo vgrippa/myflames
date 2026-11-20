@@ -9,7 +9,7 @@ import { build } from "esbuild";
 
 const result = await build({
   stdin: {
-    contents: `export { ReleaseNotes, parseReleaseNotes } from './src/releaseNotes';`,
+    contents: `export { ReleaseNotes, parseReleaseNotes, renderNotesSafely } from './src/releaseNotes';`,
     loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname,
   },
   bundle: true, platform: "node", format: "cjs", write: false,
@@ -18,12 +18,18 @@ const result = await build({
 });
 const out = { exports: {} };
 new Function("require", "module", "exports", result.outputFiles[0].text)(createRequire(import.meta.url), out, out.exports);
-const { ReleaseNotes, parseReleaseNotes } = out.exports;
+const { ReleaseNotes, parseReleaseNotes, renderNotesSafely } = out.exports;
 const require = createRequire(import.meta.url);
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const html = (text) => renderToStaticMarkup(React.createElement(ReleaseNotes, { text }));
 const textOf = (markup) => markup.replace(/<[^>]+>/g, "");
+
+// A parser failure keeps the original notes visible as escaped, wrapping text.
+const fallbackText = '## Notes\n<img src=x onerror=alert(1)>\n**literal**';
+assert.equal(renderToStaticMarkup(renderNotesSafely(fallbackText, () => {
+  throw new Error("parser failed");
+})), '<pre class="update-notes-plain">## Notes\n&lt;img src=x onerror=alert(1)&gt;\n**literal**</pre>');
 
 // Headings: one and two # are h3, deeper is h4.
 const heads = html("# Title\n\n## Section\n\n### Detail");
@@ -80,6 +86,7 @@ assert.equal(html("[a](https://example.com/a(b)c) and [b](space here)"),
 assert.equal(html("[outer [inner](dest) and [a\\]b](dest)"), "<p>[outer inner and a]b</p>");
 assert.equal(html("[a](` b `)"), "<p>[a](<code>b</code>)</p>", "code tokens cannot hide destination whitespace");
 assert.equal(html("[a](line\nbreak)"), "<p>[a](line break)</p>");
+assert.equal(html("[**bold** and `code`](dest)"), "<p><strong>bold</strong> and <code>code</code></p>");
 assert.equal(html("café_preço_útil and 𝟙_𝟚_𝟛"), "<p>café_preço_útil and 𝟙_𝟚_𝟛</p>");
 assert.equal(html("## Heading ##"), "<h3>Heading</h3>");
 
@@ -104,6 +111,8 @@ assert.equal(html("\\*no emphasis\\*"), "<p>*no emphasis*</p>");
 // CRLF input normalizes; --- rules drop out.
 const crlf = html("## Hi\r\n\r\n- one\r\n- two\r\n\r\n---\r\n\r\nparagraph");
 assert.equal(crlf, "<h3>Hi</h3><ul><li>one</li><li>two</li></ul><p>paragraph</p>", crlf);
+assert.equal(html("# First\u2028## Second\u2029- item"),
+  "<h3>First</h3><h3>Second</h3><ul><li>item</li></ul>");
 
 // Fenced code blocks keep their text as is.
 const fence = html("```sql\nSELECT **not bold**\n```");
@@ -153,12 +162,15 @@ const pathological = [
   ["unclosed link destinations", "[a](".repeat(25000)],
   ["rejected strong asterisks", "**x ".repeat(25000)],
   ["rejected strong underscores", "__x ".repeat(25000)],
-  ["escaped backtick candidates", "`" + "a\\`".repeat(30000), "`" + "a`".repeat(30000)],
+  ["escaped backtick candidates", "`" + "a\\`".repeat(30000), "<p>`" + "a`".repeat(30000) + "</p>"],
   ["rejected emphasis asterisks", "*a ".repeat(33000)],
   ["intra-word underscores", "_a".repeat(49500)],
   ["shared closing bracket without parenthesis", "[".repeat(99998) + "]("],
+  ["line separator in heading", "# " + " ".repeat(99_995) + "x\u2028y", "<h3>x</h3><p>y</p>"],
+  ["line separator in heading after list", "- a\n# " + " ".repeat(99_991) + "x\u2028y",
+    "<ul><li>a</li></ul><h3>x</h3><p>y</p>"],
 ];
-for (const [name, input, expected = input.trim()] of pathological) {
+for (const [name, input, expected = `<p>${input.trim()}</p>`] of pathological) {
   const originalIndexOf = String.prototype.indexOf;
   const markers = new Set(["`", "*", "**", "_", "__", "](", ")"]);
   let scanned = 0;
@@ -173,16 +185,15 @@ for (const [name, input, expected = input.trim()] of pathological) {
       return at;
     };
     const start = performance.now();
-    markup = html(input);
+    assert.doesNotThrow(() => { markup = html(input); }, name);
     elapsed = performance.now() - start;
   } finally {
     String.prototype.indexOf = originalIndexOf;
   }
   assert.ok(scanned <= 10 * input.length, `${name}: ${scanned} searched characters exceeds the linear budget`);
   assert.ok(elapsed < 1000, `${name}: ${elapsed.toFixed(2)} ms, expected < 1000 ms`);
-  assert.ok(markup.startsWith("<p>"), name);
   assert.ok(!/<(?:strong|em|code)>/.test(markup), name);
-  assert.equal(markup, `<p>${expected}</p>`, name);
+  assert.equal(markup, expected, name);
   console.log(`release notes timing: ${name}: ${elapsed.toFixed(2)} ms (${input.length} characters)`);
 }
 

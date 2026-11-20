@@ -12,4 +12,5 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Fixed an issue where the **Software update** dialog's **View on GitHub** link used the address from the update check without checking it. It now opens only a myflames release page on GitHub.
 - Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.

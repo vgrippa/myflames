@@ -665,7 +665,11 @@ substituted. `objects.githubusercontent.com` and
 so they are accepted only as a redirect target or as the final response URL.
 Every redirect is checked before following it, and the final response URL is
 checked before reading the body. Other URLs raise `ValueError`; release-page
-fallbacks also require the project's official HTTPS release page. Downloads use
+fallbacks also require the project's official HTTPS release page. The Software
+update dialog's **View on GitHub** address is validated with the same URL
+validator as download addresses: only the project's releases page, `/latest`
+or `/tag/<name>` on HTTPS `github.com` is accepted; an invalid or empty
+address falls back to the project's releases page. Downloads use
 an exclusively created private temporary file in the destination directory and
 enforce the 200 MiB limit (`MAX_UPDATE_BYTES`) before publishing. http.client returns an empty read
 at an early EOF even when Content-Length promised more (TLS ragged EOFs are
@@ -769,7 +773,8 @@ older than this copy of myflames, so it was not installed.").
 The dialog renders the release notes (GitHub's release body, carried unchanged
 in `release_notes`) as formatted text with `ReleaseNotes`
 (`apps/workspace/src/releaseNotes.tsx`). `parseReleaseNotes` scans line by line
-in linear time (CRLF normalized, no regular expression with nested quantifiers)
+in linear time (CRLF normalized, U+2028 and U+2029 treated as line breaks,
+no regular expression with nested quantifiers)
 and understands a subset of Markdown: `#` to `######` headings (one or two `#`
 draw as h3, deeper as h4, under the dialog's h2 title; a whitespace-separated
 closing `#` run is removed), `-` / `*` / `+` and numbered `1.` lists (the first
@@ -807,7 +812,8 @@ notes (for example `<img src=x onerror=alert(1)>` or `<script>`) shows as litera
 text. Input is capped at 100,000 UTF-16 code units without splitting a surrogate
 pair; past it the dialog renders up to the cap and ends with the paragraph
 "The rest of the notes is on GitHub." The component memoizes parsing by the
-notes string with `useMemo`. Tests: `apps/workspace/test/release-notes-unit.mjs`
+notes string with `useMemo`; if parsing fails, it shows the original notes as
+plain text in a wrapping `pre`. Tests: `apps/workspace/test/release-notes-unit.mjs`
 (including timing and scan budgets and every published release page plus
 `CHANGELOG.md`) and `apps/workspace/test/update-check.mjs`.
 

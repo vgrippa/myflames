@@ -162,7 +162,7 @@ export function parseInline(raw: string): NotesInline[] {
         if (link && link.end < end) {
           flush();
           // Text only: no anchor, no href from the notes.
-          out.push(...parse(i + 1, link.labelEnd, active));
+          for (const node of parse(i + 1, link.labelEnd, active)) out.push(node);
           i = link.end + 1;
           continue;
         }
@@ -180,7 +180,7 @@ export function parseReleaseNotes(raw: string): NotesBlock[] {
   const truncated = raw.length > CAP;
   // A cap boundary must not leave half an astral character in React text.
   const limit = truncated && /[\uD800-\uDBFF]/.test(raw[CAP - 1]) ? CAP - 1 : CAP;
-  const lines = (truncated ? raw.slice(0, limit) : raw).replace(/\r\n?/g, "\n").split("\n");
+  const lines = (truncated ? raw.slice(0, limit) : raw).replace(/\r\n?|[\u2028\u2029]/g, "\n").split("\n");
   const blocks: NotesBlock[] = [];
   let paragraph: string[] = [];
   const flushParagraph = () => {
@@ -190,7 +190,7 @@ export function parseReleaseNotes(raw: string): NotesBlock[] {
     }
   };
   const itemMatch = (line: string) => /^( *)(?:([-*+])|(\d+)\.)[ \t]+(\S.*)$/.exec(line);
-  const headingMatch = (line: string) => /^(#{1,6})\s+(.*)$/.exec(line);
+  const headingMatch = (line: string) => /^(#{1,6})\s+(\S.*)$/.exec(line);
   const fenceMatch = (line: string) => /^(`{3,})/.exec(line);
   const rule = (line: string) => line === "---" || line === "***";
   const blockBoundary = (line: string) => !!fenceMatch(line) || !!headingMatch(line) || rule(line);
@@ -322,7 +322,16 @@ function renderBlock(block: NotesBlock, key: number): ReactNode {
   }
 }
 
+export function renderNotesSafely(
+  text: string, parse: (text: string) => NotesBlock[] = parseReleaseNotes,
+): ReactNode {
+  try {
+    return <>{parse(text).map(renderBlock)}</>;
+  } catch {
+    return <pre className="update-notes-plain">{text}</pre>;
+  }
+}
+
 export function ReleaseNotes({ text }: { text: string }) {
-  const blocks = useMemo(() => parseReleaseNotes(text), [text]);
-  return <>{blocks.map(renderBlock)}</>;
+  return useMemo(() => renderNotesSafely(text), [text]);
 }
