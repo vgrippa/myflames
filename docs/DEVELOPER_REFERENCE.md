@@ -142,7 +142,23 @@ and checks owned cleanup. Its readiness wait (`smokeWindow` in `main.cjs`)
 ignores empty `.home [role=alert]` live regions and never goes ready while
 any alert carries text; the timeout error lists the readiness flags
 (home-start present, alert text present, still opening, secret still in the
-hash) and up to 200 characters of the alert text.
+hash) and up to 200 characters of the alert text, plus the phase the smoke was
+in (ready, cookie, session, tools, reload) and the completed phases with their
+milliseconds (`smoke-timing.cjs`). The 20 s readiness budget covers the
+workspace becoming ready and authenticated before and after the reload; time
+in the first `/api/lifecycle/tools` probe does not count against it, and the
+45 s kill in `scripts/smoke.cjs` stays the hard limit for the whole smoke.
+Each phase change writes a `Desktop smoke phase: <name> at <ms> ms` line to
+stdout, and a successful run prints a `Desktop smoke timings:` line with each
+phase's milliseconds. Both child streams go through `scripts/smoke-output.cjs`,
+which buffers by line, scrubs each complete line as it arrives (web addresses,
+any `http` or `https` scheme in any letter case, become `[private URL]`, and a
+`#launch=<token>` becomes `#launch=[private]`) and keeps a bounded window: the
+last 20000 characters of stdout and the last 4000 of diagnostics, with the
+trailing partial line scrubbed when the stream ends. A successful run prints
+the scrubbed stdout. When the app exits non-zero, `scripts/smoke.cjs` puts
+the app's scrubbed stdout before its diagnostics in the error, and says when
+the 45 s limit is what stopped it.
 Run `node apps/desktop/scripts/editor-settings-smoke.cjs apps/desktop/dist/mac-arm64/myflames.app`
 (`smoke:editor-settings` in `apps/desktop`) against that same built bundle for
 the two-launch Query editor settings check. It changes wrapping and multiple
