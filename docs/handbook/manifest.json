@@ -7,18 +7,51 @@
     "public_reference": "README.md"
   },
   {
-    "id": "howto",
-    "title": "How-to guides",
-    "group": "Start here",
-    "file": "howto.md",
-    "public_reference": "README.md"
-  },
-  {
     "id": "motivation",
     "title": "Why myflames",
     "group": "Start here",
     "file": "motivation.md",
     "public_reference": "README.md"
+  },
+  {
+    "id": "howto",
+    "title": "Query editor",
+    "group": "How-to guides",
+    "file": "howto.md",
+    "public_reference": "README.md",
+    "nav_sections": true
+  },
+  {
+    "id": "howto-plans",
+    "title": "Plans and schemas",
+    "group": "How-to guides",
+    "file": "howto-plans.md",
+    "public_reference": "README.md",
+    "nav_sections": true
+  },
+  {
+    "id": "howto-server",
+    "title": "Server and workload",
+    "group": "How-to guides",
+    "file": "howto-server.md",
+    "public_reference": "README.md",
+    "nav_sections": true
+  },
+  {
+    "id": "howto-connections",
+    "title": "Connections and files",
+    "group": "How-to guides",
+    "file": "howto-connections.md",
+    "public_reference": "README.md",
+    "nav_sections": true
+  },
+  {
+    "id": "howto-topology",
+    "title": "Replication, clusters and proxies",
+    "group": "How-to guides",
+    "file": "howto-topology.md",
+    "public_reference": "README.md",
+    "nav_sections": true
   },
   {
     "id": "plans",
@@ -39,6 +72,13 @@
     "title": "Server diagnostics & operations",
     "group": "Workflows",
     "file": "server.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "files",
+    "title": "File transfer and SSH",
+    "group": "Workflows",
+    "file": "files.md",
     "public_reference": "README.md"
   },
   {
