@@ -1639,6 +1639,13 @@ contextual entry points. `indexes.css` is registered in `styles.ts` to keep the
 fixed stylesheet order.
 ### Local authentication and request limits
 
+On Windows, the workspace listener binds with `SO_EXCLUSIVEADDRUSE` and without
+`SO_REUSEADDR` so no other socket can bind its port; POSIX keeps `SO_REUSEADDR`
+(a restart can reuse a port in TIME_WAIT, and a listening port stays exclusive).
+`TestWorkspaceListenerPort` binds a second `SO_REUSEADDR` socket to the
+listener's address and checks both platforms' options; the Windows CI job runs
+it in its own step.
+
 `WorkspaceServer.launch_url` carries a random, one-use `#launch=` secret, valid
 for 30 minutes. `api.ts` removes the fragment before any API call and exchanges
 it through `POST /api/auth/session` with `X-Myflames-Bootstrap: 1`. The server
