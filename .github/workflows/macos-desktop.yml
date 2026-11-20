@@ -8,14 +8,9 @@ name: macOS desktop
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - "apps/desktop/**"
-      - "myflames/**"
-      - "apps/workspace/package-lock.json"
-      - "apps/workspace/test/editor-helpers.mjs"
-      - ".github/workflows/macos-desktop.yml"
+  schedule:
+    # Scheduled workflows run on master, the default branch, at 04:37 UTC.
+    - cron: "37 4 * * *"
   pull_request:
     branches: [master]
     paths:

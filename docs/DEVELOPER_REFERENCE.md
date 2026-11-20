@@ -8911,7 +8911,8 @@ step fails.
 
 **Workflows** (`.github/workflows/`). Every workflow scopes its permissions
 (`contents: read`, except where noted); runs serialize per workflow and ref
-with in-progress pull-request runs cancelled, except publish, which groups
+with in-progress pull-request runs cancelled, except runner retry, which
+evaluates each completed desktop run separately, and publish, which groups
 per tag and never cancels.
 
 - `test.yml` (Test): push and pull requests to master. The matrix job runs
@@ -8944,13 +8945,27 @@ per tag and never cancels.
   records the commit, the installer name and SHA-256 and each step's outcome,
   failing the job when any step did not pass; the installer, its `.sha256`
   and the evidence upload as the `myflames-windows-x64` artifact.
-- `macos-desktop.yml` (macOS desktop): push and pull requests that touch
+- `macos-desktop.yml` (macOS desktop): pull requests to master that touch
   `apps/desktop`, `myflames`, `apps/workspace/package-lock.json`,
-  `apps/workspace/test/editor-helpers.mjs` or the workflow, plus manual runs;
-  macos-15 with Python 3.14 and Node 22. It builds the backend and the
-  unsigned app (`package:mac`, signing discovery off) and runs the three
+  `apps/workspace/test/editor-helpers.mjs` or the workflow, nightly on master
+  at 04:37 UTC, and manual runs. Push runs were dropped because they repeated
+  the PR build and scarce hosted Apple Silicon runner capacity could turn
+  master red without running a step. It uses macos-15 with Python 3.14 and
+  Node 22. It builds the backend and the unsigned app (`package:mac`, signing
+  discovery off) and runs the three
   packaged smokes: `smoke.cjs`, `editor-settings-smoke.cjs` and
   `preferences-smoke.cjs`.
+- `macos-retry.yml` (macOS runner retry): a completed `macOS desktop` run
+  triggers one ubuntu-24.04 job with a five-minute timeout. It reruns a
+  non-successful run only when every non-successful job in that attempt has
+  no started steps and a check-run annotation containing `not acquired`.
+  A real failure after a step started is never retried. Attempts below 4
+  allow at most three retries. Permissions are exactly `actions: write` for
+  `gh run rerun` and `contents: read`; there is no checkout or stored secret.
+  Event values enter the script through `env`, with only validated numeric
+  run IDs and attempt numbers used to select the run, so fork PR branch
+  names and titles cannot become shell code.
+  Fork pull requests are retried by hand.
 - `docs-sync.yml` (Docs and release sync): pull requests to master, release
   publication, and manual runs with a required `tag` input; the release job
   alone gets `contents: write`. The pull-request job fails user-facing
