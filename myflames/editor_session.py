@@ -2882,8 +2882,13 @@ class EditorSession(EditorInsights):
             # a DBA told otherwise could repeat their writes.
             if (message.endswith(" Nothing was sent.") and
                     any(u.get("status") in ("ok", "error", "stopped") for u in run.units)):
-                message = (message[:-len(" Nothing was sent.")] +
-                           " Earlier statements were sent; this statement and later statements were not sent.")
+                sent = " Earlier statements were sent; this statement and later statements were not sent."
+                message = message[:-len(" Nothing was sent.")] + sent
+                # _send ended the session with the unit-level text first; the
+                # session's end message (status, later replies) must agree.
+                with self.lock:
+                    if self.end_message and " Nothing was sent. " in self.end_message:
+                        self.end_message = self.end_message.replace(" Nothing was sent. ", sent + " ", 1)
             run.message = message
         except Exception as exc:  # never leave a run running
             run.message = "The run failed: %s" % exc
