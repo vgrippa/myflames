@@ -16,6 +16,7 @@ import datetime
 from contextlib import closing
 import hashlib
 import hmac
+import itertools
 import json
 import math
 import os
@@ -46,6 +47,32 @@ ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ss
 _BASE_ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
 _SSH_ENDPOINT_FIELDS = ('ssh_host', 'ssh_user', 'ssh_port')
 
+_TOPOLOGY_EPOCH = uuid.uuid4().hex
+_TOPOLOGY_START_ORDER = itertools.count(1)
+_TOPOLOGY_CLOCK_SETTING = 'topology.observation_clock'
+
+
+class _TopologyObservation(object):
+    """Private start-order evidence, never a field in a server report.
+
+    Store-issued observations have a durable sequence and store binding.
+    Probes do not own a store: they retain their process-monotonic start and
+    the preceding stored observation instead, including across cache hits.
+    """
+    def __init__(self, store=None, sequence=None, previous=None):
+        self.store = store
+        self.sequence = sequence
+        self.epoch = _TOPOLOGY_EPOCH
+        # A strict monotonic sequence also orders starts within one clock
+        # tick on platforms whose monotonic timer has coarse resolution.
+        self.started = next(_TOPOLOGY_START_ORDER)
+        self.previous = previous
+
+
+def _topology_probe_observation(profile):
+    return _TopologyObservation(previous=dict(profile.get('topology_identity') or {}))
+
+
 # Session restore: one autosaved workspace snapshot (see validate_session_state).
 SESSION_MAX_BYTES = 64 * 1024 * 1024
 SESSION_MAX_DEPTH = 200
@@ -72,10 +99,24 @@ UI_SIDEBAR_MIN = 208
 UI_SIDEBAR_MAX = 320
 UI_INSPECTOR_MIN = 280
 UI_INSPECTOR_MAX = 560
+# Keep these two literal lists equal to the TypeScript FONT_CHOICES registry
+# (apps/workspace/src/fonts.ts). A font id is never free text: no CSS can
+# reach the page through a preference.
+UI_FONT_IDS = ['system', 'inter', 'sf-pro', 'helvetica-neue', 'segoe-ui', 'arial', 'roboto',
+               'open-sans', 'source-sans-3', 'ibm-plex-sans', 'noto-sans', 'verdana']
+UI_CODE_FONT_IDS = ['system', 'jetbrains-mono', 'sf-mono', 'menlo', 'monaco', 'consolas',
+                    'cascadia-mono', 'cascadia-code', 'fira-code', 'source-code-pro',
+                    'ibm-plex-mono', 'roboto-mono', 'ubuntu-mono', 'hack', 'courier-new']
+UI_TEXT_SIZE_MIN = 12
+UI_TEXT_SIZE_MAX = 16
+UI_CODE_TEXT_SIZE_MIN = 11
+UI_CODE_TEXT_SIZE_MAX = 20
 UI_PREFERENCE_DEFAULTS = {'theme': 'system', 'inspector_width': 340, 'explain_format': 'table',
                           'files_show_hidden': False, 'files_transfers_open': True, 'sidebar_width': 208,
                           'server_nav_collapsed': True, 'health_auto_production': -1,
-                          'health_auto_development': -1, 'diagram_zoom_speed': 100}
+                          'health_auto_development': -1, 'diagram_zoom_speed': 100,
+                          'ui_font': 'system', 'ui_text_size': 13,
+                          'code_font': 'system', 'code_text_size': 13}
 
 
 def _valid_ui_preference(key, value):
@@ -93,6 +134,14 @@ def _valid_ui_preference(key, value):
         return type(value) is int and value in (-1, 0, 10, 30, 60)
     if key == 'diagram_zoom_speed':
         return type(value) is int and value in (25, 50, 100, 150, 200)
+    if key == 'ui_font':
+        return isinstance(value, str) and value in UI_FONT_IDS
+    if key == 'code_font':
+        return isinstance(value, str) and value in UI_CODE_FONT_IDS
+    if key == 'ui_text_size':
+        return type(value) is int and UI_TEXT_SIZE_MIN <= value <= UI_TEXT_SIZE_MAX
+    if key == 'code_text_size':
+        return type(value) is int and UI_CODE_TEXT_SIZE_MIN <= value <= UI_CODE_TEXT_SIZE_MAX
     return False
 
 
@@ -406,6 +455,11 @@ class WorkspaceStore:
                          'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL, ssh TEXT)')
             conn.execute('CREATE INDEX IF NOT EXISTS audit_attempted_at ON audit (attempted_at)')
             conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            # Private ordering metadata, separate from public identity fields.
+            # Additive, as with the other derived tables: no version migration.
+            conn.execute('CREATE TABLE IF NOT EXISTS topology_observations '
+                         '(profile_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, '
+                         'epoch TEXT NOT NULL, started INTEGER NOT NULL)')
             # A cache of investigation list metadata, derived from records and
             # refreshed by list_investigations: an older myflames sharing this
             # file writes records only, so no version bump or migration.
@@ -819,6 +873,18 @@ class WorkspaceStore:
                     requested['type'] = 'production'
                 value.update(_safety_fields(requested, existing or {}))
                 value['group'] = group if group is not None else (existing or {}).get('group', '')
+                if value['group']:
+                    # Joining a group takes the id the group already has; a
+                    # group with no current member starts a new generation.
+                    generation = None
+                    if existing and value['group'] == (existing.get('group') or '') and \
+                            existing.get('group_generation'):
+                        generation = existing['group_generation']
+                    if generation is None:
+                        generation = self._group_generation(conn, value['group'])
+                    value['group_generation'] = generation or uuid.uuid4().hex
+                else:
+                    value.pop('group_generation', None)
                 if existing and _same_endpoint(value, existing) and 'topology_identity' in existing:
                     value['topology_identity'] = existing['topology_identity']
                 updated = _now()
@@ -843,6 +909,21 @@ class WorkspaceStore:
         """(kind, payload dict) of one record inside an open transaction, or (None, None)."""
         row = conn.execute('SELECT kind, payload FROM records WHERE id=?', (key,)).fetchone()
         return (row[0], json.loads(row[1])) if row else (None, None)
+
+    def _group_generation(self, conn, name):
+        """The generation the current members of group *name* share, or None.
+
+        Read inside the caller's write transaction so a concurrent membership
+        change cannot pair a new member with a dead group's id.
+        """
+        for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+            try:
+                value = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(value, dict) and value.get('group') == name and value.get('group_generation'):
+                return value['group_generation']
+        return None
 
     def _profile(self, key, include_updated=False):
         """A stored profile with its ``secret_ref``, or None. Never creates the database.
@@ -887,6 +968,8 @@ class WorkspaceStore:
                 value = {field: existing[field] for field in PROFILE_FIELDS if field in existing}
                 value.update(_safety_fields(existing, existing))
                 value['group'] = existing.get('group', '')
+                if existing.get('group_generation'):
+                    value['group_generation'] = existing['group_generation']
                 if 'topology_identity' in existing:
                     value['topology_identity'] = existing['topology_identity']
                 value.update(remember_password=False, secret_backend='')
@@ -920,8 +1003,26 @@ class WorkspaceStore:
                 if kind != 'profile':
                     raise ValueError('Unknown saved connection ID: %s' % key)
                 rows.append((key, value))
+            # The group keeps its generation while it has members; a group
+            # whose members all left (or were deleted) is gone, and assigning
+            # the name again starts a new generation, so a review made for the
+            # old group can never match the new one.
+            generation = None
+            if group:
+                for key, value in rows:
+                    if value.get('group') == group and value.get('group_generation'):
+                        generation = value['group_generation']
+                        break
+            if group and generation is None:
+                generation = self._group_generation(conn, group)
+            if group and generation is None:
+                generation = uuid.uuid4().hex
             for key, value in rows:
                 value['group'] = group
+                if generation:
+                    value['group_generation'] = generation
+                else:
+                    value.pop('group_generation', None)
                 conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
                              (_now(), json.dumps(value, allow_nan=False), key))
             conn.execute('COMMIT')
@@ -933,11 +1034,152 @@ class WorkspaceStore:
             conn.close()
         return {'updated': ids, 'group': group}
 
-    def record_topology_identity(self, profile_id, identity, expected=None):
+    def save_connection_group(self, name, profile_ids, previous_name=None):
+        """Create or edit a connection group (rename, add and remove members) in one write transaction."""
+        from .connection_groups import GROUP_MAX_MEMBERS, list_groups, validate_group
+        name = validate_group(name)
+        if not name:
+            raise ValueError('Enter a connection group name.')
+        if previous_name is not None:
+            previous_name = validate_group(previous_name) or None
+        if not isinstance(profile_ids, list) or not profile_ids or any(
+                not isinstance(key, str) or not key or len(key) > 200 for key in profile_ids):
+            raise ValueError('Choose 1 to %d saved connection IDs.' % GROUP_MAX_MEMBERS)
+        ids = list(dict.fromkeys(profile_ids))
+        if len(profile_ids) > GROUP_MAX_MEMBERS or len(ids) > GROUP_MAX_MEMBERS:
+            raise ValueError('A connection group can have at most %d saved connections (1 to %d).'
+                             % (GROUP_MAX_MEMBERS, GROUP_MAX_MEMBERS))
+        id_set = set(ids)
+        conn = self._transaction()
+        try:
+            target_rows = []
+            for key in ids:
+                kind, value = self._record(conn, key)
+                if kind != 'profile' or not isinstance(value, dict):
+                    raise ValueError('Unknown saved connection ID: %s' % key)
+                target_rows.append((key, value))
+            all_profiles = []
+            for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+                try:
+                    value = json.loads(payload)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    all_profiles.append((key, value))
+            existing_in_name = {key for key, value in all_profiles if value.get('group') == name}
+            if previous_name is not None:
+                if previous_name != name and existing_in_name:
+                    raise ValueError('A connection group named %r already exists.' % name)
+                clear_groups = {previous_name, name}
+            else:
+                if existing_in_name and not (existing_in_name & id_set):
+                    raise ValueError('A connection group named %r already exists.' % name)
+                clear_groups = {name}
+            # The group keeps the generation its staying members carry (a
+            # rename keeps it too); a group created fresh, or one whose name
+            # outlived it, gets a new random id so an old review cannot match.
+            generation = None
+            for key, value in target_rows:
+                if value.get('group') in clear_groups and value.get('group_generation'):
+                    generation = value['group_generation']
+                    break
+            if generation is None:
+                generation = uuid.uuid4().hex
+            now = _now()
+            updated_ids = []
+            for key, value in target_rows:
+                if value.get('group') != name or value.get('group_generation') != generation:
+                    value['group'] = name
+                    value['group_generation'] = generation
+                    conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                 (now, json.dumps(value, allow_nan=False), key))
+                updated_ids.append(key)
+            for key, value in all_profiles:
+                if key not in id_set and value.get('group') in clear_groups:
+                    value['group'] = ''
+                    value.pop('group_generation', None)
+                    conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                 (now, json.dumps(value, allow_nan=False), key))
+                    updated_ids.append(key)
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        profiles = self.list('profile')
+        return {'group': name, 'name': name, 'profile_ids': ids, 'updated': updated_ids,
+                'groups': list_groups(profiles, {name: ids}), 'profiles': profiles}
+
+    def delete_connection_group(self, name):
+        """Clear a connection group on its members while keeping every saved connection and password."""
+        from .connection_groups import list_groups, validate_group
+        name = validate_group(name)
+        if not name:
+            raise ValueError('Enter a connection group name.')
+        cleared_ids = []
+        if self.path.exists():
+            conn = self._transaction()
+            try:
+                now = _now()
+                for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+                    try:
+                        value = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if isinstance(value, dict) and value.get('group') == name:
+                        value['group'] = ''
+                        value.pop('group_generation', None)
+                        conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                                     (now, json.dumps(value, allow_nan=False), key))
+                        cleared_ids.append(key)
+                conn.execute('COMMIT')
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute('ROLLBACK')
+                raise
+            finally:
+                conn.close()
+        profiles = self.list('profile')
+        return {'deleted': True, 'group': name, 'name': name, 'updated': cleared_ids,
+                'groups': list_groups(profiles), 'profiles': profiles}
+
+    def _topology_clock(self, conn):
+        row = conn.execute('SELECT value FROM settings WHERE key=?', (_TOPOLOGY_CLOCK_SETTING,)).fetchone()
+        return json.loads(row[0]) if row else {'store': uuid.uuid4().hex, 'sequence': 0}
+
+    def _issue_topology_observation(self, conn):
+        clock = self._topology_clock(conn)
+        clock['sequence'] += 1
+        conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)',
+                     (_TOPOLOGY_CLOCK_SETTING, json.dumps(clock)))
+        return _TopologyObservation(clock['store'], clock['sequence'])
+
+    def begin_topology_observation(self):
+        """Reserve a start sequence shared by every instance of this store.
+
+        Call before collecting server evidence and retain this token until
+        publication. A record without a token reserves one on entry to this
+        store operation; that fallback cannot order overlapping server reads.
+        """
+        conn = self._transaction()
+        try:
+            observation = self._issue_topology_observation(conn)
+            conn.execute('COMMIT')
+            return observation
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+
+    def record_topology_identity(self, profile_id, identity, expected=None, observation=None):
         """Record evidence from the opened connection without touching other fields.
 
-        An endpoint edit during the read invalidates its evidence. The timestamp
-        of the profile itself stays unchanged: this is not a credential edit.
+        An endpoint edit or a newer observation invalidates the evidence. The
+        profile timestamp stays unchanged: this is not a credential edit.
         """
         from .connection_groups import IDENTITY_FIELDS
         if not isinstance(identity, dict) or not identity:
@@ -953,13 +1195,48 @@ class WorkspaceStore:
             clean['source_uuids'] = list(dict.fromkeys(sources))
         if not inspected:
             return
+        if observation is None:
+            observation = identity.get('_topology_observation')
+        if observation is None:
+            observation = self.begin_topology_observation()
+        if not isinstance(observation, _TopologyObservation) or observation.epoch != _TOPOLOGY_EPOCH:
+            return
         clean['recorded_at'] = _now()
         conn = self._transaction()
         try:
             kind, value = self._record(conn, profile_id)
             if kind == 'profile' and (expected is None or _same_endpoint(expected, value)):
                 previous = dict(value.get('topology_identity') or {})
-                if clean.get('server_uuid') and clean['server_uuid'] != previous.get('server_uuid'):
+                row = conn.execute('SELECT sequence, epoch, started FROM topology_observations WHERE profile_id=?',
+                                   (profile_id,)).fetchone()
+                recorded = dict(zip(('sequence', 'epoch', 'started'), row)) if row else {}
+                clock = self._topology_clock(conn)
+                if observation.store is not None:
+                    valid = (observation.store == clock['store'] and
+                             isinstance(observation.sequence, int) and
+                             0 < observation.sequence <= clock['sequence'])
+                    # A probe can publish between reserving this token and
+                    # completing its read. Its later commit sequence must
+                    # not make an earlier probe appear to have started later.
+                    newer = valid and (observation.started > recorded.get('started', 0)
+                                       if recorded.get('epoch') == observation.epoch else
+                                       observation.sequence > recorded.get('sequence', 0))
+                elif recorded.get('epoch') == observation.epoch:
+                    newer = observation.started > recorded.get('started', 0)
+                else:
+                    # Another process can write this database. Its monotonic
+                    # origin is unrelated: only accept the probe if its saved
+                    # snapshot has not been superseded in the meantime.
+                    newer = observation.previous == previous
+                if not newer:
+                    conn.execute('COMMIT')
+                    return
+                issued = observation if observation.store is not None else self._issue_topology_observation(conn)
+                conn.execute('INSERT OR REPLACE INTO topology_observations VALUES (?, ?, ?, ?)',
+                             (profile_id, max(issued.sequence, recorded.get('sequence', 0)),
+                              observation.epoch, observation.started))
+                if (clean.get('server_uuid') and previous.get('server_uuid') and
+                        clean['server_uuid'] != previous['server_uuid']):
                     # The same endpoint can reach another server. None of the
                     # old server's evidence belongs to the newly observed UUID.
                     previous.clear()
@@ -1892,16 +2169,26 @@ class WorkspaceStore:
             if not isinstance(profile_id, str) or len(profile_id) > 200:
                 raise ValueError('Invalid connection field: profile_id')
             clean['profile_id'] = profile_id
+        group_name = value.get('group_name')
+        if group_name is not None:
+            from .connection_groups import validate_group
+            group_name = validate_group(group_name)
+            clean['group_name'] = group_name
         value = clean
         if not profile_id:
             return value
+        # One read: the endpoint and the secret reference come from the same
+        # committed record. A group request checks membership with it too, also
+        # when the request types the password: consent is the store, read now.
+        profile = None
+        if group_name is not None or not value.get('password'):
+            profile = self._profile(profile_id)
+            if profile is None:
+                raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
+        if group_name is not None and (not group_name or profile.get('group') != group_name):
+            raise ValueError('This saved connection is outside the current connection group.')
         if value.get('password'):
             return value
-        # One read: the endpoint and the secret reference come from the same
-        # committed record.
-        profile = self._profile(profile_id)
-        if profile is None:
-            raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
         if not profile.get('remember_password'):
             return value
         from . import secret_store
@@ -2137,6 +2424,8 @@ def _present(kind, record):
         from .secret_store import backend_label
         record.pop('secret_ref', None)
         record.setdefault('group', '')
+        if not record['group']:
+            record.pop('group_generation', None)
         record.setdefault('remember_password', False)
         record.setdefault('secret_backend', '')
         record['has_saved_password'] = bool(record['remember_password'])

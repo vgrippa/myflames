@@ -81,8 +81,9 @@ export type IconName =
   | "block"
   | "clean"
   | "undo"
-  // Query editor: Format SQL.
+  // Query editor: Format SQL and Find and replace.
   | "format"
+  | "replace"
   // Learn: show a lesson's animation full screen, and leave it.
   | "fullscreen"
   | "exit-fullscreen"

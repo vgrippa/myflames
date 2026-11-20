@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from myflames import accounts_api, dbops, editor_session, lifecycle, ui
+import _cluster_fixtures as CF
+from myflames import accounts_api, cluster, cluster_shell, dbops, editor_session, lifecycle, managed_shell, ui
 # These handlers load lazily in ui.py and retain connector static helpers.
 # Import before replacing the factory so no module caches a test mock when
 # this suite runs before the server-view suites in the same interpreter.
@@ -80,6 +81,98 @@ class TestWriteHTTP(unittest.TestCase):
         elif path == '/api/live/variable/apply':
             payload['expect']['connection_identity'] = dbops.connection_identity(self.connection)
         return payload
+
+    def test_disabled_cluster_catalog_actions_return_exact_400_without_a_token(self):
+        shell = {'path': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6', 'version_tuple': [8, 4, 6]}
+        cases = (
+            ('galera-11.8-healthy', 'bootstrap_pc', 'local', shell, False),
+            ('galera-11.8-healthy', 'desync_node', 'remote', shell, False),
+            ('ic-8.4-healthy', 'switchover', 'primary', shell, False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview', None, False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview',
+             dict(shell, version_tuple=[8, 0, 13]), False),
+            ('ic-8.4-healthy', 'switch_to_multi_primary', 'overview', shell, True),
+            ('ic-8.4-healthy', 'set_primary_cluster', 'overview', shell, False),
+            ('ic-8.4-member-offline', 'stop_member', 'missing', shell, False),
+            ('ic-8.4-read-replica-local', 'switchover', 'local', shell, False),
+        )
+        tokens = ui._review_tokens(self.server)
+        for scenario, aid, who, installed, ssh in cases:
+            with self.subTest(scenario=scenario, action=aid, shell=installed, ssh=ssh):
+                conn = CF.conn(scenario)
+                conn.ssh_host = 'bastion.example' if ssh else None
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(cluster_shell, 'find_shell', return_value=installed):
+                    status, report = self.post('/api/live/cluster', {'connection': self.connection})
+                    self.assertEqual(status, 200, report)
+                    target = None if who == 'overview' else next(x for x in report['members'] if
+                        (x['local'] if who == 'local' else not x['local'] if who == 'remote' else
+                         x['role'] == 'PRIMARY' if who == 'primary' else x['state'] == 'MISSING'))
+                    actions = report['actions'] if target is None else target['actions']
+                    action = next(a for a in actions if a['id'] == aid)
+                    self.assertFalse(action['enabled'])
+                    expected = action['why_not'] + ' ' + action['fix']
+                    before = dict(tokens.entries)
+                    with mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+                        status, response = self.post('/api/live/cluster/plan', {
+                            'connection': self.connection, 'action': aid,
+                            'member_key': target['key'] if target else None,
+                            'enabled': True, 'why_not': None, 'fix': None})
+                    self.assertEqual((status, response), (400, {'error': expected}))
+                    self.assertNotIn('review_token', response)
+                    issue.assert_not_called()
+                    self.assertEqual(dict(tokens.entries), before)
+
+    def test_cluster_plan_reads_current_state_instead_of_trusting_the_catalog(self):
+        current = [CF.conn('galera-11.8-healthy')]
+        tokens = ui._review_tokens(self.server)
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=lambda **kw: current[0]):
+            status, report = self.post('/api/live/cluster', {'connection': self.connection})
+            self.assertEqual(status, 200)
+            target = next(x for x in report['members'] if x['local'])
+            action = next(a for a in target['actions'] if a['id'] == 'desync_node')
+            self.assertTrue(action['enabled'])
+            current[0] = CF.conn('galera-11.8-donor')
+            fresh = CF.report('galera-11.8-donor')
+            fresh_target = next(x for x in fresh['members'] if x['local'])
+            disabled = next(a for a in cluster.available_actions(fresh, fresh_target['key']) if a['id'] == 'desync_node')
+            with mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+                status, response = self.post('/api/live/cluster/plan', {
+                    'connection': self.connection, 'action': action['id'], 'member_key': target['key']})
+            self.assertEqual((status, response), (400, {'error': disabled['why_not'] + ' ' + disabled['fix']}))
+            issue.assert_not_called()
+
+    def test_privilege_disabled_cluster_plan_returns_400_with_grant_and_no_token(self):
+        from test_cluster_privileges import GrantsClient as BaseGrantsClient
+
+        class GrantsClient(BaseGrantsClient):
+            # Special methods must be on the fake itself; __getattr__ cannot
+            # forward a context manager while retaining its grant overrides.
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+
+        conn = GrantsClient()
+        tokens = ui._review_tokens(self.server)
+        before = dict(tokens.entries)
+        expected = ('Needs GROUP_REPLICATION_ADMIN or SUPER. '
+                    'Run the statement below as an administrator, then Refresh. '
+                    'GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;')
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                mock.patch.object(conn, 'close', wraps=conn.close) as close, \
+                mock.patch.object(tokens, 'issue', wraps=tokens.issue) as issue:
+            status, response = self.post('/api/live/cluster/plan', {
+                'connection': self.connection, 'action': 'switch_to_multi_primary',
+                'enabled': True, 'missing_privileges': [], 'grant_sql': 'GRANT SUPER ON *.* TO attacker;'})
+        self.assertEqual((status, response), (400, {'error': expected}))
+        self.assertNotIn('review_token', response)
+        issue.assert_not_called()
+        self.assertEqual(dict(tokens.entries), before)
+        self.assertEqual(conn.writes, [])
+        close.assert_called_once_with()
+        self.assertEqual(conn.reads.count(dbops._grants_read_sql(cluster.CLUSTER_TAG)), 1)
 
     def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
         self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)
@@ -453,6 +546,156 @@ class TestWriteHTTP(unittest.TestCase):
                 self.assertNotIn(secret, json.dumps(result))
                 self.assertEqual(sum(g.call_count for g in (connect, account, dump, editor)), 1)
                 self.assertNotIn(secret, json.dumps(self.server.store.audit_records()))
+
+
+class _FakeShellJob:
+    """Just enough of managed_shell.InstallJob for cancel and snapshots."""
+    def __init__(self):
+        import threading
+        self.id = 'a' * 32
+        self.state = 'downloading'
+        self.cancel_event = threading.Event()
+        self.watchdog = None
+
+    def snapshot(self):
+        return {'id': self.id, 'state': self.state, 'version': '9.7.0',
+                'received': 0, 'total': 158574987, 'elapsed_s': 0.0, 'error': None, 'cleaning': False}
+
+
+class TestManagedShellHTTP(unittest.TestCase):
+    """The three /api/client/shell/* endpoints over the real POST handler."""
+    PATHS = ('/api/client/shell/status', '/api/client/shell/install', '/api/client/shell/cancel')
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                          'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        self.server = SimpleNamespace(origin='http://127.0.0.1:8765', token='test-session-token',
+                                      cookie_name='myflames_test', session_secret='test-cookie-secret',
+                                      store=WorkspaceStore())
+        self.status_payload = {'schema_version': 'managed-shell-status-1.0', 'supported': True,
+                               'unsupported_reason': None, 'platform': 'darwin-arm64',
+                               'pinned': {'version': '9.7.0', 'size': 157547585,
+                                          'license': 'GPL-2.0-only WITH Universal-FOSS-exception-1.0',
+                                          'license_url': 'https://www.mysql.com/about/legal/licensing/oem/',
+                                          'downloads_url': 'https://dev.mysql.com/downloads/shell/9.7.html'},
+                               'installed': None, 'job': None}
+        # Even a regression past validation cannot open a socket.
+        for name in ('socket.socket', 'socket.create_connection'):
+            guard = mock.patch(name, side_effect=AssertionError('HTTP tests must not open sockets'))
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def post(self, path, payload=None, headers=None, raw=None):
+        """Bypass socket setup, retaining do_POST, dispatch and HTTP serialization."""
+        body = raw if raw is not None else json.dumps(payload).encode('utf-8')
+        values = {'Host': '127.0.0.1:8765', 'Origin': self.server.origin,
+                  'Cookie': 'myflames_test=test-cookie-secret',
+                  'X-Myflames-Token': self.server.token, 'Content-Type': 'application/json',
+                  'Content-Length': str(len(body))}
+        values.update(headers or {})
+        handler = object.__new__(ui.WorkspaceHandler)
+        handler.server = self.server
+        handler.connection = mock.Mock()
+        handler.path, handler.command = path, 'POST'
+        handler.request_version = 'HTTP/1.1'
+        handler.requestline = 'POST %s HTTP/1.1' % path
+        handler.headers = Message()
+        for key, value in values.items():
+            if value is not None:
+                handler.headers[key] = value
+        handler.rfile, handler.wfile = io.BytesIO(body), io.BytesIO()
+        handler.do_POST()
+        head, content = handler.wfile.getvalue().split(b'\r\n\r\n', 1)
+        return int(head.decode('ascii').split('\r\n', 1)[0].split()[1]), json.loads(content)
+
+    def test_status_answers_managed_shell_status(self):
+        with mock.patch.object(managed_shell, 'status', return_value=self.status_payload) as status_call:
+            status, result = self.post('/api/client/shell/status', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(result, self.status_payload)
+        status_call.assert_called_once_with(os.fspath(self.server.store.path.parent))
+
+    def test_status_refuses_any_payload_key(self):
+        with mock.patch.object(managed_shell, 'status', side_effect=AssertionError('called')) as status_call:
+            for payload in ({'unexpected': True}, {'id': 'a' * 32}, {'connection': {}}, {'password': 'secret'}):
+                with self.subTest(payload=payload):
+                    status, result = self.post('/api/client/shell/status', payload)
+                    self.assertEqual(status, 400)
+                    self.assertIn('error', result)
+            status_call.assert_not_called()
+
+    def test_install_starts_the_flight_and_reports_refusals_plainly(self):
+        job = _FakeShellJob()
+        with mock.patch.object(managed_shell, 'start_install', return_value=job.snapshot()) as start, \
+                mock.patch.object(managed_shell, 'status', return_value=self.status_payload):
+            status, result = self.post('/api/client/shell/install', {})
+        self.assertEqual(status, 200)
+        start.assert_called_once_with(os.fspath(self.server.store.path.parent))
+        with mock.patch.object(managed_shell, 'start_install',
+                               side_effect=managed_shell.Refused('A MySQL Shell installation is already running.')):
+            status, result = self.post('/api/client/shell/install', {})
+        self.assertEqual(status, 400)
+        self.assertEqual(result['error'], 'A MySQL Shell installation is already running.')
+
+    def test_install_refuses_any_payload_key(self):
+        with mock.patch.object(managed_shell, 'start_install', side_effect=AssertionError('called')) as start:
+            for payload in ({'id': 'a' * 32}, {'connection': {}}, ['not', 'an', 'object']):
+                with self.subTest(payload=payload):
+                    status, result = self.post('/api/client/shell/install', payload)
+                    self.assertEqual(status, 400)
+                    self.assertIn('error', result)
+            start.assert_not_called()
+
+    def test_cancel_requires_one_well_formed_id(self):
+        with mock.patch.object(managed_shell, 'cancel', side_effect=AssertionError('Invalid id reached cancel')) as cancel:
+            for payload, sentence in (
+                    ({}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': None}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 42}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': ''}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 'a' * 65}, 'Name the running MySQL Shell download to stop.'),
+                    ({'id': 'a' * 32, 'extra': True}, 'Unexpected MySQL Shell field.')):
+                with self.subTest(payload=payload):
+                    status, result = self.post('/api/client/shell/cancel', payload)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(result['error'], 'Could not complete the request: ' + sentence)
+            cancel.assert_not_called()
+
+    def test_cancel_without_a_job_is_a_plain_400(self):
+        with mock.patch.object(managed_shell, '_JOB', None):
+            status, result = self.post('/api/client/shell/cancel', {'id': 'a' * 32})
+        self.assertEqual(status, 400)
+        self.assertEqual(result['error'], 'No MySQL Shell download is running.')
+
+    def test_stale_cancel_id_never_stops_the_running_job(self):
+        job = _FakeShellJob()
+        with mock.patch.object(managed_shell, '_JOB', job), \
+                mock.patch.object(managed_shell, 'status', return_value=self.status_payload):
+            status, result = self.post('/api/client/shell/cancel', {'id': 'b' * 32})
+            self.assertEqual(status, 400)
+            self.assertEqual(result['error'], 'That MySQL Shell download is no longer active.')
+            self.assertFalse(job.cancel_event.is_set(), 'a stale id must not cancel the running job')
+            self.assertEqual(job.state, 'downloading')
+            status, result = self.post('/api/client/shell/cancel', {'id': job.id})
+            self.assertEqual(status, 200)
+            self.assertTrue(job.cancel_event.is_set())
+
+    def test_authentication_and_origin_run_before_dispatch(self):
+        bad_headers = ({'Cookie': None}, {'X-Myflames-Token': 'wrong'},
+                       {'Host': 'attacker.example:8765'}, {'Origin': 'https://attacker.example'})
+        with mock.patch.object(managed_shell, 'status', side_effect=AssertionError('called')) as status_call:
+            for path in self.PATHS:
+                for headers in bad_headers:
+                    with self.subTest(path=path, headers=headers):
+                        payload = {'id': 'a' * 32} if path.endswith('/cancel') else {}
+                        status, result = self.post(path, payload, headers)
+                        self.assertEqual(status, 403)
+                        self.assertIn('error', result)
+            status_call.assert_not_called()
 
 
 if __name__ == '__main__':

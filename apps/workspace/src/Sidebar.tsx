@@ -4,10 +4,12 @@
 // places and open plans open in a drawer.
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { ReactNode } from "react";
-import { time, type Plan } from "./api";
+import { appVersion, time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { UpdateBadge } from "./UpdateBadge";
+import { useMinuteClock } from "./UpdateCheck";
+import { updatePhase, updatePhaseLabel, useUpdateStatus } from "./updateStatus";
 import { applySidebarWidth, clampSidebarWidth, setUiPreference, SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, useUiPreferences } from "./uiPreferences";
 import type { SaveStatus } from "./session";
 
@@ -30,6 +32,26 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "investigations", label: "Investigations", icon: "investigation" },
   { key: "learn", label: "Learn", icon: "learn" },
 ];
+
+/** When the wide sidebar is hidden, its toggle carries the update alert.
+ * The narrow icon rail already keeps the badge visible on the logo. */
+export function SidebarToggle({ expanded, narrow, onToggle }: {
+  expanded: boolean;
+  narrow: boolean;
+  onToggle: () => void;
+}) {
+  const status = useUpdateStatus();
+  const now = useMinuteClock();
+  const phase = !expanded && !narrow ? updatePhase(status, now) : null;
+  const label = `${expanded ? "Hide sidebar" : "Show sidebar"}${phase ? `. ${updatePhaseLabel(status, phase)}` : ""}`;
+  return (
+    <button id="window-sidebar-toggle" type="button" className="icon-button"
+      aria-label={label} title={label} aria-expanded={expanded} aria-controls="workspace-sidebar"
+      data-update-phase={phase || undefined} onClick={onToggle}>
+      <Icon name="browser" />
+    </button>
+  );
+}
 
 export function statusText(status: SaveStatus) {
   switch (status.kind) {
@@ -58,6 +80,7 @@ export function Sidebar({
   onOpenPlan,
   onRemovePlan,
   onOpenSettings,
+  onOpenUpdates,
   settingsOpen,
   expanded,
   narrow,
@@ -83,6 +106,8 @@ export function Sidebar({
   onRemovePlan: (id: string) => void;
   /** Open the Settings page in the main area. */
   onOpenSettings: () => void;
+  /** Open the Settings page at Updates and news (the brand version control). */
+  onOpenUpdates: () => void;
   /** The Settings page is on screen: the gear reads as the current spot. */
   settingsOpen?: boolean;
   placeBadges?: Partial<Record<Place, ReactNode>>;
@@ -160,6 +185,7 @@ export function Sidebar({
     navRefs.current[target]?.focus();
   }
   const status = statusText(saveStatus);
+  const version = appVersion() || "development";
   return (
     <aside ref={sidebar} id="workspace-sidebar" className="sidebar" aria-label="Workspace" tabIndex={-1}>
       {!narrow && <div className="sidebar-resizer" role="separator" tabIndex={0}
@@ -194,9 +220,23 @@ export function Sidebar({
         }} />}
       <div className="sidebar-head">
         <div className="brand-group">
-          <button className="brand" onClick={() => go("home")} aria-label="myflames Home">
+          <button className="brand" onClick={() => go("home")} aria-label="myflames Home" title={`myflames ${version}`}>
             <img src={logo} alt="" width="22" height="22" />
             <span className="brand-name">myflames</span>
+          </button>
+          {/* The version is its own control: Settings > Updates and news. On the
+              icon rail it is hidden and the brand's tooltip names the version. */}
+          <button
+            type="button"
+            className="brand-version"
+            aria-label={`myflames ${version}: Updates and news settings`}
+            title={`myflames ${version}: Updates and news settings`}
+            onClick={() => {
+              setDrawerOpen(false);
+              onOpenUpdates();
+            }}
+          >
+            {version}
           </button>
           <UpdateBadge />
         </div>

@@ -14,6 +14,9 @@
 ^tiktoken not installed$
 # MariaDB always has transaction tracking, so the unknown-state case is MySQL-only.
 ^MariaDB always reports @@in_transaction$
+# MariaDB editor startup reads @@in_transaction, so the Performance Schema probe
+# refusal case is MySQL-only.
+^MariaDB reads @@in_transaction instead of a Performance Schema probe$
 # Python 3.7 cannot parse with feature_version (test_gen_sysvar_history).
 ^ast\.parse feature_version needs Python 3\.8$
 # Non-Windows Python 3.7 cannot import this Windows-only ctypes layout.

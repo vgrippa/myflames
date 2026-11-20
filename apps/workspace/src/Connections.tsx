@@ -3,9 +3,12 @@
 // keep the `profiles/*` endpoints and `profile_id`.
 import { lazy, Suspense, createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, clientMissingCode, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
+import { api, clientMissingCode, profileGroups, type Connection, type ConnectionType, type GroupSaveResult, type Profile, type SecretStore } from "./api";
 import { ClientMissingNotice } from "./ClientMissing";
 import { Icon } from "./components";
+import { groupConnectionLabel } from "./binding";
+
+const GroupEditorSheet = lazy(() => import("./GroupEditorSheet").then(module => ({ default: module.GroupEditorSheet })));
 import { ReadinessFacts, checkReadiness, copyReadiness, readinessHint, readinessLine } from "./readiness";
 import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
@@ -67,11 +70,11 @@ export function passwordStatus(p?: Profile) {
 }
 /** The non-secret fields of a connection or saved connection, in session
  * order. Spaces pasted around the host or CA path, or after the database,
- * are dropped as the server drops them (live.connection_options). */
-export function connectionFields(c: Partial<Connection>): SessionConnection & { group: string } {
+ * are dropped as the server drops them (live.connection_options). Stored
+ * group metadata stays on profiles; Group requests carry group_name. */
+export function connectionFields(c: Partial<Connection>): SessionConnection {
   return {
     name: c.name || "",
-    group: c.group || "",
     host: trimPasted(c.host || ""),
     port: c.port || 3306,
     user: c.user || "",
@@ -214,7 +217,7 @@ const groupTag = (g?: string) => g ? <span className="connection-group-tag" titl
  * confirmed under another policy (changed in another tab or the CLI) sends
  * nothing: its connection key no longer matches.
  */
-export type WritePolicy = { blocked: string; check: () => Promise<Connection> };
+export type WritePolicy = { blocked: string; check: (connection?: Connection) => Promise<Connection> };
 export const WritePolicyContext = createContext<WritePolicy | null>(null);
 export function useWritePolicy() {
   return useContext(WritePolicyContext);
@@ -372,6 +375,8 @@ export function Connections({
   busy,
   onUse,
   onActiveDeleted,
+  onGroupSaved,
+  onGroupDeleted,
   loading = false,
   loadError = "",
   addRequest = 0,
@@ -389,6 +394,10 @@ export function Connections({
   loadError?: string;
   /** Clear both settings and typed credentials after removing the active row. */
   onActiveDeleted: () => void;
+  /** A group edit applies at once; the shell moves an active Group connection. */
+  onGroupSaved?: (result: GroupSaveResult, previousName: string) => void | Promise<unknown>;
+  /** A deleted group's saved connections stay; the shell drops its Group connection. */
+  onGroupDeleted?: (name: string) => void | Promise<unknown>;
   /** Above zero: New connection… was chosen elsewhere (picker, palette); open
    * the Add connection form, then call onAddHandled so it opens only once. */
   addRequest?: number;
@@ -449,6 +458,8 @@ export function Connections({
   const [selected, setSelected] = useState<string[]>([]);
   const [cursor, setCursor] = useState("");
   const [search, setSearch] = useState("");
+  // The group being edited in the group editor sheet (null: closed).
+  const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [sheet, setSheet] = useState(() => typeof window !== "undefined" && window.innerWidth < 1040);
   const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.innerWidth <= 650);
   const [inspectorWidth, setInspectorWidth] = useState(340);
@@ -480,9 +491,12 @@ export function Connections({
   // the server fills the password for that one request from the secret store.
   const savedPassword = !!profile?.has_saved_password;
   const usingSaved = savedPassword && !draft.password;
+  // Requests are built from the connection fields only: the form's group is
+  // stored metadata (the user's consent), never sent to a server endpoint.
+  const { group: _formGroup, ...formFields } = tidy(draft);
   const formConnection: Connection = editingId
-    ? { ...tidy(draft), profile_id: editingId }
-    : tidy(draft);
+    ? { ...formFields, profile_id: editingId }
+    : formFields;
   const hostProblem = hostHasSpace(draft.host || "") ? "A host name or IP address cannot contain spaces." : "";
   const portProblem = Number.isInteger(draft.port) && draft.port >= 1 && draft.port <= 65535 ? "" : "Enter a port from 1 to 65535.";
   const trimmedName = (draft.name || "").trim();
@@ -820,6 +834,7 @@ export function Connections({
       : `Save connection asks whether to keep the password; a saved password is ${storedIn(secretStore?.backend, secretStore?.label)}, never in the workspace database, captures, or exports.`;
 
   const existingGroups = [...new Set(profiles.filter(p => !deletedIds.includes(p.id)).map(p => (p.group || "").trim()).filter(Boolean))].sort();
+  const connectionGroups = profileGroups(profiles.filter(p => !deletedIds.includes(p.id)));
 
   const rows: ConnectionRow[] = [
     ...(!active.id && active.fields.host ? [{ key: "active", fields: active.fields }] : []),
@@ -1321,6 +1336,27 @@ export function Connections({
         </div>
         {loading && <p role="status">Loading connections…</p>}
         {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => { setError((e as Error).message); setErrorMissing(""); })}>Retry connections</button></p>}
+        {connectionGroups.length > 0 && (
+          <section className="group-connections-section" aria-label="Group connections" data-testid="home-group-connections">
+            <h3 className="group-connections-title">Group connections</h3>
+            <ul className="group-connections-list">
+              {connectionGroups.map((g) => (
+                <li key={g.name} className="group-connection-row" data-group={g.name}>
+                  <span className="group-connection-open">
+                    <span className="group-connection-name">{g.name}</span>
+                    <span className="group-connection-count">· {g.count} {g.count === 1 ? "server" : "servers"}</span>
+                  </span>
+                  <SafetyTags type={g.type} readOnly={g.read_only} />
+                  <span className="group-connection-actions">
+                    <button type="button" className="button small" data-action="edit-group"
+                      aria-label={`Edit group ${g.name}`}
+                      onClick={() => setEditingGroup(g.name)}>Edit group…</button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={phone || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {
@@ -1351,6 +1387,17 @@ export function Connections({
         {editingId === null && error && <p role="alert" className="error connections-status">{error}</p>}
       </ViewLayout>
       {importingConnections && <Suspense fallback={<p role="status">Loading import…</p>}><ImportConnections profiles={profiles} refresh={refresh} onClose={() => setImportingConnections(false)} /></Suspense>}
+      {editingGroup && (
+        <Suspense fallback={<p role="status">Loading the group editor…</p>}>
+          <GroupEditorSheet
+            group={editingGroup}
+            profiles={profiles.filter(p => !deletedIds.includes(p.id))}
+            onSaved={async (result, previousName) => { await onGroupSaved?.(result, previousName); }}
+            onDeleted={async (name) => { await onGroupDeleted?.(name); }}
+            onClose={() => setEditingGroup(null)}
+          />
+        </Suspense>
+      )}
       {confirmDelete && !deleteLeft && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
         : confirmDelete.length === 1 ? "Delete connection?" : `Delete ${confirmDelete.length} connections?`}
         description="Remove these settings from this computer. Existing editor sessions are not closed."
@@ -1384,6 +1431,9 @@ export function ConnectionPicker({
   onManage,
   onAdd,
   onAccount,
+  onOpenGroup,
+  onEditGroup,
+  activeGroup = null,
   note,
 }: {
   profiles: Profile[];
@@ -1398,11 +1448,18 @@ export function ConnectionPicker({
   onAdd?: () => void;
   /** Opens Account and privileges for the connection in use. */
   onAccount?: () => void;
+  /** Open a connection group as one Group connection (an explicit open). */
+  onOpenGroup?: (name: string) => void;
+  /** Edit a group in the group editor sheet. */
+  onEditGroup?: (name: string) => void;
+  /** The Group connection in use, or null for a plain connection. */
+  activeGroup?: { name: string; count: number } | null;
   /** A one-off remark, such as a connection that no longer exists. */
   note?: string;
 }) {
   const privileges = usePrivileges();
   const profile = profiles.find((p) => p.id === active.id);
+  const groups = profileGroups(profiles);
   const saved = !!profile?.has_saved_password;
   const [override, setOverride] = useState(false);
   const passwordField = useRef<HTMLInputElement>(null);
@@ -1417,7 +1474,10 @@ export function ConnectionPicker({
   useEffect(() => setOverride(false), [active.id]);
   const hasConnection = !!active.fields.host;
   const showPassword = hasConnection && (!saved || override || !!active.password);
-  const name = active.fields.name || connectionTarget(active.fields);
+  // A Group connection names the group; a plain connection names itself.
+  const name = activeGroup
+    ? groupConnectionLabel(activeGroup.name, activeGroup.count)
+    : active.fields.name || connectionTarget(active.fields);
   const state = active.password
     ? "Typed password"
     : saved
@@ -1430,7 +1490,7 @@ export function ConnectionPicker({
         trigger={<>
           {hasConnection && (safety.known ? <TypeDot type={safety.type} readOnly={safety.read_only} /> : <span className="status-dot is-unknown" aria-label="Policy unknown" role="img" />)}
           <span className="connection-pill-name">{name}</span>
-          {groupTag(profile?.group)}
+          {groupTag(activeGroup ? activeGroup.name : profile?.group)}
           <span className="picker-target">{active.fields.name ? ` · ${connectionTarget(active.fields)}` : ""}</span>
           {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
           {/* Where the pills yield to width, a short type word stays beside the
@@ -1445,16 +1505,47 @@ export function ConnectionPicker({
         <div className="picker-panel">
           <h3 className="popover-title">Connection in use</h3>
           <label className="field">Connection
-            <Select label="Connection" value={active.id} onChange={id => {
+            <Select label="Connection" value={activeGroup ? "group-connection" : active.id} onChange={id => {
+              if (id === "group-connection") return;
               onSwitch(id);
               const chosen = profiles.find(p => p.id === id);
-              if (chosen) void checkReadiness({ ...chosen, profile_id: chosen.id,
+              // The probe sends the connection fields only (connectionFields):
+              // stored group metadata never leaves the profile list.
+              if (chosen) void checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
                 password: id === active.id ? active.password : "" }).catch(() => {});
             }} options={[
+              ...(activeGroup ? [["group-connection", name] as [string, string]] : []),
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),
               ...profiles.map((p): [string, string] => [p.id, p.group ? `${p.name} (${p.group})` : p.name]),
             ]} />
           </label>
+          {groups.length > 0 && (
+            <section className="group-connections-section" aria-label="Group connections">
+              <h4 className="group-connections-title">Group connections</h4>
+              <ul className="group-connections-list">
+                {groups.map((g) => {
+                  const isActive = activeGroup?.name === g.name;
+                  return (
+                    <li key={g.name} className={`group-connection-row${isActive ? " is-active" : ""}`} data-group={g.name}>
+                      <button type="button" className="group-connection-open"
+                        aria-label={isActive ? `Refresh group connection ${g.name}` : `Open group connection ${g.name}`}
+                        onClick={() => { closePopovers(); onOpenGroup?.(g.name); }}>
+                        <span className="group-connection-name">{g.name}</span>
+                        <span className="group-connection-count">· {g.count} {g.count === 1 ? "server" : "servers"}</span>
+                        <SafetyTags type={g.type} readOnly={g.read_only} />
+                      </button>
+                      <span className="group-connection-actions">
+                        {isActive && <span className="group-connection-active-note">In use</span>}
+                        <button type="button" className="button small" data-action="edit-group"
+                          aria-label={`Edit group ${g.name}`}
+                          onClick={() => { closePopovers(); onEditGroup?.(g.name); }}>Edit group…</button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
           {hasConnection && <>
           <p className="picker-endpoint">{connectionTarget(active.fields)}{active.fields.database ? ` · ${active.fields.database}` : ""}</p>
           <ReadinessFacts connection={{ ...active.fields, profile_id: active.id || undefined, type: profile?.type }} details />

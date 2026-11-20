@@ -239,9 +239,10 @@ GALERA_VARIABLES = (
 #: Variables read with the standard preflight. A name the server does not
 #: have is simply absent from the answer (SHOW GLOBAL VARIABLES WHERE ... IN).
 EXTRA_VARIABLES = GALERA_VARIABLES + (
-    "report_port", "server_uuid",
+    "report_port", "server_uuid", "server_id", "partial_revokes",
     "group_replication_group_name", "group_replication_single_primary_mode", "group_replication_local_address",
-    "group_replication_group_seeds",
+    "group_replication_group_seeds", "group_replication_bootstrap_group",
+    "group_replication_preemptive_garbage_collection",
 )
 
 WSREP_STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'"
@@ -707,7 +708,7 @@ def read_status(conn, _identity=None):
                 _finish(report)
                 return report
         raise
-    report = _base(server)
+    report = _ActionReport(_base(server), conn, server.variables)
     report["statements"].append("SHOW GLOBAL VARIABLES")
     wsrep_on = _on(server.var("wsrep_on"))
     if is_galera_node(server.variables):
@@ -1264,6 +1265,12 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
         "group_seeds": _text(variables.get("group_replication_group_seeds")),
         "view_id": None,
     }
+    # SHOW omits variables this version/plugin does not have. Keep absence
+    # distinct from OFF, especially for the START safety check.
+    for variable, field in (("group_replication_bootstrap_group", "bootstrap_group"),
+                            ("group_replication_preemptive_garbage_collection", "preemptive_garbage_collection")):
+        if variable in variables:
+            report["group_replication"][field] = _text(variables[variable])
     stats = reader.optional(_GR_STATS_SQL_57 if mysql57 else _GR_STATS_SQL,
                             "performance_schema.replication_group_member_stats", report["notes"])
     if stats is not None:
@@ -1429,7 +1436,7 @@ def _read_metadata(reader, report, group_name, local):
     if group_instances:
         report["cluster"]["expected_size"] = group_instances
         report["cluster"]["expected_source"] = "mysql_innodb_cluster_metadata"
-    _read_clusterset(reader, report, metadata, local, others)
+    _read_clusterset(reader, report, metadata, local, others, clusters)
     _read_routers(reader, report, metadata)
 
 
@@ -1439,7 +1446,7 @@ def _cs_instance(inst):
             "source": False}
 
 
-def _read_clusterset(reader, report, metadata, local, others=None):
+def _read_clusterset(reader, report, metadata, local, others=None, cluster_rows=None):
     """The InnoDB ClusterSet this cluster belongs to, from the metadata
     (``report["clusterset"]``; absent outside a ClusterSet). A replica
     cluster's metadata is a copy replicated from the primary cluster over the
@@ -1456,6 +1463,7 @@ def _read_clusterset(reader, report, metadata, local, others=None):
     if mine is None:
         return
     report["statements"].append("SELECT mysql_innodb_cluster_metadata.v2_cs_members, v2_cs_clustersets")
+    groups = {_text(row[0]): _text(row[3]) for row in cluster_rows or () if len(row) > 3}
     clusters = []
     for r in rows:
         if _text(r[0]) != _text(mine[0]):
@@ -1466,17 +1474,25 @@ def _read_clusterset(reader, report, metadata, local, others=None):
         instances.sort(key=lambda i: _natural(i["label"] or i["address"] or ""))
         clusters.append({"name": _text(r[2]), "role": _text(r[3]), "invalidated": _on(r[4]) is True,
                          "local": r is mine, "instances": instances})
+    # Review-only identity evidence from this server's own metadata read.
+    # Keep it off the public cluster-1.0 report, like cached catalog grants.
+    report._clusterset_groups = {_text(r[2]): groups.get(_text(r[1])) for r in rows
+                                if _text(r[0]) == _text(mine[0])}
     clusters.sort(key=lambda c: (c["role"] != "PRIMARY", _natural(c["name"] or "")))
     me = next(c for c in clusters if c["local"])
     primary = next((c for c in clusters if c["role"] == "PRIMARY" and not c["invalidated"]), None)
     cs = {"id": _text(mine[0]), "name": _text(mine[5]), "local_cluster": me["name"], "local_role": me["role"],
           "invalidated": me["invalidated"], "primary_cluster": primary["name"] if primary else None,
           "clusters": clusters, "channel": None,
-          "from_local_copy": me["role"] != "PRIMARY" or metadata.get("local_copy") == "left_group"}
+          "from_local_copy": me["role"] != "PRIMARY" or metadata.get("local_copy") in ("left_group", "read_replica")}
     report["clusterset"] = cs
     if me["role"] != "PRIMARY":
         report["notes"].append("This cluster is not the ClusterSet's primary cluster, so the ClusterSet read here "
                                "is its replicated copy of the metadata and may be behind. Connect to the primary "
+                               "cluster for the current view.")
+    elif metadata.get("local_copy") == "read_replica":
+        report["notes"].append("This server is a read replica, so the ClusterSet read here is its replicated copy "
+                               "of the metadata and may be behind. Connect to a group member of the primary "
                                "cluster for the current view.")
     name = me["name"] or "This cluster"
     if me["invalidated"]:
@@ -1615,9 +1631,12 @@ def _read_read_replica(reader, report):
     report["metadata"] = metadata
     _use_cluster(report, metadata, row)
     report["cluster"]["uuid"] = _text(row[3])
+    others = {}
     group_instances = 0
     for inst in instances:
-        if inst.pop("cluster_id") != metadata["cluster_id"]:
+        cluster_id = inst.pop("cluster_id")
+        if cluster_id != metadata["cluster_id"]:
+            others.setdefault(cluster_id, []).append(inst)
             continue
         metadata["instances"].append(inst)
         if inst is me:
@@ -1642,6 +1661,7 @@ def _read_read_replica(reader, report):
     report["notes"].append("This server is a read replica of the InnoDB Cluster: it replicates asynchronously over "
                            "the %s channel and is not a group member, so the group's quorum and members are not "
                            "visible here. The metadata read here is its replicated copy." % READ_REPLICA_CHANNEL)
+    _read_clusterset(reader, report, metadata, local, others, clusters)
     _judge_read_replica(reader, report, local)
     _read_routers(reader, report, metadata)
     return True
@@ -2028,7 +2048,7 @@ def check_in_text(router):
 #     sessions opened later only (Ma/sql/wsrep_var.cc:112-215), which
 #     silently diverges the data.
 # * InnoDB Cluster and InnoDB ClusterSet through MySQL Shell (cluster_shell.py;
-#   offered only when mysqlsh 8.0+ is installed; Sh/modules/adminapi/
+#   enabled only with a sufficiently recent mysqlsh; Sh/modules/adminapi/
 #   cluster/cluster_impl.cc and cluster_set/cluster_set_impl.cc):
 #   - mode switches: Cluster.switchToMultiPrimaryMode() and
 #     switchToSinglePrimaryMode() (:2840-2907): an InnoDB Cluster that is
@@ -2043,7 +2063,7 @@ def check_in_text(router):
 #   - ClusterSet.setPrimaryCluster(name) (cluster_set_impl.cc:2396), for a
 #     REPLICA cluster that is not invalidated; forcePrimaryCluster(name)
 #     (:3005), from a member of a replica cluster, typed (MySQL Shell refuses
-#     while the primary cluster is reachable and OK,
+#     while any instance of the primary cluster is reachable,
 #     verify_primary_cluster_not_recoverable); rejoinCluster(name) (:3324)
 #     for an invalidated cluster. A replica cluster's metadata is a
 #     replicated copy: MySQL Shell checks the primary cluster's before each.
@@ -2052,14 +2072,38 @@ def check_in_text(router):
 #     operation ran is judged from a read after it (reviewed_writes,
 #     verify_on_error).
 
-ACTION_SCHEMA_VERSION = "cluster-action-1.0"
+ACTION_SCHEMA_VERSION = "cluster-action-1.1"
 CLUSTER_ACTION_TAG = "/*myflames:cluster_op*/ "
 GR_UDF_MIN = (8, 0, 13)
 #: START GROUP_REPLICATION and the UDFs wait for the group (a join, the old
 #: primary's transactions), so a send waits longer than a read.
 ACTION_TIMEOUT = 120
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_GR_PRIVILEGE = "SUPER or GROUP_REPLICATION_ADMIN"
+_GR_PRIVILEGE = "GROUP_REPLICATION_ADMIN or SUPER"
+
+
+class _ActionReport(dict):
+    """Request-local catalog inputs, never fields in the public JSON report.
+
+    Plain status/CLI reads do not need grants. Keep the originating connection
+    only for a lazy catalog read, shared by every member and overview action.
+    MariaDB's additional reviewed identity comes from the same preflight as
+    hostname/port and the wsrep variables, without changing cluster-1.0.
+    """
+    def __init__(self, report, conn, variables):
+        super().__init__(report)
+        self._action_conn = conn
+        self._action_grants = None
+        self._clusterset_groups = {}
+        self._galera_identity = ({"server_id": _number(variables.get("server_id")),
+                                  "wsrep_node_name": _text(variables.get("wsrep_node_name"))}
+                                 if report.get("engine") == "mariadb" else {})
+
+    def action_grants(self):
+        from . import dbops
+        if self._action_grants is None:
+            self._action_grants = _grant_model(self, dbops.read_grants(self._action_conn, CLUSTER_TAG))
+        return self._action_grants
 
 
 def _version_of(report):
@@ -2108,10 +2152,6 @@ def _group_ready(report):
     return None
 
 
-def _action(aid, label, danger, description):
-    return {"id": aid, "label": label, "danger": danger, "description": description}
-
-
 #: What myflames passes to MySQL Shell: an instance as host:port (IPv6
 #: bracketed), a cluster name in the characters MySQL Shell allows (letters,
 #: digits, _ - ., not starting with a digit: Sh/modules/adminapi/common/
@@ -2120,14 +2160,186 @@ _ADDRESS = re.compile(r"(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+):[0-9]{1,5}")
 _CLUSTER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,62}")
 #: The actions MySQL Shell runs; ids with a cluster name end in ":<name>".
 SHELL_ACTIONS = ("rejoin_instance", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
-SHELL_MIN_VERSION = (8, 0, 0)
-SHELL_CLUSTERSET_MIN_VERSION = (8, 0, 27)
+#: All three topology methods first appear in Shell 8.0.14 (absent in
+#: 8.0.13): mysql-shell tag 8.0.14, modules/adminapi/mod_dba_cluster.cc:132-142.
+#: The session server and every group member need MySQL 8.0.13:
+#: modules/adminapi/cluster/topology_configuration_command.cc:49-54, 231-245;
+#: mysql-server tag mysql-8.0.13, plugin/group_replication/src/udf/
+#: udf_multi_primary.cc:87-94 registers the UDF (absent in mysql-8.0.12).
+# Option-file loading first appears in Shell 8.0.32 (shell_options.cc:
+# 205-214,887-891 at that tag). Earlier methods cannot use our credentials.
+SHELL_MIN_VERSION = (8, 0, 32)
+SHELL_CLUSTERSET_MIN_VERSION = SHELL_MIN_VERSION
 #: WL#15056 added rejoinInstance's recoveryMethod option in MySQL Shell 8.1.0.
 SHELL_REJOIN_MIN_VERSION = (8, 1, 0)
 #: An AdminAPI operation waits for recovery or a channel catching up.
 SHELL_TIMEOUT = 600
 _SHELL_PRIVILEGE = ("The cluster administrator account: MySQL Shell connects to the members with this "
                     "connection's user and password")
+_SHELL_SSH_NOTE = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
+                   "members directly, outside the tunnel, with this connection's user and password. Run them in "
+                   "MySQL Shell from a host that reaches the members.")
+
+# One engine table maps action id and execution route to versioned requirements.
+# Each requirement is a tuple of acceptable alternatives, least privilege first.
+# MySQL: udf_utils.cc:35-87 and sql_parse.cc START/STOP_GROUP_REPLICATION;
+# Shell: accounts.cc:122-175,244-324, Topology_configuration_command::prepare.
+# A Shell topology entry uses the full list below, never a SUPER substitute.
+MYSQL_ACTION_PRIVILEGES = {
+    "switchover": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                   "mysqlsh": "shell_admin"},
+    "switch_to_single_primary": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                                 "mysqlsh": "shell_admin"},
+    "switch_to_multi_primary": {"udf": ((GR_UDF_MIN, (("GROUP_REPLICATION_ADMIN", "SUPER"),)),),
+                                "mysqlsh": "shell_admin"},
+    "start_member": {"sql": ((GR_MIN_VERSION, (("SUPER",),)),
+                              ((8, 0, 0), (("GROUP_REPLICATION_ADMIN", "SUPER"),)))},
+    "stop_member": {"sql": ((GR_MIN_VERSION, (("SUPER",),)),
+                             ((8, 0, 0), (("GROUP_REPLICATION_ADMIN", "SUPER"),)))},
+    # These AdminAPI methods have no ensure_user_privileges call (review B5).
+    "rejoin_instance": {"mysqlsh": "shell_runtime"},
+    "set_primary_cluster": {"mysqlsh": "shell_runtime"},
+    "force_primary_cluster": {"mysqlsh": "shell_runtime"},
+    "rejoin_cluster": {"mysqlsh": "shell_runtime"},
+}
+MYSQL_SHELL_GLOBAL_PRIVILEGES = (
+    ((0, 0, 0), ("RELOAD", "SHUTDOWN", "PROCESS", "FILE", "SELECT", "REPLICATION SLAVE",
+                 "REPLICATION CLIENT", "CREATE USER")),
+    ((8, 0, 0), ("SYSTEM_VARIABLES_ADMIN", "PERSIST_RO_VARIABLES_ADMIN", "REPLICATION_SLAVE_ADMIN",
+                 "GROUP_REPLICATION_ADMIN", "ROLE_ADMIN", "CONNECTION_ADMIN")),
+    ((8, 0, 17), ("EXECUTE", "CLONE_ADMIN")),
+    ((8, 0, 18), ("REPLICATION_APPLIER",)),
+    ((8, 3, 0), ("TRANSACTION_GTID_TAG",)),
+)
+MYSQL_SHELL_SCHEMA_PRIVILEGES = (
+    ("mysql", ("DELETE", "INSERT", "UPDATE")),
+) + tuple((schema, ("ALTER", "ALTER ROUTINE", "CREATE", "CREATE ROUTINE", "CREATE TEMPORARY TABLES",
+                    "CREATE VIEW", "DELETE", "DROP", "EVENT", "EXECUTE", "INDEX", "INSERT", "LOCK TABLES",
+                    "REFERENCES", "SHOW VIEW", "TRIGGER", "UPDATE"))
+          for schema in (METADATA_SCHEMA, METADATA_SCHEMA + "_bkp", METADATA_SCHEMA + "_previous"))
+
+# MariaDB: sys_vars.cc Sys_wsrep_desync / Sys_wsrep_provider_options and
+# set_var.cc on_check_access_global -> privilege.h SUPER_ACL (review D1/E1).
+# Resolve through the existing variable-specific dbops table, not a new rule.
+MARIADB_ACTION_PRIVILEGES = {"desync_node": "wsrep_desync", "resync_node": "wsrep_desync",
+                             "bootstrap_pc": "wsrep_provider_options"}
+_PRIVILEGES_UNREADABLE = ("Privileges could not be read; the server refuses the change if one is missing.")
+_SHELL_RUNTIME_PRIVILEGES = "MySQL Shell checks the privileges it needs when it runs."
+_GRANT_FIX = "Run the statement below as an administrator, then Refresh."
+_GRANT_MODE_UNKNOWN = ("The GRANT could not be built because partial_revokes could not be read "
+                       "in this account's session. Refresh and try again.")
+
+
+def _grant_model(report, grants):
+    """Normalize dbops.read_grants or an existing privileges model once.
+
+    An absent, failed, empty or unparsed read is unknown, never a denial.
+    CURRENT_USER(), not the login name or a role's grantee, names the GRANT.
+    """
+    from . import privileges
+    if not isinstance(grants, dict) or not grants.get("checked", True):
+        return None
+    if "global" in grants and "dynamic" in grants:
+        model = dict(grants)
+        partial = model.get("grant_partial_revokes", model.get("partial_revokes"))
+    else:
+        partial = grants.get("partial_revokes")
+        model = privileges.parse_grants(grants.get("grants"), report.get("engine"), report.get("server_version"),
+                                         partial_revokes=partial is True)
+        model["account"] = grants.get("account")
+    if not isinstance(partial, bool):
+        version = _version_of(report)
+        if report.get("engine") == "mariadb" or (
+                report.get("engine") in ("mysql", "percona", "percona_server", "pxc") and
+                len(version) == 3 and (5, 7, 0) <= version < (8, 0, 16)):
+            # MySQL 5.7.44 sql/auth/sql_auth_cache.cc:1033 and 8.0.15:1163
+            # always wild_compare; 8.0.16:1181 adds mysqld_partial_revokes().
+            # MariaDB sql/sql_acl.cc:3257 also always wild_compare.
+            partial = False
+    # A successful read on an engine without partial_revokes has known
+    # wildcard semantics. On versions with the variable, absence is unknown.
+    model["grant_partial_revokes"] = partial if isinstance(partial, bool) else None
+    if not model.get("grants") or model.get("unparsed") or not model.get("fresh_session", True):
+        return None
+    account = model.get("account")
+    if not isinstance(account, str) or "@" not in account:
+        return None
+    try:
+        privileges.quote_account(*account.rsplit("@", 1))
+    except ValueError:
+        return None
+    model.update(engine=report.get("engine"), version=report.get("server_version"))
+    return model
+
+
+def _catalog_grants(report, checks):
+    if "grants" in checks:
+        return _grant_model(report, checks["grants"])
+    return report.action_grants() if isinstance(report, _ActionReport) else None
+
+
+def _privilege_requirements(report, action):
+    """(requirements, Shell-runtime-only). Specs retain scope/grant option.
+
+    Alternatives stay tuples internally; the catalog displays each privilege
+    together with its scope and WITH GRANT OPTION when those are required.
+    """
+    from . import dbops
+    base, _ = _action_name(action["id"])
+    version = _version_of(report)
+    if report.get("engine") == "mariadb":
+        variable = MARIADB_ACTION_PRIVILEGES.get(base)
+        if not variable:
+            return [], False
+        need = dbops.required_privileges("set_global", "mariadb", version, variable)
+        # Both wsrep variables have a single-privilege alternative today.
+        # Preserve the existing helper's alternatives without parsing grants.
+        alternatives = tuple(a[0] for a in need["any_of"])
+        return [(alternatives, None, False)], False
+    rules = MYSQL_ACTION_PRIVILEGES.get(base, {}).get(action["via"], ())
+    if rules == "shell_runtime":
+        return [], True
+    if rules == "shell_admin":
+        names = sorted(p for since, names in MYSQL_SHELL_GLOBAL_PRIVILEGES if version >= since for p in names)
+        return ([((p,), None, True) for p in names] +
+                [((p,), schema, True) for schema, names in MYSQL_SHELL_SCHEMA_PRIVILEGES for p in names]), False
+    requirements = ()
+    for since, needed in rules:
+        if version >= since:
+            requirements = needed
+    return [(alternatives, None, False) for alternatives in requirements], False
+
+
+def _privilege_label(privilege, database, grantable):
+    from .privileges import quote_identifier
+    return (privilege + (" ON %s.*" % quote_identifier(database) if database else "") +
+            (" WITH GRANT OPTION" if grantable else ""))
+
+
+def _grant_sql(missing, account, partial_revokes=None):
+    """Advisory text only. No statement built here enters the write plan."""
+    from .privileges import quote_account, quote_identifier
+    account = quote_account(*account.rsplit("@", 1))
+    grouped = {}
+    for alternatives, database, grantable in missing:
+        if database and any(c in database for c in "\\_%"):
+            if not isinstance(partial_revokes, bool):
+                return None
+            if partial_revokes is False:
+                # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
+                # wildcard comparison with partial_revokes OFF, literal ON.
+                database = database.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+        names = grouped.setdefault((database, grantable), [])
+        if alternatives[0] not in names:
+            names.append(alternatives[0])
+    return "\n".join("GRANT %s ON %s TO %s%s;" %
+                     (", ".join(names), "%s.*" % quote_identifier(database) if database else "*.*", account,
+                      " WITH GRANT OPTION" if grantable else "")
+                     for (database, grantable), names in grouped.items())
+
+
+class ActionUnavailable(ValueError):
+    """A catalog refusal, already worded for the user (including its fix)."""
 
 
 def _shell(checks, minimum=SHELL_MIN_VERSION):
@@ -2150,146 +2362,529 @@ def _action_name(action):
     return base, name or None
 
 
-def _clusterset_actions(cs):
-    """ClusterSet changes offered on a member of any cluster in the set
-    (Cluster_set_impl::set_primary_cluster, force_primary_cluster and
-    rejoin_cluster; MySQL Shell checks the set's state again before each)."""
-    out = []
+def _shell_minimum(report, action):
+    base, _ = _action_name(action)
+    if base == "rejoin_instance":
+        return SHELL_REJOIN_MIN_VERSION
+    if base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster") or (
+            base == "switchover" and (report.get("clusterset") or {}).get("local_role") == "REPLICA"):
+        return SHELL_CLUSTERSET_MIN_VERSION
+    return SHELL_MIN_VERSION
+
+
+def _tool_issue(report, action, checks):
+    """Tool/version checks precede state checks; never expose client error text."""
+    if action["via"] == "mysqlsh":
+        minimum = _shell_minimum(report, action["id"])
+        version = ".".join(str(n) for n in minimum)
+        if checks.get("ssh"):
+            return _SHELL_SSH_NOTE, "Connect directly to a group member from a host that reaches the members."
+        shell = checks.get("shell")
+        fix = "Install MySQL Shell %s or later, then Refresh." % version
+        if not isinstance(shell, dict) or not shell.get("path"):
+            return "MySQL Shell was not found on this computer.", fix
+        if not shell.get("version_tuple"):
+            return "The installed MySQL Shell version could not be read.", fix
+        if tuple(shell["version_tuple"]) < minimum:
+            found = shell.get("version") or ".".join(str(n) for n in shell["version_tuple"])
+            return "This action needs MySQL Shell %s or later; found %s." % (version, found), fix + " Get MySQL Shell."
+    if report.get("kind") in ("group_replication", "innodb_cluster"):
+        base, _ = _action_name(action["id"])
+        usable, why = _gr_usable(report)
+        if not usable:
+            return why, "Use a MySQL Group Replication member running MySQL 8.0.13 or later."
+        if base in ("switchover", "switch_to_multi_primary", "switch_to_single_primary"):
+            # Shell's shared Topology_configuration_command::prepare checks
+            # every group member, but a MISSING metadata row is not a member
+            # and does not block setPrimaryInstance (cluster_impl.cc:2911-2915).
+            for member in _group_members(report):
+                version = _version_of({"server_version": member.get("version")})
+                if not version:
+                    return ("A group member's MySQL version could not be read.",
+                            "Refresh from an ONLINE member to read the group versions.")
+                if version < GR_UDF_MIN:
+                    return ("Every group member must run MySQL 8.0.13 or later for this change.",
+                            "Upgrade the group members to MySQL 8.0.13 or later, then Refresh.")
+    return None
+
+
+def _group_issue(report):
+    local = _local_member(report)
+    if local and (local.get("role") == "READ_REPLICA" or local.get("instance_type") == "read-replica"):
+        return ("This connection is to a read replica, not a Group Replication member.",
+                "Connect to an ONLINE Group Replication member, then Refresh.")
+    if not local or local.get("state_source") != "replication_group_members":
+        return ("This connection is not to a Group Replication member.",
+                "Connect to an ONLINE Group Replication member, then Refresh.")
+    why = _group_ready(report)
+    if why:
+        return why, "Restore an ONLINE member with quorum and wait for recovery or connectivity to settle, then Refresh."
+    return None
+
+
+_LOCAL_ACTIONS = {
+    "stop_member": ("Stop Group Replication runs on the server it stops", "stop it"),
+    "start_member": ("Start Group Replication runs on the server it starts", "start it"),
+    "desync_node": ("Desync runs on the node it changes", "desync it"),
+    "resync_node": ("Resync runs on the node it changes", "resync it"),
+    "bootstrap_pc": ("Bootstrap runs on the node it changes", "bootstrap its component"),
+}
+
+
+def _member_profiles(report, member, checks):
+    """All current profiles claiming this UUID, including unsaved passwords.
+
+    Credential availability cannot resolve conflicting identity evidence.
+    The opened member's live identity can confirm its own stored endpoint.
+    """
+    field = "wsrep_node_uuid" if report.get("kind") in ("galera", "pxc") else "server_uuid"
+    uuid = member.get("uuid")
+    if not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
+        return []
+    current = checks.get("current_profile") or {}
+    candidates = {p["id"]: p for p in checks.get("group_profiles") or () if isinstance(p, dict) and p.get("id")
+                  and p.get("group") == checks.get("group_name")
+                  and (p.get("topology_identity") or {}).get(field) == uuid}
+    if (member.get("local") and current.get("group") == checks.get("group_name") and
+            current.get("id") and target_server_identity(report).get(field) == uuid):
+        candidates[current["id"]] = current
+    return list(candidates.values())
+
+
+def _member_address_profiles(report, member, checks):
+    """Saved endpoints Review may try, without logging in or proving identity.
+
+    Use the topology matcher's host, port and loopback rules. Check each
+    profile separately so duplicate addresses remain ambiguous, including
+    profiles without a saved password.
+    """
+    from .topology_links import match_database_endpoint, split_host_port
+    uuid = member.get("uuid")
+    if not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
+        return []
+    host, port = split_host_port(member.get("address"), 3306)
+    host, port = member.get("host") or host, member.get("port") or port
+    current = checks.get("current_profile") or {}
+    candidates = {}
+    for profile in checks.get("group_profiles") or ():
+        if (not isinstance(profile, dict) or not profile.get("id") or
+                profile.get("group") != checks.get("group_name")):
+            continue
+        endpoint = {"kind": "database", "profile_host": profile.get("host"),
+                    "profile_port": profile.get("port") or 3306, "ssh_host": profile.get("ssh_host")}
+        match, _ = match_database_endpoint(host, port, [endpoint], observer_host=current.get("host"))
+        if match is not None:
+            candidates[profile["id"]] = profile
+    return list(candidates.values())
+
+
+def _member_profile(report, member, checks):
+    """Prefer confirmed identity; a unique address only chooses Review's login."""
+    candidates = _member_profiles(report, member, checks)
+    if not candidates:
+        candidates = _member_address_profiles(report, member, checks)
+    if len(candidates) != 1:
+        return None
+    profile = candidates[0]
+    current = checks.get("current_profile") or {}
+    if profile.get("remember_password") or (member.get("local") and profile["id"] == current.get("id")):
+        return profile
+    return None
+
+
+def _member_route_issue(report, member, checks):
+    """Explain ambiguity or missing credentials without promising extra probes."""
+    candidates = _member_profiles(report, member, checks)
+    if len(candidates) > 1:
+        names = sorted(p.get("name") or p["id"] for p in candidates)
+        return ("%s %s reach this member." %
+                (" and ".join(names), "both" if len(names) == 2 else "all"),
+                "A MySQL Router or ProxySQL connection reaches whichever server is primary. "
+                "Connect to %s to act on this member, or keep only one of them in the group." % names[0])
+    if not candidates:
+        candidates = _member_address_profiles(report, member, checks)
+        if len(candidates) > 1:
+            names = sorted(p.get("name") or p["id"] for p in candidates)
+            return ("%s %s use this member's address." %
+                    (" and ".join(names), "both" if len(names) == 2 else "all"),
+                    "Keep one saved connection for this member in the group, or correct their addresses.")
+    if candidates:
+        return ("The saved connection %s has no saved password." % (candidates[0].get("name") or candidates[0]["id"]),
+                "Save its password before reviewing a cluster action.")
+    name = member.get("name") or "this member"
+    # Reuse stored and live identity evidence, including the active member,
+    # rather than asking the user to confirm connections already accounted for.
+    confirmed = {p["id"] for known_member in _members(report)
+                 for p in _member_profiles(report, known_member, checks)}
+    unconfirmed = {p["id"]: p for p in checks.get("group_profiles") or ()
+                   if isinstance(p, dict) and p.get("id") and p.get("group") == checks.get("group_name")
+                   and p["id"] not in confirmed}
+    if unconfirmed:
+        names = sorted(p.get("name") or p["id"] for p in unconfirmed.values())
+        choices = " or ".join(names[:3])
+        if len(names) > 3:
+            choices += " and %d more" % (len(names) - 3)
+        return ("No saved connection in this group is confirmed as %s yet." % name,
+                "Open the one that reaches %s (%s) on its own and view Cluster once to confirm it." % (name, choices))
+    fix = "Add a saved connection for %s to this group." % name
+    return fix, fix
+
+
+def _member_issue(report, action, member, checks):
+    base = action["id"]
+    kind = report.get("kind")
+    state = member.get("state")
+    name = member.get("name") or "This member"
+    if kind in ("innodb_cluster", "group_replication"):
+        if member.get("role") == "READ_REPLICA" or member.get("instance_type") == "read-replica":
+            return ("%s is a read replica, not a Group Replication member." % name,
+                    "Choose a Group Replication member.")
+        if base == "rejoin_instance":
+            if _version((report.get("metadata") or {}).get("schema_version")) < (2, 0, 0):
+                return ("Rejoin needs InnoDB Cluster metadata 2.0.0 or later.",
+                        "Upgrade the cluster metadata in MySQL Shell, then Refresh.")
+            if not member.get("in_metadata"):
+                return "This member is not recorded in the cluster metadata.", "Add it to the cluster in MySQL Shell first."
+            if state not in ("MISSING", "OFFLINE", "ERROR"):
+                return ("This member has not left the group.",
+                        "Rejoin a member only after it has left the group and its fault has been checked.")
+            if not _ADDRESS.fullmatch(member.get("address") or ""):
+                return "This member has no valid MySQL Shell address.", "Correct its address in the cluster metadata, then Refresh."
+            issue = _group_issue(report)
+            if issue:
+                return issue
+            if not any(m.get("role") == "PRIMARY" and m.get("state") == "ONLINE" for m in _group_members(report)):
+                return "No ONLINE primary is visible in this cluster.", "Restore an ONLINE primary before rejoining a member."
+            if (report.get("clusterset") or {}).get("invalidated"):
+                return ("This cluster is invalidated in its ClusterSet.",
+                        "Rejoin this cluster to the ClusterSet before rejoining a member.")
+            cs = report.get("clusterset") or {}
+            if cs and cs.get("global_status") != "OK":
+                status = cs.get("global_status")
+                return (("This cluster's ClusterSet status is %s; Rejoin needs exactly OK." % status if status else
+                         "This cluster's ClusterSet status could not be verified as OK."),
+                        "Check the cluster's globalStatus with dba.getClusterSet().status() in MySQL Shell; "
+                        "restore an OK status before rejoining the member in MySQL Shell.")
+            return None
+        if member.get("state_source") != "replication_group_members":
+            return "This member is not in the group view.", "Connect to this member and Refresh to read its state."
+        if base == "stop_member":
+            if state not in ("ONLINE", "RECOVERING", "ERROR"):
+                return ("Group Replication is already stopped or its state is unknown on this member.",
+                        "Refresh on this member to read its state before stopping Group Replication.")
+            return None
+        if base == "start_member":
+            if state == "ERROR":
+                return ("Group Replication is still running on this member in ERROR.",
+                        "Stop Group Replication on this member first.")
+            if state != "OFFLINE":
+                return "This member is not OFFLINE.", "Stop Group Replication on this member before starting it again."
+            bootstrap = checks.get("bootstrap_group", (report.get("group_replication") or {}).get("bootstrap_group"))
+            bootstrap = str(bootstrap or "").upper()
+            if bootstrap in ("ON", "1"):
+                return ("group_replication_bootstrap_group is ON, so starting would create a new group.",
+                        "Set group_replication_bootstrap_group to OFF, then Refresh.")
+            if bootstrap not in ("OFF", "0"):
+                return ("The Group Replication bootstrap setting could not be read.",
+                        "Read group_replication_bootstrap_group and confirm it is OFF, then Refresh.")
+            return None
+        if (report.get("cluster") or {}).get("topology") != "single_primary":
+            return "Make primary needs single-primary mode.", "Switch the group to single-primary mode first."
+        if member.get("role") == "PRIMARY":
+            return "%s is already the primary." % name, "Choose an ONLINE secondary."
+        if state != "ONLINE":
+            return "%s is not ONLINE." % name, "Wait for recovery or rejoin this member, then Refresh."
+        if member.get("role") != "SECONDARY":
+            return "%s is not a secondary." % name, "Choose an ONLINE secondary."
+        if not _UUID.fullmatch(member.get("uuid") or ""):
+            return "This member has no valid Group Replication UUID.", "Refresh the cluster and verify this member's identity."
+        if action["via"] == "mysqlsh" and not _ADDRESS.fullmatch(member.get("address") or ""):
+            return "This member has no valid MySQL Shell address.", "Correct its address in the cluster metadata, then Refresh."
+        return _group_issue(report)
+    if checks.get("group_name") and not member.get("local") and base in ("desync_node", "resync_node"):
+        # Peer-local wsrep_desync/state is not part of this node's report.
+        # Catalog availability invites Review on the peer's own saved login.
+        return None
+    galera = report.get("galera") or {}
+    metrics = galera.get("metrics") or {}
+    if (galera.get("wsrep_on") or "").upper() != "ON":
+        return "Galera replication is not enabled on this node.", "Enable Galera replication on this node, then Refresh."
+    comment = (metrics.get("local_state_comment") or "").strip()
+    desync = (galera.get("desync") or "").upper()
+    if base == "desync_node":
+        if desync == "ON":
+            return "This node is already desynced.", "Resync this node before desyncing it again."
+        if desync != "OFF" or comment != "Synced":
+            return ("This node is not Synced with wsrep_desync OFF.",
+                    "Wait for the node to become Synced and confirm wsrep_desync is OFF, then Refresh.")
+    elif base == "resync_node":
+        if desync != "ON":
+            return ("wsrep_desync is not ON on this node.",
+                    "Resync only a node desynced with wsrep_desync; let a state transfer or backup finish on its own.")
+    else:
+        if (report.get("cluster") or {}).get("component") != "non-Primary":
+            return "This node is not in a non-Primary component.", "Bootstrap only after verifying this component has lost its Primary status."
+        if metrics.get("connected") is not True:
+            return "This node is not connected to its Galera component.", "Restore the node's Galera connection, then Refresh."
+        if _joining(metrics):
+            return "This node is joining the component.", "Wait for the state transfer to finish, then Refresh."
+    return None
+
+
+def _overview_issue(report, action):
+    issue = _group_issue(report)
+    if issue:
+        return issue
+    base, name = _action_name(action["id"])
+    cs = report.get("clusterset") or {}
+    if base in ("switch_to_multi_primary", "switch_to_single_primary"):
+        if report.get("kind") == "innodb_cluster":
+            # Shell forbids BOTH switches in any ClusterSet, including its
+            # primary cluster (cluster_impl.cc:2838-2880; common/preconditions.cc).
+            if cs:
+                return ("Mode switches are not supported for a cluster in a ClusterSet.",
+                        "Keep this ClusterSet cluster in single-primary mode.")
+            if _missing(report) or any(m.get("state") != "ONLINE" for m in _group_members(report)):
+                return "Every cluster member must be ONLINE for a mode switch.", "Rejoin offline or missing members and wait for recovery, then Refresh."
+            if not any(m.get("state") == "ONLINE" and m.get("role") == "PRIMARY" for m in _group_members(report)):
+                return "No ONLINE primary is visible in this cluster.", "Restore an ONLINE primary before changing the cluster mode."
+        topology = (report.get("cluster") or {}).get("topology")
+        desired = "multi_primary" if base == "switch_to_multi_primary" else "single_primary"
+        if topology == desired:
+            return ("The group is already in %s mode." % desired.replace("_", "-"),
+                    "Choose the other mode to change the topology.")
+        if topology not in ("single_primary", "multi_primary"):
+            return "The group mode could not be read.", "Refresh from an ONLINE Group Replication member."
+        # MySQL 8.4+/9.x rejects the multi-primary UDF while this is ON:
+        # mysql-server/plugin/group_replication/src/udf/udf_multi_primary.cc:118-121.
+        if base == "switch_to_multi_primary" and _on(
+                (report.get("group_replication") or {}).get("preemptive_garbage_collection")):
+            return ("group_replication_preemptive_garbage_collection is ON.",
+                    "Set group_replication_preemptive_garbage_collection to OFF, then Refresh.")
+        return None
+    if base in ("set_primary_cluster", "force_primary_cluster") and cs.get("invalidated"):
+        return "This cluster is invalidated in its ClusterSet.", "Rejoin this cluster to the ClusterSet first."
+    if base == "force_primary_cluster":
+        if cs.get("local_role") != "REPLICA":
+            return "This cluster is not a replica cluster of the ClusterSet.", "Connect to a non-invalidated replica cluster to fail over to it."
+        if not _CLUSTER_NAME.fullmatch(cs.get("local_cluster") or ""):
+            return "This cluster has no valid ClusterSet name.", "Correct the cluster name in the metadata, then Refresh."
+        # SQL metadata cannot prove every instance of the primary cluster is
+        # unreachable. Do not infer this from a channel error or local copy.
+        # Shell's verify_primary_cluster_not_recoverable is the final gate.
+        return None
+    if not cs.get("primary_cluster"):
+        return "No primary cluster is recorded in this ClusterSet.", "Restore a primary cluster in MySQL Shell, then Refresh."
+    return None
+
+
+def _action_privileges(report, action, checks):
+    """Always evaluate privileges; only override eligibility when it passed.
+
+    Shell's up-front validation requires affirmative scope/grant-option
+    evidence, including for schema privileges and partially revoked grants.
+    Other actions have only global requirements. Parsing and effective role /
+    partial-revoke semantics remain entirely in privileges.py.
+    """
+    from . import privileges
+    action.update(missing_privileges=[], grant_sql=None, privileges_unreadable=False)
+    requirements, shell_runtime = _privilege_requirements(report, action)
+    note = _SHELL_RUNTIME_PRIVILEGES if shell_runtime else None
+    if not requirements:
+        if note:
+            action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
+        return action
+    model = _catalog_grants(report, checks)
+    if model is None:
+        action["privileges_unreadable"] = True
+        note = " ".join(n for n in (_PRIVILEGES_UNREADABLE, note) if n)
+    else:
+        missing = []
+        for alternatives, database, grantable in requirements:
+            held = [privileges.has(model, p, level="database" if database else "global", database=database,
+                                   grantable=grantable) for p in alternatives]
+            if True not in held:
+                missing.append((alternatives, database, grantable))
+        action["missing_privileges"] = [[_privilege_label(p, database, grantable) for p in alternatives]
+                                         for alternatives, database, grantable in missing]
+        if missing:
+            action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
+            if action["enabled"]:
+                action.update(enabled=False,
+                              why_not="Needs " + "; and ".join(" or ".join(a) for a in action["missing_privileges"]) + ".",
+                              fix=_GRANT_FIX if action["grant_sql"] else _GRANT_MODE_UNKNOWN)
+            elif not action["grant_sql"]:
+                note = " ".join(n for n in (note, _GRANT_MODE_UNKNOWN) if n)
+    if note:
+        action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
+    return action
+
+
+def _evaluate_action(report, aid, label, danger, description, scope, checks, member=None, cluster_name=None,
+                     target_issue=None):
+    """One eligibility result shared by the catalog and fresh-read planning.
+
+    First failure wins: target, tool/version, readable report, then state.
+    A Rejoin names a member but runs from the active member with quorum.
+    Other Group member actions use that member's saved connection. The plan
+    proves the route against a fresh target report.
+    """
+    local = _local_member(report)
+    grouped = bool(checks.get("group_name"))
+    member_route = scope == "member" and aid != "rejoin_instance"
+    target = member if member_route and grouped or aid in _LOCAL_ACTIONS else local
+    profile = _member_profile(report, target, checks) if grouped and target else None
+    via = _action_via(report, aid)
+    # All these SQL/AdminAPI changes have dbops' risky classification. danger
+    # remains the existing presentation hint, independently of write policy.
+    action = {"schema_version": ACTION_SCHEMA_VERSION, "id": aid, "label": label, "scope": scope,
+              "kind": "risky", "via": via, "danger": danger, "description": description,
+              "member_key": member.get("key") if member else None,
+              "member_name": member.get("name") if member else None,
+              "member_uuid": member.get("uuid") if member else None, "cluster_name": cluster_name,
+              "enabled": True, "why_not": None, "fix": None,
+              "target": {"self": bool(target and target.get("local")),
+                         "member_name": target.get("name") if target else (report.get("server") or {}).get("hostname")}}
+    issue = target_issue
+    if grouped:
+        action["target"]["profile_id"] = profile.get("id") if profile else None
+        if profile and member_route and not _member_profiles(report, target, checks):
+            from .topology_links import format_endpoint
+            action["target"].update(confirm=True, note="Review checks that %s (%s) is this member." %
+                                    (profile.get("name") or profile["id"],
+                                     format_endpoint(profile.get("host") or "127.0.0.1", profile.get("port") or 3306)))
+        if target and profile is None:
+            issue = _member_route_issue(report, target, checks)
+        if member_route and not member.get("local"):
+            # The active member's grants and SSH transport say nothing about
+            # another saved login. Read its grants only when planning there.
+            checks = dict(checks, grants=None, ssh=bool((profile or {}).get("ssh_host")))
+    if aid in _LOCAL_ACTIONS and not member.get("local") and not grouped:
+        where = (local or {}).get("name") or (report.get("server") or {}).get("hostname") or "an unidentified server"
+        operation, fix = _LOCAL_ACTIONS[aid]
+        name = member.get("name") or "the selected member"
+        issue = ("%s, %s; this connection is to %s." % (operation, name, where),
+                 "Connect to %s to %s." % (name, fix))
+    if issue is None:
+        issue = _tool_issue(report, action, checks)
+    if issue is None and not report.get("available"):
+        issue = ("The cluster could not be read on this connection.", "Refresh with an account that can read the cluster state.")
+    if issue is None:
+        issue = (_member_issue(report, action, member, checks) if scope == "member" else
+                 _overview_issue(report, action))
+    if issue:
+        action.update(enabled=False, why_not=issue[0], fix=issue[1])
+    elif grouped and member is not None and not member.get("local") and aid in ("desync_node", "resync_node"):
+        action["why_not"] = "Review checks wsrep_desync and the state on this node's own connection."
+    _action_privileges(report, action, checks)
+    if grouped and target and profile is None:
+        action["why_not"] = issue[0]
+    return action
+
+
+def _clusterset_actions(report, checks):
+    """Stable ClusterSet families, with bare disabled ids when no target fits.
+
+    Candidate targets come from the actual metadata fields, never invented
+    global_status/primary_unreachable fields. Shell checks remote reachability
+    and GTIDs before changing a ClusterSet, as it did before this catalog.
+    """
+    cs = report.get("clusterset") or {}
     clusters = [c for c in cs.get("clusters") or () if _CLUSTER_NAME.fullmatch(c.get("name") or "")]
-    if not cs.get("invalidated"):
-        for c in clusters:
-            if c.get("role") == "REPLICA" and not c.get("invalidated"):
-                out.append(_action("set_primary_cluster:%s" % c["name"], "Make %s the primary cluster…" % c["name"],
-                                   True, "MySQL Shell switches the ClusterSet over to %s (setPrimaryCluster): the "
-                                         "current primary cluster becomes a replica cluster." % c["name"]))
-    for c in clusters:
-        if c.get("invalidated"):
-            out.append(_action("rejoin_cluster:%s" % c["name"], "Rejoin %s to the ClusterSet…" % c["name"], True,
-                               "MySQL Shell rejoins the invalidated cluster %s as a replica cluster "
-                               "(rejoinCluster)." % c["name"]))
-    if cs.get("local_role") == "REPLICA" and not cs.get("invalidated") \
-            and _CLUSTER_NAME.fullmatch(cs.get("local_cluster") or ""):
-        out.append(_action("force_primary_cluster", "Fail over to this cluster…", True,
-                           "MySQL Shell makes %s the primary cluster without the current primary cluster "
-                           "(forcePrimaryCluster), which is invalidated. Only when the primary cluster is lost."
-                           % cs["local_cluster"]))
+    replicas = [c for c in clusters if c.get("role") == "REPLICA" and not c.get("invalidated")]
+    invalidated = [c for c in clusters if c.get("invalidated")]
+    no_set = (("This cluster is not part of an InnoDB ClusterSet.",
+               "Create or join a ClusterSet in MySQL Shell, then Refresh.") if not cs else None)
+    out = []
+    for target in replicas or [None]:
+        name = target["name"] if target else None
+        issue = no_set or (("No non-invalidated replica cluster is recorded in this ClusterSet.",
+                            "Add or rejoin a replica cluster in MySQL Shell, then Refresh.") if not target else None)
+        out.append(_evaluate_action(
+            report, "set_primary_cluster:%s" % name if name else "set_primary_cluster",
+            "Make %s the primary cluster…" % name if name else "Make primary cluster…", True,
+            "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+            "overview", checks, cluster_name=name, target_issue=issue))
+    out.append(_evaluate_action(
+        report, "force_primary_cluster", "Fail over to this cluster…", True,
+        "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster "
+        "(forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+        "overview", checks, cluster_name=cs.get("local_cluster"), target_issue=no_set))
+    for target in invalidated or [None]:
+        name = target["name"] if target else None
+        issue = no_set or (("No invalidated cluster is recorded in this ClusterSet.",
+                            "Use Rejoin cluster after a cluster has been invalidated.") if not target else None)
+        out.append(_evaluate_action(
+            report, "rejoin_cluster:%s" % name if name else "rejoin_cluster",
+            "Rejoin %s to the ClusterSet…" % name if name else "Rejoin cluster to the ClusterSet…", True,
+            "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+            "overview", checks, cluster_name=name, target_issue=issue))
     return out
 
 
 def available_actions(report, member_key=None, checks=None):
-    """The reviewed changes offered on the member *member_key* (group-wide
-    changes are offered on the connected member). Empty for a report that
-    is not available, not a cluster, or a member this server cannot act on."""
-    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+    """Every member-scope action for this kind, including disabled actions."""
+    if not report:
         return []
     member = next((m for m in _members(report) if m.get("key") == member_key), None)
     if member is None:
         return []
     kind = report.get("kind")
-    out = []
+    definitions = []
     if kind in ("innodb_cluster", "group_replication"):
-        usable, _ = _gr_usable(report)
-        if not usable:
-            return []
-        shell = _shell(checks)
-        cs = report.get("clusterset")
-        ic = kind == "innodb_cluster"
-        if member.get("state_source") == "metadata":
-            # In the metadata, not in the group: MySQL Shell's rejoinInstance,
-            # run through this ONLINE member (Cluster_impl::rejoin_instance:
-            # quorum, a primary, and a ClusterSet in a usable state).
-            if (ic and _shell(checks, SHELL_REJOIN_MIN_VERSION) and member.get("state") == "MISSING"
-                    and member.get("in_metadata")
-                    and _ADDRESS.fullmatch(member.get("address") or "") and _group_ready(report) is None
-                    and not (cs and cs.get("invalidated"))):
-                out.append(_action("rejoin_instance", "Rejoin to the cluster…", True,
-                                   "MySQL Shell rejoins %s to the cluster with incremental recovery from a donor "
-                                   "(Cluster.rejoinInstance)." % member.get("name")))
-            return out
-        if member.get("state_source") != "replication_group_members":
-            return []
-        topology = report.get("cluster", {}).get("topology")
-        # A replica cluster's primary runs the clusterset_replication channel,
-        # which the switchover UDF refuses; MySQL Shell's setPrimaryInstance
-        # moves the channel (see the comment above).
-        replica_cluster = bool(cs and cs.get("local_role") == "REPLICA")
-        if (topology == "single_primary" and member.get("role") == "SECONDARY" and member.get("state") == "ONLINE"
-                and _UUID.match(member.get("uuid") or "") and _group_ready(report) is None
-                and (not replica_cluster or (_shell(checks, SHELL_CLUSTERSET_MIN_VERSION)
-                                             and _ADDRESS.fullmatch(member.get("address") or "")))):
-            out.append(_action("switchover", "Make primary…", True,
-                               "Makes %s the primary; the current primary becomes a read-only secondary once its "
-                               "running transactions finish." % member.get("name")))
-        if member.get("local"):
-            if member.get("state") in ("ONLINE", "RECOVERING", "ERROR"):
-                out.append(_action("stop_member", "Stop Group Replication…", True,
-                                   "This member leaves the group and becomes read-only (super_read_only ON)."))
-            if member.get("state") == "OFFLINE":
-                out.append(_action("start_member", "Start Group Replication…", False,
-                                   "Joins this member to the group. Recovery may replace its data with a clone."))
-            if kind == "group_replication" and _group_ready(report) is None:
-                if topology == "single_primary":
-                    out.append(_action("switch_to_multi_primary", "Switch the group to multi-primary…", True,
-                                       "Every member accepts writes, and the mode is persisted."))
-                elif topology == "multi_primary":
-                    out.append(_action("switch_to_single_primary", "Switch the group to single-primary…", True,
-                                       "The group elects one primary; the others become read-only."))
-            elif (ic and shell and _group_ready(report) is None and not cs and not _missing(report)
-                  and all(m.get("state") == "ONLINE" for m in _group_members(report))):
-                # MySQL Shell's switchTo*Mode: every member ONLINE, an InnoDB
-                # Cluster only, never one in a ClusterSet
-                # (Cluster_impl::switch_to_multi_primary_mode, All_online).
-                if topology == "single_primary":
-                    out.append(_action("switch_to_multi_primary", "Switch the cluster to multi-primary…", True,
-                                       "MySQL Shell switches the cluster: every member accepts writes, and it sets "
-                                       "auto_increment on every member and the mode in the metadata."))
-                elif topology == "multi_primary":
-                    out.append(_action("switch_to_single_primary", "Switch the cluster to single-primary…", True,
-                                       "MySQL Shell switches the cluster: one primary is elected, the others become "
-                                       "read-only, and it resets auto_increment and the metadata mode."))
-            if (ic and _shell(checks, SHELL_CLUSTERSET_MIN_VERSION) and cs and member.get("state") == "ONLINE"
-                    and _group_ready(report) is None):
-                out.extend(_clusterset_actions(cs))
-    elif kind == "galera" and report.get("engine") == "mariadb" and member.get("local"):
-        galera = report.get("galera") or {}
-        metrics = galera.get("metrics") or {}
-        comment = (metrics.get("local_state_comment") or "").strip()
-        wsrep_on = (galera.get("wsrep_on") or "").upper()
-        desync = (galera.get("desync") or "").upper()
-        if wsrep_on != "ON":
-            return []
-        if desync == "OFF" and comment == "Synced":
-            out.append(_action("desync_node", "Desync this node…", False,
-                               "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."))
-        elif desync == "ON":
-            out.append(_action("resync_node", "Resync this node…", False,
-                               "Puts this node back in flow control (wsrep_desync = OFF)."))
-        component = report.get("cluster", {}).get("component")
-        if component == "non-Primary" and metrics.get("connected") is True and not _joining(metrics):
-            out.append(_action("bootstrap_pc", "Bootstrap a Primary component…", True,
-                               "Makes this node, and the nodes it reaches, a Primary component that accepts writes."))
+        definitions = [
+            ("switchover", "Make primary…", True, "Makes this member the primary; the current primary becomes a read-only secondary."),
+            ("stop_member", "Stop Group Replication…", True, "This member leaves the group and becomes read-only (super_read_only ON)."),
+            ("start_member", "Start Group Replication…", False, "Joins this member to the group. Recovery may replace its data with a clone."),
+        ]
+        if kind == "innodb_cluster":
+            definitions.append(("rejoin_instance", "Rejoin to the cluster…", True,
+                                "MySQL Shell rejoins this member with incremental recovery from a donor (Cluster.rejoinInstance)."))
+    elif kind == "galera" and report.get("engine") == "mariadb":
+        definitions = [
+            ("desync_node", "Desync this node…", False, "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."),
+            ("resync_node", "Resync this node…", False, "Puts this node back in flow control (wsrep_desync = OFF)."),
+            ("bootstrap_pc", "Bootstrap a Primary component…", True, "Makes this node, and the nodes it reaches, a Primary component that accepts writes."),
+        ]
+    return [_evaluate_action(report, aid, label, danger, description, "member", checks or {}, member=member)
+            for aid, label, danger, description in definitions]
+
+
+def overview_actions(report, checks=None):
+    """Every overview action, evaluated against the connected member."""
+    if not report or report.get("kind") not in ("innodb_cluster", "group_replication"):
+        return []
+    checks = checks or {}
+    ic = report.get("kind") == "innodb_cluster"
+    out = [
+        _evaluate_action(report, "switch_to_single_primary", "Switch to single-primary…", True,
+                         "The group elects one primary; the other members become read-only." +
+                         (" MySQL Shell updates auto_increment and the cluster metadata." if ic else ""),
+                         "overview", checks),
+        _evaluate_action(report, "switch_to_multi_primary", "Switch to multi-primary…", True,
+                         "Every member accepts writes, and the mode is persisted." +
+                         (" MySQL Shell updates auto_increment and the cluster metadata." if ic else ""),
+                         "overview", checks),
+    ]
+    if ic:
+        out.extend(_clusterset_actions(report, checks))
     return out
 
 
-def with_actions(report, shell=None, ssh=False):
-    """*report* with each member's ``actions`` (the workspace's Cluster place
-    reads it this way; the CLI and MCP report has no actions). The changes
-    MySQL Shell runs are offered when *shell* (cluster_shell.find_shell, looked
-    up here for an InnoDB Cluster when not given) is installed and the
-    connection does not use SSH."""
+def with_actions(report, shell=None, ssh=False, group_profiles=(), current_profile=None, group_name=None):
+    """Attach the workspace catalog once per scope; CLI and MCP stay read-only."""
     if shell is None and report.get("kind") == "innodb_cluster":
         from .cluster_shell import find_shell
         shell = find_shell()
-    checks = {"shell": shell, "ssh": ssh}
+    checks = {"shell": shell, "ssh": ssh, "group_profiles": group_profiles,
+              "current_profile": current_profile, "group_name": group_name}
     if shell and report.get("kind") == "innodb_cluster" and ssh:
-        note = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
-                "members directly, outside the tunnel, with this connection's user and password. Run them in "
-                "MySQL Shell from a host that reaches the members.")
         notes = report.setdefault("notes", [])
-        if note not in notes:
-            notes.append(note)
+        if _SHELL_SSH_NOTE not in notes:
+            notes.append(_SHELL_SSH_NOTE)
     for member in report.get("members") or ():
         member["actions"] = available_actions(report, member.get("key"), checks)
+    report["actions"] = overview_actions(report, checks)
     return report
 
 
@@ -2321,10 +2916,19 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
     return report
 
 
-def action_checks(conn, report, action):
-    """Extra reads one action needs at plan and send time (a dict): the
-    bootstrap flag for a start, and MySQL Shell for an InnoDB Cluster."""
-    out = {}
+def action_checks(conn, report, action, check_grants=True):
+    """Check the bootstrap flag and MySQL Shell, plus fresh grants for planning.
+
+    Sending skips grants: the same-session identity guard and the server's
+    privilege checks enforce the reviewed write. All other checks still run.
+    """
+    from . import dbops
+    requirements, _ = _privilege_requirements(report, {"id": action, "via": _action_via(report, action)})
+    # An explicit unknown prevents sibling catalog entries from triggering a
+    # lazy grants read during send or when Shell validates the privileges.
+    out = {"grants": None}
+    if check_grants and requirements:
+        out["grants"] = _grant_model(report, dbops.read_grants(conn, CLUSTER_TAG))
     if (report or {}).get("kind") == "innodb_cluster" and _via_shell(report, action):
         from .cluster_shell import find_shell
         out["shell"] = find_shell()
@@ -2340,8 +2944,12 @@ def action_checks(conn, report, action):
 
 
 def _server_identity(report):
+    server = dict(report.get("server") or {})
+    server.update(getattr(report, "_galera_identity", {}))
+    if report.get("kind") in ("galera", "pxc"):
+        server["wsrep_gcomm_uuid"] = (report.get("galera") or {}).get("gcomm_uuid")
     return {"engine": report.get("engine"), "server_version": report.get("server_version"),
-            "server": dict(report.get("server") or {}), "kind": report.get("kind")}
+            "server": server, "kind": report.get("kind")}
 
 
 def _connected_text(report, local):
@@ -2351,20 +2959,68 @@ def _connected_text(report, local):
                      where != local.get("name") else "")
 
 
-def plan_action(report, action, member_key=None, checks=None):
+def target_server_identity(report):
+    """The node identity persisted as route evidence, without topology labels."""
+    if report.get("kind") in ("galera", "pxc"):
+        return {"wsrep_node_uuid": (report.get("galera") or {}).get("gcomm_uuid")}
+    return {"server_uuid": (report.get("server") or {}).get("server_uuid")}
+
+
+def _check_member_target(report, member, target):
+    """A Group member action must be local by identity, never by host:port."""
+    own = next(iter(target_server_identity(report).values()), None)
+    if (not member or not member.get("local") or not isinstance(own, str) or not _UUID.fullmatch(own)
+            or own != member.get("uuid")):
+        from .topology_links import format_endpoint
+        endpoint = target["endpoint"]
+        server = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
+        raise ValueError("%s does not reach %s: it reports a different server." %
+                         (server, (member or {}).get("name") or "the selected member"))
+
+
+def plan_action(report, action, member_key=None, checks=None, target=None):
     """The reviewed plan for *action* on *member_key* from *report* (a fresh
     read) and *checks* (:func:`action_checks`). Raises ValueError when the action is
-    not offered for that member now."""
-    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+    disabled now, with exactly the catalog's reason and fix. Overview actions
+    use the connected member; their member_key may be omitted."""
+    if not report or report.get("kind") in (None, "none"):
         raise ValueError("No cluster was read on this connection.")
-    if not isinstance(action, str) or not isinstance(member_key, str):
+    if not isinstance(action, str) or (member_key is not None and not isinstance(member_key, str)):
         raise ValueError("Choose a member and an action.")
-    if action not in [a["id"] for a in available_actions(report, member_key, checks)]:
+    local = _local_member(report)
+    catalog = available_actions(report, member_key, checks)
+    # Keep member identity checks for legacy callers that pass a key for an
+    # overview action. Never let that key move a group-wide operation.
+    if member_key is None or (local and member_key == local.get("key")):
+        catalog += overview_actions(report, checks)
+    selected = next((a for a in catalog if a["id"] == action), None)
+    if selected is None:
         raise ValueError("That change is not offered for this member now. Refresh and try again.")
+    if target is not None and selected["scope"] == "member":
+        routed_member = (local if action == "rejoin_instance" else
+                         next((m for m in _members(report) if m.get("key") == member_key), None))
+        _check_member_target(report, routed_member, target)
+    if not selected["enabled"]:
+        raise ActionUnavailable(" ".join(text for text in
+                                        (selected["why_not"], selected["fix"], selected["grant_sql"]) if text))
+    if selected["target"].get("confirm"):
+        # An address suggestion is catalog-only. The caller must reopen the
+        # saved target and supply its binding; that fresh local identity then
+        # replaces the suggestion before any write plan can be produced.
+        raise ValueError("Review this action through the member's saved connection to confirm its identity.")
+    if action in ("desync_node", "resync_node") and member_key != (local or {}).get("key"):
+        raise ValueError("Review this action through the node's saved connection to check its own wsrep_desync state.")
+    if selected["scope"] == "overview":
+        member_key = local["key"]
     checks = checks or {}
     member = next(m for m in _members(report) if m.get("key") == member_key)
-    local = _local_member(report)
     cluster = report.get("cluster") or {}
+    server_name = None
+    if target is not None:
+        from .topology_links import format_endpoint
+        endpoint = target["endpoint"]
+        server_name = "%s (%s)" % (target["profile_name"], format_endpoint(endpoint["host"], endpoint["port"]))
+    member_name = server_name if selected["scope"] == "member" and action != "rejoin_instance" else None
     expect = dict(_server_identity(report), member=_identity(member), local=_identity(local),
                   component=cluster.get("component"), quorum=cluster.get("quorum"), topology=cluster.get("topology"))
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
@@ -2374,7 +3030,7 @@ def plan_action(report, action, member_key=None, checks=None):
                       ["Cluster", "%s%s" % (kind_label(report), " %s" % cluster["name"] if cluster.get("name") else "")]]}
     kind = report.get("kind")
     if kind in ("innodb_cluster", "group_replication") and _via_shell(report, action):
-        shell = _shell(checks)
+        shell = _shell(checks, _shell_minimum(report, action))
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
         expect["missing"] = sorted(m.get("key") for m in _missing(report))
         expect["shell"] = shell["path"]
@@ -2385,18 +3041,40 @@ def plan_action(report, action, member_key=None, checks=None):
         plan["verified"].append("MySQL Shell installed")
         plan["facts"] += [["Runs with", "MySQL Shell %s (%s)" % (shell.get("version") or "", shell["path"])],
                           ["Privilege", _SHELL_PRIVILEGE]]
-        _plan_shell(report, plan, action, member, local, expect)
+        _plan_shell(report, plan, action, member, local, expect, server_name=member_name)
     elif kind in ("innodb_cluster", "group_replication"):
         expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
-        plan["facts"].append(["Privilege", "Needs %s" % _GR_PRIVILEGE])
-        _plan_group(report, plan, action, member, local, checks, expect)
+        plan["facts"].append(["Privilege", "Needs %s" %
+                              ("SUPER" if _version_of(report) < (8, 0, 0) else _GR_PRIVILEGE)])
+        _plan_group(report, plan, action, member, local, checks, expect, server_name=member_name)
     else:
         galera = report.get("galera") or {}
         expect.update(desync=galera.get("desync"), wsrep_on=galera.get("wsrep_on"),
                       local_state=(galera.get("metrics") or {}).get("local_state_comment"))
         plan["facts"].append(["Privilege", "Needs SUPER"])
-        _plan_galera(report, plan, action, member, expect)
+        _plan_galera(report, plan, action, member, expect, server_name=member_name)
     plan["expect"] = expect
+    if target is not None:
+        # The caller supplies only a store-built binding. Node identity comes
+        # from this fresh report and is persisted before a token is issued.
+        expect["target"] = dict(target, server_identity=target_server_identity(report))
+        plan["server_name"] = server_name
+        plan["facts"][0] = ["Runs on", server_name]
+        identity = target_server_identity(report)
+        listed = local if action == "rejoin_instance" else member
+        plan["facts"] += [["Server UUID" if "server_uuid" in identity else "Galera node UUID",
+                           next(iter(identity.values()))],
+                          ["Listed in the cluster as", (listed or {}).get("name")]]
+        if selected["scope"] == "member" and action != "rejoin_instance":
+            # Topology labels are untrusted display data. Keep them on their
+            # own fact line, never in place of the saved server's name.
+            plan["target_text"] = server_name
+            if plan.get("typed_guard") == server_name:
+                plan["typed_guard"] = target["profile_name"]
+        if plan.get("via") == "mysqlsh":
+            plan["warnings"].append("MySQL Shell connects to every member with %s's account." % target["profile_name"])
+    if selected["why_not"]:
+        plan["warnings"].append(selected["why_not"])
     plan["statements"] = [CLUSTER_ACTION_TAG + s for s in plan["statements"]]
     plan["timeout_s"] = SHELL_TIMEOUT if plan.get("via") == "mysqlsh" else ACTION_TIMEOUT
     plan["checks"] = _checks(action, member, local)
@@ -2431,9 +3109,11 @@ def _checks(action, member, local):
 
 def _effect(plan, before, after):
     """What changed: (what, before, now) rows from the reads before and after
-    the send."""
-    def word(value):
-        return "Not readable" if value in (None, "") else str(value).replace("_", "-")
+    the send. A missing value says why it is missing: a read that failed is
+    told apart from a server that reported no value, and no cell ever reads
+    "Not readable"."""
+    def word(value, missing):
+        return missing if value in (None, "") else str(value).replace("_", "-")
 
     def name(side, key):
         return ((side or {}).get(key) or {}).get("name")
@@ -2448,33 +3128,47 @@ def _effect(plan, before, after):
                            (("receiver", "receiver_state"), ("applier", "applier_state")) if item.get(key))
         return " ".join(x for x in (item.get("source"), states) if x) or None
 
+    # In multi-primary mode every ONLINE member reports PRIMARY, so the
+    # snapshot's primary is a member; None means no ONLINE or RECOVERING
+    # member reported PRIMARY in the view read here, or that read failed.
+    no_primary = "No member reported the PRIMARY role in the view read here"
     action = _action_name(plan["action"])[0]
     if action in ("switchover", "set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
         if action == "switchover":
-            rows = [["Primary", word(name(before, "primary")), word(name(after, "primary"))]]
+            rows = [["Primary", word(name(before, "primary"), no_primary), word(name(after, "primary"), no_primary)]]
         else:
-            rows = [["Primary cluster", word(before.get("cs_primary")), word(after.get("cs_primary"))],
-                    ["Invalidated", word(", ".join(before.get("cs_invalidated") or ()) or "none"),
-                     word(", ".join(after.get("cs_invalidated") or ()) or "none")]]
+            rows = [["Primary cluster", word(before.get("cs_primary"), "No primary cluster in the view read here"),
+                     word(after.get("cs_primary"), "No primary cluster in the view read here")],
+                    ["Invalidated", ", ".join(before.get("cs_invalidated") or ()) or "none",
+                     ", ".join(after.get("cs_invalidated") or ()) or "none"]]
         if before.get("cs_channel") is not None or after.get("cs_channel") is not None:
-            rows.append(["ClusterSet channel", word(channel(before)), word(channel(after))])
+            rows.append(["ClusterSet channel", word(channel(before), "No channel in the view read here"),
+                         word(channel(after), "No channel in the view read here")])
         return rows
     if action == "rejoin_instance":
-        return [[name(after, "member") or name(before, "member") or "The instance", word(state(before, "member")),
-                 word(state(after, "member"))]]
+        return [[name(after, "member") or name(before, "member") or "The instance",
+                 word(state(before, "member"), "Not in the view read before the action"),
+                 word(state(after, "member"), "Not in the view read after the action")]]
     if action in ("stop_member", "start_member"):
-        return [[name(after, "local") or name(before, "local") or "This member", word(state(before, "local")),
-                 word(state(after, "local"))]]
+        # The after state comes from the member's own row; None there means
+        # the read after the action failed, not that the server said nothing.
+        return [[name(after, "local") or name(before, "local") or "This member",
+                 word(state(before, "local"), "Not in the view read before the action"),
+                 word(state(after, "local"), "The read after the action failed")]]
     if action in ("desync_node", "resync_node"):
-        return [["wsrep_desync", word(before.get("desync")), word(after.get("desync"))],
-                ["State", word(before.get("local_state")), word(after.get("local_state"))]]
+        return [["wsrep_desync", word(before.get("desync"), "No value reported before the action"),
+                 word(after.get("desync"), "No value reported after the action")],
+                ["State", word(before.get("local_state"), "No value reported before the action"),
+                 word(after.get("local_state"), "No value reported after the action")]]
     if action == "bootstrap_pc":
-        return [["Component", word(before.get("component")), word(after.get("component"))]]
-    return [["Group mode", word(before.get("topology")), word(after.get("topology"))]]
+        return [["Component", word(before.get("component"), "Component status not reported"),
+                 word(after.get("component"), "Component status not reported")]]
+    return [["Group mode", word(before.get("topology"), "Mode not reported by the server"),
+             word(after.get("topology"), "Mode not reported by the server")]]
 
 
-def _plan_group(report, plan, action, member, local, checks, expect):
-    name = member.get("name")
+def _plan_group(report, plan, action, member, local, checks, expect, server_name=None):
+    name = server_name or member.get("name")
     primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
     online = [m for m in _group_members(report) if m.get("state") == "ONLINE"]
     if action == "switchover":
@@ -2512,7 +3206,8 @@ def _plan_group(report, plan, action, member, local, checks, expect):
         plan["undo"] = "START GROUP_REPLICATION;" + (" Not enough after the last member: the group must be "
                                                      "bootstrapped again." if last else "")
     elif action == "start_member":
-        bootstrap = (checks.get("bootstrap_group") or "").upper()
+        bootstrap = (checks.get("bootstrap_group", (report.get("group_replication") or {}).get("bootstrap_group"))
+                     or "").upper()
         if bootstrap not in ("0", "OFF"):
             raise ValueError("group_replication_bootstrap_group is %s, so START GROUP_REPLICATION would %s. Nothing "
                              "is offered." % (bootstrap or "not readable",
@@ -2550,6 +3245,12 @@ def _plan_group(report, plan, action, member, local, checks, expect):
                         "SELECT group_replication_switch_to_multi_primary_mode();")
 
 
+def _action_via(report, action):
+    base, _ = _action_name(action)
+    return ("mysqlsh" if _via_shell(report, action) else "udf" if base in
+            ("switchover", "switch_to_multi_primary", "switch_to_single_primary") else "sql")
+
+
 def _via_shell(report, action):
     """True when MySQL Shell runs *action* (offered only with MySQL Shell)."""
     base, _ = _action_name(action)
@@ -2567,11 +3268,18 @@ def _js(value):
     return json.dumps(value)
 
 
-def _plan_shell(report, plan, action, member, local, expect):
+def _plan_shell(report, plan, action, member, local, expect, server_name=None):
     """The plan for a change MySQL Shell runs: one AdminAPI call."""
     base, target = _action_name(action)
-    name = member.get("name")
+    name = server_name or member.get("name")
     cs = report.get("clusterset") or {}
+    # Bind the object AdminAPI resolves, as well as Shell's global session.
+    # Its connections may follow a router or primary to a different cluster.
+    is_set = base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster")
+    adminapi = ({"kind": "clusterset", "name": cs.get("name"),
+                 "groups": dict(getattr(report, "_clusterset_groups", {}))}
+                if is_set else {"kind": "cluster", "group_name": (report.get("group_replication") or {}).get("group_name")})
+    expect["server_identity"] = dict(expect["server"], adminapi=adminapi)
     cluster = (report.get("cluster") or {}).get("name") or "the cluster"
     primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
     if base == "switchover":
@@ -2663,8 +3371,8 @@ def _plan_shell(report, plan, action, member, local, expect):
                           ["Primary cluster to invalidate", cs.get("primary_cluster") or "Not recorded"]]
         plan["warnings"] += ["Only when the primary cluster is lost: if it still takes writes, the ClusterSet "
                              "splits in two. Fence it, or make sure it is down, first.",
-                             "MySQL Shell refuses while the primary cluster is reachable and healthy; use Make "
-                             "primary cluster (setPrimaryCluster) then."]
+                             "MySQL Shell refuses while any instance of the primary cluster is reachable; use "
+                             "Make primary cluster (setPrimaryCluster) for a planned switchover."]
         plan["typed_guard"] = target
         plan["undo"] = ("Cannot be undone. Once %s is back and consistent, rejoin it with "
                         "dba.getClusterSet().rejoinCluster(%s);" % (lost, _js(cs.get("primary_cluster") or "")))
@@ -2686,10 +3394,14 @@ def _plan_shell(report, plan, action, member, local, expect):
     if cs.get("from_local_copy") and base in ("set_primary_cluster", "force_primary_cluster", "rejoin_cluster"):
         plan["warnings"].append("The ClusterSet state here is this cluster's replicated copy of the metadata; "
                                 "MySQL Shell reads the primary cluster's before it changes anything.")
+    # Reuse the checked object; another dba.get* call would open unchecked
+    # sessions. The derived guard is shown and bound by reviewed_writes.
+    plan["statements"] = [statement.replace("dba.getClusterSet()", "myflamesClusterSet").replace(
+        "dba.getCluster()", "myflamesCluster") for statement in plan["statements"]]
 
 
-def _plan_galera(report, plan, action, member, expect):
-    name = member.get("name")
+def _plan_galera(report, plan, action, member, expect, server_name=None):
+    name = server_name or member.get("name")
     metrics = (report.get("galera") or {}).get("metrics") or {}
     if action == "desync_node":
         plan.update(eyebrow="SET GLOBAL", title="Desync %s?" % name, confirm_label="Desync this node",
@@ -2779,7 +3491,8 @@ def _done_text(plan, after):
     return "Sent. The group is %s." % ((after or {}).get("topology") or "not readable").replace("_", "-")
 
 
-def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
+def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None, target=None,
+                   group_checks=None):
     """Send a reviewed plan: read the cluster again, refuse with nothing sent
     when the member, the server or the group changed, then send it.
     *progress* follows the steps for the sheet (reviewed_writes.Progress)."""
@@ -2794,8 +3507,11 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         report = read_status(conn)
         if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
             raise ValueError("This connection now reaches another server or cluster.")
-        checks = action_checks(conn, report, reviewed["action"])
-        plan = plan_action(report, reviewed["action"], reviewed.get("member_key"), checks)
+        checks = action_checks(conn, report, reviewed["action"], check_grants=False)
+        if group_checks is not None:
+            checks.update(group_checks())
+        binding = target() if callable(target) else target
+        plan = plan_action(report, reviewed["action"], reviewed.get("member_key"), checks, target=binding)
         state["before"] = _after(report, reviewed)
         state["plan"], state["shell"] = plan, _shell(checks)
         return plan

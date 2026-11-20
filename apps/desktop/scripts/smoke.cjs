@@ -3,6 +3,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { OutputCollector } = require('./smoke-output.cjs');
 (async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-desktop-smoke-'));
   // A packaged app is a macOS .app bundle or the Windows win-unpacked folder.
@@ -23,14 +24,17 @@ const path = require('node:path');
   }
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(executable, [...(appPath ? [] : [path.resolve(__dirname, '..')]), '--smoke'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '', diagnostics = '';
-  child.stdout.on('data', chunk => { output += chunk; });
+  const output = new OutputCollector(20000), diagnostics = new OutputCollector(4000);
+  child.stdout.on('data', chunk => { output.push(chunk); });
   // Chromium diagnostics can be noisy. Keep them private unless startup fails.
-  child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-4000); });
-  const timeout = setTimeout(() => child.kill('SIGTERM'), 45000);
+  child.stderr.on('data', chunk => { diagnostics.push(chunk); });
+  let killedByTimer = false;
+  const timeout = setTimeout(() => { killedByTimer = true; child.kill('SIGTERM'); }, 45000);
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
-    if (code !== 0) throw new Error('Desktop smoke did not complete successfully. ' + diagnostics.replace(/http:\/\/\S+/g, '[private URL]'));
+    if (code !== 0) {
+      throw new Error(`Desktop smoke did not complete successfully${killedByTimer ? ' (stopped after 45 s)' : ''}.\nApp stdout: ${output.end()}\nDiagnostics: ${diagnostics.end()}`);
+    }
     const report = JSON.parse(await fs.readFile(path.join(home, 'smoke.json'), 'utf8'));
     if (!report.ready || !report.shellNavigation || !report.completion || !report.undoRedo || !report.authenticated || !report.reloadAuthenticated || !report.preload || !report.sandbox || report.nodeIntegration) throw new Error('Desktop isolation checks failed.');
     const samePath = (a, b) => windows ? String(a).toLowerCase() === b.toLowerCase() : a === b;
@@ -55,6 +59,6 @@ const path = require('node:path');
     const outputDirectory = path.resolve(__dirname, '../smoke-results');
     await fs.mkdir(outputDirectory, { recursive: true });
     await fs.copyFile(path.join(home, 'smoke.png'), path.join(outputDirectory, 'desktop.png'));
-    process.stdout.write(output + clientLine + 'Owned backend stopped. Screenshot: apps/desktop/smoke-results/desktop.png\n');
+    process.stdout.write(output.end() + clientLine + 'Owned backend stopped. Screenshot: apps/desktop/smoke-results/desktop.png\n');
   } finally { clearTimeout(timeout); await fs.rm(home, { recursive: true, force: true }); }
 })().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });

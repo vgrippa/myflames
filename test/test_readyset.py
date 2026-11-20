@@ -733,8 +733,19 @@ class TestActionsAndAbuseCases(ReadysetBase):
         conn3 = FakeReadyset()
         plan3 = self.api_plan(conn3, "enter_maintenance_mode")
         conn3.fail_on_write = "ERROR 2013 (HY000): Lost connection to MySQL server during query"
-        res3 = self.api_send(conn3, plan3)
+        calls_at_send = []
+        original_write = conn3.run_write
+        def send(sql, **kwargs):
+            calls_at_send.extend(conn3.calls)
+            return original_write(sql, **kwargs)
+        with mock.patch.object(conn3, 'run_write', side_effect=send):
+            res3 = self.api_send(conn3, plan3)
         self.assertEqual(res3["status"], "unknown")
+        self.assertEqual(res3["states"], ["unknown"])
+        self.assertIsNone(res3["after"])
+        self.assertIsNone(res3["effect"])
+        self.assertEqual(conn3.writes, plan3["statements"])
+        self.assertEqual(conn3.calls, calls_at_send, "a reply-less mysql-client error triggered an after-read")
 
 
 class TestCliSurface(ReadysetBase):

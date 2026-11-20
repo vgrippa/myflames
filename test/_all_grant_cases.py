@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from myflames import accounts, privileges
 from test_accounts import FakeConn, actor
+from _reviewed_replay import UUID, answer_evidence
+from _reviewed_replay import evidence_options
 
 FIXTURES = Path(__file__).parent / 'fixtures/accounts'
 
@@ -48,14 +50,34 @@ def plan(case, request, present=False):
     conn = FakeConn(case['engine'], name='subject', grants=grants)
     conn.version = case['version']
     original = conn.run
-    def read(sql, extra_flags=None, timeout=None):
+    # plan_change re-reads the connected account's privileges with node
+    # evidence: answer that read (and the binder packet) like a real server.
+    actor_grants = ['GRANT ALL PRIVILEGES ON *.* TO `admin`@`localhost` WITH GRANT OPTION']
+    identity = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': case['version']}
+    if case['engine'] == 'mysql':
+        identity['server_uuid'] = UUID
+    who = ('myflames_who\tadmin@localhost\tadmin@localhost\t%s\t%s\n'
+           % ('NONE' if case['engine'] == 'mysql' else 'NULL', case['version'])
+           + ''.join(grant + '\n' for grant in actor_grants)
+           + ''.join('%s\t%s\n' % pair for pair in [
+               ('partial_revokes', 'OFF'), ('read_only', 'OFF'), ('super_read_only', 'OFF')] + [
+               (key, value) for key, value in sorted(identity.items())]))
+    def answer(sql, extra_flags=None, timeout=None):
         if sql == accounts.TAG + 'SHOW PRIVILEGES':
             return ''.join('\t'.join(row) + '\n' for row in case['rows'])
+        if 'myflames_who' in sql:
+            return who
+        if 'information_schema.APPLICABLE_ROLES' in sql:
+            return ''
         return original(sql, extra_flags, timeout)
+    @evidence_options
+    def read(sql, extra_flags=None, timeout=None):
+        packet = answer_evidence(sql, extra_flags, timeout, answer, identity)
+        return packet if packet is not None else answer(sql, extra_flags, timeout)
     conn.run = read
     options = {k:v for k,v in request.items() if k not in ('connection', 'user', 'host', 'operation', 'role')}
     value = accounts.plan_change(conn, request['operation'], 'subject', role=request.get('role', False),
-                                actor=actor(case['engine'], grants=['GRANT ALL PRIVILEGES ON *.* TO `admin`@`localhost` WITH GRANT OPTION']),
+                                actor=actor(case['engine'], grants=actor_grants),
                                 **options)
     value['plan_id'] = 'synthetic-reviewed-plan'
     return dict(value)

@@ -16,6 +16,7 @@ from collections import OrderedDict
 
 from . import dbops, editor_session as ed, privileges
 from .connector import ConnectorError
+from .connection_groups import ProfileReadError
 from .live import connection_options
 from .perf_common import ident
 from .review_tokens import ReviewTokens
@@ -436,6 +437,8 @@ def _policy(payload, workspace, snapshot):
 def _actor(session):
     try:
         return privileges.read_privileges(session._conn)
+    except ProfileReadError:
+        raise  # A locally refused login cannot grant permission to continue.
     except (ConnectorError, ValueError):
         return {'checked': False, 'grants': [], 'roles': [], 'engine': session.engine, 'version': session.server_version}
 
@@ -458,6 +461,10 @@ def _apply(snapshot, payload, workspace, audit):
     try:
         with session.run_lock:
             _policy(payload, workspace, snapshot)
+            guarded = ed._group_options({}, payload, workspace.store, snapshot.identity, snapshot.safety,
+                                         audit, snapshot.plan['statements'], operation='table_data')
+            if guarded.get('_login_guard') is not None and session._conn is not None:
+                session._conn._login_guard = guarded['_login_guard']
             session._verify_identity(audit, snapshot.plan['statements'])
             actor = _actor(session)
             reason = edit_reason(snapshot.meta, actor, snapshot.schema, snapshot.table)
@@ -542,6 +549,7 @@ def _open(payload, workspace, fill_password, options, identity, safety, label):
         raise ValueError('Use a page size of 1 to 100 and an offset of 0 to 10000.')
     filled = fill_password(payload)
     full = connection_options(filled.get('connection'))
+    full = ed._group_options(full, payload, workspace.store, identity, safety, operation='table_data')
     if _facts(payload, workspace)[1] != identity:
         raise ValueError('The connection policy changed. Reload the table.')
     session = ed.EditorSession('table-' + secrets.token_hex(16), identity, full, safety['type'], safety['read_only'], True, TTL, label)

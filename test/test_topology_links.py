@@ -13,6 +13,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from myflames import topology_links
 from myflames.connector import ConnectorError
+from _reviewed_replay import evidence_options
 
 
 def xml_rows(rows):
@@ -48,7 +49,38 @@ class FakeProbeConn(object):
     def __exit__(self, *exc):
         return False
 
+    def _variables(self):
+        return {
+            "version": self.cfg.get("version", "8.4.11"),
+            "version_comment": self.cfg.get("version_comment", "MySQL Community Server - GPL"),
+            "hostname": self.cfg.get("hostname", "mysql-primary"),
+            "port": str(self.cfg.get("port", 3306)),
+            "report_host": self.cfg.get("report_host", self.cfg.get("hostname", "mysql-primary")),
+            "report_port": str(self.cfg.get("port", 3306)),
+            "server_id": str(self.cfg.get("server_id", 1)),
+            "server_uuid": self.cfg.get("uuid", "11111111-1111-1111-1111-111111111111"),
+            "read_only": "ON" if self.cfg.get("read_only") else "OFF",
+            "super_read_only": "ON" if self.cfg.get("read_only") else "OFF",
+            "wsrep_on": "ON" if self.cfg.get("wsrep") else "OFF",
+            "wsrep_cluster_name": self.cfg.get("cluster_name", ""),
+            "group_replication_group_name": self.cfg.get("gr_group", ""),
+            "gtid_mode": "ON",
+        }
+
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        # A review evidence packet gets the marker row and this server's
+        # identity projection in the same output, like a real server.
+        from _reviewed_replay import answer_evidence
+        from myflames.dbops import _EVIDENCE_VARIABLES
+        values = {key: value for key, value in self._variables().items()
+                  if key in _EVIDENCE_VARIABLES and value != ""}
+        packet = answer_evidence(sql, extra_flags, timeout, self._answer, values)
+        if packet is not None:
+            return packet
+        return self._answer(sql, extra_flags, timeout)
+
+    def _answer(self, sql, extra_flags=None, timeout=None):
         raw_sql = sql.strip()
         s = sql.replace(topology_links.TOPOLOGY_TAG, "").strip()
         upper = s.upper()
@@ -101,22 +133,7 @@ class FakeProbeConn(object):
         if "admin-version" in s:
             raise ConnectorError("ERROR 1146 (42S02): Table 'global_variables' doesn't exist")
         if s.startswith("SHOW GLOBAL VARIABLES"):
-            vmap = {
-                "version": self.cfg.get("version", "8.4.11"),
-                "version_comment": self.cfg.get("version_comment", "MySQL Community Server - GPL"),
-                "hostname": self.cfg.get("hostname", "mysql-primary"),
-                "port": str(self.cfg.get("port", 3306)),
-                "report_host": self.cfg.get("report_host", self.cfg.get("hostname", "mysql-primary")),
-                "report_port": str(self.cfg.get("port", 3306)),
-                "server_id": str(self.cfg.get("server_id", 1)),
-                "server_uuid": self.cfg.get("uuid", "11111111-1111-1111-1111-111111111111"),
-                "read_only": "ON" if self.cfg.get("read_only") else "OFF",
-                "super_read_only": "ON" if self.cfg.get("read_only") else "OFF",
-                "wsrep_on": "ON" if self.cfg.get("wsrep") else "OFF",
-                "wsrep_cluster_name": self.cfg.get("cluster_name", ""),
-                "group_replication_group_name": self.cfg.get("gr_group", ""),
-                "gtid_mode": "ON",
-            }
+            vmap = self._variables()
             return batch_rows([[k, v] for k, v in vmap.items() if v != ""])
         if "INNODB_CLUSTER_METADATA" in upper:
             return batch_rows([["mysql_innodb_cluster_metadata"]]) if self.cfg.get("innodb_cluster") else ""
@@ -124,6 +141,8 @@ class FakeProbeConn(object):
             return batch_rows(self.cfg.get("gr_members", []))
         if "WSREP_CLUSTER_MEMBERS" in upper:
             return batch_rows(self.cfg.get("wsrep_members", []))
+        if s == topology_links._WSREP_STATUS_SQL:
+            return batch_rows([["wsrep_gcomm_uuid", self.cfg["gcomm_uuid"]]]) if self.cfg.get("gcomm_uuid") else ""
         if "SHOW REPLICA STATUS" in upper or "SHOW ALL SLAVES STATUS" in upper:
             return xml_rows(self.cfg.get("channels", []))
         if "SHOW REPLICAS" in upper or "SHOW SLAVE HOSTS" in upper:
@@ -323,6 +342,7 @@ class TestMultiTierTopology(unittest.TestCase):
                 return self
             def __exit__(self, *exc):
                 return False
+            @evidence_options
             def run(self, sql, extra_flags=None, timeout=None):
                 raise ConnectorError("Failed using super-secret-probe-pw on mysql://u:url-pw@db:3306/s")
 

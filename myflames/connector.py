@@ -25,6 +25,7 @@ to a mode-0600 temp file, point the client at it, and unlink it afterwards
 single source of truth.
 """
 from contextlib import contextmanager
+import collections
 import ntpath
 import os
 import re
@@ -275,6 +276,16 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
 _STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)
 
+#: With an expired password, the batch-mode client exits 1 with empty stderr
+#: and prints only this hint on stdout (client/mysql.cc), never the server
+#: diagnostic. Map it to the server's ER_MUST_CHANGE_PASSWORD_LOGIN text
+#: (mysql-server share/messages_to_clients.txt:7059) so callers matching
+#: error 1862 see the message they expect.
+_EXPIRED_PASSWORD_HINT = ("Please use --connect-expired-password option or invoke "
+                          "mysql in interactive mode.")
+EXPIRED_PASSWORD_MESSAGE = ("ERROR 1862 (HY000): Your password has expired. To log in "
+                            "you must change it using a client that supports expired passwords.")
+
 # C0 controls except tab and newline, DEL, and C1 controls (U+0080-U+009F).
 _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -404,9 +415,15 @@ def _client_auth_error(stderr, binary, used=None):
 
 
 _MACOS_ADMIN_GID = 80
+MAX_SHELL_TRUST_ENTRIES = 40000
+_SHELL_TRUST_CACHE = collections.OrderedDict()
+_SHELL_TRUST_LOCK = threading.Lock()
+_SHELL_TRUST_CACHE_SECONDS = 5.0
+# Tests substitute a private tree; never change the machine's global config.
+MYSQLSH_SYSTEM_CONFIG_DIR = '/etc/mysql'
 
 
-def _check_client_trust(path):
+def _check_client_trust(path, _lstat=None):
     """Refuse chosen clients whose file or containing folders are untrusted."""
     message = "The database client or a folder above it can be changed by other users."
     if os.name == 'nt':
@@ -450,7 +467,7 @@ def _check_client_trust(path):
         for current in (path, os.path.realpath(path)):
             while current and current not in seen:
                 seen.add(current)
-                info = os.lstat(current)
+                info = (_lstat or os.lstat)(current)
                 if info.st_uid not in (0, os.geteuid()):
                     raise ValueError(message)
                 # Symlink modes do not govern replacement; their owner and
@@ -494,6 +511,207 @@ def checked_program(path, realpath=None, bundled=False):
         if not os.path.isfile(real) or not os.access(real, os.X_OK):
             raise ValueError('The database client is not executable.')
     except (OSError, ValueError) as exc:
+        raise ClientMissingError(str(exc)) from exc
+    return real
+
+
+def _check_shell_tree_trust(real):
+    """Check Shell's startup code and libraries, including linked subtrees.
+
+    The executable's ancestors alone do not protect Shell's rc scripts,
+    plugins, Python packages or authentication libraries. Bound every lstat
+    in this additional check, including the ancestors of symlink targets.
+    """
+    message = 'MySQL Shell or a folder it loads can be changed by other users.'
+    remaining = [MAX_SHELL_TRUST_ENTRIES]
+
+    def lstat(path):
+        if remaining[0] <= 0:
+            raise ValueError('MySQL Shell has too many files to check safely (limit %d).' %
+                             MAX_SHELL_TRUST_ENTRIES)
+        remaining[0] -= 1
+        return os.lstat(path)
+
+    windows_root = None
+    if os.name == 'nt':
+        normalized = ntpath.normcase(ntpath.normpath(real))
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+                    'LOCALAPPDATA', 'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
+            root = os.environ.get(key)
+            if (not root or not ntpath.isabs(root) or root.replace('/', '\\').startswith('\\\\')):
+                continue
+            root = os.path.realpath(root)
+            if root.replace('/', '\\').startswith('\\\\'):
+                continue
+            root = ntpath.normcase(ntpath.normpath(root))
+            try:
+                if ntpath.commonpath((root, normalized)) == root:
+                    windows_root = root
+                    break
+            except ValueError:
+                pass
+        if windows_root is None:
+            raise ValueError('Choose MySQL Shell in Program Files or your user profile.')
+
+    def check_node(path, optional=False):
+        try:
+            info = lstat(path)
+        except FileNotFoundError:
+            if optional:
+                return None
+            raise
+        if os.name == 'nt':
+            # A junction or reparse point must stay in the executable's own
+            # allowed root, even if another allowed root would accept it.
+            if path.replace('/', '\\').startswith('\\\\'):
+                raise ValueError('MySQL Shell folders must be local.')
+            resolved = os.path.realpath(path)
+            if resolved.replace('/', '\\').startswith('\\\\'):
+                raise ValueError('MySQL Shell folders must be local.')
+            resolved = ntpath.normcase(ntpath.normpath(resolved))
+            try:
+                inside = ntpath.commonpath((windows_root, resolved)) == windows_root
+            except ValueError:
+                inside = False
+            if not inside:
+                raise ValueError('A MySQL Shell folder resolves outside its trusted installation root.')
+        else:
+            if info.st_uid not in (0, os.geteuid()):
+                raise ValueError(message)
+            if stat.S_ISLNK(info.st_mode):
+                target = os.path.realpath(path)
+                _check_client_trust(target, _lstat=lstat)
+                # Sticky directories are allowed only as ancestors, never
+                # as a directory from which Shell itself loads code.
+                target_info = lstat(target)
+                admin_only = (sys.platform == 'darwin' and target_info.st_gid == _MACOS_ADMIN_GID and
+                              not target_info.st_mode & 0o002)
+                if target_info.st_mode & 0o022 and not admin_only:
+                    raise ValueError(message)
+            elif info.st_mode & 0o022:
+                admin_only = (sys.platform == 'darwin' and info.st_gid == _MACOS_ADMIN_GID and
+                              not info.st_mode & 0o002)
+                if not admin_only:
+                    raise ValueError(message)
+        return info
+
+    def walk(path):
+        first = check_node(path, optional=True)
+        pending = [(path, first)]
+        while pending:
+            current, info = pending.pop()
+            if info is None:
+                continue
+            # DirEntry.is_symlink misses Windows junctions. Resolve both kinds
+            # of link, validate the target, and walk it, including at the root.
+            if stat.S_ISLNK(info.st_mode) or (getattr(info, 'st_file_attributes', 0) or 0) & 0x400:
+                current = os.path.realpath(current)
+                info = check_node(current)
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            identity = os.path.normcase(os.path.realpath(current))
+            if identity in visited:
+                continue  # Safe sibling cycles and shared targets are walked once.
+            visited.add(identity)
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    child = check_node(entry.path)
+                    if (stat.S_ISDIR(child.st_mode) or stat.S_ISLNK(child.st_mode) or
+                            (getattr(child, 'st_file_attributes', 0) or 0) & 0x400):
+                        pending.append((entry.path, child))
+
+    visited = set()
+    bin_dir = os.path.dirname(real)
+    prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else None
+    try:
+        # macOS also executes credential-store helpers beside mysqlsh.
+        # Windows loads DLLs (including Python) and bin/sasl2 modules here.
+        walk(bin_dir)
+        for suffix in ('js', 'py'):
+            check_node(os.path.join(bin_dir, 'mysqlshrc.' + suffix), optional=True)
+        if prefix:
+            check_node(prefix)
+            for name in ('share', 'lib', 'libexec'):
+                check_node(os.path.join(prefix, name), optional=True)
+            for relative in (('share', 'mysqlsh'), ('lib', 'mysqlsh'),
+                             ('lib', 'mysql'), ('libexec', 'mysqlsh')):
+                walk(os.path.join(prefix, *relative))
+            if os.name == 'nt' and os.path.isdir(os.path.join(prefix, 'lib')):
+                with os.scandir(os.path.join(prefix, 'lib')) as entries:
+                    for entry in entries:
+                        if entry.name.lower().startswith('python'):
+                            walk(entry.path)
+        if os.name != 'nt':
+            check_node(MYSQLSH_SYSTEM_CONFIG_DIR, optional=True)
+            config = os.path.join(MYSQLSH_SYSTEM_CONFIG_DIR, 'mysqlsh')
+            check_node(config, optional=True)
+            for suffix in ('js', 'py'):
+                check_node(os.path.join(config, 'mysqlshrc.' + suffix), optional=True)
+    except OSError as exc:
+        raise ValueError('MySQL Shell startup files could not be checked safely.') from exc
+
+
+def _shell_trust_cache_key(real):
+    """Cheap invalidation for discovery only. Execution always walks afresh.
+
+    A prefix mtime cannot detect chmod of a descendant. Keep cached inventory
+    brief, also fingerprint startup roots, and never use it to authorize exec.
+    """
+    bin_dir = os.path.dirname(real)
+    prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir).lower() == 'bin' else bin_dir
+    paths = [prefix, bin_dir, os.path.join(prefix, 'share'), os.path.join(prefix, 'lib'),
+             os.path.join(prefix, 'libexec'), os.path.join(prefix, 'share', 'mysqlsh'),
+             os.path.join(prefix, 'lib', 'mysqlsh'), os.path.join(prefix, 'lib', 'mysql'),
+             os.path.join(prefix, 'libexec', 'mysqlsh')]
+    if os.name != 'nt':
+        paths.extend([MYSQLSH_SYSTEM_CONFIG_DIR, os.path.join(MYSQLSH_SYSTEM_CONFIG_DIR, 'mysqlsh')])
+    signature = []
+    for current in paths:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            signature.append(None)
+            continue
+        signature.append((os.path.realpath(current), info.st_dev, info.st_ino,
+                          info.st_mtime, info.st_ctime, info.st_mode, info.st_uid, info.st_gid))
+    return (real, tuple(signature), tuple(os.environ.get(key) for key in (
+        'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA',
+        'MYFLAMES_USER_PROFILE', 'USERPROFILE')))
+
+
+def checked_shell_program(path, realpath=None, cache=False):
+    """Check every Shell, with an optional short cache for read-only inventory.
+
+    Every execution caller uses the default fresh walk. Version probes also
+    recheck immediately before spawning, even after cached discovery.
+    """
+    real = checked_program(path, realpath, bundled=False)
+    try:
+        key = _shell_trust_cache_key(real) if cache else None
+        if key is not None:
+            with _SHELL_TRUST_LOCK:
+                checked_at = _SHELL_TRUST_CACHE.get(key)
+                if checked_at is not None and time.monotonic() - checked_at < _SHELL_TRUST_CACHE_SECONDS:
+                    _SHELL_TRUST_CACHE.move_to_end(key)
+                    return real
+        _check_shell_tree_trust(real)
+        if key is not None and _shell_trust_cache_key(real) == key:
+            with _SHELL_TRUST_LOCK:
+                _SHELL_TRUST_CACHE[key] = time.monotonic()
+                _SHELL_TRUST_CACHE.move_to_end(key)
+                while len(_SHELL_TRUST_CACHE) > 64:
+                    _SHELL_TRUST_CACHE.popitem(last=False)
+    except OSError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
+        raise ClientMissingError('MySQL Shell startup files could not be checked safely.') from exc
+    except ValueError as exc:
+        with _SHELL_TRUST_LOCK:
+            for previous in list(_SHELL_TRUST_CACHE):
+                if previous[0] == real:
+                    del _SHELL_TRUST_CACHE[previous]
         raise ClientMissingError(str(exc)) from exc
     return real
 
@@ -561,7 +779,7 @@ def probe_client(path, check_trust=True, chosen=None):
 
 
 class PartialReadError(ConnectorError):
-    """A framed, read-only batch failed; its caller must validate completion.
+    """A read batch failed; its caller must validate any completed prefix.
 
     Output is deliberately absent from the error message and never accepted
     as a successful reading by the ordinary connector methods.
@@ -572,11 +790,24 @@ class PartialReadError(ConnectorError):
         self.stdout = stdout
 
 
+def _server_read_error(stderr):
+    """Recognize a server diagnostic, excluding client error numbers.
+
+    MariaDB can echo the complete packet before its closing separator.
+    Only the first diagnostic after that echo determines the error kind.
+    """
+    boundary = stderr.rfind("\n--------------\n")
+    diagnostic = stderr[boundary + len("\n--------------\n"):] if boundary >= 0 else stderr
+    error = re.search(r"^ERROR\s+(\d+)\b", diagnostic, re.M)
+    return error is not None and not 2000 <= int(error.group(1)) <= 2999
+
+
 class _InvocationDefaults(str):
     """Keep an option file paired with the client whose engine it describes."""
-    def __new__(cls, path, binary):
+    def __new__(cls, path, binary, client_engine=None):
         value = str.__new__(cls, path)
         value.binary = binary
+        value.client_engine = client_engine
         return value
 
 
@@ -909,18 +1140,29 @@ class MySQLConnection:
             raise ConnectorError(str(exc)) from None
         return TUNNELS.acquire(spec)
 
-    def _defaults_engine(self, binary, used=None):
-        """Describe the actual client rather than its filename or server."""
+    def _client_engine_facts(self, binary, used=None):
+        """Return the existing option-file family and the confirmed lexer family.
+
+        Preserve the option-file fallback when a probe fails, but do not let
+        that fallback authorize a particular SQL framing interpretation.
+        """
         used = used or getattr(self, '_client_use', None)
         if used and os.path.realpath(used['path']) == os.path.realpath(binary):
-            return used['engine']
+            return used['engine'], used['engine']
         else:
             # A mysql symlink can be a MariaDB client. Probe the program, never
             # infer its engine from its filename or the server's engine.
             from . import client_tools
             name = os.path.splitext(os.path.basename(binary))[0]
             fields = client_tools.probe(name, binary) if os.path.isfile(binary) else {}
-            return fields.get('engine', 'mysql')
+            return fields.get('engine', 'mysql'), fields.get('engine') if fields.get('available') else None
+
+    def client_engine(self, binary, used=None):
+        """The actual binary's family, independent of its filename or server."""
+        return self._client_engine_facts(binary, used)[1]
+
+    def _defaults_engine(self, binary, used=None):
+        return self._client_engine_facts(binary, used)[0]
 
     @contextmanager
     def _invocation_defaults(self, binary=None, used=None):
@@ -930,13 +1172,13 @@ class MySQLConnection:
         invocation holds the tunnel until it ends."""
         self._check_login_consent()
         binary = binary or self._resolve_binary()
-        engine = self._defaults_engine(binary, used)
+        engine, client_engine = self._client_engine_facts(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
             path = self._create_defaults_file(None if lease is None else ("127.0.0.1", lease.port),
                                               client_engine=engine)
             try:
-                yield _InvocationDefaults(path, binary)
+                yield _InvocationDefaults(path, binary, client_engine)
             finally:
                 try:
                     os.unlink(path)
@@ -1081,19 +1323,26 @@ class MySQLConnection:
             self._group_login_started = True
         return _run_bounded(argv, **options)
 
-    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None):
+    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None,
+            retain_partial_stdout=False):
         """Run SQL through the resolved client and return its decoded stdout."""
-        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start)
+        return self._run_with_binary(sql, None, extra_flags, timeout, tail_timeout, on_tail_start,
+                                     retain_partial_stdout=retain_partial_stdout)
 
     def _run_with_binary(self, sql, binary, extra_flags=None, timeout=None, tail_timeout=None,
-                         on_tail_start=None, used=None):
+                         on_tail_start=None, used=None, retain_partial_stdout=False):
         """Run *sql* and return the raw stdout as a ``str``.
 
         Raises :class:`ConnectorError` with stderr attached on failure.
+        ``retain_partial_stdout=True`` retains completed stdout privately in
+        :class:`PartialReadError` only on a server SQL error, so client and
+        transport errors keep their ordinary type and never attach stdout.
         ``tail_timeout=(marker, seconds)`` is for framed read-only batches:
         unbuffered output starts a separate deadline at the complete marker
-        row, and errors retain stdout in :class:`PartialReadError`.
-        Optional on_tail_start runs at that marker, even if the tail fails.
+        row, and any non-zero client exit (except auth-plugin errors) or
+        timeout retains stdout in :class:`PartialReadError` for the caller to
+        validate against the markers. Optional on_tail_start runs at that
+        marker, even if the tail fails.
         """
         started = time.monotonic()
         try:
@@ -1127,11 +1376,17 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], used or getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE + self._tunnel_note(started))
             message = (
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
                 + self._tunnel_note(started)
             )
-            if tail_timeout is not None:
+            # Framed tail_timeout batches keep completed stdout on any failed
+            # exit (their caller validates the markers); retain_partial_stdout
+            # keeps it only for a server diagnostic, so a client or transport
+            # error never authorizes a read fallback.
+            if tail_timeout is not None or (retain_partial_stdout and _server_read_error(stderr)):
                 raise PartialReadError(message, _client_text(proc.stdout))
             raise ConnectorError(message)
         return _client_text(proc.stdout)
@@ -1172,6 +1427,8 @@ class MySQLConnection:
             if auth is not None:
                 raise auth
         if proc.returncode != 0 and not _STATEMENT_ERROR.search(stderr):
+            if not stderr.strip() and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr.strip() or "no stderr"))
         return _client_text(proc.stdout), stderr
@@ -1182,6 +1439,18 @@ class MySQLConnection:
     def run_stdin(self, sql, extra_flags=None, timeout=None):
         """Compatibility name for :meth:`run_write` (SQL never on argv)."""
         return self.run_write(sql, extra_flags=extra_flags, timeout=timeout)
+
+    @staticmethod
+    def _write_guard_markers(sql):
+        """Recognize the editor's exact generated tag without trusting rows.
+
+        The shared builder also accepts a privately tagged guard. Strip only
+        that locally generated leading comment for marker discovery, never
+        from the SQL sent to the server.
+        """
+        from .dbops import target_script_markers
+        untagged = re.sub(r"^/\*myflames:editor:[0-9a-f]{32}\*/ ", "", sql or "", flags=re.M)
+        return target_script_markers(untagged)
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         """Run *sql* sent on the client's standard input and return stdout.
@@ -1197,16 +1466,25 @@ class MySQLConnection:
         error. Errors redact the connection password and SQL credential
         clauses before they leave the connector.
         """
-        from .dbops import redact
+        from .dbops import redact, strip_target_guard_markers, target_error_text
         try:
-            return self._run_write(sql, extra_flags, timeout)
-        except subprocess.TimeoutExpired:
-            raise ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
-                timeout or self.query_timeout)) from None
+            return strip_target_guard_markers(self._run_write(sql, extra_flags, timeout), self._write_guard_markers(sql))
+        except subprocess.TimeoutExpired as exc:
+            from .dbops import target_guard_markers
+            error = ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
+                timeout or self.query_timeout))
+            private = set(self._write_guard_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(exc.output)) if m in private)
+            raise error from None
         except ClientAuthPluginError:
             raise
         except (ConnectorError, OSError) as exc:
-            raise ConnectorError(redact(str(exc), self.password)) from None
+            text = target_error_text(exc) if (sql or "").startswith("DELIMITER ") else str(exc)
+            error = ConnectorError(redact(text, self.password))
+            # Preserve only private guard acknowledgements, never arbitrary
+            # result rows (CREATE USER can return a generated password).
+            error.guard_markers = getattr(exc, "guard_markers", ())
+            raise error from None
 
     def _run_write(self, sql, extra_flags, timeout):
         with self._invocation_defaults() as defaults_path:
@@ -1231,9 +1509,15 @@ class MySQLConnection:
             auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
             if auth is not None:
                 raise auth
-            raise ConnectorError(
+            if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
+                raise ConnectorError(EXPIRED_PASSWORD_MESSAGE)
+            error = ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
+            from .dbops import target_guard_markers
+            private = set(self._write_guard_markers(sql))
+            error.guard_markers = tuple(m for m in target_guard_markers(_client_text(proc.stdout)) if m in private)
+            raise error
         return _client_text(proc.stdout)
 
     def query_rows(self, sql):

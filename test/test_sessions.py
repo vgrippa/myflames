@@ -27,9 +27,9 @@ SERVERS = ('mysql-8.4', 'mysql-9.7', 'mysql-26.7', 'mariadb-11.4', 'mariadb-13.0
 def replay(server, edit=None):
     calls = list(fixture('sessions', server)['calls'])
     # Identity answers are synthetic additions to the older live recordings.
-    identity_sql = ('SELECT @@server_id, @@hostname, @@version' if server.startswith('mariadb')
+    identity_sql = ('SELECT @@server_id, @@hostname, @@version, @@port' if server.startswith('mariadb')
                     else 'SELECT @@server_uuid')
-    identity = [['1', 'server-one', '11.4.13-MariaDB']] if server.startswith('mariadb') else [['server-uuid-1']]
+    identity = [['1', 'server-one', '11.4.13-MariaDB', '3306']] if server.startswith('mariadb') else [['11111111-2222-3333-4444-555555555555']]
     calls.append([sessions.SESSIONS_TAG + identity_sql, batch(identity)])
     # Explicit synthetic supplement: old live recordings predate the DDL read.
     engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
@@ -151,8 +151,8 @@ class TestLiveReplay(unittest.TestCase):
 
     def test_report_captures_server_identity_once_for_both_engines(self):
         for server, expected in (
-                ('mysql-8.4', {'server_uuid': 'server-uuid-1'}),
-                ('mariadb-11.4', {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB'})):
+                ('mysql-8.4', {'server_uuid': '11111111-2222-3333-4444-555555555555'}),
+                ('mariadb-11.4', {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
             with self.subTest(server=server):
                 conn = replay(server)
                 report = sessions_report(conn, identity=True)
@@ -310,8 +310,8 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
     status = status or [['Max_used_connections', '9'], ['Threads_connected', '8'], ['Threads_running', '3'],
                         ['Uptime', '1000']]
     pl_rows = pl_rows if pl_rows is not None else rows
-    answers = [('SELECT @@server_uuid', batch([['server-uuid-1']])),
-               ('SELECT @@server_id, @@hostname, @@version', batch([['1', 'server-one', version]])),
+    answers = [('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])),
+               ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', version, '3306']])),
                ('events_statements_current', events),
                ('performance_schema_show_processlist', batch([['performance_schema_show_processlist', ps_show_processlist]])),
                ('SHOW GLOBAL VARIABLES', batch([['max_connections', '10'], ['performance_schema', ps],
@@ -654,15 +654,14 @@ class TestSessionsKillCLI(unittest.TestCase):
     def test_tty_confirmation_identity_change_refuses(self):
         import test_locks as fixtures
         scenario = fixtures.KillScenario()
-        reads = []
+        class SwitchOnConfirm(fixtures.FakeStdin):
+            def readline(self):
+                scenario.conn.responses = [(p, batch([['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
+                                           if p == 'SELECT @@server_uuid' else value)
+                                           for p, value in scenario.conn.responses]
+                return super(SwitchOnConfirm, self).readline()
 
-        def identity(sql):
-            reads.append(sql)
-            return batch([['server-uuid-1' if len(reads) <= 2 else 'replacement-server']])
-
-        scenario.conn.responses = [(p, identity if p == 'SELECT @@server_uuid' else value)
-                                   for p, value in scenario.conn.responses]
-        code, out, err, _ = self.call(scenario, '--kill', '41', stdin=fixtures.FakeStdin('yes\n'))
+        code, out, err, _ = self.call(scenario, '--kill', '41', stdin=SwitchOnConfirm('yes\n'))
         self.assertEqual((code, out, scenario.kills()), (2, '', []))
         self.assertIn('[y/N]', err)
         self.assertIn('server identity', err)

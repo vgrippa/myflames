@@ -6,6 +6,7 @@ server, user workspace, or changes to the shared fake are needed.
 """
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import time
@@ -14,8 +15,9 @@ import unittest
 from unittest import mock
 
 from _client_tools_fixture import private_client_dir
+from test_editor_session import packet_client
 
-from myflames import editor_session as ed
+from myflames import dbops, editor_session as ed
 from myflames.workspace_store import WorkspaceStore
 
 
@@ -38,7 +40,9 @@ class EditorProcessTests(unittest.TestCase):
         # Match the identity-bearing fake installed by test_editor_session.py.
         client = FAKE.read_text(encoding="utf-8").replace(
             '"connection_id": str(self.conn_id),',
-            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+            '"server_uuid": "11111111-2222-3333-4444-555555555555" if ENGINE == "mysql" else None,')
+        client = packet_client(client)
         script = bindir / "mysql"
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(0o755)
@@ -151,14 +155,38 @@ class EditorProcessTests(unittest.TestCase):
 
     def assert_control_kill(self, session, since):
         expected = ed.TAG + "KILL QUERY %d" % session.connection_id
-        kills = (self.state / "kills.log").read_text(encoding="utf-8").splitlines()
-        self.assertIn(expected, kills)
-        controls = [p for p in self.children[since:] if "-e" in p.args]
+        guard = session._kill_statement_guard(dbops.target_session_guard(session.engine, session._kill_identity),
+                                               session.connection_id)
+        # The control client inherits the global mode, so only the tab's
+        # own packets may assert its cached quote mode. Keep the full server
+        # and token ownership guard in this byte-for-byte packet comparison.
+        expected_batch = session._guarded_statement(guard, expected, use_session_mode=False)[0]
+        kills = (self.state / "kills.log").read_text(encoding="utf-8")
+        self.assertNotIn("@@SESSION.sql_mode", kills)
+        controls = [p for p in self.children[since:] if "--batch" in p.args and "--xml" not in p.args]
         self.assertTrue(controls, "KILL QUERY did not use a second client process")
         for control in controls:
             self.assertNotEqual(control.pid, session.proc.pid)
-            self.assertEqual(control.args[control.args.index("-e") + 1], expected)
+            # Each build gets a fresh nonce. Compare every other byte of the
+            # packet, including this tab's ownership check and tagged KILL.
+            private = r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+"
+            self.assertIn(re.sub(private, "ACK", expected_batch), re.sub(private, "ACK", kills))
+            self.assertNotIn("-e", control.args)
+            self.assertFalse(any("myflames:editor:" in arg for arg in control.args))
+            self.assertIn("--skip-reconnect", control.args)
+            self.assertNotIn("--force", control.args)
             self.assert_reaped(control)
+
+    def test_start_reads_the_engine_identity_in_the_tabs_session(self):
+        session = self.open_session()
+        log = (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8")
+        self.assertIn("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider')", log)
+        self.assertIn("SELECT CONNECTION_ID() AS connection_id", log)
+        if self.engine == "mysql":
+            self.assertEqual(session.server_identity["server_uuid"], "11111111-2222-3333-4444-555555555555")
+        else:
+            self.assertNotIn("@@global.server_uuid", log)
+            self.assertNotIn("server_uuid", session.server_identity)
 
     def close_api(self, tab="tab", **payload):
         return ed.api_response("/api/editor/close", dict({"connection": self.connection}, **dict(payload, tab_id=tab)),

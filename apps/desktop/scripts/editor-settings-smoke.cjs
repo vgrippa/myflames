@@ -227,6 +227,7 @@ async function editorChecks(page, expected, helpers) {
   // Paste leaves the viewport at the document end. The automation facade sets
   // selection without scrollIntoView, so explicitly expose the two short lines.
   await page.$eval(EDITOR, editor => editor.closest('.cm-editor').querySelector('.cm-scroller').scrollTo(0, 0));
+  // Name the wait in a failure: CI logs show only "Waiting failed" otherwise.
   await page.waitForFunction(selector => {
     const editor = document.querySelector(selector);
     const second = editor?.querySelectorAll('.cm-line')[1];
@@ -234,8 +235,9 @@ async function editorChecks(page, expected, helpers) {
     const scroller = editor?.closest('.cm-editor').querySelector('.cm-scroller').getBoundingClientRect();
     return second?.textContent === 'SELECT 2;' && rect.top >= Math.max(0, scroller.top)
       && rect.bottom <= Math.min(innerHeight, scroller.bottom);
-  }, {}, EDITOR);
-  await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, CURSORS);
+  }, {}, EDITOR).catch(error => { throw new Error('line 2 never became visible: ' + error.message); });
+  await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, CURSORS)
+    .catch(error => { throw new Error('the editor never showed exactly one cursor before Option-click: ' + error.message); });
   const point = await page.$eval(EDITOR, editor => {
     const second = editor.querySelectorAll('.cm-line')[1];
     if (!second) throw new Error('Editor has no second line');
@@ -248,9 +250,18 @@ async function editorChecks(page, expected, helpers) {
   await page.keyboard.down('Alt');
   try { await page.mouse.click(point.x, point.y); }
   finally { await page.keyboard.up('Alt'); }
-  // Let CodeMirror measure/draw both cursors before counting, including the
-  // negative case. Cursor DOM remains present during its CSS blink off phase.
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  // Let CodeMirror measure/draw both cursors before counting. A slow CI runner
+  // can need more than two frames, so wait for the expected count (bounded),
+  // then let a few more frames pass so the negative case cannot gain a late
+  // second cursor. Cursor DOM remains present during its CSS blink off phase.
+  const want = expected.multi_cursor ? 2 : 1;
+  await page.waitForFunction((selector, n) => document.querySelectorAll(selector).length === n,
+    { timeout: 5000 }, CURSORS, want).catch(() => {});
+  await page.evaluate(() => new Promise(resolve => {
+    let frames = 4;
+    const tick = () => (--frames ? requestAnimationFrame(tick) : resolve());
+    requestAnimationFrame(tick);
+  }));
   const count = await page.$$eval(CURSORS, nodes => nodes.length);
   assert.equal(count, expected.multi_cursor ? 2 : 1, 'Option-click obeys Multiple cursors');
   assert.ok(await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1), 'Option-click reached the second line');

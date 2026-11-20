@@ -45,6 +45,7 @@
   max-width: 100%;
 }
 .qd-statement {
+  font-size: var(--text-code-sm);
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -88,8 +89,8 @@
   background: var(--surface-pane);
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -175,7 +176,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
 }
 .qd-digest > .text-button {
   flex: none;
@@ -295,7 +296,7 @@
 .qd-table-name > code,
 .qd-index-list code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-code-sm);
   overflow-wrap: anywhere;
 }
 .qd-index-list li {

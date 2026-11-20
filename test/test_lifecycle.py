@@ -23,8 +23,11 @@ import time
 import types
 import unittest
 from unittest import mock
+import uuid
 
 from _client_tools_fixture import private_client_dir
+from _grants_fixtures import grants_batch
+from _reviewed_replay import answer_evidence, evidence_options
 
 from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
@@ -33,6 +36,21 @@ from myflames.workspace_store import WorkspaceStore
 FIXTURES = Path(__file__).parent / 'fixtures' / 'lifecycle'
 PASSWORD = "secret'with spaces"
 DONOR_PASSWORD = "donor'private"
+
+# Public Amazon Root CA 3, used only as deterministic test data.
+SHELL_ROOT_PEM = """-----BEGIN CERTIFICATE-----
+MIIBtjCCAVugAwIBAgITBmyf1XSXNmY/Owua2eiedgPySjAKBggqhkjOPQQDAjA5
+MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6b24g
+Um9vdCBDQSAzMB4XDTE1MDUyNjAwMDAwMFoXDTQwMDUyNjAwMDAwMFowOTELMAkG
+A1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJvb3Qg
+Q0EgMzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCmXp8ZBf8ANm+gBG1bG8lKl
+ui2yEujSLtf6ycXYqm0fc4E7O5hrOXwzpcVOho6AF2hiRVd9RFgdszflZwjrZt6j
+QjBAMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMB0GA1UdDgQWBBSr
+ttvXBp43rDCGB5Fwx5zEGbF4wDAKBggqhkjOPQQDAgNJADBGAiEA4IWSoxe3jfkr
+BqWTrBqYaGFy+uGh0PsceGCmQ5nFuMQCIQCcAu/xlJyzlvnrxir4tiz+OpAUFteM
+YyRIHN8wfdVoOw==
+-----END CERTIFICATE-----
+"""
 CONNECTION = {'host': '127.0.0.1', 'port': 3306, 'user': 'operator', 'password': PASSWORD}
 CATALOG = [['app', 't', 'BASE TABLE', 'InnoDB', '100', '20'],
            ['app', 'v', 'VIEW', None, '0', '0']]
@@ -41,7 +59,7 @@ CATALOG = [['app', 't', 'BASE TABLE', 'InnoDB', '100', '20'],
 def server_variables(engine='mysql', identity='donor', version=None):
     return {'version': version or ('11.4.5-MariaDB' if engine == 'mariadb' else '8.4.3'),
             'version_comment': engine, 'hostname': identity, 'server_id': '1' if identity == 'donor' else '2',
-            'server_uuid': identity if engine == 'mysql' else '', 'port': '3306',
+            'server_uuid': str(uuid.uuid5(uuid.NAMESPACE_DNS, identity)) if engine == 'mysql' else '', 'port': '3306',
             'datadir': '/server/data/', 'socket': '/server/mysql.sock', 'local_infile': 'ON',
             'version_compile_os': 'Linux', 'version_compile_machine': 'x86_64',
             'character_set_server': 'utf8mb4', 'character_set_filesystem': 'binary',
@@ -84,7 +102,11 @@ class ReplayConnection(object):
     def __exit__(self, *args):
         self.closed = True
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        packet = answer_evidence(sql, extra_flags, timeout, self.run, self.variables)
+        if packet is not None:
+            return packet
         self.calls.append((sql, extra_flags))
         if sql.startswith(privileges.TAG):
             if 'myflames_who' in sql:
@@ -98,6 +120,10 @@ class ReplayConnection(object):
         body = sql[len(lc.TAG):]
         if self.denied and self.denied in body:
             raise ConnectorError('ERROR 1142 SELECT command denied')
+        if sql == dbops._grants_read_sql(lc.TAG):
+            return grants_batch(self.grants, login='operator@local', account='operator@%',
+                                version=self.variables['version'], server=self.variables,
+                                variables={'server_uuid': self.variables.get('server_uuid') or None})
         if body.startswith('SHOW GLOBAL VARIABLES') and '7365727665725f75756964' in body:
             self.identity_reads += 1
             values = dict(self.variables)
@@ -157,6 +183,31 @@ class ReplayConnection(object):
             if entry['contains'] in body:
                 return entry['result']
         raise AssertionError('Unexpected SQL: ' + body)
+
+
+class GrantsReplayTests(unittest.TestCase):
+    def test_lifecycle_grants_use_one_login_on_supported_engines(self):
+        for engine, version, partial in (
+                ('mysql', '5.7.44', None), ('mysql', '8.0.15', None), ('mysql', '8.4.11', False),
+                ('mysql', '9.7.2', False), ('mariadb', '10.11.16-MariaDB', None),
+                ('mariadb', '11.4.13-MariaDB', None), ('mariadb', '11.8.9-MariaDB', None)):
+            with self.subTest(engine=engine, version=version):
+                conn = ReplayConnection(server_variables(engine, version=version))
+                result, have = lc._grants(conn)
+                self.assertTrue(result['checked'], result)
+                self.assertEqual((result['user'], result['account'], result['grants']),
+                                 ('operator', 'operator@%', conn.grants))
+                self.assertIs(result['partial_revokes'], partial)
+                self.assertIn('ALL PRIVILEGES', have)
+                self.assertEqual(conn.calls, [(dbops._grants_read_sql(lc.TAG), ['--comments', '--skip-reconnect'])])
+
+    def test_denied_grants_leave_the_lifecycle_hint_unchecked(self):
+        conn = ReplayConnection()
+        conn.denied = 'SHOW GRANTS'
+        check = lc._privileges_check(conn, [('SELECT', 'ALL PRIVILEGES')])
+        self.assertEqual(check['status'], 'not_checked')
+        self.assertEqual(check['missing_any_of'], [['SELECT', 'ALL PRIVILEGES']])
+        self.assertEqual(len(conn.calls), 1)
 
 
 class StrictReplay(object):
@@ -329,6 +380,21 @@ class ControlTransportTests(unittest.TestCase):
             self.assertEqual(caught.exception.server_error_code, 1045)
             self.assertNotIn('connection-secret', str(caught.exception))
             self.assertNotIn('sql-secret', str(caught.exception))
+            self.assertFalse(os.path.exists(self.defaults[0]))
+
+    def test_control_expired_password_hint_raises_the_server_1862_message(self):
+        # The batch client reports an expired password only on stdout; the
+        # lifecycle control path maps it to the server's own 1862 text.
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\n'
+                  'sys.stdin.buffer.read()\n'
+                  'sys.stdout.write(%r)\n'
+                  'sys.exit(1)\n' % hint)
+        with self.child(script), lc.LifecycleConnection(host='localhost', binary='mysql') as conn:
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+            self.assertEqual(caught.exception.server_error_code, 1862)
             self.assertFalse(os.path.exists(self.defaults[0]))
 
     def test_control_timeout_reaps_client_and_removes_credentials(self):
@@ -844,7 +910,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(detect.call_args[1]['server']['version'], '8.0.36')
             self.assertIs(detect.call_args[1]['job'], runner)
             lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, job=runner)
-            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'], 'recipient')
+            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'],
+                             str(uuid.uuid5(uuid.NAMESPACE_DNS, 'recipient')))
             self.assertIs(detect.call_args[1]['job'], runner)
             lc.prepare_physical_backup(ReplayConnection(server_variables('mariadb')), CONNECTION,
                                        self.output, job=runner)
@@ -3687,8 +3754,213 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class ShellTLSOptionsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.ca = self.root / 'root-ca.pem'
+        self.pem = SHELL_ROOT_PEM
+        self.ca.write_text(self.pem, encoding='ascii')
+        self.tool = dict(name='mysqlsh', path='/unused/mysqlsh', engine='mysql')
+        patch = mock.patch.object(lc.ssl, 'get_default_verify_paths',
+                                  return_value=types.SimpleNamespace(cafile=str(self.ca)))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_shell_option_file_contents_for_each_tls_mode(self):
+        for mode in ('DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
+            with self.subTest(mode=mode), lc._credentials(dict(
+                    host='h', ssl_mode=mode.lower(), ssl_ca='/saved/ca.pem', ssl_cert='cert.pem',
+                    ssl_key='key.pem', ssl_cipher='cipher'), self.tool) as (argv, env):
+                path = Path(argv[1].split('=', 1)[1])
+                content = path.read_text(encoding='utf-8')
+                self.assertIn('ssl-mode="%s"' % mode, content)
+                self.assertEqual('ssl-ca=' in content, mode.startswith('VERIFY'))
+                for name in ('cert', 'key', 'cipher'):
+                    self.assertEqual('ssl-' + name + '=' in content, mode != 'DISABLED')
+                if mode.startswith('VERIFY'):
+                    self.assertIn('ssl-ca="/saved/ca.pem"', content)
+                self.assertNotIn('protocol=', content)
+                self.assertFalse((path.parent / 'ca-bundle.pem').exists())
+                self.assertEqual(env['OPENSSL_CONF'], os.devnull)
+
+    def test_stale_ca_capath_and_revocation_options_never_reach_nonverifying_shell(self):
+        for mode in ('DISABLED', 'PREFERRED', 'REQUIRED'):
+            options = dict(host='h', ssl_mode=mode, ssl_ca='/old/ca.pem', ssl_capath='/old/certs',
+                           ssl_crl='/old/crl.pem', ssl_crlpath='/old/crls')
+            with self.subTest(mode=mode), lc._credential_file(options, self.tool, True) as (argv, env):
+                text = Path(argv[1].split('=', 1)[1]).read_text()
+                self.assertIn('ssl-mode="%s"' % mode, text)
+                for name in ('ca', 'capath', 'crl', 'crlpath'):
+                    self.assertNotIn('ssl-' + name + '=', text)
+
+    def test_windows_roots_produce_private_pem_bundle_and_filter_non_server_trust(self):
+        der = lc.ssl.PEM_cert_to_DER_cert(self.pem)
+        roots = [(der, 'x509_asn', True), (der, 'x509_asn', {'1.3.6.1.5.5.7.3.1'}),
+                 (der, 'x509_asn', {'1.3.6.1.5.5.7.3.3'}), (b'not a certificate', 'pkcs_7_asn', True)]
+        with mock.patch.object(lc.sys, 'platform', 'win32'), \
+                mock.patch.object(lc.ssl, 'enum_certificates', return_value=roots, create=True) as enum:
+            with lc._credentials({'host': 'h', 'ssl_mode': 'VERIFY_CA'}, self.tool) as (argv, env):
+                bundle = Path(argv[1].split('=', 1)[1]).parent / 'ca-bundle.pem'
+                pem = bundle.read_text(encoding='ascii')
+                self.assertEqual(pem.count('-----BEGIN CERTIFICATE-----'), 2)
+                if os.name == 'posix':
+                    self.assertEqual(stat.S_IMODE(bundle.stat().st_mode), 0o600)
+            enum.assert_called_once_with('ROOT')
+            self.assertFalse(bundle.exists())
+
+    def test_empty_or_unreadable_windows_root_store_refuses_before_launch(self):
+        for result in ([], OSError('private store error')):
+            with self.subTest(result=result), mock.patch.object(lc.sys, 'platform', 'win32'), \
+                    mock.patch.object(lc.ssl, 'enum_certificates', create=True) as enum, \
+                    mock.patch.object(lc.subprocess, 'Popen') as spawn:
+                if isinstance(result, OSError):
+                    enum.side_effect = result
+                else:
+                    enum.return_value = result
+                job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+                with self.assertRaisesRegex(ConnectorError, 'no system root CA bundle.*nothing was sent'):
+                    lc._invoke(job, self.tool, {'host': 'h', 'ssl_mode': 'VERIFY_CA'}, [])
+                spawn.assert_not_called()
+
+    def test_openssl_configuration_is_disabled_even_when_inherited_is_hostile(self):
+        with mock.patch.dict(os.environ, {'OPENSSL_CONF': '/untrusted/openssl.cnf'}):
+            self.assertEqual(lc._clean_env(str(self.root), shell=True)['OPENSSL_CONF'], os.devnull)
+            self.assertNotIn('OPENSSL_CONF', lc._clean_env(str(self.root)))
+
+    def test_verify_ca_system_bundle_is_nonempty_private_and_removed_after_use(self):
+        with lc._credentials(dict(host='h', ssl_mode='VERIFY_CA'), self.tool) as (argv, env):
+            path = Path(argv[1].split('=', 1)[1])
+            ca = path.parent / 'ca-bundle.pem'
+            self.assertEqual(ca.read_text(encoding='ascii'), self.pem)
+            self.assertIn('-----BEGIN CERTIFICATE-----', ca.read_text(encoding='ascii'))
+            content = path.read_text(encoding='utf-8')
+            self.assertIn('ssl-mode="VERIFY_CA"', content)
+            self.assertIn('ssl-ca=' + connector._option_value(str(ca)), content)
+            if os.name == 'posix':
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(ca.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        self.assertFalse(ca.exists())
+        self.assertFalse(path.parent.exists())
+
+    def test_mac_keychain_roots_are_used_when_no_regular_cafile_exists(self):
+        from myflames import tls
+        for cafile in (None, str(self.root)):
+            with self.subTest(cafile=cafile), mock.patch.object(lc.sys, 'platform', 'darwin'), \
+                    mock.patch.object(lc.ssl, 'get_default_verify_paths',
+                                      return_value=types.SimpleNamespace(cafile=cafile)), \
+                    mock.patch.object(tls, '_system_roots', return_value=self.pem) as roots:
+                with lc._credentials(dict(host='h', ssl_mode='VERIFY_CA'), self.tool) as (argv, env):
+                    bundle = Path(argv[1].split('=', 1)[1]).parent / 'ca-bundle.pem'
+                    self.assertEqual(bundle.read_text(encoding='ascii'), self.pem)
+                roots.assert_called_once_with()
+
+    def test_unavailable_or_invalid_system_roots_refuse_before_any_process_starts(self):
+        from myflames import tls
+        bad = self.root / 'not-a-root.pem'
+        bad.write_text('this is not a certificate\n')
+        for platform, cafile in (('linux', None), ('darwin', None), ('linux', str(bad))):
+            with self.subTest(platform=platform, cafile=cafile), \
+                    mock.patch.object(lc.sys, 'platform', platform), \
+                    mock.patch.object(lc.ssl, 'get_default_verify_paths',
+                                      return_value=types.SimpleNamespace(cafile=cafile)), \
+                    mock.patch.object(tls, '_system_roots', return_value=''), \
+                    mock.patch.object(lc.subprocess, 'Popen') as spawn:
+                job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+                with self.assertRaisesRegex(ConnectorError, 'no system root CA bundle'):
+                    lc._invoke(job, self.tool, dict(host='h', ssl_mode='VERIFY_CA'), [])
+                spawn.assert_not_called()
+
+    def test_ca_bundle_creation_is_exclusive_and_does_not_overwrite_existing_files(self):
+        path = self.root / 'ca-bundle.pem'
+        path.write_text('existing file')
+        with self.assertRaises(ConnectorError):
+            lc._shell_tls_options({'ssl_mode': 'VERIFY_CA'}, str(self.root))
+        self.assertEqual(path.read_text(), 'existing file')
+
+    def test_missing_mode_defaults_to_preferred_and_invalid_mode_refuses(self):
+        self.assertEqual(lc._shell_tls_options({'ssl_ca': '/stale'}, str(self.root)), ['ssl-mode="PREFERRED"'])
+        with self.assertRaisesRegex(ValueError, 'Invalid TLS mode'):
+            lc._shell_tls_options({'ssl_mode': 'unknown'}, str(self.root))
+
+
 @unittest.skipIf(os.name == 'nt', 'POSIX executable trust checks')
 class ClientToolTrustTests(unittest.TestCase):
+    def test_shell_launch_paths_recheck_startup_tree_before_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bin_dir = private_client_dir(root / 'shell/bin')
+            binary = bin_dir / 'mysqlsh'
+            binary.write_text('#!/bin/sh\necho "should never run"\n')
+            binary.chmod(0o755)
+            code = private_client_dir(bin_dir.parent / 'share/mysqlsh') / 'mysqlshrc.js'
+            code.write_text('/* trusted at review */\n')
+            code.chmod(0o600)
+            tool = dict(name='mysqlsh', path=str(binary), realpath=str(binary), engine='mysql')
+            with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                connector.checked_shell_program(str(binary))
+                code.chmod(0o777)
+                with mock.patch.object(lc.subprocess, 'Popen') as spawn:
+                    job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+                    with lc._credentials({'host': 'h'}, tool) as (argv, env):
+                        with self.assertRaises(connector.ClientMissingError):
+                            job.process_tool(argv, env)
+                    with self.assertRaises(connector.ClientMissingError):
+                        lc._invoke(job, tool, {'host': 'h'}, [])
+                    spawn.assert_not_called()
+
+    def test_lifecycle_shell_plugin_flags_are_version_gated_on_real_argv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqlsh'
+            binary.write_text('#!' + sys.executable + '\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
+            binary.chmod(0o700)
+            for version, flags in (
+                    ((8, 0, 40), []), ((8, 4, 6), []), ((9, 0, 0), ['--disable-plugins']),
+                    ((9, 5, 0), ['--disable-plugins']),
+                    ((9, 6, 0), ['--disable-plugins', '--disable-builtin-plugins']),
+                    ((9, 7, 0), ['--disable-plugins', '--disable-builtin-plugins']), (None, [])):
+                with self.subTest(version=version), \
+                        mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                    tool = dict(name='mysqlsh', path=str(binary), version_tuple=version, engine='mysql')
+                    job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+                    stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, ['--js', '--', 'util', 'check'])
+                    argv = json.loads(stdout)
+                    self.assertTrue(argv[0].startswith('--defaults-file='))
+                    self.assertEqual(argv[1:], flags + ['--js', '--', 'util', 'check'])
+                    self.assertEqual(stderr, '')
+            self.assertEqual(lc._shell_plugin_flags({'version': 'mysqlsh Ver 9.6.0'}),
+                             ['--disable-plugins', '--disable-builtin-plugins'])
+
+    def test_direct_shell_process_also_overrides_hostile_openssl_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqlsh'
+            binary.write_text('#!' + sys.executable + '\nimport os\nprint(os.environ["OPENSSL_CONF"])\n')
+            binary.chmod(0o700)
+            job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+            with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                stdout, stderr = job.process_tool([str(binary)], dict(os.environ, OPENSSL_CONF='/hostile'))
+            self.assertEqual(stdout.strip(), os.devnull)
+
+    def test_upgrade_cli_integration_keeps_shell_plugin_flags_before_separator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqlsh'
+            binary.write_text('#!' + sys.executable + '\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
+            binary.chmod(0o700)
+            job = lc.LifecycleJob('upgrade_check', lambda j: None, {'host': 'h'})
+            tool = dict(name='mysqlsh', path=str(binary), version_tuple=[9, 7, 0], engine='mysql')
+            args = ['--js', '--', 'util', 'check-for-server-upgrade', '--target-version=9.7.0']
+            with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
+                stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, args)
+            argv = json.loads(stdout)
+            for flag in ('--disable-plugins', '--disable-builtin-plugins'):
+                self.assertLess(argv.index(flag), argv.index('--'))
+            self.assertEqual(argv[argv.index('--') + 1:], args[2:])
+
     def test_invoke_rechecks_path_and_target_and_runs_realpath(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

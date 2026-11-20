@@ -9,8 +9,10 @@ import inspect
 import json
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -23,7 +25,7 @@ from test_readyset import FakeReadyset
 from test_proxysql import FakeAdmin
 from test_chart_data import validate
 from myflames import cluster, connection_groups as cg, connection_import, proxysql, readyset
-from myflames import connector, mcp_server, replication as rp, topology_links as tl, ui
+from myflames import connector, dbops, editor_session, mcp_server, replication as rp, topology_links as tl, ui
 from myflames.connector import ConnectorError
 from myflames.workspace_store import ENDPOINT_FIELDS, WorkspaceStore
 
@@ -34,12 +36,12 @@ EMPTY = {'name': '', 'read': [], 'suggestions': [], 'join': [], 'suggested_name'
 class LocalDatabase(FakeProbeConn):
     """Synthetic standalone database answering the existing read-only probes."""
     def __init__(self, **options):
-        super(LocalDatabase, self).__init__('database', hostname='current-db', uuid='uuid-current')
+        super(LocalDatabase, self).__init__('database', hostname='current-db', uuid='cccccccc-1111-2222-3333-444444444444')
         for key in ENDPOINT_FIELDS:
             setattr(self, key, options.get(key))
 
-    def run(self, sql, extra_flags=None, timeout=None):
-        return super(LocalDatabase, self).run(sql.replace(rp.REPLICATION_TAG, ''), extra_flags, timeout)
+    def _answer(self, sql, extra_flags=None, timeout=None):
+        return super(LocalDatabase, self)._answer(sql.replace(rp.REPLICATION_TAG, ''), extra_flags, timeout)
 
 
 class GroupCase(unittest.TestCase):
@@ -86,6 +88,38 @@ class TestGroupStore(GroupCase):
         self.assertEqual(self.store.assign_profile_group(['one'], '')['group'], '')
         # A new write uses the same authenticated POST allowlist and dispatcher.
         self.assertIn('"/api/profiles/group"', inspect.getsource(ui))
+
+    def test_group_generation_turns_over_on_recreate_and_binds_reviews(self):
+        self.save('one')
+        self.save('two')
+        self.store.save_connection_group('G', ['one', 'two'])
+        first = {p['id']: p.get('group_generation') for p in self.store.list('profile')}
+        self.assertTrue(first['one'])
+        self.assertEqual(first['one'], first['two'])
+        connection = dict(self.request(self.store.get('profile', 'one')), group_name='G')
+        before = ui._action_target_binding(self.store.get('profile', 'one'), connection)
+        # A rename keeps the generation: the group is the same consent object.
+        self.store.save_connection_group('H', ['one', 'two'], previous_name='G')
+        self.assertEqual(self.store.get('profile', 'one')['group_generation'], first['one'])
+        # A new member takes the group's id; leaving clears it; forgetting the
+        # password keeps it.
+        self.save('three')
+        self.store.assign_profile_group(['three'], 'H')
+        self.assertEqual(self.store.get('profile', 'three')['group_generation'], first['one'])
+        self.store.forget_password('three')
+        self.assertEqual(self.store.get('profile', 'three')['group_generation'], first['one'])
+        self.store.assign_profile_group(['three'], '')
+        self.assertNotIn('group_generation', self.store.get('profile', 'three'))
+        # Delete and recreate with the same name and members: a new generation,
+        # so a review made for the old group never matches the new one.
+        self.store.delete_connection_group('H')
+        for profile in self.store.list('profile'):
+            self.assertNotIn('group_generation', profile)
+        self.store.save_connection_group('G', ['one', 'two'])
+        after = ui._action_target_binding(self.store.get('profile', 'one'), connection)
+        self.assertTrue(after['group_generation'])
+        self.assertNotEqual(after['group_generation'], before['group_generation'])
+        self.assertNotEqual(after, before)
 
     def test_group_changes_preserve_password_binding_and_legacy_defaults(self):
         saved = self.save('one')
@@ -398,7 +432,7 @@ class TestReadConsent(GroupCase):
                 self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
                 self.assertNotIn('topology_identity', report)
 
-    def test_place_requests_scope_openers_and_write_only_current_identity(self):
+    def test_place_requests_scope_openers_and_record_only_direct_identities(self):
         """Exercise request wiring as well as the lower-level scope guards."""
         current = self.save('current', 'G', host='current-db')
         self.save('inside', 'G', host='inside.example')
@@ -438,9 +472,12 @@ class TestReadConsent(GroupCase):
                             report = ui.api_response('/api/live/' + path, {'connection': connection}, workspace)
                         self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
                         self.assertEqual([c[0][0] for c in record.call_args_list],
-                                         ['current'] if mode in ('group', 'no_group') else [])
+                                         ['current', 'inside'] if mode == 'group' else
+                                         ['current'] if mode == 'no_group' else [])
                         self.assertNotIn('topology_identity', report)
-                        self.assertNotIn('topology_identity', self.store._profile('inside'))
+                        if mode == 'group':
+                            self.assertEqual(self.store._profile('inside')['topology_identity']['server_uuid'],
+                                             '11111111-1111-1111-1111-111111111111')
                         self.assertNotIn('topology_identity', self.store._profile('outside'))
                     finally:
                         if path == 'proxysql':
@@ -467,11 +504,16 @@ class TestReadConsent(GroupCase):
 
     def test_replica_status_survives_missing_policy_store_without_a_write_token(self):
         from test_replication import fixture
-        from _perf_replay import ReplayConn
+        from _reviewed_replay import ReplayConn
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run
+            from _reviewed_replay import evidence_options, answer_evidence
+            @evidence_options
             def run(sql, extra_flags=None, timeout=None):
+                evidence = answer_evidence(sql, extra_flags, timeout, run, conn.evidence_values)
+                if evidence is not None:
+                    return evidence
                 # The captured replica predates the optional reconnect read.
                 if sql == rp.REPLICATION_TAG + rp._RECEIVER_SQL:
                     raise ConnectorError('ERROR 1142: SELECT command denied')
@@ -490,7 +532,7 @@ class TestReadConsent(GroupCase):
     def test_replication_identity_sink_and_strict_report_schemas(self):
         identity = {}
         report = rp.read_status(LocalDatabase(), topology_tiers=True, _identity=identity)
-        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertEqual(identity['server_uuid'], 'cccccccc-1111-2222-3333-444444444444')
         self.assertNotIn('topology_identity', report)
         for name, report in (('replication', report), ('cluster', CF.report('ic-8.4-healthy')),
                              ('readyset', readyset.read_status(FakeReadyset()))):
@@ -502,6 +544,189 @@ class TestReadConsent(GroupCase):
                 bad['connection_group'].update(change)
                 with self.assertRaises(AssertionError):
                     validate(bad, schema)
+
+
+class TestPeerIdentityRecording(GroupCase):
+    """Own-session evidence survives the existing bounded group probes."""
+    def setUp(self):
+        super(TestPeerIdentityRecording, self).setUp()
+        self.profiles = [self.save('db-%d' % (i + 1), 'G', type='development') for i in range(3)]
+        scenario = copy.deepcopy(CF.SCENARIOS['gr-8.4-two-members'])
+        scenario['variables'].update(server_uuid=CF.SERVER_UUIDS[0], hostname='db-1')
+        scenario['tables']['performance_schema.replication_group_members'] = [
+            CF._gr_member(i, host='db-%d' % (i + 1)) for i in range(3)]
+        scenario['tables']['performance_schema.replication_group_member_stats'] = [CF._gr_stats(i) for i in range(3)]
+        self.local = CF.ScenarioConn(scenario)
+        self.peers = {p['host']: FakeProbeConn('database', hostname=p['name'], uuid=CF.SERVER_UUIDS[i],
+                                             gr_group='group', gr_members=[
+                                                 [CF.SERVER_UUIDS[j], 'db-%d' % (j + 1), '3306', 'ONLINE', 'SECONDARY']
+                                                 for j in range(3)])
+                      for i, p in enumerate(self.profiles) if i}
+        self.connection = dict(self.request(self.profiles[0]), group_name='G')
+        self.workspace = types.SimpleNamespace(store=self.store)
+        self.opened = []
+
+    def read(self):
+        def factory(**options):
+            self.opened.append(options['host'])
+            return self.local if options['host'] == self.profiles[0]['host'] else self.peers[options['host']]
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=factory):
+            return ui.api_response('/api/live/cluster', {'connection': self.connection}, self.workspace)
+
+    def test_group_cluster_read_records_both_peers_and_enables_routes_without_extra_probes(self):
+        before = {p['id']: self.store._profile(p['id'], include_updated=True) for p in self.profiles}
+        with mock.patch.object(self.store, 'record_topology_identity', wraps=self.store.record_topology_identity) as record:
+            report = self.read()
+        self.assertEqual(self.opened[0], self.profiles[0]['host'])
+        self.assertCountEqual(self.opened, [p['host'] for p in self.profiles])
+        self.assertEqual(len(tl._probe_attempts), 2)
+        for i, profile in enumerate(self.profiles):
+            after = self.store._profile(profile['id'], include_updated=True)
+            self.assertEqual(after['topology_identity']['server_uuid'], CF.SERVER_UUIDS[i])
+            after.pop('topology_identity')
+            self.assertEqual(after, before[profile['id']])
+        # call[0] and call[1] (not .args/.kwargs, which need Python 3.8).
+        calls = {call[0][0]: call for call in record.call_args_list}
+        for profile in self.profiles[1:]:
+            self.assertEqual(calls[profile['id']][1]['expected'], profile)
+        for index in (1, 2):
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertTrue(action['enabled'], action)
+            self.assertEqual(action['target']['profile_id'], self.profiles[index]['id'])
+        # The evidence stays internal and cached reads do not open peers again.
+        self.assertNotIn('topology_identity', json.dumps(report))
+        self.assertFalse(any('identity' in read for read in report['connection_group']['read']))
+        self.read()
+        self.assertEqual(self.opened[-1], self.profiles[0]['host'])
+        self.assertCountEqual(self.opened, [p['host'] for p in self.profiles] + [self.profiles[0]['host']])
+        self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_cached_probe_never_overwrites_a_newer_stored_identity(self):
+        self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[1])
+        # A direct read then records that the endpoint now reaches another
+        # server; the probe cache still keys on the unchanged settings.
+        self.store.record_topology_identity('db-2', {'server_uuid': CF.SERVER_UUIDS[0]},
+                                            expected=self.store._profile('db-2'))
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        self.read()
+        self.assertEqual(len(tl._probe_attempts), 2, 'the second read reuses the cached probes')
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0],
+                         'a cached probe must not overwrite the newer identity')
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+
+    def test_inflight_probe_never_overwrites_a_newer_direct_read(self):
+        original = tl._probe_connection
+
+        def probe(conn, profile, remaining=None):
+            observed = original(conn, profile, remaining)
+            if profile['id'] == 'db-2':
+                # The probe has observed the old UUID but has not published it.
+                # A direct read of the same, unchanged endpoint finishes now.
+                self.store.record_topology_identity('db-2', {'server_uuid': CF.SERVER_UUIDS[0]},
+                                                    expected=self.store._profile('db-2'))
+            return observed
+
+        with mock.patch.object(tl, '_probe_connection', side_effect=probe):
+            self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0],
+                         'a cache hit must retain the original observation order')
+
+    def test_cluster_member_endpoints_need_no_probe_and_offer_identity_check_on_review(self):
+        self.profiles = [self.store.save('profile', dict(p, host='db-%d' % (i + 1)), p['id'],
+                                       password='test-password', remember=True)
+                         for i, p in enumerate(self.profiles)]
+        self.connection = dict(self.request(self.profiles[0]), group_name='G')
+        report = self.read()
+        # Tier discovery intentionally skips the cluster's own addresses.
+        # Rendering their actions must not add any convenience logins.
+        self.assertEqual(self.opened, ['db-1'])
+        self.assertEqual(len(tl._probe_attempts), 0)
+        for index in (1, 2):
+            profile = self.profiles[index]
+            self.assertNotIn('topology_identity', self.store._profile(profile['id']))
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertTrue(action['enabled'], action)
+            self.assertEqual(action['target']['profile_id'], profile['id'])
+            self.assertIs(action['target']['confirm'], True)
+            self.assertEqual(action['target']['note'], 'Review checks that %s (%s:3306) is this member.' %
+                             (profile['name'], profile['host']))
+            validate(report, json.loads((ROOT / 'docs/schemas/cluster-1.0.json').read_text(encoding='utf-8')))
+
+    def test_wrong_backend_uuid_belongs_only_to_its_profile_and_duplicates_fail_closed(self):
+        self.peers[self.profiles[1]['host']].cfg['uuid'] = CF.SERVER_UUIDS[2]
+        report = self.read()
+        self.assertEqual(self.store._profile('db-2')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
+        self.assertEqual(self.store._profile('db-1')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[0])
+        for index in (1, 2):
+            member = next(m for m in report['members'] if m['uuid'] == CF.SERVER_UUIDS[index])
+            action = next(a for a in member['actions'] if a['id'] == 'stop_member')
+            self.assertFalse(action['enabled'])
+            self.assertIsNone(action['target']['profile_id'])
+            if index == 2:
+                self.assertEqual(action['why_not'], 'db-2 and db-3 both reach this member.')
+                self.assertEqual(action['fix'],
+                                 'A MySQL Router or ProxySQL connection reaches whichever server is primary. '
+                                 'Connect to db-2 to act on this member, or keep only one of them in the group.')
+            else:
+                self.assertEqual(action['why_not'], 'Add a saved connection for db-2 to this group.')
+        self.assertEqual(len(self.opened), 3)
+
+    def test_ungrouped_read_never_records_peer_identities_or_opens_peers(self):
+        self.store.assign_profile_group(['db-1'], '')
+        self.connection.pop('group_name')
+        self.read()
+        self.assertEqual(self.opened, [self.profiles[0]['host']])
+        for profile in self.profiles[1:]:
+            self.assertNotIn('topology_identity', self.store._profile(profile['id']))
+        self.assertEqual(len(tl._probe_attempts), 0)
+
+    def test_galera_and_pxc_record_only_the_own_gcomm_uuid(self):
+        for kind in ('galera', 'pxc'):
+            with self.subTest(kind=kind):
+                tl._reset_cache_for_tests()
+                peer = self.peers[self.profiles[1]['host']]
+                peer.cfg.update(wsrep=True, gcomm_uuid=CF.SERVER_UUIDS[1],
+                                version_comment='Percona XtraDB Cluster' if kind == 'pxc' else 'MariaDB Server',
+                                wsrep_members=[[CF.SERVER_UUIDS[2], 'other node', 'other:3306']])
+                with mock.patch.object(peer, 'run', wraps=peer.run) as run:
+                    self.read()
+                identity = self.store._profile('db-2')['topology_identity']
+                self.assertEqual(identity['wsrep_node_uuid'], CF.SERVER_UUIDS[1])
+                self.assertNotIn('server_uuid', identity)
+                self.assertEqual(sum(tl._WSREP_STATUS_SQL in call[0][0] for call in run.call_args_list), 1)
+                self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_endpoint_edit_or_group_removal_after_probe_prevents_persistence(self):
+        for change in ('endpoint', 'group', 'active_group'):
+            with self.subTest(change=change):
+                tl._reset_cache_for_tests()
+                for profile in self.profiles:
+                    self.store.save('profile', profile, profile['id'], password='test-password', remember=True)
+                original = cg.finish_read
+                def finishing(store, report, connection, profiles, current, identity=None):
+                    if change == 'endpoint':
+                        profile = self.profiles[1]
+                        store.save('profile', dict(profile, host='changed'), profile['id'], password='new', remember=True)
+                    else:
+                        store.assign_profile_group(['db-1' if change == 'active_group' else 'db-2'], '')
+                    return original(store, report, connection, profiles, current, identity)
+                with mock.patch.object(cg, 'finish_read', side_effect=finishing):
+                    self.read()
+                self.assertNotIn('topology_identity', self.store._profile('db-2'))
+
+    def test_public_read_rows_cannot_supply_identity_evidence(self):
+        current = self.profiles[0]
+        forged = {'connection_group': {'read': [dict(id='db-2', name='db-2', type='development', outcome='read',
+                                                    identity={'server_uuid': CF.SERVER_UUIDS[1]})]}}
+        cg.finish_read(self.store, forged, self.connection, self.profiles, current)
+        self.assertNotIn('topology_identity', self.store._profile('db-2'))
 
 
 class TestReviewRegressions(GroupCase):
@@ -556,6 +781,22 @@ class TestReviewRegressions(GroupCase):
                          {'server_uuid': 'new-server-uuid', 'source_uuids': ['new-source']})
         self.assertEqual(cg.describe(clustered, [self.store.get('profile', 'current')])['suggestions'], [])
 
+    def test_pxc_binding_ignores_first_server_uuid_record_and_preserves_node_identity(self):
+        current = self.save('current', group='G')
+        report = CF.report('pxc-8.4-healthy')
+        node_identity = cluster.target_server_identity(report)
+        self.assertEqual(set(node_identity), {'wsrep_node_uuid'})
+        self.assertTrue(node_identity['wsrep_node_uuid'])
+        self.store.record_topology_identity(current['id'], node_identity)
+        connection = dict(self.request(current), group_name=current['group'])
+        before = ui._action_target_binding(self.store.get('profile', current['id']), connection, report['kind'])
+        self.assertEqual(before['server_identity'], node_identity)
+        self.store.record_topology_identity(current['id'], {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        after = self.store.get('profile', current['id'])
+        self.assertEqual(after['topology_identity']['wsrep_node_uuid'], node_identity['wsrep_node_uuid'])
+        self.assertEqual(after['topology_identity']['server_uuid'], '11111111-2222-3333-4444-555555555555')
+        self.assertEqual(ui._action_target_binding(after, connection, report['kind']), before)
+
     def test_read_replica_identity_uses_cluster_not_group_replication(self):
         # MySQL-only: MariaDB does not expose InnoDB Cluster read replicas.
         current = self.save('current')
@@ -577,7 +818,7 @@ class TestReviewRegressions(GroupCase):
         conn.cfg['gr_group'] = 'configured-but-never-joined'
         identity = {}
         rp.read_status(conn, topology_tiers=True, _identity=identity)
-        self.assertEqual(identity['server_uuid'], 'uuid-current')
+        self.assertEqual(identity['server_uuid'], 'cccccccc-1111-2222-3333-444444444444')
         self.assertNotIn('gr_group_name', identity)
 
     def test_proxy_reports_never_store_backend_identity(self):
@@ -926,6 +1167,573 @@ class TestReviewRegressions(GroupCase):
                 self.assertEqual(opened, ['inside.example'] if mode == 'group' else [])
                 report = json.loads(out)
                 self.assertEqual([r['id'] for r in report['connection_group']['read']], ['inside'] if opened else [])
+
+    def test_save_and_delete_connection_group_rename_add_remove_and_cap(self):
+        from myflames import secret_store
+        p1 = self.save('prof-a')
+        p2 = self.save('prof-b')
+        p3 = self.save('prof-c', type='development')
+        other = self.save('prof-other', 'other-group')
+        workspace = types.SimpleNamespace(store=self.store)
+
+        # Create group with two members.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': '  alpha  ', 'profile_ids': ['prof-a', 'prof-b']}, workspace)
+        self.assertEqual(res['name'], 'alpha')
+        self.assertEqual(res['profile_ids'], ['prof-a', 'prof-b'])
+        groups = {g['name']: g for g in res['groups']}
+        self.assertEqual(groups['alpha']['profile_ids'], ['prof-a', 'prof-b'])
+        self.assertEqual(groups['alpha']['type'], 'production')
+        self.assertEqual(groups['other-group']['profile_ids'], ['prof-other'])
+        for blob in (json.dumps(res['groups']), json.dumps(res['profiles'])):
+            self.assertNotIn('test-password', blob)
+            self.assertNotIn('secret_ref', blob)
+
+        # Edit group (add prof-c, remove prof-b) and rename alpha -> beta.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'previous_name': 'alpha', 'profile_ids': ['prof-a', 'prof-c']},
+                              workspace)
+        self.assertEqual(res['name'], 'beta')
+        groups = {g['name']: g for g in res['groups']}
+        self.assertNotIn('alpha', groups)
+        self.assertEqual(groups['beta']['profile_ids'], ['prof-a', 'prof-c'])
+        self.assertEqual(self.store.get('profile', 'prof-a')['group'], 'beta')
+        self.assertEqual(self.store.get('profile', 'prof-b')['group'], '')
+        self.assertEqual(self.store.get('profile', 'prof-c')['group'], 'beta')
+
+        # Renaming or creating with a name already used by another group is refused.
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            ui.api_response('/api/profiles/groups/save',
+                            {'name': 'other-group', 'previous_name': 'beta', 'profile_ids': ['prof-a']}, workspace)
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            ui.api_response('/api/profiles/groups/save',
+                            {'name': 'other-group', 'profile_ids': ['prof-b']}, workspace)
+        # Saving the same group name (with or without previous_name) succeeds.
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'previous_name': 'beta', 'profile_ids': ['prof-a', 'prof-b']}, workspace)
+        self.assertEqual({p['id'] for p in res['profiles'] if p['group'] == 'beta'}, {'prof-a', 'prof-b'})
+        res = ui.api_response('/api/profiles/groups/save',
+                              {'name': 'beta', 'profile_ids': ['prof-a', 'prof-c']}, workspace)
+        self.assertEqual({p['id'] for p in res['profiles'] if p['group'] == 'beta'}, {'prof-a', 'prof-c'})
+
+        # 16-member cap: 16 succeeds, 17 or 20 is refused atomically.
+        many_ids = []
+        for i in range(20):
+            pid = 'member-%02d' % i
+            self.save(pid)
+            many_ids.append(pid)
+        res16 = ui.api_response('/api/profiles/groups/save',
+                                {'name': 'cap-group', 'profile_ids': many_ids[:16]}, workspace)
+        self.assertEqual(len(res16['profile_ids']), 16)
+        for bad_count in (17, 20):
+            with self.subTest(bad_count=bad_count):
+                with self.assertRaisesRegex(ValueError, '16'):
+                    ui.api_response('/api/profiles/groups/save',
+                                    {'name': 'cap-group', 'previous_name': 'cap-group',
+                                     'profile_ids': many_ids[:bad_count]}, workspace)
+        self.assertEqual({p['id'] for p in self.store.list('profile') if p['group'] == 'cap-group'},
+                         set(many_ids[:16]))
+
+        # Delete group: clears group on members, keeps every profile and its saved password.
+        del_res = ui.api_response('/api/profiles/groups/delete', {'name': 'beta'}, workspace)
+        self.assertTrue(del_res['deleted'])
+        self.assertNotIn('beta', {g['name'] for g in del_res['groups']})
+        for pid, orig in (('prof-a', p1), ('prof-b', p2), ('prof-c', p3)):
+            self.assertEqual(self.store.get('profile', pid)['group'], '')
+            self.assertTrue(self.store.get('profile', pid)['has_saved_password'])
+            self.assertEqual(self.store.connection_with_saved_password(self.request(orig))['password'], 'test-password')
+        self.assertEqual(self.store.get('profile', other['id'])['group'], 'other-group')
+
+    def test_abuse_f3_group_endpoints_strict_schema_and_allowlist(self):
+        import http.client
+        prof_a = self.save('prof-a', 'g')
+        raw_before = self.store._profile('prof-a')
+        workspace = types.SimpleNamespace(store=self.store)
+
+        # Direct API calls with id or value keys are refused and leave prof-a and its password untouched.
+        bad_payloads = [
+            ('/api/profiles/groups/delete', {'name': 'g', 'id': 'prof-a'}),
+            ('/api/profiles/groups/delete', {'id': 'prof-a'}),
+            ('/api/profiles/groups/delete', {}),
+            ('/api/profiles/groups/delete', {'name': ''}),
+            ('/api/profiles/groups/delete', {'name': 'x' * 81}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'id': 'prof-a'}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'value': {'host': 'evil.example'}}),
+            ('/api/profiles/groups/save', {'id': 'prof-a', 'value': {'host': 'evil.example'}}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': 'prof-a'}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': []}),
+            ('/api/profiles/groups/save', {'name': 'x' * 81, 'profile_ids': ['prof-a']}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'previous_name': 123}),
+            ('/api/profiles/groups/save', {'name': 'g', 'profile_ids': ['prof-a'], 'previous_name': 'x' * 81}),
+        ]
+        for path, payload in bad_payloads:
+            with self.subTest(path=path, payload=payload):
+                with self.assertRaises(ValueError):
+                    ui.api_response(path, payload, workspace)
+                self.assertEqual(self.store._profile('prof-a'), raw_before)
+                self.assertEqual(self.store.connection_with_saved_password(self.request(prof_a))['password'],
+                                 'test-password')
+
+        # HTTP server dispatch and allowlist verification.
+        server = ui.WorkspaceServer(store_path=str(self.store.path))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def post(path, payload):
+            conn = http.client.HTTPConnection(*server.server_address, timeout=10)
+            try:
+                conn.request('POST', path, body=json.dumps(payload),
+                             headers={'Content-Type': 'application/json', 'X-Myflames-Token': server.token,
+                                      'Origin': server.origin,
+                                      'Cookie': server.cookie_name + '=' + server.session_secret})
+                response = conn.getresponse()
+                return response.status, json.loads(response.read().decode('utf-8'))
+            finally:
+                conn.close()
+
+        status, body = post('/api/profiles/groups/delete', {'name': 'g', 'id': 'prof-a'})
+        self.assertEqual(status, 400, body)
+        status, body = post('/api/profiles/groups/save',
+                            {'name': 'g', 'profile_ids': ['prof-a'], 'id': 'prof-a', 'value': {'host': 'evil'}})
+        self.assertEqual(status, 400, body)
+        self.assertEqual(self.store._profile('prof-a'), raw_before)
+        self.assertEqual(self.store.connection_with_saved_password(self.request(prof_a))['password'], 'test-password')
+
+        for unallowed in ('/api/profiles/groups', '/api/profiles/groups/other',
+                          '/api/profiles/other/save', '/api/profiles/other/delete'):
+            with self.subTest(unallowed=unallowed):
+                status, body = post(unallowed, {'name': 'g'})
+                self.assertEqual(status, 404, body)
+
+    def test_abuse_f4_per_login_consent_flips_and_second_store_instance(self):
+        # 1. Group field flips between prepare and connect (including with group_name).
+        for edit_kind in ('save_group_remove', 'delete_group', 'flip_adapter'):
+            with self.subTest(stage='prepare_to_connect', edit_kind=edit_kind):
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G')
+                req_conn = dict(self.request(current), group_name='G')
+                opener = rp.profile_opener(self.store, current['id'], current, group_name='G', connection=req_conn)
+                fingerprint, connect = opener.prepare(peer)
+                self.assertTrue(fingerprint)
+                if edit_kind == 'save_group_remove':
+                    self.store.save_connection_group('G', [current['id']], previous_name='G')
+                elif edit_kind == 'delete_group':
+                    self.store.delete_connection_group('G')
+                else:
+                    real_get = self.store.get
+                    self.store.get = lambda kind, key: (
+                        dict(real_get(kind, key), group='') if key == 'peer' else real_get(kind, key))
+                try:
+                    with mock.patch.object(connector, 'MySQLConnection') as factory, \
+                            self.assertRaises(cg.ProfileReadError):
+                        connect()
+                    factory.assert_not_called()
+                finally:
+                    if edit_kind == 'flip_adapter':
+                        del self.store.get
+
+        # 2. Group field flips between two statements of one probe.
+        for edit_kind in ('save_group_remove', 'delete_group', 'second_store_instance'):
+            with self.subTest(stage='mid_probe', edit_kind=edit_kind):
+                tl._reset_cache_for_tests()
+                current = self.save('current', 'G')
+                peer = self.save('peer', 'G')
+                second_store = WorkspaceStore(self.store.path)
+                req_conn = dict(self.request(current), group_name='G')
+                scope = cg.GroupScope([current, peer], current)
+                opener = scope.opener(rp.profile_opener(
+                    self.store, current['id'], current, group_name='G', connection=req_conn))
+                calls = []
+                fake = FakeProbeConn('database')
+
+                def invoke(argv, **kwargs):
+                    sql = argv[argv.index('-e') + 1]
+                    calls.append(sql)
+                    answer = fake.run(sql)
+                    if len(calls) == 1:
+                        if edit_kind == 'save_group_remove':
+                            self.store.save_connection_group('G', [current['id']], previous_name='G')
+                        elif edit_kind == 'delete_group':
+                            self.store.delete_connection_group('G')
+                        else:
+                            second_store.save_connection_group('G', [current['id']], previous_name='G')
+                    return types.SimpleNamespace(returncode=0, stdout=answer.encode(), stderr=b'')
+
+                with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                        mock.patch.object(connector, '_run_bounded', side_effect=invoke):
+                    probed, notes = tl.probe_saved_profiles([peer], opener, skip_profile_id=current['id'], current=current)
+                self.assertEqual(len(calls), 1, 'revoked member logged in for a second statement')
+                self.assertEqual(probed, [])
+                self.assertEqual(scope.read[0]['outcome'], 'failed')
+                self.assertTrue(notes)
+
+        # 3. Second WorkspaceStore instance on the same file removes a member; next login in first instance is refused.
+        current = self.save('current', 'G')
+        peer = self.save('peer', 'G')
+        store1 = WorkspaceStore(self.store.path)
+        store2 = WorkspaceStore(self.store.path)
+        req_conn = dict(self.request(current), group_name='G')
+        opener1 = rp.profile_opener(store1, current['id'], current, group_name='G', connection=req_conn)
+        conn1 = opener1(peer)
+        store2.save_connection_group('G', [current['id']], previous_name='G')
+        with conn1, mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded') as invoke:
+            with self.assertRaises(cg.ProfileReadError):
+                conn1.run('SELECT 1')
+            invoke.assert_not_called()
+        with mock.patch.object(connector, 'MySQLConnection') as factory, \
+                self.assertRaises(cg.ProfileReadError):
+            opener1(peer)
+        factory.assert_not_called()
+
+    def test_abuse_f9_refuses_invalid_targets_and_edited_active_member_with_zero_password_lookups(self):
+        from myflames import secret_store
+        from test_workspace_store import bundle
+        current = self.save('current', 'G')
+        valid_peer = self.save('peer', 'G')
+        other_group_peer = self.save('other-peer', 'H')
+        no_pass_peer = self.store.save(
+            'profile', {'name': 'no-pass', 'host': 'nopass.example', 'port': 3306, 'user': 'dba', 'group': 'G'},
+            'no-pass', remember=False)
+        investigation = self.store.save('investigation', bundle(), 'inv-record')
+
+        lookups = []
+        real_get_secret = secret_store.get_secret
+
+        def counting_get_secret(key, backend=None):
+            lookups.append((key, backend))
+            return real_get_secret(key, backend)
+
+        with mock.patch.object(secret_store, 'get_secret', side_effect=counting_get_secret):
+            # 1. Active member with edited host + valid target_profile_id -> refused, 0 lookups.
+            edited_conn = dict(self.request(current), host='edited.example', group_name='G')
+            _, req_cur = cg.request_profiles(self.store, edited_conn)
+            self.assertIsNone(req_cur)
+            bad_opener = rp.profile_opener(self.store, current['id'], edited_conn, group_name='G', connection=edited_conn)
+            for target in (valid_peer, valid_peer['id']):
+                with self.assertRaises(cg.ProfileReadError):
+                    bad_opener(target)
+            self.assertEqual(lookups, [])
+
+            # 2. Target in another group, investigation record id, or member with no saved password -> refused, 0 lookups.
+            good_conn = dict(self.request(current), group_name='G')
+            opener = rp.profile_opener(self.store, current['id'], current, group_name='G', connection=good_conn)
+            scope = cg.GroupScope([current, valid_peer, no_pass_peer], current)
+            scoped_opener = scope.opener(opener)
+
+            for bad_target in (other_group_peer, other_group_peer['id'],
+                               {'id': investigation['id'], 'group': 'G'}, investigation['id'],
+                               no_pass_peer, no_pass_peer['id'],
+                               'unknown-id', 'x' * 201, ''):
+                with self.subTest(bad_target=bad_target):
+                    with self.assertRaises(cg.ProfileReadError):
+                        opener(bad_target)
+                    with self.assertRaises(cg.ProfileReadError):
+                        scoped_opener(bad_target)
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(
+                    {'profile_id': investigation['id'], 'host': '127.0.0.1', 'port': 3306, 'user': 'dba'})
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(
+                    dict(self.request(other_group_peer), group_name='G'))
+            self.assertEqual(lookups, [], 'refused target triggered a secret_store password lookup')
+
+            # Positive control: valid member in group G with a saved password looks up its password once.
+            conn = opener(valid_peer['id'])
+            self.assertEqual(len(lookups), 1)
+            self.assertEqual(conn.host, valid_peer['host'])
+
+
+class TestGroupEffectiveSafety(GroupCase):
+    """F5: one server-side rule for a group connection's safety type.
+
+    The strictest type of the active member, the target and every current
+    member of the group (production > staging > development > local > unset)
+    is computed from the store at every call; read-only stays per member.
+    """
+
+    def test_strictest_type_ordering(self):
+        self.assertEqual(cg.strictest_type(['local', 'staging', 'development']), 'staging')
+        self.assertEqual(cg.strictest_type(['development', 'production']), 'production')
+        self.assertEqual(cg.strictest_type(['development', None, '']), 'development')
+        self.assertIsNone(cg.strictest_type([None, '', 'bogus']))
+        profiles = [{'id': 'a', 'group': 'G', 'type': 'development'},
+                    {'id': 'b', 'group': 'G', 'type': 'production'},
+                    {'id': 'c', 'group': 'H', 'type': 'staging'},
+                    {'id': 'd', 'group': 'G'}]
+        self.assertEqual(cg.group_effective_safety(profiles, 'G'), 'production')
+        self.assertEqual(cg.group_effective_safety(profiles, 'H'), 'staging')
+        self.assertIsNone(cg.group_effective_safety(profiles, 'missing'))
+
+    def test_editor_tab_pinned_to_a_member_uses_the_group_type(self):
+        dev = self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        payload = {'connection': dict(self.request(dev), group_name='G')}
+        _, identity, safety, _ = editor_session._connection_facts(payload, self.store)
+        self.assertEqual(safety['type'], 'production')
+        self.assertTrue(safety['endpoint_matches'])
+        self.assertFalse(safety['read_only'], 'read-only stays each member\'s own flag')
+        statement = 'INSERT INTO t VALUES (1)'
+        decision = dbops.decide(dbops.classify(statement), safety['type'], safety['read_only'],
+                                safety['profile_name'])
+        self.assertEqual(dbops.gate(decision, confirmed=False)[0], 'needs_confirmation')
+        # Removing the Production member lowers the group back to its members.
+        self.store.assign_profile_group(['prod-b'], '')
+        _, identity_after, safety_after, _ = editor_session._connection_facts(payload, self.store)
+        self.assertEqual(safety_after['type'], 'development')
+        decision = dbops.decide(dbops.classify(statement), safety_after['type'], safety_after['read_only'])
+        self.assertIsNone(dbops.gate(decision, confirmed=False))
+        self.assertNotEqual(identity, identity_after,
+                            'the identity a session or token is bound to follows the group')
+
+    def test_a_production_member_joining_voids_review_tokens(self):
+        dev = self.save('dev-a', group='G', type='development')
+        workspace = types.SimpleNamespace(store=self.store)
+        conn = dict(self.request(dev), group_name='G')
+        details = {'connection_id': 7, 'mode': 'connection', 'expect': {}, 'statements': ['KILL CONNECTION 7']}
+        identity = ui._review_identity(conn, workspace)
+        token = ui._review_tokens(workspace).issue('kill', identity, details)
+        self.save('prod-b', group='G')
+        with self.assertRaises(ValueError):
+            ui._review_tokens(workspace).consumer(token, 'kill', ui._review_identity(conn, workspace), details)
+
+    def test_action_target_requires_and_uses_the_group(self):
+        dev = self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        outsider = self.save('other-c', group='H')
+        workspace = types.SimpleNamespace(store=self.store)
+        conn = self.request(dev)
+        # A target without the group connection is refused before any connection opens.
+        for payload in ({'connection': conn, 'target_profile_id': 'prod-b'},
+                        {'connection': dict(conn, group_name='G'), 'target_profile_id': outsider['id']},
+                        {'connection': dict(conn, group_name='G'), 'target_profile_id': 'missing'}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    ui.api_response('/api/live/cluster/plan', payload, workspace)
+        # A target is a cluster concept only.
+        with self.assertRaises(ValueError):
+            ui.api_response('/api/live/proxysql/plan',
+                            {'connection': dict(conn, group_name='G'), 'target_profile_id': 'prod-b'}, workspace)
+        target = ui._action_target({'target_profile_id': 'prod-b'}, dict(conn, group_name='G'), 'cluster',
+                                   self.store)
+        self.assertEqual(target['id'], 'prod-b')
+        safety = dbops.connection_safety(dev, dict(conn, group_name='G'), store=self.store,
+                                         target_profile=target)
+        self.assertEqual(safety['type'], 'production')
+
+    def test_group_safety_fails_closed(self):
+        dev = self.save('dev-a', group='G', type='development')
+        conn = dict(self.request(dev), group_name='G')
+        with mock.patch.object(self.store, 'list', side_effect=sqlite3.Error('locked')):
+            safety = dbops.connection_safety(dev, conn, store=self.store)
+        self.assertEqual(safety['type'], 'production')
+        bad = dbops.connection_safety(dev, dict(conn, group_name='G\x00'), store=self.store)
+        self.assertEqual(bad['type'], 'production')
+
+
+class _FakeMemberConn(object):
+    """Counts and bounds member logins for /api/connect without a network."""
+    lock = threading.Lock()
+    logins = []
+    active = 0
+    peak = 0
+    uuids = {}
+    fail = frozenset()
+    pause = 0.0
+
+    @classmethod
+    def reset(cls, uuids=None, fail=(), pause=0.0):
+        with cls.lock:
+            cls.logins, cls.active, cls.peak = [], 0, 0
+        cls.uuids, cls.fail, cls.pause = dict(uuids or {}), frozenset(fail), pause
+
+    def __init__(self, **options):
+        self.host = options.get('host')
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.logins.append(self.host)
+
+    def __enter__(self):
+        if self.host in _FakeMemberConn.fail:
+            raise ConnectorError('Access denied for user')
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.active += 1
+            _FakeMemberConn.peak = max(_FakeMemberConn.peak, _FakeMemberConn.active)
+        if _FakeMemberConn.pause:
+            time.sleep(_FakeMemberConn.pause)
+        return self
+
+    def __exit__(self, *args):
+        with _FakeMemberConn.lock:
+            _FakeMemberConn.active -= 1
+        return False
+
+    def server_version_comment(self):
+        return 'MySQL Community Server (GPL)'
+
+    def server_version(self):
+        return '8.0.36'
+
+    def query_rows(self, sql):
+        if sql == 'SHOW DATABASES':
+            return [('app',)]
+        if sql == 'SELECT @@global.server_uuid':
+            uuid = _FakeMemberConn.uuids.get(self.host)
+            return [(uuid,)] if uuid else []
+        if 'replication_group_members' in sql:
+            return [('PRIMARY', 'ONLINE')]
+        return []
+
+
+class TestGroupConnect(GroupCase):
+    """F8/F10: POST /api/connect opens a group as one Group connection."""
+
+    UUIDS = {'dev-a.example': 'aaaaaaaa-0000-4000-8000-000000000001',
+             'prod-b.example': 'bbbbbbbb-0000-4000-8000-000000000002',
+             'replica-c.example': 'cccccccc-0000-4000-8000-000000000003'}
+
+    def connect(self, payload, workspace):
+        with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn):
+            return ui.api_response('/api/connect', payload, workspace)
+
+    def setUp(self):
+        super(TestGroupConnect, self).setUp()
+        _FakeMemberConn.reset(uuids=self.UUIDS)
+        self.workspace = types.SimpleNamespace(store=self.store)
+
+    def test_group_name_validation_and_member_choice(self):
+        self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        for payload in ({}, {'group_name': ''}, {'group_name': 'G\x00'}, {'group_name': 'x' * 81},
+                        {'group_name': 'missing'}, {'group_name': None},
+                        {'group_name': 'G', 'active_member_profile_id': 'x' * 201},
+                        {'group_name': 'G', 'active_member_profile_id': 'missing'}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    self.connect(payload, self.workspace)
+        self.assertEqual(_FakeMemberConn.logins, [], 'a refused request never logs in')
+        reply = self.connect({'group_name': 'G', 'active_member_profile_id': 'prod-b'}, self.workspace)
+        self.assertEqual(reply['group_connection']['active_member_profile_id'], 'prod-b')
+        self.assertEqual(_FakeMemberConn.logins, ['prod-b.example'])
+
+    def test_active_member_defaults_to_the_stored_source_then_the_first(self):
+        self.save('dev-a', group='G', type='development')
+        source = self.save('prod-b', group='G')
+        replica = self.save('replica-c', group='G', type='development')
+        self.store.record_topology_identity(source['id'], {'server_uuid': self.UUIDS['prod-b.example']})
+        self.store.record_topology_identity(replica['id'],
+                                            {'server_uuid': self.UUIDS['replica-c.example'],
+                                             'source_uuids': [self.UUIDS['prod-b.example']]})
+        reply = self.connect({'group_name': 'G'}, self.workspace)
+        group = reply['group_connection']
+        self.assertEqual(group['active_member_profile_id'], 'prod-b')
+        self.assertEqual(group['primary_profile_id'], 'prod-b')
+        # Without probe_members only the active member is logged in to.
+        self.assertEqual(_FakeMemberConn.logins, ['prod-b.example'])
+        self.assertEqual(group['effective_safety'], {'type': 'production', 'read_only': False})
+        by_id = {m['profile_id']: m for m in group['members']}
+        self.assertEqual(set(by_id), {'dev-a', 'prod-b', 'replica-c'})
+        self.assertIs(by_id['prod-b']['reachable'], True)
+        self.assertEqual(by_id['prod-b']['role'], 'PRIMARY')
+        self.assertIsNone(by_id['dev-a']['reachable'])
+        self.assertIsNone(by_id['dev-a']['role'])
+        # The stored identity stands in for the uuid until a probe reads it live.
+        self.assertEqual(by_id['replica-c']['server_uuid'], self.UUIDS['replica-c.example'])
+        # The reply is the usual discovery plus the group block, never a secret.
+        self.assertEqual(reply['engine'], 'mysql')
+        self.assertNotIn('test-password', json.dumps(reply))
+
+    def test_probe_members_is_bounded_and_group_only(self):
+        profiles = [self.save('member-%02d' % i, group='G') for i in range(16)]
+        self.save('outsider', group='H')
+        _FakeMemberConn.reset(uuids=self.UUIDS, pause=0.02, fail=('member-07.example',))
+        reply = self.connect({'group_name': 'G', 'probe_members': True}, self.workspace)
+        with _FakeMemberConn.lock:
+            logins, peak = list(_FakeMemberConn.logins), _FakeMemberConn.peak
+        self.assertEqual(len(logins), 16, 'every member of a 16-member group is probed once')
+        self.assertLessEqual(peak, 4, 'at most 4 member logins at a time')
+        self.assertGreater(peak, 1, 'probes overlap')
+        allowed = {p['id'] + '.example' for p in profiles}
+        self.assertEqual(set(logins), allowed, 'only current members of the group are logged in to')
+        by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+        self.assertIs(by_id['member-07']['reachable'], False)
+        self.assertNotIn('outsider', by_id)
+        # An explicit open without the probe flag touches the active member only.
+        _FakeMemberConn.reset(uuids=self.UUIDS)
+        self.connect({'group_name': 'G'}, self.workspace)
+        self.assertEqual(len(_FakeMemberConn.logins), 1)
+
+    def test_member_removed_during_discovery_gets_no_later_login(self):
+        self.save('dev-a', group='G', type='development')
+        self.save('prod-b', group='G')
+        store, contacts, made = self.store, [], []
+
+        class GuardedFake(_FakeMemberConn):
+            def __init__(self, **options):
+                super(GuardedFake, self).__init__(**options)
+                made.append(self)
+
+            def _contact(self):
+                guard = getattr(self, '_login_guard', None)
+                if guard is not None:
+                    guard()
+                contacts.append(self.host)
+
+            def server_version(self):
+                self._contact()
+                if self.host == 'dev-a.example':
+                    # The active member's own read removes the other member.
+                    store.assign_profile_group(['prod-b'], '')
+                return super(GuardedFake, self).server_version()
+
+            def server_version_comment(self):
+                self._contact()
+                return super(GuardedFake, self).server_version_comment()
+
+            def query_rows(self, sql):
+                self._contact()
+                return super(GuardedFake, self).query_rows(sql)
+
+        with mock.patch.object(connector, 'MySQLConnection', GuardedFake):
+            reply = ui.api_response('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'dev-a',
+                                                     'probe_members': True}, self.workspace)
+        self.assertTrue(made)
+        self.assertTrue(all(callable(getattr(conn, '_login_guard', None)) for conn in made),
+                        'every member connection carries the per-login guard')
+        by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+        self.assertIs(by_id['prod-b']['reachable'], False)
+        self.assertIs(by_id['dev-a']['reachable'], True)
+        self.assertNotIn('prod-b.example', contacts, 'no client invocation reaches a removed member')
+        self.assertNotIn('prod-b.example', _FakeMemberConn.logins)
+
+    def test_topology_labels_never_rename_a_member(self):
+        victim = self.save('dev-a', group='G', name='dev-a-name', type='development')
+        other = self.save('prod-b', group='G', name='prod-db-2')
+        for label in ('prod-db-2</b>', 'prod-db-2'):
+            with self.subTest(label=label):
+                raw = self.store._profile(victim['id'])
+                raw['topology_identity'] = {'server_uuid': self.UUIDS['dev-a.example'],
+                                            'label': label, 'name': other['name'], 'role': 'PRIMARY</b>'}
+                conn = self.store._connect()
+                try:
+                    with conn:
+                        conn.execute("UPDATE records SET payload=? WHERE id=? AND kind='profile'",
+                                     (json.dumps(raw), victim['id']))
+                finally:
+                    conn.close()
+                reply = self.connect({'group_name': 'G'}, self.workspace)
+                by_id = {m['profile_id']: m for m in reply['group_connection']['members']}
+                self.assertEqual(by_id['dev-a']['profile_name'], 'dev-a-name')
+                self.assertEqual(by_id['prod-b']['profile_name'], 'prod-db-2')
+                self.assertEqual(by_id['dev-a']['host'], 'dev-a.example')
+                self.assertNotIn('</b>', json.dumps(reply))
+                self.assertIsNone(reply['group_connection']['primary_profile_id'],
+                                  'an injected role label is not topology evidence')
+                first = reply['group_connection']['members'][0]
+                self.assertEqual(reply['group_connection']['active_member_profile_id'], first['profile_id'],
+                                 'with no primary evidence the active member is the first member')
 
 
 if __name__ == '__main__':

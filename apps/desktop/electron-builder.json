@@ -8,7 +8,7 @@
     "grantFileProtocolExtraPrivileges": false, "resetAdHocDarwinSignature": true
   },
   "directories": { "output": "dist" },
-  "files": ["main.cjs", "backend.cjs", "preload.cjs", "updater.cjs", "package.json"],
+  "files": ["main.cjs", "backend.cjs", "preload.cjs", "updater.cjs", "smoke-timing.cjs", "package.json"],
   "extraResources": [
     { "from": "build/backend/myflames-backend", "to": "backend" },
     { "from": "build/mysql-client", "to": "mysql-client" },

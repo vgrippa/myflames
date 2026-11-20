@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mysql",
+ "flavor": "mysql",
+ "server_product": "MySQL",
  "server_version": "8.4.11",
  "version_comment": "MySQL Community Server - GPL",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -48,5 +50,62 @@
  "statements": [
   "SHOW GLOBAL VARIABLES"
  ],
- "notes": []
+ "notes": [],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
+ },
+ "actions": [
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "switch_to_single_primary",
+   "label": "Switch to single-primary…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "udf",
+   "danger": true,
+   "description": "The group elects one primary; the other members become read-only.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "The cluster could not be read on this connection.",
+   "fix": "Refresh with an account that can read the cluster state.",
+   "target": {
+    "self": false,
+    "member_name": "mf-ic-1"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "switch_to_multi_primary",
+   "label": "Switch to multi-primary…",
+   "scope": "overview",
+   "kind": "risky",
+   "via": "udf",
+   "danger": true,
+   "description": "Every member accepts writes, and the mode is persisted.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "The cluster could not be read on this connection.",
+   "fix": "Refresh with an account that can read the cluster state.",
+   "target": {
+    "self": false,
+    "member_name": "mf-ic-1"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  }
+ ]
 }

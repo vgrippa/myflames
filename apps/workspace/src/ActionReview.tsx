@@ -255,7 +255,7 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
     try {
       let checked: Connection;
       try {
-        checked = policy ? await policy.check() : p.connection;
+        checked = policy ? await policy.check(p.connection) : p.connection;
       } catch (e) {
         refuseLocally(p, "policy_unknown");
         throw new Error(`The saved connections could not be read (${(e as Error).message}). Nothing was sent.`);
