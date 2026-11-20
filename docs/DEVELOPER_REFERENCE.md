@@ -1504,6 +1504,18 @@ an unmeasured operator, in `output_tree.py` and `charts/tree.ts` alike.
 
 ### Bundle and lazy loading
 
+The workspace build stamps `myflames/ui_assets/index.html` with
+`<meta name="myflames-sources-sha256" content="<64 hex>">` covering every
+non-hidden file under `apps/workspace/src/` plus `index.html`, `vite.config.ts`,
+`tsconfig.json` and `package-lock.json` in `apps/workspace/`, and
+`docs/brand/myflames-app-logo.png`.
+SHA-256 consumes records sorted by the UTF-8 bytes of POSIX paths relative to
+the repository root, each containing the UTF-8 path, NUL, raw file bytes with CRLF
+byte pairs replaced by LF, and NUL; binary inputs are never decoded.
+`test/test_workspace_assets.py` requires the stamp and checks it against the
+current inputs; on failure, run `npm run build` in `apps/workspace` and commit
+the rebuilt assets.
+
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
 connections, the command palette, the investigation notebook and the shared
