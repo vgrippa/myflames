@@ -162,8 +162,12 @@ class TestWorkspaceRequestLimits(unittest.TestCase):
         server = object.__new__(WorkspaceServer)
         server._worker_slots = threading.BoundedSemaphore(1)
         server._worker_slots.acquire()
+        # A saturated drain pool closes immediately, without any new thread.
+        server._refusal_drain_slots = threading.BoundedSemaphore(1)
+        server._refusal_drain_slots.acquire()
         for failure in (None, OSError('peer closed')):
             request = mock.Mock()
+            request.recv.return_value = b''
             request.sendall.side_effect = failure
             with mock.patch.object(ThreadingHTTPServer, 'process_request') as start, \
                     mock.patch.object(server, 'shutdown_request') as close:

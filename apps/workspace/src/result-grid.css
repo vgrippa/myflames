@@ -167,8 +167,8 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-code-sm);
+  line-height: var(--leading-code-sm);
   white-space: pre;
   color: var(--ink);
 }

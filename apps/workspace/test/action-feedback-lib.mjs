@@ -500,8 +500,10 @@ export const SCENARIOS = [
   {
     name: "home-test-connection", label: "Test connection (form)", paths: ["/api/connection/test"],
     setup: async ({ page }) => {
-      await goPlace(page, "home"); await click(page, "Add connection");
-      await visible(page, ".connection-panel");
+      await goPlace(page, "home"); await click(page, "Add connection"); await pause(300);
+      // The form is taller than the window: scroll the buttons above the
+      // window status bar, which otherwise covers the click point.
+      await (await named("Test connection", ".connection-panel")(page)).evaluate((e) => e.scrollIntoView({ block: "nearest" }));
     },
     target: named("Test connection", ".connection-panel"),
     ok: async ({ page }) => waitText(page, ".connection-panel .connections-status", /Connected · 8\.4\.11/),
@@ -518,6 +520,8 @@ export const SCENARIOS = [
       await goPlace(page, "home"); await click(page, "Add connection");
       await visible(page, ".connection-panel");
       await typeInto(page, ".connection-panel .connection-fields input", "Feedback server");
+      // As in home-test-connection: scroll the buttons above the status bar.
+      await (await named("Save connection", ".connection-panel")(page)).evaluate((e) => e.scrollIntoView({ block: "nearest" }));
     },
     target: named("Save connection", ".connection-panel"),
     respondOk: () => ({ id: "p-new", name: "Feedback server", host: "127.0.0.1", port: 3306, user: "", type: "production", has_saved_password: false }),
@@ -731,7 +735,7 @@ export const SCENARIOS = [
       await click(page, "Edit table data…");
       await visible(page, ".table-data-panel input");
       await page.locator('input[aria-label="name for first"]').fill("Bob");
-      await click(page, "Review 1 changes", ".table-data-panel");
+      await click(page, "Review 1 change", ".table-data-panel");
       await page.waitForSelector("dialog.confirm-sheet[open]");
     },
     target: confirmButton("dialog.confirm-sheet[open]"),

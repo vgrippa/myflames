@@ -1,6 +1,20 @@
-# How-to guides
+# Query editor
 
-Follow these steps to try common tasks in the desktop app. Shortcuts show macOS keys first, then Windows and Linux keys.
+Use these guides to edit SQL, run queries and work with results in the desktop app; shortcuts show macOS keys first, then Windows and Linux keys.
+
+- [Multiple cursors](howto.md#multiple-cursors)
+- [Suggestions](howto.md#suggestions)
+- [Find and replace](howto.md#find-and-replace)
+- [Settings and themes](howto.md#settings-and-themes)
+- [Layout](howto.md#layout)
+- [Run and explain](howto.md#run-and-explain)
+- [Connect to a server and run a query](howto.md#connect-to-a-server-and-run-a-query)
+- [Edit table rows after reviewing SQL](howto.md#edit-table-rows-after-reviewing-sql)
+- [Commit or roll back a transaction](howto.md#commit-or-roll-back-a-transaction)
+- [Explain a query and open it in Plans](howto.md#explain-a-query-and-open-it-in-plans)
+- [Filter, sort and export query results](howto.md#filter-sort-and-export-query-results)
+- [Explain a query with named parameters](howto.md#explain-a-query-with-named-parameters)
+- [Compare Query digest with a baseline](howto.md#compare-query-digest-with-a-baseline)
 
 ## Multiple cursors
 
@@ -43,10 +57,12 @@ Related: [Edit SQL, suggestions and checks](queries.md#edit-sql-suggestions-and-
 Use find and replace to locate repeated text and change it throughout a query tab.
 
 1. Open a **Query editor** tab containing repeated text, such as the `status` names in the [multiple-cursor example](#multiple-cursors).
-2. Press **⌘F** / **Ctrl+F** and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
-3. Press **⌥⌘F** / **Ctrl+H** to open Replace, then type `state` in **Replace with**.
+2. Click **Find** in the editor toolbar, or press **⌘F** / **Ctrl+F**, and type `status` in **Find**. Press **⌘G** / **Ctrl+G** to move to the next match while Find is open.
+3. Click **Find and replace** in the editor toolbar, or press **⌥⌘F** / **Ctrl+H**, then type `state` in **Replace with**.
 4. Check the highlighted matches. Choose **Replace** to change one match or **Replace all** to change all matches in the tab.
 5. Click back in the editor and press **⌘Z** / **Ctrl+Z** to undo the replacement in one step.
+
+The toolbar's **Editing actions** menu lists editing commands with their shortcuts, including **Go to line**, line comments, cursor actions and **Toggle Tab moving focus** (**⇧⌥M** / **Ctrl+M**). **Find**, **Find and replace** and **Go to line** are also in the command palette (**⌘K** / **Ctrl+K**).
 
 ![In a Query editor tab with repeated status names, press Command+F on macOS or Ctrl+F on Windows and Linux and search for status. While Find is open, Command+G or Ctrl+G advances to the next match. Press Option+Command+F or Ctrl+H, enter state in Replace with and check the highlighted matches. Choose Replace for one match or Replace all for the whole tab. Click in the editor and press Command+Z or Ctrl+Z to undo the replacement in one step.](../screenshots/howto-find-replace.gif)
 
@@ -54,12 +70,14 @@ Related: [Work with SQL and results](queries.md#work-with-sql-and-results).
 
 ## Settings and themes
 
-Use Settings to choose a theme and change how the Query editor behaves.
+Use Settings to choose a theme, fonts and text sizes, and change how the Query editor behaves.
 
 1. Click the gear at the bottom of the sidebar, or press **⌘,** / **Ctrl+,**, to open **Settings**.
 2. Choose **Appearance**. Select **Dark** to try it across the app, then **System** to follow your operating system's appearance again. There are 17 choices.
-3. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
-4. Press **Esc** or choose **Back** to return to your previous view. Your theme and editor settings are kept on this computer across app restarts.
+3. Scroll to **Text** in **Appearance**. Open **Interface font** and choose **Inter (included)**, **System default** or an installed font from your computer, then choose **Smaller**, **Default**, **Large**, **Larger** or **Largest** in **Interface text size** (12 to 16 px) to scale workspace text.
+4. Open **Code font** and choose **JetBrains Mono (included)**, **System default** or an installed monospace font, then pick **11 px** to **20 px** in **Code text size** for the Query editor and SQL or code blocks. The preview lines and the workspace update right away; choose **Restore default text settings** to return to **System default**, **Default** and **13 px**.
+5. Choose **Query editor**. Switch **Multiple cursors** off, then on again, to try the control. Leave it on to use the multiple-cursor guide.
+6. Press **Esc** or choose **Back** to return to your previous view. Your theme, text and editor settings are kept on this computer across app restarts.
 
 ![Click the sidebar gear or press Command+comma on macOS or Ctrl+comma on Windows and Linux to open Settings. Choose Appearance and select Dark to try it, then System to follow the operating system again; there are 17 choices. Choose Query editor and switch Multiple cursors off and back on. Press Esc or choose Back to return to your previous view. Theme and editor settings are saved on this computer across restarts.](../screenshots/howto-settings-theme.gif)
 
@@ -73,11 +91,11 @@ Use the layout controls to give navigation, SQL or results more room.
 2. Drag the sidebar's right edge to make it wider. For the keyboard alternative, press **Tab** until the edge has focus and use **Left** or **Right**; hold **Shift** for a larger step. Narrow windows use a compact navigation rail instead.
 3. Drag the divider between the SQL editor and its results down to make the editor taller, or up to give the results more room.
 4. Double-click the sidebar's right edge to restore its default width. With the edge focused, **Home** or **End** also restores it. Your chosen sidebar width survives app restarts.
-5. Look at the window status bar's right end for the installed version, **Check for updates** and **View releases**. The same bar appears on every screen.
+5. The installed version sits beside the myflames name at the top of the sidebar. Choose it to open **Settings > Updates and news**, with the update status, **Check for updates** and **View releases**.
 
-![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. Every screen's bottom status bar shows the installed version, Check for updates and View releases on the right.](../screenshots/howto-layout.gif)
+![Open Query editor and run a SELECT with Command+Return on macOS or Ctrl+Enter on Windows and Linux to show results. Drag the sidebar's right edge wider, or focus it with Tab and use Left or Right, holding Shift for larger steps. Narrow windows keep a compact rail. Drag the divider between SQL and results down for more editor space or up for more result space. Double-click the sidebar edge, or focus it and press Home or End, to restore its default width. Sidebar width is kept across restarts. The installed version sits beside the myflames name at the top of the sidebar.](../screenshots/howto-layout.gif)
 
-Related: [Sidebar and status bar](quickstart.md#sidebar-and-status-bar) and [Query workspace layout](../QUERY_WORKSPACE.md).
+Related: [Sidebar and status bar](quickstart.md#sidebar-and-status-bar) and [Work with SQL and results](queries.md#work-with-sql-and-results).
 
 ## Run and explain
 
@@ -86,8 +104,154 @@ Use Run to see a SELECT's results and Explain to inspect how the server plans to
 1. Open **Query editor**, choose a connection and **Database**, and enter a SELECT for a table there. The recording uses `SELECT id, customer_id, status, total FROM orders WHERE status = 'new' ORDER BY id LIMIT 24;`.
 2. Click inside the statement and press **⌘Return** / **Ctrl+Enter**, or choose **Run**. Read the result rows below the editor.
 3. Choose **Table** beside **Explain**, then choose **Explain** (**⌘E** / **Ctrl+E**). Its result shows the server's estimated plan; **Run analysis** executes the SELECT to measure it.
-4. In the Explain result, choose **Explore** to open the visual plan in **Plans**. On MySQL, first commit or roll back any open transaction and turn autocommit on. Inspect the operators in Visual Explain, Flame graph, Tree or Bar chart.
+4. In the Explain result, choose **Explore** to open the visual plan in **Plans**. On MySQL, first commit or roll back any open transaction and turn autocommit on. Inspect the operators in **Visual Explain**, **Flame graph**, **Execution tree** or **Bar chart**.
 
-![Open Query editor, choose a connection and database, and enter SELECT id, customer_id, status, total FROM orders WHERE status = 'new' ORDER BY id LIMIT 24, using a table and columns from your database. Click in the statement and press Command+Return on macOS or Ctrl+Enter on Windows and Linux, or choose Run, to see results. Choose Table beside Explain, then Explain or Command+E or Ctrl+E for the estimated plan; Run analysis executes the SELECT for measurements. Choose Explore in the Explain result to open Plans and inspect Visual Explain, Flame graph, Tree or Bar chart. On MySQL, first finish any open transaction and turn autocommit on.](../screenshots/howto-run-explain.gif)
+![Open Query editor, choose a connection and database, and enter SELECT id, customer_id, status, total FROM orders WHERE status = 'new' ORDER BY id LIMIT 24, using a table and columns from your database. Click in the statement and press Command+Return on macOS or Ctrl+Enter on Windows and Linux, or choose Run, to see results. Choose Table beside Explain, then Explain or Command+E or Ctrl+E for the estimated plan; Run analysis executes the SELECT for measurements. Choose Explore in the Explain result to open Plans and inspect Visual Explain, Flame graph, Execution tree or Bar chart. On MySQL, first finish any open transaction and turn autocommit on.](../screenshots/howto-run-explain.gif)
 
 Related: [Work with SQL and results](queries.md#work-with-sql-and-results) and [Explain a statement](queries.md#explain-a-statement).
+
+## Connect to a server and run a query
+
+Use this when you have a saved connection and want to read rows from its database.
+
+1. Open the connection picker in the top bar.
+2. Choose the saved server in **Connection**.
+3. Open **Query editor** in the sidebar.
+4. Choose **Database** above the SQL editor.
+5. Enter a SELECT using your table and column names, for example `SELECT id FROM orders LIMIT 10;`.
+6. Click inside that statement to leave a single cursor there.
+7. Choose **Run**.
+
+What you see: the returned rows appear below the editor; **Messages** shows the statement's outcome.
+
+Good to know:
+
+- If you need to save a connection first, use **New connection…** in the picker and follow [Connect to a server](quickstart.md#connect-to-a-server).
+- **Run** sends the selected text when a selection exists, otherwise the statement at the cursor. **Run all** sends every statement in the tab.
+
+## Edit table rows after reviewing SQL
+
+Use this when you need to change a row in a supported base table and inspect the generated SQL first.
+
+1. In **Query editor** > **Schemas**, right-click the table you want to change.
+2. Choose **Edit table data…**.
+3. Change one cell's value in the table panel.
+4. Choose **Review 1 change**.
+5. Inspect the statements in **Apply table changes?**.
+6. Choose **Apply changes**.
+7. After the operation completes, choose **Reload rows** to read the saved values.
+
+![In Query editor under Schemas, right-click the orders table and choose Edit table data…. Change the status cell in the first row from new to paid, choose Review 1 change to inspect the UPDATE statement in Apply table changes?, click Apply changes to commit, and click Reload rows to confirm paid is saved.](../screenshots/howto-edit-table-rows.gif)
+
+What you see: the panel reports the operation's outcome and reloads the table page with the applied value.
+
+Good to know:
+
+- Query result grids are for reading. Double-clicking a name in **Schemas** inserts that name into SQL; use **Edit table data…** to edit rows.
+- Editing requires an InnoDB base table with a primary key or a full-column UNIQUE key whose columns are NOT NULL. The app also checks privileges and table features; a notice explains why a table cannot be edited.
+- Review is required on **Development** connections too, and the attempt is recorded in **Audit log**. A changed row or table definition refuses the batch. If the outcome is unknown, use **Check status** before making another attempt.
+
+## Commit or roll back a transaction
+
+Use this when you want to inspect an InnoDB row change before keeping or discarding it.
+
+1. In a **Query editor** tab with no open transaction, run `START TRANSACTION;` with **Run**.
+2. In the same tab, run one UPDATE or INSERT for your table with **Run**.
+3. If a review opens, check the exact SQL before choosing **Run statement**.
+4. Run a SELECT in the same tab to inspect the affected rows.
+5. Open the **Transaction open** status pill above the editor; it can also show age and changed-row counts.
+6. Choose **Roll back** to discard the changes, or **Commit** to keep them.
+7. If **Commit** opens a review, confirm the reviewed COMMIT with **Commit**.
+
+![In Query editor, place the cursor inside START TRANSACTION; and press Command+Return on macOS or Ctrl+Enter on Windows and Linux to show the Transaction open pill. Run the UPDATE and SELECT statements in the same tab to see status changed to paid, then open Transaction open above the editor and choose Roll back to display Rolled back. in the status bar.](../screenshots/howto-transaction.gif)
+
+What you see: the editor reports **Rolled back** or **Committed** while keeping the query results available.
+
+Good to know:
+
+- Each tab has its own session. Keep all statements of this transaction in the same tab.
+- **Production** connections ask before changes and Commit; writes are recorded in **Audit log**. **Roll back** remains available to release a transaction.
+- Rollback applies to transactional row changes. DDL such as ALTER TABLE can commit implicitly; see the [MySQL transaction rules](https://dev.mysql.com/doc/refman/8.4/en/commit.html) and [MariaDB transaction rules](https://mariadb.com/docs/server/reference/sql-statements/transactions/start-transaction).
+
+## Explain a query and open it in Plans
+
+Use this when you want to inspect a SELECT's estimated operators without running it for measurements.
+
+1. In **Query editor**, place the cursor inside the SELECT you want to inspect.
+2. Choose **JSON** in **Explain format** beside **Explain**.
+3. Choose **Explain**.
+4. Choose **Explore** above the Explain result.
+5. In **Plans** > **Explore**, choose **Visual Explain** or **Execution tree** to inspect the operators.
+
+![In Query editor with the cursor inside the SELECT statement, choose JSON in Explain format and click Explain. Click Explore in the Explain result to open Plans and switch the chart view to Execution tree.](../screenshots/howto-explain-plans.gif)
+
+What you see: the query opens as an estimated visual plan in **Plans**. **Stats** shows the available counts and estimates.
+
+Good to know:
+
+- **Explore** captures a visual plan for SELECT statements only. It reads the plan again in the tab's session.
+- On MySQL, this capture requires a known closed transaction and autocommit on. Finish the tab's transaction before opening the visual plan.
+- For measured timings, choose **Run analysis** in **Query editor** and approve its review. It executes the SELECT and uses server resources.
+
+## Filter, sort and export query results
+
+Use this when a loaded result contains rows you want to narrow down and save to a file.
+
+1. In **Query editor**, run a SELECT that returns rows.
+2. Type a value in **Filter loaded rows…** above the first result grid.
+3. Click a column heading to sort the displayed rows.
+4. Open **Export result 1** above that result; the button shows the filtered row count.
+5. Choose **CSV**, **JSON** or **Markdown**.
+
+![In Query editor, run a SELECT returning 24 rows, enter new in Filter loaded rows… to narrow the table to 8 of 24 loaded rows, and click the total column heading to sort. Open Export result 1 and choose CSV to export myflames-result.csv.](../screenshots/howto-results-export.gif)
+
+What you see: the app downloads a file containing the rows that match the filter.
+
+Good to know:
+
+- Filtering and sorting apply to loaded rows only. **Load more** runs the statement again with a larger row limit, so the rows can differ.
+- Sorting changes the grid's display order. Export keeps the loaded row order; use ORDER BY in SQL when the exported order matters.
+- CSV writes NULL as an empty field. Before choosing **CSV**, turn on **Protect spreadsheet formulas (CSV)** if values could be interpreted as spreadsheet formulas.
+
+## Explain a query with named parameters
+
+Use this when you want to supply literal values for `:name` placeholders while keeping the SQL text reusable.
+
+1. In **Query editor**, enter a SELECT using your table and column names, for example `SELECT id FROM orders WHERE id = :id;`.
+2. Open **Run analysis options**, the arrow beside **Run analysis**.
+3. Expand **Parameters and execution conditions**.
+4. Enter `{"id": 42}` in **Named parameters · JSON object**.
+5. Choose **Explain**.
+
+![In Query editor with SELECT id FROM orders WHERE id = :id;, open Run analysis options, expand Parameters and execution conditions, enter {"id": 42} in Named parameters · JSON object, and click Explain to produce the Explain result with Explore while keeping :id in the editor.](../screenshots/howto-named-parameters.gif)
+
+What you see: Explain uses the supplied value for `:id` and leaves the placeholder in the editor text.
+
+Good to know:
+
+- **Run** sends SQL as written, so replace placeholders with values before using it. **Explain** and **Run analysis** substitute the Parameters values.
+- **Run analysis** executes the SELECT after review; choose it only when you need measurements.
+
+## Compare Query digest with a baseline
+
+Use this when you want to see which statement digests are new or have grown since a saved reading.
+
+1. Open **Query digest** in the sidebar.
+2. Choose **Statement digests** in **Source**.
+3. Choose **Refresh** to read the server.
+4. Open **Refresh options** > **Save baseline…**.
+5. Enter a **Name** for the reading.
+6. Choose **Save baseline**.
+7. After the workload or deployment you want to compare, choose **Refresh**.
+8. Open **Refresh options** > **Compare with baseline…**.
+9. Select the saved reading in **Choose a baseline**.
+10. Choose **Compare**.
+
+![Open Query digest in the sidebar, click Refresh to load 30 statements, open Refresh options > Save baseline…, enter Before deploy and click Save baseline. Click Refresh again to load 32 statements, open Refresh options > Compare with baseline…, select Before deploy and click Compare to list new and grown statements under Since the baseline.](../screenshots/howto-digest-baseline.gif)
+
+What you see: **Since the baseline** lists new or grown digests with before and after measurements.
+
+Good to know:
+
+- Baselines work with **Statement digests** only. They require a successful Performance Schema reading with the server's identity, and stay on this computer for that server.
+- A server restart or digest reset limits what can be compared; read the notice above the comparison before interpreting changes.

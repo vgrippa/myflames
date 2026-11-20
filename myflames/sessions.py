@@ -652,7 +652,7 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         raise ValueError("Could not read the server variables: " + reason(exc))
     server = Server(variables, status)
     # Capture the same identity kill_session rechecks, while reading this report.
-    keys = ("server_id", "hostname", "version") if server.engine == "mariadb" else ("server_uuid",)
+    keys = ("server_id", "hostname", "version", "port") if server.engine == "mariadb" else ("server_uuid",)
     server_identity = {}
     if identity:  # the workspace's Kill sheet; the report and CLI do not need it
         try:

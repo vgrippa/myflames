@@ -6,14 +6,17 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from _client_tools_fixture import private_client_dir
+from _reviewed_replay import guarded_packets
+from test_editor_session import packet_client
 
-from myflames import cli, editor_session as editor, sql_cli
+from myflames import cli, dbops, editor_session as editor, sql_cli
 from myflames.workspace_store import WorkspaceStore
 
 # These tests check each command's own stderr; the CLI deprecation notice has
@@ -39,7 +42,9 @@ class SQLTests(unittest.TestCase):
         fake = Path(__file__).with_name('_fake_mysql_client.py').read_text(encoding='utf-8')
         # The editor refuses a session whose server identity it cannot read.
         fake = fake.replace('"connection_id": str(self.conn_id),',
-                            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
+                            '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1", '
+                            '"server_uuid": "11111111-2222-3333-4444-555555555555" if ENGINE == "mysql" else None,')
+        fake = packet_client(fake)
         script = bindir / 'mysql'
         script.write_text('#!%s\n%s' % (sys.executable, fake), encoding='utf-8')
         script.chmod(0o755)
@@ -166,6 +171,41 @@ class SQLTests(unittest.TestCase):
         self.assertIn("1024", err)
         log = self.log()
         self.assertLess(log.index(editor.ALTER_LOCK_WAIT), log.index(sql))
+
+    def test_bound_database_target_requires_typed_guard_even_with_yes(self):
+        sql = "DELIMITER //\nDROP /*!999999 TEMPORARY */ DATABASE prod//"
+        for target in (None, "wrong", "prod "):
+            args = [] if target is None else ["--confirm-target", target]
+            with self.subTest(target=target):
+                code, out, err = self.invoke(["-e", sql, "--yes"] + args)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(out, "")
+                self.assertNotIn("DROP /*!999999 TEMPORARY */", self.log())
+                self.assertIn(self.store.audit_records()[0]["outcome"], ("no_target", "target_mismatch"))
+        code, out, err = self.invoke(["-e", sql, "--yes", "--confirm-target", "prod"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("DROP /*!999999 TEMPORARY */ DATABASE prod", self.log())
+
+    def test_bound_alter_header_gets_preflight_and_lock_wait_guard(self):
+        # TEMPORARY hides the ALTER TABLE header in the provisional plan;
+        # the bound server skips it and reveals the need for a preflight.
+        sql = "ALTER /*!999999 TEMPORARY */ TABLE test.tt ADD COLUMN c INT"
+        review = {"schema": "test", "table": "tt", "approx_bytes": 1024,
+                  "warnings": [], "suggestion": None}
+        with mock.patch.object(editor, "_alter_review", return_value=review) as preflight:
+            code, out, err = self.invoke(["-e", sql, "--yes"])
+        self.assertEqual(code, 0, err)
+        preflight.assert_called_once()
+        self.assertIn("ALTER preflight", err)
+        self.assertLess(self.log().index(editor.ALTER_LOCK_WAIT), self.log().index(sql))
+
+    def test_bound_skipped_alter_needs_no_preflight_or_lock_wait_guard(self):
+        sql = "DELIMITER //\n/*!999999 ALTER TABLE test.tt ADD COLUMN c INT */ SELECT 1//"
+        with mock.patch.object(editor, "_alter_review", side_effect=AssertionError("skipped ALTER")):
+            code, out, err = self.invoke(["-e", sql, "--yes"])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(editor.ALTER_LOCK_WAIT, self.log())
+        self.assertIn(sql.split("\n", 1)[1][:-2], self.log())
 
     def test_review_insert_table_rejects_invalid_input_before_execution(self):
         for name in ("", "x" * 257):
@@ -413,10 +453,31 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(len(body['results'][0]['rows']), 2)
         self.assertTrue(body['results'][0]['truncated'])
         self.assertIn('2 rows', err)
+        argv_log = self.state / 'argv.log'
+        previous = len(argv_log.read_text(encoding='utf-8').splitlines())
         code, out, err = self.invoke(['-e', 'SELECT 1 /*gate*/', '--timeout', '0.1', '--json'])
         self.assertEqual(code, 1, err)
         self.assertEqual(json.loads(out)['status'], 'stopped')
         self.assertTrue((self.state / 'kills.log').exists())
+        invocations = [ast.literal_eval(line) for line in argv_log.read_text(encoding='utf-8').splitlines()[previous:]
+                       if line.startswith('[')]
+        controls = [args for args in invocations if '--batch' in args and '--xml' not in args]
+        self.assertEqual(len(controls), 1)
+        args = controls[0]
+        self.assertNotIn('-e', args)
+        kills = (self.state / 'kills.log').read_text(encoding='utf-8')
+        packet = kills[kills.rfind('DELIMITER '):].rstrip('\n') + '\n'
+        self.assertRegex(packet, r"WHERE ID = \d+ AND LEFT\(BINARY INFO, \d+\) = BINARY '/\*myflames:editor:[0-9a-f]{32}\*/'")
+        packet = re.sub(r"/\*myflames:editor:[0-9a-f]{32}\*/ ", "", packet)
+        ((guard, kill, _),) = guarded_packets(packet)
+        base_guard = dbops.target_session_guard('mysql', {
+            'server_uuid': '11111111-2222-3333-4444-555555555555'})[0]
+        self.assertTrue(guard.startswith(base_guard[:-2] + ' OR NOT EXISTS ('), guard)
+        self.assertTrue(kill.startswith(editor.TAG + 'KILL QUERY '))
+        target_log = self.state / ('session-%d.log' % int(kill.split()[-1]))
+        self.assertIn('SELECT 1 /*gate*/', target_log.read_text(encoding='utf-8'))
+        self.assertIn('--skip-reconnect', args)
+        self.assertNotIn('--force', args)
 
     def test_timeout_unresponsive_statement_ends_session_with_unknown_outcome(self):
         # A successful KILL request does not prove the statement ended. The
@@ -441,18 +502,49 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(body['status'], 'session_ended')
         self.assertEqual(body['error']['code'], 2013)
         record = self.store.audit_records()[0]
-        # This fake reports an error and the statement's end marker before
-        # the status helper discovers the lost connection. No write is still
-        # outstanding, so the engine completes this run's audit as an error.
-        self.assertEqual((record['status'], record['outcome']), ('error', 'session_ended'))
+        # The client delimiter is not a server acknowledgement. An arbitrary
+        # SELECT function is a potential write, so its lost reply is unknown
+        # even though the preceding SET completed.
+        self.assertEqual((record['status'], record['outcome']), ('unknown', 'session_ended'))
+        self.assertEqual(body['results'][0]['type'], 'ok')
+        self.assertEqual(body['results'][0]['statement'], 0)
+        self.assertTrue(self.log().endswith('SELECT lose_connection()\n'), self.log())
         self.assertEqual(body['audit_id'], record['id'])
+
+    def test_line_free_loss_during_a_guarded_write_is_exit_two_and_audited_unknown(self):
+        script = self.root / 'bin' / 'mysql'
+        source = script.read_text(encoding='utf-8').replace(
+            '        upper = text.upper()\n',
+            '        upper = text.upper()\n'
+            '        if upper == "SET @TRANSPORT_FAIL = 2":\n'
+            '            self.lost = True\n'
+            '            sys.stderr.write("ERROR %s (HY000): transport failed\\n" % os.environ["FAKE_LOSS_CODE"])\n'
+            '            sys.stderr.flush()\n'
+            '            return\n')
+        script.write_text(source, encoding='utf-8')
+        for engine in ('mysql', 'mariadb'):
+            for code in ('2006', '2013', '2050', '1045'):
+                with self.subTest(engine=engine, code=code), mock.patch.dict(
+                        os.environ, FAKE_ENGINE=engine, FAKE_LOSS_CODE=code):
+                    status, out, err = self.invoke(['-e', 'SET @before = 1; SET @transport_fail = 2; SELECT 3',
+                                                    '--yes', '--json', '-q'])
+                    self.assertEqual(status, 2, err)
+                    body = json.loads(out)
+                    self.assertEqual(body['status'], 'session_ended')
+                    self.assertEqual(body['error']['statement'], 1)
+                    self.assertEqual(body['error']['code'], int(code))
+                    record = next(r for r in self.store.audit_records() if r['id'] == body['audit_id'])
+                    self.assertEqual((record['status'], record['outcome']), ('unknown', 'session_ended'))
+                    self.assertNotIn('myflames_guard_ok_', out + err)
+                    self.assertNotIn('\nSELECT 3\n', self.log())
 
     def test_server_identity_change_refuses_write_before_sending(self):
         row = editor.EditorSession._helper_row
 
         def changed(session, step):
             value = row(session, step)
-            if value and 'hostname' in value and 'myflames_editor' not in value:
+            if (value and 'hostname' in value and 'myflames_editor' not in value and
+                    'SHOW GLOBAL VARIABLES' not in step.send):
                 value['hostname'] = 'another-server'
             return value
 

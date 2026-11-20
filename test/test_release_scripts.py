@@ -72,6 +72,9 @@ INDEX = textwrap.dedent("""\
 
 OLDER = PAGE.replace("3.4.0 (2026-12-01)", "3.3.9 (2026-11-20)").replace("3.4.0 is", "3.3.9 is")
 
+CREDIT = ("Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and "
+          "[Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).")
+
 
 def run(script, *args, **kwargs):
     return subprocess.run([sys.executable, str(SCRIPTS / script)] + list(args), stdout=subprocess.PIPE,
@@ -171,19 +174,48 @@ class ReleaseNotesTest(unittest.TestCase):
             self.assertEqual(bad.returncode, 1)
             self.assertIn("Not a release version", bad.stderr)
 
-    def test_cli_notes_end_with_the_inspiration_credit_once(self):
+    def test_cli_notes_do_not_add_the_inspiration_credit(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")
-        self.assertIn(notes.CREDIT, readme, "the credit matches the README's line")
+        self.assertIn(CREDIT, readme)
         with tempfile.TemporaryDirectory() as tmp:
             page = Path(tmp) / "3.4.0.md"
             page.write_text(PAGE, encoding="utf-8")
             done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertTrue(done.stdout.endswith("\n\n" + notes.CREDIT + "\n"), done.stdout[-200:])
-            # A page that already carries the credit is not given a second one.
-            page.write_text(PAGE + "\n" + notes.CREDIT + "\n", encoding="utf-8")
-            again = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
-            self.assertEqual(again.stdout.count(notes.CREDIT), 1)
+            self.assertNotIn("Inspired by", done.stdout)
+
+    def test_page_and_main_refuse_the_inspiration_credit(self):
+        cases = (
+            ("exact credit", CREDIT),
+            ("reworded credit", "The work of Brendan Gregg and Tanel Poder inspired myflames."),
+            ("reversed names and case", "We thank TANEL PODER and brendan gregg for the inspiration."),
+            ("wrapped credit", "The work of Brendan\nGregg and Tanel\nPoder inspired myflames."),
+            ("fenced credit", "```text\n" + CREDIT + "\n```"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "3.4.0.md"
+            for label, credit in cases:
+                with self.subTest(label=label):
+                    # Leading blank lines must not shift the reported source line.
+                    text = "\n\n" + PAGE + "\n" + credit + "\n"
+                    line = len(("\n\n" + PAGE + "\n").splitlines()) + 1
+                    if label == "fenced credit":
+                        line += 1
+                    message = "custom/3.4.0.md line %d has the inspiration credit" % line
+                    with self.assertRaises(notes.ReleaseNotesError) as caught:
+                        notes.page(text, "3.4.0", "custom/3.4.0.md")
+                    self.assertIn(message, str(caught.exception))
+                    path.write_text(text, encoding="utf-8")
+                    done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    self.assertEqual(done.stdout, "")
+                    self.assertIn("%s/3.4.0.md line %d has the inspiration credit" % (path.parent.name, line), done.stderr)
+
+    def test_a_single_inspiration_author_is_not_the_credit(self):
+        for author in ("Brendan Gregg", "Tanel Poder"):
+            with self.subTest(author=author):
+                text = PAGE.replace("It works.", "Adds a link to %s's work." % author)
+                self.assertIn(author, notes.page(text, "3.4.0")[1])
 
 
 class RealReleaseNotesTest(unittest.TestCase):
@@ -191,14 +223,14 @@ class RealReleaseNotesTest(unittest.TestCase):
 
     FOLDER = REPO / "docs/release-notes"
 
-    def test_every_page_is_in_the_format_and_ends_with_the_credit(self):
+    def test_every_page_is_in_the_format_without_the_credit(self):
         pages = sorted(p for p in self.FOLDER.glob("*.md") if p.name != "index.md")
         self.assertGreater(len(pages), 20)
         for path in pages:
             with self.subTest(path.name):
                 text = path.read_text(encoding="utf-8")
                 date, body = notes.page(text, path.stem)
-                self.assertTrue(text.rstrip("\n").endswith(notes.CREDIT), "%s ends with the credit" % path.name)
+                self.assertNotIn("Inspired by", text)
                 self.assertIn("## Additional resources", body)
 
     def test_index_lists_every_page_newest_first_with_its_date(self):
@@ -534,6 +566,16 @@ def workflow_step(path, name):
 class DocsSyncWorkflowTest(unittest.TestCase):
     """Abuse cases for .github/workflows/docs-sync.yml's shell steps."""
 
+    def test_release_checks_out_the_workflow_commit_without_credentials(self):
+        workflow = (REPO / ".github/workflows/docs-sync.yml").read_text(encoding="utf-8")
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        release_job = jobs.split("\n  release:\n", 1)[1]
+        checkout = release_job.split("      - uses: actions/checkout@", 1)[1].split("\n      - ", 1)[0]
+        settings = [line.strip() for line in checkout.splitlines()]
+        self.assertIn("ref: ${{ github.sha }}", settings)
+        self.assertIn("persist-credentials: false", settings)
+        self.assertNotIn("refs/tags/", release_job)
+
     def run_tag_step(self, tag):
         script = workflow_step(REPO / ".github/workflows/docs-sync.yml", "Release tag")
         with tempfile.TemporaryDirectory() as tmp:
@@ -617,6 +659,187 @@ class DocsSyncWorkflowTest(unittest.TestCase):
                 self.assertEqual(written, "")
                 # The rejected value is not echoed, so it cannot print a workflow command.
                 self.assertEqual(done.stdout, "::error::Not a release tag (expected vX.Y.Z).\n")
+
+
+@unittest.skipUnless(shutil.which("bash"), "needs bash")
+class MacosRetryWorkflowTest(unittest.TestCase):
+    """Run the real retry step against canned API pages, never the real gh."""
+
+    WORKFLOW = REPO / ".github/workflows/macos-retry.yml"
+    STEP = "Retry only when no runner was assigned"
+    RUN_ID = "43912550465"
+    GH_REPO = "vgrippa/myflames"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+        self.log = self.tmp / "gh.jsonl"
+        self.script = workflow_step(self.WORKFLOW, self.STEP)
+        # A queued job can have started_at even though no step ever started.
+        self.job = {"id": 133458036379, "conclusion": "cancelled", "steps": [],
+                    "started_at": "2026-11-16T16:54:02Z"}
+        self.annotations = {str(self.job["id"]): [{
+            "annotation_level": "failure", "title": "", "raw_details": "",
+            "message": "The job was not acquired by Runner of type hosted even after multiple attempts",
+        }]}
+        shim = self.tmp / "gh"
+        shim.write_text("#!" + sys.executable + "\n" + textwrap.dedent("""\
+            import json
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            with open(os.environ["GH_SHIM_LOG"], "a", encoding="utf-8") as log:
+                log.write(json.dumps(args) + "\\n")
+            if args[:1] == ["api"] and args[2:] == ["--paginate", "--slurp"]:
+                status = int(os.environ.get("GH_SHIM_API_EXIT", "0"))
+                if status:
+                    sys.exit(status)
+                endpoint = args[1]
+                if endpoint.endswith("/jobs"):
+                    sys.stdout.write(os.environ["GH_SHIM_JOBS"])
+                elif "/check-runs/" in endpoint and endpoint.endswith("/annotations"):
+                    annotations = json.loads(os.environ["GH_SHIM_ANNOTATIONS"])
+                    job_id = endpoint.split("/")[-2]
+                    sys.stdout.write(json.dumps([annotations.get(job_id, [])]))
+                else:
+                    sys.exit("Unexpected gh api endpoint: " + endpoint)
+            elif args[:2] == ["run", "rerun"]:
+                sys.exit(int(os.environ.get("GH_SHIM_RERUN_EXIT", "0")))
+            else:
+                sys.exit("Unexpected gh arguments: " + repr(args))
+            """), encoding="utf-8")
+        shim.chmod(0o755)
+
+    def run_retry(self, jobs=None, annotations=None, **overrides):
+        if jobs is None:
+            jobs = [self.job]
+        if annotations is None:
+            annotations = self.annotations
+        if self.log.exists():
+            self.log.unlink()
+        # Use a fresh environment: no real token, shell startup files or gh config.
+        env = {
+            "PATH": os.pathsep.join((str(self.tmp), str(Path(sys.executable).parent), os.defpath)),
+            "HOME": str(self.tmp), "USERPROFILE": str(self.tmp),
+            "GH_TOKEN": "fake", "GH_REPO": self.GH_REPO,
+            "RUN_ID": self.RUN_ID, "RUN_ATTEMPT": "1", "RUN_CONCLUSION": "failure",
+            "GH_SHIM_LOG": str(self.log),
+            "GH_SHIM_JOBS": json.dumps([{"total_count": len(jobs), "jobs": jobs}]),
+            "GH_SHIM_ANNOTATIONS": json.dumps(annotations),
+        }
+        env.update(overrides)
+        done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", self.script],
+                              cwd=str(self.tmp), env=env, timeout=20,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()] if self.log.exists() else []
+        return done, calls
+
+    def assert_result(self, done, calls, status, rerun=False):
+        self.assertEqual(done.returncode, status, done.stdout + done.stderr)
+        expected = [["run", "rerun", self.RUN_ID, "--repo", self.GH_REPO]] if rerun else []
+        self.assertEqual([args for args in calls if args[:2] == ["run", "rerun"]], expected, calls)
+
+    def test_workflow_has_only_the_required_privileges_and_trusted_inputs(self):
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        self.assertEqual([line for line in trigger.splitlines() if line.strip()],
+                         ["  workflow_run:", '    workflows: ["macOS desktop"]', "    types: [completed]"])
+        permissions = workflow.split("\npermissions:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertEqual(sorted(line.strip() for line in permissions.splitlines() if line.strip()),
+                         ["actions: write", "contents: read"])
+        job = workflow.split("\n  retry:\n", 1)[1]
+        self.assertNotIn("permissions:", job)
+        self.assertNotIn("uses:", job)
+        self.assertIn("    if: github.event.workflow_run.head_repository.full_name == github.repository",
+                      job.split("\n    steps:\n", 1)[0].splitlines())
+        step = job.split("\n      - name: " + self.STEP + "\n", 1)[1]
+        env = step.split("        env:\n", 1)[1].split("\n        run: |\n", 1)[0]
+        self.assertEqual(sorted(line.strip().split(":", 1)[0] for line in env.splitlines() if line.strip()),
+                         ["GH_REPO", "GH_TOKEN", "RUN_ATTEMPT", "RUN_CONCLUSION", "RUN_ID"])
+        self.assertNotIn("${{", self.script)
+
+    def test_not_acquired_attempt_requests_exactly_one_rerun(self):
+        done, calls = self.run_retry()
+        self.assert_result(done, calls, 0, rerun=True)
+        self.assertEqual(calls, [
+            ["api", "repos/%s/actions/runs/%s/attempts/1/jobs" % (self.GH_REPO, self.RUN_ID),
+             "--paginate", "--slurp"],
+            ["api", "repos/%s/check-runs/%s/annotations" % (self.GH_REPO, self.job["id"]),
+             "--paginate", "--slurp"],
+            ["run", "rerun", self.RUN_ID, "--repo", self.GH_REPO],
+        ])
+
+    def test_concurrency_cancelled_attempt_is_not_retried(self):
+        annotations = {str(self.job["id"]): [{
+            "annotation_level": "failure", "title": "", "raw_details": "",
+            "message": "Canceling since a higher priority waiting request for macOS desktop-refs/pull/34/merge exists",
+        }]}
+        done, calls = self.run_retry(annotations=annotations, RUN_ATTEMPT="3", RUN_CONCLUSION="cancelled")
+        self.assert_result(done, calls, 0)
+
+    def test_attempt_limit_and_success_do_not_call_gh(self):
+        for overrides in ({"RUN_ATTEMPT": "4"}, {"RUN_ATTEMPT": "5"}, {"RUN_CONCLUSION": "success"}):
+            with self.subTest(overrides=overrides):
+                done, calls = self.run_retry(**overrides)
+                self.assert_result(done, calls, 0)
+                self.assertEqual(calls, [])
+
+    def test_invalid_event_identifiers_cannot_run_commands(self):
+        pwned, pwned2 = self.tmp / "pwned", self.tmp / "pwned2"
+        cases = (
+            {"RUN_ID": "1; touch " + str(pwned)},
+            {"RUN_ID": "$(touch " + str(pwned2) + ")"},
+            {"RUN_ID": ""},
+            {"RUN_ATTEMPT": "01/../2"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                done, calls = self.run_retry(**overrides)
+                self.assert_result(done, calls, 1)
+                self.assertEqual(calls, [])
+                self.assertFalse(pwned.exists())
+                self.assertFalse(pwned2.exists())
+
+    def test_started_step_rejects_a_forged_not_acquired_annotation(self):
+        annotations = {str(self.job["id"]): [{
+            "annotation_level": "failure", "title": "", "raw_details": "",
+            "message": "::error:: fake The job was NOT ACQUIRED",
+        }]}
+        # Each independent sign of execution must veto even a matching annotation.
+        for evidence in ({"started_at": "2026-11-16T16:54:02Z"},
+                         {"status": "in_progress"}, {"conclusion": "failure"}):
+            with self.subTest(evidence=evidence):
+                step = {"name": "Set up job", "number": 1, "started_at": None,
+                        "status": "completed", "conclusion": "skipped"}
+                step.update(evidence)
+                done, calls = self.run_retry(jobs=[dict(self.job, steps=[step])], annotations=annotations)
+                self.assert_result(done, calls, 0)
+                self.assertEqual(len(calls), 1, calls)  # No annotations needed once a step started.
+
+    def test_skipped_job_prevents_retry_in_either_order(self):
+        skipped = dict(self.job, id=133458036380, conclusion="skipped")
+        for jobs in ([self.job, skipped], [skipped, self.job]):
+            with self.subTest(order=[job["id"] for job in jobs]):
+                done, calls = self.run_retry(jobs=jobs)
+                self.assert_result(done, calls, 0)
+
+    def test_malformed_data_and_api_failure_fail_without_rerun(self):
+        cases = (
+            ("null steps", {"steps": None}, {}),
+            ("non-numeric job id", {"id": "1/../2"}, {}),
+            ("non-JSON reply", {}, {"GH_SHIM_JOBS": "not json"}),
+            ("gh api failure", {}, {"GH_SHIM_API_EXIT": "1"}),
+        )
+        for label, changes, overrides in cases:
+            with self.subTest(label=label):
+                done, calls = self.run_retry(jobs=[dict(self.job, **changes)], **overrides)
+                self.assert_result(done, calls, 1)
+
+    def test_failed_rerun_is_reported(self):
+        done, calls = self.run_retry(GH_SHIM_RERUN_EXIT="1")
+        self.assert_result(done, calls, 1, rerun=True)
 
 
 if __name__ == "__main__":

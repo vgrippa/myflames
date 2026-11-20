@@ -38,7 +38,8 @@ const mk = src('MassKillDialog.tsx');
 const handle = mk.slice(mk.indexOf('async function handleConfirm'), mk.indexOf('function declineBulk'));
 assert.ok(handle.includes('prepareBulkKill') && !handle.includes('killBulkSessions'), 'prepare does not send');
 const send = mk.slice(mk.indexOf('async function sendBulk'), mk.indexOf('return (\n    <dialog'));
-assert.ok(send.includes('killBulkSessions(') && send.includes('policy.check()'), 'send re-checks policy then kills');
+assert.ok(send.includes('killBulkSessions(') && send.includes('policy.check(connection)') &&
+  send.indexOf('policy.check(connection)') < send.indexOf('killBulkSessions('), 'send re-checks policy then kills');
 assert.ok(mk.includes('<ConfirmSheet') && mk.includes('pending.review.statements') && mk.includes('onCancel={declineBulk}'), 'confirmation sheet lists the statements');
 assert.ok(/recordDeclined\(/.test(mk), 'cancel is recorded as declined');
 console.log('Editor fixes: digest execution statistics and CSV guard, table copy, Copy value, ALTER quoting and Kill sessions review passed.');

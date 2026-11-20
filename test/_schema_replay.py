@@ -15,6 +15,7 @@ import os
 
 from myflames import schema_versions
 from myflames.connector import ConnectorError
+from _reviewed_replay import UUID, answer_evidence, evidence_options
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'schema_versions')
 SERVERS = ('mysql-8.4', 'mariadb-11.4')
@@ -63,13 +64,31 @@ class ReplayConn(object):
     raise it."""
 
     def __init__(self, record, edit=None, error=None):
-        self.record = record
+        # The historical grants recording predates optional Galera discovery.
+        self.record = dict(record, calls=[dict(call, sql=call['sql'].replace(
+            "'hostname', 'port')", "'hostname', 'port', 'wsrep_on', 'wsrep_node_name')"))
+            if 'myflames_who' in call['sql'] else call for call in record['calls']])
         self.edit = edit
         self.error = error
         self.sent = []
+        self.evidence_values = {}
+        for call in record['calls']:
+            if 'SHOW GLOBAL VARIABLES' in call['sql']:
+                for line in call.get('stdout', '').splitlines():
+                    if '\t' in line:
+                        key, value = line.split('\t', 1)
+                        if key in ('server_id', 'hostname', 'port', 'server_uuid', 'version', 'version_comment'):
+                            self.evidence_values[key] = value
+        # Limited captures may lack identity variables in their grants read.
+        # These defaults are synthetic transport evidence, not recorded facts.
+        for key, value in (('server_id', '1'), ('hostname', 'schema-fixture'), ('port', '3306')):
+            self.evidence_values.setdefault(key, value)
+        if 'mariadb' not in self.evidence_values.get('version', '').lower():
+            self.evidence_values.setdefault('server_uuid', UUID)
 
-    def _answer(self, method, sql, flags):
-        self.sent.append((method, sql, list(flags or [])))
+    def _answer(self, method, sql, flags, record=True):
+        if record:
+            self.sent.append((method, sql, list(flags or [])))
         if self.error is not None:
             raise self.error
         for call in self.record['calls']:
@@ -77,8 +96,13 @@ class ReplayConn(object):
                 return self.edit(method, sql, dict(call)) if self.edit else call
         raise ConnectorError('unexpected SQL: %s' % sql[:300])
 
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
-        return self._answer('run', sql, extra_flags)['stdout']
+        self.sent.append(('run', sql, list(extra_flags or [])))
+        def plain(body, flags, seconds):
+            return self._answer('run', body, flags, record=False)['stdout']
+        packet = answer_evidence(sql, extra_flags, timeout, plain, self.evidence_values)
+        return packet if packet is not None else plain(sql, extra_flags, timeout)
 
     def run_script(self, sql, extra_flags=None, timeout=None):
         call = self._answer('run_script', sql, extra_flags)

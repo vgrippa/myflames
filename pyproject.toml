@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myflames"
-version = "3.4.3"
+version = "3.5.0"
 description = "MySQL and MariaDB performance workspace: EXPLAIN ANALYZE flame graphs and Visual Explain, an advisor, top and running queries, and lock views"
 readme = "README.md"
 requires-python = ">=3.7"
@@ -38,6 +38,7 @@ include = ["myflames*"]
 # Include CSS + all JS files (including the per-lesson .js files in
 # teach/ that Tier-0 migrated out of raw-string literals).
 myflames = [
+    "mysql-shell.lock.json",
     "ui_assets/*.html",
     "ui_assets/assets/*",
     "*.css",

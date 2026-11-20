@@ -120,7 +120,7 @@ class CanaryReplica(FakeProbeConn):
 
     def __init__(self, canary_port):
         super(CanaryReplica, self).__init__("database", hostname=socket.gethostname(),
-                                            uuid="uuid-canary-replica")
+                                            uuid="dddddddd-1111-2222-3333-444444444444")
         self.cfg["port"] = ACTIVE_PORT
         self.cfg["channels"] = [{
             "Channel_Name": "", "Source_Host": "127.0.0.1", "Source_Port": str(canary_port),
@@ -135,11 +135,11 @@ class CanaryReplica(FakeProbeConn):
         self.port = ACTIVE_PORT
         self.user = "dba"
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def _answer(self, sql, extra_flags=None, timeout=None):
         sql = sql.replace(rp.REPLICATION_TAG, "")
         if "RELAYLOG" in sql.upper():
             return xml_rows([])
-        return super(CanaryReplica, self).run(sql, extra_flags=extra_flags, timeout=timeout)
+        return super(CanaryReplica, self)._answer(sql, extra_flags=extra_flags, timeout=timeout)
 
 
 class CanaryReadyset(FakeReadyset):

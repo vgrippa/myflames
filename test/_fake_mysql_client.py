@@ -84,6 +84,7 @@ class Client(object):
         sys.stdout.flush()
 
     def error(self, line, code=None, state=None, message=""):
+        self.statement_error = True
         if ENGINE == "mysql":
             self.flush()
         head = "ERROR"
@@ -147,6 +148,18 @@ class Client(object):
     # -- the engine ------------------------------------------------------------------
     def run(self, statement, line):
         self.write("--------------\n%s\n--------------\n\n" % statement)
+        # Startup's identity reads share a single COM_QUERY. Only this known
+        # generated packet is split here; test SQL is not parsed by this fake.
+        if "SHOW GLOBAL VARIABLES WHERE" in statement and "SHOW GLOBAL STATUS WHERE" in statement:
+            for part in statement.split("; "):
+                self.statement_error = False
+                self._statement(part.strip(), line)
+                if self.statement_error:
+                    break
+            return
+        self._statement(statement, line)
+
+    def _statement(self, statement, line):
         self.log(statement)
         if self.lost:
             self.error(line, 2006, "HY000", "MySQL server has gone away")
@@ -180,6 +193,14 @@ class Client(object):
                                             "Lost connection to MySQL server during query'" % line)
             return
         upper = text.upper()
+        if upper == "SHOW GLOBAL VARIABLES WHERE VARIABLE_NAME IN ('SERVER_UUID', 'WSREP_ON', 'WSREP_PROVIDER')":
+            rows = ([["server_uuid", getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555")]] if ENGINE == "mysql" else
+                    [["wsrep_on", "OFF"]])
+            self.result(statement, ["Variable_name", "Value"], rows)
+            return
+        if upper == "SHOW GLOBAL STATUS WHERE VARIABLE_NAME = 'WSREP_GCOMM_UUID'":
+            self.result(statement, ["Variable_name", "Value"], [])
+            return
         if "CONNECTION_ID() AS CONNECTION_ID" in upper:
             names = re.findall(r"\bAS (\w+)", text)
             if "in_transaction" in names and ENGINE == "mysql":
@@ -335,6 +356,58 @@ class Client(object):
         if upper.startswith("SELECT EMPTY"):
             self.result(statement, [], [])
             return
+        if "AS mf_probe" in text and text.startswith("SELECT "):
+            mode_str = getattr(self, "route_sql_mode", self.sql_mode)
+            modes = {m.strip().upper() for m in mode_str.split(",")}
+            nbe = "NO_BACKSLASH_ESCAPES" in modes
+            ansi = ENGINE == "mariadb" and bool(modes & {
+                "ANSI_QUOTES", "ANSI", "ORACLE", "MSSQL", "POSTGRESQL", "DB2", "MAXDB"})
+
+            def read_quoted(s, start, quote, escapes):
+                if start >= len(s) or s[start] != quote:
+                    return None, start
+                pos = start + 1
+                out = []
+                while pos < len(s):
+                    ch = s[pos]
+                    if ch == quote:
+                        if pos + 1 < len(s) and s[pos + 1] == quote:
+                            out.append(quote)
+                            pos += 2
+                            continue
+                        return "".join(out), pos + 1
+                    if ch == "\\" and escapes:
+                        if pos + 1 >= len(s):
+                            return None, len(s)
+                        nxt = s[pos + 1]
+                        out.append({"n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "Z": "\x1a"}.get(nxt, nxt))
+                        pos += 2
+                        continue
+                    out.append(ch)
+                    pos += 1
+                return None, len(s)
+
+            val, pos = read_quoted(text, len("SELECT "), "'", not nbe)
+            if val is None or not text[pos:].startswith(" /* ' */ AS mf_probe"):
+                self.error(line, 1064, "42000", "You have an error in your SQL syntax")
+                return
+            rest = text[pos + len(" /* ' */ AS mf_probe"):]
+            if not rest or (ansi and re.fullmatch(r' /\*(?:!\d{5}|M!\d{5,6}) "(?:""|[^"])*" \*/ /\* " \*/', rest)):
+                self.result(statement, ["mf_probe"], [[val]])
+                return
+            if (not ansi and
+                    re.fullmatch(r' /\*(?:!\d{5}|M!\d{5,6}) "(?:\\.|[^"\\])*" \*/ /\* " \*/', rest)):
+                self.result(statement, ["mf_probe"], [[val]])
+                return
+            if not rest.startswith(", 1 AS "):
+                self.error(line, 1064, "42000", "You have an error in your SQL syntax")
+                return
+            alias, apos = read_quoted(rest, len(", 1 AS "), '"', not nbe and not ansi)
+            if alias is None or rest[apos:] != ' /* " */':
+                self.error(line, 1064, "42000", "You have an error in your SQL syntax")
+                return
+            self.result(statement, ["mf_probe", alias], [[val, "1"]])
+            return
         m = re.match(r"SELECT (-?\d+)(?: AS (\w+))?$", text, re.I)
         if m:
             self.result(statement, [m.group(2) or m.group(1)], [[m.group(1)]])
@@ -397,6 +470,8 @@ def main():
     log_argv()
     if "-e" in args:
         return one_shot(args[args.index("-e") + 1])
+    if "--xml" not in args:
+        return one_shot(sys.stdin.read())
     if os.environ.get("FAKE_DENY") == "1":
         sys.stderr.write("ERROR 1045 (28000): Access denied for user 'app'@'localhost' (using password: YES)\n")
         return 1

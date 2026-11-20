@@ -31,7 +31,7 @@ NAMES = ("galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three",
 #: InnoDB ClusterSet servers (synthetic), with the actions MySQL Shell runs as
 #: they are offered when it is installed (SHELL stands for it).
 CLUSTERSET = ("ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
-              "ic-8.4-clusterset-invalidated")
+              "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset")
 SHELL = {"path": "/usr/bin/mysqlsh", "realpath": "/usr/bin/mysqlsh", "version": "8.4.6", "version_tuple": [8, 4, 6]}
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
 

@@ -145,8 +145,8 @@ try {
   // The status bar shows known fields only: an unknown field is hidden,
   // never described ("not checked", "unknown", "Not refreshed").
   const status = render('WindowStatusBar' , { scope: 'test', fallback: { engineVersion: 'MySQL 8.4.0', transaction: 'Autocommit', refreshedAt: NaN } });
-  assert.match(status, /data-status="engine">MySQL 8\.4\.0</);
-  assert.match(status, /data-status="transaction">Autocommit</);
+  assert.match(status, /data-status="engine"[^>]*>MySQL 8\.4\.0</);
+  assert.match(status, /data-status="transaction"[^>]*>Autocommit</);
   assert.doesNotMatch(status, /data-status="(connection|session|last-run|duration|rows|refreshing|refreshed)"/, 'unknown fields are hidden');
   assert.doesNotMatch(status, /not checked|unknown|not refreshed/i);
   assert.doesNotMatch(render('WindowStatusBar', { scope: 'test' }), /data-status=/, 'nothing known, no fields');
@@ -157,9 +157,9 @@ try {
     durationMs: 1234, rows: 1, refreshing: true, refreshedAt: Date.UTC(2026, 9, 15, 12, 5) } });
   for (const field of ['engine', 'connection', 'session', 'transaction', 'last-run', 'duration', 'rows', 'refreshing', 'refreshed'])
     assert.match(full, new RegExp(`data-status="${field}"`), field);
-  assert.match(full, /data-status="rows">1 row</);
-  assert.match(full, /data-status="duration">1.?234 ms</);
-  assert.match(full, /data-status="refreshed">Refreshed <time dateTime="2026-10-15T12:05:00.000Z"/);
+  assert.match(full, /data-status="rows"[^>]*>1 row</);
+  assert.match(full, /data-status="duration"[^>]*>1.?234 ms</);
+  assert.match(full, /data-status="refreshed"[^>]*>Refreshed <time dateTime="2026-10-15T12:05:00.000Z"/);
   // sortRows reads each row's value once, keeps equal values in their order,
   // and puts missing values last in both directions.
   const sortable = [{ id: 'a', v: 2 }, { id: 'b', v: null }, { id: 'c', v: 1 }, { id: 'd', v: 2 }, { id: 'e', v: null }, { id: 'f', v: 0 }];

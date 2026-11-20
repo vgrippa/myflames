@@ -2,6 +2,7 @@
 
 What changed in each version of myflames, newest first. Changes that are merged but not released yet are listed in [CHANGELOG.md](../../CHANGELOG.md).
 
+- [myflames 3.5.0 (2026-11-20)](3.5.0.md)
 - [myflames 3.4.3 (2026-11-15)](3.4.3.md)
 - [myflames 3.4.2 (2026-11-15)](3.4.2.md)
 - [myflames 3.4.1 (2026-11-11)](3.4.1.md)

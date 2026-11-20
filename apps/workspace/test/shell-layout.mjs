@@ -15,6 +15,7 @@ if (process.env.MYFLAMES_NO_SANDBOX && !args.includes('--no-sandbox')) args.push
 // Launch Chromium first so a refused launch cannot leave a server behind.
 const browser = await puppeteer.launch({ headless: 'shell', args });
 let server, directory;
+let updateStatus = null;
 async function stopServer() {
   if (server?.pid && server.exitCode === null && server.signalCode === null) {
     const stopped = once(server, 'exit');
@@ -22,11 +23,14 @@ async function stopServer() {
     await stopped;
   }
 }
-async function startServer() {
+async function startServer(version = '') {
   server = spawn(process.env.PYTHON || 'python3', ['-c', `
 import sys
 from myflames import connector
+import myflames.ui as ui
 from myflames.ui import WorkspaceServer
+if sys.argv[2]:
+    ui.__version__ = sys.argv[2]
 def refuse(*args, **kwargs):
     raise AssertionError('Shell suite must never connect to a database')
 connector.MySQLConnection.run = refuse
@@ -41,7 +45,7 @@ except KeyboardInterrupt:
     pass
 finally:
     s.server_close()
-`, path.join(directory, 'workspace.sqlite3')], {
+`, path.join(directory, 'workspace.sqlite3'), version], {
     cwd: root, env: { ...process.env, HOME: directory, USERPROFILE: directory, MYFLAMES_SECRET_BACKEND: 'vault' },
   });
   return new Promise((resolve, reject) => {
@@ -70,6 +74,7 @@ try {
       const json = (body, status = 200) => request.respond({ status, contentType: 'application/json', body: JSON.stringify(body) });
       if (target.origin !== new URL(url).origin && !['data:', 'blob:', 'about:'].includes(target.protocol)) return request.abort();
       if (target.pathname === '/api/news') return json({schema_version:'news-1.0',enabled:false,items:[],sources:[],offline:true});
+      if (target.pathname === '/api/app/update/status' && updateStatus) return json(updateStatus);
       if (target.pathname === '/api/app/update/check') return json({error:'Shell suite: updates offline.'},400);
       if (target.pathname === '/api/editor/status') return json({status:'none',session:null,run:null});
       if (/^\/api\/(live|connection|editor\/open|table-data)/.test(target.pathname)) return json({error:'Shell suite: no database operations.'},400);
@@ -230,14 +235,18 @@ try {
         await go(place);
         await page.waitForFunction(()=>document.querySelector('.session-status')?.dataset.state!=='loading');
         const metrics = await page.evaluate(()=>{
-          const bar=document.querySelector('.window-statusbar'), updates=bar.querySelector('.window-statusbar-updates');
+          const bar=document.querySelector('.window-statusbar'), brand=document.querySelector('.brand-version');
           return {overflow:document.documentElement.scrollWidth-innerWidth, bars:document.querySelectorAll('.window-statusbar').length,
-            text:updates.textContent, right:updates.getBoundingClientRect().right, left:updates.getBoundingClientRect().left,
+            version:brand?brand.textContent:'', versionShown:!!(brand&&brand.getClientRects().length),
+            footerText:bar.textContent, footerTabIndex:bar.tabIndex,
             footerPadding:parseFloat(getComputedStyle(document.querySelector('.workspace')).paddingBottom), barHeight:bar.getBoundingClientRect().height};
         });
         assert.equal(metrics.bars,1); assert.ok(metrics.overflow<=0,`${theme} ${viewport} ${place}: ${JSON.stringify(metrics)}`);
-        assert.match(metrics.text,/myflames \d+\.\d+\.\d+/); assert.match(metrics.text,/Check for updates/); assert.match(metrics.text,/View releases/);
-        assert.ok(metrics.left>=0 && metrics.right<=viewport,`${place}: update actions fit`);
+        assert.equal(metrics.footerText.includes(metrics.version),false,`${place}: no installed version text in the status bar`);
+        assert.doesNotMatch(metrics.footerText,/myflames|Check for updates|View releases/,`${place}: the status bar keeps only the view's facts`);
+        assert.equal(metrics.footerTabIndex,metrics.footerText.trim()?0:-1,`${place}: only a footer with facts is a tab stop`);
+        assert.match(metrics.version,/\d+\.\d+\.\d+|development/,`${place}: the brand names the installed version`);
+        assert.equal(metrics.versionShown,viewport>900,`${place}: the version hides on the icon rail`);
         assert.ok(metrics.footerPadding>=metrics.barHeight,`${place}: content reserves the footer`);
         if (place === 'home') {
           if (viewport > 1000) {
@@ -263,11 +272,84 @@ try {
           assert.ok(await page.$('.window-statusbar [data-status="safety"]'));
         }
       }
-      await page.click('button[aria-label="Settings"]');
+      if (viewport === 720) {
+        // The rail hides the version, but opening the drawer exposes the
+        // same control and choosing it closes the drawer and focuses Settings.
+        await page.click('#window-sidebar-toggle');
+        await page.waitForSelector('.sidebar-drawer.open');
+        await page.waitForSelector('.brand-version',{visible:true});
+        assert.equal(await page.$eval('.brand-version',e=>e.textContent),
+          await page.$eval('meta[name="myflames-version"]',e=>e.content));
+        await page.focus('.brand-version');
+        await page.keyboard.press('Enter');
+        await page.waitForSelector('.settings-page[data-section="updates"]');
+        await page.waitForFunction(()=>document.activeElement?.id==='settings-section-title');
+        assert.equal(await page.$('.sidebar-drawer.open'),null,'the version closes the 720 px drawer');
+      } else await page.click('button[aria-label="Settings"]');
       await page.waitForSelector('.settings-page');
-      assert.match(await page.$eval('.window-statusbar-updates',e=>e.textContent),/myflames \d+\.\d+\.\d+/);
+      await page.locator('.settings-page .source-item ::-p-text(Updates and news)').click();
+      await page.waitForSelector('.settings-page .settings-update-status');
+      const updatesText = await page.$eval('.settings-page .settings-update-status',e=>e.textContent);
+      assert.match(updatesText,/myflames \d+\.\d+\.\d+/,'Settings names the installed version');
+      assert.match(updatesText,/Check for updates/,'Settings has Check for updates');
+      assert.equal(await page.$eval('.settings-page .settings-update-status a',e=>e.textContent),'View releases');
+      assert.equal(await page.$eval('.settings-page .settings-update-status a',e=>e.href),'https://github.com/vgrippa/myflames/releases');
+      const footerText = await page.$eval('.window-statusbar',e=>e.textContent);
+      assert.equal(footerText.includes(await page.$eval('.brand-version',e=>e.textContent)),false,'Settings footer has no installed version');
+      assert.doesNotMatch(footerText,/myflames|Check for updates|View releases/);
+      assert.equal(await page.$eval('.window-statusbar',e=>e.tabIndex),-1,'the empty Settings footer is not a tab stop');
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       await lastControlAboveFooter('.settings-panel', `${theme} ${viewport} Settings`, {requireControl:true});
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(()=>!document.querySelector('.settings-page'));
+    }
+  }
+  // Use the server's version-to-meta-tag seam, including the untouched Vite
+  // placeholder that appVersion() reads as an unpackaged development build.
+  for (const injectedVersion of ['3.5.0-rc.12','__MYFLAMES_VERSION__']) {
+    await page.close();
+    await stopServer();
+    url = await startServer(injectedVersion);
+    updateStatus = {schema_version:'app-update-status-1.0',current_version:injectedVersion,
+      last_check:{checked_at:new Date().toISOString(),outcome:'available',current_version:injectedVersion,
+        latest_version:'3.6.0',reason:null},auto_check:false,staging:null,staged:null,active_operations:[]};
+    page = await newPage();
+    await page.goto(url);
+    await page.waitForSelector('.update-badge[data-phase="available"]');
+    const version = injectedVersion.startsWith('__') ? 'development' : injectedVersion;
+    assert.equal(await page.$eval('meta[name="myflames-version"]',e=>e.content),injectedVersion);
+    for (const theme of ['light','dark']) {
+      await api({theme});
+      await page.reload();
+      await page.waitForSelector('.update-badge[data-phase="available"]');
+      await page.click('.sidebar-resizer',{clickCount:2});
+      for (const sidebarWidth of [208,264,320]) {
+        if (await width() !== sidebarWidth) await drag(sidebarWidth - await width());
+        const row = await page.evaluate(() => {
+          const head=document.querySelector('.sidebar-head'), version=document.querySelector('.brand-version');
+          const brand=document.querySelector('.brand'), name=document.querySelector('.brand-name'), badge=document.querySelector('.update-badge');
+          const h=head.getBoundingClientRect(), v=version.getBoundingClientRect(), n=name.getBoundingClientRect(), b=badge.getBoundingClientRect();
+          const css=getComputedStyle(version);
+          return {text:version.textContent,title:version.title,label:version.getAttribute('aria-label'),
+            overflow:head.scrollWidth>head.clientWidth,ellipsis:css.textOverflow,nowrap:css.whiteSpace,
+            truncated:version.scrollWidth>version.clientWidth,nameFits:name.scrollWidth<=name.clientWidth,
+            brandFlex:getComputedStyle(brand).flexShrink,badgeWidth:b.width,
+            inside:n.left>=h.left&&b.right<=h.right+1&&v.left>=n.right&&v.right<=b.left,
+            oneRow:Math.abs((n.top+n.height/2)-(b.top+b.height/2))<2&&Math.abs((v.top+v.height/2)-(b.top+b.height/2))<2};
+        });
+        const label = `${theme} ${version}, sidebar ${sidebarWidth}: ${JSON.stringify(row)}`;
+        assert.equal(await width(),sidebarWidth,label);
+        assert.equal(row.text,version,label);
+        assert.equal(row.label,`myflames ${version}: Updates and news settings`,label);
+        assert.equal(row.title,row.label,label);
+        assert.equal(row.overflow,false,label);
+        assert.ok(row.inside&&row.oneRow&&row.nameFits,label);
+        assert.equal(row.brandFlex,'0',label);
+        assert.equal(row.badgeWidth,22,label);
+        assert.equal(row.ellipsis,'ellipsis',label);
+        assert.equal(row.nowrap,'nowrap',label);
+        if (sidebarWidth===208) assert.equal(row.truncated,true,label);
+      }
     }
   }
   assert.deepEqual(errors,[]);

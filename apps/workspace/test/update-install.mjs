@@ -93,10 +93,46 @@ async function closeSettings() {
 const autoChecked = () => page.$eval(".update-auto-toggle input", (e) => e.checked);
 const badgePhase = (phase) => page.waitForFunction(
   (p) => document.querySelector(".sidebar .brand-group .update-badge")?.dataset.phase === p, { timeout: 10000 }, phase);
-const footerText = (pattern) => page.waitForFunction(
-  (p) => new RegExp(p).test(document.querySelector(".window-statusbar-updates .update-check")?.textContent || ""),
+// The update status line lives in Settings > Updates and news.
+const settingsText = (pattern) => page.waitForFunction(
+  (p) => new RegExp(p).test(document.querySelector(".settings-page .settings-update-status .update-check")?.textContent || ""),
   { timeout: 10000 }, pattern.source);
 const dialogButtons = () => page.$$eval("dialog.update-dialog .dialog-actions button", (els) => els.map((e) => e.textContent.trim()));
+async function watchAnnouncements() {
+  await page.evaluate(() => {
+    const region = document.querySelector(".update-announcement");
+    if (!region || region.closest(".sidebar") || region.getAttribute("aria-live") !== "polite"
+      || region.getAttribute("aria-atomic") !== "true") throw Error("Always-mounted polite update region missing");
+    window.__updateAnnouncements = region.textContent.trim() ? [region.textContent.trim()] : [];
+    window.__updateAnnouncementObserver?.disconnect();
+    window.__updateAnnouncementObserver = new MutationObserver(() => {
+      if (region.textContent.trim()) window.__updateAnnouncements.push(region.textContent.trim());
+    });
+    window.__updateAnnouncementObserver.observe(region, { childList: true, characterData: true, subtree: true });
+  });
+}
+async function hiddenSidebarAlert(phase, label, { restore = true } = {}) {
+  if (await page.$eval("#window-sidebar-toggle", e => e.getAttribute("aria-expanded")) === "true")
+    await page.click("#window-sidebar-toggle");
+  await page.waitForFunction(p => document.querySelector("#window-sidebar-toggle")?.dataset.updatePhase === p, {}, phase);
+  const toggle = await page.$eval("#window-sidebar-toggle", e => {
+    const dot = getComputedStyle(e, "::after");
+    return { label: e.getAttribute("aria-label"), title: e.title, content: dot.content,
+      width: parseFloat(dot.width), height: parseFloat(dot.height),
+      sidebarHidden: getComputedStyle(document.querySelector(".sidebar")).display === "none",
+      liveRegionPresent: getComputedStyle(document.querySelector(".update-announcement")).display !== "none" };
+  });
+  assert.equal(toggle.label, `Show sidebar. ${label}`);
+  assert.equal(toggle.title, toggle.label);
+  assert.ok(toggle.sidebarHidden && toggle.liveRegionPresent && toggle.content !== "none"
+    && toggle.width > 0 && toggle.height > 0, JSON.stringify(toggle));
+  if (restore) {
+    await page.click("#window-sidebar-toggle");
+    assert.equal(await page.$eval("#window-sidebar-toggle", e => e.dataset.updatePhase), undefined,
+      "the toggle defers to the visible sidebar badge");
+    assert.equal(await page.$eval("#window-sidebar-toggle", e => e.getAttribute("aria-label")), "Hide sidebar");
+  }
+}
 async function shootBadge(name) {
   for (const theme of ["light", "dark"]) for (const width of [1440, 720]) {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme }]);
@@ -132,13 +168,21 @@ try {
   // A2. On, and never checked: exactly one automatic check after the
   // start-up tick (10 s after load).
   statusMock = statusBody(null, { auto_check: true });
-  checkMock = { status: 200, body: info(record("up_to_date")) };
+  checkMock = { status: 200, body: info(record("available"), updateFields) };
   const checksBeforeAuto = countPath("/api/app/update/check");
   const reloadedAt = Date.now();
   await page.reload({ waitUntil: "networkidle0" });
+  if (await page.$(".settings-page")) await closeSettings();
+  assert.equal(await page.$(".settings-page"), null, "automatic news arrives with Settings closed");
+  await watchAnnouncements();
+  await page.click("#window-sidebar-toggle");
   await waitFor(() => countPath("/api/app/update/check") === checksBeforeAuto + 1, "the automatic check", 15000);
+  await page.waitForFunction(() => document.querySelector(".update-announcement")?.textContent.trim() === "Update available: myflames 3.2.0");
+  await hiddenSidebarAlert("available", "Update available: myflames 3.2.0");
   await pause(Math.max(0, 15000 - (Date.now() - reloadedAt)));
   assert.equal(countPath("/api/app/update/check"), checksBeforeAuto + 1, "exactly one automatic check");
+  assert.deepEqual(await page.evaluate(() => window.__updateAnnouncements), ["Update available: myflames 3.2.0"],
+    "a newly available automatic update is announced once, with the sidebar hidden");
 
   // A3. On, but the last check is from today: the tick finds nothing due.
   statusMock = statusBody(record("up_to_date"), { auto_check: true });
@@ -146,13 +190,16 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await pause(12000);
   assert.equal(countPath("/api/app/update/check"), checksBeforeFresh, "no automatic check while the last one is fresh");
+  await page.click("#window-sidebar-toggle");
+  assert.equal(await page.$eval("#window-sidebar-toggle", e => e.dataset.updatePhase), undefined, "no alert when up to date");
+  assert.equal(await page.$eval("#window-sidebar-toggle", e => e.getAttribute("aria-label")), "Show sidebar");
 
   // B1. An available result from today: the badge beside the logo.
   statusMock = statusBody(record("available"));
   checkMock = { status: 200, body: info(record("available"), updateFields) };
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector(".sidebar .brand-group button.update-badge[data-phase=available]");
-  assert.equal(await page.$eval(".update-badge", (e) => e.getAttribute("aria-label")), "myflames 3.2.0 is available");
+  assert.equal(await page.$eval(".update-badge", (e) => e.getAttribute("aria-label")), "Update available: myflames 3.2.0");
 
   // B2. At 1440 px the badge sits right of the name on the brand row; at
   // 720 px (the 48 px icon rail) it is a dot on the logo's top-right corner.
@@ -199,11 +246,16 @@ try {
   await page.locator("dialog.update-dialog button ::-p-text(Later)").click();
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
 
-  // B4. A result 25 hours old is a past result: no badge.
+  // B4. A result 25 hours old is a past result: no badge; Settings shows it
+  // as a past result.
   statusMock = statusBody(record("available", { checked_at: iso(25 * 60 * 60 * 1000) }));
   await page.reload({ waitUntil: "networkidle0" });
-  await footerText(/Last result: 3\.2\.0 available/);
+  await openSettings();
+  await settingsText(/Last result: 3\.2\.0 available/);
+  await closeSettings();
   assert.equal(await page.$(".sidebar .brand-group .update-badge"), null, "no badge for a stale result");
+  await page.click("#window-sidebar-toggle");
+  assert.equal(await page.$eval("#window-sidebar-toggle", e => e.dataset.updatePhase), undefined, "no hidden-sidebar alert for a stale result");
 
   // C. The desktop flow, through a fake bridge that records its calls. The
   // answers live in localStorage so they survive the reloads.
@@ -233,6 +285,8 @@ try {
   stageMock = { status: 200, body: staging("running", 0, 100) };
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector(".sidebar .brand-group button.update-badge[data-phase=available]");
+  await watchAnnouncements();
+  await hiddenSidebarAlert("available", "Update available: myflames 3.2.0");
   await page.click(".sidebar .brand-group .update-badge");
   await page.waitForSelector("dialog.update-dialog[open]");
   await page.waitForSelector("dialog.update-dialog .dialog-actions .button.primary:not([disabled])");
@@ -247,15 +301,32 @@ try {
   await page.waitForFunction(() => /Downloading: 40%/.test(
     document.querySelector("dialog.update-dialog .update-progress")?.textContent || ""), { timeout: 10000 });
   await page.screenshot({ path: path.join(shots, "update-install-dialog-downloading-light-1440.png") });
+  await page.locator("dialog.update-dialog button ::-p-text(Later)").click();
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await hiddenSidebarAlert("downloading", "Downloading myflames 3.2.0: 40%", { restore: false });
+  stagingState = staging("running", 60, 100);
+  await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-label") === "Show sidebar. Downloading myflames 3.2.0: 60%");
+  assert.deepEqual(await page.evaluate(() => window.__updateAnnouncements), ["Update available: myflames 3.2.0"],
+    "download percentages never update the live region");
   stagingState = staging("done", 100, 100);
   await badgePhase("ready");
+  await page.waitForFunction(() => document.querySelector(".update-announcement")?.textContent.trim() === "myflames 3.2.0 is ready: restart to update");
+  await hiddenSidebarAlert("ready", "myflames 3.2.0 is ready: restart to update");
   assert.equal(await page.evaluate(() => window.__bridgeCalls.filter((c) => c === "prepare").length), 1, "prepare called once");
   assert.equal(await page.$eval(".update-badge", (e) => e.getAttribute("aria-label")),
     "myflames 3.2.0 is ready: restart to update");
+  await openSettings();
+  await settingsText(/3\.2\.0 ready to install/);
+  assert.equal(await page.$eval(".settings-update-status .update-check-status", e => e.textContent), "3.2.0 ready to install");
+  await closeSettings();
+  await page.click(".sidebar .brand-group .update-badge");
+  await page.waitForSelector("dialog.update-dialog[open]");
+  assert.deepEqual(await page.evaluate(() => window.__updateAnnouncements),
+    ["Update available: myflames 3.2.0", "myflames 3.2.0 is ready: restart to update"],
+    "available and ready are each announced once, including after Settings and dialog opens");
   assert.match(await page.$eval("dialog.update-dialog", (e) => e.textContent),
     /myflames 3\.2\.0 is ready\. Restart now, or it installs when you quit myflames\./);
   assert.ok((await dialogButtons()).includes("Restart to update"), "the dialog offers Restart to update");
-  await footerText(/3\.2\.0 ready to install/);
 
   // C2. Restart while a dump runs: the warning first, then Restart anyway.
   activeOps = ["dump"];

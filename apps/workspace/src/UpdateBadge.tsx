@@ -1,7 +1,8 @@
 // The update badge beside the logo: a newer version is available, its
 // download is running, or it is ready to install at restart. It starts the
-// automatic check and hosts the one Software update dialog, which Home's
-// footer, About myflames and Settings open too (updateStatus.ts).
+// automatic check and hosts the one Software update dialog, which the
+// Settings Updates and news section and About myflames open too
+// (updateStatus.ts).
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./components";
@@ -33,8 +34,24 @@ export function UpdateBadge() {
   const phase = updatePhase(s, now);
   const label = phase ? updatePhaseLabel(s, phase) : "";
   const percent = stagingPercent(s.staging);
+  const [announcement, setAnnouncement] = useState("");
+  const announced = useRef(new Set<string>());
+  const milestone = phase === "available" || phase === "ready" ? label : "";
+  useEffect(() => {
+    if (!milestone || announced.current.has(milestone)) return;
+    announced.current.add(milestone);
+    setAnnouncement(milestone);
+  }, [milestone]);
   return (
     <>
+      {/* Always mounted outside the sidebar, which can be display:none.
+          Announce each version's milestones once, never download percent. */}
+      {createPortal(
+        <span className="update-announcement visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+          {announcement}
+        </span>,
+        document.body,
+      )}
       {phase && (
         <button ref={button} type="button" className="update-badge" data-phase={phase} aria-label={label} title={label}
           aria-haspopup="dialog" onClick={() => void openUpdateDialog(button.current)}>

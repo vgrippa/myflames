@@ -167,7 +167,7 @@ CASES = (
     # Several statements: the worst counts.
     ('SELECT 1; DROP TABLE t', 'risky', 'ddl', ['SELECT', 'DROP TABLE']),
     ('SELECT 1 # x\n; DELETE FROM t', 'risky', 'dml', ['SELECT', 'DELETE']),
-    ('SELECT 1 /*!50000 ; DROP TABLE t */', 'risky', 'ddl', ['SELECT', 'DROP TABLE']),
+    ('SELECT 1 /*!50000 ; DROP TABLE t */', 'risky', 'unknown', ['SELECT', 'DROP TABLE']),
     ("PREPARE s FROM 'DROP TABLE t'; EXECUTE s", 'risky', 'unknown', ['PREPARE', 'EXECUTE']),
     ('INSERT INTO t VALUES (1); SELECT 1', 'write', 'dml', ['INSERT', 'SELECT']),
     ('DELIMITER //\nCREATE PROCEDURE p() BEGIN UPDATE t SET a = 1; END//\nDELIMITER ;\nCALL p();',
@@ -267,6 +267,7 @@ class TestSelectFunctionSafety(unittest.TestCase):
             "SELECT 'mutate_rows()', `mutate_rows`, 'COUNT (1)' /* mutate_rows() */",
             'SELECT CONNECTION_ID(), USER(), CURRENT_USER(), VERSION(), DATABASE()',
             'SELECT LAST_INSERT_ID()',
+            'SELECT ROW_COUNT()',
         )
         for sql in queries:
             with self.subTest(sql=sql):
@@ -457,7 +458,12 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(result['ambiguous'])
         self.assertEqual(result['kind'], 'risky')
         self.assertIn(dbops.AMBIGUOUS_REASON, result['reasons'])
-        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'read')
+        # A server backslash reading alone does not bind the client's status
+        # even when sql_mode is known. Only a mode-setting reply permits the
+        # synchronized non-NBE reading used by the bound editor.
+        self.assertEqual(dbops.classify(sql, backslash_escapes=True)['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='')['kind'], 'risky')
+        self.assertEqual(dbops.classify(sql, sql_mode='', client_status_synced=True)['kind'], 'read')
         self.assertEqual(dbops.classify(sql, backslash_escapes=False)['kind'], 'risky')
         self.assertFalse(dbops.classify("SELECT 'it''s'; SELECT 2")['ambiguous'])
 
@@ -510,9 +516,11 @@ class TestReviewGate(unittest.TestCase):
                 self.assertEqual([p['text'] for p in parts], ['SELECT 1', 'DROP TABLE t'])
                 self.assertEqual(self.kind(sql), 'risky')
         # An unquoted argument ends at a space; the client keeps the old
-        # delimiter when it has a backslash or is missing.
+        # delimiter when the parsed value still has a backslash or is
+        # missing. get_arg unescapes pairs in unquoted values first.
         self.assertEqual(dbops.split_statements('DELIMITER // ignored\nSELECT 1//')[0]['delimiter'], '//')
-        for sql in ('DELIMITER /\\/\nSELECT 1/\\/', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
+        self.assertEqual(dbops.split_statements('DELIMITER /\\/\nSELECT 1//')[0]['delimiter'], '//')
+        for sql in ('DELIMITER /\\\\/\nSELECT 1', 'DELIMITER\nSELECT 1', "DELIMITER ''\nSELECT 1"):
             with self.subTest(sql=sql):
                 result = dbops.classify(sql)
                 self.assertEqual(result['kind'], 'risky')
@@ -910,12 +918,13 @@ class TestPrivileges(unittest.TestCase):
                 self.assertEqual(dbops.strip_credentials(text), expected)
 
     def test_read_grants_returns_no_credentials(self):
+        from _grants_fixtures import grants_batch
         class Conn(object):
             def run(self, sql, extra_flags=None):
-                if 'USER()' in sql:
-                    return 'app@localhost\tapp@%\n'
-                return ("GRANT USAGE ON *.* TO `app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'\n"
-                        "GRANT SELECT ON `shop`.* TO `app`@`%`\n")
+                return grants_batch([
+                    "GRANT USAGE ON *.* TO `app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'",
+                    "GRANT SELECT ON `shop`.* TO `app`@`%`"], account='app@%', login='app@localhost',
+                    version='11.4.13-MariaDB')
         result = dbops.read_grants(Conn())
         self.assertEqual(result['grants'], ['GRANT USAGE ON *.* TO `app`@`%`', 'GRANT SELECT ON `shop`.* TO `app`@`%`'])
         self.assertNotIn('13C17A9', json.dumps(result))
@@ -982,18 +991,135 @@ class TestPrivileges(unittest.TestCase):
         self.assertEqual(dbops.privilege_hint('kill', 'mysql', (8, 4, 6), lines)['via'], 'CONNECTION_ADMIN')
 
     def test_read_grants(self):
+        from _grants_fixtures import grants_batch
         class Conn(object):
             calls = []
 
             def run(self, sql, extra_flags=None):
                 self.calls.append((sql, extra_flags))
-                return 'app@localhost\tapp@%\n' if 'USER()' in sql else 'GRANT USAGE ON *.* TO `app`@`%`\n'
+                return grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'], account='app@%', login='app@localhost')
         conn = Conn()
         result = dbops.read_grants(conn)
         self.assertEqual((result['user'], result['account'], result['grants']),
                          ('app', 'app@%', ['GRANT USAGE ON *.* TO `app`@`%`']))
-        self.assertTrue(all(sql.startswith('/*myflames:dbops*/ ') and flags == ['--comments']
-                            for sql, flags in conn.calls))
+        self.assertEqual(len(conn.calls), 1)
+        sql, flags = conn.calls[0]
+        self.assertTrue(sql.startswith('/*myflames:dbops*/ '))
+        self.assertEqual(flags, ['--comments', '--skip-reconnect'])
+        self.assertEqual(sql.count('SHOW GRANTS'), 1)
+        self.assertEqual(sql.count('CURRENT_USER()'), 2)
+        self.assertEqual(sql.count("'partial_revokes'"), 2)
+        self.assertNotIn('wsrep_gcomm_uuid', sql)
+        self.assertEqual(result['partial_revokes'], False)
+
+    def test_grants_galera_status_is_an_explicit_opt_in(self):
+        from _grants_fixtures import grants_batch, UUID
+        conn = mock.Mock()
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'],
+                                             version='11.4.13-MariaDB', variables={'wsrep_gcomm_uuid': UUID})
+        result = dbops.read_grants(conn, galera_identity=True)
+        self.assertTrue(result['checked'], result)
+        self.assertEqual(conn.run.call_args[0][0].count(
+            "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"), 2)
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'],
+                                             version='11.4.13-MariaDB', variables={'wsrep_gcomm_uuid': UUID},
+                                             after_variables={'wsrep_gcomm_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'})
+        self.assertFalse(dbops.read_grants(conn, galera_identity=True)['checked'])
+
+    def test_grants_use_registered_uuid_instead_of_the_version_brand(self):
+        from _grants_fixtures import grants_batch
+        # MariaDB's --version override can remove its name or impersonate
+        # an arbitrary MySQL version. An absent optional variable is valid.
+        for version in ('11.8.9-custom', '8.4.11', 'custom-server'):
+            with self.subTest(version=version):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version=version,
+                                                     variables={'server_uuid': None, 'partial_revokes': None})
+                self.assertTrue(dbops.read_grants(conn)['checked'])
+        # Conversely, a MariaDB-looking VERSION() must not mask a malformed
+        # registered UUID on a MySQL server.
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version='11.8.9-MariaDB',
+                                             variables={'server_uuid': 'invalid'})
+        self.assertFalse(dbops.read_grants(conn)['checked'])
+
+    def test_grants_refuse_a_server_account_or_session_change(self):
+        from _grants_fixtures import grants_batch
+        changes = [dict(after_variables={'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}),
+                   dict(after_variables={'wsrep_gcomm_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}),
+                   dict(after_variables={'partial_revokes': 'ON'})]
+        changes += [dict(after_identity={i: value}) for i, value in enumerate(
+            ['other@client', 'other@%', '9.7.0', '74', '2', 'other-host', '3307'])]
+        for change in changes:
+            with self.subTest(change=change):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], **change)
+                result = dbops.read_grants(conn)
+                self.assertFalse(result['checked'])
+                self.assertIsNone(result['account'])
+                self.assertEqual(result['grants'], [])
+                self.assertIn('changed while reading grants', result['error'])
+                conn.run.assert_called_once()
+
+    def test_grants_optional_variables_across_lifecycle_engines(self):
+        from _grants_fixtures import UUID
+        from _perf_replay import batch
+        grant = 'GRANT SELECT ON *.* TO `operator`@`%`'
+        cases = [('5.7.44', None), ('8.0.15', None), ('8.0.16', False), ('8.4.11', True), ('9.7.2', False)]
+        cases += [(version + '-MariaDB', None) for version in
+                  ('10.11.16', '11.0.6', '11.1.6', '11.2.6', '11.3.2', '11.4.13', '11.8.9')]
+        for version, partial in cases:
+            with self.subTest(version=version):
+                # Handwritten result sets, independent of grants_batch: SHOW
+                # filters absent variables out rather than raising error 1193.
+                variables = [] if 'MariaDB' in version else [['server_uuid', UUID]]
+                if partial is not None:
+                    variables.insert(0, ['partial_revokes', 'ON' if partial else 'OFF'])
+                identity = ['operator@client', 'operator@%', version, '73', '1', 'fixture-db', '3306']
+                result_sets = ([['myflames_grants_begin'] + identity], variables, [],
+                               [['myflames_grants_rows']], [[grant]],
+                               [['myflames_grants_end'] + identity], variables, [], [['myflames_grants_done']])
+                conn = mock.Mock()
+                conn.run.return_value = ''.join(batch(rows) for rows in result_sets)
+                result = dbops.read_grants(conn)
+                self.assertTrue(result['checked'], result)
+                self.assertEqual((result['user'], result['account'], result['grants']),
+                                 ('operator', 'operator@%', [grant]))
+                self.assertIs(result['partial_revokes'], partial)
+                conn.run.assert_called_once()
+                sql = conn.run.call_args[0][0]
+                self.assertNotRegex(sql, r'@@(?:global\.)?partial_revokes')
+                self.assertEqual(sql.count("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+                                           "('server_uuid', 'partial_revokes')"), 2)
+
+    def test_grants_partial_revokes_and_invalid_identity_are_explicit(self):
+        from _grants_fixtures import grants_batch
+        for value, expected in [('ON', True), ('1', True), ('OFF', False), ('0', False),
+                                (None, None), ('unknown', None)]:
+            with self.subTest(value=value):
+                conn = mock.Mock()
+                conn.run.return_value = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'],
+                                                     variables={'partial_revokes': value})
+                result = dbops.read_grants(conn)
+                self.assertTrue(result['checked'])
+                self.assertIs(result['partial_revokes'], expected)
+        for version in ('5.7.44', '8.4.11'):
+            conn = mock.Mock()
+            conn.run.return_value = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'], version=version,
+                                                 variables={'server_uuid': 'invalid'})
+            self.assertFalse(dbops.read_grants(conn)['checked'])
+        conn.run.return_value = grants_batch(['GRANT SUPER ON *.* TO `app`@`%`'], version='11.4.13-MariaDB',
+                                             variables={'server_uuid': None, 'partial_revokes': None})
+        self.assertTrue(dbops.read_grants(conn)['checked'])
+
+    def test_incomplete_grants_batch_never_exposes_an_account(self):
+        from _grants_fixtures import grants_batch
+        complete = grants_batch(['GRANT USAGE ON *.* TO `app`@`%`'])
+        for text in ('', complete.rsplit('myflames_grants_done', 1)[0], complete + 'unexpected\n',
+                     complete + 'myflames_grants_done\n'):
+            conn = mock.Mock()
+            conn.run.return_value = text
+            result = dbops.read_grants(conn)
+            self.assertEqual((result['checked'], result['account'], result['grants']), (False, None, []))
 
 
 # ---- redaction -----------------------------------------------------------------------------
@@ -1768,3 +1894,32 @@ class TestReadysetClassificationAndRedaction(unittest.TestCase):
         clean = dbops.redact(raw)
         self.assertNotIn("s3cr3t!pw", clean)
         self.assertIn("mysql://readyset_user:[redacted]@db-primary.internal:3306/shop", clean)
+
+    def test_client_status_probe_formats_and_validation(self):
+        self.assertEqual(dbops.client_status_probe("$$", True),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("//", False),
+                         ("SELECT '\\''//' /* ' */ AS mf_probe", "\\'//"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\""$$" /* " */', "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb"),
+                         ('SELECT \'\\\'$$\' /* \' */ AS mf_probe, 1 AS "\\"$$" /* " */', "'$$"))
+        # MySQL clients ignore ANSI_QUOTES; NBE makes all quotes literal.
+        self.assertEqual(dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mysql"),
+                         ("SELECT '\\'$$' /* ' */ AS mf_probe", "'$$"))
+        self.assertEqual(dbops.client_status_probe("$$", False, ansi_quotes=True, client_engine="mariadb"),
+                         ("SELECT '\\''$$' /* ' */ AS mf_probe", "\\'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=False, client_engine="mariadb",
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*!99999 "\\"$$" */ /* " */', "'$$"))
+        self.assertEqual(
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine=None,
+                                      server_ansi_quotes=True),
+            ('SELECT \'\\\'$$\' /* \' */ AS mf_probe /*M!999999 "\\""$$" */ /* " */', "'$$"))
+        with self.assertRaises(ValueError):
+            dbops.client_status_probe("$$", True, ansi_quotes=True, client_engine="mariadb",
+                                      server_ansi_quotes=False)
+        for bad in ("", None, "'", '"', "\\", "a b", "/*"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                dbops.client_status_probe(bad, True)

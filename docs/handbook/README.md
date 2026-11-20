@@ -4,18 +4,25 @@ The handbook is part of the MyFlames project and is the source of truth for the
 user documentation displayed by the separate project website. Edit these
 Markdown chapters here; do not maintain a second prose copy in the website.
 
-
 ## Start here
 
 - [Installation & first steps](quickstart.md)
-- [How-to guides](howto.md)
 - [Why myflames](motivation.md)
+
+## How-to guides
+
+- [Query editor](howto.md)
+- [Plans and schemas](howto-plans.md)
+- [Server and workload](howto-server.md)
+- [Connections and files](howto-connections.md)
+- [Replication, clusters and proxies](howto-topology.md)
 
 ## Workflows
 
 - [Execution plans & comparison](plans.md)
 - [Query editor & slow queries](queries.md)
 - [Server diagnostics & operations](server.md)
+- [File transfer and SSH](files.md)
 - [Schemas & version comparison](schemas.md)
 - [Learn the algorithms](learn.md)
 

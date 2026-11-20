@@ -19,7 +19,7 @@ export type Bound<T> = {
 };
 
 type Identity = Pick<Connection, "host" | "port" | "user" | "ssl_mode"> &
-  Partial<Pick<Connection, "profile_id" | "ssl_ca" | "name" | "ssh_host" | "ssh_user" | "ssh_port">> & {
+  Partial<Pick<Connection, "profile_id" | "ssl_ca" | "name" | "ssh_host" | "ssh_user" | "ssh_port" | "group_name">> & {
     /** Write safety of a saved connection (dbops.py): "production" (the default) or "development". */
     type?: string;
     /** Refuses every write. */
@@ -66,6 +66,11 @@ export function connectionKey(c: Identity): string {
   if (ssh) key.push(ssh);
   const type = c.type === "development" ? "development" : "production";
   if (type !== "production" || c.read_only === true) key.push(type, c.read_only === true);
+  // A Group connection (its group name) comes last: renaming the group or
+  // moving to another member rebinds every view, and endpointKey's slice of
+  // the leading endpoint parts is unchanged.
+  const group = trimPasted(c.group_name || "");
+  if (group) key.push("group", group);
   return JSON.stringify(key);
 }
 
@@ -82,12 +87,31 @@ export function endpointKey(key: string): string {
   }
 }
 
+/** The saved-connection id a connectionKey() text was built with (""
+ * for an unsaved connection or an unreadable key). */
+export function keyProfileId(key: string): string {
+  try {
+    const parts: unknown = JSON.parse(key);
+    return Array.isArray(parts) && typeof parts[0] === "string" ? parts[0] : "";
+  } catch {
+    return "";
+  }
+}
+
 /** "Production (app@db1:3306)", or "app@db1:3306" without a name; a
- * connection through SSH adds "via bastion". */
+ * connection through SSH adds "via bastion". A Group connection (group_name)
+ * shows its group label ("Group connection mf-ic · 3 servers") as its name. */
 export function connectionLabel(c: Identity): string {
   const via = trimPasted(c.ssh_host || "");
   const target = `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}${via ? ` via ${via}` : ""}`;
+  if (c.group_name && c.name) return c.name;
   return c.name && c.name !== target ? `${c.name} (${target})` : target;
+}
+
+/** "Group connection mf-ic · 3 servers": the name of a connection group
+ * opened as one Group connection (the top bar and the status bar). */
+export function groupConnectionLabel(name: string, count: number): string {
+  return `Group connection ${name} · ${count} ${count === 1 ? "server" : "servers"}`;
 }
 
 /** One read: the connection it was sent to and the parameters it asked for. */

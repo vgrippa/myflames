@@ -498,6 +498,13 @@
       "script": null,
       "reason": "Directory of recorded reports and synthetic replies (cluster-*, sessions-*, locks-*, config-*, digest-*, ddl-progress.json, parameter-versions-mock.mjs and more) replayed by locks.mjs, sessions.mjs, cluster.mjs, replication.mjs, proxysql.mjs, readyset.mjs, errorlog.mjs, innodb.mjs, config.mjs and the perf-harness suites."
     },
+    "group-connections.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 300,
+      "safety": "A Cluster member action keeps the route confirmed in Review through confirmation and runs through that member's saved connection, never one matched only by address (header lines 9-11).",
+      "reason": "Group connections picker, group editor sheet and member routing on the real workspace server with a throwaway HOME and vault store; profiles, cluster reads and reviewed actions mocked."
+    },
     "health-watch-unit.mjs": {
       "kind": "suite",
       "script": "test:health",
@@ -893,6 +900,11 @@
       "safety": "Bulk kill policy: a policy change or failed policy read while the kill review is open never sends the kill, and an attempted write keeps its outcome (test/release-rf3-regressions.mjs:89-136).",
       "reason": "Release rf-3 node --test regressions executing the actual handlers and JSX; header: no browser, listening sockets or database."
     },
+    "release-shots.mjs": {
+      "kind": "generator",
+      "script": null,
+      "reason": "Captures the release-verification screenshots (each release-notes view at 1440 and 720 px, light and dark) with a sha256 manifest; produces release evidence, not a pass/fail check."
+    },
     "replication-source-version.mjs": {
       "kind": "suite",
       "script": "test:replication-source-version",
@@ -1150,6 +1162,12 @@
       "script": "test:tables",
       "timeout": 180,
       "reason": "Tables view on schema-2.0 reports recomputed from live captures; mocked live endpoints."
+    },
+    "text-size-stress.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 600,
+      "reason": "Whole workspace at the largest and smallest Settings > Appearance text sizes, 1440 and 720 px, light and dark: no sideways page scroll, status bar and metric tiles never clip; real server on a throwaway store with fixture answers."
     },
     "theme-browser-harness.mjs": {
       "kind": "helper",

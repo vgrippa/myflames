@@ -383,6 +383,180 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['installations'], [])
         self.assertEqual([s['version'] for s in report['shells']], ['9.6.0', '8.4.13'])
 
+    def test_managed_shell_appears_after_first_read_and_wins_over_newer_path_copy(self):
+        from myflames import cluster_shell, lifecycle, managed_shell
+        managed = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        newer = self.make(self.root / 'path/bin', 'mysqlsh', version='10.0.0')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=None) as installed:
+            self.assertEqual([s['path'] for s in self.discover(newer.parent)['shells']], [str(newer)])
+            installed.return_value = str(managed.parent)
+            # A PATH alias of the managed binary must not duplicate or relabel it.
+            report = self.discover(newer.parent, managed.parent)
+            self.assertEqual([s['path'] for s in report['shells']], [str(managed), str(newer)])
+            self.assertEqual(report['shells'][0]['origin'], 'managed')
+            self.assertEqual(report['shells'][0]['origin_label'], 'Downloaded by myflames')
+            self.assertEqual(report['copies'][0]['origin'], 'managed')
+            self.assertEqual(ct.select(report, {'engine': 'mysql', 'version': '8.4.13'})['shell']['path'],
+                             str(managed))
+            with mock.patch.dict(os.environ, {'PATH': str(newer.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                    mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                    mock.patch.object(ct.connector, 'client_choices', return_value={}):
+                self.assertEqual(cluster_shell.find_shell()['path'], str(managed))
+                for server in (None, {'engine': 'mysql', 'version': '8.4.13'}):
+                    with self.subTest(server=server):
+                        tools = lifecycle.detect_tools(server=server)
+                        self.assertEqual(tools['tools']['mysqlsh']['path'], str(managed))
+                        self.assertEqual(tools['tools']['mysqlsh']['origin_label'], 'Downloaded by myflames')
+            self.assertGreaterEqual(installed.call_count, 5)
+
+    def test_managed_bin_only_adds_shell_and_rechecks_launch_trust(self):
+        from myflames import managed_shell
+        binary = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        self.make(binary.parent, 'mysql')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=str(binary.parent)), \
+                mock.patch.object(ct.connector, 'checked_shell_program',
+                                  wraps=ct.connector.checked_shell_program) as checked:
+            report = self.discover()
+            self.assertEqual(report['installations'], [])
+            self.assertEqual([s['path'] for s in report['shells']], [str(binary)])
+            # Snapshot, discovery and the actual --version launch each check.
+            self.assertGreaterEqual(checked.call_count, 3)
+            self.assertEqual(checked.call_args, mock.call(str(binary)))
+
+    def test_managed_inventory_listing_uses_the_trust_cache_only_for_cached_reads(self):
+        from myflames import managed_shell
+        binary = self.make(self.root / 'managed/bin', 'mysqlsh', version='9.7.0')
+        with mock.patch.object(managed_shell, 'installed_bin_dir', return_value=str(binary.parent)) as installed:
+            ct.snapshot(path='', common_dirs=(), bundled=False)
+            self.assertEqual(installed.call_args, mock.call(cache=False))
+            ct.snapshot(path='', common_dirs=(), bundled=False, cache_shell_trust=True)
+            self.assertEqual(installed.call_args, mock.call(cache=True))
+
+    def test_shell_startup_tree_abuse_is_skipped_without_any_version_probe(self):
+        from myflames import cluster_shell, lifecycle
+        system = self.root / 'etc-mysql'
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        for relative, directory in (
+                ('share/mysqlsh', True), ('share/mysqlsh/mysqlshrc.js', False),
+                ('share/mysqlsh/mysqlshrc.py', False), ('bin/mysqlshrc.js', False),
+                ('lib/mysqlsh/plugins/p/init.py', False), ('etc-mysql/mysqlsh', True),
+                ('etc-mysql/mysqlsh/mysqlshrc.js', False)):
+            path = self.root / relative if relative.startswith('etc-mysql') else shell.parent.parent / relative
+            private_client_dir(path if directory else path.parent)
+            if not directory:
+                path.write_text('/* untrusted code */\n')
+            path.chmod(0o777)
+            try:
+                with self.subTest(relative=relative), \
+                        mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(system)), \
+                        mock.patch.object(ct, 'probe') as probe, \
+                        mock.patch.object(ct.subprocess, 'run') as run, \
+                        mock.patch.dict(os.environ, {'PATH': str(shell.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                        mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()):
+                    candidates = ct.snapshot(path=str(shell.parent), common_dirs=(), bundled=False)
+                    self.assertIn('trust_error', candidates[0])
+                    report = self.discover(shell.parent)
+                    self.assertEqual(report['shells'], [])
+                    self.assertEqual([s['path'] for s in report['skipped']], [str(shell)])
+                    self.assertIn('Other users can change', report['skipped'][0]['reason'])
+                    self.assertIsNone(cluster_shell.find_shell(refresh=True))
+                    probe.assert_not_called()
+                    run.assert_not_called()
+            finally:
+                path.chmod(0o700)
+
+    def test_shell_tree_symlink_to_world_writable_directory_is_never_probed(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        target = private_client_dir(self.root / 'other-user')
+        target.chmod(0o777)
+        share = private_client_dir(shell.parent.parent / 'share')
+        (share / 'mysqlsh').symlink_to(target, target_is_directory=True)
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+        self.assertFalse(report['shells'])
+        self.assertEqual(len(report['skipped']), 1)
+        probe.assert_not_called()
+
+    def test_discover_rechecks_shell_tree_after_snapshot(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        directory = private_client_dir(shell.parent.parent / 'share/mysqlsh')
+        candidates = ct.snapshot(path=str(shell.parent), common_dirs=(), bundled=False)
+        directory.chmod(0o777)
+        with mock.patch.object(ct, 'snapshot', return_value=candidates), mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+        self.assertFalse(report['shells'])
+        self.assertEqual(len(report['skipped']), 1)
+        probe.assert_not_called()
+
+    def test_linked_startup_file_oserror_and_budget_all_skip_before_probe(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        share = private_client_dir(shell.parent.parent / 'share')
+        target = private_client_dir(self.root / 'linked-startup')
+        code = target / 'mysqlshrc.js'
+        code.write_text('/* code loaded through a top-level link */')
+        (share / 'mysqlsh').symlink_to(target, target_is_directory=True)
+        code.chmod(0o777)
+        with mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('Other users can change', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+        code.chmod(0o600)
+        with mock.patch.object(ct.connector.os, 'scandir', side_effect=PermissionError('private detail')), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('could not be checked safely', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+        # The full 40,001-entry boundary is also exercised by connector's
+        # real filesystem test. Lower the same bound here to check inventory.
+        with mock.patch.object(ct.connector, 'MAX_SHELL_TRUST_ENTRIES', 1), \
+                mock.patch.object(ct, 'probe') as probe:
+            report = self.discover(shell.parent)
+            self.assertFalse(report['shells'])
+            self.assertIn('too many files', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+
+    def test_cached_inventory_never_lets_untrusted_shell_start_a_version_probe(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh')
+        directory = private_client_dir(shell.parent.parent / 'lib/mysqlsh')
+        code = directory / 'plugin.py'
+        code.write_text('/* trusted */')
+        code.chmod(0o600)
+        self.discover(shell.parent, cache_shell_trust=True)
+        code.chmod(0o777)
+        with mock.patch.object(ct.subprocess, 'run') as run:
+            report = self.discover(shell.parent, cache_shell_trust=True, refresh=True)
+            self.assertFalse(report['shells'])
+            run.assert_not_called()
+            # Direct probes also recheck, independently of discovery caching.
+            self.assertFalse(ct.probe('mysqlsh', str(shell), refresh=True)['available'])
+            run.assert_not_called()
+
+    def test_find_shell_polling_reuses_walk_and_refresh_rechecks(self):
+        from myflames import cluster_shell, lifecycle
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        with mock.patch.dict(os.environ, {'PATH': str(shell.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.connector, '_check_shell_tree_trust',
+                                  wraps=ct.connector._check_shell_tree_trust) as walk:
+            self.assertIsNotNone(cluster_shell.find_shell())
+            initial = walk.call_count
+            self.assertGreater(initial, 0)
+            self.assertIsNotNone(cluster_shell.find_shell())
+            self.assertEqual(walk.call_count, initial)
+            self.assertIsNotNone(cluster_shell.find_shell(refresh=True))
+            self.assertGreater(walk.call_count, initial)
+
+    def test_actual_shell_version_probe_disables_openssl_configuration(self):
+        shell = self.make(self.root, 'mysqlsh', version='9.7.0')
+        with mock.patch.dict(os.environ, {'OPENSSL_CONF': '/hostile/openssl.cnf'}), \
+                mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
+            self.assertTrue(ct.probe('mysqlsh', str(shell))['available'])
+        self.assertEqual(run.call_args[1]['env']['OPENSSL_CONF'], os.devnull)
+
     def test_inventory_copies_keep_banners_metadata_and_failed_probes(self):
         mysql = self.make(self.root / 'first', banner='mysql Ver 8.4.13 for test')
         failed = self.make(self.root / 'second', 'mysqldump', banner='unknown', exit_code=2)
@@ -645,6 +819,15 @@ class SelectionTests(unittest.TestCase):
             random.Random(i).shuffle(shuffled['shells'])
             self.assertEqual(ct.select(shuffled, {'engine': 'mysql', 'version': '8.4.3'}), expected)
         self.assertEqual(self.discovered, original)
+
+    def test_managed_shell_selection_wins_independently_of_list_order(self):
+        managed = dict(self.shell, path='/managed/mysqlsh', realpath='/managed/mysqlsh',
+                       version='8.4.13', version_tuple=(8, 4, 13), origin='managed',
+                       origin_label='Downloaded by myflames', order=99)
+        for shells in ([self.shell, managed], [managed, self.shell]):
+            with self.subTest(shells=shells):
+                self.discovered['shells'] = shells
+                self.assertEqual(self.choose()['shell']['path'], managed['path'])
 
     def test_empty_inventory(self):
         result = ct.select(dict(installations=[], shells=[]))

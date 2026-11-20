@@ -137,6 +137,7 @@ for (const file of ['ClusterPlace.tsx', 'ProxySqlPlace.tsx']) {
     React, useContext: () => null, useEffect() {}, useRef: () => ({ current: null }),
     useInspector: () => ({ open: true, sheet: false }),
     RefreshAllContext: {}, ViewActivityContext: {}, ViewBackLabelContext: {}, ViewSwitcherContext: { Provider: 'provider' },
+    ViewServerContext: {},
     Inspector: 'inspector', InfoPopover: 'info', Icon: 'icon',
   });
   const list = React.createElement('list', null, ...layout.parent.children.filter(n =>

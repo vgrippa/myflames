@@ -249,11 +249,11 @@ class _LiveRead(object):
         self.version = None
         self.engine = None
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, **kwargs):
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise ConnectorError('Schema lint live-read time limit reached.')
-        return self.conn.run(sql, extra_flags=extra_flags, timeout=min(left, timeout or READ_SECONDS))
+        return self.conn.run(sql, extra_flags=extra_flags, timeout=min(left, timeout or READ_SECONDS), **kwargs)
 
     def metadata(self):
         if self.version is None:

@@ -303,10 +303,47 @@ def _retry(plan_id, entry, workspace):
                 _compact_plans(plans)
 
 
-def _build(conn, request, secrets, connection, profile, change_set_id=None):
+def _build(conn, request, secrets, connection, profile, change_set_id=None, safety=None):
     options = dict(request['options'], **secrets)
     return accounts.plan_change(conn, request['operation'], request['user'], request['host'], request['role'],
-                                connection=connection, profile=profile, change_set_id=change_set_id, **options)
+                                connection=connection, profile=profile, change_set_id=change_set_id,
+                                safety=safety, **options)
+
+
+def _group_login_guard(store, connection, identity=None):
+    """Per-login consent for a Group connection, re-read from the store.
+
+    The member and the request's active profile must still be current members
+    of the group at every login, not just when the request was validated.
+    """
+    from . import connection_groups
+    if not isinstance(connection, dict) or connection.get('group_name') is None:
+        return None
+    # Capture the reviewed incarnation for writes and the current one for
+    # reads. A group recreated during a read cannot inherit its old consent.
+    if identity is None:
+        _profiles, member = connection_groups.request_profiles(store, connection)
+        safety = dbops.connection_safety(member, connection, store=store)
+        consent = dbops.identity_group(dbops.connection_identity(connection, safety))
+    else:
+        consent = dbops.identity_group(identity)
+
+    def guard():
+        _profiles, current = connection_groups.request_profiles(store, connection)
+        if current is None:
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group.')
+        now = dbops.connection_safety(current, connection, store=store)
+        current_identity = dbops.connection_identity(connection, now)
+        if dbops.identity_group(current_identity) != consent:
+            raise connection_groups.ProfileReadError(
+                'The connection group changed after the review; nothing was sent. Review the change again.')
+        if identity is not None and current_identity != identity:
+            raise connection_groups.ProfileReadError(
+                "The connection's write policy changed after the review; nothing was sent. "
+                'Review the change again.')
+
+    return guard
 
 
 def response(path, payload, workspace, with_saved_password, request_profile):
@@ -324,7 +361,11 @@ def response(path, payload, workspace, with_saved_password, request_profile):
     options = connection_options(filled.get('connection'))
     options['query_timeout'] = 30
     try:
-        with MySQLConnection(**options) as conn:
+        conn = MySQLConnection(**options)
+        guard = _group_login_guard(workspace.store, payload.get('connection'))
+        if guard is not None:
+            conn._login_guard = guard
+        with conn:
             if path == PRIVILEGES_PATH:
                 return privileges.read_privileges(conn)
             if path == '/api/accounts/scope-objects':
@@ -341,7 +382,8 @@ def response(path, payload, workspace, with_saved_password, request_profile):
                 return accounts.read_account(conn, user, _text(host, 'host', 255, allow_empty=True), role)
             connection = payload.get('connection')
             profile = request_profile(connection, workspace.store)
-            plan = _build(conn, request, secrets, connection, profile)
+            safety = dbops.connection_safety(profile, connection, store=workspace.store)
+            plan = _build(conn, request, secrets, connection, profile, safety=safety)
     except (ValueError, ConnectorError) as exc:
         _reraise(exc, [options.get('password')] + list(secrets.values()))
     public = dict(plan)
@@ -384,7 +426,7 @@ def _apply(payload, workspace, with_saved_password, request_profile):
         raise ValueError('Enter connection settings.')
     store = workspace.store
     profile = request_profile(connection, store)
-    safety = dbops.connection_safety(profile, connection)
+    safety = dbops.connection_safety(profile, connection, store=store)
     identity = dbops.connection_identity(connection, safety)
     entry = _recall(plan_id, identity, workspace)
     request_payload, reviewed = entry['request'], entry['statements']
@@ -408,12 +450,60 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                                  outcome='read_only' if blocked[0] == 'refused' else blocked[0],
                                  message=blocked[1], target={'change_set_id': plan_id, 'request': request})
         return _unsent(request, blocked[0], blocked[1], audit_id)
+
+    from . import connection_groups
+    grouped = isinstance(connection, dict) and connection.get('group_name') is not None
+
+    def current_consent():
+        """Membership and the strictest policy, re-read at each login and send.
+
+        A member removed from the group, or made Read-only, after the review
+        (or after the password lookup) receives nothing.
+        """
+        if not grouped:
+            return
+        _profiles, current = connection_groups.request_profiles(store, connection)
+        if current is None:
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group; nothing was sent.')
+        now = dbops.connection_safety(current, connection, store=store)
+        if dbops.connection_identity(connection, now) != identity:
+            raise connection_groups.ProfileReadError(
+                "The connection's write policy changed after the review; nothing was sent. "
+                'Review the change again.')
+
+    def before_send():
+        try:
+            current_consent()
+        except connection_groups.ProfileReadError as exc:
+            return str(exc)
+        return None
+
+    def changed(message):
+        audit = dbops.AuditTrail(store, 'accounts.' + request['operation'], 'ui', connection=plain,
+                                 safety=safety, policy=dbops.policy_summary(decision))
+        audit_id = audit.outcome(reviewed or [request['operation']], 'refused', outcome='changed',
+                                 message=message, target={'change_set_id': plan_id, 'request': request})
+        result = _unsent(request, 'refused', message, audit_id)
+        result.update(change_set_id=plan_id,
+                      statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
+                                  for i, s in enumerate(reviewed or [])])
+        return result
+
     # Claim atomically before opening a connection: overlapping requests can
     # never send the same reviewed change twice. Policy refusals remain retryable.
+    if dbops.identity_group(entry['identity']) != dbops.identity_group(identity):
+        return changed('The connection group changed after the review; nothing was sent. Review the change again.')
     entry = _recall(plan_id, identity, workspace, consume=True)
-    filled = with_saved_password(payload)
-    options = connection_options(filled.get('connection'))
-    options['query_timeout'] = 30
+    try:
+        current_consent()
+        filled = with_saved_password(payload)
+        options = connection_options(filled.get('connection'))
+        options['query_timeout'] = 30
+        # The secret store can wait (the vault lock): consent is from now.
+        current_consent()
+    except connection_groups.ProfileReadError as exc:
+        return changed(str(exc))
     all_secrets = [options.get('password')] + list(secrets.values())
 
     def stale(current, message):
@@ -430,31 +520,67 @@ def _apply(payload, workspace, with_saved_password, request_profile):
                                   for i, s in enumerate(reviewed)])
         return result
 
+    def unavailable(message):
+        # The audited twin of accounts.apply's identity_unavailable refusal:
+        # the evidence scope failed, so nothing was or can be sent.
+        audit = dbops.AuditTrail(store, 'accounts.' + request['operation'], 'ui', connection=plain,
+                                 safety=safety, policy=dbops.policy_summary(decision))
+        audit_id = audit.outcome(reviewed or [request['operation']], 'refused',
+                                 outcome='identity_unavailable', message=message,
+                                 target={'change_set_id': plan_id, 'request': request})
+        result = _unsent(request, 'refused', message, audit_id)
+        result.update(change_set_id=plan_id, outcome='identity_unavailable',
+                      statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
+                                  for i, s in enumerate(reviewed or [])])
+        return result
+
+    evidence = None
+
     try:
-        with MySQLConnection(**options) as conn:
+        conn = MySQLConnection(**options)
+        if grouped:
+            # Every login of this apply (the fresh reads and each statement's
+            # client) re-checks consent and the group's strictest policy.
+            conn._login_guard = current_consent
+            conn._group_login_started = False
+        with conn:
             # Existence and direct-grant checks in plan_change can fail after
             # drift. Compare first so those cases are audited stale refusals,
             # rather than unaudited input errors. The client cannot replace the
             # reviewed expect with a new fingerprint to approve unseen changes.
-            current = accounts.read_account(conn, request['user'], request['host'], request['role'])
+            evidence = dbops.TargetEvidenceConnection(conn)
+            current = accounts.read_account(evidence, request['user'], request['host'], request['role'])
+            evidence.check()
             if expect != entry['expect'] or accounts.fingerprint(current) != expect:
                 return stale(current, 'The account changed since the review; nothing was sent.')
             try:
-                plan = _build(conn, request, secrets, connection, profile, change_set_id=plan_id)
+                plan = _build(evidence, request, secrets, connection, profile, change_set_id=plan_id, safety=safety)
             except ValueError:
                 # The target can also change between the check and the rebuild.
-                current = accounts.read_account(conn, request['user'], request['host'], request['role'])
+                evidence.check()
+                current = accounts.read_account(evidence, request['user'], request['host'], request['role'])
+                evidence.check()
                 if accounts.fingerprint(current) != expect:
                     return stale(current, 'The account changed since the review; nothing was sent.')
                 raise
+            evidence.check()
             if _review_context(plan) != entry['review_context']:
                 return stale(plan, 'The server, connected account or a role changed since the review; nothing was sent.')
             if reviewed is not None and list(plan['statements']) != list(reviewed):
                 return stale(plan, 'The statements would differ from the ones you reviewed; nothing was sent.')
-            result = accounts.apply(conn, plan, expect, confirmed=True, typed_name=typed_name,
+            result = accounts.apply(evidence, plan, expect, confirmed=True, typed_name=typed_name,
                                     store=_ApplyAuditStore(store),
-                                    surface='ui', connection=connection, profile=profile)
-    except (ValueError, ConnectorError) as exc:
+                                    surface='ui', connection=connection, profile=profile, safety=safety,
+                                    before_send=before_send if grouped else None)
+    except connection_groups.ProfileReadError as exc:
+        return changed(str(exc))
+    except ConnectorError as exc:
+        if evidence is not None and evidence.problem:
+            # The evidence scope failed during the pre-apply read or rebuild;
+            # refuse audited rather than raise an unaudited error.
+            return unavailable(evidence.problem)
+        _reraise(exc, all_secrets)
+    except ValueError as exc:
         _reraise(exc, all_secrets)
     if result['status'] == 'needs_typed_name':
         _retry(plan_id, entry, workspace)

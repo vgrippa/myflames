@@ -1111,6 +1111,218 @@ class TestVersionAwareClients(unittest.TestCase):
             self.assertEqual(MySQLConnection(host='race')._resolve_binary(), second)
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX Shell installation permissions')
+class TestShellProgramTrust(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = os.path.realpath(self.temp.name)
+        self.prefix = os.path.join(self.root, 'shell')
+        self.bin = os.path.join(self.prefix, 'bin')
+        private_client_dir(self.bin)
+        self.program = os.path.join(self.bin, 'mysqlsh')
+        with open(self.program, 'w') as handle:
+            handle.write('#!/bin/sh\nexit 0\n')
+        os.chmod(self.program, 0o755)
+        self.system = os.path.join(self.root, 'etc-mysql')
+        patch = mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', self.system)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def make(self, relative, directory=False):
+        path = os.path.join(self.prefix, relative)
+        private_client_dir(path if directory else os.path.dirname(path))
+        if not directory:
+            with open(path, 'w') as handle:
+                handle.write('/* startup code */\n')
+            os.chmod(path, 0o600)
+        return path
+
+    def test_shell_tree_checks_every_code_location_and_bin_rc(self):
+        for relative, directory in (
+                ('share/mysqlsh', True), ('share/mysqlsh/mysqlshrc.js', False),
+                ('share/mysqlsh/mysqlshrc.py', False), ('bin/mysqlshrc.js', False),
+                ('bin/mysqlshrc.py', False), ('bin/mysql-secret-store-keychain', False),
+                ('bin/mysql-secret-store-login-path', False), ('lib/mysqlsh/plugins/p/init.py', False),
+                ('lib/mysqlsh/python-packages/p/code.py', False), ('lib/mysql/plugins/auth.so', False),
+                ('libexec/mysqlsh/helper', False), ('share', True), ('lib', True), ('libexec', True)):
+            path = self.make(relative, directory)
+            with self.subTest(relative=relative):
+                self.assertEqual(connector.checked_shell_program(self.program), self.program)
+                os.chmod(path, 0o777)
+                try:
+                    with self.assertRaisesRegex(connector.ClientMissingError, 'changed by other users'):
+                        connector.checked_shell_program(self.program)
+                finally:
+                    os.chmod(path, 0o700)
+
+    def test_bin_credential_helper_link_target_is_checked_before_each_launch(self):
+        target = self.make('helper-target')
+        os.symlink('../helper-target', os.path.join(self.bin, 'mysql-secret-store-keychain'))
+        self.assertEqual(connector.checked_shell_program(self.program, cache=True), self.program)
+        os.chmod(target, 0o777)
+        with self.assertRaisesRegex(connector.ClientMissingError, 'changed by other users'):
+            connector.checked_shell_program(self.program)
+
+    def test_global_config_and_both_rc_languages_are_checked(self):
+        for relative in ('', 'mysqlsh', 'mysqlsh/mysqlshrc.js', 'mysqlsh/mysqlshrc.py'):
+            path = os.path.join(self.system, relative)
+            if relative.endswith(('.js', '.py')):
+                private_client_dir(os.path.dirname(path))
+                with open(path, 'w') as handle:
+                    handle.write('/* global startup */\n')
+            else:
+                private_client_dir(path)
+            with self.subTest(relative=relative):
+                os.chmod(path, 0o777)
+                try:
+                    with self.assertRaises(connector.ClientMissingError):
+                        connector.checked_shell_program(self.program)
+                finally:
+                    os.chmod(path, 0o700)
+
+    def test_root_owned_link_cannot_hide_a_writable_target_or_ancestor(self):
+        link = self.make('share/mysqlsh', directory=True)
+        os.rmdir(link)
+        outside = os.path.join(self.root, 'writable')
+        private_client_dir(outside)
+        target = os.path.join(outside, 'code')
+        private_client_dir(target)
+        os.symlink(target, link)
+        real_lstat = os.lstat
+
+        def root_owned(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if str(path) == link:
+                values = list(info)
+                values[4] = 0  # Root ownership of the link does not protect its target.
+                return os.stat_result(values)
+            return info
+
+        with mock.patch.object(connector.os, 'lstat', side_effect=root_owned):
+            self.assertEqual(connector.checked_shell_program(self.program), self.program)
+            for writable in (outside, target):
+                with self.subTest(writable=writable):
+                    os.chmod(writable, 0o777)
+                    try:
+                        with self.assertRaises(connector.ClientMissingError):
+                            connector.checked_shell_program(self.program)
+                    finally:
+                        os.chmod(writable, 0o700)
+
+    def test_tree_link_cycles_terminate_and_broken_links_fail_closed(self):
+        code = self.make('lib/mysqlsh/code.py')
+        os.symlink('../mysqlsh', os.path.join(os.path.dirname(code), 'cycle'))
+        self.assertEqual(connector.checked_shell_program(self.program), self.program)
+        os.symlink('missing', os.path.join(os.path.dirname(code), 'broken'))
+        with self.assertRaises(connector.ClientMissingError):
+            connector.checked_shell_program(self.program)
+
+    def test_top_level_link_target_is_walked_not_just_its_directory(self):
+        link = self.make('share/mysqlsh', directory=True)
+        os.rmdir(link)
+        target = os.path.join(self.root, 'linked-startup')
+        private_client_dir(target)
+        code = os.path.join(target, 'mysqlshrc.js')
+        with open(code, 'w') as handle:
+            handle.write('/* planted startup code */')
+        os.chmod(code, 0o777)
+        os.symlink(target, link)
+        with self.assertRaisesRegex(connector.ClientMissingError, 'changed by other users'):
+            connector.checked_shell_program(self.program)
+        os.chmod(code, 0o600)
+        self.assertEqual(connector.checked_shell_program(self.program), self.program)
+
+    def test_walk_oserrors_fail_closed_with_plain_reason(self):
+        directory = self.make('share/mysqlsh', directory=True)
+        original_scan, original_stat = os.scandir, os.lstat
+        for operation in ('scan', 'stat'):
+            def scan(path):
+                if path == directory:
+                    raise PermissionError('private filesystem detail')
+                return original_scan(path)
+
+            def lstat(path):
+                if path == directory:
+                    raise PermissionError('private filesystem detail')
+                return original_stat(path)
+
+            with self.subTest(operation=operation), \
+                    mock.patch.object(connector.os, 'scandir', side_effect=scan if operation == 'scan' else original_scan), \
+                    mock.patch.object(connector.os, 'lstat', side_effect=lstat if operation == 'stat' else original_stat):
+                with self.assertRaisesRegex(connector.ClientMissingError, 'startup files could not be checked safely'):
+                    connector.checked_shell_program(self.program)
+
+    def test_discovery_cache_is_bounded_by_prefix_mtime_and_never_authorizes_launch(self):
+        code = self.make('lib/mysqlsh/plugin.py')
+        with mock.patch.object(connector, '_check_shell_tree_trust', wraps=connector._check_shell_tree_trust) as walk:
+            connector.checked_shell_program(self.program, cache=True)
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 1)
+            info = os.stat(self.prefix)
+            os.utime(self.prefix, (info.st_atime, info.st_mtime + 1))
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 2)
+            # chmod of a nested file need not change prefix mtime. Actual
+            # launches always bypass cached discovery and catch this change.
+            os.chmod(code, 0o777)
+            with self.assertRaises(connector.ClientMissingError):
+                connector.checked_shell_program(self.program)
+            self.assertEqual(walk.call_count, 3)
+
+    def test_discovery_cache_expires_even_without_prefix_change(self):
+        with mock.patch.object(connector, '_check_shell_tree_trust', wraps=connector._check_shell_tree_trust) as walk, \
+                mock.patch.object(connector.time, 'monotonic', return_value=1) as now:
+            connector.checked_shell_program(self.program, cache=True)
+            now.return_value = 1 + connector._SHELL_TRUST_CACHE_SECONDS
+            connector.checked_shell_program(self.program, cache=True)
+            self.assertEqual(walk.call_count, 2)
+
+    def test_tree_budget_accepts_real_install_size_and_refuses_over_40000(self):
+        directory = self.make('lib/mysqlsh/python-packages', directory=True)
+        self.assertEqual(connector.MAX_SHELL_TRUST_ENTRIES, 40000)
+        for i in range(40001):
+            with open(os.path.join(directory, str(i)), 'w'):
+                pass
+            if i == 21599:
+                self.assertEqual(connector.checked_shell_program(self.program), self.program)
+        with self.assertRaisesRegex(connector.ClientMissingError, 'too many files'):
+            connector.checked_shell_program(self.program)
+        from myflames import client_tools
+        with mock.patch.object(client_tools.subprocess, 'run') as probe:
+            report = client_tools.discover(path=self.bin, common_dirs=(), bundled=False)
+            self.assertFalse(report['shells'])
+            self.assertEqual(len(report['skipped']), 1)
+            self.assertIn('too many files', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+
+    def test_shell_never_gets_the_bundled_client_exemption(self):
+        with mock.patch.object(connector, 'checked_program', return_value=self.program) as checked:
+            connector.checked_shell_program(self.program, self.program)
+        checked.assert_called_once_with(self.program, self.program, bundled=False)
+
+    def test_mac_admin_group_exception_never_allows_world_writes(self):
+        directory = self.make('share/mysqlsh', directory=True)
+        real_lstat = os.lstat
+        for platform, mode, allowed in (('darwin', 0o775, True), ('darwin', 0o777, False),
+                                        ('linux', 0o775, False)):
+            def admin_group(path, *args, **kwargs):
+                info = real_lstat(path, *args, **kwargs)
+                if str(path) == directory:
+                    values = list(info)
+                    values[0], values[5] = stat.S_IFDIR | mode, 80
+                    return os.stat_result(values)
+                return info
+            with self.subTest(platform=platform, mode=mode), \
+                    mock.patch.object(connector.sys, 'platform', platform), \
+                    mock.patch.object(connector.os, 'lstat', side_effect=admin_group):
+                if allowed:
+                    connector.checked_shell_program(self.program)
+                else:
+                    with self.assertRaises(connector.ClientMissingError):
+                        connector.checked_shell_program(self.program)
+
+
 class TestWindowsClientTrust(unittest.TestCase):
     """Check Windows paths without starting a Windows executable on POSIX."""
 
@@ -1237,6 +1449,130 @@ class TestWindowsClientTrust(unittest.TestCase):
         self.windows_os.path.realpath.side_effect = lambda value: (
             r'D:\actual' if value == r'C:\alias' else r'd:\ACTUAL\bin\mysql.exe')
         self.assertEqual(connector.probe_client(r'C:\alias\bin\mysql.exe')['name'], 'mysql.exe')
+
+    def test_shell_tree_stays_in_the_executables_own_allowed_root(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        prefix = ntpath.dirname(ntpath.dirname(program))
+        info = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.return_value = info
+        scan = mock.MagicMock()
+        scan.__enter__.side_effect = lambda: iter(())
+        self.windows_os.scandir.return_value = scan
+        connector._check_client_trust(program)
+        connector._check_shell_tree_trust(program)
+        for relative in ('bin', r'share\mysqlsh', r'lib\mysqlsh', r'lib\mysql', r'libexec\mysqlsh'):
+            path = ntpath.join(prefix, relative)
+            for target in (r'C:\outside', r'C:\Program FilesOther', r'C:\Users\tester', r'\\server\share'):
+                self.windows_os.path.realpath.side_effect = lambda value: target if value == path else value
+                with self.subTest(relative=relative, target=target), self.assertRaises(ValueError):
+                    connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_shell_tree_checks_bundled_windows_python_junction(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        lib = ntpath.join(ntpath.dirname(ntpath.dirname(program)), 'lib')
+        python = ntpath.join(lib, 'Python3.13')
+        info = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.return_value = info
+        self.windows_os.path.isdir.return_value = True
+        entry = type('Entry', (), {'name': 'Python3.13', 'path': python})()
+
+        def scan(path):
+            context = mock.MagicMock()
+            context.__enter__.return_value = iter([entry] if path == lib else [])
+            return context
+
+        self.windows_os.scandir.side_effect = scan
+        connector._check_shell_tree_trust(program)
+        self.windows_os.path.realpath.side_effect = lambda value: r'D:\untrusted' if value == python else value
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_shell_tree_checks_windows_bin_dlls_and_sasl_descendants(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        bin_dir = ntpath.dirname(program)
+        sasl = ntpath.join(bin_dir, 'sasl2')
+        dlls = [ntpath.join(bin_dir, name) for name in ('python313.dll', 'python3.dll')]
+        plugin = ntpath.join(sasl, 'test-auth.dll')
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        regular = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.side_effect = lambda path: regular if path in dlls + [program, plugin] else directory
+
+        def scan(path):
+            children = ([program] + dlls + [sasl] if path == bin_dir else
+                        [plugin] if path == sasl else [])
+            entries = [type('Entry', (), {'name': ntpath.basename(child), 'path': child})()
+                       for child in children]
+            context = mock.MagicMock()
+            context.__enter__.return_value = iter(entries)
+            return context
+
+        self.windows_os.scandir.side_effect = scan
+        connector._check_shell_tree_trust(program)
+        for path in dlls + [sasl, plugin]:
+            self.assertIn(mock.call(path), self.windows_os.lstat.call_args_list)
+            for target in (r'D:\untrusted', r'\\server\share\code'):
+                self.windows_os.path.realpath.side_effect = lambda value: target if value == path else value
+                with self.subTest(path=path, target=target), self.assertRaisesRegex(ValueError, 'local|outside'):
+                    connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_shell_tree_walks_windows_python_home_descendants(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        lib = ntpath.join(ntpath.dirname(ntpath.dirname(program)), 'lib')
+        python = ntpath.join(lib, 'Python3.13')
+        package = ntpath.join(python, 'test_package')
+        module = ntpath.join(package, '__init__.py')
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        regular = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        self.windows_os.lstat.side_effect = lambda path: regular if path == module else directory
+        self.windows_os.path.isdir.return_value = True
+
+        def scan(path):
+            children = {lib: [python], python: [package], package: [module]}.get(path, [])
+            entries = [type('Entry', (), {'name': ntpath.basename(child), 'path': child})()
+                       for child in children]
+            context = mock.MagicMock()
+            context.__enter__.return_value = iter(entries)
+            return context
+
+        self.windows_os.scandir.side_effect = scan
+        connector._check_shell_tree_trust(program)
+        self.assertIn(mock.call(module), self.windows_os.lstat.call_args_list)
+        self.windows_os.path.realpath.side_effect = lambda value: r'D:\untrusted' if value == module else value
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            connector._check_shell_tree_trust(program)
+        self.run.assert_not_called()
+
+    def test_windows_junction_target_is_walked_and_escape_refuses(self):
+        program = r'C:\Program Files\MySQL Shell\bin\mysqlsh.exe'
+        subtree = r'C:\Program Files\MySQL Shell\share\mysqlsh'
+        target = r'C:\Program Files\ShellStartup'
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        junction = type('Junction', (), {'st_mode': stat.S_IFDIR | 0o755,
+                                        'st_file_attributes': 0x400})()
+        self.windows_os.lstat.side_effect = lambda path: junction if path == subtree else directory
+        self.windows_os.path.realpath.side_effect = lambda path: target if path == subtree else path
+        scan = mock.MagicMock()
+        scan.__enter__.side_effect = lambda: iter(())
+        self.windows_os.scandir.return_value = scan
+        connector._check_shell_tree_trust(program)
+        self.assertIn(mock.call(target), self.windows_os.scandir.call_args_list)
+        self.windows_os.path.realpath.side_effect = lambda path: r'C:\Users\tester\outside' if path == subtree else path
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            connector._check_shell_tree_trust(program)
+        from myflames import client_tools
+        self.windows_os.path.isfile.side_effect = lambda path: ntpath.basename(path) == 'mysqlsh.exe'
+        self.windows_os.access.return_value = True
+        self.windows_os.stat.return_value = os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        with mock.patch.object(client_tools, 'os', self.windows_os), mock.patch.object(client_tools, 'probe') as probe:
+            report = client_tools.discover(path=ntpath.dirname(program), common_dirs=(), bundled=False)
+            self.assertFalse(report['shells'])
+            self.assertEqual(len(report['skipped']), 1)
+            self.assertIn('outside', report['skipped'][0]['reason'])
+            probe.assert_not_called()
+        self.run.assert_not_called()
 
     def test_windows_process_group_and_taskkill_argument_list(self):
         # Exercise transport setup/cleanup separately from the mocked probe.
@@ -1869,6 +2205,38 @@ class TestSafetyRegressions(unittest.TestCase):
                 for secret in ('connection-secret', 'new-secret', '414243'):
                     self.assertNotIn(secret, text)
 
+    def test_tagged_editor_guard_retains_only_its_acknowledgement_on_error(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        unrelated = 'myflames_guard_ok_' + 'f' * 32 + '_0'
+        output = ('private-result\n' + lines.markers[0] + '\n' + unrelated + '\n').encode()
+        failure = _fake_completed(output, b'ERROR 1094 (HY000) at line 2: Unknown thread id: 41', 1)
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', return_value=failure):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIsNone(dbops.target_guard_failed(caught.exception, lines))
+        self.assertNotIn('private-result', str(caught.exception))
+
+    def test_tagged_editor_guard_timeout_keeps_ack_without_generated_sql(self):
+        from myflames import dbops
+        session = editor_session.EditorSession('tab', 'identity', {})
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = session._guarded_statement(guard, editor_session.TAG + 'KILL QUERY 41')
+        timeout = subprocess.TimeoutExpired(['mysql'], 1, output=(lines.markers[0] + '\nprivate-result').encode(),
+                                            stderr=script.encode())
+        with MySQLConnection('h', binary='mysql') as conn, \
+                mock.patch.object(connector, '_run_bounded', side_effect=timeout):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        self.assertEqual(caught.exception.guard_markers, lines.markers)
+        self.assertIn('outcome is unknown', str(caught.exception))
+        for private in (session.statement_tag, 'myflames_guard_ok_', 'private-result', 'SET @myflames_target'):
+            self.assertNotIn(private, str(caught.exception))
+
 
 class TestBoundedTransport(unittest.TestCase):
     """Exercise OS pipes with a local Python child, never a database."""
@@ -1989,13 +2357,70 @@ class TestBoundedTransport(unittest.TestCase):
     def test_identity_sql_error_retains_stdout_only_for_opted_in_read_batches(self):
         output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
         script = 'import sys\nsys.stdout.write(%r)\nsys.stderr.write("ERROR 1227: denied")\nsys.exit(1)' % output
-        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}):
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
             with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
                 with self.assertRaises(ConnectorError) as caught:
                     conn.run('SELECT 1', **options)
                 self.assertEqual(isinstance(caught.exception, connector.PartialReadError), bool(options))
                 if options:
                     self.assertEqual(caught.exception.stdout, output)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_framed_tail_timeout_retains_stdout_on_connection_loss(self):
+        output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 2013 (HY000): Lost connection to MySQL server during query")\n'
+                  'sys.exit(1)' % output)
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}, {'retain_partial_stdout': True}):
+            with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    conn.run('SELECT 1', **options)
+                if 'tail_timeout' in options:
+                    self.assertIs(type(caught.exception), connector.PartialReadError)
+                    self.assertEqual(caught.exception.stdout, output)
+                else:
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_opted_in_reads_never_attach_stdout_to_client_errors(self):
+        for diagnostic in ('ERROR 2003 (HY000): Cannot connect',
+                           'ERROR 2013 (HY000) at line 2: Lost connection',
+                           'client failed without a server diagnostic'):
+            for options in ({}, {'retain_partial_stdout': True}):
+                script = ('import sys\nsys.stdout.write("private prefix\\n")\n'
+                          'sys.stderr.write(%r)\nsys.exit(1)' % diagnostic)
+                with self.subTest(diagnostic=diagnostic, options=options), self.child(script), \
+                        MySQLConnection('h', binary='mysql') as conn:
+                    with self.assertRaises(ConnectorError) as caught:
+                        conn.run('SELECT 1', **options)
+                    self.assertIs(type(caught.exception), ConnectorError)
+                    self.assertFalse(hasattr(caught.exception, 'stdout'))
+                    self.assertNotIn('private prefix', str(caught.exception))
+                    self.assertIsNotNone(self.children[0].poll())
+
+    def test_expired_password_stdout_hint_raises_the_server_1862_message(self):
+        # The batch client prints only this hint on stdout and exits 1 with an
+        # empty stderr; the connector maps it to the server's own 1862 text.
+        from myflames import dbops
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = 'import sys\nsys.stdout.write(%r)\nsys.exit(1)' % hint
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    getattr(conn, method)('SELECT 1')
+                self.assertEqual(str(caught.exception), connector.EXPIRED_PASSWORD_MESSAGE)
+                self.assertEqual(dbops.error_code(str(caught.exception)), 1862)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_expired_password_hint_with_stderr_keeps_the_client_error(self):
+        hint = 'Please use --connect-expired-password option or invoke mysql in interactive mode.\n'
+        script = ('import sys\nsys.stdout.write(%r)\n'
+                  'sys.stderr.write("ERROR 1045 (28000): Access denied for user")\nsys.exit(1)' % hint)
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaisesRegex(ConnectorError, r'mysql client exited 1: ERROR 1045'):
+                    getattr(conn, method)('SELECT 1')
                 self.assertIsNotNone(self.children[0].poll())
 
 
@@ -2083,6 +2508,10 @@ class TestClientSecurityFixes(unittest.TestCase):
                                          if text in genuine else ConnectorError)
                         if text in genuine:
                             self.assertIn('client_ed25519 plugin', str(caught.exception))
+                        if method == 'run' and text in genuine:
+                            with self.assertRaises(connector.ClientAuthPluginError) as opted:
+                                conn.run('SELECT 1', retain_partial_stdout=True)
+                            self.assertFalse(hasattr(opted.exception, 'stdout'))
 
     def test_option_file_keeps_the_client_it_was_built_for(self):
         mysql = self.binary()

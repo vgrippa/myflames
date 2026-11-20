@@ -9,7 +9,12 @@ export type SuggestedIndexOrigin = {
   before: StatementBefore;
   target: { key: string; label: string };
 };
-export type SqlOpenOptions = { append?: boolean; indexOrigin?: SuggestedIndexOrigin };
+export type SqlOpenOptions = {
+  append?: boolean;
+  indexOrigin?: SuggestedIndexOrigin;
+  /** The place that opened this SQL owns its destination, including a group member. */
+  from?: string;
+};
 const measured = (n: unknown): number | null =>
   typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
 

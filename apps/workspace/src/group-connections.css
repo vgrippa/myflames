@@ -1,0 +1,151 @@
+/* Group connections: the picker's Group connections section, the group
+   editor sheet (GroupEditorSheet) and the Groups section on Home's
+   Connections place. Theme tokens only. */
+
+.group-connections-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.group-connections-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: none;
+}
+
+.group-connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.group-connection-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 6px);
+  background: var(--surface-raised);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.group-connection-row.is-active {
+  border-color: var(--accent);
+}
+
+.group-connection-open {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 0;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+button.group-connection-open {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.group-connection-open:hover .group-connection-name {
+  text-decoration: underline;
+}
+
+.group-connection-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.group-connection-count {
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.group-connection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.group-connection-active-note {
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* The editor sheet (ConfirmSheet .group-editor-sheet). */
+.group-editor-sheet .group-editor-name {
+  max-width: 320px;
+}
+
+.group-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.group-editor-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 6px);
+  background: var(--surface-raised);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.group-editor-item-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.group-editor-addr {
+  color: var(--ink-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.group-editor-move {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.group-editor-footer {
+  margin-top: 10px;
+}
+
+/* The status bar's Edit group… button beside the safety words. */
+.statusbar-group-edit {
+  margin-left: 10px;
+}

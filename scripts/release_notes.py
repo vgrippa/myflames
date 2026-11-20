@@ -10,9 +10,9 @@ level-two sections named in SECTIONS, in that order, ending with "Additional
 resources". The notes are the page without its title line (GitHub shows the
 release name above them) and without leading or trailing blank lines. A
 missing page, a wrong title, an unknown, repeated or out-of-order section, a
-deeper heading, a page with no entries, an unclosed code fence, an em dash or
-an internal /api/ path is an error (exit status 1) with a message that says
-what to fix. docs/release-notes/index.md lists every page, newest first; see
+deeper heading, a page with no entries, an unclosed code fence, an em dash,
+an internal /api/ path or the inspiration credit is an error (exit status 1)
+with a message that says what to fix. docs/release-notes/index.md lists every page, newest first; see
 DEVELOPER_REFERENCE "Release notes". Stdlib only, Python 3.7+.
 """
 import argparse
@@ -32,6 +32,12 @@ HEADING_RE = re.compile(r"^ {0,3}(?P<marks>#{1,6})\s+(?P<text>.*?)\s*$")
 # A code fence: three or more backticks or tildes (Markdown); it closes on the
 # same character, at least as many, and nothing else on the line.
 FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+# Treat both authors on a page as the credit regardless of wording or wrapping.
+# Fenced text is included: it also reaches the GitHub release body.
+CREDIT_AUTHORS = (
+    re.compile(r"\bBrendan\s+Gregg\b", re.IGNORECASE),
+    re.compile(r"\bTanel\s+Poder\b", re.IGNORECASE),
+)
 
 # The sections a page may have, in the order it must use them. Leave out the
 # empty ones; "Additional resources" is always there.
@@ -52,10 +58,6 @@ STYLE = (
     ("/api/", "an internal /api/ path: say what the user can do instead"),
 )
 
-# Every release's notes end with the project's origin credit (README, NOTICE):
-# Brendan Gregg and Tanel Poder are where this work began. Never remove it.
-CREDIT = ("Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and "
-          "[Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).")
 
 
 class ReleaseNotesError(Exception):
@@ -108,6 +110,11 @@ def page(text, version, name=None):
     *notes* is the page without its title line, as GitHub shows it."""
     version = normalize_version(version)
     name = name or "docs/release-notes/%s.md" % version
+    authors = [pattern.search(text) for pattern in CREDIT_AUTHORS]
+    if all(authors):
+        line = text.count("\n", 0, min(match.start() for match in authors)) + 1
+        raise ReleaseNotesError("%s line %d has the inspiration credit: remove it from release notes."
+                                % (name, line))
     lines = text.splitlines()
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -186,8 +193,6 @@ def main(argv=None):
     except ReleaseNotesError as exc:
         print("release_notes: %s" % exc, file=sys.stderr)
         return 1
-    if CREDIT not in body:
-        body = body.rstrip("\n") + "\n\n" + CREDIT + "\n"
     # UTF-8 whatever the locale: the notes hold en dashes, arrows and µ.
     sys.stdout.flush()
     sys.stdout.buffer.write(body.encode("utf-8"))

@@ -19,6 +19,8 @@ import _accounts_replay as replay  # noqa: E402
 from myflames import accounts as a, dbops, privileges as p  # noqa: E402
 from myflames.connector import ConnectorError, MySQLConnection  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
+from _reviewed_replay import acknowledged_error
+from _reviewed_replay import evidence_options, answer_evidence
 
 MYSQL_VERSION = '8.4.11'
 MARIADB_VERSION = '11.4.13-MariaDB'
@@ -32,8 +34,18 @@ def actor(engine='mysql', account='admin@localhost', grants=None, variables=None
         'GRANT SYSTEM_USER, ROLE_ADMIN, CONNECTION_ADMIN ON *.* TO admin@localhost WITH GRANT OPTION']
     report = p.parse_grants(grants, engine, MARIADB_VERSION if engine == 'mariadb' else MYSQL_VERSION)
     report.update(account=account, current_roles=list(roles),
-                  variables=variables if variables is not None else {'server_id': '42', 'hostname': 'test-server'})
+                  variables=variables if variables is not None else {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'server_uuid': '11111111-2222-3333-4444-555555555555'})
     return report
+
+
+
+def plan_with_actor(conn, *args, **kwargs):
+    """Supply actor fixtures at the read boundary, never bypass node rechecks."""
+    supplied = kwargs.pop('actor', None)
+    if supplied is None:
+        return a.plan_change(conn, *args, **kwargs)
+    with mock.patch.object(p, 'read_privileges', return_value=supplied):
+        return a.plan_change(conn, *args, **kwargs)
 
 
 def catalog_replay(conn, server):
@@ -66,8 +78,24 @@ class FakeConn(object):
     def is_mariadb(self):
         return self.engine == 'mariadb'
 
+    def evidence_identity(self):
+        from _reviewed_replay import UUID
+        values = {'server_id': '42', 'hostname': 'test-server', 'port': '3306', 'version': self.version}
+        if self.engine == 'mysql':
+            values['server_uuid'] = UUID
+        values.update(getattr(self, 'evidence_values', {}))
+        return values
+
+    @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
+        evidence = answer_evidence(sql, extra_flags, timeout,
+                                   lambda body, flags, limit: self.run(body, extra_flags=flags, timeout=limit),
+                                   self.evidence_identity())
+        if evidence is not None:
+            return evidence
         self.calls.append((sql, extra_flags))
+        if sql == 'SELECT @@version':
+            return self.version + '\n'
         assert sql.startswith(a.TAG), sql
         assert extra_flags == ['--comments'], extra_flags
         body = sql[len(a.TAG):]
@@ -138,7 +166,7 @@ class AccountsTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def plan(self, op, **kw):
-        return a.plan_change(self.conn, op, self.conn.name, self.conn.account_host, **kw)
+        return plan_with_actor(self.conn, op, self.conn.name, self.conn.account_host, **kw)
 
     def apply(self, plan, **kw):
         return a.apply(self.conn, plan, plan['expect'], store=self.store, confirmed=True, **kw)
@@ -185,12 +213,17 @@ class AccountsTest(unittest.TestCase):
                 now, timeouts = [0.0], []
                 original = conn.run
 
+                @evidence_options
                 def run(sql, extra_flags=None, timeout=None):
                     if any(sql == a.TAG + 'SHOW GRANTS FOR ' + role(n) for n in ('a', 'b', 'c')):
                         timeouts.append(timeout)
                         now[0] += min(3, timeout) if timeout is not None else 3
                         if timeout is not None and timeout < 3:
-                            raise ConnectorError('Query timed out')
+                            # The prefix completed before the server stopped
+                            # this role read at its remaining query budget.
+                            # A lost transport would refuse the whole scope.
+                            code = 3024 if engine == 'mysql' else 1969
+                            raise ConnectorError('ERROR %d: Query timed out' % code)
                     return original(sql, extra_flags, timeout)
 
                 with mock.patch.object(conn, 'run', side_effect=run), \
@@ -231,11 +264,21 @@ class AccountsTest(unittest.TestCase):
         self.assertTrue(any('print_identified_with_as_hex = ON' in sql for sql, _ in conn.calls))
 
     def test_read_errors_are_sanitized_and_missing_accounts_detected(self):
-        self.conn.run = mock.Mock(side_effect=ConnectorError("ERROR 1227 IDENTIFIED BY '*HASH'"))
+        original = self.conn.run
+        error = ["ERROR 1227 IDENTIFIED BY '*HASH'"]
+        @evidence_options
+        def run(sql, extra_flags=None, timeout=None):
+            evidence = answer_evidence(sql, extra_flags, timeout, run, self.conn.evidence_identity())
+            if evidence is not None:
+                return evidence
+            if sql.startswith(a.TAG + 'SHOW GRANTS FOR '):
+                raise ConnectorError(error[0])
+            return original(sql, extra_flags, timeout)
+        self.conn.run = run
         with self.assertRaisesRegex(ConnectorError, '1227') as cm:
             a.read_account(self.conn, 'app')
         self.assertNotIn('HASH', str(cm.exception))
-        self.conn.run.side_effect = ConnectorError('ERROR 1141 (42000): There is no such grant')
+        error[0] = 'ERROR 1141 (42000): There is no such grant'
         self.assertFalse(a.read_account(self.conn, 'app')['exists'])
 
     def test_attributes_from_every_show_create_user_row(self):
@@ -680,7 +723,7 @@ class AccountsTest(unittest.TestCase):
                 # not independently mark this role as protected.
                 self.conn.role_grants[child] = ['GRANT UPDATE ON `mysql`.* TO ' + child]
                 active = actor(engine, roles=[{'name': 'parent', 'host': host}])
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['protected'])
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.assertIsNone(plan['guards']['after_management']['account_options'])
@@ -693,11 +736,11 @@ class AccountsTest(unittest.TestCase):
                 self.conn.role_grants[parent].append('GRANT ' + other + ' TO ' + parent)
                 self.conn.role_grants[other] = ['GRANT USAGE ON *.* TO ' + other,
                                                'GRANT ' + child + ' TO ' + other]
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 # An independent grant, however, preserves administration.
                 self.conn.role_grants[other].append('GRANT UPDATE ON `mysql`.* TO ' + other)
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['self_lockout'])
                 self.assertTrue(plan['guards']['after_management']['account_options'])
                 self.assertEqual(plan['guards']['typed_name'], '')
@@ -708,17 +751,17 @@ class AccountsTest(unittest.TestCase):
                 self.conn.role_grants[child] = ['GRANT USAGE ON *.* TO ' + child,
                                                'GRANT ' + leaf + ' TO ' + child]
                 self.conn.role_grants[leaf] = ['GRANT UPDATE ON `mysql`.* TO ' + leaf]
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.conn.role_grants[other].append('GRANT ' + leaf + ' TO ' + other)
-                plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertFalse(plan['guards']['self_lockout'])
                 # Dropping the active root cuts off all of those paths.
-                plan = a.plan_change(self.conn, 'drop', 'parent', role=True, actor=active)
+                plan = plan_with_actor(self.conn, 'drop', 'parent', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 # Failure to read the actor cannot prove the role harmless.
                 with mock.patch.object(a, '_revocation_snapshot', return_value=None):
-                    plan = a.plan_change(self.conn, 'drop', 'child', role=True, actor=active)
+                    plan = plan_with_actor(self.conn, 'drop', 'child', role=True, actor=active)
                 self.assertTrue(plan['guards']['self_lockout'])
                 self.assertIsNone(plan['guards']['after_management']['account_options'])
 
@@ -752,7 +795,7 @@ class AccountsTest(unittest.TestCase):
                                        roles=[{'name': 'r', 'host': host}] if from_role else [])
                         name = 'r' if from_role else 'admin'
                         target_host = '%' if from_role else 'localhost'
-                        plan = a.plan_change(self.conn, 'revoke', name, target_host, role=from_role,
+                        plan = plan_with_actor(self.conn, 'revoke', name, target_host, role=from_role,
                                              actor=active, privileges=[bypass])
                         self.assertEqual(plan['guards']['self_lockout'], read_only == 'ON')
                         self.assertIs(plan['guards']['after_management']['account_options'], read_only == 'OFF')
@@ -763,7 +806,7 @@ class AccountsTest(unittest.TestCase):
                             self.conn.grants.append('GRANT ' + role + ' TO admin@localhost')
                             self.conn.role_grants[role] = ['GRANT ' + alternate + ' ON *.* TO ' + role]
                             active['current_roles'] = [{'name': 'r', 'host': host}]
-                        plan = a.plan_change(self.conn, 'revoke', name, target_host, role=from_role,
+                        plan = plan_with_actor(self.conn, 'revoke', name, target_host, role=from_role,
                                              actor=active, privileges=[bypass])
                         self.assertFalse(plan['guards']['self_lockout'])
                         self.assertTrue(plan['guards']['after_management']['account_options'])
@@ -814,16 +857,16 @@ class AccountsTest(unittest.TestCase):
             self.conn.role_grants[child] = ['GRANT CREATE USER, UPDATE ON *.* TO ' + child]
             active = actor(engine, roles=[{'name': 'r', 'host': host}])
             # Revoking r's direct CREATE USER preserves its child's grant.
-            plan = a.plan_change(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
+            plan = plan_with_actor(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
             self.assertFalse(plan['guards']['self_lockout'])
             self.assertTrue(plan['guards']['after_management']['create_user'])
             # The only remaining admin path is through the nested child.
             self.conn.role_grants[r][0] = 'GRANT USAGE ON *.* TO ' + r
-            plan = a.plan_change(self.conn, 'revoke', 'child', role=True, actor=active, privileges=['CREATE USER'])
+            plan = plan_with_actor(self.conn, 'revoke', 'child', role=True, actor=active, privileges=['CREATE USER'])
             self.assertTrue(plan['guards']['self_lockout'])
             self.assertIsNone(plan['guards']['after_management']['create_user'])
             # It is equally destructive to remove the child edge from r.
-            plan = a.plan_change(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
+            plan = plan_with_actor(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
                                  roles=[{'name': 'child', 'host': '%'}])
             self.assertTrue(plan['guards']['self_lockout'])
             self.assertIsNone(plan['guards']['after_management']['create_user'])
@@ -833,7 +876,7 @@ class AccountsTest(unittest.TestCase):
             self.conn.role_grants[r].append('GRANT ' + other + ' TO ' + r)
             self.conn.role_grants[other] = ['GRANT USAGE ON *.* TO ' + other,
                                            'GRANT ' + child + ' TO ' + other]
-            plan = a.plan_change(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
+            plan = plan_with_actor(self.conn, 'roles', 'r', role=True, actor=active, mode='revoke',
                                  roles=[{'name': 'child', 'host': '%'}])
             self.assertFalse(plan['guards']['self_lockout'])
             self.assertTrue(plan['guards']['after_management']['create_user'])
@@ -844,11 +887,11 @@ class AccountsTest(unittest.TestCase):
         public = 'GRANT CREATE USER, UPDATE ON *.* TO PUBLIC'
         self.conn.role_grants['PUBLIC'] = [public]
         active = actor('mariadb', grants=self.conn.grants + [public])
-        plan = a.plan_change(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
         self.assertTrue(plan['guards']['self_lockout'])
         self.assertIsNone(plan['guards']['after_management']['create_user'])
         self.conn.grants.append('GRANT CREATE USER ON *.* TO admin@localhost')
-        plan = a.plan_change(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'PUBLIC', role=True, actor=active, privileges=['CREATE USER'])
         self.assertFalse(plan['guards']['self_lockout'])
         self.assertTrue(plan['guards']['after_management']['create_user'])
         # PUBLIC can also preserve administration when a direct grant is lost.
@@ -863,7 +906,7 @@ class AccountsTest(unittest.TestCase):
         self.conn.role_grants['`r`@`%`'] = ['GRANT CREATE USER ON *.* TO `r`@`%`']
         self.conn.role_grants['`other`@`%`'] = ['GRANT CREATE USER ON *.* TO `other`@`%`']
         active = actor(roles=[{'name': 'r', 'host': '%'}, {'name': 'other', 'host': '%'}])
-        plan = a.plan_change(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
+        plan = plan_with_actor(self.conn, 'revoke', 'r', role=True, actor=active, privileges=['CREATE USER'])
         self.assertFalse(plan['guards']['self_lockout'])
         self.conn.role_grants['`other`@`%`'] = ['GRANT USAGE ON *.* TO `other`@`%`']
         # Protected roles already require their own name, so assert the fresh
@@ -995,6 +1038,95 @@ class AccountsTest(unittest.TestCase):
             self.assertEqual(self.apply(plan)['status'], 'refused')
         self.assertEqual(self.conn.stdin, [])
 
+    def test_before_send_refusal_is_audited_and_sends_nothing(self):
+        plan = self.plan('lock')
+        result = self.apply(plan, before_send=lambda: 'The connection group changed; nothing was sent.')
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertIn('connection group', result['message'])
+        self.assertEqual(self.conn.stdin, [])
+        self.assertEqual([s['status'] for s in result['statements']], ['not_sent'])
+        (record,) = self.store.audit_records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_before_send_ok_applies(self):
+        plan = self.plan('lock')
+        result = self.apply(plan, before_send=lambda: None)
+        self.assertEqual(result['status'], 'applied')
+
+    def test_nothing_sent_skips_the_post_write_readback(self):
+        # A server refusal on statement 0 sent nothing; a failing readback
+        # afterwards must not replace the refusal with an unknown verdict.
+        plan = self.plan('lock')
+        self.conn.broken = False
+
+        def refuse(sql, extra_flags=None, timeout=None):
+            self.conn.broken = True
+            raise acknowledged_error(ConnectorError(
+                'mysql client exited 1: ERROR 1227 (42000) at line 2: '
+                'Access denied; you need the SUPER privilege'), sql)
+        self.conn.run_stdin = refuse
+        real_run = self.conn.run
+
+        def run(sql, **kwargs):
+            if self.conn.broken:
+                raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): Cannot connect')
+            return real_run(sql, **kwargs)
+        self.conn.run = run
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'denied')
+        self.assertEqual(result['sent'], [])
+        self.assertEqual(result['after'], {})
+        self.assertEqual(result['diff'], {})
+        self.assertIn('Access denied', result['message'])
+        self.assertNotIn('unknown', result['status'])
+        (record,) = self.store.audit_records()
+        self.assertEqual((record['status'], record['outcome']), ('error', 'denied'))
+
+    def test_consent_refusal_at_statement_zero_keeps_its_verdict(self):
+        from myflames.connection_groups import ProfileReadError
+        plan = self.plan('lock')
+        self.conn.broken = False
+
+        def refuse(sql, extra_flags=None, timeout=None):
+            self.conn.broken = True
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        self.conn.run_stdin = refuse
+        real_run = self.conn.run
+
+        def run(sql, **kwargs):
+            if self.conn.broken:
+                raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): Cannot connect')
+            return real_run(sql, **kwargs)
+        self.conn.run = run
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertEqual(result['sent'], [])
+        self.assertIn('outside the current connection group', result['message'])
+        self.assertNotIn('The statements were sent', result['message'])
+
+    def test_consent_loss_mid_apply_stops_at_the_next_statement(self):
+        from myflames.connection_groups import ProfileReadError
+        self.conn = FakeConn('mariadb', exists=False)
+        plan = self.plan('create', password='s3cret')
+        calls = []
+
+        def execute(sql, extra_flags=None, timeout=None):
+            calls.append(sql)
+            if len(calls) == 1:
+                self.conn.exists = True
+                return ''
+            raise ProfileReadError('This saved connection is outside the current connection group.')
+        self.conn.run_stdin = execute
+        result = self.apply(plan)
+        self.assertEqual(len(calls), 2, 'the second statement is refused at the client boundary')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertEqual([s['status'] for s in result['statements']], ['ok', 'not_sent', 'not_sent'])
+        outcomes = [r['outcome'] for r in self.store.audit_records()]
+        self.assertEqual(sorted(outcomes), ['changed', 'sent'])
+
     def test_apply_success_diff_audit_single_use(self):
         plan = self.plan('grant', privileges=['PROCESS'])
 
@@ -1035,9 +1167,12 @@ class AccountsTest(unittest.TestCase):
     def test_safe_server_messages_are_kept(self):
         self.conn = FakeConn('mysql')
         plan = self.plan('drop')
-        self.conn.run_stdin = mock.Mock(side_effect=ConnectorError(
-            "mysql client exited 1: ERROR 4006 (HY000) at line 1: Operation DROP USER failed for 'app'@'%' as it is "
-            "referenced as a definer account in a view."))
+        error = ConnectorError(
+            "mysql client exited 1: ERROR 4006 (HY000) at line 2: Operation DROP USER failed for 'app'@'%' as it is "
+            "referenced as a definer account in a view.")
+        def refuse(sql, **kwargs):
+            raise acknowledged_error(error, sql)
+        self.conn.run_stdin = refuse
         result = self.apply(plan)
         self.assertEqual(result['status'], 'refused_by_server')
         self.assertIn('referenced as a definer', result['message'])
@@ -1076,6 +1211,51 @@ class AccountsTest(unittest.TestCase):
             self.assertEqual(result['generated_password'], generated)
             self.assertNotIn(generated, json.dumps(self.store.audit_records()))
             self.assertIsNone(plan._generated)
+
+    def test_mariadb_generated_create_password_survives_a_later_packet_refusal(self):
+        # Use the real planner, executor, guard classification and redaction.
+        # Only the SQL connection's server answers are synthetic.
+        for code, outcome in ((1242, 'identity_mismatch'), (1142, 'denied')):
+            for refused_index in (0, 1, 2):
+                with self.subTest(code=code, refused_index=refused_index):
+                    self.conn = FakeConn('mariadb', exists=False)
+                    plan = self.plan('create', random_password=True)
+                    generated = plan._generated
+                    calls = []
+
+                    def execute(sql, extra_flags=None, timeout=None):
+                        calls.append(sql)
+                        if len(calls) - 1 == refused_index:
+                            error = ConnectorError('mysql client exited 1: ERROR %d (42000) at line 2: '
+                                                   'The identity check refused this login' % code)
+                            raise acknowledged_error(error, sql) if code != 1242 else error
+                        if len(calls) == 1:
+                            self.conn.exists, self.conn.locked = True, True
+                        elif len(calls) == 2:
+                            self.assertIn('SET PASSWORD FOR', sql)
+                            self.assertIn(generated, sql)
+                        return ''
+
+                    self.conn.run_stdin = execute
+                    result = self.apply(plan)
+                    self.assertEqual(len(calls), refused_index + 1)
+                    self.assertEqual(result['status'], ('refused' if code == 1242 else 'denied')
+                                     if refused_index == 0 else 'partial')
+                    self.assertEqual(result.get('outcome'), outcome if code == 1242 else None)
+                    self.assertEqual([s['status'] for s in result['statements']],
+                                     ['ok'] * refused_index + ['not_sent' if code == 1242 else 'denied'] +
+                                     ['not_sent'] * (2 - refused_index))
+                    if refused_index == 2:
+                        self.assertEqual(result['generated_password'], generated)
+                    else:
+                        self.assertNotIn('generated_password', result)
+                    self.assertNotIn(generated, json.dumps(self.store.audit_records()))
+                    self.assertNotIn(generated, json.dumps(plan))
+                    self.assertIsNone(plan._generated)
+                    self.assertFalse(plan._passwords)
+                    self.assertFalse(plan._statements)
+                    with self.assertRaises(ValueError):
+                        self.apply(plan)
 
     def test_timeout_is_unknown_and_audit_failure_sends_nothing(self):
         plan = self.plan('lock')
@@ -1158,8 +1338,75 @@ class AccountsTest(unittest.TestCase):
         self.assertNotEqual(data['env'].get('HOME'), os.environ.get('HOME'))
         self.assertIn('NO_BACKSLASH_ESCAPES', data['stdin'])
         statements = dbops.split_statements(data['stdin'], backslash_escapes=False)
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 6)
+        self.assertEqual(statements[2]['text'], 'SET SESSION sql_mode = @@SESSION.sql_mode')
+        self.assertEqual(statements[3]['text'], dbops.client_status_probe('$$', False)[0])
         self.assertFalse(any('DROP USER' in s['code'] for s in statements))
+
+    def test_stale_quote_status_stops_at_probe_before_any_password_bytes(self):
+        """A client whose quote-status reply stays stale splits the probe at its
+        embedded delimiter and stops before sending any password SQL."""
+        for password in ("slash\\'; DROP USER victim; -- ", "slash$$\\'; DROP USER victim; -- "):
+            expected_delim = '//' if '$$' in password else '$$'
+            for engine in ('mysql', 'mariadb'):
+                with self.subTest(engine=engine, expected_delim=expected_delim):
+                    self.conn = FakeConn(engine)
+                    plan = self.plan('password', password=password)
+                    reviewed = plan['statements'][0]
+                    self.assertIn(dbops.CLIENT_STATUS_SYNC + ';\n' +
+                                  dbops.client_status_probe(expected_delim, False)[0], reviewed)
+                    seen_scripts = []
+                    def stale_client(script, extra_flags=None, timeout=None):
+                        from client_addline_oracle import client_packets
+                        seen_scripts.append(script)
+                        # Model a client that ignores SERVER_STATUS_NO_BACKSLASH_ESCAPES
+                        # from Packet 0, splits Packet 1 at expected_delim, and stops on ERROR 1064.
+                        self.assertTrue(script.startswith('DELIMITER ' + expected_delim + '\n'))
+                        packets, residual, _ = client_packets(
+                            script, engine, delimiter=';', append_delimiter=False, backslash_escapes=True)
+                        self.assertEqual(residual, '')
+                        sync_idx = script.index(dbops.CLIENT_STATUS_SYNC)
+                        probe_idx = script.index('AS mf_probe')
+                        acct_kw = 'SET PASSWORD FOR' if engine == 'mariadb' else 'ALTER USER'
+                        acct_idx = script.index(acct_kw)
+                        self.assertLess(sync_idx, probe_idx)
+                        self.assertLess(probe_idx, acct_idx)
+                        self.assertIn("SELECT '\\''", packets[1])
+                        err = ConnectorError('mysql client exited 1: ERROR 1064 (42000) at line %d: '
+                                             'You have an error in your SQL syntax' %
+                                             (script[:script.index(packets[1])].count('\n') + 1))
+                        err.guard_markers = (dbops.target_script_markers(script)[0],)
+                        raise err
+                    self.conn.run_stdin = stale_client
+                    result = self.apply(plan)
+                    self.assertEqual(len(seen_scripts), 1)
+                    self.assertEqual(result['status'], 'refused')
+                    self.assertIn("The client's quote status could not be confirmed. Nothing was sent.", result['message'])
+                    self.assertEqual(result['sent'], [])
+                    self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+
+    def test_wrong_or_missing_probe_reply_reports_unknown_outcome(self):
+        # The client finished the script without an error, so the account
+        # packet after the probe was sent: never report "Nothing was sent".
+        password = "x\\'; DROP USER victim; --"
+        for reply in ('', 'wrong\n'):
+            with self.subTest(reply=reply):
+                self.conn = FakeConn('mysql')
+                plan = self.plan('password', password=password)
+                self.conn.run_stdin = mock.Mock(return_value=reply)
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'unknown')
+                self.assertIn("could not be confirmed after the account statement was sent", result['message'])
+                self.assertNotIn("Nothing was sent", result['message'])
+                self.assertEqual(self.store.audit_records()[-1]['status'], 'unknown')
+
+    def test_probe_row_is_stripped_without_hiding_random_password_row(self):
+        self.conn = FakeConn('mysql', name='admin', host='localhost')
+        plan = self.plan('password', random_password=True, current_password="cur\\'$$")
+        self.conn.run_stdin = mock.Mock(return_value="\\\\'//\nadmin\tlocalhost\tserver-gen-PW\t1\n")
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'applied')
+        self.assertEqual(result['generated_password'], 'server-gen-PW')
 
     def test_transport_errors_never_echo_credentials(self):
         conn = MySQLConnection('127.0.0.1', password='connection-secret', binary='/fake/mysql')
@@ -1307,6 +1554,7 @@ class GrantEditorTest(unittest.TestCase):
 
     def test_catalog_unreadable_falls_back_and_keeps_held_scopes(self):
         original = self.conn.run
+        @evidence_options
         def run(sql, **kwargs):
             if sql in (a.TAG + 'SHOW PRIVILEGES', a.TAG + 'SHOW DATABASES'):
                 raise ConnectorError('ERROR 1227: secret-password')
@@ -1360,6 +1608,7 @@ class GrantEditorTest(unittest.TestCase):
 
     def test_scope_objects_bound_and_quoted_schema(self):
         calls = []
+        @evidence_options
         def run(sql, **kwargs):
             calls.append(sql)
             if 'information_schema.TABLES' in sql:
@@ -1376,6 +1625,7 @@ class GrantEditorTest(unittest.TestCase):
             a.scope_objects(self.conn, 'information_schema')
 
     def test_scope_objects_partial_failure_and_functions(self):
+        @evidence_options
         def run(sql, **kwargs):
             if 'information_schema.TABLES' in sql:
                 raise ConnectorError('secret-credential')

@@ -186,6 +186,33 @@ export const clientTools = (connection?: Connection, refresh = false, signal?: A
  * path answers 400 with a plain sentence. */
 export const chooseClientTools = (engine: ClientToolsEngine, path: string | null, connection?: Connection) =>
   api<ClientTools>("client/tools/choose", { engine, path, ...(connection ? { connection } : {}) });
+
+// ---- Managed MySQL Shell (Settings > Client tools > MySQL Shell) ----------
+// managed-shell-status-1.0 (docs/DEVELOPER_REFERENCE.md): the backend's
+// managed_shell module downloads the pinned Oracle MySQL Shell into
+// myflames's data folder on request; nothing is redistributed by myflames.
+export type ShellJobState = "downloading" | "verifying" | "installing" | "done" | "failed" | "cancelled";
+export type ManagedShellJob = {
+  id: string; state: ShellJobState; version: string;
+  received: number; total: number; elapsed_s: number; error: string | null;
+  /** A failed/cancelled worker is still removing files; install rejoins it. */
+  cleaning: boolean;
+};
+export type ManagedShellStatus = {
+  schema_version: "managed-shell-status-1.0";
+  supported: boolean;
+  unsupported_reason: string | null;
+  platform: string | null;
+  pinned: { version: string; size: number; license: string; license_url: string; downloads_url: string } | null;
+  installed: { path: string; version: string; origin: string; origin_label: string } | null;
+  job: ManagedShellJob | null;
+};
+/** Read-only status of the managed MySQL Shell; never starts a download. */
+export const shellStatus = () => api<ManagedShellStatus>("client/shell/status", {});
+/** Start (or rejoin) the single download flight; a refusal answers 400. */
+export const shellInstall = () => api<ManagedShellStatus>("client/shell/install", {});
+/** Stop the running download; the id must be the running job's. */
+export const shellCancel = (id: string) => api<ManagedShellStatus>("client/shell/cancel", { id });
 // Capture and erase the fragment as soon as this module loads. It is never
 // written to storage, the DOM, a request URL, or the saved workspace.
 let launchSecret = "";
@@ -205,15 +232,28 @@ function captureLaunchSecret() {
   if (window.location.hash) window.history.replaceState(null, "", window.location.pathname + window.location.search);
 }
 captureLaunchSecret();
+/** The server's overload refusal (ui.py `_refuse_request`): a 503 written
+ * before the request is read, so the launch secret never reached the server
+ * and the attempt may be retried like one that got no answer. */
+class OverloadRefusal extends Error {
+  constructor() {
+    super("The server is busy. Open the launch URL printed by myflames ui to try again.");
+  }
+}
 export function authenticate(): Promise<string> {
   captureLaunchSecret();
   if (!authentication) {
     const body = JSON.stringify(launchSecret ? { secret: launchSecret } : {});
-    launchSecret = "";
-    authentication = fetch("/api/auth/session", {
+    const attempt = () => fetch("/api/auth/session", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": sessionProof() }, body,
     }).then(async response => {
+      // The overload refusal (ui.py _refuse_request) is written before the
+      // request is read: the secret never reached the server, so a 503 does
+      // not spend it and the attempt is retried like one without an answer.
+      if (response.status === 503) throw new OverloadRefusal();
+      // Any other answer means the launch secret reached the server: it is spent.
+      launchSecret = "";
       const result = await response.json();
       if (!response.ok || typeof result.token !== "string" || !result.token)
         throw new ApiError(result.error || "Open the launch URL printed by myflames ui.", response.status, result);
@@ -222,6 +262,34 @@ export function authenticate(): Promise<string> {
       try { window.localStorage.setItem(SESSION_PROOF, result.token); }
       catch { /* This tab still works when browser storage is unavailable. */ }
       return result.token;
+    });
+    // Retry only a failure that left the launch secret unread: fetch rejects
+    // with TypeError when the server was still starting, restarting, or reset
+    // the connection before reading the request, and the overload refusal is
+    // a 503 the server writes before reading the request. Any other HTTP
+    // answer spends the secret. The promise stays uncached after such a
+    // failure so a later call tries again; a refusal (an ApiError) is final
+    // and stays cached, failing every call the same way.
+    let unanswered = false;
+    const pending: Promise<string> = (async () => {
+      let lastError: unknown;
+      for (let tries = 0; tries < 3; tries++) {
+        try {
+          return await attempt();
+        } catch (error) {
+          if (!(error instanceof TypeError || error instanceof OverloadRefusal)) throw error;
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      unanswered = true;
+      throw lastError;
+    })();
+    authentication = pending;
+    // Leave the promise uncached when every attempt failed without an answer,
+    // so a later call tries again.
+    pending.catch(() => {
+      if (unanswered && authentication === pending) authentication = null;
     });
   }
   return authentication;
@@ -382,6 +450,9 @@ export type Connection = {
   ssh_port?: number;
   /** Topology discovery consent group ("" or absent means no group). */
   group?: string;
+  /** Set on a Group connection (POST /api/connect): the connection group this
+   * connection is the active member of. Part of the connection's identity. */
+  group_name?: string;
 };
 /** Production asks before every write; Development only before risky ones. */
 export type ConnectionType = "production" | "development";
@@ -423,6 +494,111 @@ export type ConnectionGroup = {
   join: ConnectionGroupJoin[];
   suggested_name?: string;
 };
+
+// ---- Group connections (POST /api/connect, /api/profiles/groups/*) -----------
+// A connection group opened as one Group connection (ui._connect_response):
+// the reply is the active member's connection/test discovery plus
+// group_connection. Live member facts are read for the other members only on
+// an explicit open or Refresh (probe_members: true).
+
+/** The safety a group member or a whole Group connection is judged by. */
+export type GroupSafety = { type: ConnectionType; read_only: boolean };
+export type GroupConnectionMember = {
+  profile_id: string;
+  profile_name: string;
+  host: string;
+  port: number;
+  safety: GroupSafety;
+  /** Live facts; null when the member was not probed or could not be read. */
+  server_uuid: string | null;
+  role: string | null;
+  state: string | null;
+  reachable: boolean | null;
+};
+export type GroupConnection = {
+  group_name: string;
+  /** The strictest member type (the backend computes it); read_only is the active member's own. */
+  effective_safety: GroupSafety;
+  active_member_profile_id: string;
+  primary_profile_id: string | null;
+  members: GroupConnectionMember[];
+};
+/** POST /api/connect: the active member's discovery plus group_connection. */
+export type GroupConnectResult = {
+  version: string;
+  engine?: string;
+  flavor?: string;
+  product?: string;
+  schemas?: string[];
+  databases?: string[];
+  databases_truncated?: boolean;
+  databases_error?: string;
+  through_ssh?: string;
+  group_connection: GroupConnection;
+};
+/** Open a connection group as one Group connection. probe (an explicit open
+ * or Refresh) logs in to the other members; without it only the active
+ * member is read. */
+export function openConnectionGroup(
+  name: string,
+  options: { activeMember?: string; probe?: boolean } = {},
+  signal?: AbortSignal,
+) {
+  return api<GroupConnectResult>("connect", {
+    group_name: name,
+    ...(options.activeMember ? { active_member_profile_id: options.activeMember } : {}),
+    ...(options.probe ? { probe_members: true } : {}),
+  }, signal);
+}
+/** One connection group, as connection_groups.list_groups reports it. */
+export type ProfileGroup = {
+  name: string;
+  profile_ids: string[];
+  count: number;
+  /** The strictest member type: any Production member makes it production. */
+  type: ConnectionType;
+  /** True only when every member is read-only. */
+  read_only: boolean;
+};
+export type GroupSaveResult = {
+  group: string;
+  name: string;
+  profile_ids: string[];
+  updated: string[];
+  groups: ProfileGroup[];
+  /** The whole saved-connections list after the edit (never a password). */
+  profiles: Profile[];
+};
+/** Create or edit one connection group (rename with previousName); the saved
+ * connections of members that leave the group stay. */
+export function saveConnectionGroup(name: string, profileIds: string[], previousName?: string, signal?: AbortSignal) {
+  return api<GroupSaveResult>("profiles/groups/save", {
+    name,
+    profile_ids: profileIds,
+    ...(previousName ? { previous_name: previousName } : {}),
+  }, signal);
+}
+/** Delete one connection group; its saved connections stay. */
+export function deleteConnectionGroup(name: string) {
+  return api<{ deleted: boolean; group: string; name: string; updated: string[]; groups: ProfileGroup[]; profiles: Profile[] }>(
+    "profiles/groups/delete", { name });
+}
+/** The groups of a saved-connections list, as connection_groups.list_groups
+ * computes them (the picker lists groups beside saved connections). */
+export function profileGroups(profiles: Pick<Profile, "id" | "group" | "type" | "read_only">[]): ProfileGroup[] {
+  const byName = new Map<string, ProfileGroup>();
+  for (const p of profiles) {
+    const name = (p.group || "").trim();
+    if (!name) continue;
+    let group = byName.get(name);
+    if (!group) byName.set(name, (group = { name, profile_ids: [], count: 0, type: "development", read_only: true }));
+    group.profile_ids.push(p.id);
+    group.count += 1;
+    if (p.type !== "development") group.type = "production";
+    if (p.read_only !== true) group.read_only = false;
+  }
+  return [...byName.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name));
+}
 
 // ---- Audit trail of server writes (dbops.py, /api/audit/*) ------------------
 
