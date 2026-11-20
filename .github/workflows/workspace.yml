@@ -1,0 +1,140 @@
+name: Workspace suites
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    name: suites (${{ matrix.shard }}/6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      PUPPETEER_CACHE_DIR: ${{ github.workspace }}/local/puppeteer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/workspace/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Set suite Python
+        run: python3 -c 'import sys; print("PYTHON=" + sys.executable)' >> "$GITHUB_ENV"
+      - name: Read Puppeteer version
+        id: puppeteer
+        run: node -e "console.log('version=' + require('./apps/workspace/package-lock.json').packages['node_modules/puppeteer'].version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.PUPPETEER_CACHE_DIR }}
+          key: puppeteer-${{ runner.os }}-${{ runner.arch }}-${{ steps.puppeteer.outputs.version }}
+      - name: Install workspace dependencies
+        working-directory: apps/workspace
+        run: npm ci
+      # Ubuntu 24.04's AppArmor restriction blocks the unprivileged user
+      # namespaces Chrome's sandbox needs. Allow them on this disposable
+      # runner so suites can launch Chrome with its sandbox enabled. Never on a
+      # self-hosted runner, where the setting would outlive the job.
+      - name: Allow Chrome sandbox
+        if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Suites that check hover-only controls assert the touch behavior when
+      # the browser has no hover-capable pointer; print what this runner has.
+      - name: Report the browser's pointer
+        working-directory: apps/workspace
+        run: >-
+          node --input-type=module -e "import p from 'puppeteer';
+          const b = await p.launch({ headless: 'shell' }); const page = await b.newPage();
+          console.log('hover:', await page.evaluate(() => matchMedia('(hover: hover)').matches),
+          'fine pointer:', await page.evaluate(() => matchMedia('(pointer: fine)').matches)); await b.close();"
+      - name: Run workspace suites
+        working-directory: apps/workspace
+        # Fixed waits in several suites fail under parallel load on 4-vCPU runners (measured locally).
+        run: |
+          npm run test:suites -- --jobs 1 --retries 1 --shard ${{ matrix.shard }}/6 \
+            --receipt "${{ github.workspace }}/local/workspace-suites/shard-${{ matrix.shard }}.json" \
+            --log-dir "${{ github.workspace }}/local/workspace-suites/logs-${{ matrix.shard }}"
+      - name: Detect flaky suites
+        id: receipt
+        if: always()
+        env:
+          RECEIPT_PATH: local/workspace-suites/shard-${{ matrix.shard }}.json
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          let receipt;
+          try {
+            receipt = JSON.parse(fs.readFileSync(process.env.RECEIPT_PATH, 'utf8'));
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+          const flaky = Array.isArray(receipt?.suites) && receipt.suites.some(suite => suite?.status === 'flaky');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `flaky=${flaky}\n`);
+          NODE
+      - uses: actions/upload-artifact@v7
+        name: Upload suite receipt
+        if: always()
+        with:
+          name: workspace-suites-receipt-${{ matrix.shard }}
+          path: local/workspace-suites/shard-${{ matrix.shard }}.json
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        name: Upload suite logs
+        if: failure() || steps.receipt.outputs.flaky == 'true'
+        with:
+          name: workspace-suites-logs-${{ matrix.shard }}
+          path: local/workspace-suites/logs-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: ignore
+
+  suites:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Test receipt accounting
+        run: node --test scripts/check_workspace_receipts.test.mjs
+      - uses: actions/download-artifact@v7
+        name: Download every shard receipt
+        with:
+          pattern: workspace-suites-receipt-*
+          path: local/workspace-suite-receipts
+      - name: Prove complete suite coverage
+        if: always()
+        # The checker also appends flaky suite names and shards to the run summary.
+        run: node scripts/check_workspace_receipts.mjs local/workspace-suite-receipts
+      - name: Require every shard to succeed
+        if: always()
+        env:
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "Workspace shards finished with: $SHARD_RESULT"
+            exit 1
+          fi

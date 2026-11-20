@@ -9,6 +9,7 @@
     "dev": "vite build --watch",
     "docs:screenshots": "node test/readme-screenshots.mjs",
     "docs:howtos": "node test/howto-recordings.mjs",
+    "test:suites": "node ../../scripts/run_workspace_suites.mjs",
     "test:review-auth": "npm run build && node test/review-auth.mjs",
     "test:accounts-all": "npm run build && node test/accounts-all-grants.mjs",
     "test:auth": "npm run build && node test/auth.mjs",

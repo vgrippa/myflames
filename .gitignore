@@ -42,3 +42,7 @@ build/
 
 # Screenshots written by the Files browser suites (files-browser.mjs, files-connections.mjs).
 apps/workspace/test/shots-*/
+
+# Scratch folders report.mjs and perf-budgets-regressions.mjs create beside themselves.
+apps/workspace/test/.report-unit-*/
+apps/workspace/test/.perf-budget-test-*/

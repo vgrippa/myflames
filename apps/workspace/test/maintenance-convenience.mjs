@@ -136,10 +136,15 @@ try {
  // The Contents choice Structure only is named in the summary and sent in the plan request.
  await page.locator(`${view} .dump-group[data-group=contents] .checkbox ::-p-text(Structure only)`).click();
  assert.match(await h.text(`${view} .ops-dump-options > summary`),/4 threads · Structure only \(no rows\) · Gzip, level 7/);
- await page.locator(`${view} .ops-actions button ::-p-text(Start dump)`).click();
+ // Both tool reads above use state.fallback; no installed client tools select this plan.
+ // Center the actual button so font-dependent form height cannot put its text under a fixed bar.
+ const startDump=`${view} .ops-actions button.primary`;
+ await page.$eval(startDump,e=>e.scrollIntoView({block:'center',behavior:'instant'}));
+ const preparedResponse=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/lifecycle/prepare');
+ await page.locator(startDump).click();
+ await preparedResponse;
  await page.waitForFunction(()=>!document.querySelector('select[aria-label="Tool"]')?.disabled);
  assert.equal(await page.$eval('.ops-actions .privilege-status-note',e=>getComputedStyle(e).display),'none');
- for(let i=0;i<100&&!state.other.some(r=>r.path==='/api/lifecycle/prepare');i++)await new Promise(r=>setTimeout(r,25));
  assert.deepEqual(state.other.find(r=>r.path==='/api/lifecycle/prepare').body.options,{compression:'gzip',compression_level:7,structure_only:true});
  if(await page.$('.detail-back'))await page.click('.detail-back');
  // Wait for the preflight to finish before changing its disabled form.

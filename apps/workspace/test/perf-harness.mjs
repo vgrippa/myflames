@@ -50,7 +50,12 @@ export const privilegeAnswer = (state, need = "CONNECTION_ADMIN or SUPER", extra
   grey_out: state === "denied", available: true, ...extra,
 });
 export async function assertPrivilege(page, selector, state, need, { unverifiedBadge = false } = {}) {
-  await page.waitForFunction((s, expected) => document.querySelector(s)?.dataset.privilegeState === expected, {}, selector, state);
+  // Wait for the state and aria-disabled together: a dialog can still hold its
+  // action disabled while it re-checks the target (slower CI runners).
+  await page.waitForFunction((s, expected) => {
+    const element = document.querySelector(s);
+    return element?.dataset.privilegeState === expected && element.getAttribute("aria-disabled") === String(expected === "denied");
+  }, {}, selector, state);
   const actual = await page.$eval(selector, e => ({ disabled: e.disabled, aria: e.getAttribute("aria-disabled"), title: e.title,
     described: (e.getAttribute("aria-describedby") || "").split(" ").map(id => document.getElementById(id)?.textContent || "").join(" "),
     unverified: !!e.querySelector(".privilege-unverified") }));

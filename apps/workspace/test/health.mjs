@@ -885,14 +885,19 @@ try {
   await page.waitForFunction(() => /Since the baseline/.test(document.querySelector(".view-inspector")?.textContent || ""));
   assert.match(await h.inspector(), /Before deployWarming: 17% full, about 8 min 13 s to full at this rate · WarmingNowFull, 0\.2 MiB\/s read from disk · OK/);
   await page.click(".detail-back");
-  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  // Back restores focus asynchronously and can scroll the list after it renders.
+  await page.waitForFunction(() => !document.querySelector(".view-inspector") && document.activeElement?.matches("[data-row-key]"));
   // A restart since the baseline (uptime 30 s): tiles built from counters are
   // not compared; gauges and diagnostics still are.
   const restarted = structuredClone(changed);
   restarted.taken_at = "2026-10-14T16:40:25.574713+00:00";
   restarted.uptime_s = 30;
   state.queue.push({ status: 200, body: fromServer(restarted) });
+  // Keep Refresh clear of the sticky app bar after Back restored the list scroll.
+  await page.$eval(`${view} [data-action=refresh]`, (e) => e.scrollIntoView({ block: "center", behavior: "instant" }));
+  const restartedResponse = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/health");
   await h.refresh();
+  assert.equal((await (await restartedResponse).json()).uptime_s, restarted.uptime_s, "Refresh receives the queued restart reading");
   await page.waitForFunction((t) => /Not compared/.test(document.querySelector(t)?.textContent || ""), {}, `${tile("questions")} .tile-compare`);
   assert.equal(await page.$eval(`${tile("questions")} .baseline-not-compared`, (e) => e.title), "Not compared: the server restarted since");
   assert.equal(await text(`${tile("threads_running")} .tile-compare`), "was 2 threads");

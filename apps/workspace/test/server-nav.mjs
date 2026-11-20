@@ -64,7 +64,10 @@ try {
   assert.equal(await page.$('.place-toolbar [data-action="refresh-all"]'), null,
     "only the view's Refresh is visible before a wider read");
   await openRefreshMenu(page);
-  assert.match(await text('.view-refresh-menu'), /Refresh every view on .+ \(⌥⌘R\).*18 sections/s,
+  const mac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent));
+  assert.match(await text('.view-refresh-menu'), mac
+    ? /Refresh every view on .+ \(⌥⌘R\).*18 sections/s
+    : /Refresh every view on .+ \(Ctrl\+Alt\+R\).*18 sections/s,
     "the secondary action names its connection, shortcut and scope");
   assert.equal(await page.$eval('.view-refresh-menu [data-action="refresh-all"]', e => e.getAttribute('role')), 'menuitem');
   assert.equal(live().length, beforeRefreshMenu, "opening Refresh options reads nothing");
