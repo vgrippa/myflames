@@ -585,6 +585,9 @@ class EditorStatusO3ProcessTests(unittest.TestCase):
         self.assertNotIn("Nothing was sent", message, result)
         self.assertIn("Earlier statements were sent; this statement and later statements were not sent.",
                       message, result)
+        # The session's own end message (status and later replies) agrees.
+        self.assertNotIn("Nothing was sent", session.end_message or "")
+        self.assertIn("Earlier statements were sent", session.end_message or "")
         packets = [p[2] for p in self.packets()]
         self.assertFalse(any(LAB_TEXT in p for p in packets), packets)
 
