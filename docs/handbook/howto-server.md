@@ -99,6 +99,8 @@ Use this before removing an index that looks unused or redundant: hide it, watch
 4. Review the ALTER TABLE statement and confirm.
 5. After a few days of normal traffic, return to the same menu: choose **Set visible…** or **Set not ignored…** to restore the index, or **Drop index…** to remove it.
 
+![Open Server > Indexes, choose Unused, select the k_country_created candidate, click Set invisible… in the inspector, and review ALTER TABLE `mfshop`.`customers` ALTER INDEX `k_country_created` INVISIBLE in the sheet.](../screenshots/howto-hide-index.gif)
+
 What you see: the optimizer stops considering the index in query plans while writes still maintain it, so plans change without losing the index.
 
 Good to know:
