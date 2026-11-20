@@ -38,6 +38,7 @@ const server = spawn(process.env.PYTHON || 'python3', ['-c',
 let browser;
 const readinessRequests = [], imports = [], saves = [], diagnostics = [], failed = [], httpErrors = [];
 let offline = false;
+let holdWorkbenchImport = false, releaseWorkbenchImport;
 try {
   const url = await new Promise((resolve, reject) => {
     let output = '';
@@ -74,10 +75,16 @@ try {
     if (route === '/api/connections/import') {
       imports.push(body);
       if (body.tool === 'dbeaver') return respond(body.choose ? { found: true, cancelled: false, items: [{ ...imported, name: 'DBeaver MariaDB', host: 'maria.internal' }] } : { found: false, cancelled: false, items: [] });
-      return respond({ found: true, cancelled: false, items: [
+      const preview = { found: true, cancelled: false, items: [
         { ...imported, name: 'Primary' },
         { name: 'Endpoint duplicate', host: 'db.example', port: 3306, user: 'reader', database: '' }, imported, hostile,
-      ] });
+      ] };
+      if (holdWorkbenchImport) {
+        holdWorkbenchImport = false;
+        releaseWorkbenchImport = () => respond(preview);
+        return;
+      }
+      return respond(preview);
     }
     if (route === '/api/profiles/save') saves.push(body);
     // Every other server access is explicitly refused, including background
@@ -116,6 +123,41 @@ try {
   await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('Synthetic offline check') && document.querySelector(selector)?.textContent.includes('stale'), {}, `${connectionRow('Primary')} [data-col=server]`);
   assert.match(await page.$eval(`${connectionRow('Primary')} [data-col=server]`, e => e.textContent), /MySQL 8.4.3/);
   offline = false;
+  // Keep the first read pending while a queued source change supersedes it.
+  holdWorkbenchImport = true;
+  const importRequest = tool => request => new URL(request.url()).pathname === '/api/connections/import'
+    && JSON.parse(request.postData() || '{}').tool === tool;
+  const workbenchStarted = page.waitForRequest(importRequest('workbench'));
+  await menu();
+  await workbenchStarted;
+  assert.equal(typeof releaseWorkbenchImport, 'function');
+  const importPicker = 'dialog.connection-import-sheet select[aria-label="Import from"]';
+  assert.equal(await page.$eval(importPicker, e => e.disabled), true);
+  const stalePreview = await page.evaluateHandle(() => {
+    const status = document.querySelector('dialog.connection-import-sheet [role="status"]');
+    const result = { shown: false };
+    const observer = new MutationObserver(() => { if (status.textContent.includes('connections found')) result.shown = true; });
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+    return { result, observer };
+  });
+  const dbeaverResponse = page.waitForResponse(response => importRequest('dbeaver')(response.request()));
+  // page.select dispatches the queued change even though loading disables the picker.
+  await page.select(importPicker, 'dbeaver');
+  await dbeaverResponse;
+  await page.waitForFunction(() => document.querySelector('dialog.connection-import-sheet')?.textContent.includes('Default file not found'));
+  await page.waitForSelector(`${importPicker}:not(:disabled)`);
+  const workbenchResponse = page.waitForResponse(response => importRequest('workbench')(response.request()));
+  await releaseWorkbenchImport();
+  await (await workbenchResponse).json();
+  await page.waitForNetworkIdle();
+  assert.match(await page.$eval('dialog.connection-import-sheet', e => e.textContent), /Default file not found/);
+  assert.equal(await page.$eval(importPicker, e => e.value), 'dbeaver');
+  assert.equal(await page.$eval(importPicker, e => e.disabled), false);
+  assert.doesNotMatch(await page.$eval('dialog.connection-import-sheet', e => e.textContent), /connections found/);
+  assert.equal(await stalePreview.evaluate(({ result, observer }) => { observer.disconnect(); return result.shown; }), false, 'the held Workbench preview never appears');
+  await stalePreview.dispose();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('dialog.connection-import-sheet'));
   for (const theme of ['light', 'dark']) {
     await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }]);
     for (const width of [1440, 720]) {

@@ -198,6 +198,7 @@ assert 'IDENTIFIED' not in f['export']['text']
           return void respond(data);
         }
         if (pathname === "/api/accounts/export") return void respond(fixture.export);
+        if (request.method() === "GET" && /^\/assets\/[^/]+\.woff2$/.test(pathname)) return void request.continue();
         errors.push(`Unexpected request: ${pathname}`); void request.abort();
       });
       await page.setViewport({ width: 1440, height: 1000 });

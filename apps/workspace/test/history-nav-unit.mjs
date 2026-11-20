@@ -214,8 +214,11 @@ test("reveal targets the full name past page 200, reports absence and ignores an
 test("editor history restores only existing tab IDs and never reveals another connection's object", () => {
   const editor = source("QueryLab.tsx");
   const property = find(editor, (n) => ts.isPropertyAssignment(n) && n.name.getText() === "restoreNavigation");
+  const tabConnections = { q1: { host: "B" }, q2: { host: "B" } };
   const ctx = {
     tabs: [{ id: "q1" }, { id: "q2" }], tabId: "q1", connection: { host: "B" }, narrow: false,
+    // Supply each tab's resolved connection without mounting the editor's refs.
+    currentTabConnection: (id) => tabConnections[id] || ctx.connection,
     connectionKey: (c) => c.host, browserRevealSerial: { current: 0 },
     setTabId: (id) => { ctx.selected = id; },
     setBrowserReveal: (value) => { ctx.reveal = value; },
@@ -230,6 +233,11 @@ test("editor history restores only existing tab IDs and never reveals another co
   const first = ctx.reveal.n;
   restore({ tabId: "q1", reveal: null });
   restore(restored); assert.equal(ctx.reveal.n, first + 1, "a repeated target after clearing still makes a fresh reveal request");
+  tabConnections.q2 = { host: "A" };
+  restored = restore({ tabId: "q2", reveal: { connection: "B", schema: "shop", table: "orders" } });
+  assert.equal(ctx.selected, "q2");
+  assert.equal(ctx.reveal, null, "a reveal matching the workspace still cannot reveal another connection's object in this tab");
+  assert.equal(restored.reveal, null);
 });
 
 test("a lazy object destination records only its settled tab and connection switches cancel the wait", () => {

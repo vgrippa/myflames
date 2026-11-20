@@ -173,7 +173,12 @@ try {
   const failedRequests = [];
   const badResponses = [];
   page.on("console", (m) => { if (["error", "warn"].includes(m.type())) consoleMessages.push(m.text()); });
-  page.on("requestfailed", (r) => failedRequests.push(new URL(r.url()).pathname));
+  page.on("requestfailed", (r) => {
+    const pathname = new URL(r.url()).pathname, reason = r.failure()?.errorText || "";
+    // The completion's parameter-name read is cancelled by its AbortSignal when the page reloads or the editor unmounts.
+    if (pathname === "/api/config/versions/names" && reason === "net::ERR_ABORTED") return;
+    failedRequests.push(`${pathname} ${reason}`.trim());
+  });
   page.on("response", (r) => { if (r.status() >= 400) badResponses.push([new URL(r.url()).pathname, r.status()]); });
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setRequestInterception(true);
@@ -423,7 +428,8 @@ try {
   await page.select(DATABASE, "shop");
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("This tab is still connected to A"));
   assert.equal(calls("/api/editor/use").length, usesBeforeMismatch, "database change cannot target the old server");
-  assert.equal(await page.$eval(DATABASE, (e) => e.value), "app");
+  // During a connection mismatch the picker shows the database Run will use once the session closes: the toolbar connection's (B, shop), as 3.5.0 decided (QueryLab.tsx databaseShown reads statusSession). The refused choice changed nothing: no USE was sent (line 425) and the feedback names A.
+  assert.equal(await page.$eval(DATABASE, (e) => e.value), "shop", "during a mismatch the picker shows the toolbar connection's database");
   await chooseConnection(page, A);
   await page.select(DATABASE, "");
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("a new session starts with none"));

@@ -6,6 +6,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ## [Unreleased]
 
+### Bug fixes
+
+- Fixed an issue where choosing another source in **Import connections** right after opening it could leave the sheet loading, with the **Import from** picker disabled.
+
 ### Security fixes
 
 - Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.
