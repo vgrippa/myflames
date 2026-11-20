@@ -95,7 +95,7 @@
     "test:import-csv": "npm run build && node test/import-csv.mjs",
     "test:import-csv-unit": "node test/import-csv-unit.mjs",
     "test:home-workspace": "npm run build && node test/home-workspace.mjs",
-    "test:update-check": "npm run build && node test/update-check.mjs",
+    "test:update-check": "node test/release-notes-unit.mjs && npm run build && node test/update-check.mjs",
     "test:update-install": "npm run build && node test/update-install.mjs",
     "test:client-tools": "npm run build && node test/client-tools.mjs",
     "test:news": "npm run build && node test/news.mjs",

@@ -750,6 +750,28 @@ macOS update through the Host-checked feed, and an older signed build staged
 as 3.3.99 was refused by `ElectronSquirrelPreventDowngrades` ("The update is
 older than this copy of myflames, so it was not installed.").
 
+The dialog renders the release notes (GitHub's release body, carried unchanged
+in `release_notes`) as formatted text with `ReleaseNotes`
+(`apps/workspace/src/releaseNotes.tsx`). `parseReleaseNotes` scans line by line
+in linear time (CRLF normalized, no regular expression with nested quantifiers)
+and understands a subset of Markdown: `#` to `######` headings (one or two `#`
+draw as h3, deeper as h4, under the dialog's h2 title), `-` / `*` / `+` and
+`1.` lists where an indented line continues the current item and a blank line
+never splits the list, fenced code blocks (``` lines) kept as is, and
+paragraphs (consecutive lines joined with a space); `---` and `***` alone on a
+line drop out. Inline it reads `**bold**` and `__bold__` as strong, `` `code` ``
+as code, and `*em*` and `_em_` as em only when the markers enclose non-space
+text, plus backslash escapes (`\*`, `\_`, `` \` ``, `\\`); `[text](url)`
+renders `text` only (no anchor and no href: the dialog's **View on GitHub**
+link is the way to the page), bare URLs stay plain text, and unclosed markers
+render literally. Every string reaches the DOM as a React text child: no
+dangerouslySetInnerHTML, no innerHTML, and no href, src or style built from the
+notes, so HTML in the notes (for example `<img src=x onerror=alert(1)>` or
+`<script>`) shows as literal text. Input is capped at 100,000 characters; past
+it the dialog renders up to the cap and ends with the paragraph "The rest of
+the notes is on GitHub." Tests: `apps/workspace/test/release-notes-unit.mjs`
+and `apps/workspace/test/update-check.mjs`.
+
 Every HTTPS read (the release check and download, `tool_updates._fetch`, and
 Home news) takes its context from `myflames/tls.py` `https_context()`: the
 standard library's default context, with certificate and host name checks on.
