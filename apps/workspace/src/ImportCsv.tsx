@@ -499,7 +499,7 @@ export function ImportCsv({ session, currentKey, show, onRunning, onEnd }: {
       finishLocal(p, { kind: "refused", message, auditId: record?.audit_id || null });
     };
     try {
-      if (policy) checked = await policy.check();
+      if (policy) checked = await policy.check(conn);
     } catch (e) {
       await refuse("policy_unknown", `The saved connections could not be read (${errorText(e)}). Nothing was sent.`);
       return;

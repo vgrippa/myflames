@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mariadb",
+ "flavor": "mariadb",
+ "server_product": "MariaDB",
  "server_version": "11.8.9-MariaDB-ubu2404-log",
  "version_comment": "mariadb.org binary distribution",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -78,10 +80,76 @@
    },
    "actions": [
     {
+     "schema_version": "cluster-action-1.1",
+     "id": "desync_node",
+     "label": "Desync this node…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": false,
+     "description": "Takes this node out of flow control (wsrep_desync = ON), for example for a backup.",
+     "member_key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "member_name": "galera-3",
+     "member_uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "This node is not Synced with wsrep_desync OFF.",
+     "fix": "Wait for the node to become Synced and confirm wsrep_desync is OFF, then Refresh.",
+     "target": {
+      "self": true,
+      "member_name": "galera-3"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
+     "id": "resync_node",
+     "label": "Resync this node…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
+     "danger": false,
+     "description": "Puts this node back in flow control (wsrep_desync = OFF).",
+     "member_key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "member_name": "galera-3",
+     "member_uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "cluster_name": null,
+     "enabled": false,
+     "why_not": "wsrep_desync is not ON on this node.",
+     "fix": "Resync only a node desynced with wsrep_desync; let a state transfer or backup finish on its own.",
+     "target": {
+      "self": true,
+      "member_name": "galera-3"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
+    },
+    {
+     "schema_version": "cluster-action-1.1",
      "id": "bootstrap_pc",
      "label": "Bootstrap a Primary component…",
+     "scope": "member",
+     "kind": "risky",
+     "via": "sql",
      "danger": true,
-     "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes."
+     "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes.",
+     "member_key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "member_name": "galera-3",
+     "member_uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+     "cluster_name": null,
+     "enabled": true,
+     "why_not": null,
+     "fix": null,
+     "target": {
+      "self": true,
+      "member_name": "galera-3"
+     },
+     "missing_privileges": [],
+     "grant_sql": null,
+     "privileges_unreadable": false
     }
    ]
   }
@@ -154,5 +222,13 @@
   "mysql.wsrep_cluster_members is written only for a Primary component, so on this node it lists the last Primary view; the members shown come from wsrep_incoming_addresses.",
   "wsrep_incoming_addresses reports port 0 for galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH GLOBAL STATUS) or since start."
- ]
+ ],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": "mf_galera"
+ },
+ "actions": []
 }

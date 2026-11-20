@@ -88,6 +88,16 @@ CLUSTERSET_SQL = ("/*myflames:cluster*/ SELECT m.clusterset_id, m.cluster_id, m.
                   "m.invalidated, s.domain_name FROM mysql_innodb_cluster_metadata.v2_cs_members m JOIN "
                   "mysql_innodb_cluster_metadata.v2_cs_clustersets s ON s.clusterset_id = m.clusterset_id")
 
+# Synthetic catalog inputs, not part of the historical live captures. Keep
+# their admin behavior explicit while privilege-denial tests supply their own
+# grants. ALL expands only static privileges, so dynamic grants are separate.
+ADMIN_GRANTS = [
+    "GRANT ALL PRIVILEGES ON *.* TO `mf_admin`@`localhost` WITH GRANT OPTION",
+    "GRANT CLONE_ADMIN, CONNECTION_ADMIN, GROUP_REPLICATION_ADMIN, PERSIST_RO_VARIABLES_ADMIN, "
+    "REPLICATION_APPLIER, REPLICATION_SLAVE_ADMIN, ROLE_ADMIN, SYSTEM_VARIABLES_ADMIN, "
+    "TRANSACTION_GTID_TAG ON *.* TO `mf_admin`@`localhost` WITH GRANT OPTION",
+]
+
 
 def _with_clusterset_answer(calls):
     if any(c[0] == CLUSTERSET_SQL for c in calls) or \
@@ -102,10 +112,35 @@ def recorded(name, edit=None):
     data = load(name)
     from myflames import topology_links as tl
     # Explicit synthetic denial: these captures predate local client footprints.
-    calls = _with_clusterset_answer(data["calls"]) + [
+    # The catalog now reads optional bootstrap/GC variables in the same
+    # preflight. Adapt only the SELECT list in older captures, preserving
+    # their answers (absence is unknown, never a fabricated OFF value).
+    from myflames.cluster import EXTRA_VARIABLES
+    from myflames.perf_common import PREFLIGHT_VARIABLES
+    preflight_sql = "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ", ".join(
+        "'%s'" % n for n in sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES)))
+    calls = [[preflight_sql if c[0].startswith("/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE") else c[0]] + c[1:]
+             for c in data["calls"]]
+    if "mariadb" in _version(data).lower():
+        # Older captures omit server_id. Supply a marked synthetic read value
+        # without altering their public report or the archived recording.
+        calls = [[c[0], set_pairs(c[1], {"server_id": "1"})] + c[2:]
+                 if c[0] == preflight_sql else c for c in calls]
+    from _grants_fixtures import grants_batch
+    from myflames import dbops
+    calls = _with_clusterset_answer(calls) + [
         [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
-        [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, '']]
-    return ReplayConn(calls, edit=edit, version=_version(data)), data
+        [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, ''],
+        ["/*myflames:cluster*/ SELECT USER(), CURRENT_USER() LIMIT 1", batch([["mf_admin@client", "mf_admin@localhost"]])],
+        ["/*myflames:cluster*/ SHOW GRANTS", batch([[line] for line in ADMIN_GRANTS])],
+        [dbops._grants_read_sql("/*myflames:cluster*/ "), grants_batch(ADMIN_GRANTS, version=_version(data))]]
+    def replay_edit(sql, text, n):
+        # Topology edits target recorded two-column variables/status rows.
+        # The framed catalog reply is synthetic and must retain its markers.
+        if edit is None or "myflames_grants_begin" in sql:
+            return text
+        return edit(sql, text, n)
+    return ReplayConn(calls, edit=replay_edit, version=_version(data)), data
 
 
 # ---- editing recorded answers --------------------------------------------------
@@ -343,7 +378,7 @@ SERVER_UUIDS = ["11111111-1111-11f0-8a00-0242ac130002", "22222222-2222-11f0-8a00
 
 def _mariadb_vars(**extra):
     out = {"version": "11.8.9-MariaDB-ubu2404-log", "version_comment": "mariadb.org binary distribution",
-           "performance_schema": "OFF", "hostname": "galera-1", "port": "3306", "wsrep_on": "OFF",
+           "performance_schema": "OFF", "hostname": "galera-1", "port": "3306", "server_id": "1", "wsrep_on": "OFF",
            "wsrep_provider": "none", "wsrep_cluster_name": "my_wsrep_cluster", "wsrep_cluster_address": "",
            "wsrep_node_name": "galera-1", "wsrep_node_address": "", "wsrep_node_incoming_address": "AUTO",
            "wsrep_desync": "OFF"}
@@ -556,6 +591,12 @@ def _clusterset(rows, extra=None):
     scenario = _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)], version=(2, 2, 0),
                    instances=instances)
     scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = rows
+    # ClusterSet metadata contains every cluster's group identity, even
+    # though this connection can observe live GR state only in its group.
+    cluster_rows = scenario["tables"]["mysql_innodb_cluster_metadata.v2_gr_clusters"]
+    for index, row in enumerate(rows):
+        if not any(cluster[0] == row[1] for cluster in cluster_rows):
+            cluster_rows.append([row[1], row[2], "pm", "22222222-3333-4444-5555-%012d" % index])
     if extra:
         scenario["extra"] = extra
     return scenario
@@ -564,6 +605,23 @@ def _clusterset(rows, extra=None):
 _CS_CHANNEL_ON = {"performance_schema.replication_connection_status": [["ON", "0", ""]],
                   "performance_schema.replication_applier_status": [["ON"]],
                   "performance_schema.replication_connection_configuration": [["mf-main-1", "3306"]]}
+
+
+def _read_replica_clusterset():
+    """Connected to a read replica of the ClusterSet's primary cluster: no
+    group, its replicated copy of the metadata, the channel running."""
+    instances = _instances(read_replica=RR_UUID) + _cs_instances("cid-2", "mf-dr", 30)
+    scenario = _ic([], [], version=(2, 2, 0), instances=instances,
+                   variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1", report_host="mf-rr-1",
+                                         group_replication_group_name=None,
+                                         group_replication_single_primary_mode=None,
+                                         group_replication_local_address=None,
+                                         group_replication_group_seeds=None))
+    scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = _cs(("cid-1", "mfcluster", "PRIMARY", False),
+                                                                            ("cid-2", "drcluster", "REPLICA", False))
+    scenario["extra"] = {"performance_schema.replication_connection_status": [["ON", "0", ""]],
+                         "performance_schema.replication_applier_status": [["ON"]]}
+    return scenario
 
 SCENARIOS.update({
     "ic-8.4-clusterset-primary": _clusterset(_cs(("cid-1", "mfcluster", "PRIMARY", False),
@@ -582,6 +640,12 @@ SCENARIOS.update({
     # This cluster itself invalidated, in its own copy of the metadata.
     "ic-8.4-clusterset-local-invalidated": _clusterset(
         _cs(("cid-0", "maincluster", "PRIMARY", False), ("cid-1", "mfcluster", "REPLICA", True)), _CS_CHANNEL_ON),
+    # Connected to a read replica of the ClusterSet's primary cluster (the
+    # ic-8.4-read-replica-local shape: no Group Replication plugin, the
+    # read_replica_replication channel running): the ClusterSet read comes
+    # from its replicated copy of the metadata (cluster.py _read_read_replica).
+    # Read replicas in a ClusterSet are a metadata 2.2.0 shape, on 8.0 and 8.4.
+    "ic-8.4-read-replica-clusterset": _read_replica_clusterset(),
 })
 
 
@@ -595,6 +659,13 @@ class ScenarioConn(object):
 
     def _answer(self, body):
         sc = self.scenario
+        if body.startswith("SELECT 'myflames_grants_begin'"):
+            from _grants_fixtures import grants_batch
+            return grants_batch(ADMIN_GRANTS, version=self.version)
+        if body == "SELECT USER(), CURRENT_USER() LIMIT 1":
+            return batch([["mf_admin@client", "mf_admin@localhost"]])
+        if body == "SHOW GRANTS":
+            return batch([[line] for line in ADMIN_GRANTS])
         if body.startswith("SHOW GLOBAL VARIABLES WHERE Variable_name IN"):
             names = [n.strip().strip("'") for n in body.split("(", 1)[1].rstrip(")").split(",")]
             return batch([[n, sc["variables"][n]] for n in names if n in sc["variables"]])

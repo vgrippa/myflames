@@ -1,6 +1,8 @@
 {
  "schema_version": "cluster-1.0",
  "engine": "mysql",
+ "flavor": "mysql",
+ "server_product": "MySQL",
  "server_version": "8.4.11-11.1",
  "version_comment": "MySQL Community Server - GPL, wsrep_26.22",
  "captured_at": "2026-10-20T14:40:00+00:00",
@@ -180,5 +182,13 @@
   "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH STATUS) or since start.",
   "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to inspect it."
- ]
+ ],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": "mf_pxc"
+ },
+ "actions": []
 }

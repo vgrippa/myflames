@@ -2982,3 +2982,49 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
 }
 /* Reduced motion: the spinners stand still (style.css stops every animation);
    the present-tense label and the seconds still say that it is working. */
+
+/* A Group connection: the Server: control and the member's name, address and
+   role in a single-server view's header (GroupServerPicker.tsx, provided
+   through ViewServerContext). Wraps under the title in a narrow toolbar. */
+.view-title {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.group-server {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.group-server-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.group-server-label {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.group-server-segmented {
+  flex-wrap: wrap;
+}
+.group-server-select {
+  max-width: 300px;
+}
+.view-server-name {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* A removed member moved this place's views to the primary or source. */
+.group-server-note {
+  color: var(--warn-text);
+  font-size: var(--text-sm);
+  flex-basis: 100%;
+}

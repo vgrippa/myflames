@@ -10,12 +10,17 @@ import {
   authenticate,
   download,
   exportedAnalysis,
+  openConnectionGroup,
   searchObjects,
   type Analysis,
   type Bundle,
   type Capture,
   type CatalogObject,
   type Comparison,
+  type GroupConnection,
+  type GroupSaveResult,
+  type Connection,
+  type Profile,
   type Plan,
   type PlanReportRequest,
   type TopStatement,
@@ -55,7 +60,11 @@ import {
   requestConnection,
   recordConnectionUse,
   type ActiveConnection,
+  type Safety,
 } from "./Connections";
+import { groupConnectionLabel } from "./binding";
+import { unavailableMemberConnection } from "./queryConnection";
+const GroupEditorSheet = lazyComponent(() => import("./GroupEditorSheet").then((m) => m.GroupEditorSheet));
 import type { DigestAction } from "./SlowQueries";
 import type { SettingsSection } from "./SettingsPage";
 import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
@@ -240,6 +249,18 @@ function restoreCapture(original: Capture, analyzed: Capture): Capture {
 }
 const message = (e: unknown) =>
   e instanceof Error ? e.message : "Could not complete the operation.";
+/** Group type follows every current saved member; read-only belongs to the
+ * member being used. A failed list read or changed endpoint stays conservative
+ * through connectionSafety, just like a plain saved connection. */
+function currentGroupSafety(active: ActiveConnection, group: GroupConnection, profiles: Profile[] | null): Safety {
+  const safety = connectionSafety(active, profiles);
+  const members = profiles?.filter((p) => (p.group || "").trim() === group.group_name);
+  return {
+    ...safety,
+    type: safety.endpointMatches && members?.length && members.every((p) => p.type === "development")
+      ? "development" : "production",
+  };
+}
 function App() {
   // Width mode and expansion change together. Separate media listeners in
   // the shell and Sidebar could briefly turn the desktop sidebar into an
@@ -466,6 +487,8 @@ function App() {
   // each change made here and when the window comes back.
   const savedList = useSavedConnections(false);
   const profiles = savedList.items;
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
   // The type of a saved connection is known once the list has loaded, and
   // not known again while the latest read of it failed.
   const profilesLoaded = savedList.loaded;
@@ -532,10 +555,26 @@ function App() {
       `${name ? `The saved connection “${name}”` : "The saved connection in use"} was deleted. Its settings are kept as an unsaved connection.`,
     );
   }, [ready, profiles, profilesLoaded, profilesFailed, patchLab]);
-  function applyConnection(id: string, fields: SessionConnection, password: string) {
+  // A Group connection (a connection group opened as one connection, POST
+  // /api/connect): its members, their probed state, and the
+  // active member. In-memory only; a reload restores the active member as a
+  // plain connection.
+  const [groupConnection, setGroupConnection] = useState<GroupConnection | null>(null);
+  // The group open in the group editor sheet (picker, status bar).
+  const [groupEditor, setGroupEditor] = useState<string | null>(null);
+  const [groupRevision, setGroupRevision] = useState(0);
+  // Any explicit connection choice invalidates an older group probe.
+  const connectionChoice = useRef(0);
+  function applyConnection(id: string, fields: SessionConnection, password: string, group: GroupConnection | null = null) {
+    connectionChoice.current += 1;
+    if (!group) {
+      setMemberByPlace({});
+      setMemberNote("");
+    }
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });
     setActivePassword(password);
+    setGroupConnection(group);
     // Use connection is an explicit credential choice, including when Home
     // supplies a new password for the same endpoint. Reconnect is not.
     setPasswordRevision(value => value + 1);
@@ -544,6 +583,114 @@ function App() {
   function switchConnection(id: string) {
     const p = profiles.find((item) => item.id === id);
     if (p) applyConnection(p.id, connectionFields(p), "");
+  }
+  /** Open a connection group as one Group connection (an explicit open or
+   * Refresh probes the other members). Starts on the member the backend
+   * picks (the primary or source) unless *activeMember* names one. */
+  async function openGroup(name: string, options: { activeMember?: string; probe?: boolean } = {}) {
+    const choice = ++connectionChoice.current;
+    const probe = options.probe !== false;
+    setConnectionNote("");
+    try {
+      const result = await openConnectionGroup(name, { activeMember: options.activeMember, probe });
+      if (choice !== connectionChoice.current) return;
+      const gc = result.group_connection;
+      if (groupActiveRef.current?.group_name !== gc.group_name) {
+        setMemberByPlace({});
+        setMemberNote("");
+      }
+      const member = gc.members.find((m) => m.profile_id === gc.active_member_profile_id);
+      const profile = profilesRef.current.find((p) => p.id === gc.active_member_profile_id);
+      const fields = profile
+        ? connectionFields(profile)
+        : connectionFields(member ? { name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only } : {});
+      applyConnection(gc.active_member_profile_id, fields, "", gc);
+      setConnectionNote(
+        `${groupConnectionLabel(gc.group_name, gc.members.length)}: ${member?.profile_name || gc.active_member_profile_id} is the active member.`,
+      );
+    } catch (e) {
+      if (choice !== connectionChoice.current) return;
+      setConnectionNote(`Could not open group ${name}: ${(e as Error).message}`);
+    }
+  }
+  /** After a group edit: refresh the saved connections and move an active
+   * Group connection (rename, or the active member leaving the group). */
+  async function groupSaved(result: GroupSaveResult, previousName: string) {
+    const current = groupActiveRef.current;
+    const choice = current?.group_name === previousName ? ++connectionChoice.current : connectionChoice.current;
+    const fresh = await refreshProfiles().catch(() => null);
+    if (!current || current.group_name !== previousName || choice !== connectionChoice.current) return;
+    try {
+      const stillMember = result.profile_ids.includes(labStateRef.current.profile_id);
+      const reopened = await openConnectionGroup(result.name, {
+        activeMember: stillMember ? labStateRef.current.profile_id : undefined,
+        probe: false,
+      });
+      const gc = reopened.group_connection;
+      if (choice !== connectionChoice.current) return;
+      const member = gc.members.find((m) => m.profile_id === gc.active_member_profile_id);
+      const profile = (fresh || profilesRef.current).find((p) => p.id === gc.active_member_profile_id);
+      const fields = profile
+        ? connectionFields(profile)
+        : connectionFields(member ? { name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only } : {});
+      // Editing the group does not discard the active member's session
+      // password, but only while the backend kept the same member active: a
+      // save that moves the Group connection clears it with the member.
+      const password = stillMember && gc.active_member_profile_id === labStateRef.current.profile_id
+        ? activeRef.current.password
+        : "";
+      // A rename keeps the per-place choices; removal is handled below.
+      applyConnection(gc.active_member_profile_id, fields, password, gc);
+      setGroupRevision((revision) => revision + 1);
+      if (!stillMember) {
+        setConnectionNote(`The active member left the group. The Group connection moved to ${member?.profile_name || gc.active_member_profile_id}.`);
+      }
+    } catch (e) {
+      if (choice !== connectionChoice.current) return;
+      // The group is gone or has no member left: the connection in use stays
+      // as the plain member connection.
+      setGroupConnection(null);
+      setConnectionNote(`Group ${result.name} could not be opened again: ${(e as Error).message}`);
+    }
+  }
+  /** After a group delete: its saved connections stay; an active Group
+   * connection becomes the plain member connection. */
+  async function groupDeleted(name: string) {
+    const choice = groupActiveRef.current?.group_name === name ? ++connectionChoice.current : connectionChoice.current;
+    await refreshProfiles().catch(() => {});
+    if (groupActiveRef.current?.group_name !== name || choice !== connectionChoice.current) return;
+    setGroupConnection(null);
+    setMemberByPlace({});
+    setMemberNote("");
+    setConnectionNote(`Group ${name} was deleted. Its saved connections stay; the active member stays in use as a plain connection.`);
+  }
+  // The member each single-server place works on, by place ("server",
+  // "query"): chosen in the place's Server: control, an explicit open of that
+  // member's saved connection. Absent entries mean the primary or source (the
+  // active member the backend picked). Never saved; a reload starts there.
+  const [memberByPlace, setMemberByPlace] = useState<Record<string, string>>({});
+  // A group edit removed a member a place was on: its views moved to the
+  // primary and this note says so until the next explicit choice.
+  const [memberNote, setMemberNote] = useState("");
+  /** The member's saved connection as a request connection (its profile id,
+   * its own endpoint, the group's strictest safety), with the group name so
+   * the backend re-checks membership at every login. Null for a non-member. */
+  function memberRequest(id: string): Connection | null {
+    const group = groupActiveRef.current;
+    const member = group?.members.find((m) => m.profile_id === id);
+    if (!group || !member) return null;
+    // Keep this member's typed password and exact policy when it is active.
+    if (id === activeRef.current.id) return requestRef.current;
+    const profile = profilesRef.current.find((p) => p.id === id);
+    const fields = profile
+      ? connectionFields(profile)
+      : connectionFields({ name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only });
+    const active = { id, fields, password: "" };
+    const c = requestConnection(active, currentGroupSafety(active, group,
+      profilesLoaded && !profilesFailed ? profilesRef.current : null));
+    c.group_name = group.group_name;
+    c.name = `${groupConnectionLabel(group.group_name, group.members.length)} · ${profile?.name || member.profile_name}`;
+    return c;
   }
   function selectOperator(id: string) {
     setStatsIds([]);
@@ -1394,9 +1541,39 @@ function App() {
     fields: labState.connection,
     password: activePassword,
   };
+  // A Group connection stays active while its active member is the connection
+  // in use. Safety follows the current saved profiles, so edits in another
+  // window take effect without reopening or probing the group.
+  const groupActive = groupConnection &&
+    groupConnection.members.some((m) => m.profile_id === labState.profile_id)
+    ? groupConnection
+    : null;
+  const groupActiveRef = useRef(groupActive);
+  groupActiveRef.current = groupActive;
+  // A group edit can remove a member a place was on: that place moves to the
+  // primary or source (the active member the backend picked) and says so.
+  useEffect(() => {
+    if (!groupActive) {
+      setMemberByPlace((prev) => (Object.keys(prev).length ? {} : prev));
+      setMemberNote("");
+      return;
+    }
+    setMemberByPlace((prev) => {
+      const gone = Object.entries(prev).filter(([, id]) => !groupActive.members.some((m) => m.profile_id === id));
+      if (!gone.length) return prev;
+      const next = { ...prev };
+      for (const [place] of gone) delete next[place];
+      const target = groupActive.members.find((m) => m.profile_id === groupActive.active_member_profile_id);
+      const names = gone.map(([, id]) => profiles.find((p) => p.id === id)?.name || id).join(", ");
+      setMemberNote(`${names} ${gone.length === 1 ? "is" : "are"} not in this group any more; its views moved to ${target?.profile_name || groupActive.active_member_profile_id}.`);
+      return next;
+    });
+  }, [groupActive, profiles]);
   // Production, Development or Read-only, as the server will judge the
   // connection in use; part of its identity (binding.ts connectionKey).
-  const safety = connectionSafety(activeConnection, profilesLoaded && !profilesFailed ? profiles : null);
+  const safety: Safety = groupActive
+    ? currentGroupSafety(activeConnection, groupActive, profilesLoaded && !profilesFailed ? profiles : null)
+    : connectionSafety(activeConnection, profilesLoaded && !profilesFailed ? profiles : null);
   const activeRef = useRef(activeConnection);
   activeRef.current = activeConnection;
   // Write actions (Kill) stay off while the policy is unknown, and check it
@@ -1406,24 +1583,102 @@ function App() {
     : profilesFailed
       ? `The settings of this connection could not be read (${profilesFailed}), so changes are off until they load.`
       : "The settings of this connection are still loading.";
-  const checkPolicy = useCallback(async () => {
+  const checkPolicy = useCallback(async (target?: Connection) => {
     const items = await refreshProfiles();
     const active = activeRef.current;
-    return requestConnection(active, connectionSafety(active, items));
+    const asked = target?.group_name ? {
+      id: target.profile_id || "", fields: connectionFields(target), password: target.password || "",
+    } : active;
+    const freshSafety = connectionSafety(asked, items);
+    const checked = requestConnection(asked, freshSafety);
+    const group = groupActiveRef.current;
+    if (target?.group_name && target.group_name !== group?.group_name) {
+      throw new Error("The Group connection changed. Open it again and review the change.");
+    }
+    if (group) {
+      const members = items.filter((p) => (p.group || "").trim() === group.group_name);
+      if (!freshSafety.endpointMatches || !members.some((p) => p.id === asked.id)) {
+        throw new Error("The saved connection changed or left this group. Open the Group connection again.");
+      }
+      // Confirmation must preserve the Group connection's identity and use
+      // its freshly read strictest type. Read-only remains this member's flag.
+      checked.group_name = group.group_name;
+      checked.name = target?.name || groupConnectionLabel(group.group_name, members.length);
+      checked.type = members.some((p) => p.type !== "development") ? "production" : "development";
+    }
+    return checked;
   }, [refreshProfiles]);
   const writePolicy = useMemo(() => ({ blocked: policyBlocked, check: checkPolicy }), [policyBlocked, checkPolicy]);
   const request = useMemo(
-    () =>
-      requestConnection(
+    () => {
+      const c = requestConnection(
         {
           id: labState.profile_id,
           fields: labState.connection,
           password: activePassword,
         },
         { type: safety.type, read_only: safety.read_only, endpointMatches: safety.endpointMatches, known: safety.known },
-      ),
-    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
+      );
+      // A Group connection carries its group name: the backend re-checks the
+      // membership on every request, and the key reloads the views on a change.
+      // Its display name is the group's ("Group connection mf-ic · 3 servers").
+      if (groupActive) {
+        c.group_name = groupActive.group_name;
+        c.name = groupConnectionLabel(groupActive.group_name, groupActive.members.length);
+      }
+      return c;
+    },
+    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive],
   );
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  // The member each single-server place works on: its own choice while it is
+  // a member, else the primary or source the backend made active. A view's
+  // requests carry that member's profile id and the group name; the
+  // connection's safety stays the group's strictest (memberRequest).
+  const memberOf = (place: string) => {
+    if (!groupActive) return "";
+    const chosen = memberByPlace[place];
+    return chosen && groupActive.members.some((m) => m.profile_id === chosen)
+      ? chosen
+      : groupActive.active_member_profile_id;
+  };
+  const serverMemberId = memberOf("server");
+  const queryMemberId = memberOf("query");
+  const serverRequest = useMemo(
+    () => (groupActive && serverMemberId ? memberRequest(serverMemberId) || request : request),
+    [groupActive, serverMemberId, request, profiles],
+  );
+  const serverRequestRef = useRef(serverRequest);
+  serverRequestRef.current = serverRequest;
+  const serverWritePolicy = useMemo(() => ({
+    blocked: policyBlocked,
+    check: async () => {
+      const checked = await checkPolicy(serverRequestRef.current);
+      if (connectionKey(checked) !== connectionKey(serverRequestRef.current)) {
+        throw new Error("The server or its write policy changed. Review the change again.");
+      }
+      return checked;
+    },
+  }), [policyBlocked, checkPolicy]);
+  const queryTab = labState.tabs.find((t) => t.id === labState.tab_id) || labState.tabs[0];
+  const queryRequest = queryTab?.member ? memberRequest(queryTab.member) : request;
+  // An orphaned member tab has no endpoint. Keep the same disconnected key
+  // as QueryLab, rather than borrowing the window's status or grants.
+  const placeRequest = mode === "query" ? queryRequest || unavailableMemberConnection(queryTab.member!, queryTab.member_name)
+    : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest : request;
+  const queryRequestRef = useRef(queryRequest);
+  queryRequestRef.current = queryRequest;
+  const placeConnected = ready && safety.known && !!placeRequest.host;
+  const placeConnectionName = groupActive && placeRequest.profile_id
+    ? profiles.find((p) => p.id === placeRequest.profile_id)?.name
+      || groupActive.members.find((m) => m.profile_id === placeRequest.profile_id)?.profile_name
+      || placeRequest.name || connectionTarget(placeRequest)
+    : placeRequest.name || connectionTarget(placeRequest);
+  const chooseMember = useCallback((place: string, id: string) => {
+    setMemberNote("");
+    setMemberByPlace((current) => (current[place] === id ? current : { ...current, [place]: id }));
+  }, []);
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
   // Navigation history (Back/Forward, the cross-link chip, the palette's
   // Recent views): one entry per settled place or view, in-memory only.
@@ -1747,13 +2002,26 @@ function App() {
   // The write safety of the connection in use, first in the window footer of
   // the places that send to it (Query editor, Server, Workload, Replication, Cluster,
   // Tuning). Unknown (not loaded, or the read failed) is Production assumed.
-  const safetyStatus = ready && connectionPlace ? (
-    <SafetyStatus
-      safety={safety}
-      name={labState.connection.name || connectionTarget(labState.connection)}
-      unknown={profilesFailed || "loading"}
-      onRetry={() => void refreshProfiles().catch(() => {})}
-    />
+  // A Group connection names the group and offers the group editor beside it.
+  const safetyStatus = ready && connectionPlace && !!placeRequest.host ? (
+    <>
+      <SafetyStatus
+        safety={{ ...safety, type: placeRequest.type === "development" ? "development" : "production", read_only: placeRequest.read_only === true }}
+        name={groupActive ? groupConnectionLabel(groupActive.group_name, groupActive.members.length) : labState.connection.name || connectionTarget(labState.connection)}
+        unknown={profilesFailed || "loading"}
+        onRetry={() => void refreshProfiles().catch(() => {})}
+      />
+      {groupActive && (
+        <button
+          type="button"
+          className="button small statusbar-group-edit"
+          data-action="edit-group"
+          onClick={() => setGroupEditor(groupActive.group_name)}
+        >
+          Edit group…
+        </button>
+      )}
+    </>
   ) : null;
   function manageConnections() {
     go("home");
@@ -1780,13 +2048,19 @@ function App() {
   } | null>(null);
   const openServerTable = useCallback((view: "indexes" | "tables", schema: string, table: string, from: string) => {
     const back = linkOrigin();
+    const group = groupActiveRef.current;
+    const member = group?.members.find((m) => {
+      const via = memberRequest(m.profile_id);
+      return via && connectionKey(via) === from;
+    });
+    if (member) chooseMember("server", member.profile_id);
     setServerLink((l) => ({ view, schema, table, from, n: (l?.n || 0) + 1 }));
     setMode("server");
     pendingServerView.current = view;
     finishLink(back);
     setError("");
     setNotice("");
-  }, []);
+  }, [profiles, chooseMember]);
   const openDigest = useCallback(
     (row: TopStatement, rank: number, action: DigestAction, expect?: string) => {
       const back = linkOrigin();
@@ -1836,7 +2110,12 @@ function App() {
       onManage={manageConnections}
       onAdd={newConnection}
       onAccount={() => setAccountOpen(true)}
-      note={connectionNote}
+      onOpenGroup={(name) => void openGroup(name, { probe: true })}
+      onEditGroup={(name) => setGroupEditor(name)}
+      activeGroup={groupActive ? { name: groupActive.group_name, count: groupActive.members.length } : null}
+      note={[connectionNote, mode === "query" && !queryRequest
+        ? "This tab has no open connection. Account and privileges are unavailable."
+        : groupActive ? `Account and privileges shown for ${placeConnectionName}.` : ""].filter(Boolean).join(" ")}
     />
   );
   // Server owns its Refresh all state. Measure its existing action strip so
@@ -1863,8 +2142,8 @@ function App() {
     appear.observe(root, { childList: true, subtree: true });
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
-  const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : (mode === "inspect" ? `plans:${activeId}` : `place:${mode}`);
+  const statusScope = mode === "query" ? `query:${connectionKey(placeRequest)}:${labState.tab_id}`
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(placeRequest)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : (mode === "inspect" ? `plans:${activeId}` : `place:${mode}`);
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -2081,8 +2360,8 @@ function App() {
   }, [anotherDialogOpen]);
 
   return (
-    <ConnectionInUseProvider connection={request} connected={ready && safety.known && !!request.host}>
-    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={ready && safety.known && !!request.host}>
+    <ConnectionInUseProvider connection={placeRequest} connected={placeConnected}>
+    <PrivilegesProvider connection={placeRequest} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={placeConnected}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
@@ -2326,6 +2605,8 @@ function App() {
                   loading={!profilesLoaded && !profilesFailed}
                   loadError={profilesFailed}
                   onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
+                  onGroupSaved={groupSaved}
+                  onGroupDeleted={groupDeleted}
                   addRequest={addConnection}
                   onAddHandled={() => setAddConnection(0)}
                 />
@@ -2356,11 +2637,15 @@ function App() {
                 initial={labInitial}
                 connection={request}
                 picker={null}
+                group={groupActive}
+                groupMember={queryMemberId}
+                onGroupMember={(id) => chooseMember("query", id)}
+                memberConnection={memberRequest}
                 batchRunning={batchRunning}
                 onStateChange={reportEditor}
                 onTabsNow={tabsNow}
                 onBusyChange={setLabBusy}
-                onConnected={(via) => { if (connectionKey(via) === connectionKey(connectedRequest.current)) setConnectRevision(n => n + 1); }}
+                onConnected={(via) => { if (queryRequestRef.current && connectionKey(via) === connectionKey(queryRequestRef.current)) setConnectRevision(n => n + 1); }}
                 onCapture={capture}
                 onCompareCaptures={async (before, after) => {
                   const left = await capture(before.capture, before.name, { open: false });
@@ -2368,9 +2653,15 @@ function App() {
                   if (left && right) { setBeforeId(left.id); setAfterId(right.id); setMode("compare"); }
                 }}
                 onOpenTable={openServerTable}
-                onOpenLocks={() => chooseServerView("locks")}
+                onOpenLocks={() => {
+                  if (groupActive && queryRequest?.profile_id) chooseMember("server", queryRequest.profile_id);
+                  chooseServerView("locks");
+                }}
                 onScreen={mode === "query"}
-                onOpenInstruments={openInstrumentsRow}
+                onOpenInstruments={(row) => {
+                  if (groupActive && queryRequest?.profile_id) chooseMember("server", queryRequest.profile_id);
+                  openInstrumentsRow(row);
+                }}
               />
               </WritePolicyContext.Provider>
             </div>
@@ -2390,7 +2681,7 @@ function App() {
                   onOpenInEditor={(row, rank, from) => openDigest(row, rank, "open", from)}
                   onExplain={(row, rank, from) => openDigest(row, rank, "explain", from)}
                   onAnalyze={(row, rank, from) => openDigest(row, rank, "analyze", from)}
-                  onOpenSql={(sql, options) => { setMode("query"); withLab(lab => lab.openSql(sql, options)); }}
+                  onOpenSql={(sql, options) => { setMode("query"); withLab(lab => lab.openSql(sql, { ...options, from: connectionKey(request) })); }}
                   settings={{ timeout: labState.timeout, repeat: labState.repeat, server: `${request.host}:${request.port}` }}
                   disabled={labBusy || batchRunning}
                   onOpenInstruments={openInstrumentsRow}
@@ -2410,7 +2701,7 @@ function App() {
                 <SchemaVersionsPlace key={resetKey} connection={request} profiles={profiles}
                   onOpenSql={(sql) => {
                     const back = linkOrigin();
-                    withLab((lab) => lab.openSql(sql));
+                    withLab((lab) => lab.openSql(sql, { from: connectionKey(request) }));
                     go("query");
                     finishLink(back);
                   }} />
@@ -2420,7 +2711,7 @@ function App() {
           )}
           {ready && mountServer && (
             <div hidden={!serverOnScreen}>
-              <WritePolicyContext.Provider value={writePolicy}>
+              <WritePolicyContext.Provider value={serverWritePolicy}>
               <ViewOnScreenContext.Provider value={serverOnScreen}>
               <Server
                 key={resetKey}
@@ -2439,13 +2730,20 @@ function App() {
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
                 picker={null}
-                connection={request}
+                connection={serverRequest}
+                topologyConnection={request}
+                groupServer={groupActive ? {
+                  group: groupActive,
+                  member: serverMemberId,
+                  note: memberNote,
+                  onChoose: (id: string) => chooseMember("server", id),
+                } : null}
                 disabled={labBusy}
                 navigation={serverNavigation}
                 settings={{
                   timeout: labState.timeout,
                   repeat: labState.repeat,
-                  server: `${labState.connection.host}:${labState.connection.port}`,
+                  server: `${serverRequest.host}:${serverRequest.port}`,
                 }}
                 initial={labInitial?.slow}
                 onStateChange={reportSlow}
@@ -2472,7 +2770,7 @@ function App() {
                 }}
                 onOpenSql={(sql, options) => {
                   const back = linkOrigin();
-                  withLab((lab) => lab.openSql(sql, options));
+                  withLab((lab) => lab.openSql(sql, { ...options, from: connectionKey(serverRequest) }));
                   go("query");
                   finishLink(back);
                 }}
@@ -2528,7 +2826,8 @@ function App() {
                 <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
                   onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
-                  profiles={profiles} onSwitchConnection={switchConnection} />
+                  profiles={profiles} onSwitchConnection={switchConnection}
+                  onEditGroup={setGroupEditor} groupRevision={groupRevision} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2629,7 +2928,7 @@ function App() {
           fallback={plansStatus ? {
             engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
             connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
-          } : connectionPlace ? { connectionState: request.host ? connectionLabel(request) : "No connection" } : {}} />}
+          } : connectionPlace ? { connectionState: placeRequest.host ? connectionLabel(placeRequest) : "No connection" } : {}} />}
       </div>
       <input
         ref={file}
@@ -2759,9 +3058,18 @@ function App() {
       />}
       {accountOpen && (
         <AccountPrivilegesSheet
-          name={activeConnection.fields.name || connectionTarget(activeConnection.fields)}
-          hasConnection={!!activeConnection.fields.host}
+          name={placeConnectionName}
+          hasConnection={!!placeRequest.host}
           onClose={() => setAccountOpen(false)}
+        />
+      )}
+      {groupEditor && (
+        <GroupEditorSheet
+          group={groupEditor}
+          profiles={profiles}
+          onSaved={groupSaved}
+          onDeleted={groupDeleted}
+          onClose={() => setGroupEditor(null)}
         />
       )}
       {commandPaletteOpen && (

@@ -25,11 +25,18 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeTime, assert_read_only, deny_blocker_read, fixture, replay
+from _reviewed_replay import ReplayConn
 from myflames import (cluster, config_review, ddl_progress, discover, error_log, health, indexes, innodb_status,
                       locks, param_compare, parameters, perf_common, ps_instruments, replication, schema_health,
                       server_checks, sessions, variables, watch)
 from myflames.connector import ConnectorError
 from myflames.perf_common import Server
+
+recorded_replay = replay
+
+def replay(*args, **kwargs):
+    conn, data = recorded_replay(*args, **kwargs)
+    return ReplayConn(data['calls'], clock=conn.clock, error=conn.error, edit=conn.edit, version=conn.version), data
 
 SERVER = 'mysql-5.7'
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -450,7 +457,13 @@ class TestGroupReplication(unittest.TestCase):
 
     def test_no_reviewed_changes_before_8_0_13(self):
         report, _ = self.read('gr-5.7-healthy')
-        self.assertEqual(cluster.with_actions(report)['members'][0].get('actions'), [])
+        catalog = cluster.with_actions(report)
+        self.assertEqual({a['id'] for a in catalog['members'][0]['actions']},
+                         {'switchover', 'stop_member', 'start_member'})
+        self.assertFalse(any(a['enabled'] for a in catalog['members'][0]['actions']))
+        self.assertEqual({a['id'] for a in catalog['actions']},
+                         {'switch_to_single_primary', 'switch_to_multi_primary'})
+        self.assertFalse(any(a['enabled'] for a in catalog['actions']))
 
     def test_undefined_primary_names_no_member(self):
         """5.7's group_replication_primary_member reads UNDEFINED when no member is

@@ -562,6 +562,20 @@
             "string",
             "null"
           ]
+        },
+        "bootstrap_group": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The corresponding group_replication_ global variable, when returned by SHOW; absence is tolerated."
+        },
+        "preemptive_garbage_collection": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The corresponding group_replication_ global variable, when returned by SHOW; absence is tolerated."
         }
       }
     },
@@ -958,6 +972,13 @@
           }
         }
       }
+    },
+    "actions": {
+      "type": "array",
+      "description": "Every overview action for this cluster kind (cluster.overview_actions), enabled or disabled. Added only by the workspace live read (cluster.with_actions); member actions live only in members[].actions.",
+      "items": {
+        "$ref": "#/$defs/action"
+      }
     }
   },
   "$defs": {
@@ -1128,7 +1149,7 @@
         },
         "actions": {
           "type": "array",
-          "description": "Reviewed changes this member offers (cluster.available_actions). Added only by the workspace's POST /api/live/cluster (cluster.with_actions); myflames cluster and the MCP tool cluster_status leave it out.",
+          "description": "Every member action for this cluster kind (cluster.available_actions), enabled or disabled. Added only by the workspace live read (cluster.with_actions).",
           "items": {
             "$ref": "#/$defs/action"
           }
@@ -1260,27 +1281,225 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "schema_version",
         "id",
         "label",
+        "scope",
+        "kind",
+        "via",
         "danger",
-        "description"
+        "description",
+        "member_key",
+        "member_name",
+        "member_uuid",
+        "cluster_name",
+        "enabled",
+        "why_not",
+        "fix",
+        "missing_privileges",
+        "grant_sql",
+        "privileges_unreadable",
+        "target"
       ],
       "properties": {
+        "schema_version": {
+          "const": "cluster-action-1.1"
+        },
         "id": {
           "type": "string",
-          "description": "The action: one of the fixed ids, or set_primary_cluster:<cluster> / rejoin_cluster:<cluster> for a ClusterSet change on a named cluster (run by MySQL Shell).",
-          "pattern": "^(switchover|stop_member|start_member|switch_to_multi_primary|switch_to_single_primary|desync_node|resync_node|bootstrap_pc|rejoin_instance|force_primary_cluster|(set_primary_cluster|rejoin_cluster):[A-Za-z_][A-Za-z0-9_.-]{0,62})$"
+          "description": "The action: one of the fixed ids, or set_primary_cluster[:<cluster>] / rejoin_cluster[:<cluster>] for a ClusterSet change (run by MySQL Shell).",
+          "pattern": "^(switchover|stop_member|start_member|switch_to_multi_primary|switch_to_single_primary|desync_node|resync_node|bootstrap_pc|rejoin_instance|force_primary_cluster|(set_primary_cluster|rejoin_cluster)(:[A-Za-z_][A-Za-z0-9_.-]{0,62})?)$"
         },
         "label": {
           "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "overview",
+            "member"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "write",
+            "risky"
+          ],
+          "description": "dbops.KINDS classification; these global SQL/AdminAPI actions are risky."
+        },
+        "via": {
+          "type": "string",
+          "enum": [
+            "sql",
+            "udf",
+            "mysqlsh"
+          ]
         },
         "danger": {
           "type": "boolean"
         },
         "description": {
           "type": "string"
+        },
+        "member_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "member_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "member_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "why_not": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing_privileges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "Reserved for privilege evaluation; currently []."
+        },
+        "grant_sql": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Reserved for privilege evaluation; currently null."
+        },
+        "privileges_unreadable": {
+          "type": "boolean",
+          "description": "Reserved for privilege evaluation; currently false."
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "self",
+            "member_name"
+          ],
+          "description": "Execution target. In a Group connection, profile_id names a saved connection confirmed by node identity, or a unique address suggestion with confirm true. Review must prove the session's node identity before issuing a token.",
+          "properties": {
+            "profile_id": {
+              "type": ["string", "null"]
+            },
+            "confirm": {
+              "type": "boolean",
+              "description": "Review must confirm this address-suggested connection's own node identity."
+            },
+            "note": {
+              "type": "string",
+              "description": "Explanation displayed under an enabled action."
+            },
+            "self": {
+              "type": "boolean"
+            },
+            "member_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         }
-      }
+      },
+      "description": "Complete workspace catalog entry (cluster-action-1.1). Disabled entries have a plain reason and fix; enabled entries have null why_not and fix. Privilege fields are placeholders in this slice.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "why_not": {
+                "type": "null"
+              },
+              "fix": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "why_not": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fix": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "overview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "member_key": {
+                "type": "null"
+              },
+              "member_name": {
+                "type": "null"
+              },
+              "member_uuid": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "member_key": {
+                "type": "string"
+              },
+              "member_name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

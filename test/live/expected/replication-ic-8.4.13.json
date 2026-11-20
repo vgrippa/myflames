@@ -1,0 +1,70 @@
+{
+  "available": true,
+  "capabilities": {
+    "agat": false,
+    "performance_schema": true,
+    "source_version": false,
+    "status": false,
+    "worker_timestamps": "<volatile>"
+  },
+  "captured_at": "<timestamp>",
+  "channels": [],
+  "cluster_hint": "group_replication",
+  "connection_group": {
+    "join": [],
+    "name": "",
+    "read": [],
+    "suggested_name": "",
+    "suggestions": []
+  },
+  "engine": "mysql",
+  "flavor": "mysql",
+  "global_skip_counter": "<volatile>",
+  "group_replication_channels": [],
+  "gtid": {
+    "enforce_consistency": "ON",
+    "mode": "ON"
+  },
+  "message": "This server is not a replica: SHOW REPLICA STATUS returned no channel. Group Replication is configured on it: Cluster (myflames cluster) shows the group.",
+  "notes": [],
+  "replica": false,
+  "schema_version": "replication-1.0",
+  "server_product": "MySQL",
+  "server_version": "8.4.13",
+  "settings": {
+    "parallel_workers": 4,
+    "preserve_commit_order": "ON",
+    "read_only": "OFF",
+    "server_identity": {
+      "server_uuid": "<volatile>"
+    },
+    "super_read_only": "OFF"
+  },
+  "statement": "SHOW REPLICA STATUS",
+  "summary": {
+    "channels": 0,
+    "failed": 0,
+    "judged": 0,
+    "lag_max_s": "<volatile>",
+    "ok": 0,
+    "problem": 0,
+    "unknown": 0,
+    "watch": 0
+  },
+  "topology_tiers": {
+    "live_footprint": {
+      "known": true,
+      "notes": [],
+      "proxysql_connected": true,
+      "readyset_connected": false,
+      "readyset_heartbeat_table": false,
+      "readyset_programs": []
+    },
+    "notes": [
+      "ProxySQL client sessions are connected to this server; save a ProxySQL Admin connection to link routing."
+    ],
+    "proxysql": [],
+    "readyset": []
+  },
+  "uptime_s": "<volatile>"
+}

@@ -33,6 +33,53 @@ class TestWorkspaceStore(unittest.TestCase):
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
 
+    def test_topology_observations_keep_start_order_across_store_instances(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = self.store.begin_topology_observation()
+        reopened = WorkspaceStore(self.path)
+        newer = reopened.begin_topology_observation()
+        reopened.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile, observation=newer)
+        before = reopened._profile('db', include_updated=True)
+        self.store.record_topology_identity('db', {'server_uuid': 'old'}, expected=profile, observation=older)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+        # Equal observations are idempotent, even if a caller supplies new data.
+        self.store.record_topology_identity('db', {'server_uuid': 'replay'}, expected=profile, observation=newer)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+        self.store.record_topology_identity('db', {'server_uuid': 'direct'}, expected=profile)
+        self.assertEqual(self.store._profile('db')['topology_identity']['server_uuid'], 'direct')
+
+    def test_topology_observation_rejects_tokens_from_another_store(self):
+        self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        other = WorkspaceStore(self.path.parent / 'other.sqlite3')
+        observation = other.begin_topology_observation()
+        self.store.record_topology_identity('db', {'server_uuid': 'foreign'}, observation=observation)
+        self.assertNotIn('topology_identity', self.store._profile('db'))
+
+    def test_newer_reserved_observation_can_finish_after_an_older_probe(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = workspace_store._topology_probe_observation(profile)
+        newer = self.store.begin_topology_observation()
+        self.store.record_topology_identity('db', {'server_uuid': 'old', '_topology_observation': older},
+                                            expected=profile)
+        self.store.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile, observation=newer)
+        before = self.store._profile('db', include_updated=True)
+        self.assertEqual(before['topology_identity']['server_uuid'], 'new')
+        self.store.record_topology_identity('db', {'server_uuid': 'replay', '_topology_observation': older},
+                                            expected=profile)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+
+    def test_probe_rejects_a_changed_snapshot_from_another_process_epoch(self):
+        profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
+        older = workspace_store._topology_probe_observation(profile)
+        # A separate workspace process has an unrelated monotonic origin.
+        with patch.object(workspace_store, '_TOPOLOGY_EPOCH', 'another-process'):
+            reopened = WorkspaceStore(self.path)
+            reopened.record_topology_identity('db', {'server_uuid': 'new'}, expected=profile)
+        before = self.store._profile('db', include_updated=True)
+        self.store.record_topology_identity('db', {'server_uuid': 'old', '_topology_observation': older},
+                                            expected=profile)
+        self.assertEqual(self.store._profile('db', include_updated=True), before)
+
     def test_client_choice_read_and_clear_do_not_create_a_database(self):
         self.assertIsNone(self.store.client_choice('mysql'))
         self.assertIsNone(self.store.set_client_choice('mysql', None))
@@ -653,3 +700,70 @@ class TestWorkspaceStore(unittest.TestCase):
             with self.subTest(capture=capture), self.assertRaises(ValueError):
                 self.store.save('investigation', value)
         self.assertFalse(self.path.exists())
+
+    def test_save_and_delete_connection_group(self):
+        # Deleting a group before storage exists validates the name and does not create the database.
+        with self.assertRaises(ValueError):
+            self.store.delete_connection_group('')
+        empty_del = self.store.delete_connection_group('nonexistent')
+        self.assertEqual(empty_del['groups'], [])
+        self.assertEqual(empty_del['profiles'], [])
+        self.assertFalse(self.path.exists())
+
+        p1 = self.store.save('profile', {'name': 'db-1', 'host': 'db1.example', 'user': 'dba'}, 'p1',
+                             password='pw-1', remember=True)
+        p2 = self.store.save('profile', {'name': 'db-2', 'host': 'db2.example', 'user': 'dba'}, 'p2',
+                             password='pw-2', remember=True)
+        p3 = self.store.save('profile', {'name': 'db-3', 'host': 'db3.example', 'user': 'dba'}, 'p3',
+                             password='pw-3', remember=True)
+        inv = self.store.save('investigation', bundle(), 'inv-1')
+
+        saved = self.store.save_connection_group('  prod-eu  ', ['p1', 'p2'])
+        self.assertEqual(saved['name'], 'prod-eu')
+        self.assertEqual([g['name'] for g in saved['groups']], ['prod-eu'])
+        self.assertEqual(saved['groups'][0]['profile_ids'], ['p1', 'p2'])
+
+        # Rename prod-eu -> prod-global while adding p3 and removing p2.
+        renamed = self.store.save_connection_group('prod-global', ['p1', 'p3'], previous_name='prod-eu')
+        self.assertEqual(renamed['name'], 'prod-global')
+        self.assertEqual([g['name'] for g in renamed['groups']], ['prod-global'])
+        self.assertEqual(renamed['groups'][0]['profile_ids'], ['p1', 'p3'])
+        self.assertEqual(self.store.get('profile', 'p2')['group'], '')
+
+        # Non-profile record ID is refused atomically.
+        with self.assertRaises(ValueError):
+            self.store.save_connection_group('prod-global', ['p1', inv['id']], previous_name='prod-global')
+        self.assertEqual({p['id'] for p in self.store.list('profile') if p['group'] == 'prod-global'}, {'p1', 'p3'})
+
+        # Delete group keeps all profiles and their saved passwords.
+        deleted = self.store.delete_connection_group('prod-global')
+        self.assertTrue(deleted['deleted'])
+        self.assertEqual(deleted['groups'], [])
+        for pid, host, pw in (('p1', 'db1.example', 'pw-1'),
+                              ('p2', 'db2.example', 'pw-2'),
+                              ('p3', 'db3.example', 'pw-3')):
+            prof = self.store.get('profile', pid)
+            self.assertEqual(prof['group'], '')
+            self.assertTrue(prof['has_saved_password'])
+            filled = self.store.connection_with_saved_password({'profile_id': pid, 'host': host, 'port': 3306, 'user': 'dba'})
+            self.assertEqual(filled['password'], pw)
+
+    def test_typed_password_still_checks_group_membership(self):
+        # A request that types the password is checked against the group too:
+        # consent is the store, not the credential's origin.
+        self.store.save('profile', {'name': 'db-1', 'host': 'db1.example', 'user': 'dba', 'group': 'G'}, 'p1',
+                        password='pw-1', remember=True)
+        request = {'profile_id': 'p1', 'host': 'db1.example', 'port': 3306, 'user': 'dba', 'group_name': 'G'}
+        filled = self.store.connection_with_saved_password(dict(request, password='typed-pw'))
+        self.assertEqual(filled['password'], 'typed-pw')
+        self.assertEqual(self.store.connection_with_saved_password(dict(request))['password'], 'pw-1')
+        # A member that left the group is refused with or without a typed
+        # password, and so is a deleted profile.
+        self.store.assign_profile_group(['p1'], 'H')
+        for value in (dict(request, password='typed-pw'), dict(request)):
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(value)
+        self.store.delete('profile', 'p1')
+        for value in (dict(request, password='typed-pw'), dict(request)):
+            with self.assertRaises(ValueError):
+                self.store.connection_with_saved_password(value)

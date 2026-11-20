@@ -14,6 +14,7 @@ import time
 import uuid
 
 from .connector import MySQLConnection, ConnectorError, client_environment, MAX_STDOUT_BYTES, MAX_STDERR_BYTES, _client_text
+from .connection_groups import ProfileReadError
 from .collectors import collect_schema, collect_stats, collect_stats_freshness, collect_session_variables, extract_table_names
 from .parser import parse_explain
 from .server_info import parse_version_tuple, unsupported_version_note
@@ -442,9 +443,11 @@ def normalize_capture(value):
 
 
 class LiveJob:
-    def __init__(self, payload):
+    def __init__(self, payload, login_guard=None):
         from . import dbops
         self.options = connection_options(payload.get('connection'))
+        # Installed only by the workspace, never read from request JSON.
+        self._login_guard = login_guard
         # Keep the non-secret owner independently of the mutable client options.
         self.identity = dbops.identity_endpoint(dbops.connection_identity(payload.get('connection')))
         self.query = bind_query(payload.get('query'), payload.get('parameters'))
@@ -473,15 +476,22 @@ class LiveJob:
         return {'id': self.id, 'state': self.state, 'error': self.error,
                 'progress': self.progress, 'repeat': self.repeat, 'result': self.result}
 
+    def _open_connection(self):
+        conn = MySQLConnection(**self.options)
+        if self._login_guard is not None:
+            conn._login_guard = self._login_guard
+            conn._group_login_started = False
+        return conn
+
     def cancel(self):
         self.cancelled.set()
         # Kill only the connection owned by this job, never another user's query.
         connection_id = self.connection_id
         if connection_id:
             try:
-                with MySQLConnection(**self.options) as control:
+                with self._open_connection() as control:
                     control.run('KILL QUERY %d' % connection_id, timeout=5)
-            except ConnectorError: pass
+            except (ConnectorError, ProfileReadError): pass
         if self.process and self.process.poll() is None:
             self.process.terminate()
 
@@ -498,6 +508,8 @@ class LiveJob:
         argv = conn._build_argv('', ['--raw', '--unbuffered', '--binary-mode', '--comments'],
                                 defaults_path=defaults_path)[:-2]
         # Feed SQL on stdin; credentials and query literals stay out of argv.
+        if self._login_guard is not None:
+            self._login_guard()
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=env)
         self.process = proc
@@ -575,7 +587,7 @@ class LiveJob:
     def run(self):
         self.state = 'running'
         try:
-            with MySQLConnection(**self.options) as conn:
+            with self._open_connection() as conn:
                 version = conn.server_version()
                 maria = conn.is_mariadb()
                 runs, warnings, raw, trace_data = [], [], '', None
@@ -673,8 +685,8 @@ class LiveJobs:
         self.jobs = {}
         self.lock = threading.Lock()
 
-    def start(self, payload):
-        job = LiveJob(payload)
+    def start(self, payload, login_guard=None):
+        job = LiveJob(payload, login_guard=login_guard)
         with self.lock:
             active = [j for j in self.jobs.values() if j.state in ('queued', 'running')]
             if len(active) >= 2: raise ValueError('Two captures are running. Wait or cancel one first.')

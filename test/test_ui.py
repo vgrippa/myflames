@@ -1756,7 +1756,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         self.assertEqual(self.workspace.jobs.payloads[-1]['query'], 'SELECT 1')
         for path in ('/api/live/top', '/api/live/running', '/api/live/explain-connection'):
             with self.subTest(path=path), mock.patch.object(ui, '_discover_response',
-                                                            side_effect=lambda p, payload: payload) as discover:
+                                                            side_effect=lambda p, payload, **kwargs: payload) as discover:
                 payload = self.call(path, {'connection': self.connect(profile_id), 'limit': 5})
                 self.assertEqual(payload['connection']['password'], self.PASSWORD)
                 self.assertEqual(payload['limit'], 5)
@@ -1876,6 +1876,21 @@ class TestProfilePasswordAPI(unittest.TestCase):
         status, body = post('/api/profiles/group', {'profile_ids': [profile_id], 'group': ' G '})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {'updated': [profile_id], 'group': 'G'})
+        status, body = post('/api/profiles/groups/save',
+                            {'name': 'H', 'previous_name': 'G', 'profile_ids': [profile_id]})
+        self.assertEqual(status, 200)
+        self.assertNotIn(self.PASSWORD, body)
+        self.assertEqual([g['name'] for g in json.loads(body)['groups']], ['H'])
+        status, body = post('/api/profiles/groups/delete', {'name': 'H', 'id': profile_id})
+        self.assertEqual(status, 400)
+        self.assertEqual(server.store.get('profile', profile_id)['group'], 'H')
+        status, body = post('/api/profiles/groups/delete', {'name': 'H'})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['groups'], [])
+        self.assertEqual(server.store.get('profile', profile_id)['group'], '')
+        self.assertTrue(server.store.get('profile', profile_id)['has_saved_password'])
+        status, _ = post('/api/profiles/groups/other', {'name': 'H'})
+        self.assertEqual(status, 404)
         status, body = post('/api/profiles/forget-password', {'id': profile_id})
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)['has_saved_password'])

@@ -352,7 +352,7 @@ def fixture_connection(tool, maria=False):
         if view == "replication":
             # The replication tests' loader adds the skip-counter variables the
             # recordings predate; use it so both suites replay the same reads.
-            from _perf_replay import ReplayConn
+            from _reviewed_replay import ReplayConn
             from test_replication import fixture as replication_fixture
             data = replication_fixture(view, server)
             conn = ReplayConn(data["calls"], clock=clock)
@@ -470,6 +470,10 @@ def fixture_connection(tool, maria=False):
         conn = FakeConn(ver, [("SELECT 'myflames_who'", batch([
             ["myflames_who", "app@localhost", "app@%", "NONE", ver], [grant],
             ["partial_revokes", "OFF"]])), ("APPLICABLE_ROLES", "")])
+        # These privilege-only recordings predate the packet identity prefix.
+        conn.evidence_values = {'version': ver, 'server_id': '1', 'hostname': 'fixture-db', 'port': '3306'}
+        if not maria:
+            conn.evidence_values['server_uuid'] = '11111111-2222-3333-4444-555555555555'
     return conn, patches
 
 
@@ -492,7 +496,9 @@ class TestServerReadTools(unittest.TestCase):
         from myflames.connector import MySQLConnection
         factory._unescape_mysql = MySQLConnection._unescape_mysql
         if hasattr(conn, "answers"):
-            conn.answers = {mcp._read_sql(sql): answers for sql, answers in conn.answers.items()}
+            conn.answers = {mcp._read_sql(sql, engine="mariadb" if maria else "mysql",
+                                          server_version="11.4.13-MariaDB" if maria else "8.4.11"): answers
+                            for sql, answers in conn.answers.items()}
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch("myflames.connector.MySQLConnection", factory))
             resolver = stack.enter_context(mock.patch("myflames.workspace_cli._resolve_connection", return_value={
@@ -613,7 +619,7 @@ class TestServerReadTools(unittest.TestCase):
             resolve.assert_not_called()
 
     def test_read_adapter_refuses_writes_and_converts_transaction_clock(self):
-        from _perf_replay import ReplayConn
+        from _reviewed_replay import ReplayConn
         conn = ReplayConn([])
         reader = mcp._ReadConnection(conn)
         for sql in ("KILL 1", "SET GLOBAL x=1", "SET SESSION x=1", "CREATE TABLE t(a int)",
@@ -629,6 +635,61 @@ class TestServerReadTools(unittest.TestCase):
                              "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM'))")
         self.assertEqual(mcp._read_sql("SELECT 'a; SET x=1'; SHOW GRANTS"), "SELECT 'a; SET x=1'; SHOW GRANTS")
 
+    def test_native_readers_need_supported_server_facts(self):
+        from myflames import dbops
+        for function in ("CURRENT_ROLE()", "JSON_VALUE('{}', '$.a')"):
+            sql = "SELECT " + function
+            for engine, version in ((None, None), ("mysql", "5.7.44"), ("mysql", "garbled")):
+                with self.subTest(sql=sql, engine=engine, version=version):
+                    self.assertNotEqual(dbops.classify(sql, engine=engine, server_version=version)["kind"], "read")
+                    with self.assertRaises(ValueError):
+                        mcp._read_sql(sql, engine=engine, server_version=version)
+            for engine, version in (("mysql", "8.4.0"), ("mariadb", "10.11.1"), ("mariadb", "10.11.16")):
+                self.assertEqual(mcp._read_sql(sql, engine=engine, server_version=version), sql)
+                for changed in (sql.replace(function, "db." + function), sql + "; SELECT 1 INTO OUTFILE '/tmp/x'"):
+                    with self.assertRaises(ValueError):
+                        mcp._read_sql(changed, engine=engine, server_version=version)
+        transport = mock.Mock()
+        transport.server_version.return_value = "5.7.44"
+        reader = mcp._ReadConnection(transport)
+        identity = "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), "
+        reader.run(identity + "CURRENT_ROLE(), VERSION(); SHOW GRANTS")
+        self.assertEqual(transport.run.call_args[0][0], identity + "NULL, VERSION(); SHOW GRANTS")
+        transport.reset_mock()
+        with self.assertRaises(ValueError):
+            reader.run("SELECT CURRENT_ROLE()")
+        transport.run.assert_not_called()
+
+    def test_read_adapter_checks_every_statement_inside_delimiter_packets(self):
+        transport = mock.Mock()
+        reader = mcp._ReadConnection(transport)
+        for delimiter in ('$$', '//', '__mf_end_1__'):
+            packet = "DELIMITER %s\nSELECT 'a; DROP TABLE t'; SHOW GLOBAL STATUS%s\n" % (delimiter, delimiter)
+            reader.run(packet)
+            self.assertEqual(transport.run.call_args[0][0], packet)
+            transport.reset_mock()
+            for body in ('SELECT 1; DROP TABLE t', 'SHOW GLOBAL STATUS; SET GLOBAL read_only=0',
+                         'SELECT 1; /*!50000 DELETE FROM t */', 'SELECT 1; /*M! DELETE FROM t */',
+                         'SELECT 1; \\! touch unsafe', "SELECT 'unclosed"):
+                with self.subTest(delimiter=delimiter, body=body), self.assertRaises(ValueError):
+                    reader.run('DELIMITER %s\n%s%s\n' % (delimiter, body, delimiter))
+                transport.run.assert_not_called()
+
+    def test_read_adapter_requires_shared_classifier_read_verdict(self):
+        transport = mock.Mock()
+        reader = mcp._ReadConnection(transport)
+        for sql in ("SELECT 1 INTO OUTFILE '/tmp/mcp-out'", "SELECT 1 INTO DUMPFILE '/tmp/mcp-out'",
+                    "SELECT 1 INTO @saved", "SELECT @saved := 1", "SELECT GET_LOCK('mcp', 0)",
+                    "SELECT custom_function()", "SELECT * FROM t FOR UPDATE", "SELECT * FROM t FOR SHARE",
+                    "SELECT * FROM t LOCK IN SHARE MODE", "SHOW STATUS; SELECT 1 INTO OUTFILE '/tmp/mcp-out'"):
+            with self.subTest(sql=sql), self.assertRaises(ValueError):
+                reader.run(sql)
+            transport.run.assert_not_called()
+        for sql in ("SELECT 1", "SHOW GLOBAL STATUS", "SELECT COUNT(*) FROM t", "SELECT 'INTO OUTFILE'",
+                    "SELECT CHARSET('x'); SHOW GRANTS"):
+            reader.run(sql)
+            self.assertEqual(transport.run.call_args[0][0], sql)
+
     def test_saved_profile_resolution_and_password_redaction(self):
         from _perf_replay import FakeFactory
         from myflames.connector import ConnectorError
@@ -643,7 +704,7 @@ class TestServerReadTools(unittest.TestCase):
             store.find_profile.assert_called_once_with("Fixture")
             self.assertEqual(store.connection_with_saved_password.call_args[0][0]["profile_id"], "p1")
             self.assertEqual(result["account"], "app@%")
-            with mock.patch.object(conn, "run", side_effect=ConnectorError("saved-test-secret failed")):
+            with mock.patch.object(conn, "run", side_effect=ConnectorError("ERROR 1045 (28000): saved-test-secret failed")):
                 with self.assertRaises(ValueError) as caught:
                     mcp.my_privileges_tool("Fixture")
             self.assertNotIn("saved-test-secret", str(caught.exception))

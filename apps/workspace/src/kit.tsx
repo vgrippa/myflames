@@ -3329,6 +3329,11 @@ export const RefreshAllContext = createContext<{
   run: () => void;
 } | null>(null);
 
+/** With a Group connection, the server this place works on: the Server:
+ * picker and the member's name, address and role, drawn in every view's
+ * header (ViewLayout). Null without a Group connection. */
+export const ViewServerContext = createContext<ReactNode>(null);
+
 /** The anatomy every data view shares: a toolbar (title, ⓘ, controls,
  * Refresh), then the content, and the inspector for the selection. Escape
  * closes the inspector and returns focus to the selected row. */
@@ -3397,6 +3402,8 @@ export function ViewLayout({
   // the narrow layout, where Back returns to the list, or for a hidden title).
   const offered = useContext(ViewSwitcherContext);
   const switcher = offered && !onBack && !hideTitle ? offered : null;
+  // A Group connection names the member this view reads, next to its title.
+  const viewServer = useContext(ViewServerContext);
   useEffect(() => {
     reportActivity?.(id, !!loading);
     return () => reportActivity?.(id, false);
@@ -3450,6 +3457,7 @@ export function ViewLayout({
             </h2>
           )}
           {info && <InfoPopover label={`About ${title}`}>{info}</InfoPopover>}
+          {viewServer}
         </div>
         <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
         <div className="toolbar-end">

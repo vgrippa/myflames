@@ -14,6 +14,10 @@ The policy appears in a strip along the window and in write-review sheets. Devel
 
 For protected actions, the SQL shown in the review is the SQL authorized for execution. The app binds the review to the statements and target, checks the target again before acting, and records the result in the local Audit log.
 
+Cluster SQL changes check the server identity in the session that sends the SQL. Galera checks the node's UUID as well as its server details. MySQL Shell first checks its global session's server UUID, then checks the group UUID of the Cluster object it obtains through AdminAPI. For ClusterSet actions it compares the set's name and every member cluster's group UUID with the reviewed metadata. A mismatch refuses the action. The action uses that checked object; AdminAPI manages its own connections to members.
+
+Cluster actions require MySQL Shell 8.0.32 or later; rejoining a member needs 8.1.0 or later and cluster metadata 2.0.0 or later. Rejoin stays disabled when the cluster's ClusterSet status cannot be verified as exactly OK. Check the status and perform the rejoin in MySQL Shell when the app cannot establish it.
+
 Privilege checks can report an action as unknown when they cannot prove that it is allowed. Read the reason rather than assuming unknown means permitted.
 
 ## Keep the cost of reads in mind

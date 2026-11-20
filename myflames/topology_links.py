@@ -45,10 +45,7 @@ _DB_VARS_SQL = (
     "'wsrep_on','wsrep_cluster_name','wsrep_cluster_address','wsrep_node_name','wsrep_node_incoming_address',"
     "'group_replication_group_name','gtid_mode')"
 )
-_WSREP_STATUS_SQL = (
-    "SHOW GLOBAL STATUS WHERE Variable_name IN ("
-    "'wsrep_cluster_size','wsrep_cluster_status','wsrep_local_state_comment')"
-)
+_WSREP_STATUS_SQL = "SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'"
 _WSREP_MEMBERS_SQL = "SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members"
 _GR_MEMBERS_SQL = (
     "SELECT MEMBER_ID, MEMBER_HOST, MEMBER_PORT, MEMBER_STATE, MEMBER_ROLE "
@@ -203,6 +200,7 @@ def _evict_locked():
 
 def _claim_probe(profile, open_profile, reads, remaining):
     from .replication import _settings_fingerprint
+    from .workspace_store import _topology_probe_observation
     name = _profile_name(profile)
     profile_id = profile.get("id") or name
     with _cache_lock:
@@ -233,7 +231,7 @@ def _claim_probe(profile, open_profile, reads, remaining):
         for old in [k for k in _probe_cache if k[0] == key[0]]:
             del _probe_cache[old]
         entry = {"done": threading.Event(), "data": None, "problem": None, "kept": True,
-                 "key": key, "connect": connect}
+                 "key": key, "connect": connect, "observation": _topology_probe_observation(profile)}
         _probe_attempts.add(key)
         _probe_pending[profile_id] = entry
         _probe_cache[key] = entry
@@ -249,7 +247,7 @@ def _named_rows(conn, sql):
         raise ConnectorError("a value the client could not print as XML")
 
 
-def _probe_connection(conn, profile):
+def _probe_connection(conn, profile, remaining=None):
     """Read a lightweight, bounded identity + topology summary from *conn*."""
     reader = Reader(conn, TOPOLOGY_TAG)
     base = {
@@ -408,6 +406,13 @@ def _probe_connection(conn, profile):
     if wsrep_on:
         cluster_kind = "pxc" if "percona xtradb cluster" in (vcomment or "").lower() else "galera"
         cluster_name = _text(variables.get("wsrep_cluster_name"))
+        # The members table describes other nodes too. Only this session's
+        # gcomm UUID proves which node this saved connection reaches.
+        if remaining is not None and remaining() < QUERY_TIMEOUT_S:
+            raise ConnectorError("Topology read budget was reached.")
+        status = reader.rows(_WSREP_STATUS_SQL, timeout=QUERY_TIMEOUT_S)
+        base["wsrep_node_uuid"] = next((_text(r[1]) for r in status
+                                         if len(r) > 1 and r[0] == "wsrep_gcomm_uuid"), None)
         try:
             mrows = reader.rows(_WSREP_MEMBERS_SQL, timeout=QUERY_TIMEOUT_S)
             for r in mrows:
@@ -526,7 +531,7 @@ def _fill_probe(entry, key, connect, profile, remaining):
                 keep, entry["problem"] = False, "Topology budget expired before reading %s." % name
                 return
             sent = True
-            entry["data"] = _probe_connection(conn, profile)
+            entry["data"] = _probe_connection(conn, profile, remaining)
     except ProfileReadError as exc:
         # Revocation aborts the whole multi-statement probe, including any
         # partial identity. A login already sent still consumes its attempt.
@@ -577,6 +582,7 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
 
     for profile in usable:
         name = _profile_name(profile)
+        fresh = False
         while True:
             try:
                 entry, owner, pending = _claim_probe(profile, open_profile, reads, remaining)
@@ -595,6 +601,7 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
             if owner:
                 reads[0] += 1
                 _fill_probe(entry, entry["key"], entry["connect"], profile, remaining)
+                fresh = True
                 break
             if not pending:
                 break
@@ -610,8 +617,19 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
                     record_read(open_profile, profile, 'not_reached', entry['problem'])
                 entry = None
                 break
+            # Waiting for a probe does not change when its observation began.
+            # Plain cache hits keep answering topology questions without
+            # publishing identity evidence again.
+            fresh = True
         if entry and entry.get("data"):
-            record_read(open_profile, profile, "read")
+            data = entry["data"]
+            identity = None
+            if fresh and data.get("kind") == "database":
+                field = "wsrep_node_uuid" if data.get("cluster_kind") in ("galera", "pxc") else "server_uuid"
+                # This private evidence follows the original probe through
+                # pending waits and cache hits. Publication is not a new read.
+                identity = {field: data.get(field), '_topology_observation': entry['observation']}
+            record_read(open_profile, profile, "read", identity=identity)
             probed.append(entry["data"])
         elif entry and entry.get("problem"):
             outcome = "failed" if entry['kept'] else "not_reached"

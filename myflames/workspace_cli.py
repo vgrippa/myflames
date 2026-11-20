@@ -1717,6 +1717,7 @@ def _replication_skip(argv):
 
 
 def _replication_skip_loop(argv):
+    from . import dbops
     from .replication import (COMMON_ERRORS, DRIFT_WARNING, LOOP_DEFAULT_POLL_S, LOOP_MAX_SKIPS,
                               OPERATION_LOOP, SkipLoop, describe_plan, format_loop_event, read_status,
                               receiver_guard_plan)
@@ -1771,6 +1772,7 @@ def _replication_skip_loop(argv):
             sys.stderr.flush()
 
     def work(conn):
+        conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
         report = read_status(conn)
         audit.server(report.get('engine'), report.get('server_version'))
         channel = _replication_channel(report, args.channel)
@@ -1804,7 +1806,7 @@ def _replication_skip_loop(argv):
         loop = SkipLoop(conn, args.channel, args.errors, args.max,
                         max_duration_s=args.max_minutes * 60 if args.max_minutes else None,
                         poll_s=args.interval, decision=decision, audit_factory=audit_for, on_event=emit,
-                        decision_reader=state['decision_reader'])
+                        decision_reader=state['decision_reader'], receiver_required=guard['receiver_guard'] == 'on')
         if not args.quiet:
             sys.stderr.write('Watching; press Ctrl+C to stop.\n')
         return loop.run()

@@ -1697,7 +1697,16 @@ request supplies no password.
 Kill preparation, single replication skips, and lifecycle plans
 carry a server-issued review token. Its registry holds at most 256 entries for
 300 seconds. Tokens bind the operation, connection identity and policy, and
-reviewed details. Checks happen before saved-password lookup; consumption is
+reviewed details. Every review on a Group connection, including Accounts and
+the Query editor's own registries, binds the store-derived `group_name` and
+`group_generation` in `dbops.connection_identity`. `dbops.identity_group`
+extracts that consent binding independently of the endpoint and write policy.
+A group deleted and recreated with the same name and members has a new
+generation, so none of its earlier reviews authorize a send. The identity also
+carries the group's effective safety (`connection_safety` with the store;
+see "Write safety and audit"), so a change to that safety voids earlier tokens
+and editor session ownership. Checks happen before
+saved-password lookup; consumption is
 atomic at the send boundary after fresh state and policy checks. Missing,
 expired, altered, or replayed tokens require a fresh review. Tokens are never
 persisted. Lifecycle jobs re-read saved profile policy before connecting,
@@ -1706,6 +1715,80 @@ endpoint/policy requires a fresh review; a rename alone does not. Clone donors
 are bound too, with read-only permitted for the donor read.
 Accounts and the Query editor retain their own bounded review
 registries and confirmation contracts.
+
+Kill, Variables, replication skip, ProxySQL and Readyset connections are opened through
+`ui._group_guarded_connection`. Its `conn._login_guard` re-reads the active
+member's saved endpoint, current membership, group generation and, for a
+reviewed send, effective write policy before transport setup and every client
+invocation. Revoked consent refuses before that login sends SQL, including
+when a typed password was supplied or the pending audit is already durable.
+A refusal at the write boundary finishes that pending record as unsent.
+
+Reviewed SQL writes bind the destination inside every query packet that
+carries a reviewed statement. A successful read in another login cannot
+establish that binding: a forwarded port, router or failover can change the
+destination before the next login, and a proxy can route separate statements
+within one login to different backends. `reviewed_writes.execute` uses
+`dbops.target_guarded_script` to put the guard derived from the reviewed
+server identity and its statement in one multi-statement `COM_QUERY`,
+repeating the guard in each packet. Variables, accounts, replication skips
+(including each skip-loop send), and Kill from Locks or Sessions use the same
+builder. The script starts with a client `DELIMITER` command; its delimiter
+must occur nowhere in any statement or guard, or the script is refused before
+sending anything. Packet start lines identify statement indices, including
+multi-line SQL. A private acknowledgement follows each guard in its packet;
+1242 before that acknowledgement reports `identity_mismatch`, while 1242
+after it belongs to the protected statement:
+that statement and every later one are `not_sent`, while earlier ones are
+`done`. With no earlier statement the result is `refused`; otherwise it keeps
+a partial outcome. No after-read or retry follows a definite mismatch. Other
+packet errors use that statement's existing failure contract. Account plans
+that need several client invocations guard each invocation and retain earlier
+accepted statements after a later refusal. Cluster SQL and UDF actions are covered
+by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
+the first line reads `@@global.server_uuid` through the Shell's global
+`session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. It then
+checks the returned AdminAPI object's extended status: a Cluster's group UUID,
+or a ClusterSet's name and complete member cluster/group UUID map, against the
+reviewed server's variable and metadata reads. The action reuses that object;
+AdminAPI manages its own member connections. A different identity
+throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
+exception to a refusal with `sent: []`. Its guard is reviewed, token-bound and
+audited like the SQL prefix, and later error line numbers exclude it.
+ProxySQL Admin and Readyset actions do not expose these identity variables
+and retain their own protocol contracts.
+
+Group Cluster reviews also bind `expect.target`: the target's saved
+`profile_id`, `profile_name`, every stored endpoint field (host, port, user,
+TLS mode and CA, SSH host, user and port), node `server_identity`,
+`group_name`, and the group's `group_generation` (a random id stored on each
+member: fresh when a group is created, kept on rename and as members join or
+leave, cleared when the group is deleted, so a group deleted and recreated
+with the same name and members never matches a review made for the old one).
+The server builds this object, persists the identity observed
+while planning, and rebuilds the object from the current store before any
+password lookup on apply. A changed endpoint, identity, profile, name or
+group refuses the review with nothing sent. Only the node identity key selected
+by `cluster.target_server_identity` participates: `server_uuid` for Group
+Replication and InnoDB Cluster, `wsrep_node_uuid` for Galera/PXC. Planning records
+only that key without clearing the other; an unrelated UUID recorded later does
+not invalidate the review. Both the request's active
+profile and target must still be unedited/current members of the named
+group; every client login checks consent again, including after a secret
+lookup. The strictest current group type and the target's own Read-only
+flag govern the write. The token still belongs to the active connection,
+and its details bind the target, so it cannot move between servers.
+The Audit log's `connection` names the saved target, and its `target`
+contains the reviewed expectations, including the same `target` binding.
+SQL sends carry the target's SQL UUID guard; MySQL Shell sends check its
+global session UUID and the returned AdminAPI object's identity before acting.
+Apply-time target refusals (including group removal and a forgotten remote
+password) produce an audited `refused` result before password lookup. A login
+consent refusal after `audit.attempt` completes that pending record as `refused`
+with no statements sent, rather than an error or an unknown outcome. MySQL
+Shell checks the same consent before reading credentials and immediately before
+spawn, then its first JavaScript line checks the global session's reviewed
+server UUID and the returned AdminAPI object's reviewed cluster identity.
 
 Every editor owner path checks the connection, including ended sessions,
 status, export, stop, close, commit, and rollback. Ended sessions compare
@@ -1737,6 +1820,19 @@ Local `audit purge` has its separate confirmation contract.
 
 
 ### Profiles
+
+Group member write requests recheck saved membership, the active profile and the group's strictest policy at transport setup and immediately before every client login, including background jobs and helper connections; a local refusal is audited through `_group_login_refusal`.
+
+Every live read that opens a database client for a request carrying
+`connection.group_name` installs the read form of the same guard, without a
+reviewed write identity. This includes
+Server views, replication status, full analysis, schema catalog and structure,
+object search, table columns, readiness, connection tests and legacy capture
+jobs (including their script and cancellation clients). A member removed or
+moved, an edited saved endpoint, or a recreated group refuses the next login
+even when the same request already completed an earlier client invocation.
+Read consent does not bind the group's write policy; making a member read-only
+does not revoke an otherwise consenting read.
 
 `python3 -m myflames profiles list [--json]`, `profiles set NAME [--type production|development] [--read-only | --read-write]`, `profiles forget NAME`,
   `profiles delete NAME` manage workspace connection profiles and their saved
@@ -1841,8 +1937,8 @@ Local `audit purge` has its separate confirmation contract.
   `Cc`, `Cf` or `Cs`) and an internal `topology_identity` dict
   (`connection_groups.IDENTITY_FIELDS`: `server_uuid`, `gr_group_name`,
   `cluster_kind`, `cluster_name`, `cluster_id`, `clusterset_id`,
-  `clusterset_name`, `wsrep_cluster_uuid`, plus `source_uuids` and
-  `recorded_at`), neither secret. `group` is returned by `/api/profiles/list|save`
+  `clusterset_name`, `wsrep_cluster_uuid`, `wsrep_node_uuid`, plus
+  `source_uuids` and `recorded_at`), neither secret. `group` is returned by `/api/profiles/list|save`
   and `profiles list --json` (`_present` defaults it to `""`) and accepted by
   `/api/profiles/save` (`value.group`; omitting `group` on an update preserves
   the stored value, and `forget_password` keeps both `group` and
@@ -1851,10 +1947,10 @@ Local `audit purge` has its separate confirmation contract.
   `topology_identity`, rejects a top-level `group` argument, and saves imported
   profiles with `group: ""`. `topology_identity` is never accepted from
   `/api/profiles/save` or `/api/connections/import` and is never returned in
-  reports; it is written only for the connection in use after a direct read of
+  reports; it is written for the connection in use after a direct read of
   that connection (`connection_groups.finish_read` calling
   `connection_groups.identity_from_report` and
-  `WorkspaceStore.record_topology_identity(profile_id, identity, expected=current)`),
+  `WorkspaceStore.record_topology_identity(profile_id, identity, expected=current, observation=token)`),
   only while the stored profile still matches `_same_endpoint(expected, stored)`
   (an endpoint edit in flight or on save drops `topology_identity`), without
   changing `updated` or `secret_ref`. `identity_from_report` records no identity
@@ -1867,12 +1963,47 @@ Local `audit purge` has its separate confirmation contract.
   the Cluster read is authoritative for `CLUSTER_IDENTITY_FIELDS`).
   `record_topology_identity` replaces or clears only the fields the view
   inspected (`set(identity) & (set(IDENTITY_FIELDS) | {"source_uuids"})`),
-  leaving fields owned by the other view intact unless `server_uuid` changed on
+  leaving fields owned by the other view intact unless a previously recorded `server_uuid` changed on
   the same endpoint (which drops the previous identity first); string values
   over 128 characters and `source_uuids` lists with more than 32 entries (or an
   entry over 128 characters) are refused (clearing that inspected field), never
   truncated, and an identity write error never fails the status read.
-  `POST /api/profiles/group` (`ui._profiles_response` ->
+  Existing consenting group probes also record the probed profile's own node
+  identity through `finish_read`, with `expected=profile`: MySQL's
+  `server_uuid` from that probe's `SHOW GLOBAL VARIABLES`, or Galera/PXC's
+  `wsrep_node_uuid` from `SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'` on the
+  same connection. Each probe retains its monotonic start order in the cache,
+  including while another request waits for it. Publishing or reusing a result
+  never gives it a new observation time. A plain cache hit answers topology
+  questions without publishing identity evidence again. The store refuses an observation
+  older than or equal to the one already recorded, so an in-flight or cached
+  probe cannot overwrite a newer direct read. `begin_topology_observation()`
+  reserves a store-bound sequence before a waiting read; pass that token as
+  `observation` to `record_topology_identity`. Direct workspace reads and
+  routed Cluster action plans call `connection_groups.begin_read` before
+  collecting identity. Its private `_topology_observation` sink reaches
+  `finish_read`, never the JSON report; overlapping reads that finish in
+  reverse order retain the identity of the newer start. Readers without a
+  store-issued token retain their monotonic start through `grouped_read`, as
+  probes do. A failed reservation permits the read but prevents publishing
+  its evidence with a later timestamp. Calls without a token reserve one on
+  entry to the record operation, so callers of waiting reads must retain a
+  start token. Sequences survive reopening the store, foreign-store tokens
+  are refused, and replayed tokens change nothing. Probe ordering and store
+  sequences live in the private `topology_observations` table, leaving profile
+  timestamps and public identity fields unchanged. Across processes, where a
+  probe's monotonic origin is unrelated, its preceding identity snapshot must
+  still match the store. A peer's membership table, reported address, ProxySQL or
+  Readyset backend UUID never supplies this evidence. `GroupScope` keeps the
+  endpoint snapshot and identity as private attributes of its read outcome;
+  they are not fields in the serialized report. Before persisting them,
+  `finish_read` rechecks the active profile and each peer's current group
+  membership; the store rechecks the observed endpoint. Cached probes retain
+  their existing fingerprint, attempt registry, `PROFILE_READ_LIMIT` and
+  `PROFILE_BUDGET_S` rules. Recording adds no probe, never retries a cached
+  login and does not expand automatic refresh or ungrouped reads. Connections
+  excluded by the existing topology candidate filter remain unprobed.
+  `POST /api/profiles/group` (`ui._profile_response` ->
   `WorkspaceStore.assign_profile_group(profile_ids, group)`, in
   `_WORKSPACE_PATHS`) validates `group` with `validate_group` (`""` clears the
   group; `None`, >80 characters or control/format/surrogate characters raise
@@ -1883,6 +2014,140 @@ Local `audit purge` has its separate confirmation contract.
   and leaves every profile unchanged), updates `group` and `updated` while
   preserving `secret_ref` and `topology_identity`, and returns
   `{"updated": ids, "group": group}`.
+  `POST /api/profiles/groups/save` (`{name, profile_ids, previous_name}`) and
+  `POST /api/profiles/groups/delete` (`{name}`) (`ui._profile_group_response` ->
+  `WorkspaceStore.save_connection_group(name, profile_ids, previous_name=None)`
+  and `WorkspaceStore.delete_connection_group(name)`) are dispatched by their
+  full path before the generic `/api/profiles/` branch, listed in the POST
+  allowlist, and enforce strict request schemas (unknown keys, wrong types and
+  over-long strings are refused with 400). `save_connection_group` validates
+  `name` (and optional `previous_name`) with `validate_group` (requiring a
+  non-empty `name` of at most `GROUP_MAX_LEN` = 80 characters and at most 200
+  characters before trimming), caps membership at `GROUP_MAX_MEMBERS` (16; 1 to
+  16 profile IDs of 1–200 characters), and in one `BEGIN IMMEDIATE` transaction
+  checks that every ID exists with `kind = 'profile'`, refuses a `name` already
+  used by another group (unless it is the same group being renamed), renames
+  the group when `previous_name` is given, sets `group = name` on every listed
+  profile, and clears `group = ""` on profiles that were in the group and are
+  not listed. `delete_connection_group(name)` clears `group = ""` on its members
+  in one transaction while keeping every saved connection and its saved password
+  intact. Every member also carries the group's `group_generation` (a random
+  id): `save_connection_group` keeps the generation staying members carry (a
+  rename keeps it) and starts a fresh one for a group with no current members,
+  `assign_profile_group` reuses the group's current generation or starts one,
+  profile saves keep or adopt it, `forget_password` keeps it, and leaving or
+  deleting the group clears it (`_present` drops it when `group` is empty). Both return `groups` (`connection_groups.list_groups(profiles)`) and
+  `profiles` (`store.list("profile")`, never a password or `secret_ref`).
+  `connection_safety` obtains `group_name` and `group_generation` from this
+  current stored membership. `connection_identity` appends them as a consent
+  object to every Group connection review, and `identity_group` reads that
+  object without the policy or endpoint fields. A request-supplied generation
+  is never trusted. Recreating a group with the same name and members cannot
+  reuse its earlier reviews, while endpoint-bound status and cleanup remain
+  available through `identity_endpoint`.
+  The workspace opens a group as one **Group connection** from the connection
+  picker (`main.tsx` `openGroup`, `api.openConnectionGroup` with
+  `probe_members: true` on an explicit open or Refresh, never on automatic
+  refresh): the picker lists groups beside the saved connections
+  (`api.profileGroups`, the same computation as `list_groups`) with the name,
+  the server count and the strictest safety pill. The Group connection
+  carries `group_name` on every request (`binding.ts connectionKey` includes
+  it, so views reload when the group or the active member changes) and is
+  judged by the reply's `effective_safety`; the top bar and the status bar
+  name it (`binding.ts groupConnectionLabel`, "Group connection mf-ic · 3
+  servers") and the status bar has **Edit group…**. One group editor sheet
+  (`GroupEditorSheet.tsx`, a lazy chunk) is shared by the picker, the status
+  bar and Home's Connections place: rename, add and remove members
+  (`profiles/groups/save`), and delete (`profiles/groups/delete`, whose
+  confirmation says the saved connections stay). After a save that removes
+  the active member, the Group connection re-opens without probing on the
+  member the backend picks and says so.
+  Single-server places get a **Server:** picker (`GroupServerPicker.tsx`
+  `GroupServerPicker` and `groupMemberLabel`: `"<profile_name> · <host>:<port>"`
+  plus `" · <ROLE>"` when `role` is present; a `Segmented` control up to 4
+  members in a wide window, a `Select` in a narrow window or above 4 members,
+  never listing unsaved topology peers). `main.tsx` keeps `memberByPlace`
+  (`"server"` and `"query"`, in-memory only; absent entries default via
+  `memberOf` to `groupActive.active_member_profile_id`, the primary or source).
+  The `"server"` choice drives `Server.tsx` (`serverRequest`, `groupServer`),
+  which provides `viewServer` (`ViewServerContext` in `kit.tsx` `ViewLayout`:
+  `GroupServerPicker`, `.view-server-name` with `groupMemberLabel`, and optional
+  `.group-server-note`) in every view header across the places `Server.tsx`
+  renders (`serverPlace`: `server` views Health, InnoDB, Error log, Locks,
+  Indexes, Tables, Parameters, Instruments, Maintenance and Users and roles;
+  `workload` views Top statements, Processlist, Memory, Waits and I/O; `tuning`
+  Tuning; and `diagram` Database diagram). The `"query"` choice drives
+  `QueryLab.tsx` (`group`, `groupMember`), which renders `GroupServerPicker` in
+  `.editor-connection`; each new tab created while in a Group connection
+  (`addTab`, `openSql`) binds `{member: groupMember, member_name}` and shows
+  ` · <member_name>` in `.query-tab-label`, and `connectionFor(t)` runs the tab
+  on `memberConnection(t.member)`. `main.tsx` `memberRequest(id)` returns `null`
+  for a non-member, or builds a `Connection` for that current member of
+  `groupActive` from its stored profile (falling back to the
+  `group_connection.members` entry), carrying its `profile_id` (`id`), its own
+  endpoint fields, `group_name: group.group_name`,
+  `name: "<groupConnectionLabel> · <member.profile_name>"`, and the group's
+  strictest safety (`group.effective_safety.type` and
+  `group.effective_safety.read_only`, `endpointMatches: true`, `known: true`).
+  Switching the picker does not call `POST /api/connect`; the view read or
+  editor run logs in to the chosen member with its `profile_id` and
+  `group_name`. When a group edit removes a member that `"server"` or `"query"`
+  had selected in `memberByPlace`, `main.tsx` deletes that entry so the place
+  moves to `groupActive.active_member_profile_id` (the primary or source) and
+  sets `memberNote` (`"<names> is/are not in this group any more; its views
+  moved to <active_member>."`, shown in `.group-server-note` until the next
+  explicit choice); in `QueryLab.tsx`, a tab bound to a removed member
+  (`groupMemberProblem(t)`) marks `.query-tab-member.is-gone`, shows
+  `.group-member-note` (`"<member_name> is not in this group any more. Pick a
+  server for this tab to run it."`) with `.group-member-rebind` (`Select`
+  `"Server for this tab"`, `rebindMember`), and refuses Run, Explain and Run
+  analysis until a current member is chosen. Tests:
+  `apps/workspace/test/group-connections.mjs`.
+
+  Every editor request that names `connection.group_name` rechecks the stored
+  profile's membership in `_connection_facts`, including runs on an already
+  open tab session. A removed member refuses with
+  `This saved connection is outside the current connection group.` before
+  any statement or password lookup, as a fresh saved login does. A typed
+  password cannot bypass that check. Status, Rollback, Stop and Close on a
+  tab's existing session are the one exception (`_connection_facts`
+  `allow_group_revoked`, with `_owned_session`'s endpoint ownership
+  unchanged): they send no new user statements, so a member removed from the
+  group can still release an open transaction's locks, and Stop's KILL then
+  uses the session's own authenticated run options when the password lookup
+  is refused. Run, Open, Commit, Preview and Use keep the strict refusal.
+
+  `POST /api/connect` (`ui._connect_response`; JSON only, on the POST
+  allowlist) opens a connection group as one Group connection:
+  `{group_name, active_member_profile_id?, probe_members?}`. `group_name` is
+  validated with `connection_groups.validate_group`; the group's current
+  members are read from the store. The active member is the request's
+  `active_member_profile_id` when it is a current member, else the member the
+  stored topology identity marks primary or source
+  (`connection_groups.group_primary`: a member whose recorded `server_uuid`
+  another member lists in `source_uuids`), else the first member. The reply is
+  the `/api/connection/test` discovery for the active member
+  (`ui._connection_test_report`) plus `group_connection`: `{group_name,
+  effective_safety {type, read_only}, active_member_profile_id,
+  primary_profile_id, members[]}` with each member's `{profile_id,
+  profile_name, host, port, safety, server_uuid, role, state, reachable}`.
+  Names, hosts, ports and safety come from the store record; the live facts
+  (`server_uuid`, `role`, `state`, `reachable`) are separate fields read for
+  the active member always and for the other members only when the request
+  asks (`probe_members: true`, which the UI sends on an explicit open or
+  Refresh, never on automatic refresh), at most 4 logins at a time
+  (`_CONNECT_PROBE_CONCURRENCY`) and never more logins than the group has
+  members (`_CONNECT_PROBE_BUDGET`, 16). Every member login fills that
+  member's own saved password through `connection_with_saved_password` (which
+  re-checks group membership), and every member connection carries a
+  `conn._login_guard` that rechecks the requesting active member's endpoint,
+  membership and group generation as well as the probed member's stored
+  endpoint, membership and generation before each client invocation. Removing
+  either member, changing its endpoint or recreating the group while discovery
+  runs prevents later logins under the old consent. The reply never contains a secret; a
+  member that cannot be read is `reachable: false`. Member names and
+  endpoints never come from topology evidence: a stored topology label cannot
+  rename a member (F10).
 
   Consent rule and `connection_group` report field: a topology or source-version
   read (`Cluster`, `Replication`, `ProxySQL`, `Readyset`, and the CLI
@@ -1891,29 +2156,36 @@ Local `audit purge` has its separate confirmation contract.
   connections in the same non-empty `group` as the connection in use
   (`connection_groups.members(profiles, current)`), never to the connection in
   use itself (`id != current["id"]`), and never when the connection in use is
-  unsaved or has `group == ""`. `request_profiles(store, connection)` fails
+  unsaved or has `group == ""`. There is no in-memory revocation registry:
+  consent is derived from the store at every login. `request_profiles(store, connection)` fails
   closed: if `store` is `None`, `store.list("profile")` raises or does not
   return a `list` or `tuple` of dicts, it returns `([], None)` so no saved
   connection is read; if `connection.profile_id` names a profile whose stored
   `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`, `ssh_host`,
   `ssh_user`, `ssh_port`) differ from `connection`
-  (`not _same_endpoint(connection, current)`), `current` becomes `None` so an
-  edited endpoint cannot borrow the saved connection's group consent (`members`
-  is `[]`), while `profiles` is still passed for non-login suggestions.
+  (`not _same_endpoint(connection, current)`), or if `connection.group_name` is
+  set and does not match the stored profile's non-empty `group`, `current`
+  becomes `None` so an edited endpoint or mismatched `group_name` cannot borrow
+  the saved connection's group consent (`members` is `[]`), while `profiles` is
+  still passed for non-login suggestions.
   `@grouped_read` (on `cluster.read_status`, `cluster.attach_topology_tiers`,
   `replication.read_status`, `replication.attach_source_versions`,
   `proxysql.read_status` and `readyset.read_status`) and
   `replication.profile_opener` enforce the same check at call, `prepare`,
-  connect and before every client login (`GroupScope.opener`, `consent(profile)`
-  before and after `connection_with_saved_password`, and
+  connect and before every client login (`GroupScope.opener().check`,
+  `consent(profile)` before and after `connection_with_saved_password`, and
   `conn._login_guard = login_consent` checked by
   `MySQLConnection._check_login_consent` in `_invocation_defaults` and
   `_run_client`): each statement of a probe starts its own client login, and
-  before each one `login_consent` checks again that both connections are still
-  in the same group and that the target's endpoint and saved password
+  before each one `consent` / `login_consent` re-reads the store (`store.get`
+  and `request_profiles`) and checks again that the request's own profile is a
+  stored, unedited profile and a current member of the active group (and of
+  `group_name` when named), that the target is a `profile` record in the same
+  group with a saved password, and that the target's endpoint and saved password
   (`_stored_fingerprint`) are unchanged; if the store becomes unreadable, the
   current or target profile is deleted, or its endpoint, `group` or saved
-  password changes in flight, `ProfileReadError` stops the rest of that probe
+  password changes in flight (including via another `WorkspaceStore` instance on
+  the same file), `ProfileReadError` stops the rest of that probe
   before the client is run. The member is reported in `connection_group.read`
   as `not_reached` when the refusal comes before any login, and as `failed`
   when an earlier statement of the probe already logged in
@@ -2185,27 +2457,921 @@ desktop launcher.
 `myflames/dbops.py` is the one safety layer for every statement that changes
 server state (db-operations skill). Editor run reviews also bind the **On error** mode through `editor_session._review_digest`: a Stop review cannot authorize Continue, or the reverse; changing the mode requires a fresh review. Its parts:
 
-- `classify(sql, backslash_escapes=None, key_columns=None)` returns
-  `{kind: read|write|risky, category, reasons[], statements: [{text, start, end,
-  verb, kind, category, reasons}], count, ambiguous}`. `split_statements` splits
-  like the mysql client on top of `live.TOKEN` / `TOKEN_NO_BACKSLASH` (no second
-  tokenizer; `TOKEN` reads `-- ` as a comment only before the client's ASCII
-  white space, never Python's `\s`): comments, quoted strings and backtick
-  identifiers, executable comments `/*! */` and `/*M! */` whose bodies are code
-  (a delimiter inside splits, as `client/mysql.cc` does), `DELIMITER` lines at a
-  line start with nothing pending (any first word starting with `delimiter`, as
-  in `--binary-mode`; the argument parsed like the client's `get_arg`: quotes
-  stripped, an unquoted one ends at a space, not a tab; a missing argument or
-  one with a backslash keeps the old delimiter and is risky), and the client's
-  backslash commands outside quotes (`\g` and `\G` end a statement, `\N` is
-  NULL, any other is risky: `REASON_CLIENT_COMMAND`). `--` before another
-  control character is risky (`REASON_DASH_CONTROL`; the client reads code,
-  the server a comment). Each client statement is also cut at top-level `;`
-  and the worst part counts (`REASON_MULTI`): under a custom delimiter the
-  server runs every `;`-separated statement of one request. Statements carry
-  `issues`. Without `backslash_escapes` both string readings are classified
-  and the worse wins (`ambiguous`, reason `AMBIGUOUS_REASON`). An unclosed
-  quote or comment is risky. Decisions:
+`dbops.target_session_guard(engine, identity)` returns a `session_guard`
+list for review and audit, like `READ_ONLY_SESSION_GUARD`.
+`dbops.target_guarded_script(guard, statements)` turns it into client input
+and packet start lines with private marker and statement-index metadata.
+Every packet contains the guard, a private `SELECT` acknowledgement, then
+the reviewed SQL it protects (including any internal session-variable
+readback). Every guarded unit starts with its guard on the first physical
+line; an editor tag stays on that same line before the guard. User SQL and
+its leading comments never precede the guard or occupy an earlier line.
+A proxy may choose a different backend session for the
+next packet, but cannot separate this check from the statement it protects.
+Using the same client invocation alone does not establish this property.
+
+The script begins with `DELIMITER <d>`. The builder tries `$$`, `//`,
+`__mf_end_1__`, then `__mf_end_2__`, choosing the first string absent from the
+entire guard and every statement, including quoted text and comments. If all
+candidates occur, it refuses with nothing sent. Each string must split into
+exactly one complete SQL unit through `dbops.split_statements`, with closed
+quotes and comments, no client-command issues and identical boundaries under
+all modelled quote modes when the session mode is unknown. This compares
+quote boundaries, executable code and classified effects, including SQL inside
+executable comments, not just the outer unit. Token roles and restored
+identifier names must agree too, even when both readings have a read effect.
+Otherwise it refuses before token consumption or
+transport. Internal tuples explicitly group individually validated units that
+depend on the same session. Every member, including a plain single statement,
+uses its parsed span on the wire, without terminal delimiters or comments
+after those delimiters. The builder inserts exactly one separator between
+units; the evidence binder uses the same rule for its read bodies. Review and audit text stays
+unchanged. Account password wrappers validate their literal
+under the mode they assert in that packet. `check_reviewed` and the builder
+both accept multi-line SQL with these complete boundaries for MySQL/MariaDB identity packets.
+The persistent editor passes its known `sql_mode` and the unit's validated
+`delimiter` to `target_guarded_script`. Each such packet asserts the executing
+session's `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES` flags with NULL-safe
+comparisons; MariaDB packets also check `MSSQL` and `ORACLE`. A refresh from
+another backend with the same connection id cannot authorize a different
+quote or stored-program grammar. An unknown mode keeps all-reading validation.
+With a bound session, planning can infer a later mode from a single literal `SET [SESSION] sql_mode
+= '<mode>'`; expressions, indirect changes and multi-assignment dump headers
+leave it unknown. Execution still invalidates cached mode after a possible
+change, and independent helpers validate under every modelled mode. The packet
+builder rechecks closure, client commands, dollar bodies and delimiter collisions.
+SQL-mode saves expire after CREATE EVENT unless every schedule expression
+belongs to the literal/clock subset described below, and after SET expressions containing a subquery or table read
+because a view can call a function that changes the saved user variable.
+Standalone PROCEDURE, FUNCTION, TRIGGER and PACKAGE definitions retain saves;
+their bodies run later. The Query editor sessions section specifies the full
+save/restore contract and its conservative limits.
+Client quote status is independent of the server's SQL mode. Every unit is
+checked with both values of `SERVER_STATUS_NO_BACKSLASH_ESCAPES`; MariaDB
+clients also check both values of `SERVER_STATUS_ANSI_QUOTES`, including when
+the corresponding mode is off. Unknown client families check all combinations.
+Stored-program exit can restore `@@SESSION.sql_mode` without restoring these
+bits, even on a direct connection. MariaDB's `SET STATEMENT sql_mode=... FOR`
+has the same effect: its reply is sent before the restore runs the sql_mode
+update hook (`mariadb-11.8.9:sql/sql_parse.cc:2467–2468,1934–1935`, before the
+restore at `2536` and `1967`). When client readings differ, a bound session
+with a known mode sends `SET SESSION sql_mode = @@SESSION.sql_mode` as a
+separate client statement immediately before the affected unit. Its reply
+updates the bits before the client reads that unit. Planning and classification
+then use the synchronized bits, while retaining every possible client family.
+An unbound session or unknown mode refuses; family, delimiter or dollar-grammar
+disagreements that remain after synchronization still refuse.
+The helper is named in editor review and audit, including for an allowed read;
+its results are internal. Immediately after that `SET` reply, both the Query editor
+and Users and roles (`_with_password_mode`) send `dbops.client_status_probe`
+as a following packet using the packet's active delimiter so any stale client quote
+or backslash-escape bit splits at the embedded delimiter and fails on the server
+before later units are read, and verify the probe result before proceeding or
+returning output. Both packets assert the target and expected mode.
+A failed helper or probe stops before the unit, including with Continue on error;
+when earlier units of the run already ran, the message says so ("Earlier
+statements were sent; this statement and later statements were not sent.")
+instead of "Nothing was sent.".
+The probe confirms the bits the client used to read the probe, which the
+helper's reply set; the unit is read with the bits of the probe's own reply.
+On a direct server these are the same: helper, probe and unit carry one guard
+bound to `CONNECTION_ID()` and nothing between them runs a stored program. They
+can differ only when an intermediary rewrites the probe reply's status (or
+serves it from a cache that invents one); anything that can rewrite replies
+already controls the session, so this is an accepted assumption, not a check.
+The helper can raise server warnings without changing what it sends: MySQL
+raises warning 3135 when strict mode and its sub-modes are only partly set
+(`mysql-8.4.0:sql/sys_vars.cc:4629–4648`), MySQL 8.0+ warns that
+`PAD_CHAR_TO_FULL_LENGTH` is deprecated (`mysql-8.4.0:sql/sys_vars.cc:4700–4704`),
+and MySQL 5.7 warns about its deprecated modes
+(`mysql-5.7.44:sql/sys_vars.cc:3861–3876`); MariaDB's check raises none
+(`mariadb-11.8.9:sql/sys_vars.cc:3991–3996`). The helper never commits: an
+implicit commit from a SET statement happens only for its committing forms
+(`mysql-8.4.0:sql/sql_parse.cc:426–428`;
+`mariadb-11.8.9:sql/sql_parse.cc:453–454`), never for a plain
+`SET SESSION sql_mode`.
+Through a statement-routing proxy the helper's reply may come from the proxy
+rather than the server. The lab check against ProxySQL 3.0.11 showed that
+ProxySQL cannot track `SET SESSION sql_mode = @@SESSION.sql_mode`: it locks
+the connection to its hostgroup and later reads fail with error 9006, so
+nothing runs. Editor tabs through ProxySQL are unbound (the routed start-up
+fallback) and refuse status-dependent units.
+No helper is inserted for units whose client readings agree. Every
+resynchronized unit is guarded, and its packet runs the guard's marker SELECT
+just before the unit's statement, so its diagnostics describe that marker
+(a following `ROW_COUNT()` reads -1: a result set's end sets the row count to
+-1, `mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+`mariadb-11.8.9:sql/sql_class.h:6311–6313`), not the helper SET or the
+preceding user statement. Ordinary intervening `ROW_COUNT()`, `FOUND_ROWS()`,
+`SHOW WARNINGS` and `GET DIAGNOSTICS` units retain their existing behavior.
+Users and roles names the same status helper in its reviewed password wrapper
+when the literal's client readings differ. Its staging packet sets the password
+mode and ends with the helper, so the reply precedes the password bytes without
+another routing decision between the mode setup and helper. The account packet
+repeats its mode setup for server parsing, preserving backslash passwords even
+when a proxy routes packets to separate sessions. Agreeing literals add no helper.
+Sources: `mysql-8.4.0:client/mysql.cc:2771–2784`,
+`mysql-8.4.0:sql/sys_vars.cc:4710–4718`,
+`mysql-8.4.0:sql/sp_head.cc:2106–2107,2305`,
+`mariadb-11.8.9:client/mysql.cc:2659–2663`,
+`mariadb-11.8.9:sql/sys_vars.cc:3997–4011` and
+`mariadb-11.8.9:sql/sp_head.cc:1114–1115,1193–1194,1476,1489`.
+A caller-supplied DELIMITER command cannot bypass these checks.
+Mode-sensitive reads also require the guarded packet. A literal mode assignment
+is only a planning prediction: it can fail while Continue on error leaves the
+old mode active. The existing preflight therefore validates later mode-sensitive
+units under unknown modes before any user statement runs, even when their
+predicted verdict is read.
+Reviewed-packet validation also scans MySQL dollar-quoted bodies: a tag starts only
+at an identifier boundary, contains identifier characters (including digits
+and multibyte characters), and closes only with the identical case-sensitive
+tag. An unterminated body refuses before sending, so it cannot swallow the
+packet delimiter. Quotes, comments and dollar signs inside identifiers do
+not open a body. Source: `mysql-9.7.0:client/mysql.cc:2715–2746,2953–2974` (the client enables this grammar after its server probe at
+`mysql-9.7.0:client/mysql.cc:1288–1291`). Inside a dollar-quoted body,
+MySQL 8.1+ clients still treat a backslash as an escape unless the
+NO_BACKSLASH_ESCAPES status bit is set (`mysql-8.4.0:client/mysql.cc:2771–2783`,
+the escape branch that runs before the dollar-body closer at `2936`). The
+editor refuses dollar-quoted text because the two client readings (with and
+without the grammar) differ.
+The classifier compares the legacy reading, where dollar tags can be
+identifiers, with the dollar-body reading. Differences in unit spans,
+delimiters, executable code, quoted identifiers, closure or parser issues
+mark the result and its statements risky and ambiguous. Reviewed SQL refuses
+any such difference, even when both readings contain one closed unit with
+the same outer span. For example, a dollar tag inside a comment cannot change
+which WHERE terms execute. Both paths use the splitter's identifier-boundary
+and multibyte-tag grammar. This prevents either client reading from
+authorizing different SQL under the other reading.
+ProxySQL Admin, Readyset and plans without a recognized SQL engine keep
+one physical line per statement (CR and LF are refused). ProxySQL apply
+also forces that restriction independently of a caller-supplied engine or sender. Statements retain
+their original text, including newlines and semicolons. Each delimiter is on a fresh
+line so a trailing `--` or `#` comment cannot swallow it. For example:
+
+```sql
+DELIMITER $$
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_0'; SET GLOBAL max_connections = 200
+$$
+SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '<reviewed uuid>'); SELECT 'myflames_guard_ok_<nonce>_1'; SET GLOBAL max_connections = 201
+$$
+```
+
+Both clients enable `CLIENT_MULTI_STATEMENTS` and send the text between
+client delimiters with one query call: MySQL `mysql-9.7.0:client/mysql.cc:2841–2876,3675,5004–5008`;
+MariaDB `mariadb-11.8.9:client/mysql.cc:2729–2763,3641,5179`.
+`DELIMITER` remains available in binary mode (MySQL `mysql-9.7.0:client/mysql.cc:2645–2647`;
+MariaDB `mariadb-11.8.9:client/mysql.cc:2580–2583`). The server executes that packet in order
+and stops on an error: MySQL `mysql-9.7.0:sql/sql_parse.cc:2167–2168`; MariaDB
+`mariadb-11.8.9:sql/sql_parse.cc:1925–1926`. The client remains in batch mode on stdin with
+`--skip-reconnect` and no `--force`, so an error also prevents later packets
+from being sent.
+
+Account password and package-mode wrappers first send their fixed session-mode
+setup in a guarded packet. The client must receive that reply before parsing
+the account change: its quote parser uses the last acknowledged
+`SERVER_STATUS_NO_BACKSLASH_ESCAPES` flag (MySQL `mysql-9.7.0:client/mysql.cc:2785–2787`;
+MariaDB `mariadb-11.8.9:client/mysql.cc:2659–2663`). The next guarded packet saves the mode
+of its own destination session, asserts the required mode again, runs the
+account statement and restores that saved mode. It never relies on the
+staging packet's session variables or mode: the proxy may use another session
+on the same server. Only the exact generated password or package wrapper is
+accepted; another account body that changes sql_mode refuses with nothing sent.
+This preserves passwords containing backslashes and quotes. If either guard refuses, this invocation
+sent no account change; only disposable session setup could have run. Earlier
+accepted account statements still retain the existing partial outcome.
+
+Replication uses the same explicit grouping. MySQL sends `SET GTID_NEXT`,
+`BEGIN`, `COMMIT` and `SET GTID_NEXT = 'AUTOMATIC'` in one guarded packet
+(`mysql-9.7.0:sql/sys_vars.cc:6549–6554` declares GTID_NEXT session-only). MariaDB sends
+`SET default_master_connection` and its skip-counter assignment in one packet:
+`mariadb-11.8.9:sql/sys_vars.cc:1440–1444` declares the selector session-local, and
+`mariadb-11.8.9:sql/sys_vars.cc:5972–5973` selects the counter's channel from that session variable.
+`START` names its channel explicitly in the next guarded packet. A later
+guard refusal records all earlier completed units. An error inside a grouped
+packet cannot identify which internal unit completed; residual GTID/counter
+evidence remains unknown unless the subsequent read confirms it. Variables'
+`SET SESSION` and its readback also share one guarded packet.
+
+MySQL, Percona Server and PXC use a UUID validated against the existing UUID
+grammar. MariaDB instead compares `@@global.server_id`, `@@global.hostname`
+and `@@global.port`, plus `@@global.wsrep_node_name` when the reviewed identity
+records it, joined with `OR`. Integers are validated and rendered as integers;
+names accept only ASCII letters, digits, underscore, dot, colon and hyphen,
+then use the SQL string escaping helper. Missing or invalid identity data
+refuses before constructing a write script. The identity comes from review
+evidence, never request connection fields. MariaDB reads include the server's
+port; replication copies `settings.server_identity` into the skip plan's
+`identity.server_identity`. Cluster SQL plans must include the required values
+in `expect.server`; older MariaDB plans without `server_id` refuse safely.
+Standalone MariaDB has no server UUID. Two standalone MariaDB servers with
+the same `server_id`, hostname and port cannot be distinguished by this
+guard; configure a different `server_id` for every standalone server.
+If a MariaDB host name is outside the comparable name grammar, both the
+review and write refusal explain that its characters cannot be compared
+safely and suggest a plain host name or a MySQL server with a UUID. The
+message never echoes the unsafe name.
+
+Every SQL sender captures and binds `wsrep_gcomm_uuid` when the reviewed
+server has a loaded `wsrep_provider` (nonempty and other than `none`), even
+with `wsrep_on = OFF`, or reports `wsrep_on = ON`, including Accounts,
+Variables, replication and Kill;
+Galera and PXC Cluster plans bind it in `expect.server.wsrep_gcomm_uuid`.
+MariaDB's provider-exists condition is separate from wsrep_on in
+`mariadb-11.8.9:sql/wsrep_var.cc:104–110`; an unset or `none` provider selects
+normal operation in `mariadb-11.8.9:sql/wsrep_mysqld.cc:879–889`.
+Accounts' review and apply reads, Variables' value, metadata and grants reads,
+and Replication's status, privilege and final status rechecks use one shared
+`dbops.TargetEvidenceConnection` per review or recheck. `read_privileges`
+also binds its initial grants and optional role-flag reads when called alone;
+nested readers reuse the existing binder. A replication skip loop retains
+that scope across iterations and receiver-check callbacks. Kill CLI binds the lock report,
+privileges, target, transaction and XA reads before displaying confirmation.
+Every read packet starts with server identity variables (including provider
+detection), node status and a private marker, followed by the requested read
+bodies. A client `DELIMITER` absent from the payload keeps those statements
+in one COM_QUERY; `--skip-reconnect` prevents reconnecting midway. All packets
+retain comments: both identity reads and the marker SELECT carry the first
+read's leading `/*myflames:...*/` tag, or `/*myflames:target-evidence*/` when
+that read has no tag. The caller's read bodies keep their original tags.
+All packets in that review/recheck must return the same identity. A changed, duplicate or
+incomplete identity invalidates the entire read, including when an optional
+reader catches the error, and no write may follow. Transport exceptions,
+incomplete prefixes and ambiguous internal SQL boundaries all set sticky
+`identity_unavailable`; subsequent reads, writes and identity extraction in
+that scope refuse. A fresh wrapper cannot substitute caller-supplied variables
+for unread evidence. Version and flavor helpers read this scope's metadata,
+including `version_comment`, rather than the transport's metadata cache.
+
+Ordinary `MySQLConnection.run` failures keep their existing `ConnectorError`
+or specialized client-error type and expose no stdout. The binder explicitly
+opts in with `retain_partial_stdout=True`; connector adapters and connection
+wrappers forward that option. Only a server SQL error retains completed
+stdout privately in `PartialReadError`. Genuine client errors, including
+authentication-plugin failures, keep their own type even with this opt-in.
+Framed readers' existing `tail_timeout` option keeps completed stdout privately
+in `PartialReadError` on any non-auth failed client exit or its own deadline
+expiration, and its caller validates the framing markers. When a
+server error names this packet's start line and the full identity prefix has
+validated, the binder raises the read's original error without poisoning the
+scope. Thus an expected 1141 from SHOW GRANTS for an absent account can reach
+the create/rename fallback. Client errors (2000–2999), missing or wrong error
+locations, missing markers and mismatched identities still fail closed, even
+if some prefix data arrived. The binder removes the prefix from successful
+batch/XML results and discards private stdout and MariaDB's SQL echo before
+passing a read error to its caller. Refusal details include only an
+`ERROR NNNN ...` diagnostic line, remove `near '...'` SQL echoes,
+redact a string connection password and hide
+private evidence markers. Missing or non-string passwords do not break error
+handling. Saved-group consent refusals preserve `ProfileReadError` so optional
+privilege readers cannot turn revoked login permission into unknown coverage.
+The scope retains the original consent exception and re-raises it from
+every later `check()`, read or write, even when an optional reader caught it
+as `ValueError`. The original connection-group explanation is preserved.
+This adds identity/status work to each read and may refuse a rotating proxy;
+it does not make changing server state
+a transactional snapshot. Regression coverage: `test_reviewed_writes_e1.py`,
+`test_reviewed_writes_evidence.py`, `test_reviewed_writes_f2.py` and the Accounts, Variables, Replication,
+Privileges and Kill suites. These synthetic packet tests are not live proof.
+Kill projects provider detection and the node UUID in the same SELECT as the
+other identity fields and the process row, for single and bulk targets. A
+Galera identity row without `wsrep_gcomm_uuid` is incomplete and cannot
+authorize a Kill, including through the deprecated CLI.
+Its pre-KILL target, InnoDB transaction and prepared-XA rechecks also share
+one evidence scope: each read carries its own same-packet identity prefix,
+and all identities must agree before KILL is sent. A denied transaction or XA
+read may use its existing fallback only after that prefix validates; an
+identity failure refuses the entire recheck, even if the optional reader
+catches the error.
+Its MariaDB projection explicitly reads `@@global.server_id`, matching the
+guard: `mariadb-11.8.9:sql/sys_vars.cc:3606–3612` makes the unqualified value
+session-scoped, so a proxy's reused session could otherwise override it.
+Its `wsrep_on` identity slot denotes that node identity is required, including
+when a loaded provider has replication switched off. A failed or incomplete
+per-target identity projection is an audited `identity_unavailable` refusal
+with nothing sent. Missing, invalid or
+unreadable node evidence refuses with "The identity check could not run";
+it never falls back to the server's names or id.
+The same guard statement compares this node UUID with the `VARIABLE_VALUE`
+for `VARIABLE_NAME = 'wsrep_gcomm_uuid'` in `information_schema.GLOBAL_STATUS`
+(MariaDB) or `performance_schema.global_status` (MySQL/PXC). The comparison
+uses `NOT (... <=> '<reviewed node UUID>')`, so an absent status row also
+refuses instead of letting SQL NULL pass the guard. Sharing server_id,
+hostname, port or wsrep_node_name cannot replace node identity. MariaDB
+registers GLOBAL_STATUS with `Show::variables_fields_info` (VARIABLE_NAME,
+VARIABLE_VALUE; `mariadb-11.8.9:sql/sql_show.cc:10393–10398,10832–10833`),
+and `mariadb-11.8.9:mysql-test/suite/wsrep/r/variables.result:58` records
+wsrep_gcomm_uuid.
+MySQL's columns are defined in `mysql-9.7.0:storage/perfschema/table_global_status.cc:65–66`.
+This table does not require Performance Schema to be enabled: its share is
+`perpetual` (`mysql-9.7.0:storage/perfschema/table_global_status.cc:81`), and `mysql-9.7.0:storage/perfschema/ha_perfschema.cc:111–112`
+allows perpetual tables with instrumentation disabled. Its
+`pfs_truncatable_world_acl` also permits SELECT without a table grant
+(`mysql-9.7.0:storage/perfschema/table_global_status.cc:73`, `mysql-9.7.0:storage/perfschema/pfs_engine_table.cc:1139–1148`). An absent
+wsrep_gcomm_uuid row still fails the NULL-safe comparison; it never authorizes
+a write and is not evidence that Performance Schema is disabled.
+
+A match sets a session variable to NULL and changes no persistent state.
+A mismatch raises server error 1242 before the protected statement executes.
+Both clients report `ERROR <code> (<state>) at line <query_start_line>`:
+MySQL `mysql-9.7.0:client/mysql.cc:5463`; MariaDB
+`mariadb-11.8.9:client/mysql.cc:5447,5497`.
+That line names the start of the entire packet, not the substatement inside
+it. Each packet emits a unique `myflames_guard_ok_<32-hex nonce>_<k>` row
+after the guard and before its protected SQL. The client prints each result
+before reading the next result or error (MySQL `mysql-9.7.0:client/mysql.cc:3731–3736,3767`;
+MariaDB `mariadb-11.8.9:client/mysql.cc:3714–3719,3761`). On a failed invocation the
+connector preserves only these acknowledgement names in `guard_markers`,
+never arbitrary stdout rows that might contain a generated password. It strips
+them from successful output; error diagnostics discard SQL echoes, so markers
+never appear in user results or audit records.
+
+`dbops.target_guard_failed(exc, packet_lines)` maps 1242 at a known packet
+start without that packet's acknowledgement to its zero-based
+`statement_index`. A marker present for packet k proves its guard passed:
+even error 1242 then belongs to the protected SQL. Another server error before
+the marker means `identity_unavailable`, with the server's reason. At packet 1 the
+result is `refused`, outcome `identity_mismatch`, and `sent: []`, with the
+message: "The server answering this connection is not the one you reviewed.
+Nothing was sent. Refresh and review again." At packet k, the earlier k−1
+statements completed; statement k and every later statement are `not_sent`.
+`reviewed_writes.execute` returns `partial`, keeps those earlier statements in
+`sent` with `done` states, and finishes the audit as `error` with outcome
+`identity_mismatch`. Replication retains its existing failed-send and residual
+GTID/counter contracts when earlier packets ran. No after-read or retry follows
+a definite identity mismatch.
+
+Server errors after acknowledgement use the existing failure contract of the
+reviewed statement. A grouped packet's error location identifies its group,
+so it cannot establish completion of individual internal units.
+`dbops.shift_guard_error(exc, packet_lines)` maps packet start lines to
+1-based statement indices before existing error handling, including for
+multi-line statements. An unrecognized line cannot identify a statement and
+keeps an unknown outcome in `reviewed_writes`. Client transport errors,
+including line-free 2006 after any packet may have run, also keep an unknown
+outcome. Only a recognized connection or login failure before any acknowledged
+packet and without a query line is `not_connected` with nothing sent.
+Replication handles an ambiguous line-free client error (including 2050 after
+an acknowledgement) before definite server-error handling: the outcome and
+audit are `unknown`, with GTID/counter progress unverified and no automatic
+after-read or retry.
+MariaDB can echo SQL before its ERROR line;
+packet error mapping discards that echo before displaying the server reason.
+Missing or invalid identity evidence still refuses before sending with outcome
+`identity_unavailable`. Review tokens and audit statements retain their
+existing guard-plus-statements metadata; client delimiter commands and repeated
+copies of the guard do not change it. MySQL Shell actions retain their
+first-line JavaScript guard and original error mapping.
+The scalar-subquery behavior is documented in the
+[MySQL manual](https://dev.mysql.com/doc/refman/8.4/en/subquery-errors.html)
+and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/data-manipulation/selecting-data/subqueries/subqueries-scalar-subqueries).
+
+- `dbops.lex_sql` is the shared SQL lexer used by `split_statements`,
+  `skipped_executable_comments`, classification, editor planning and reviewed
+  packet validation. It returns source spans for code, strings, quoted
+  identifiers, ordinary comments and executable comment boundaries, plus
+  closure and uncertainty evidence. Strings honor doubled quotes and
+  `NO_BACKSLASH_ESCAPES`. `ANSI_QUOTES` makes double quotes identifiers;
+  backticks, ANSI double quotes and MariaDB MSSQL brackets escape their
+  closing delimiter only by doubling, never with a backslash. `sql_mode_flags`
+  expands MySQL `ANSI`. MySQL before 8.0 also expands `ORACLE`, `MSSQL`,
+  `POSTGRESQL`, `DB2` and `MAXDB` into `ANSI_QUOTES`; MySQL 8.0+ retains only
+  the `ANSI` and `TRADITIONAL` combinations, and `TRADITIONAL` does not change
+  quoting. MariaDB expands `ANSI` and those five compatibility modes.
+  MySQL's `MSSQL` alias does not enable bracket identifiers. Literal
+  `SET sql_mode` predictions use the bound server version; unknown versions
+  compare the possible expansions. `lex_sql` accepts `sql_mode` or explicit
+  `backslash_escapes`, `ansi_quotes` and `mssql` flags. Sources:
+  `mysql-5.7.44:sql/sys_vars.cc:3794–3839`,
+  `mysql-8.0.46:sql/sys_vars.cc:4896–4909`;
+  `mysql-9.7.0:sql/sql_lex.cc:1782–1820,1906–1914`;
+  `mariadb-11.8.9:sql/sql_class.h:161–185`, `mariadb-11.8.9:sql/sys_vars.cc:3939–3979`,
+  `mariadb-11.8.9:sql/sql_lex.cc:2081–2082,2374–2385,2935–2985`.
+  Inside an executed
+  `/*! ... */` or `/*M! ... */`, the body is SQL: a quoted `*/`, or one in a
+  `#` or `-- ` line comment, does not close the executable comment.
+  Sources: `mysql-9.7.0:sql/sql_lex.cc:1037–1066,1782–1812,1931–2075` and
+  `mariadb-11.8.9:sql/sql_lex.cc:1636–1691,2398–2531`.
+- MySQL before 8.1.0 always reads exactly five version digits
+  (`mysql-5.7.44:sql/sql_lex.cc:1923–1938`,
+  `mysql-8.0.46:sql/sql_lex.cc:1892–1910`). MySQL 8.1+ reads six only when
+  followed by ASCII whitespace, otherwise five
+  (`mysql-8.1.0:sql/sql_lex.cc:1911–1929`, `mysql-8.4.0:sql/sql_lex.cc:1919–1937`).
+  MySQL 9.x keeps that rule (`mysql-9.7.0:sql/sql_lex.cc:1975–1993`).
+  MariaDB reads five or six with no whitespace requirement. An unknown
+  MySQL version or unknown engine is checked under all three grammars through
+  `lexer_readings`/`comment_dialect`, including provisional planning and MCP
+  filtering. Classification keeps the worst verdict. Before opening a tab,
+  provisional planning can retain different version interpretations only
+  when the client boundaries agree and quote readings agree within each
+  grammar. That provisional review cannot execute SQL: the opened session
+  is re-planned and any changed consent requirements need a new confirmation.
+  A session with an unknown version refuses ambiguous conditional SQL.
+  The five-digit-only reading cannot execute a gate of 80100 or higher:
+  every server using that grammar predates 8.1. Its skipped body therefore
+  cannot supply a stray sixth digit of SQL during provisional classification.
+  For example, on MySQL 5.7 or 8.0, `/*!100000 INTO
+  OUTFILE ... */` executes `0 INTO OUTFILE ...`, using version 10000.
+  MariaDB executes `/*M!` only on MariaDB,
+  and skips MySQL-style version numbers 50700–99999
+  (`mariadb-11.8.9:sql/sql_lex.cc:2416–2466`). An ordinary comment consumes
+  no nested level; a skipped versioned comment consumes one nested
+  `/* ... */` level, not arbitrary nesting. Sources:
+  `mysql-9.7.0:sql/sql_lex.cc:1331–1366,2004–2027` and
+  `mariadb-11.8.9:sql/sql_lex.cc:1821–1862,2486–2509`.
+- `skipped_executable_comments(sql, engine, server_version, backslash_escapes=None,
+  wsrep_on=None, sql_mode=None)` reports skipped or uncertain comments with `start`, `end`,
+  `opener` (never the SQL body), `certain`, and an optional construct-only
+  `problem`. Unknown quote modes inspect every modelled reading. Unknown engine or
+  version facts make version gates uncertain. Reversed comments (`/*!!`)
+  and unterminated executed comments refuse in the editor. MariaDB's
+  `/*!99997` marker also refuses unless wsrep is known off: a local wsrep
+  session executes it specially (`mariadb-11.8.9:sql/sql_lex.cc:2472–2480`).
+- With a complete engine/version/session binding, the
+  editor classifies the server's own reading: skipped comments are comments,
+  and the SQL sent stays unchanged. This accepts cross-version dump options
+  such as `CREATE DATABASE d /*!80016 DEFAULT ENCRYPTION='N' */` on MariaDB
+  and MySQL 5.7. Conditional reads require the same session guard as writes;
+  display-only facts after routed startup cannot authorize them. A known
+  wsrep-off reading also asserts `@@SESSION.wsrep_on <=> 0` in its packet,
+  so a prior SET cannot silently enable the 99997 exception (MariaDB
+  `mariadb-11.8.9:sql/sys_vars.cc:6426–6432`). An absent or unrecognized wsrep value stays
+  unknown.
+- `classify(sql, backslash_escapes=None, key_columns=None, engine=None,
+  server_version=None, wsrep_on=None, sql_mode=None, client_engine=None)` returns `{kind: read|write|risky,
+  category, reasons[], statements: [{text, start, end, verb, kind, category,
+  reasons}], count, ambiguous}`. Unknown version gates are considered both
+  executed and skipped; different unknown conditions are risky instead of
+  enumerating all combinations. Unknown quote mode takes the worst overall
+  and per-statement verdict even when offsets match: token spans, delimiters,
+  masked code, closure, issues and effect all participate in comparison.
+  Four readings cover backslash mode times ANSI_QUOTES; MariaDB and unknown
+  engines also consider bracket identifiers. Readings whose distinguishing
+  characters are absent are scanned once, keeping long unquoted queries
+  linear without dropping an applicable grammar. An unknown mode refuses in the
+  editor only when readings disagree, so mode-independent dump headers remain
+  usable after a nonliteral mode change. `_mode_reading` keeps identifier and
+  string spans distinct and compares restored identifier names, including
+  escaped identifier delimiters. A double-quoted token such as `"t"` is
+  ambiguous with unknown `sql_mode`, even when both readings have the same
+  write category. The editor refuses before sending; a known `ANSI_QUOTES`
+  reading retains the target for ALTER preflight, the five-second lock-wait
+  guard and DROP confirmation. A hidden `INTO OUTFILE` therefore cannot inherit the other reading's read
+  verdict. Review text always retains the original source.
+- Client framing is distinct from server masking but uses the same lexer.
+  `client_engine` identifies the actual `mysql` or `mariadb` binary independently
+  of the server engine. The connector carries its selected or probed client
+  family with `_InvocationDefaults`; the editor pins it when starting that
+  process and passes it through planning, selection, classification and packet
+  validation. A binary named `mysql` can be MariaDB. If the family is unknown,
+  both client readings must agree before the editor sends SQL.
+  The client recognizes delimiters inside conditional comments before the
+  server evaluates their version gates. MySQL's client treats `/*M!` as an
+  ordinary multi-line comment (`mysql-8.4.0:client/mysql.cc:2895–2902`);
+  MariaDB's client exposes its contents to client framing
+  (`mariadb-10.11.16:client/mysql.cc:2788–2798`), even when connected to MySQL.
+  A delimiter cutting a server-skipped comment
+  is risky and refuses in the editor: it cannot mask SQL in a later packet
+  after an earlier packet errors under `--force`. A delimiter splitting an
+  executed comment or a server string/identifier also refuses. Client strings
+  suppress delimiters and persist across lines. Both clients honor
+  NO_BACKSLASH_ESCAPES. MariaDB's client also honors ANSI_QUOTES and never
+  handles backslashes inside backticks (`mariadb-10.11.16:client/mysql.cc:2630–2634`,
+  `mariadb-11.4.10:client/mysql.cc:2638–2642`,
+  `mariadb-11.8.9:client/mysql.cc:2659–2663`). MySQL's client ignores
+  ANSI_QUOTES and handles backslash pairs inside backticks, except that a
+  following backtick still closes the identifier
+  (`mysql-8.4.0:client/mysql.cc:2771–2785`). Neither client knows MSSQL brackets.
+  MariaDB's ANSI handling requires its server status bit. MySQL servers
+  advertise only NO_BACKSLASH_ESCAPES here
+  (`mysql-8.4.0:sql/sys_vars.cc:4710–4718`,
+  `mariadb-11.8.9:sql/sys_vars.cc:4002–4009`). A proxy can answer a SET itself
+  without delivering that ANSI bit to the client. A known server mode therefore
+  does not establish the MariaDB client's quote state. When ANSI_QUOTES is
+  possible, `lexer_readings` checks that client both with and without the bit
+  (`client_ansi_quotes`), independently of server masking. Planning, cursor
+  selection and reviewed packets refuse differing boundaries or closure;
+  the server/client statement-count check runs for both readings. Ordinary
+  double-quoted identifiers still work when both client readings agree.
+  A backslash at the end of a line inside a string or identifier is refused
+  when the client's escape handling can change it: MySQL drops it, and the
+  MariaDB binary-mode path can copy a NUL
+  (`mariadb-10.11.16:client/mysql.cc:2638–2651`). Paired backslashes and
+  NO_BACKSLASH_ESCAPES retain their normal meaning.
+  Every client family and version refuses a `/*+ ... */` optimizer hint
+  containing `/*`, `#`, `--` followed by whitespace or a line ending, or a
+  backslash, including inside quotes. A one-line hint may contain single
+  quotes, double quotes and backticks when every quoted span closes before
+  the first `*/`; a doubled quote escapes that quote. An unbalanced quoted
+  span refuses. This accepts `/*+ SET_VAR(optimizer_switch = 'mrr_cost_based=off') */`
+  and ``/*+ BKA(`t1`) */`` as well as `/*+ BKA(t) */`. MySQL's hint scanner
+  returns `HINT_ERROR` on `*/` inside a quoted value instead of extending
+  the span beyond the hint: `mysql-5.7.44:sql/sql_lex_hints.h:150–188`
+  (quoted identifiers), `mysql-8.0.46:sql/sql_lex_hints.h:110–147` and
+  `mysql-8.4.0:sql/sql_lex_hints.h:108–145` (also quoted text). Clients do
+  not interpret quotes while in hint state and end it at the first `*/`:
+  `mysql-5.7.44:client/mysql.cc:2759–2772`,
+  `mysql-8.0.46:client/mysql.cc:2644–2655`,
+  `mysql-8.4.0:client/mysql.cc:2922–2947`. MariaDB before 12 treats `/*+`
+  as an ordinary comment ending at the first `*/` on the server
+  (`mariadb-10.11.16:sql/sql_lex.cc:2469–2484`,
+  `mariadb-11.8.9:sql/sql_lex.cc:2503–2518`). The client does the same
+  unless a nested `/*!` changes its comment state
+  (`mariadb-10.11.16:client/mysql.cc:2788–2810`,
+  `mariadb-11.8.9:client/mysql.cc:2817–2843`). The refusal names the
+  construct, not its SQL body. A nested `/*!` can replace MySQL's hint state
+  with conditional-comment state, or set conditional-comment state inside
+  a MariaDB 10.11–11.8 client's ordinary comment. This can change comment
+  endings and expose quotes and delimiters
+  (`mysql-5.7.44:client/mysql.cc:2759–2772`,
+  `mysql-8.0.46:client/mysql.cc:2644–2655`,
+  `mysql-8.4.0:client/mysql.cc:2922–2947`,
+  `mariadb-10.11.16:client/mysql.cc:2805,2826–2830`,
+  `mariadb-11.8.9:client/mysql.cc:2834,2855–2859`). MySQL clients 5.7.44,
+  8.0.42, 8.1.0, 8.4.0, 8.4.5 and 9.1.0 also treat `#` and `-- ` inside
+  hints as line comments. The hint-state exclusion is fixed in 9.2.0 by
+  commit `514931dba1e` (Bug#30875669), and in 8.0.43 and 8.4.6 by
+  commit `94a29a8a117` (Bug#37572191)
+  (`mysql-5.7.44:client/mysql.cc:2681–2690`,
+  `mysql-8.0.42:client/mysql.cc:2576–2586`,
+  `mysql-8.1.0:client/mysql.cc:2692–2702`,
+  `mysql-8.4.0:client/mysql.cc:2859–2870`,
+  `mysql-8.4.5:client/mysql.cc:2866–2877`,
+  `mysql-9.1.0:client/mysql.cc:2875–2886`;
+  fixed: `mysql-8.0.43:client/mysql.cc:2580–2590`,
+  `mysql-8.4.6:client/mysql.cc:2870–2880`,
+  `mysql-9.2.0:client/mysql.cc:2876–2886`).
+  MySQL's hint state is local to one line
+  (`mysql-8.4.0:client/mysql.cc:2735–2741`). Multi-line hints containing
+  any quote or the active delimiter refuse on every client family and
+  version. A dollar-quote opener also refuses on the MySQL reading:
+  MySQL 8.1+ clients can open dollar quotes after the first line of a hint
+  (`mysql-8.4.0:client/mysql.cc:2945–2957`).
+  MariaDB 10.11–11.8 keep `/*+` in their persistent multi-line comment state;
+  sources: `mariadb-10.11.16:client/mysql.cc:2788–2798`,
+  `mariadb-11.4.10:client/mysql.cc:2796–2797`,
+  `mariadb-11.8.9:client/mysql.cc:2817–2818`.
+  MariaDB 12.0.1+ keeps persistent hint and conditional-comment state
+  (`mariadb-12.0.1:client/mysql.cc:2218,2366,2536,2779–2798`), but a nested
+  `/*!` can still replace hint state. Its line-comment branch has no
+  `SSC_HINT` exclusion (`mariadb-12.0.1:client/mysql.cc:2694–2708`); the
+  oracle's hint line-comment guard applies only to the fixed MySQL ranges.
+  Backslash commands in hints remain
+  conservatively refused across client versions.
+  The client pass also refuses any ordinary `/* ... */` comment whose body
+  contains a nested `/*!`, `/*+` or `/*M!` opener, on one line or across
+  lines, for every client family and version. In MySQL, a nested `/*!` or
+  `/*+` sets `ss_comment` even with `ml_comment` already set. The first
+  `*/` clears only `ss_comment`, leaving the ordinary comment open past
+  the server's closing marker. A later `\C` can then discard text that the
+  server reading treated as quoted data, exposing an unreviewed statement.
+  MariaDB 10.11–11.8 has this interaction for `/*!`; its `/*+` is ordinary
+  comment text. MariaDB 12.0.1+ also sets hint state for `/*+`
+  (`mariadb-12.0.1:client/mysql.cc:2782–2784`). None of the
+  checked MariaDB clients sets `ss_comment` for `/*M!`; that opener is
+  refused conservatively too. MySQL and MariaDB 10.11–11.8 keep `ss_comment`
+  local to `add_line`; MariaDB 12.0.1+ keeps it across lines. Refusal avoids
+  depending on those version-specific state transitions. Client sources:
+
+  | Source (`client/mysql.cc`) | State lifetime | Ordinary close and nested special openers |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2538` | `2721–2767` |
+  | `mysql-8.0.46` | `2470` | `2616–2651` |
+  | `mysql-8.4.0` | `2741` | `2895–2930` |
+  | `mysql-9.7.0` | `2755` | `2913–2948` |
+  | `mariadb-10.11.16` | `2591` | `2788–2830` |
+  | `mariadb-11.4.10` | `2599` | `2796–2838` |
+  | `mariadb-11.8.9` | `2620` | `2817–2859` |
+  | `mariadb-12.0.1` | `2218,2366,2536` | `2739–2789` |
+  | MariaDB `HEAD` at `3a2f8e27981b76b99d2b87cc3bcec5ef022b2b23` | `2313,2460–2462,2629–2631` | `2834–2887` |
+
+  The server's ordinary comment consumes no nested level:
+  `mysql-5.7.44:sql/sql_lex.cc:1969–1973`,
+  `mysql-8.0.46:sql/sql_lex.cc:1940–1944`,
+  `mysql-8.4.0:sql/sql_lex.cc:1967–1971`,
+  `mysql-9.7.0:sql/sql_lex.cc:2023–2027`,
+  `mariadb-10.11.16:sql/sql_lex.cc:2471–2475`,
+  `mariadb-11.4.10:sql/sql_lex.cc:2502–2506`,
+  `mariadb-11.8.9:sql/sql_lex.cc:2505–2509`.
+  The client pass refuses overlapping openers and closers for ordinary,
+  hint and executable comments. A closing `*/` preceded immediately by `/`
+  contains an overlapping `/*`. The clients' ordinary-opener branch has no
+  `!ml_comment` guard and consumes the closing `*`, keeping the comment
+  open after the server ends it. This also affects hints read as ordinary
+  comments by MariaDB 10.11–11.8 and hints after their first line in MySQL.
+  Body checks include the closing `*` so they cannot split that opener.
+  A `*` immediately after a closing `*/` also refuses: MySQL's hint close
+  processes one byte at a time, so its closing slash can open a new comment
+  (`mysql-8.4.0:client/mysql.cc:2928–2930`). When a block comment's closer
+  touches following SQL, the editor inserts one space in the reviewed `send`
+  text, unless the next byte is client whitespace or starts the active
+  delimiter. This anticipates the space an ordinary comment can acquire
+  via `need_space` (`mysql-8.4.0:client/mysql.cc:2921,2959–2962`;
+  `mariadb-11.8.9:client/mysql.cc:2851,2865–2870`). Normalization uses server
+  token spans, including hint and executable-comment closers. Before inserting,
+  every possible client-family and ANSI-status reading must agree with the
+  server about any comment closer where the client could add a space.
+  This includes the dollar-quote reading used by capable MySQL 8.1+ clients.
+  The editor binds the client family, not its version or the result of its
+  dollar-quote capability probe, so MySQL and unknown families check both
+  dollar settings; the MariaDB closer scan keeps dollar quotes disabled.
+  Comparing readings retains the client's token spans as well as the server's
+  spans, boundaries, issues and code. A skipped server comment or MSSQL bracket
+  identifier cannot hide a changed client string or comment boundary.
+  A client-only closer inside a server string, identifier or skipped comment
+  refuses: normalization must not modify that data, and the client must not
+  insert an unreviewed space. This covers MariaDB MSSQL bracket identifiers,
+  MariaDB executable comments read by a MySQL client, and nested comments in
+  server-skipped version comments. Token spans
+  for `send` are rebuilt after insertion; source ranges and error positions
+  still map to the original editor text. The confirmation shows the normalized
+  text, which must equal the client packet, including whitespace.
+  Strings, quoted identifiers and `#` or `-- ` line comments
+  consume their complete contents first, so opener text there remains data.
+  Quotes and line-comment markers inside an ordinary block comment do not
+  protect a nested opener. Existing hint and executable-comment checks
+  cover nested openers in those other comment kinds.
+  Every multi-line block comment (`/*`, `/*+`, `/*!` or `/*M!`) also refuses
+  when a later physical line starts, after ASCII whitespace, with a named
+  client command or a backslash command. This includes command-looking lines
+  after pending SQL and commands disabled by binary mode. Ordinary comments
+  without those lines remain supported; command text inside a SQL string
+  outside a block comment remains string data. The message asks the user to
+  move the command outside the comment or reword that line.
+  MySQL 8.2+ checks each input line for a named command before `add_line`.
+  `skip_over_comments_and_space` can treat an unclosed hint or conditional
+  comment followed by whitespace as an entirely skippable buffer; a later
+  DELIMITER line then discards that buffer. Its inner loop stops at either
+  `*` or a following `/`, so it is not a general SQL comment scanner.
+  The ordinary-comment and string flags still suppress this lookup.
+  MySQL 5.7, 8.0 and 8.1, and all checked MariaDB clients, require an empty
+  buffer instead. The shared refusal avoids depending on client versions.
+
+  | Client tag | Per-line dispatch (`client/mysql.cc`) | Comment-buffer scanner (`client/mysql.cc`) |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2355–2369` | Empty buffer required |
+  | `mysql-8.0.46` | `2318–2329` | Empty buffer required |
+  | `mysql-8.1.0` | `2387–2398` | Empty buffer required |
+  | `mysql-8.4.0` | `2455–2481` | `2577–2593` |
+  | `mysql-9.7.0` | `2469–2495` | `2591–2607` |
+  | `mariadb-10.11.16` | `2403–2414` | Empty buffer required |
+  | `mariadb-11.8.9` | `2432–2443` | Empty buffer required |
+  | `mariadb-12.0.1` | `2352–2363` | Empty buffer required |
+
+  Separately from command dispatch, `add_line` omits the trailing newline
+  when its unflushed output begins with the first nine bytes of `delimiter`,
+  case-insensitively, unless a string or ordinary multi-line comment remains
+  open. No word boundary is required; special-comment state does not protect
+  that newline. A column-zero SQL continuation such as `delimiter -` followed
+  by `- 1 AND id = 5` can therefore become a `--` comment. The client lexer
+  refuses a column-zero `delimiter` prefix outside strings and comments in
+  sent SQL, unless myflames consumes it as a standalone DELIMITER command.
+  A line beginning inside a quoted token also refuses when it starts with
+  that prefix and closes the token before its newline, including the closing
+  line of a `$tag$` body in MySQL 8.1+ clients. A line that stays
+  inside the quoted token keeps its newline and remains supported.
+  Indenting or quoting a `delimiter_x` identifier preserves its newline.
+  For string data, avoid the line break just before DELIMITER. Dollar-quote
+  recognition and closing are source-checked in `client/mysql.cc` at
+  `mysql-8.1.0:2541–2572,2764–2798`,
+  `mysql-8.4.0:2701–2733,2931–2962` and
+  `mysql-9.7.0:2715–2747,2949–2981`.
+  Sources (`client/mysql.cc`): `mysql-5.7.44:1179–1189,2786–2800`,
+  `mysql-8.0.46:1203–1214,2667–2680`, `mysql-8.1.0:1217–1228,2802–2815`,
+  `mysql-8.4.0:1233–1244,2966–2982`, `mysql-9.7.0:1235–1246,2987–3000`,
+  `mariadb-10.11.16:1178–1188,2849–2863`,
+  `mariadb-11.8.9:1185–1195,2878–2892`, `mariadb-12.0.1:1187–1197,2812–2826`.
+
+  The executable-comment closer has the same overlap refusal as ordinary
+  and hint closers, including `SELECT /*!40101 1 */*2`. A space before the
+  multiplication operator makes the boundary explicit. The checked MySQL
+  clients and MariaDB 10.11/11.8 clear special-comment state at `*` and
+  reexamine `/`; MariaDB 12.0.1 consumes both bytes for `/*!` and `/*+`.
+  It does not set special-comment state for `/*M!`, whose closing slash can
+  still reopen a comment (`mariadb-12.0.1:client/mysql.cc:2779–2792`). Every checked server
+  consumes both closer bytes. This difference is refused on all clients,
+  including an unknown family.
+
+  | Tag | Client special closer (`client/mysql.cc`) | Server closer (`sql/sql_lex.cc`) |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2766–2767` | `1997–2006` |
+  | `mysql-8.0.46` | `2649–2651` | `1967–1975` |
+  | `mysql-8.1.0` | `2761–2763` | `1986–1994` |
+  | `mysql-8.4.0` | `2928–2930` | `1994–2002` |
+  | `mysql-9.7.0` | `2946–2948` | `2050–2058` |
+  | `mariadb-10.11.16` | `2829–2830` | `2499–2510` |
+  | `mariadb-11.8.9` | `2858–2859` | `2533–2544` |
+  | `mariadb-12.0.1` | `2786–2792` | `2537–2548` |
+
+  `test/client_addline_oracle.py` independently transcribes the relevant
+  `add_line` states from `mysql-8.4.0` and `mariadb-11.8.9`, including the
+  per-line conditional/hint state, DELIMITER-prefix newline omission and
+  `\C` parameter removal. It feeds the planned `send` without the statement
+  tag; the transport adds that tag on the wire. Its separate
+  server scanner counts statements without using production lexer tokens.
+  `test/test_client_comment_parity.py` enumerates every fragment through
+  length three over `/`, `*`, `!`, `+`, `M`, single quote, newline, space and
+  `x`, in seven plain/comment templates, for both client and server families.
+  Every accepted input must preserve the planned text and reviewed statement
+  count. This bounded ASCII differential test supplements the explicit
+  regressions; it does not execute SQL or replace live client validation.
+  Its line-structured extension enumerates token sequences through length
+  three, including comment-initial lines, LF, CRLF, DELIMITER, charset and
+  backslash commands, with an envelope that closes comments on a later line.
+  Accepted plans must produce exactly the reviewed unit texts, with no
+  commands or residual client buffer, under all eight client tags in the
+  dispatch table and both Unix and Windows reader behavior. The oracle
+  includes MySQL's comment-buffer lookup and
+  MariaDB 12.0.1's persistent special-comment state and two-byte closer for
+  `/*!` and `/*+`, but not `/*M!`. The unknown client family is not exercised
+  by this line enumeration; explicit regressions check family disagreements.
+  A separate bounded corpus crosses custom delimiters containing single,
+  double and backtick quotes, backslashes, internal and edge whitespace,
+  15/16/31-byte values, and 254/255/256/257/300-byte command lines. It compares
+  original script packets with planned units after the editor's documented
+  edge-whitespace trimming, then requires exact bytes for each private send.
+  Another corpus crosses dollar tags, short quote/comment bodies, identifier
+  prefixes, column-zero continuation lines and MSSQL bracket identifiers.
+  The oracle enables dollar quotes only for MySQL 8.1+ with a successful
+  capability probe; its explicit tests also cover a disabled probe.
+  These corpora cover both server and client families and all eight client
+  tags above. They do not enumerate arbitrary SQL, non-ASCII client charset
+  behavior or server execution. Production limit regressions separately check
+  UTF-8 byte counts. Executable-comment version digit rules and the trimming
+  of all trailing non-graphic bytes are outside this oracle's coverage.
+  Explicit regressions and live checks cover
+  further cases without making this enumeration exhaustive for arbitrary SQL.
+  Nested `/*` inside an executable comment refuses because `ml_comment` and
+  `ss_comment` interact at the closing markers. Executable
+  openers, closing markers and version digits are not atomic to the client;
+  a custom delimiter cutting any of them also refuses. Sources:
+  `mysql-9.7.0:client/mysql.cc:2750–2755,2785–2799,2838–2839,2913–2965`.
+  The server reading of each client unit still exposes every executable
+  semicolon for classification, even when the client sees one quoted string.
+  `DELIMITER` lines with nothing
+  pending are consumed as client commands. The argument follows the selected
+  client family's `get_arg`: both strip the opening quote and ignore text
+  after the closing quote; an unquoted argument ends at a space, not a tab.
+  MySQL accepts an unclosed quoted argument and stops at the first matching
+  quote. MariaDB requires closure and unescapes doubled quotes; it also
+  unescapes backslash pairs except inside backticks. MySQL unescapes
+  backslash pairs only for unquoted arguments. A missing or empty value,
+  remaining backslash, carriage return, or leading/trailing ASCII whitespace
+  refuses. The whitespace restriction prevents comment-space normalization
+  from creating the active delimiter, including `DELIMITER ' +'`.
+  The parsed delimiter must fit 15 UTF-8 bytes, including when supplied by
+  an internal caller. The entire physical DELIMITER command line must fit
+  255 UTF-8 bytes, including indentation and ignored trailing text, excluding
+  LF. Both client families truncate those buffers; myflames refuses instead.
+  The common limits were checked in every client tag above. Representative
+  sources (`client/mysql.cc`): `mysql-8.4.0:237,4617–4632` and
+  `mariadb-11.8.9:302,4883–4902`.
+  The first delimiter character must be ASCII. When the client character
+  set is multibyte (`use_mb(charset_info)` guards the copy), both clients
+  copy a UTF-8 multibyte character and continue before checking the
+  delimiter, so a delimiter starting with that character cannot match.
+  Multibyte characters
+  after an ASCII first character still count toward the 15-byte limit.
+  Sources (`client/mysql.cc`): `mysql-8.4.0:2759–2770` and
+  `mariadb-11.8.9:2643–2657`; the same ordering holds in all tags above.
+  Quote-containing delimiters remain supported. Inside a quoted token,
+  a doubled quote is not consumed as an escape when the active delimiter
+  starts at its second quote: the client closes the token at the first quote
+  and checks the delimiter before reopening at the second. The server token
+  pass preserves that packet boundary. For example, `DELIMITER "'a"` followed
+  by `SELECT '1''aDELETE FROM t'aSELECT '2' 'a` plans three units, including
+  the DELETE that requires confirmation. Sources (`client/mysql.cc`):
+  `mysql-5.7.44:2638–2640,2768–2772`,
+  `mysql-8.4.0:2824–2825,2931–2947`,
+  `mariadb-10.11.16:2700,2831–2835` and
+  `mariadb-11.8.9:2729,2860–2864`.
+  Normalized text is split again before review so an internal space cannot
+  create a delimiter across a comment closer either (`/ +` across `*/+2`).
+  Unknown families require equal parsed arguments as well as equal discarded
+  source ranges before a DELIMITER line is consumed. Sources: MySQL
+  `mysql-9.7.0:client/mysql.cc:2661–2682,2838–2912,4652–4671,4897–4935`;
+  MariaDB `mariadb-11.8.9:client/mysql.cc:2580–2584,2729–2808,4881–4905,5023–5080`;
+  MySQL argument parsing: `mysql-8.4.0:client/mysql.cc:4861–4900`.
+  CRLF handling follows the binary-mode reader: Unix MySQL and all checked
+  MariaDB clients keep the carriage return before LF, whereas MySQL on
+  Windows removes it. `get_arg` therefore keeps that byte in an unquoted
+  `DELIMITER //` argument on Unix. The splitter refuses any delimiter
+  containing CR, including caller-supplied delimiters; it also refuses a
+  caller-supplied LF because `add_line` cannot match across physical lines.
+  On a CRLF script, use `DELIMITER '//'` or a space after the unquoted `//`.
+  The splitter keeps original source offsets and CRLF bytes in SQL and
+  comments; it does not strip CR from literals. On Windows, a MySQL or
+  unknown client family refuses CRLF inside a sent unit, since its reader
+  would change those bytes even inside a literal. CRLF between units and
+  on consumed command lines still works. MariaDB preserves the sent bytes.
+  Sources:
+  `mysql-5.7.44:client/readline.cc:73–95`,
+  `mysql-8.0.46:client/readline.cc:75–95`,
+  `mysql-8.1.0:client/readline.cc:74–94`,
+  `mysql-8.4.0:client/readline.cc:75–95`,
+  `mysql-9.7.0:client/readline.cc:75–95`,
+  `mariadb-10.11.16:client/readline.cc:38–44`,
+  `mariadb-11.8.9:client/readline.cc:38–44`,
+  `mariadb-12.0.1:client/readline.cc:65–71`.
+  Argument termination: `mysql-8.4.0:client/mysql.cc:4861–4900` and
+  `mariadb-11.8.9:client/mysql.cc:5023–5080`.
+  MariaDB ORACLE mode-change detection unwraps `SET STATEMENT ... FOR`
+  before checking a statement-initial `name := value`, including each
+  semicolon-separated part of a client unit. The DDL boundary scanner reads
+  `:=` as one operator, so a wrapped assignment is not mistaken for a label.
+  User-variable assignments and right-hand-side reads of `@@sql_mode`
+  retain their existing meaning. Grammar (`sql/sql_yacc.yy`):
+  `mariadb-10.11.16:2022–2026,16452,18521–18524,18725–18760`,
+  `mariadb-11.8.9:2087–2091,17009–17020,19225–19230,19513–19547`,
+  `mariadb-12.0.1:2087–2091,17080,19287–19290,19573–19607`;
+  operator lexer: `mariadb-11.8.9:sql/sql_lex.cc:2548–2563`.
+  Binary mode does not disable every client command. Both client families
+  retain `\C` and the long-form `DELIMITER`; the MariaDB clients also retain
+  `\-` (sandbox). The short forms `\c`/`\d` and the long forms `charset` and
+  `sandbox` are disabled with these flags. `\C` calls `com_charset`, then
+  removes its parameters through the next delimiter or line end; inside a
+  conditional comment it instead consumes through that comment's closing
+  marker only while `ss_comment` is set. For MySQL and MariaDB 10.11–11.8,
+  that conditional state requires `/*!` to open on the same input line;
+  MariaDB's `/*M!` never sets it. MySQL's same-line hint state can also select
+  the closing-marker cutoff. MariaDB 12.0.1+ carries `ss_comment` across lines.
+  A `/*` consumed as a parameter never reaches the server. Sources below are
+  tagged `client/mysql.cc` files:
+
+  | Client source | Enabled short / long commands | Parameter removal |
+  | --- | --- | --- |
+  | `mysql-5.7.44` | `2439–2442`, `2498–2501` | `2602–2624` |
+  | `mysql-8.0.46` | `2391–2392`, `2439–2440` | `2521–2540` |
+  | `mysql-8.1.0` | `2460–2461`, `2508–2509` | `2633–2652` |
+  | `mysql-8.4.0` | `2552–2553`, `2667–2668` | `2796–2815` |
+  | `mysql-9.7.0` | `2566–2567`, `2681–2682` | `2810–2829` |
+  | `mariadb-10.11.16` | `2477–2489`, `2551–2554` | `2664–2686` |
+  | `mariadb-11.4.10` | `2485–2497`, `2559–2562` | `2672–2694` |
+  | `mariadb-11.8.9` | `2506–2518`, `2580–2583` | `2693–2715` |
+  | `mariadb-12.0.1` | `2427–2439`, `2501–2504` | `2614–2636` |
+
+  With `--comments`, MySQL `mysql-8.4.0:client/mysql.cc:2453–2464,2577–2593`
+  and `mysql-9.7.0:client/mysql.cc:2469–2478,2591–2607` can skip
+  leading block comments, including `/*! ... */`, before named-command
+  lookup, including earlier lines holding only comments and whitespace.
+  The editor's leading tag is also a skippable comment.
+  `/*!40101 SELECT 1 */` followed by a new-line `DELIMITER //` therefore
+  changes client framing and discards the preceding comment buffer.
+  MySQL `mysql-5.7.44:client/mysql.cc:2355–2356`,
+  `mysql-8.0.46:client/mysql.cc:2318–2319`,
+  `mysql-8.1.0:client/mysql.cc:2387–2388` and MariaDB
+  `mariadb-10.11.16:client/mysql.cc:2403–2404`,
+  `mariadb-11.4.10:client/mysql.cc:2411–2412`,
+  `mariadb-11.8.9:client/mysql.cc:2432–2433` do not skip that prefix.
+  The editor refuses comment-prefixed named commands that remain in the
+  text sent to either client family, without relying on the client's
+  version. At a line or unit head, `DELIMITER`, `charset` and `sandbox`
+  are unsupported unless the standalone `DELIMITER` handler consumes that
+  exact line. Ordinary block or line comments before a standalone
+  `DELIMITER` are allowed: `split_statements` consumes the command, and
+  `plan_statements` builds each unit's `send` from its statement text only.
+  Neither the command nor that preceding comment-only prefix is sent.
+  All possible readings must agree on the original source range each
+  consumed line discards. With an unknown client family, a server-skipped
+  `/*M! ... */` before DELIMITER refuses when the MySQL client reading drops
+  it but the MariaDB client reading keeps it as pending executable text.
+  Comparing only the remaining statement text would miss that difference.
+  An executable comment that keeps SQL pending prevents that consumption;
+  its following `DELIMITER` remains in the unit and refuses (the JG2 case).
+  Inline comment-prefixed commands also refuse. `charset`, `sandbox` and
+  all other unsupported client commands retain their checks, including
+  after comments on preceding lines. Only the named-command refusal for
+  the exact consumed `DELIMITER` is removed; other issues are retained.
+  The active delimiter also ends a command name (`charset;`, `charset//`),
+  matching lookup of a completed client buffer after delimiter removal
+  (`mysql-8.4.0:client/mysql.cc:2832–2863`,
+  `mariadb-11.8.9:client/mysql.cc:2729–2763`).
+  A `DELIMITER` at the script start or after a complete statement, with
+  only whitespace or ordinary comments on earlier lines, keeps this handling.
+  SQL names and functions such as `SELECT CHARSET('x')` remain SQL.
+
+  `lex_sql` records unsupported backslash commands in both the client and
+  server readings, before a later comment can hide SQL. This includes `\C`,
+  `\c`, `\d` and MariaDB's `\-`. A command exposed by either reading makes
+  classification risky and refuses editor planning and reviewed packets.
+  Command text inside strings or ordinary comments in both readings stays
+  ordinary text. In particular, a quote inside `/*!999999 ... */` can hide
+  `\C` from the client while the server skips the quote: this is refused as
+  a disagreement, not described as a command the client actually executes.
+  `\g` and `\G` do not end statements in `--binary-mode`
+  (`mysql-8.4.0:client/mysql.cc:2552–2553,2818–2822`). They are editor
+  input conveniences: the editor splits them itself and sends validated,
+  privately framed units, never the raw user script. `\N` remains the
+  client's NULL spelling. MariaDB also treats `--` without following
+  whitespace as a comment at a statement start
+  (`mariadb-10.11.16:client/mysql.cc:2745–2757`,
+  `mariadb-11.8.9:client/mysql.cc:2774–2786`); this is not a general server
+  line-comment rule. `--` before a non-whitespace control character is risky because
+  the server and client disagree. Newer dollar-body grammar is also compared
+  in full, including quoted/commented tags and client DELIMITER arguments.
+  `split_statements` returns `code`, `idents`, `token_spans`, `unclosed` and
+  `issues` with source text and offsets; each executable semicolon in a
+  custom-delimiter unit is classified (`REASON_MULTI`). Decisions:
   reads are SELECT, WITH ... SELECT, TABLE, VALUES, SHOW, HELP, DESCRIBE/DESC,
   EXPLAIN without ANALYZE, USE, CHECKSUM, transaction starts and ROLLBACK,
   UNLOCK, and `SET NAMES`, `SET [SESSION] TRANSACTION` (not READ WRITE), SET
@@ -2247,6 +3413,15 @@ server state (db-operations skill). Editor run reviews also bind the **On error*
   qualified/quoted calls, or nested calls that change state. Function names
   are read with `_IDENT_CHAR`, so `SELECT €()` and `CONCAT\u00a0(` (a
   no-break space is part of the name) are calls of unverified functions.
+  `CURRENT_ROLE` is a native reader only with established MySQL 8.0.11+ or
+  MariaDB 10.11.1+ facts; `JSON_VALUE` requires MySQL 8.0.21+ or MariaDB 10.11.1+
+  facts. `JSON_VALUE_SYM` is absent from `mysql-8.0.20:sql/sql_yacc.yy`
+  and first appears in `mysql-8.0.21:sql/sql_yacc.yy:1261,10005–10010`.
+  The other conservative floors use checked source tags, not inferred
+  introduction dates (`mysql-8.0.11:sql/item_create.cc:1316`,
+  `mariadb-10.11.1:sql/sql_yacc.yy:9850–9853`,
+  `mariadb-10.11.1:sql/item_create.cc:5787`). Unknown or older servers keep
+  those calls risky; qualified and quoted calls never gain the exemption.
   A classification is a hint: a SELECT can still call a stored function that
   writes, so on a read-only connection the server enforces it too: run
   `READ_ONLY_SESSION_GUARD` (`SET SESSION TRANSACTION READ ONLY`, returned as
@@ -2270,14 +3445,26 @@ server state (db-operations skill). Editor run reviews also bind the **On error*
   while the request keeps its `ENDPOINT_FIELDS` (host, port, user, TLS), else
   production; its read-only flag applies either way. A profile save that
   changes the endpoint without choosing a type makes it production.
+  `connection_safety(profile, connection, store=..., target_profile=...)`
+  computes the group connection's effective safety from the store at every
+  call (`dbops._group_safety` over `connection_groups.group_effective_safety`):
+  when the request names `connection.group_name`, or names a target profile
+  other than the active member, the type is the strictest of the active
+  member, the target and every current member of the group (production >
+  staging > development > local > unset); read-only stays each member's own
+  flag. A group claim the store cannot confirm keeps production. The action,
+  kill, variables-apply and accounts-apply endpoints and
+  `editor_session._connection_facts` (a tab pinned to a member) use it, and it
+  feeds `connection_identity`, so a Production member joining a group voids
+  review tokens and editor session ownership issued before.
   `connection_identity(connection, safety)` is the key reports and
   confirmations bind to, the Python twin of `connectionKey()` in
   `apps/workspace/src/binding.ts`: profile id, host, port, user, TLS mode and
   CA, then type and read-only only when not production and read-write (keys of
   default connections are unchanged). `report.flight_key` takes the same
   `safety`. Writes send with `WRITE_CLIENT_FLAGS` (`--comments`,
-  `--binary-mode`, which turns off every client command except `\C` and
-  DELIMITER in non-interactive use, on MySQL and MariaDB clients). All
+  `--binary-mode`, which retains `\C` and DELIMITER in non-interactive
+  use; MariaDB also retains `\-`, the sandbox command, as documented above). All
   connector executions pass `connector.CLIENT_CHARSET_FLAGS`
   (`--default-character-set=utf8mb4` and `--init-command=SET NAMES utf8mb4`) to
   keep client byte encoding locale-independent and avoid MariaDB 10.11
@@ -2291,7 +3478,9 @@ server state (db-operations skill). Editor run reviews also bind the **On error*
   `write_when_read_only` and object privileges, per the db-operations table
   (MariaDB SUPER counts before 11.0, READ_ONLY ADMIN before 10.11;
   `ALLOWED_BY_SUPER_BEFORE_110000`). `read_grants(conn)` reads USER(),
-  CURRENT_USER() and SHOW GRANTS, tagged, with `--comments`.
+  CURRENT_USER(), SHOW GRANTS and partial_revokes together with bracketing
+  identity snapshots in one tagged invocation, with `--comments` and
+  `--skip-reconnect`. An incomplete or changed snapshot returns no grants.
 - Audit: table `audit` in `~/.myflames/workspace.sqlite3` (owner-only, columns
   `workspace_store.AUDIT_COLUMNS`: id, attempted_at, finished_at (ISO-8601 UTC),
   status `pending|ok|error|declined|refused|unknown`, outcome (operation status such as
@@ -2433,8 +3622,14 @@ statement digest, expiring single-use token, and decline path. Every non-termina
 stderr with default No when the policy requires confirmation. `--yes` bypasses the prompt; read-only still refuses.
 A changed endpoint, default database or profile safety during password resolution
 refuses before opening a client. Once connected, the script is re-planned against
-the session's actual sql_mode; changed statements or policy need authorization
-again. `EditorSession.start_run(Run(...))` executes the script in one client,
+the session's actual sql_mode. The CLI compares `editor_session._run_review_state`
+before and after binding: changed typed targets, categories, per-unit guards,
+statements or policy need authorization again, even when the aggregate kind
+and action stay the same. `--yes` never supplies a newly revealed database
+name; `--confirm-target` must still match exactly. ALTER detection is recomputed
+from the bound plan, so a newly visible ALTER gets its preflight and lock-wait
+guard, while a skipped ALTER gets neither.
+`EditorSession.start_run(Run(...))` executes the script in one client,
 without helpers between user statements (the reviewed ALTER guard is an explicit
 statement, included in results and audit). Writes use `AuditTrail(operation="sql",
 surface="cli")`, including refused and declined attempts; no editor history entry
@@ -2477,7 +3672,9 @@ failure/refusal/decline before sending a statement, including failure to create
 a pre-send audit record. Pre-send failures write a diagnostic to stderr only:
 stdout stays empty, even with either JSON option or `--quiet`, and no output
 file is created. Errors after statement outcomes retain the JSON envelope and
-any preceding results on stdout, including connection loss with exit 2. Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault
+any preceding results on stdout, including connection loss with exit 2. This transport exit code does not
+claim that a write failed to run: a write still outstanding at connection loss
+retains an unknown audit outcome. Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault
 python3 -m unittest discover -s test -p 'test_sql_cli.py' -v` uses the editor's
 fake MySQL/MariaDB clients, not a live server.
 
@@ -2498,6 +3695,8 @@ the same `prediction` as the workspace review; no flag or help text changed.
 
 ### Query editor sessions
 
+For Group member DDL and table-data requests, consent is checked before transport setup and again immediately before the persistent client or any helper client spawns; an already open session keeps its existing per-write policy checks.
+
 `myflames/editor_session.py` runs any SQL from a Query editor tab in that
 tab's own server session (query-editor skill). `myflames sql` uses the same
 planner, write gate and session engine from the CLI.
@@ -2514,17 +3713,148 @@ planner, write gate and session engine from the CLI.
   connection switch (a request for another identity is refused, so the UI
   closes first), idle timeout (`EditorSessions.reap`, default 30 minutes,
   `idle_minutes` 1 to 1440), and server exit (`WorkspaceServer.server_close`
-  calls `EditorSessions.close`; an `atexit` hook kills leftover clients). Never
-  reconnected: an ended session answers runs with `status: "session_ended"`
+  calls `EditorSessions.close`; an `atexit` hook kills leftover clients). After
+  startup, never reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
+- Expired passwords: a failed login that prints the MySQL batch client's
+  expired-password hint on stdout reports `connector.EXPIRED_PASSWORD_MESSAGE`
+  (ERROR 1862). The editor checks both handshake-step and session notes;
+  script and write connectors map this hint when the client fails without
+  stderr. An actual server error retains priority over the hint. Tests:
+  `test/test_editor_session_i4.py` and `test/test_connector.py` (`TestBoundedTransport`).
+- Identity: after a preliminary session handshake, startup captures connection
+  id, version, hostname, port, server id, optional `server_uuid`, `wsrep_on`,
+  `wsrep_provider` and `wsrep_gcomm_uuid` in one `COM_QUERY` packet through
+  the tab's persistent client: a SELECT followed by SHOW GLOBAL VARIABLES
+  and SHOW GLOBAL STATUS. Only this complete packet supplies the write and
+  KILL identity; fields from the preliminary handshake are never combined
+  with its optional values. Autocommit, SQL mode and safe-updates settings
+  also come from this complete packet before deciding which setup is needed.
+  The client's private delimiter keeps these
+  statements in one packet. Any missing or failed identity result leaves
+  the tab open for ordinary reads, without a write or KILL binding. Required
+  startup hardening and state readbacks carry the recorded guard when a complete
+  identity is available; otherwise they are sent and verified without a guard.
+  State readback is required even when no startup setting needs to change.
+  A failed verification refuses startup; an incomplete identity still refuses
+  later writes, session-changing statements and KILL.
+  A startup guard refusal through a proxy routing statements to different
+  servers or backend sessions closes and drains that client, then starts one
+  fresh client for the same tab and options. The entire retry is unguarded:
+  identity reads supply display fields only, then startup hardening and its
+  state readbacks must pass before ordinary reads become available. No write,
+  session-change, USE or KILL binding is retained, and no guarded packet is
+  ever sent on that client. A failure on the fresh client fails startup;
+  there is no third attempt. During a retry,
+  the registered session stays `starting` while the failed client's readers
+  drain. Close is permanent across attempts. Before spawning either client,
+  startup checks Close, registry ownership and workspace shutdown under their
+  locks, so a removed tab cannot launch an unowned replacement.
+  The existing `in_transaction: null` and
+  `transaction_note` status fields explain in the workspace's transaction
+  popover that this connection routes statements to different servers or
+  sessions, so changes, database switching and Stop are unavailable.
+  Lab evidence (`proxysql-trace-e3.txt`, 2026-11-18; ProxySQL on port 36033,
+  covered by `test/live/live_editor_proxysql.py`): the guard's user-variable
+  SET disabled multiplexing and locked the frontend to the writer hostgroup
+  30. A later SELECT routed to reader hostgroup 32 returned ERROR 9006
+  (HY000), "connection is locked to hostgroup 30 but trying to reach
+  hostgroup 32", until that client disconnected. A drain SELECT therefore
+  cannot recover that connection. Regression tests model that per-client
+  lock in `test/test_editor_session_e3.py`.
+  A run result with ProxySQL error 9006 and this hostgroup-lock diagnostic
+  explains that the proxy tied the tab to one server group after a refused
+  change and asks the user to close and reopen the tab to run reads again.
+  The error's code and SQLSTATE stay unchanged; its original message remains
+  in `detail` and after the recovery text in `message` for the current UI.
+  A successful read without `server_uuid` identifies MariaDB even when both
+  version strings are customized. MySQL uses the UUID; MariaDB uses server id,
+  hostname and port, plus `wsrep_gcomm_uuid` from that packet when the Galera
+  provider is loaded, even with `wsrep_on` OFF (MariaDB
+  `mariadb-11.8.9:sql/wsrep_var.cc:104–110` separates provider presence from wsrep_on).
+  MySQL-compatible Galera servers also retain the node UUID. Stop and Close's
+  helper refuses KILL with "The server could not be confirmed" when its
+  required identity is unavailable; a missing or changed Galera node UUID
+  cannot fall back to the shared id, hostname and port. The KILL binding is
+  separate from the write identity. A write guard requires the complete
+  startup binding too, with every required identity field: missing or invalid
+  identity refuses with `identity_unavailable`, "The server could not be
+  confirmed. Nothing was sent." Ordinary reads remain available. Later write probes include the MySQL UUID.
+  The probe alone never authorizes a write: every non-read Run statement,
+  Run session or transaction control, and the Commit and Rollback actions use
+  `dbops.target_guarded_script` to send the recorded identity guard
+  and its statement in one `COM_QUERY` packet on the existing tab client.
+  Explicit safe-updates changes also use that guard in their packet, with a
+  guarded state readback. A guard refusal finishes their audit as refused and
+  ends the session before any readback or retry. If only the readback fails,
+  the accepted setting is recorded as unverified with an unknown outcome;
+  it is never called unsent or retried.
+  With a complete identity, startup read-only and safe-updates SETs and startup
+  state reads carry the recorded session guard in each packet. USE and its
+  state readback (including nested transaction-meter reads) and the unqualified
+  ALTER TABLE database-context check always require that guard. Startup requires a successful
+  state readback and the requested safe-updates value. A read-only connection
+  additionally verifies SHOW SESSION VARIABLES for `transaction_read_only` or
+  `tx_read_only`; missing, denied or false values end startup. These names are
+  session defaults, not evidence that an already open transaction is read-only
+  (MySQL `mysql-9.7.0:sql/sys_vars.cc:5094–5121`; MariaDB `mariadb-11.8.9:sql/sys_vars.cc:4530–4570`).
+  A refused ALTER context guard is audited before any lock-wait SET or ALTER.
+  No later helper is sent on the refused client. A failed readback after USE reports
+  an unknown outcome and ends the session, since the database change was already
+  accepted. Tests: `test/test_editor_session_e2.py`.
+  The guard also compares `CONNECTION_ID()` with the recorded backend session
+  id, preserving the tab's transaction context across same-server proxy
+  session switches (MySQL `mysql-9.7.0:sql/item_func.cc:1532–1541`; MariaDB
+  `mariadb-11.8.9:sql/item_func.cc:817–824`).
+  Query-editor plan generation also guards its transaction-state and
+  autocommit reads, internal settings, START TRANSACTION READ ONLY, plan
+  statement and cleanup ROLLBACK. Its closed-transaction precondition must
+  come from the bound backend; a guard refusal ends the session before any
+  later helper or cleanup SQL is sent.
+  No client can detect a proxy that hands the same backend session to another
+  client between statements outside a transaction and then returns it with
+  the same identity. The guard detects a different server or connection id;
+  it cannot prove exclusive ownership throughout an idle interval.
+  Each write packet repeats the guard, so per-packet proxy routing cannot
+  move a confirmed write to another server. The guard's OK and its exact
+  per-packet acknowledgement result set stay outside user results and their
+  row, result and memory budgets. An ordinary result row resembling the
+  acknowledgement prefix is preserved. The acknowledgement distinguishes an
+  identity failure from the protected statement's own error, including 1242.
+  The stderr end line can arrive before the stdout acknowledgement. On a
+  server error the engine waits up to one second for that reply; if it is
+  still absent, it closes stdin and drains a normal client exit before
+  declaring a guard refusal. This sends no SQL. If the client cannot drain,
+  the session ends with an unknown write outcome.
+  A client-library error or an error without an input line during a guarded
+  write also ends the session with an unknown outcome, even after its client
+  delimiter was read. No state probe or later statement follows it; the
+  delimiter confirms client framing, not whether the write ran.
+  A definite guard mismatch stops even **On error: Continue**,
+  marks that statement and later ones `not_run`, and ends the session without
+  an after-read or retry; earlier completed statements retain their results.
+  Audit finishes `refused` / `identity_mismatch` with no completed statements,
+  or `error` / `identity_mismatch` with their count when earlier statements ran.
+  Ending the client rolls back any open transaction, as for a failed session
+  identity probe. Confirmation text, tokens and audited user SQL stay unchanged.
+  Regression tests: `test/test_editor_session_identity.py`.
 - Framing: a random client delimiter is set once (`DELIMITER __mf<hex>_`);
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
   followed by ...` on stderr without contacting the server; N is the line
-  myflames wrote it on, so it ends the statement exactly and adds no server
-  statement between user statements (ROW_COUNT(), FOUND_ROWS(), SHOW WARNINGS
-  and GET DIAGNOSTICS keep working within a run). Server errors carry the line
+  myflames wrote it on, so it ends the statement exactly. Units whose client
+  readings agree add no server statement between user statements.
+  A status-sensitive unit on a bound session with known mode instead follows
+  its reviewed `SET SESSION sql_mode = @@SESSION.sql_mode` helper in a separate
+  client packet; the editor checks that reply before sending the unit's bytes.
+  Diagnostic reads following an ordinary user write
+  still describe that write; a guarded write that itself reads diagnostics
+  (for example `INSERT ... VALUES (ROW_COUNT())`) observes the guard's marker
+  SELECT, which its packet runs just before the write. `ROW_COUNT()` then
+  reads -1: a result set's end sets the row count to -1
+  (`mysql-9.7.0:sql/sql_class.cc:3851–3852`;
+  `mariadb-11.8.9:sql/sql_class.h:6311–6313`). Server errors carry the line
   their statement started on, which attributes them. stdout and stderr are
   separate pipes, each read by its own thread: the MariaDB client writes an
   error before flushing stdout, so a merged stream could misorder them. On
@@ -2537,18 +3867,283 @@ planner, write gate and session engine from the CLI.
   run's closing helper (a tagged status SELECT) closes the last one. Leading
   `--`/`#` comment lines are dropped before sending (the client would send them
   as a statement of their own) and trailing white space is trimmed (the client
-  does that too).
+  does that too). Every packet and each semicolon-separated suffix outside
+  quoted text and comments begins with a private `/*myflames:editor:<token>*/`
+  comment (`secrets.token_hex(16)`, one token per session). Helpers keep their
+  existing public tag after it. `--comments` preserves these comments through
+  both clients (MySQL `mysql-9.7.0:client/mysql.cc:1802–1805,2843–2859`;
+  MariaDB `mariadb-11.8.9:client/mysql.cc:1784–1787,2734–2756`). Only wire text changes: editor SQL,
+  confirmation, result attribution and history keep the user's original SQL.
+  CREATE definitions and ALTER EVENT bodies receive only their leading tag, even when another
+  statement precedes the definition in a custom-delimiter unit; their stored
+  bodies stay unchanged. The DDL gate already refuses a definition batched
+  with trailing SQL.
+  Statement-history matching removes only this session's leading private tag
+  before applying the existing helper and exact-SQL checks. Guarded packets
+  use the builder's collision-checked delimiter and keep the same bare
+  `delimiter` completion marker with its actual input line number.
 - Planning (`plan_statements`): `dbops.split_statements` with the session's
-  backslash reading (`@@sql_mode`, read at start and after every run); a
+  lexical mode (`@@sql_mode`, read at start and after every run); a
   statement with `unclosed` or `issues` (client backslash command, also inside
-  a `/*+ */` optimizer hint, which the client does not treat as a comment; `--`
+  a `/*+ */` optimizer hint on clients that process commands there; `--`
   before a control character; unusable DELIMITER), a NUL, a leading `delimiter` word,
-  or dollar-quoted text (`$tag$`, read as a string by MySQL 8.1+ clients) is
+  or dollar-quoted text (`$tag$`, read as a string by MySQL 8.1+ servers and clients) is
   refused with `status: "invalid"`; so is a statement whose quotes read
-  differently under NO_BACKSLASH_ESCAPES after a statement that may change
-  `sql_mode` in the same run. `selection: {start, end}` runs only that part.
+  differently under an unknown NO_BACKSLASH_ESCAPES, ANSI_QUOTES or MSSQL
+  mode. Planning also refuses SQL whose selected delimiter exposes more
+  statements in the server's reading than in the client's reading before
+  offering confirmation, asking for each statement on its own, ending with
+  the delimiter. Both client families check both possible backslash status
+  readings independently of the server mode, including when the mode is empty.
+  MariaDB clients also check both ANSI status values; an unknown family checks
+  every combination. A stored function or procedure can leave stale bits after
+  restoring its caller's SQL mode. Different readings require the separate
+  quote-status helper described under Write safety and audit, and an unbound
+  session or unknown mode refuses. Cursor and selection planning use the bound
+  mode, then review the helper with the selected unit. Ordinary units never get
+  this helper, preserving diagnostics between them. Unit and process coverage:
+  `test/test_editor_session_o3.py`; the stored-function regression for each GA
+  server is in `test/live/live_writes_ga.py`.
+  Every client family refuses hint bodies containing comment
+  markers (`/*`, `#`, `--` followed by whitespace or a line ending),
+  backslashes or unclosed quotes, including hazards inside quotes. Balanced
+  single, double and backtick spans with doubled-quote escapes are allowed
+  on one line; quotes or the active delimiter in a multi-line hint refuse.
+  Sources: `mysql-5.7.44:sql/sql_lex_hints.h:150–188`,
+  `mysql-8.0.46:sql/sql_lex_hints.h:110–147`,
+  `mysql-8.4.0:client/mysql.cc:2735–2741,2922–2947`,
+  `mariadb-11.8.9:sql/sql_lex.cc:2503–2518`.
+  Named commands after a comment-only prefix, including across lines,
+  refuse when retained in a sent unit. A standalone `DELIMITER` consumed
+  after ordinary comment lines is allowed and never appears in any unit's
+  `send`. Before consuming it, the splitter checks the entire prefix since
+  the current unit started against the server reading. Only whitespace and
+  comments that the server ignores may be discarded. Executed or uncertain
+  comment bodies stay in a refused unit, even when no SQL follows the command.
+  This includes `/*M! ... */` read as an ordinary comment by the MySQL client
+  but executed by MariaDB. With an unknown client family, every reading must
+  also agree on the original source range discarded by each consumed
+  DELIMITER line, including commands after earlier units or mode changes.
+  Only a command whose prefix passes this check loses
+  its named-client-command issue; other prefix issues remain. A DELIMITER left
+  after pending executable-comment SQL also refuses. Sources:
+  `mysql-8.4.0:client/mysql.cc:2455–2471,2895–2902` and
+  `mariadb-11.8.9:sql/sql_lex.cc:2416–2467`. This
+  protects against MySQL's comment-skipping lookup
+  (`mysql-8.4.0:client/mysql.cc:2453–2468,2577–2593`). See Write safety
+  and audit for the shared lexer rules and cross-version client sources.
+  Server dollar-quote sources: `mysql-8.1.0:strings/sql_chars.cc:128–129`
+  and `mysql-8.1.0:sql/sql_lex.cc:2111–2143`.
+  Possible changes include quoted assignment targets
+  and CALL/EXECUTE anywhere in a unit, including SET STATEMENT wrappers and
+  compound bodies. Reading `@@sql_mode`, including saving it in a user
+  variable, does not change the mode. Each SET assignment is checked at its
+  target and `=` or `:=` operator, including SESSION/LOCAL/GLOBAL/PERSIST scopes,
+  quoted names and spaces around the scope dot (`@@SESSION . sql_mode`). Spaced `@ @`
+  is not system-variable syntax (both lexers enter their hostname state after the first `@`);
+  the detector treats it conservatively as a possible change. The check does not
+  restart assignment tracking on CHARACTER SET inside CAST, CONVERT or other
+  right-hand-side expressions. Later assignments after SET NAMES, SET CHARACTER
+  SET or nested expressions still invalidate the mode. User variables such as
+  `@sql_mode` and right-hand-side reads or comparisons of `@@sql_mode` preserve
+  it; an opaque assignment target cannot prove the mode is unchanged.
+  When MariaDB ORACLE mode is possible, a statement-initial `name := value`
+  also leaves later mode unknown. ORACLE's one-part `set_assign` omits SET,
+  and name resolution can fall back to a system-variable assignment
+  (`mariadb-11.8.9:sql/sql_yacc.yy:19225–19230,19513–19549`;
+  `mariadb-11.8.9:sql/sql_lex.cc:9042–9050`). The qualified form
+  `name.name := value` cannot assign `sql_mode`: it requires a structured
+  variable, and GLOBAL, LOCAL and SESSION are reserved qualifiers
+  (`mariadb-11.8.9:sql/sql_lex.cc:9058–9136`;
+  `mariadb-11.8.9:sql/item_func.cc:62–69`). The detector nevertheless treats
+  qualified targets conservatively as unknown. Detection includes quoted
+  names, spaces around the dot, and assignments after a semicolon in one unit.
+  User-variable assignments and assignment-like text in SELECT expressions,
+  strings or identifiers do not gain this statement-initial meaning.
+  Grammar: `mysql-9.7.0:sql/sql_yacc.yy:13861–13864,16607–16731` and
+  `mariadb-11.8.9:sql/sql_yacc.yy:13694–13697,17009–17319`. Lexer:
+  `mysql-9.7.0:sql/sql_lex.cc:2117–2148`; `mariadb-11.8.9:sql/sql_lex.cc:2601–2631`.
+  `selection: {start, end}` runs only that part.
+  Executable comments require engine and version facts bound to the tab's
+  complete server/session identity. An unknown quote mode is accepted when
+  every modelled reading agrees on boundaries and effect. Known
+  skipped options are masked for planning and gating but remain unchanged
+  on the wire. Dump headers `/*!40101 ... */`, `/*!40103 ... */` and
+  `/*!50503 ... */` remain executable on both engines; `/*!80016 ... */`
+  executes on MySQL 8.0.16+ and is a comment on MariaDB or MySQL 5.7.
+  The editor refuses unknown or unbound server facts, disagreeing quote modes,
+  unterminated executed comments, reversed `/*!!` comments, and MariaDB's
+  `/*!99997` marker when wsrep is on or unknown. The message names only the
+  construct and reason, never its SQL body. A routed reads-only tab has no
+  complete binding and cannot authorize conditional SQL from display facts.
+  After routed startup or a failed identity step, planning and run
+  revalidation treat the engine, server version, SQL mode and `wsrep_on` as
+  unknown. Displayed hello/status values cannot narrow any lexer reading,
+  cursor or selection boundary, classification or ORACLE-mode decision.
+  Unbound executable-comment, ORACLE anonymous-block and stored-program refusals name the
+  missing session binding instead of advising a known SQL mode or merely
+  reporting the resulting unknown engine. Explain's
+  statement prefix, format and Tree availability may use the displayed
+  engine/version: a stale choice produces an ordinary server error and
+  does not supply facts to SQL safety checks. Units classified as `read` by
+  `dbops.classify` are exempt from the embedded-DDL and stored-definition checks.
+  SHOW CREATE TABLE/VIEW/PROCEDURE/FUNCTION/TRIGGER/EVENT/DATABASE/SCHEMA and plain
+  EXPLAIN therefore retain their read policy, including a custom-delimiter unit
+  containing only reads. The exemption uses the entire unit's classification:
+  a read or DROP PREPARE before a writing compound block still takes all DDL checks.
+  SHOW grammar: `mysql-9.7.0:sql/sql_yacc.yy:14343–14444` and
+  `mariadb-11.8.9:sql/sql_yacc.yy:14438–14629`.
+  The locally selected client family remains independent of that binding.
+  Ordinary reads still run when every possible reading agrees.
+  Startup retains the identity packet's observed `wsrep_on` in `_kill_identity`;
+  an absent value stays unknown. When that value is OFF, the guarded packet
+  requires `@@SESSION.wsrep_on <=> 0`, so the cached value cannot authorize a
+  different reading after the session setting changes.
+  Planning before startup is provisional and repeated after startup.
+  A possible executed wrapper such as `/*!999999 CREATE */ ALTER TABLE ...`
+  still refuses as embedded DDL before startup. Opening a bound session
+  first permits the known skipped comment and a standalone ALTER review
+  with its preflight and lock-wait setup. Ordinary comments and executable
+  opener/closer markers alone never count as wrapper code. `_run_api`
+  runs a started decision of `allow` without another review, including when a
+  provisional write resolves to a read. A token alone never makes an allowed
+  read require consent; an explicit `require_confirmation` still tightens policy
+  for dedicated Server actions. When the started decision needs consent, it
+  compares the action, typed target, ALTER preflight and binding, policy and
+  aggregate kind/category, and every unit's send text, kind, category, verb,
+  `single`, `session_control` and `conditional_sql` guards. Reasons, warnings,
+  transaction telemetry and other explanatory text do not invalidate consent.
+  The already validated, consumed provisional token applies only when this
+  request starts the same tab's first session and those requirements match.
+  A changed requirement returns a new confirmation, or a refusal, before any
+  user SQL is sent. A newly discovered ALTER gets its preflight before that
+  comparison. A provisional ALTER removed by the bound server's executable-comment
+  rules has no preflight or lock-wait setup; its final read/write decision follows
+  the same review comparison. A first-run MariaDB Table Explain runs without
+  confirmation when startup changes only its read-only EXPLAIN prefix.
+  Run-review digests bind those consent requirements and the
+  started client's private session tag: an unused provisional token, another
+  tab's token or a previous session's token cannot authorize the bound review.
+  Regression coverage: `test/test_editor_session_i1.py`,
+  `test/test_editor_session_e3.py` and `test/test_editor_session_identity.py`.
+  `start_run` revalidates each unit with the current binding before any
+  transport or identity probe; changed masked code requires a fresh plan.
+  Conditional reads also use the guarded packet, so a proxy cannot send
+  their version-sensitive text to an unreviewed backend.
+  In a bound session, a single literal `SET [SESSION] sql_mode = '<mode>'` supplies the later
+  planning mode, including combination names. The dump-header form
+  `SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='<mode>'` also supplies that mode:
+  the optional leading assignment must only save the current session mode
+  to a user variable. SESSION/LOCAL qualification is supported. The separate
+  routine preamble `SET @saved_sql_mode=@@sql_mode` preserves the current
+  mode until its following literal assignment. Within one run, these exact
+  saves track the mode known at the save point. A later
+  `SET [SESSION|LOCAL] sql_mode=@saved_sql_mode` or
+  `SET SQL_MODE=@OLD_SQL_MODE` restores that prediction only for the same
+  user variable, compared case-insensitively, with no intervening reassignment.
+  Saves remain evidence only across SET statements without calls, subqueries
+  or table references, and standalone CREATE PROCEDURE, FUNCTION, TRIGGER or
+  PACKAGE definitions. A stored body is not executed when it is defined.
+  Standalone CREATE EVENT preserves saves only when its AT, EVERY, STARTS and
+  ENDS expressions contain literals, parenthesized `+`/`-` arithmetic, INTERVAL
+  quantities and units, or the built-in CURRENT_TIMESTAMP and NOW() clock
+  expressions (including literal precision 0–6). Typed DATE, TIME and TIMESTAMP
+  literals are supported. No user/system variables, identifiers, subqueries
+  or other calls are allowed in this subset, including inside interval
+  quantities or clock arguments. Unsupported or excessively nested expressions
+  invalidate saves. The event's DO body is deferred and does not invalidate
+  them; a trailing executing statement in the same unit still does.
+  Schedule expressions execute during creation
+  (`mysql-8.4.0:sql/events.cc:350`,
+  `mysql-8.4.0:sql/event_parse_data.cc:183–192,245–249,343–347,393–399`,
+  `mariadb-11.8.9:sql/event_parse_data.cc:211–230,287–301,396–405,457–471`).
+  Any other intervening statement,
+  including `SELECT @v`, `SELECT f()`, DO or an INSERT that could fire a
+  trigger, invalidates saved values. Function-like calls in SET expressions
+  also invalidate them, including qualified or quoted function names.
+  A SET subquery or table expression invalidates saves even without a visible
+  call: `SET @other=(SELECT c FROM v)` and `SET @other=(TABLE v LIMIT 1)` may
+  read a view that calls a stored function. This conservatively includes
+  constant subqueries. Quoted data, quoted identifiers and variable names
+  such as `@table` do not count as query keywords; arithmetic SETs still work.
+  `SET STATEMENT ... FOR` is checked by its wrapped statement, so a wrapped
+  UPDATE or SELECT also invalidates saves even without an explicit call.
+  A definition followed by executing SQL in the same client unit cannot
+  preserve a save. This deliberately gives up predictions for harmless reads
+  to avoid trusting user variables that stored functions or triggers may change
+  (`mariadb-11.8.9:sql/item_func.cc:4775–4779,5624–5628`).
+  Captured MySQL and MariaDB dumps with literal event schedules preserve
+  event mode saves before later routines, so their SQL plans again. The
+  one-DDL-per-confirmation policy still refuses executing a complete dump;
+  use Maintenance > Restore. MariaDB's sandbox command line still requires
+  removal before running the remaining SQL in the editor. Isolated procedure
+  save/restore sections still run through confirmation.
+  Quoted variable names and executed version comments use the same rules.
+  Planning and pre-send revalidation each track saves afresh for that run;
+  no saved value carries into another run or comes from an unbound session.
+  Assignment from any other expression, an unknown saved mode, opaque
+  variable assignments, and intervening CALL/EXECUTE/SOURCE cannot supply
+  a known restore. Arbitrary multi-assignments and mode expressions still
+  leave the mode unknown. Sources:
+  `mysql-9.7.0:client/mysqldump.cc:995,1588–1597`;
+  `mariadb-11.8.9:client/mysqldump.cc:839,1830–1839`;
+  `mariadb-10.11.16:client/mysqldump.c:796,1733–1746`. Planning a dump does not bypass the
+  separate confirmation required for each DDL statement. Whole dumps belong in
+  **Maintenance > Restore**. The `/*M!999999\- enable the sandbox mode */`
+  first line emitted by mariadb-dump is a mariadb client command and stays
+  refused; the message explains that it can be deleted to run the remaining
+  SQL in the editor, or that Restore handles a whole dump. Sources:
+  `mariadb-11.8.9:client/mysqldump.cc:798` and
+  `mariadb-10.11.16:client/mysqldump.c:750`.
+  A nonliteral assignment without a tracked save, or an
+  indirect change, leaves later units mode-unknown. Every unknown reading
+  must agree on boundaries and classified effect, including unguarded reads
+  and executable comments. Quoted identifiers and strings have distinct token
+  roles even with identical spans and read effects. The cached execution mode is still invalidated
+  when a changing unit is sent, even if it errors. Preflight, tagging and
+  execution use each unit's revalidated mode prediction. Every guarded packet
+  checks that predicted quote mode on its executing server session. If a
+  literal assignment fails under Continue on error, a later mode-sensitive
+  packet refuses when its predicted mode does not match; no intervening
+  state read resets the user's diagnostics. Other nonliteral and indirect changes
+  retain the unknown-mode validation until refresh.
+  MariaDB `ORACLE` quoting is modelled, but CREATE/ALTER stored-program units
+  refuse with an explanation that the editor does not support that PL/SQL
+  grammar. Anonymous BEGIN/DECLARE blocks and top-level IF/WHILE/LOOP/REPEAT/CASE
+  blocks also refuse under ORACLE or an unknown MariaDB mode. Unknown MariaDB
+  modes cannot authorize those definitions either. An unbound engine cannot
+  rule out MariaDB ORACLE grammar for either anonymous compounds or stored-program
+  definitions. Both refuse during planning with an existing unbound session,
+  including after routed startup or a failed identity step, regardless of its
+  displayed engine or mode. With no session yet, the provisional first-run plan
+  defers only these ORACLE-mode refusals until the session opens; every other
+  planning and policy check still applies. The bound re-plan decides whether
+  the grammar is supported before any user SQL is sent. A planning error or a
+  `refuse` decision there returns without starting a run, even after provisional
+  confirmation. A bound session with a known non-ORACLE mode can review a definition.
+  A later literal or tracked restore cannot rule out an earlier possible ORACLE mode in that run,
+  because the assignment could fail under Continue on error; use a separate run
+  after the session mode has been refreshed.
+  `bound_oracle_mode(session)` exposes True/False for a bound mode, or None
+  without that fact, to the DDL scanner; `dbops.oracle_mode(sql_mode, engine)` handles planning modes.
+  Tests: `test/test_sql_lexer.py`, `test/test_editor_session_f1.py`,
+  `test/test_editor_session_j2.py`, `test/test_editor_session_k2.py` and
+  `test/test_editor_session_k3.py`.
   Offsets in requests and responses are UTF-16 code units (JavaScript string
   indexes; `Offsets`).
+  Dollar-quote tags follow the utf8mb4 client's identifier-byte rules: ASCII
+  letters, digits and underscore, plus every valid multibyte character, with
+  `$` ending the tag. An identifier character immediately before the opener
+  prevents it from starting a dollar quote. Source: MySQL
+  `mysql-9.7.0:client/mysql.cc:2715–2746`, `mysql-9.7.0:strings/sql_chars.cc:87–121`.
+  Planning compares the legacy split with a dollar-body split before
+  examining individual fragments: spans, delimiters, code, identifiers,
+  closure and parser issues must agree. This catches `$tag$` even when
+  `DELIMITER tag` would split its tag in the legacy reading. Cursor scoping
+  applies the same comparison before selecting a fragment. Sources: MySQL
+  `mysql-9.7.0:client/mysql.cc:2838,2966`. Regressions for executable comments, quote-mode
+  changes, independent Stop helpers, dollar delimiters and ProxySQL error
+  recovery are in `test/test_editor_session_f1.py`.
 - Values: NULL is `null`; everything else is the client's text (big integers,
   DECIMAL, dates as printed); binary columns print as `0x` plus upper-case hex
   and the column gets `hex: true` when every non-null value has that form. It
@@ -2569,16 +4164,70 @@ planner, write gate and session engine from the CLI.
   (`size_limit`, `size_limit_read`). While a run is running, status responses
   carry no rows. Load more re-runs with a larger limit. Stop
   (`EditorSession.stop`) sends the same KILL for the running user statement;
+  Stop, row-limit cancellation and Close use `_send_kill`, which puts the
+  guard derived from the tab's recorded server identity and `KILL QUERY` in
+  one query packet on the helper connection. The same guard also requires
+  the target connection id's current processlist `INFO` to begin with this
+  session's private token, compared as binary text (not a substring or LIKE
+  match), and excludes the helper's own `CONNECTION_ID()` so its tagged guard
+  cannot authorize killing itself on a reused proxy backend.
+  Both engines use `information_schema.PROCESSLIST`, which works with
+  Performance Schema OFF. MySQL's P_S processlist is not perpetual
+  (`mysql-9.7.0:storage/perfschema/table_processlist.cc:76–86`); its handler returns EOF
+  when disabled (`mysql-9.7.0:storage/perfschema/ha_perfschema.cc:111–112,1759–1762`).
+  I_S PROCESSLIST is present in MySQL 5.7, 8.0, 8.4 and 9.7: local source refs
+  `mysql-5.7.44:sql/sql_show.cc:2597,9116–9117`,
+  `mysql-8.0.46:sql/sql_show.cc:3244,5152`,
+  `mysql-8.4.0:sql/sql_show.cc:3232,5094` and
+  `mysql-9.7.0:sql/sql_show.cc:3846–3854,5705`. It is deprecated in newer MySQL, so a
+  future removal will refuse Stop rather than weaken ownership verification.
+  It traverses the server thread list independently of P_S. MariaDB sources:
+  `mariadb-11.8.9:sql/sql_show.cc:3461,3512–3515,10433–10443`. The leading comment remains
+  readable when the rest of INFO is truncated. A missing/hidden row, NULL
+  INFO, another tab's token, a recycled id or a
+  denied/unavailable processlist check cannot authorize KILL; there is no
+  fallback to an identity-only check. This batch has
+  `--skip-reconnect` and no `--force`, so a failed identity check cannot reach
+  the KILL. A mismatch or an unavailable check reports
+  `The server could not be confirmed. No KILL QUERY was sent.` to Stop;
+  the message also explains that the statement continues and the server may
+  hide or rewrite its text. MySQL's credential rewriter drops the leading
+  token, for example CREATE USER (`mysql-9.7.0:sql/sql_rewrite.cc:894–907`); processlist
+  prefers rewritten text (`mysql-9.7.0:sql/sql_show.cc:3797–3807`). This deliberately
+  refuses Stop rather than interrupting an unverified statement.
+  CALL and EXECUTE can expose inner SQL without the tab's token, so Stop
+  keeps the same refusal and explains that a statement inside a routine or
+  prepared statement continues. Sources: MySQL `mysql-9.7.0:sql/sp_instr.cc:971–983`
+  and `mysql-9.7.0:sql/sql_prepare.cc:293–308`; MariaDB `mariadb-11.8.9:sql/sp_instr.cc:1083–1139`
+  and `mariadb-11.8.9:sql/sql_prepare.cc:5033–5061`. No connection-id-only fallback is allowed.
+  The helper sends generated SQL on stdin, retaining only its own exact
+  private acknowledgement on errors. A KILL error after acknowledgement is
+  distinct from a guard failure; 1094 (unknown thread id) says the statement
+  already ended, without claiming it succeeded. Timeouts report an unknown
+  interrupt outcome. Generated SQL and the private token never appear in
+  Stop responses or session notes, including server errors and timeouts.
+  Close still terminates and reaps the tab's local client.
   `stopped` is true only when the KILL was sent. A statement it interrupts
   (1317 or 3169) is `stopped` and undone; one that ended normally is `ok` and
-  took effect, and later statements do not run. A statement still running
+  took effect, and later statements do not run. An interrupted MySQL SLEEP
+  can instead finish `complete`
+  with a result of `1` (MySQL `mysql-9.7.0:sql/item_func.cc:6269–6281`). The live writes
+  test accepts that outcome only with Stop recorded as requested/sent and
+  the eight-second sleep ending in less than seven seconds; MariaDB still
+  requires `stopped` with an interrupted statement. A statement still running
   `STOP_GRACE` (15) seconds after a KILL ends the session (`unresponsive`).
   `force: true` ends the session instead. KILLs and new statements are
   serialized (`send_lock`) and a KILL is never sent while a helper runs, so it
-  cannot hit another statement; both servers also clear a KILL QUERY that
-  lands between statements at the next command. `timeout` (seconds) stops a
+  cannot hit a later statement sent by this tab; both servers also clear a
+  KILL QUERY that lands between statements at the next command. `timeout` stops a
   run the same way. The `CONNECTION_ID()` read at start is checked after every
-  run; a different one ends the session. A statement's error text never ends
+  run; a different one ends the session. Processlist verification and KILL
+  remain sequential server statements, not an atomic conditional interrupt:
+  a proxy reassigning that backend to another client after the check can
+  still race KILL. This limit follows from MySQL's separate thread lookup
+  in `mysql-9.7.0:sql/sql_parse.cc:6572–6583` and MariaDB's in
+  `mariadb-11.8.9:sql/sql_parse.cc:9125–9135`; the guard never locks the target thread
+  across those statements. A statement's error text never ends
   the session by itself (server messages quote table data): a lost connection
   (1053, 1927, 2006, 2013, 2055, 4031) ends it when the run's status helper
   fails with one, or when the client exits. stderr: one server error per
@@ -2594,11 +4243,33 @@ planner, write gate and session engine from the CLI.
   ROW_COUNT() and SHOW WARNINGS in the next run describe them. `/commit` and
   `/rollback` send tagged COMMIT and ROLLBACK; `/close` with an open or
   unknown transaction answers `transaction_open` or `transaction_unknown`
-  unless `discard: true`. A statement that commits implicitly (DDL except
+  unless `discard: true`. A member that left its connection group still gets
+  Status, Rollback, Stop and Close on the tab's existing session (endpoint
+  ownership unchanged, never new statements), so its locks are never
+  stranded; Run, Open, Commit, Preview and Use keep the strict refusal
+  (Profiles, "Connection groups"). A statement that commits implicitly (DDL except
   CREATE/DROP TEMPORARY TABLE, GRANT/REVOKE, LOCK/UNLOCK TABLES, START
   TRANSACTION, BEGIN, SET autocommit = 1, ANALYZE/OPTIMIZE/REPAIR/CHECK TABLE,
   FLUSH, RESET, replication statements; `implicit_commit`) while a transaction
   is open or unknown always asks, also on Development, with `warnings`.
+  BEGIN, START TRANSACTION and SET autocommit values that can enable it use
+  COMMIT's write confirmation and audit policy even when the transaction is
+  currently closed. Quoted names, quoted values and expressions cannot evade
+  that policy; only literal 0/OFF/FALSE is known not to commit. MariaDB
+  `SET STATEMENT ... FOR` wrappers are unwrapped before transaction-control
+  checks, including nested wrappers and the transaction-age reset. The FOR
+  boundary follows the classifier's expression handling; NEXT/PREVIOUS VALUE
+  FOR inside an assignment does not end the wrapper. A double-quoted SET
+  target may name `autocommit` under ANSI_QUOTES, so an unknown quoted name is
+  treated conservatively. MariaDB grammar: `mariadb-11.8.9:sql/sql_yacc.yy:17009–17021`.
+  SET autocommit
+  retains its existing session-write policy even for those values. ROLLBACK,
+  SAVEPOINT, RELEASE SAVEPOINT and read-only SET TRANSACTION retain their read
+  policy but still carry the server/session guard in their packet.
+  The Rollback button remains available under read-only policy and after group
+  removal, subject to that identity guard. Engine behavior: MySQL
+  `mysql-9.7.0:sql/transaction.cc:125–146` and `mysql-9.7.0:sql/sys_vars.cc:5321–5324` commit existing
+  work for BEGIN and when enabling autocommit, respectively.
 - Safety: every run is classified per statement with `dbops.classify` (the
   session's backslash reading; before the session exists both readings) and
   judged by `dbops.decide` with `dbops.connection_safety` (a profile's type
@@ -2621,7 +4292,11 @@ planner, write gate and session engine from the CLI.
   confirms) and audited as `editor_safe_updates`; the saved policy is re-read
   after the password lookup and again after the client connects, right before
   `SET SESSION sql_safe_updates = 0` (a change refuses, sends nothing and ends a
-  session that request started). MariaDB `SET STATEMENT` of
+  session that request started). If applying or verifying an explicit
+  safe-updates preference fails, `/open` closes and removes the session that
+  request created, including an incomplete-identity or routed tab whose
+  startup deferred the setting. A refused preference on an existing session
+  leaves that session registered. MariaDB `SET STATEMENT` of
   `transaction_read_only`, `tx_read_only` or `sql_safe_updates` is a write
   (`dbops.SESSION_GUARD_VARIABLES`); read-only connections also refuse `READ
   WRITE` switches matched with quoted identifiers restored. The audit record is
@@ -2633,23 +4308,108 @@ planner, write gate and session engine from the CLI.
   even if the old decision allowed Development DML. This implements db-operations
   section 1 step 6 and section 5's backend enforcement rule.
   Sessions are keyed by tab id plus `dbops.connection_identity` (saved
-  connection id, host, port, user, TLS mode and CA, type and read-only).
+  connection id, host, port, user, TLS mode and CA, SSH target when present,
+  type and read-only, and the store-derived group name and generation on a
+  Group connection).
   Concurrent runs on one tab answer 409 `code: "busy"`; at most 8 live
   sessions (`too_many_sessions`). `EditorSessions.open` never returns a live
   session of another identity, so requests racing on one tab cannot share it.
 - DDL confirmation (db-operations sections 6, 7 and 9): `_decision` refuses
   multiple DDL statements, including those grouped by a custom DELIMITER, before
-  credentials. Run them one at a time. A CREATE routine's body is one DDL.
+  credentials. Run them one at a time. A CREATE routine's body and an ALTER
+  EVENT compound body are each one DDL. Terminal semicolons and ordinary
+  comments under a custom delimiter do not add another statement.
+  `_ddl_codes` recognizes control blocks only at stored-program statement
+  positions (body start, a label, or the next statement after BEGIN, a
+  semicolon, THEN, ELSE, DO or REPEAT). Expression CASEs have separate
+  balancing; IF/REPEAT functions and IF NOT EXISTS do not open blocks.
+  Row-constructor IF conditions remain one statement. Identifiers include
+  ASCII letters, digits, `_`, `$` and every non-ASCII character; qualified
+  names and `@`/`@@` variables are atomic, so their name parts cannot become
+  control keywords. Unbalanced or unsupported structures refuse with
+  "One DDL per confirmation" instead of guessing a boundary. MySQL grammar:
+  `mysql-8.4.0:sql/sql_yacc.yy:4736–4761,5121–5189,5423–5686`.
+  Opening and closing labels compare decoded names case-insensitively,
+  including independently masked quoted names. Non-reserved END/DO names
+  remain operands in parameters, column lists and loop expressions; only a
+  matched expression CASE consumes an END as its closer. Event names are
+  consumed before looking for the body DO. INTERVAL, BINARY and event
+  schedule AT/EVERY/STARTS/ENDS introduce operands, so an END or DO identifier
+  after them cannot close the expression or start the event body. Grammar:
+  `mysql-9.7.0:sql/sql_yacc.yy:3657–3727,10592–10600,10738–10744`;
+  `mariadb-11.8.9:sql/sql_yacc.yy:3036–3092,9870–9895,10289`.
+  UDF declarations (`CREATE
+  [AGGREGATE] FUNCTION f RETURNS STRING|INTEGER|REAL|DECIMAL SONAME 'x.so'`)
+  have no parameters or body and end after SONAME's string. Trailing SQL still
+  requires a separate confirmation. Sources: MySQL
+  `mysql-8.4.0:sql/sql_yacc.yy:5423–5497,6759–6763,15222–15238,17685–17726`; MariaDB
+  `mariadb-11.8.9:sql/sql_yacc.yy:4540–4543,5983–5988,16306,18880–18883,20005–20011`.
+  Function return headers consume multi-word types before their length or
+  precision, including `DOUBLE PRECISION`, `CHARACTER VARYING` and `NATIONAL
+  CHAR`. `LONG CHARACTER SET cs` treats `LONG` as the type and `CHARACTER SET`
+  as its charset attribute (`mysql-8.4.0:sql/sql_yacc.yy:7081–7085`).
+  Charset, collation and trigger FOLLOWS/PRECEDES names can be quoted
+  strings or identifiers. Qualified names remain atomic here; the server
+  validates whether a particular name is legal in that position. MySQL grammar:
+  `mysql-8.4.0:sql/sql_yacc.yy:7115–7153,7434–7482,17588–17599`; MariaDB:
+  `mariadb-11.8.9:sql/sql_yacc.yy:6633–6677,18448–18460,18803–18838`.
+  DECLARE handlers, cursor declarations, nested BEGIN blocks with declarations
+  and labelled loops retain their statement boundaries. MariaDB range and
+  cursor FOR loops use `DO ... END FOR` in its native grammar
+  (`mariadb-11.8.9:sql/sql_yacc.yy:18942–18945`). `LOOP ... END LOOP` for FOR
+  loops belongs only to the ORACLE grammar
+  (`mariadb-11.8.9:sql/sql_yacc.yy:19225,19414–19417`);
+  expressions and cursor SELECTs cannot consume a statement separator.
+  `EXCEPTION WHEN ... THEN` sections also belong only to the ORACLE grammar,
+  and stop at the enclosing END (`mariadb-11.8.9:sql/sql_yacc.yy:19588–19610`).
+  The lexer maps EXCEPTION to that token only under MODE_ORACLE
+  (`mariadb-11.8.9:sql/sql_lex.cc:1417–1428`).
+  Recognizing these boundaries does not authorize ORACLE-mode SQL or replace
+  the server's syntax checks. MariaDB grammar:
+  `mariadb-11.8.9:sql/sql_yacc.yy:4559–4578,18942–18945,19103–19207,19414–19417,19588–19611`.
+  A PACKAGE specification or body includes its outer END and any initialization
+  block, and a statement after that END needs its own review. Forward declarations
+  and routines with a single-statement body end at their semicolon; an Oracle
+  routine's IS/AS declarations can contain semicolons before its BEGIN.
+  AS/IS is recognized only in a package or routine header, after the name,
+  parameters and return type where applicable; aliases and expression IS
+  inside a body never start a declaration section.
+  Native package initializer blocks retain the package's separate outer END. MariaDB
+  grammar: `mariadb-11.8.9:sql/sql_yacc.yy:18766–18776,18848–18865,19340–19346,19643–19670,19694–19709,19728–19855,20012–20055`;
+  ALTER EVENT: `mariadb-11.8.9:sql/sql_yacc.yy:7471–7505,7618–7620,3118–3156`.
   DDL embedded in anonymous blocks or SET STATEMENT wrappers refuses: submit
   it as standalone SQL so its target and safeguards can be reviewed.
+  Native MariaDB BEGIN NOT ATOMIC, IF, WHILE, LOOP, REPEAT and CASE blocks
+  are checked at nested statement positions for every CREATE/ALTER/DROP/RENAME/TRUNCATE
+  object form, including DROP DATABASE. DROP PREPARE is session control,
+  not object DDL; quoted text and identifier occurrences are not statements.
+  A leading DDL keyword never exempts the rest of a client unit from these
+  checks or from the ORACLE anonymous-block refusal. In particular,
+  `DROP PREPARE s; BEGIN NOT ATOMIC ... END` still checks every nested change.
+  Only a stored-program definition is exempt from the anonymous-block check,
+  and the DDL boundary gate separately requires it to stand alone. Sources:
+  `mysql-9.7.0:sql/sql_yacc.yy:2627–2645`;
+  `mariadb-11.8.9:sql/sql_yacc.yy:2157–2167`.
+  Blocks containing DML keep their write classification and normal policy.
+  MariaDB grammar: `mariadb-11.8.9:sql/sql_yacc.yy:18212–18219,19167–19172,20174–20257`. Regressions:
+  `test/test_editor_ddl_gate.py`, `test/test_editor_session_i4.py` and
+  `test/test_editor_session_j2.py`.
   Temporary-table DDL also confirms. Multiple DML statements still share one
   review. DROP DATABASE/SCHEMA carries `confirmation.typed_target`; `_gate`
   requires `payload.typed_target` to match the decoded database identifier
-  exactly, alongside the single-use token. Read-only refusal takes precedence.
+  exactly, alongside the single-use token. Independently of boundary counting,
+  every DROP DATABASE/SCHEMA in every unit contributes its typed name,
+  including inside stored-program definitions or prefixed compound blocks.
+  An undecodable name or multiple distinct database targets refuses;
+  the confirmation's single typed field cannot authorize multiple names.
+  Read-only refusal takes precedence. Regression coverage:
+  `test/test_editor_ddl_gate.py` and `test/test_editor_session_j2.py`.
 - ALTER review (db-operations section 9): `_plan_run` adds the exact
   `/*myflames:editor*/ SET SESSION lock_wait_timeout = 5` before ALTER, leaving
   the user's SQL intact. It is shown, token-bound, audited and executed as its
-  own statement in the same session; any error stops before ALTER. The setting
+  own statement, but sent in the same guarded `COM_QUERY` packet as ALTER;
+  the first user OK belongs to the setting and a setting error leaves ALTER
+  `not_run`. An identity refusal runs neither statement. The setting
   persists in the tab afterwards. The skill gives `N`, not a numeric value;
   five seconds is the chosen application policy, per metadata-lock wait, not a
   total ALTER deadline. Longer MariaDB WAIT clauses and MySQL SET_VAR overrides
@@ -2677,22 +4437,22 @@ planner, write gate and session engine from the CLI.
   when the prediction below is INSTANT (the review then says "No rewrite
   offered: the server is predicted to run this ALTER instantly."; on MySQL
   ALGORITHM=INPLACE turns an instant ADD or DROP COLUMN into a rebuild,
-  `handler0alter.cc:1053-1056`). Existing
+  `mysql-9.7.0:storage/innobase/handler/handler0alter.cc:1053–1056`). Existing
   algorithm/lock clauses, partitioning, comments and unknown cases get no
   rewrite, with an explanation. Suggested SQL is displayed separately; using
   it requires editing and a new review. INPLACE can rebuild a table, and
   LOCK=NONE does not remove metadata-lock acquisition. The UI points to Server
   > Locks; no automatic SQL rewrite or lock killing occurs.
   Source checks (mysql-expert's source-verification rule): local
-  `mysql-server/sql/sql_table.cc:17360-17367` rejects INSTANT with a nondefault
+  `mysql-9.7.0:sql/sql_table.cc:17360–17367` rejects INSTANT with a nondefault
   LOCK; `18470-18525` enforces requested INPLACE/NONE. Tag `mysql-8.4.0` has the
   same checks at `16499-16506` and `17604-17666`. Local
-  `mariadb-server/sql/sql_alter.cc:139-223`, tag `mariadb-10.11.1:136-215`,
+  `mariadb-11.8.9:sql/sql_alter.cc:138–222`, tag `mariadb-10.11.1:136-215`,
   validates requested algorithms and locks, including rebuild-capable INPLACE.
-  MySQL rebuild evidence: `storage/innobase/handler/handler0alter.cc:927-949`
+  MySQL rebuild evidence: `mysql-9.7.0:storage/innobase/handler/handler0alter.cc:927–949`
   and `3042-3043` (`innobase_need_rebuild` in the in-place path).
-  SESSION timeout scope/ranges: MySQL `sql/sys_vars.cc:2378-2382`, MariaDB
-  `sql/sys_vars.cc:1592-1596`. See also the official
+  SESSION timeout scope/ranges: MySQL `mysql-9.7.0:sql/sys_vars.cc:2378–2382`, MariaDB
+  `mariadb-11.8.9:sql/sys_vars.cc:1559–1563`. See also the official
   [MySQL operations table](https://dev.mysql.com/doc/refman/8.4/en/innodb-online-ddl-operations.html)
   and [MariaDB online DDL overview](https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-online-ddl/innodb-online-ddl-overview).
   Callers send the ALTER alone: the Tables view's Add column… and Remove
@@ -2842,7 +4602,7 @@ planner, write gate and session engine from the CLI.
   `json`) explains exactly one statement in the tab's session, like MySQL
   Workbench. It prefixes `EXPLAIN FORMAT=TRADITIONAL|TREE|JSON ` (MariaDB's
   Table is plain `EXPLAIN `, which is always tabular there; MySQL 9.7
-  defaults `explain_format` to TREE in `sql/sys_vars.cc`, so Table names
+  defaults `explain_format` to TREE in `mysql-9.7.0:sql/sys_vars.cc:7599–7609`, so Table names
   TRADITIONAL) and records
   `explain_prefix` so error offsets still point into the editor text. Tree
   needs MySQL 8.0.16 or later (refused otherwise). More than one statement
@@ -2852,17 +4612,18 @@ planner, write gate and session engine from the CLI.
   classified like any statement, so EXPLAIN of a DELETE is a read, runs on a
   read-only connection without confirmation, and changes no row. Planning
   still evaluates constant parts (a derived table without tables is
-  materialized while the plan is built, `sql/sql_derived.cc`; verified on
+  materialized while the plan is built, `mysql-9.7.0:sql/sql_derived.cc:1628–1668`; verified on
   MySQL 9.7: `EXPLAIN SELECT * FROM (SELECT GET_LOCK('x', 0)) a` leaves the
   lock held; stored functions ran this way before 8.0.42, 8.4.5 and 9.3.0,
   Bug#37560280), so `dbops` applies the SELECT expression checks to the
   explained statement (named locks, `:=`, sequences, locking clauses, and
   functions that are not verified native readers) without the INTO check; DDL
   after EXPLAIN stays a read because the server refuses it. An optional
-  `parameters` object fills `:name` placeholders with `live.fill_parameters`
-  (the literals of `bind_query`: hex strings, finite numbers, NULL, lists for
-  IN; refused when backslash and NO_BACKSLASH_ESCAPES readings disagree); a
-  statement without placeholders is sent as written, and Run never binds. No
+  `parameters` object fills `:name` placeholders in SQL code spans using the
+  session's bound mode (the literals of `bind_query`: hex strings, finite
+  numbers, NULL, lists for IN; refused when an unknown mode makes readings
+  disagree); a statement without placeholders is sent as written, and Run
+  never binds. No
   SELECT projection, transaction wrapper or session setting change. Messages
   and history show the exact `EXPLAIN …` sent (`statement.sent`). The UI's
   Explain format select (`explain_format` in the UI preferences store, with a one-time legacy `myflames.editor.explainFormat` localStorage fallback)
@@ -3029,9 +4790,13 @@ planner, write gate and session engine from the CLI.
   line comment trailing space and safe keyword case, or a change of the space
   between an IGNORE_SPACE function and its parenthesis. `RESERVED` and
   `IGNORE_SPACE_FUNCTIONS` were computed from the server sources (MySQL
-  `sql/lex.h` symbols not declared `%token<lexer.keyword>` in `sql_yacc.yy`,
-  as `gen_keyword_list.cc` does, intersected with MariaDB `lex.h` symbols in no
-  `keyword_*` rule; MySQL `SYM_FN` and MariaDB `sql_functions[]`). A refusal,
+  `mysql-9.7.0:sql/lex.h` symbols not declared `%token<lexer.keyword>` in
+  `mysql-9.7.0:sql/sql_yacc.yy`, as
+  `mysql-9.7.0:sql/gen_keyword_list.cc:86–162` does, intersected with
+  `mariadb-11.8.9:sql/lex.h` symbols in no `keyword_*` rule of
+  `mariadb-11.8.9:sql/sql_yacc.yy`; MySQL `SYM_FN` at
+  `mysql-9.7.0:sql/lex.h:847–883` and MariaDB `sql_functions[]` at
+  `mariadb-11.8.9:sql/lex.h:754–800`). A refusal,
   a kept statement or "Already formatted" is said in `.editor-feedback`
   (`is-error` for a refusal); nothing is sent to the server. Unit tests
   `test/sql-format.mjs` (`npm run test:sql-format`, no build: the modules are
@@ -3270,8 +5035,9 @@ planner, write gate and session engine from the CLI.
   row must match a unit's exact sent text uniquely in both directions, else the
   unit reports the statement was not retained unambiguously; duplicate event IDs
   abort attribution. Collection runs after
-  a script and inserts no helper between user statements, so `ROW_COUNT()`,
-  `SHOW WARNINGS` and other intra-script diagnostics are preserved. Consumers
+  a script and inserts no observation helper between user statements; the
+  incoming-diagnostics limit of each write's identity guard still applies
+  (Query editor sessions, Framing). Consumers
   and instrumentation are never enabled automatically; disabled collection
   returns `available: false` with the reason and a link to Server >
   Instruments. Helper reads use the 30 s helper timeout.
@@ -3815,7 +5581,12 @@ without an automatic retry; light and dark at 1440 and 720 px).
 
 ### Locks
 
-`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+The deprecated Kill CLI also catches a `ConnectorError` from its final
+identity projection before prompting: it returns `refused` with
+`outcome: "identity_unavailable"`, `sent: []` and no KILL statement, and
+records the refusal with both connection and audit passwords redacted.
+
 Transaction evidence is additive in `locks-1.1`: report-level `trx_checked`
 is true only when `INNODB_TRX` was read successfully. An empty transaction list
 with `trx_checked: false` cannot establish that no transactions are open.
@@ -4045,7 +5816,7 @@ Sessions uses the same helper for `thread_kind` and `kill_blocked_reason`.
 
 ### Sessions
 
-`python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`) so Kill session in the workspace is bound to connection and server identity. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py` (replays in `test/fixtures/perf/sessions-*.json`).
+`python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`) so Kill session in the workspace is bound to connection and server identity. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py` (replays in `test/fixtures/perf/sessions-*.json`).
 Report-level `trx_checked` is true only when `INNODB_TRX` was read without truncation; false
 means absence of a transaction cannot be asserted. Each sessions row carries
 the same additive `trx_scope` and `trx_scope_source` fields and uses the shared
@@ -4629,6 +6400,8 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 
 ### Server lifecycle: upgrade-check, dump, restore, clone
 
+Group consent is rechecked at transport setup and immediately before every control, cancellation, monitoring, MySQL Shell, dump or restore client spawn (including both clone endpoints); tools that open internal sessions, such as a single mysqldump or parallel MySQL Shell process, can only be checked immediately before their process spawns, not between logins inside that process.
+
 #### MySQL Shell on demand (backend)
 
 `managed_shell.py` exposes local-only `status(workspace_directory=None)`,
@@ -4767,6 +6540,25 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 
 ### Replication: status, skip, skip-loop
 
+Status and receiver-coverage reads for a loop confirmation share one
+`TargetEvidenceConnection`. Workspace and deprecated CLI loop startup pass
+that same scope into `SkipLoop`, which retains it for initial receiver reads
+and later iterations. An identity or consent failure in
+`receiver_guard_plan` refuses the scope; it cannot disable receiver coverage.
+Ordinary denied or unavailable instrumentation can still report coverage
+off after its packet identity validates. The CLI passes
+`receiver_required=(guard['receiver_guard'] == 'on')`, so coverage advertised
+in its confirmation must also be available when the loop starts.
+
+`read_status` keeps the Readyset diagnostic fallback outside its bound
+MySQL/MariaDB reader. Only when no identity has validated may it identify
+Readyset through the underlying connection after a nonfatal, non-permission
+failure. Login denial (1045) and the other replication denial codes also
+refuse without an identification retry. The hint has no channels or server identity and leaves the scope
+refused. Skip and loop startup check that scope before proceeding; the hint
+cannot authorize writes. An already validated scope never uses this unbound
+fallback, and a connection-group consent refusal keeps its original type.
+
 The topologies always use the stage presentation (server glyphs, selectable nodes, floating cards with contact shadows over a lit stage floor with a faint grid, and links, stems and the group line as lit rails) with no presentation controls; the group's rail uses the accent only when every member is healthy, and colors come from theme tokens through color-mix() and light-dark(), while shadows use black with alpha. Motion illustrates reported running links or healthy group membership, never measured traffic. Failed, stopped, unknown and stale links stay still, and the operating system's reduced-motion setting turns it off. Each place's ⓘ explains what the motion means.
 
 Overview cards derive health from judged channel statuses. Errors and stopped threads are problems; unjudged Group Replication channels never imply an OK or running state. The GTID mode comes from `gtid.mode`, with `gtid.gtid_mode` accepted for older payloads and missing values shown as unavailable. Maximum applier lag is the maximum of measured judged channels, with measured, unknown and unjudged channel counts; zero does not establish synchronization. Receiver, heartbeat and worker lag caveats remain visible in the lag view and inspector.
@@ -4804,7 +6596,7 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 - `python3 -m myflames cluster [--fail-on {problem,watch}] [--json] [-o PATH] [-q]` (`cluster-1.0`, `read_status`), connection flags and `--profile` as the other live commands, query timeout 30 s. Tag `/*myflames:cluster*/`; every statement is a `SELECT` or `SHOW GLOBAL`. Exit 0 (also for a server that is not part of a cluster), 1 when a finding is at the `--fail-on` level or worse, 2 for bad input, an account that cannot read the cluster tables (`available: false`; `--json` still writes the report to stdout or `-o`) or a connection failure.
 - Detection: Galera when the global `wsrep_on` is ON (MariaDB), or, when SHOW GLOBAL VARIABLES has no `wsrep_on` (Percona XtraDB Cluster 8.4, verified live on 8.4.11, where it is session-only), when `wsrep_provider` names a provider. MariaDB with the global `wsrep_on` OFF and a provider loaded reads the wsrep status anyway: while `wsrep_connected` is ON or `wsrep_cluster_size` above 0 the node is still in the component (the server-level names stay listed, the provider's are hidden) and is reported as Galera with the problem finding `wsrep_off`; when the account cannot read that status, `available: false` (unreadable is not disconnected); otherwise not a cluster ("the Galera provider is not connected"). `kind` is `pxc` when `version_comment` names Percona XtraDB Cluster, else `galera` (labelled MariaDB Galera Cluster on MariaDB and Galera Cluster for MySQL on MySQL, `cluster.kind_label`, `kindLabel`). Otherwise, on MySQL 8.0+, Group Replication from `performance_schema.replication_group_members` (with `MEMBER_COMMUNICATION_STACK` from 8.0.27); a single OFFLINE row without a group name is the idle plugin. `innodb_cluster` when `mysql_innodb_cluster_metadata.v2_gr_clusters` lists the group name, else `group_replication`. Without a group, a server whose `@@server_uuid` is a `read-replica` instance in its replicated copy of `v2_instances` is an InnoDB Cluster read replica (`kind: innodb_cluster`, the local member with role `READ_REPLICA` judged by its `read_replica_replication` channel in `replication_connection_status` and `replication_applier_status`: both ON ok, the receiver CONNECTING watch (also with its last error kept while it retries, as MySQL Shell tells it apart), a stopped receiver or applier, or an error while not connecting, problem; a table that cannot be read leaves it unknown unless what was read shows a failure; the group instances from the metadata with state null, never MISSING). MariaDB without wsrep and MySQL without a group return `kind: "none"` with `message`.
 - Reads: preflight `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)` and `Uptime`; Galera `SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\_%'`, `mysql.wsrep_cluster_members` (membership of the last Primary view; on a non-Primary node the members come from `wsrep_incoming_addresses`), and on PXC `performance_schema.pxc_cluster_view`; Group Replication `replication_group_member_stats`, then `information_schema.SCHEMATA`, `schema_version`, `v2_gr_clusters`, `v2_instances` (`attributes->>'$.instance_type'`: read replicas from 2.2.0 are listed apart, never MISSING) and `v2_routers` (the five port keys only, by `attributes->>'$.KEY'`, so the router configuration and its metadata account never leave the server; from metadata 2.4.0 `COALESCE(router_stats.last_check_in, routers.last_check_in)`, as MySQL Shell reads it; also `UNIX_TIMESTAMP` of the check-in for its UTC time).
-- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): `v2_cs_members` and `v2_cs_clustersets` identify the set's clusters, primary cluster and invalidated clusters. The other clusters' instances come from the shared `v2_instances` metadata, without reading their live member states. On an ONLINE primary of a replica cluster, read the `clusterset_replication` channel from `performance_schema.replication_connection_status`, `replication_applier_status` and `replication_connection_configuration`: receiver and applier state, last error number and message, and source address. Findings flag this or another invalidated cluster, no recorded primary cluster, and a stopped, reconnecting or errored channel. A replica cluster's view comes from its replicated metadata copy and may be behind; the report notes this. `ClusterTopology` draws a ClusterSet band above the group with an arrow from the primary cluster to each replica cluster, broken when the channel stops or a cluster is invalidated, and Use for saved connections to the other clusters' instances.
+- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): `v2_cs_members` and `v2_cs_clustersets` identify the set's clusters, primary cluster and invalidated clusters. The other clusters' instances come from the shared `v2_instances` metadata, without reading their live member states. On an ONLINE primary of a replica cluster, read the `clusterset_replication` channel from `performance_schema.replication_connection_status`, `replication_applier_status` and `replication_connection_configuration`: receiver and applier state, last error number and message, and source address. Findings flag this or another invalidated cluster, no recorded primary cluster, and a stopped, reconnecting or errored channel. A replica cluster's view comes from its replicated metadata copy and may be behind; the report notes this. Connected to an InnoDB Cluster read replica of a cluster in a ClusterSet (a metadata 2.2.0 shape, on MySQL 8.0 and 8.4), the ClusterSet is read from the read replica's replicated copy the same way: `from_local_copy` is true and one note says the ClusterSet read here is that copy and may be behind. `ClusterTopology` draws a ClusterSet band above the group with an arrow from the primary cluster to each replica cluster, broken when the channel stops or a cluster is invalidated, and Use for saved connections to the other clusters' instances.
 - The `cluster-1.0` JSON report has an optional `clusterset` object (`docs/schemas/cluster-1.0.json`), absent outside a ClusterSet: `name, local_cluster, local_role, invalidated, primary_cluster, clusters[] {name, role, invalidated, local, instances[] {label, address, server_uuid, instance_type, source}}, channel {receiver_state?, applier_state?, last_error_number?, last_error_message?, source?} | null, from_local_copy` (`v2_cs_clustersets.clusterset_id` is moved by `@grouped_read` into the internal `_identity["clusterset_id"]` for `topology_identity` and is not serialized in `clusterset`). The deprecated command line's text output does not show the ClusterSet.
 - Envelope: `schema_version, engine, server_version, version_comment, captured_at, uptime_s, performance_schema, available, message, kind, server {hostname, port, report_host, server_uuid}, cluster {name, uuid, size, expected_size, expected_source, component, quorum, failures_tolerated, topology, provider}, status, status_why, local, members[] {key, name, address, host, port, uuid, state, state_source, role, version, local, status, status_why, metrics, label?, endpoint?, in_metadata?, instance_type?, communication_stack?, pxc_status?, segment?}, galera {..., wsrep_on, address_nodes, address_names_this_node, missing, incomplete}, group_replication, metadata {..., local_copy}, routers[] {id, name, product, address, version, last_check_in, last_check_in_age_s, last_check_in_utc, from_local_copy, ports}, findings[] {id, status, title, text, member?}, topology_tiers, connection_group, summary, statements, notes`. Members are sorted by name; `member.host` and `port` are separate (an IPv6 host is bracketed only in `address`).
 - Severity, one scale for every kind (CLI, JSON, MCP, the place, the sidebar, `--fail-on`): `ok` with quorum and every expected member present and healthy; `watch` while quorum holds but a member is missing (a Galera node not in the component, an InnoDB Cluster member MISSING or UNREACHABLE), in a transitional state (Donor/Desynced, Joiner, Joined, Joining, RECOVERING), or one more failure would lose the majority (`no_tolerance`, "Cannot survive another failure"); `problem` without quorum or outside a Primary component, for a member in ERROR, when the connected member is OFFLINE or in ERROR, or a Galera node that does not replicate (`wsrep_off`).
@@ -4819,27 +6611,346 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 
 #### Cluster changes
 
-Reviewed changes live only in a member's inspector (one home, no Management
-tab or context menu; `cluster.available_actions(report, member_key, checks)`, `action_checks`, `plan_action`, `execute_action`, `with_actions`; the send half is `reviewed_writes.execute`; sources and line references in the "reviewed actions" comment in `cluster.py`):
+The workspace's action catalog is complete for the reported cluster kind even
+when an action cannot run. `cluster.with_actions` puts overview actions only in
+`report.actions` (`overview_actions(report, checks)`) and member actions only in
+`member.actions` (`available_actions(report, member_key, checks)`). There is no
+`clusterset.actions` copy. CLI and MCP reads have no catalog. Actions keep their
+ids and labels as eligibility changes:
 
-| Action | Statement (tagged `/*myflames:cluster_op*/`) | Offered when | Typed name |
+- Group Replication: overview `switch_to_single_primary`, `switch_to_multi_primary`; each member `switchover`, `stop_member`, `start_member`.
+- InnoDB Cluster: the same two overview actions, plus `set_primary_cluster:<name>` for each non-invalidated replica cluster, `force_primary_cluster` for this cluster, and `rejoin_cluster:<name>` for each invalidated cluster; each member `switchover`, `stop_member`, `start_member`, `rejoin_instance`. Read replicas keep the same member actions, disabled. When there is no ClusterSet or no qualifying target, the overview keeps a disabled bare `set_primary_cluster`, `force_primary_cluster`, or `rejoin_cluster` entry for that family.
+- MariaDB Galera: no overview actions; each node `desync_node`, `resync_node`, `bootstrap_pc`.
+- PXC, Galera for MySQL, and servers outside a cluster: no actions.
+
+Each `cluster-action-1.1` entry has `schema_version, id, label, scope, kind,
+via, danger, description, member_key, member_name, member_uuid, cluster_name,
+enabled, why_not, fix, target, missing_privileges, grant_sql,
+privileges_unreadable` (`docs/schemas/cluster-1.0.json#/$defs/action`). `scope` is
+`overview` or `member`; member identity fields are null for overview actions.
+`cluster_name` identifies a ClusterSet target (null when there is none).
+`via` is `sql`, `udf` or `mysqlsh`. `kind` uses `dbops.KINDS`; these global
+SQL and AdminAPI changes are `risky`, independently of the existing `danger`
+presentation hint. Enabled actions have null `fix`; `why_not` may carry an
+informational privilege warning. Disabled actions have a short plain reason
+and a fix, selected by the first failing
+check: target connection, tool/version, readable report, then topology and
+member state, then missing privileges when those earlier checks passed.
+Privilege evaluation has one hook (`_action_privileges`) and still fills
+`missing_privileges`, `grant_sql` and `privileges_unreadable` when an earlier
+check disabled the action; that earlier reason and fix keep precedence.
+
+`target` has `self: boolean, member_name: string | null`, and, in a Group
+connection, `profile_id: string | null`, with optional `confirm: boolean` and
+`note: string`. Group member actions route through that member's saved
+connection, except `rejoin_instance`: it keeps the missing member's key,
+name and address as the instance to rejoin, but routes through the active
+ONLINE member with quorum. It does not need a saved login for the missing
+member. Shell's `modules/adminapi/cluster/cluster_impl.cc:1143–1176` checks
+Normal quorum and a primary before opening the separate target instance.
+A recorded `server_uuid` on MySQL or `wsrep_node_uuid` (the observed
+`wsrep_gcomm_uuid`) on Galera confirms the route. The profile must currently
+belong to the group and have a saved password for another member. The active
+member can use its request password (typed or saved); its live identity is
+sufficient without an earlier recording.
+
+Stored identity evidence takes precedence over addresses. More than one
+current group profile claiming the same member UUID disables the action with
+no route, even if one profile has no saved password or is the active member.
+The reason names all conflicting saved connections, for example
+`cluster-ic-1 and cluster-ic-router-rw both reach this member.`, with the fix
+`A MySQL Router or ProxySQL connection reaches whichever server is primary. Connect to cluster-ic-1 to act on this member, or keep only one of them in the group.`
+Names are sorted, and the fix names the first connection without assuming
+which endpoint is direct or treating either identity record as stale.
+Planning and every apply login reject the same ambiguity without picking by
+store order. A confirmed profile without a saved password cannot be replaced
+by an address suggestion.
+
+Only when no stored or active-session identity confirms the member, the catalog
+checks its reported host and port against current group members' saved
+endpoints using `topology_links.match_database_endpoint` normalization,
+including its IPv6 and scoped loopback rules. Exactly one match with usable
+credentials keeps the action eligible with that `target.profile_id`,
+`target.confirm: true`, and the note
+`Review checks that prod-db-2 (db-2:3306) is this member.` The place displays
+`target.note` under an enabled action in the same muted style as disabled
+reasons and connects it with `aria-describedby`. The address only chooses the
+saved connection the user's Review click tries; it never proves identity or
+authorizes a write. A catalog-only suggestion cannot produce a write plan.
+Several address matches disable the action and name all matching profiles,
+including matches with no saved password. With no identity or address match,
+saved connections in this group whose identity is unknown or matches no
+current member produce the reason
+`No saved connection in this group is confirmed as mf-ic-2 yet.` and the fix
+`Open the one that reaches mf-ic-2 (cluster-ic-2 or cluster-ic-3) on its own and view Cluster once to confirm it.`
+The choices use the saved names (ids when unnamed), sorted by name, with at
+most three shown followed by `and N more`. Connections already confirmed as
+another member, including the active connection confirmed by its live
+identity, are excluded. With no such unconfirmed connections, the reason
+and fix remain `Add a saved connection for <member> to this group.`
+
+Catalog evaluation makes no new logins. Tier discovery deliberately skips
+known cluster-member endpoints, so Refresh cannot be offered as a way to
+confirm their saved connections. Successful existing tier probes can still
+record their own node identities before the catalog's store snapshot. On a
+Review click, planning uses the selected saved connection with the existing
+membership, endpoint, credential and policy checks, proves its own UUID and
+local-member identity, then records that identity before issuing a review
+token. A failed proof records nothing and issues no token, for example
+`prod-db-2 (db-2:3306) does not reach db-2: it reports a different server.`
+Remote grants are not inferred from the active account: planning reads
+grants on the target. MySQL Shell eligibility uses that target's SSH fields.
+Outside a Group connection, local-node SQL still requires the connected
+member; UDFs and MySQL Shell retain their connected-member route. Overview
+actions default to the active member.
+
+For a Group connection's remote Galera node, both `desync_node` and
+`resync_node` remain eligible when their route is available, with the note
+"Review checks wsrep_desync and the state on this node's own connection."
+The active node's desync or donor state cannot judge a peer. Review must
+open that node's saved connection and evaluate its own `wsrep_desync` and
+local state; planning from a remote row in the active node's report refuses.
+
+`POST /api/live/cluster/plan` and `/api/live/cluster/action` accept the optional
+top-level `target_profile_id`.
+If present, the id must be non-empty text of at most 200 characters and
+identify a stored **profile**, with a saved password when it is another member, in the request's
+`connection.group_name`. The request's own saved profile must also still
+belong to that group and its endpoint fields must be unedited. An omitted
+target in a Group connection selects its active saved member (`clusterApi.ts`
+`planClusterAction` and `sendClusterAction` pass the catalog's saved member
+route as `target_profile_id` and retain it for the reviewed send; callers that
+omit it use the active-member default). Invalid
+targets in plan requests refuse with HTTP 400 before any password lookup.
+Apply refuses a target that left the group or forgot its password with an
+audited `refused` result and nothing sent. The refusal route retains the
+request's `group_name` so the audit uses the group's strictest current type,
+as the review does, before any password lookup. ProxySQL and
+Readyset plan/action handlers reject the field, including null, with 400.
+The connection is constructed only from the target's stored endpoint
+fields and its own saved password, as for `replication.profile_opener`, except
+that the request's active member can use its own typed password. The request's
+password is never copied to another member's route.
+
+Except for `rejoin_instance`, a Group member plan's freshly read target session's own server UUID
+(Galera: gcomm/node UUID) must equal the clicked member's UUID, and that
+member must be `local` in the report from that session. A matching address
+or topology label cannot satisfy this check. A mismatch returns 400 with
+no token; a later backend identity change refuses apply before a write,
+and the existing in-client SQL guard covers a change at the write login.
+The review's `server_name`, `target_text` and Runs on fact use the stored
+profile name and endpoint, such as `prod-db-2 (db-2:3306)`. The live UUID
+and `Listed in the cluster as` topology label have their own fact lines.
+The plan builders format member titles and confirmation labels directly from
+that saved server name; no topology-label substring replacement occurs.
+For `rejoin_instance` this route proof and the Runs on / UUID / Listed in
+the cluster as facts refer to the active ONLINE member. Its Instance fact,
+title, `target_text` and typed confirmation still name the missing member.
+An identity-recording failure refuses planning with a plain sentence and no token,
+without exposing a store exception.
+
+`POST /api/live/cluster/plan` reads the server again and evaluates the same
+catalog. `plan_action` raises `ActionUnavailable` for a disabled entry with
+the non-empty `why_not`, `fix` and `grant_sql` joined by single spaces; newlines
+inside `grant_sql` are preserved. The HTTP response is 400 with that exact
+error text and no review token. Unknown ids retain the existing refusal. Overview
+plans may omit `member_key`; the plan binds the connected member. Execution
+still rechecks the reviewed statements and expectations against fresh state
+(`action_checks`, `plan_action`, `execute_action`, `reviewed_writes.execute`).
+
+##### Privileges per action
+
+`MYSQL_ACTION_PRIVILEGES`, `MARIADB_ACTION_PRIVILEGES` and the two
+`MYSQL_SHELL_*_PRIVILEGES` tables are the requirements source. Each inner
+`missing_privileges` list contains acceptable alternatives, least privilege
+first; each inner list is a separate requirement. SQL and UDF requirements are global
+(`ON *.*`). Shell topology requirements also retain schema scope and
+`WITH GRANT OPTION`. `SUPER` alone never substitutes for Shell's full list.
+
+The file:line references below identify the implementation in this checkout.
+The recorded upstream evidence in `cluster.py` identifies MySQL 9.7 trunk
+`sql/sql_parse.cc:3560–3564,3653–3657` for START/STOP and
+`plugin/group_replication/src/udf/udf_utils.cc:35–102` for UDF access;
+MySQL Shell `modules/adminapi/common/accounts.cc:122–175,244–324` for its
+administrator list and
+`modules/adminapi/cluster/topology_configuration_command.cc:231–245` for
+topology preparation. MariaDB's `sql/sys_vars.cc` definitions
+`Sys_wsrep_desync` / `Sys_wsrep_provider_options` use
+`sql/set_var.cc` `on_check_access_global` and `sql/privilege.h` `SUPER_ACL`;
+these two variables keep `SUPER`, including on versions that split other
+administrative privileges. Those upstream references are the source review
+recorded with the tables, separate from fixture or live-test evidence.
+
+| Action and route | Engine / version | Required privileges | Source file:line |
 | --- | --- | --- | --- |
-| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+, except a ClusterSet replica cluster (MySQL Shell route below); single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
-| `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member, ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member |
-| `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member, OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read at plan and send time; ON or unreadable refuses) | no |
-| `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication only (not InnoDB Cluster), on the connected member, group ready as for switchover | the connected member's name |
-| `desync_node` Desync this node… | `SET GLOBAL wsrep_desync = ON;` | MariaDB Galera, the connected node, `wsrep_on` ON, `wsrep_desync` OFF and Synced | no |
-| `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node, `wsrep_desync` ON | no |
-| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node, `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name |
+| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2187` |
+| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2189` |
+| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2188` |
+| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2190` |
+| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2181` |
+| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
+| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
+| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
+| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
+| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2182` |
+| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2192` |
+| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2193` |
+| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
+| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
+| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
+| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
+| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2217`; `myflames/dbops.py:1549` |
+| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:2806` (MySQL kinds); `myflames/cluster.py:2815` (MariaDB-only Galera branch) |
 
-MySQL Shell actions are offered only in the Cluster place for a MySQL InnoDB
-Cluster when `mysqlsh` is installed on this computer. `cluster_shell.find_shell`
-uses the client inventory and its ownership and version checks. Mode switches
-need MySQL Shell 8.0 or later, ClusterSet changes (including Make primary within
-a replica cluster) need 8.0.27 or later, and member rejoin needs 8.1 or later.
-The connected member must be ONLINE with quorum, with no group member
-RECOVERING or UNREACHABLE. Group-wide actions appear on the connected member;
-rejoin appears on the MISSING member and Make primary on the target secondary.
+For the three Shell topology actions, the global list is cumulative by
+**server** version, with `WITH GRANT OPTION` for every required privilege:
+
+| Server version | Global privileges added | Source file:line |
+| --- | --- | --- |
+| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:2198`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:2200`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:2202`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:2203`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:2204`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+
+The schema requirements below also need grant option. A global grant can
+satisfy a schema requirement when `privileges.has` proves its scope and grant
+option, respecting partial revokes. Dynamic grant option is per privilege;
+a separate static `GRANT OPTION` does not supply it.
+
+| Schema | Privileges | Source file:line |
+| --- | --- | --- |
+| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:2207`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:2208`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+
+##### Grant reads, suggestions and refusals
+
+Status reads keep a request-local `_ActionReport`: `read_status` itself does
+not read grants, and CLI/MCP reports expose neither grants nor the connection.
+Building the workspace catalog lazily reads `dbops.read_grants` for actions
+with a local requirement list and shares the parsed model across the request.
+At plan time, `action_checks` reads fresh privileges on the connection that
+will send the change, even if the report has cached catalog grants. Sending
+skips that advisory grant read and relies on the same-session identity guard
+and the server's privilege checks. It never borrows another member's or saved connection's grants.
+Runtime-only Shell actions skip this read, including while `plan_action`
+evaluates sibling catalog entries. Their informational `why_not` is
+"MySQL Shell checks the privileges it needs when it runs." Shell remains
+responsible for its member logins and the privileges needed by each step.
+
+`dbops.read_grants` reads tagged USER(), CURRENT_USER(), VERSION(),
+CONNECTION_ID(), server_id, hostname and port, plain SHOW GRANTS, and the
+optional server_uuid and partial_revokes values in one
+client invocation with `--skip-reconnect`. `galera_identity=True` additionally
+reads and requires a valid wsrep_gcomm_uuid in both snapshots, only for callers
+that need Galera node identity. Ordinary reads, including dump and restore
+preflights, omit GLOBAL_STATUS. The presence of server_uuid in the variable
+results determines whether to validate a MySQL UUID; VERSION() is not engine
+evidence because MariaDB permits a custom version string. Framed identity/account snapshots
+before and after the grants must match, including the optional variables;
+an incomplete or changed snapshot returns no account or grants. The shared `privileges.parse_grants` / `privileges.has`
+model handles effective login-time roles and partial revokes; Cluster adds no
+grant parser. For an action with a local requirement list, a failed, empty,
+unparsed or non-fresh grant model, or an absent or invalid `CURRENT_USER()`
+account, is unknown: `privileges_unreadable: true`,
+`missing_privileges: []`, `grant_sql: null`. It does not disable an otherwise
+eligible action. It appends exactly "Privileges could not be read; the server
+refuses the change if one is missing." to `why_not`, and an enabled plan keeps
+that sentence in `warnings`. Earlier topology or target refusals remain.
+
+Schema GRANT suggestions use the partial_revokes value from this same login,
+never the earlier status preflight. With it OFF, `_`, `%` and backslash in a
+schema name are escaped as database-pattern literals before identifier
+quoting. With it ON, names remain literal, including underscores and percent
+signs. MySQL 5.7 and 8.0.0–8.0.15 have no partial_revokes variable and always
+use wildcard matching, so a successful grant read on those versions uses
+the same escaping as OFF. MariaDB also always uses wildcard matching.
+When the setting is unknown on a version that has it, or the version is
+incomplete or unknown, and a schema needs such escaping,
+`grant_sql` is null and the catalog explains that the GRANT could not be
+built. A globally scoped suggestion needs no schema escaping. This follows
+MySQL `sql/auth/sql_auth_cache.cc:1426–1430`: wild_compare with
+partial_revokes OFF and strcmp with it ON. Historical source evidence is
+`mysql-5.7.44:sql/auth/sql_auth_cache.cc:1033`,
+`mysql-8.0.15:sql/auth/sql_auth_cache.cc:1163` (unconditional wild_compare),
+and `mysql-8.0.16:sql/auth/sql_auth_cache.cc:1181–1184` (the new switch).
+MariaDB `sql/sql_acl.cc:3257` uses wild_compare unconditionally. Failed
+grant reads still return no model or suggestion on every engine/version.
+
+When a readable model cannot satisfy a requirement, `missing_privileges`
+names each missing alternative with its required scope and grant option.
+An otherwise eligible entry becomes disabled with `why_not` equal to
+`"Needs " + "; and ".join(" or ".join(row) for row in missing_privileges) + "."`
+and, when a safe suggestion can be built, `fix` exactly
+"Run the statement below as an administrator, then Refresh."
+An earlier refusal keeps its own reason and fix, while still carrying the
+missing privileges and GRANT text.
+
+`grant_sql` is advisory SQL for an administrator. It selects the first,
+least-privilege alternative from each missing requirement, deduplicates names
+and groups them by scope and grant option. The grantee is the account returned
+by `CURRENT_USER()`, split at the final `@` and quoted by `quote_account`
+(backticks doubled inside each identifier), never `USER()`, a profile's user
+name or a role's grantee. For example:
+
+```sql
+GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;
+```
+
+For Shell topology checks on MySQL 8.4 with only USAGE, the full suggestion
+includes the global line and all four schema lines, each with grant option:
+
+```sql
+GRANT CLONE_ADMIN, CONNECTION_ADMIN, CREATE USER, EXECUTE, FILE, GROUP_REPLICATION_ADMIN, PERSIST_RO_VARIABLES_ADMIN, PROCESS, RELOAD, REPLICATION CLIENT, REPLICATION SLAVE, REPLICATION_APPLIER, REPLICATION_SLAVE_ADMIN, ROLE_ADMIN, SELECT, SHUTDOWN, SYSTEM_VARIABLES_ADMIN, TRANSACTION_GTID_TAG ON *.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT DELETE, INSERT, UPDATE ON `mysql`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata_bkp`.* TO `monitor`@`%` WITH GRANT OPTION;
+GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, LOCK TABLES, REFERENCES, SHOW VIEW, TRIGGER, UPDATE ON `mysql_innodb_cluster_metadata_previous`.* TO `monitor`@`%` WITH GRANT OPTION;
+```
+
+Only missing groups appear in an actual suggestion. GRANT text never enters
+the action's reviewed statements or executes through the Cluster action.
+A privilege refusal from `/api/live/cluster/plan`, for example, is HTTP 400
+with exactly:
+
+```text
+Needs GROUP_REPLICATION_ADMIN or SUPER. Run the statement below as an administrator, then Refresh. GRANT GROUP_REPLICATION_ADMIN ON *.* TO `monitor`@`%`;
+```
+
+It issues no review token and sends no write, regardless of a caller-supplied
+`enabled`, `missing_privileges` or `grant_sql` value.
+
+##### State and execution
+
+The enabled-state rules below apply to catalog entries; failure disables the
+entry instead of hiding it (`ClusterPlace.tsx` `ActionGroup` renders `report.actions` in `section.cluster-actions` under `Changes · the whole cluster` and `member.actions` in each member's inspector, keeping disabled buttons in the tab order with `aria-disabled="true"` and `aria-describedby` pointing to `.cluster-action-why`, which shows `why_not` and `fix`, a `Use <connection>` button when `fix` asks to connect to a member matching a saved profile, `<Commands>` with `grant_sql` and `"Run it as an administrator, then Refresh."`, and the `privileges_unreadable` hint). After execution, `_effect(plan, before, after)` builds `[what, before, now]` rows and replaces any missing `None` or `""` value with a specific reason (`"No member reported the PRIMARY role in the view read here"`, `"No primary cluster in the view read here"`, `"No channel in the view read here"`, `"Not in the view read before the action"`, `"Not in the view read after the action"`, `"The read after the action failed"`, `"No value reported before the action"`, `"No value reported after the action"`, `"Component status not reported"`, `"Mode not reported by the server"`), never `"Not readable"`. Sources and line references are in the "reviewed
+actions" comment in `cluster.py`:
+
+| Action | Statement (tagged `/*myflames:cluster_op*/`) | Enabled when | Typed name |
+| --- | --- | --- | --- |
+| `switchover` Make primary… | `SELECT group_replication_set_as_primary('<MEMBER_ID>')` | Group Replication or InnoDB Cluster on MySQL 8.0.13+ (including all group members), except a ClusterSet replica cluster (MySQL Shell route below); single-primary, the member SECONDARY and ONLINE with a UUID MEMBER_ID, the connected member ONLINE with quorum, no member RECOVERING or UNREACHABLE | no |
+| `stop_member` Stop Group Replication… | `STOP GROUP_REPLICATION;` | the connected member (or in a Group connection a member with a confirmed saved connection in the group), ONLINE, RECOVERING or ERROR | when it is the primary or the last ONLINE member (`target.profile_name` on a routed Group member plan) |
+| `start_member` Start Group Replication… | `START GROUP_REPLICATION;` | the connected member (or in a Group connection a member with a confirmed saved connection in the group), OFFLINE, and `@@global.group_replication_bootstrap_group` OFF (read in preflight and again at plan and send time; ON or unreadable refuses); ERROR requires stopping Group Replication first | no |
+| `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication (InnoDB Cluster uses MySQL Shell below), from the connected member, group ready as for switchover; the other mode is active; multi-primary is disabled while `group_replication_preemptive_garbage_collection` is ON (read in preflight when present, absent variables tolerated) | the connected member's name |
+| `desync_node` Desync this node… | `SET GLOBAL wsrep_desync = ON;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, `wsrep_desync` OFF and Synced | no |
+| `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_desync` ON | no |
+| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name (`target.profile_name` on a routed Group member plan) |
+
+MySQL Shell actions stay in the catalog when `mysqlsh` is missing, too old,
+or the connection uses SSH; each condition has its own reason and fix.
+`cluster_shell.find_shell` uses the client inventory and its ownership and
+version checks. Mode switches and ClusterSet changes (including Make primary
+within a replica cluster) need MySQL Shell 8.0.32 or later: that is the first
+Shell version to read the private `--defaults-file` used for credentials
+(Shell tag 8.0.32, `mysqlshdk/shellcore/shell_options.cc:205–214,887–891`).
+Older versions remain discoverable so the disabled action can name the
+version found and offer **Get MySQL Shell**. Member rejoin needs 8.1 or
+later for the incremental recovery option. Topology changes require MySQL
+8.0.13 on the connected server and every group member; a MISSING metadata row
+does not block Make primary. The connected member must be ONLINE with quorum,
+with no group member RECOVERING or UNREACHABLE. ClusterSet actions remain
+disabled on a read replica. Both InnoDB Cluster mode switches are disabled in
+any ClusterSet, including its primary cluster, and require every member ONLINE.
 
 The reviewed statements below are JavaScript AdminAPI calls, tagged
 `/*myflames:cluster_op*/`. `Cluster` and `ClusterSet` name the AdminAPI objects;
@@ -4849,7 +6960,7 @@ the sent calls get them with `dba.getCluster()` and `dba.getClusterSet()`.
 | --- | --- | --- | --- |
 | `switch_to_multi_primary` | `dba.getCluster().switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
 | `switch_to_single_primary` | `dba.getCluster().switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
-| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | target in metadata but MISSING from the group, valid metadata address, cluster not invalidated | member name |
+| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | metadata 2.0.0+, target in metadata and MISSING, OFFLINE or ERROR, valid metadata address, an ONLINE primary and quorum, cluster not invalidated, local cluster's ClusterSet global status exactly OK when in a set | member name |
 | `switchover` Make primary… | `dba.getCluster().setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
 | `set_primary_cluster:<name>` | `dba.getClusterSet().setPrimaryCluster("<name>");` | target a non-invalidated replica cluster in the set, local cluster not invalidated | target cluster name |
 | `force_primary_cluster` Fail over to this cluster… | `dba.getClusterSet().forcePrimaryCluster("<local_cluster>");` | connected to a non-invalidated replica cluster | local cluster name |
@@ -4861,7 +6972,7 @@ switch, sets `auto_increment_increment` and `auto_increment_offset` on every
 member, and updates the mode in the cluster metadata. Multi-primary uses
 increment 7, or the group size when larger, and offset
 `1 + server_id % increment`; single-primary uses increment 1 and offset 2.
-Member rejoin runs through the connected ONLINE member with quorum and allows
+Member rejoin runs through the connected ONLINE member with quorum and an ONLINE primary, and allows
 incremental recovery only. If the missing transactions are gone from every
 member's binary logs, MySQL Shell refuses and nothing changes; the user then
 runs `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in MySQL Shell.
@@ -4874,7 +6985,7 @@ channels; the old primary becomes a replica cluster. MySQL Shell refuses
 an unreachable or unhealthy primary or target, or a target with transactions
 the primary does not have. `ClusterSet.forcePrimaryCluster(name)` is an
 emergency failover to this replica cluster and invalidates the old primary.
-It refuses while the primary cluster is reachable and healthy. Transactions
+It refuses while any instance of the primary cluster is reachable, including a primary without quorum or an OFFLINE member. The catalog uses the metadata fields it reads; it does not infer that all primary instances are unreachable from a channel error. MySQL Shell verifies remote reachability, cluster health and GTIDs before these ClusterSet operations. Transactions
 the old primary committed that this cluster did not receive are lost; the
 review warns to fence the old primary or confirm it is down before proceeding.
 `ClusterSet.rejoinCluster(name)` rejoins an invalidated cluster as a replica
@@ -4882,6 +6993,17 @@ cluster, refusing errant transactions. In a replica cluster, Make primary
 uses `Cluster.setPrimaryInstance()` because the server refuses the Group
 Replication switchover function while the replica channel runs on its primary.
 ClusterSet plans warn when their metadata view comes from a replica cluster.
+
+Member rejoin requires metadata 2.0.0 or later and, within a ClusterSet, the
+local cluster's `globalStatus` to be exactly `OK` (Shell tag 8.4.0,
+`modules/adminapi/common/preconditions.cc:352–358`). `OK_NOT_REPLICATING`,
+`OK_NOT_CONSISTENT`, `OK_MISCONFIGURED`, `NOT_OK` and unknown status disable
+it with the reason. The SQL status report does not establish that complete
+AdminAPI status, which includes remote GTID consistency checks
+(`modules/adminapi/cluster_set/cluster_set_impl.cc:593–600`), so a ClusterSet
+member rejoin stays disabled when the status is unavailable. Its fix directs
+the user to check status and rejoin in MySQL Shell; a running local channel
+does not prove `OK`.
 
 Every MySQL Shell change uses the same reviewed-change policy, review token
 and audit path as the other Cluster changes. The exact call is shown at
@@ -4898,7 +7020,7 @@ as JavaScript string literals.
 0600 option file, never on the command line or in the environment. The Shell
 runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
 startup script or saved credential takes part. A socket connection passes
-through that socket. MySQL Shell changes are not offered over an SSH connection,
+through that socket. MySQL Shell changes stay disabled over an SSH connection,
 because MySQL Shell connects to the other members directly with this connection's
 user and password; the place says so in its notes. ShellWriter rechecks the Shell startup
 tree immediately before launch and uses the lifecycle Shell TLS option builder and
@@ -4909,22 +7031,110 @@ sessions can fall back to PREFERRED), before creating credentials or sending any
 VERIFY_CA always passes a CA file, including a private system-root bundle when no
 explicit CA was saved, so member sessions retain CA verification. The time limit is 600 s.
 
+Before these calls, the first script line uses the Shell global session's
+`runSql("SELECT @@global.server_uuid").fetchOne()[0]` to compare the reviewed
+UUID, throwing `MYFLAMES_IDENTITY_MISMATCH` if different. No AdminAPI method
+is evaluated before this check. AdminAPI opens separate connections
+(`modules/adminapi/mod_dba.cc:849–862`), so this UUID check covers only the
+global session. The rest of that same first line obtains and checks the
+AdminAPI object: `Cluster.status({extended: 1}).defaultReplicaSet.groupName`
+must match the reviewed server's own `group_replication_group_name` variable.
+The field exists in Shell 8.0.32 (`modules/adminapi/cluster/status.cc:1555–1556,1798`
+at that tag). ClusterSet actions use `ClusterSet.status({extended: 2})`:
+`domainName` and the exact cluster-name to `clusters[name].groupName` map must
+match the set name and every cluster group UUID read from this server's
+metadata. Extended level 2 retains those group names (Shell tag 8.0.32,
+`modules/adminapi/cluster_set/status.cc:132–164`). A missing or changed identity
+throws the same mismatch marker before any action. The reviewed action calls
+`myflamesCluster` or `myflamesClusterSet`, reusing the checked object instead
+of obtaining another object with new unchecked connections. Shell's
+`mysqlshdk/shellcore/shell_core.cc:140–177` evaluates stdin JavaScript as one
+script, so that exception prevents subsequent calls. `session_guard` exposes
+the derived JavaScript line to review, token binding and audit. Its identities
+come from `expect.server_identity`, including the AdminAPI object kind and
+group UUID or ClusterSet name/group map. `ShellWriter`
+maps the first-line marker to `refused` / `identity_mismatch` with every
+reviewed call `not_sent`; no after-read follows. Later exception locations
+subtract this prefix line, and a marker in a later AdminAPI error cannot
+claim an identity refusal.
+
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
-reviewed-write result is failed with nothing sent. A statement exception maps
-to `ERROR <n> at line <l>: <message>`, using the MySQL Shell number, the MySQL
-number, or 0 when neither is present. For a statement exception, only the line
-containing the first `at STDIN:<n>` or its immediately preceding physical line can
-supply the error number and message; earlier echoed text cannot supply the code.
+reviewed-write result is failed with nothing sent. Only the bare initial
+`MySQL Error <n>` format from Shell `src/mysqlsh/main.cc:633–645` establishes
+that failure: an AdminAPI-wrapped connection error without a location remains
+unknown. A statement exception maps
+to `ERROR <n> at line <l>: <message>` only when stderr supplies a call location,
+using the MySQL Shell number, the MySQL number, or 0 when neither is present.
+MySQL Shell appends that location in `mysqlshdk/scripting/types.cc:717` and
+`mysqlshdk/scripting/polyglot/utils/polyglot_error.cc:438`. Only a physical
+line consisting of ` at STDIN:<line>` (with optional `:<column>`, spaces or
+tabs and a CRLF terminator) supplies a location. The last such stderr
+location takes precedence over embedded text; only that physical line and
+its immediately preceding line supply the exception message and number.
+Blank and progress lines are preserved when deciding adjacency, so earlier
+echoed server text cannot be promoted into the exception. The immediately
+preceding exception supplies its message; the last number within that
+exception line wins. NOTE, WARNING and INFO lines cannot supply a location;
+Unicode separators inside a line do not create extra output lines. Stdout is
+progress and cannot supply a location or an
+exception number. Without a location, a numbered or
+typed exception retains its message with the statement location and outcome
+unknown; no line 1 is invented and no identity mismatch is inferred.
+An exception message containing `at STDIN:1` without a standalone call-site
+line stays unlocated and cannot suppress the after-read.
 Since one AdminAPI call can fail after
 some steps ran, `verify_on_error` reads the cluster again and reports partial
-when the before/after comparison shows a visible change. A timeout or Shell
-exit without an error message leaves the outcome unknown and is never retried
-automatically. This read does not prove the state of members it cannot see.
+when the before/after comparison shows a visible change. That read also runs
+for an unlocated exception: a visible change is partial, while no visible
+change or a failed after-read leaves the outcome unknown. Individual statement
+states stay unknown when no call location was reported. A timeout or Shell
+exit without an error message also leaves the outcome unknown unless an
+after-read observes a partial change. No error is retried automatically.
+This read does not prove the state of members it cannot see.
 
-Never use "GCache" wording. Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), direct SQL mode switches on InnoDB Cluster (use the MySQL Shell calls above), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). Direct SQL sends wait up to 120 s (START and the UDFs wait for the group); MySQL Shell sends wait up to 600 s. The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
+Never use "GCache" wording. There are no catalog actions for `SET GLOBAL
+wsrep_on` (sessions opened later stop replicating their writes), PXC, Galera
+for MySQL, or direct SQL mode switches on InnoDB Cluster. Start remains visible
+but disabled on an ERROR member because the plugin still runs.
+
+`expect` binds the server identity (engine, version, `server`), kind, member
+and connected member (key, UUID, name, role, state), component, quorum,
+topology, group members and states, `wsrep_desync`, `wsrep_on`, local state,
+`wsrep_last_committed` for bootstrap, and `bootstrap_group` for start. State
+drift refuses the reviewed operation before sending. MariaDB Galera also
+binds the freshly read `server_id`, `hostname`, `port` and `wsrep_node_name`:
+the preflight retains the extra identity on `_ActionReport`, outside the
+public `cluster-1.0` server object. Before a Galera write, a same-session
+`session_guard` compares all four global values and the node's wsrep_gcomm_uuid
+from GLOBAL_STATUS; a mismatch or missing node UUID refuses before
+the reviewed action statement runs. Endpoints:
+`POST /api/live/cluster/plan` (`action`, `member_key` for member actions;
+`_CONNECTION_PATHS`, saved password like the views; returns an enabled plan
+with `policy` and `review_token`) and `POST /api/live/cluster/action`
+(`plan` without its token, `review_token`, `typed`, `confirmed: true`;
+`_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.1`.
+Direct SQL sends wait up to 120 s; MySQL Shell sends wait up to 600 s. The
+workspace's `POST /api/live/cluster` returns the catalog in the two scopes
+described above; `myflames cluster` and `cluster_status` do not carry it.
+Tests: `test/test_cluster.py` (complete catalogs, eligibility, versions,
+optional variables and identical refusals), `test/test_cluster_actions.py`
+and `test/test_cluster_shell.py` (plans, statements, typed names, review-token
+and audit guards, fresh grants on the sending connection, runtime-only Shell
+actions without grant reads, drift before sending, unknown outcomes),
+`test/test_cluster_privileges.py` (versioned requirements, GRANT text, scope,
+grant option, unreadable grants and the Galera identity guard), and
+`test/test_ui_http.py` (exact disabled-action HTTP 400 text, no review token,
+and a fresh read that supersedes the displayed catalog).
 
 ### ProxySQL
+
+Group connection reads, plans, fresh apply reads, reviewed sends and after
+reads use `ui._group_guarded_connection`. Each client login rechecks current
+group consent. Apply also binds the reviewed connection identity and effective
+write policy. If membership changes during pending-audit preparation, the
+send is refused locally, its statements remain `not_sent`, and the pending
+audit record finishes as `refused` / `changed` without starting a write client.
 
 After a reviewed action completes (including an unknown outcome), the workspace
 stops pending digest reads and clears cached routing before refreshing the main
@@ -4958,9 +7168,16 @@ A row change refuses while the module has other changes in memory (LOAD would ap
 
 #### Reviewed changes planned from a fresh read (Cluster, ProxySQL and Readyset)
 
-`myflames/reviewed_writes.py` and `apps/workspace/src/ActionReview.tsx`. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or when the client printed an error with no line, before it read any statement (it could not connect or log in; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.0`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action` or `cluster_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
+`myflames/reviewed_writes.py` and `apps/workspace/src/ActionReview.tsx`. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 complete statements; MySQL/MariaDB identity packets permit multi-line SQL, while Admin interfaces require single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or for an initial connection/login error without a line or private acknowledgement (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005 or 2026; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action` or `cluster_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
 
 ### Readyset
+
+Group connection status, explain-cache, cache export and plan reads use the
+read consent guard; reviewed actions use the same per-login check with the
+reviewed connection identity and effective policy. Revocation during audit
+preparation starts no write client and finishes the pending audit record as
+`refused` / `changed`, with every reviewed statement `not_sent`. The guard also
+covers each fresh apply read and the read after an accepted send.
 
 The Readyset place reads a Readyset SQL adapter (`3307`) or Admin SQL (`6036`) listener (`myflames/readyset.py`, `myflames/topology_links.py`, `docs/schemas/readyset-1.0.json`; checked against the Readyset source at `6d2adde9b0`, `public/readyset-adapter`, `public/readyset-sql-parsing`, `public/nom-sql` and `public/replicators`, and live on `public.ecr.aws/readyset/readyset:latest-stable` behind ProxySQL 3.0.11 and in front of MySQL 8.4 GTID primary/replica in `scripts/readyset-matrix.sh`).
 
@@ -4975,6 +7192,24 @@ The Readyset place reads a Readyset SQL adapter (`3307`) or Admin SQL (`6036`) l
 - Endpoints, CLI, MCP and Workspace: `POST /api/live/readyset` (passes `_topo_args()` to `@grouped_read` `readyset.read_status` and calls `finish_read` to populate `report["connection_group"]`), `/api/live/readyset/explain-cache`, `/api/live/readyset/export-caches`, `/api/live/readyset/plan` and `/api/live/readyset/action`; CLI `python3 -m myflames readyset [--json] [--export-caches] [--explain-cache SQL_OR_ID] [--fail-on watch|problem]` (`--profile NAME` uses that saved connection's group through `request_profiles`, `members`, `profile_opener` and `finish_read`, like `replication`, unless CLI flags overrode its endpoint); MCP `readyset_status(profile, detail)` (read-only); Workspace (`ReadysetPlace.tsx`, `ConnectionGroupBar.tsx`, `readysetApi.ts`, `readyset.css`, lazy-loaded right after `ProxySQL` with sidebar mute `"This connection is not a Readyset instance"`): tabs Topology (`ConnectionGroupBar` above `ReadysetTopologyDiagram`, re-reading `/api/live/readyset` after a group change), Caches, Proxied queries, Tables, Dynamic parameters, Performance, plus the `CreateCacheSheet` live dry-run builder and `ExportCachesSheet`. Tests: `test/test_readyset.py`, `test/test_topology_links.py`, `test/test_connection_groups.py`, `apps/workspace/test/readyset.mjs` (fixtures from `apps/workspace/test/readyset-fixtures.py`), `apps/workspace/test/topology-groups.mjs`, and live Docker matrix `scripts/readyset-matrix.sh`.
 
 ### Users and roles: privileges, accounts
+
+`read_account` binds all grants, attributes, role expansion and optional
+catalog reads to one evidence scope. The apply endpoint shares one scope
+across its preliminary account read, plan rebuild, apply checks and
+post-write read. Nested readers reuse it. Optional server errors may retain
+their existing fallback only after the packet's identity validates,
+including error 1141 for an absent create or rename destination. Identity
+failures are checked before stale or typed-name verdicts. Failed identity
+or consent validation during post-write readback returns `status=unknown`,
+`outcome=unverified`, with no after-state or diff, and updates the last audit
+record to the same unknown outcome. Accepted statements remain recorded as
+sent; readback failure does not claim they were refused or rolled back.
+The last accepted statement's audit stays pending until readback completes:
+validated after-state finishes it as `ok/applied`, identity or consent failure
+as `unknown/unverified`, and an ordinary read error after a validated prefix
+as `ok/sent` without an after-state. Earlier accepted statements finish as
+`ok/sent`. This preserves the audit store's one-way completion rule; finished
+records are never rewritten to attach later evidence.
 
 Backend `myflames/privileges.py` (the one SHOW GRANTS parser, `has`, `requirements`, `can`, `read_privileges`) and `myflames/accounts.py` (`list_accounts`, `read_account`, `plan_change` and the `plan_*` wrappers, `apply`, `grant_diff`, `fingerprint`); endpoints `myflames/accounts_api.py` (dispatched by `ui._accounts_response`); CLI `myflames/accounts_cli.py` (dispatched from `cli.main`). Contract and evidence: the accounts skill and its references. Tests: `test/test_privileges.py`, `test/test_accounts.py`, `test/test_accounts_api.py`, `test/test_accounts_cli.py`, with live replays `test/fixtures/accounts/<server>.json` (MySQL 8.0.46, 8.4.11, 9.7.2, MariaDB 10.11.19, 11.4.13, recorded 2026-10-15; scenario in `PROVENANCE.txt`; helper `test/_accounts_replay.py`).
 
@@ -5016,7 +7251,8 @@ Backend `myflames/privileges.py` (the one SHOW GRANTS parser, `has`, `requiremen
 - `myflames accounts show ACCOUNT [--role]` and `POST /api/accounts/read {connection, user, host, role?}` (`account-1.0`: `name, host, role, engine, version, exists, grants[], partial_revokes, model, roles[], default_roles[], attributes {locked, expired, plugins, limits, password_options}, role_grants[], effective_model, dangerous[], protected, system, warnings, fingerprint`): SHOW GRANTS FOR (1141 means `exists: false`), SHOW CREATE USER (MySQL 8.0.17+ with `print_identified_with_as_hex = ON` in the same call, every row joined because MariaDB prints a second `ALTER USER ... PASSWORD EXPIRE INTERVAL` row; parsed into attributes and discarded), MySQL default roles from its `DEFAULT ROLE` clause, MariaDB from `SET DEFAULT ROLE`, and SHOW GRANTS FOR every role reached (at most 256). `fingerprint` is SHA-256 over the credential-free grants (order ignored), roles, default roles and attributes: the plan's `expect`.
   CLI account show/grant commands diagnose a missing MariaDB user that matches a role and suggest `--role`; `show --json` adds `role_hint` to its missing-account result. Denied role reads do not assert that a role exists. MySQL roles share the account namespace and need no extra probe. Regression coverage: `test/test_accounts_cli.py`.
 - `POST /api/accounts/plan {connection, operation, user, host, role?, ...}` (`account-plan-1.0`): reads only. `operation` create, drop, rename (`new_user` or `new_name`, `new_host`), lock, unlock, expire, password (`password` or `random_password`, MySQL `current_password` for REPLACE), grant and revoke (`privileges[]`, `level` global|database|table|column|routine|proxy, `database`, `table`, `columns[]`, `routine`, `kind`, `pattern`, `proxy {name, host}`, `grant_option`), roles (`mode` grant|revoke|default, `roles[] {name, host}`, `admin_option`, `special` ALL|NONE), options (`limits`, `expire`, `password_options`). `password` is accepted only for create and password and never echoed. Response: `schema_version, plan_id (= change_set_id), operation, request (the non-secret request), name, host, role, engine, version, account, action, before (account-1.0), expect, connection_identity, actor, actor_server, statements[] (passwords as '[redacted]'), warnings[], guards {blocked[], typed_name, self_lockout, protected, after_management}, privileges (the can() answer for the actor), effects {sessions[], definers[], warnings[]} (drop, rename), dependencies[] (granted roles), generates_password, classification, policy {action, tone, title, text, connection_type, read_only}, status ready|blocked`. Plans live on the workspace server as `_account_plans` (request and redacted statements only, no secret; 30 minutes, 200 at most per server, single use). Non-server callers of the plan helpers use a separate fallback store. Apply claims the plan atomically before opening a connection; a missing typed name restores it with its original expiry. Policy refusals leave it usable.
-- `POST /api/accounts/apply {connection, plan_id, expect, confirmed, typed_name?, password?, current_password?}` (`account-change-1.0`, in `ui._WRITE_PATHS`): `dbops.gate` on the connection's policy first (account changes are risky: a read-only connection refuses and nothing is opened, Production and Development need `confirmed: true`; the refusal is audited and returned with `audit_id`), then the saved password, then a fresh account fingerprint is compared with both `expect` and the reviewed fingerprint before rebuilding the plan. A dropped or newly created account, or revoked privileges that invalidate planning, returns `status: stale` with audit `status: refused, outcome: stale`. Drift during a failed rebuild is checked again; unchanged invalid input remains an error. Rebuilt statements must equal the reviewed ones; `accounts.apply` then re-checks the connection identity, server version and identity, actor (`read_privileges`), every granted role's fingerprint, the account against `expect`, the rename destination, the guards and the privilege answer, and sends each statement with `connector.run_stdin` (stdin, `dbops.WRITE_CLIENT_FLAGS`, `--skip-reconnect`, empty temporary HOME, allowlisted environment), stopping at the first error. Response: `schema_version, change_set_id, operation, account, status, message, statements[] {index, statement, status ok|denied|refused_by_server|interrupted|unknown|not_sent, error, message}, before, after, diff {added[], removed[], levels, attributes_before/after, defaults_before/after, exists_before/after}, warnings[], audit_ids[], generated_password (once, MySQL RANDOM PASSWORD or the MariaDB generated one)`. Statuses: `applied`, `partial` (a later statement failed; a MariaDB create that stopped at SET PASSWORD leaves the account locked), `refused`, `needs_confirmation`, `needs_typed_name` (the plan stays usable), `stale`, `denied`, `refused_by_server`, `interrupted`, `unknown`. One `AuditTrail` record per statement (operation `accounts.<operation>`, `target.change_set_id`); refusals one finished record; a cancelled sheet calls `/api/audit/declined`. Server text is kept only for errors that never quote the statement (`accounts._SAFE_ERROR_TEXT`), redacted; others by number.
+- `POST /api/accounts/apply {connection, plan_id, expect, confirmed, typed_name?, password?, current_password?}` (`account-change-1.0`, in `ui._WRITE_PATHS`): `dbops.gate` on the connection's policy first (account changes are risky: a read-only connection refuses and nothing is opened, Production and Development need `confirmed: true`; the refusal is audited and returned with `audit_id`), then the saved password, then a fresh account fingerprint is compared with both `expect` and the reviewed fingerprint before rebuilding the plan. On a Group connection, consent and the group's strictest policy are re-read from the store right before the password lookup, right after it, at every client login (`conn._login_guard`, raising `ProfileReadError`), and right before the first statement (`accounts.apply`'s `before_send`): a member removed from the group or made Read-only in between gets an audited `refused` with outcome `changed` and nothing sent; a refusal after an earlier accepted statement reports `partial`. A typed password does not skip the membership check (`connection_with_saved_password` checks it before returning). A dropped or newly created account, or revoked privileges that invalidate planning, returns `status: stale` with audit `status: refused, outcome: stale`. Drift during a failed rebuild is checked again; unchanged invalid input remains an error. Rebuilt statements must equal the reviewed ones; `accounts.apply` then re-checks the connection identity, server version and identity, actor (`read_privileges`), every granted role's fingerprint, the account against `expect`, the rename destination, the guards and the privilege answer, and sends each statement with `connector.run_stdin` (stdin, `dbops.WRITE_CLIENT_FLAGS`, `--skip-reconnect`, empty temporary HOME, allowlisted environment), stopping at the first error. Response: `schema_version, change_set_id, operation, account, status, message, statements[] {index, statement, status ok|denied|refused_by_server|interrupted|unknown|not_sent, error, message}, before, after, diff {added[], removed[], levels, attributes_before/after, defaults_before/after, exists_before/after}, warnings[], audit_ids[], generated_password (once, MySQL RANDOM PASSWORD or the MariaDB generated one)`. Statuses: `applied`, `partial` (a later statement failed; a MariaDB create that stopped at SET PASSWORD leaves the account locked), `refused`, `needs_confirmation`, `needs_typed_name` (the plan stays usable), `stale`, `denied`, `refused_by_server`, `interrupted`, `unknown`. One `AuditTrail` record per statement (operation `accounts.<operation>`, `target.change_set_id`); refusals one finished record; a cancelled sheet calls `/api/audit/declined`. Server text is kept only for errors that never quote the statement (`accounts._SAFE_ERROR_TEXT`), redacted; others by number.
+- Generated passwords: once a password-setting statement succeeds, apply returns `generated_password` even when a subsequent identity guard refuses and the outcome is partial. On MariaDB create, this means SET PASSWORD succeeded before ACCOUNT UNLOCK was refused; the password is still returned while the account stays locked. A refusal before the password-setting statement succeeds returns no generated password. The plan is consumed and its private password and SQL fields are cleared; the returned secret is never added to audit records or after-state reads. Regression tests: `test/test_accounts.py`.
 - Workspace batch review (`Accounts.tsx`, `accountsApi.ts`): compact compatible edits into groups and plan every group sequentially, retaining errors beside their group. One sheet lists every exact statement, warning and guard; an error or blocked plan disables Apply until fixed or removed. Typed-name fields are deduplicated by account. Apply re-plans each group immediately before its one-shot apply, using that fresh plan's `plan_id` and `expect`; it re-checks the connection before planning and sending. New statements, warnings or typed/self-lockout guards stop the batch for another review. Stop at the first refusal, partial result, failure or lost response; show every group's applied/failed/not-sent status, then refresh the list, selected account and privilege model. Earlier groups are not rolled back. Cancel, Escape and removal each post one declined audit per planned group; backend apply retains per-statement audit records. Browser suite `accounts.mjs` and its `--unit` adapter tests cover batch ordering, fresh fingerprints, per-group errors, cancel audits and stopping.
 
 - Statements (one account, one level, one role per statement; tag `/*myflames:accounts*/`): names backquoted with doubled backquotes (MariaDB roles without host, `PUBLIC` bare); database grants escape `_`, `%` and `\` unless `pattern` (MySQL with `partial_revokes` ON matches literally and refuses patterns); privileges from the allowlist per engine, version and level (MySQL dynamic names from `SHOW PRIVILEGES`); passwords are doubled-quote literals inside the statement's own `NO_BACKSLASH_ESCAPES` session (`_with_password_mode`, restored after; verified live with a password ending in a backslash on all five servers with the mysql 8.0 client), NUL and line breaks refused. MySQL: `CREATE USER a IDENTIFIED BY 'x' | RANDOM PASSWORD [ACCOUNT LOCK]`, `ALTER USER a IDENTIFIED BY ... [REPLACE 'current']` (binary log: the hash, checked live). MariaDB New user: `CREATE USER a ACCOUNT LOCK`, `SET PASSWORD FOR a = PASSWORD('x')` (binary log: the hash), `ALTER USER a ACCOUNT UNLOCK`; with an active `PASSWORD VALIDATION` plugin (`information_schema.PLUGINS`) the first step is `CREATE USER a IDENTIFIED BY '<32-character random>' ACCOUNT LOCK` because the plugin refuses an empty password with 1819 (live on 10.11 and 11.4 with simple_password_check: the binary log shows only the temporary password, the typed one is validated by SET PASSWORD, a weak one leaves the account locked). Every MariaDB password plan warns that only the binary log is protected (the general and slow logs keep the typed text, checked live). Default roles: MySQL `ALTER USER a DEFAULT ROLE ...`, MariaDB `SET DEFAULT ROLE r FOR a` (one role or NONE).
@@ -5172,6 +7408,8 @@ and preserves positions. Before the first build it can use the selected database
 imported diagrams are excluded.
 
 ### Schema versions
+
+Applying a Group member's sync script uses Query editor's consent checks at transport setup and immediately before each client spawn; Schema versions itself only generates the script and opens no apply client.
 
 Save one database's schema on this computer and compare any two schemas: a
 saved version, a `schema-snapshot-1.0` file, or a database read now through a
@@ -6294,7 +8532,7 @@ stdout is the ranked table (or JSON); stderr has `source:`, `clock:`, `counted:`
 
 ### Saved connections and Database diagram Load
 
-`savedConnections.ts` (not `main.tsx`) owns the one list of saved connections per window. `useSavedConnections(load = true)` (React `useSyncExternalStore`) returns `{items, loaded, error, secretStore}`; `refreshSavedConnections()` reads `profiles/list` (the workspace store on this computer: no server is read, nothing is sent). The latest read wins: an older answer, success or failure, never replaces a newer one, and every caller gets the latest read's answer (write-policy checks keep that rule). An unchanged answer keeps the list's identity and publishes nothing. When it is read: once the workspace session is restored (the shell, `useSavedConnections(false)` plus its first read), after every create, edit, rename, delete, password save or forget in this window (Connections calls the shell's `refresh`, which is `refreshSavedConnections`), when the window comes back (`focus`, `visibilitychange`; at most once a second, only after a first read), and when a Compare tab opens or Refresh choices is pressed. A component shown on its own reads it once on mount. Every list reads it: the connection picker, Home's Connections, Compare's Source and Target (`ServerCompare.tsx`), Schema versions' Compare sides, Maintenance's clone donor, Cluster's member switch and the Audit log's connection names (the last four through the shell's props). A chosen side keeps its choice while it exists (choices are ids); a chosen saved connection that was deleted stays chosen and says so: "<name> (deleted)" (`deletedConnectionLabel`, from the names this window has seen, "A deleted saved connection" otherwise), the setup says "Target: the saved connection “<name>” was deleted. Choose another target." and Compare stays off; Schema versions' side reads "<name> (deleted)" or "<connection> · no saved password"; Maintenance's clone donor "Fill from saved connection" names "<name> (deleted)" and says the copied fields stay. The connection in use deleted in another window or with the CLI is kept on the next read as an unsaved connection and the picker shows "<name> (not saved)" with the note "The saved connection “<name>” was deleted. Its settings are kept as an unsaved connection." (a deletion on Home still clears it). Tests: `apps/workspace/test/saved-connections.mjs` (`npm run test:saved-connections`), `profiles.mjs --unit`.
+`savedConnections.ts` (not `main.tsx`) owns the one list of saved connections per window. `useSavedConnections(load = true)` (React `useSyncExternalStore`) returns `{items, loaded, error, secretStore}`; `refreshSavedConnections()` reads `profiles/list` (the workspace store on this computer: no server is read, nothing is sent). The latest read wins: an older answer, success or failure, never replaces a newer one, and every caller gets the latest read's answer (write-policy checks keep that rule). An unchanged answer keeps the list's identity and publishes nothing. When it is read: once the workspace session is restored (the shell, `useSavedConnections(false)` plus its first read), after every create, edit, rename, delete, password save or forget in this window (Connections calls the shell's `refresh`, which is `refreshSavedConnections`), when the window comes back (`focus`, `visibilitychange`; at most once a second, only after a first read), and when a Compare tab opens or Refresh choices is pressed. A component shown on its own reads it once on mount. Every list reads it: the connection picker, Home's Connections, Compare's Source and Target (`ServerCompare.tsx`), Schema versions' Compare sides, Maintenance's clone donor, Cluster's member switch and the Audit log's connection names (the last four through the shell's props). A chosen side keeps its choice while it exists (choices are ids); a chosen saved connection that was deleted stays chosen and says so: "<name> (deleted)" (`deletedConnectionLabel`, from the names this window has seen, "A deleted saved connection" otherwise), the setup says "Target: the saved connection “<name>” was deleted. Choose another target." and Compare stays off; Schema versions' side reads "<name> (deleted)" or "<connection> · no saved password"; Maintenance's clone donor "Fill from saved connection" names "<name> (deleted)" and says the copied fields stay. The connection in use deleted in another window or with the CLI is kept on the next read as an unsaved connection and the picker shows "<name> (not saved)" with the note "The saved connection “<name>” was deleted. Its settings are kept as an unsaved connection." (a deletion on Home still clears it). Whole-group edits (`POST /api/profiles/groups/save` with `{name, profile_ids, previous_name}` capped at 16 members, and `POST /api/profiles/groups/delete` with `{name}`) return the updated `groups` and secret-free `profiles` lists and take effect at once on the next login through the store-backed consent check (`replication.profile_opener` and `GroupScope.opener().check`). Tests: `apps/workspace/test/saved-connections.mjs` (`npm run test:saved-connections`), `profiles.mjs --unit`, `test/test_connection_groups.py`.
 
 Database diagram (`SchemaDiagram.tsx`, `schema-diagram.css`): choosing a database never reads it (a diagram read can be large, a keyboard walk through a closed select fires one change per arrow press, and a shown diagram is never replaced without asking); opening the place still reads nothing and Server's Refresh all still reads the chosen database once. Empty state: a live database chosen shows "See how the tables of <db> connect", one sentence naming what is read and through which connection ("Nothing on the server changes."), primary **Load <db>** (`.diagram-load`, an `ActionButton`) and secondary **Import a schema**; its progress (`Reading <db>…`, seconds after 1 s, Stop once slow) and error with **Try again** show once under the button (`.diagram-load-status`, `ActionStatus keepLine`), and the status line under the toolbar takes them over only once a diagram is shown; a load started there moves focus to the canvas. A connection but no database shows "Choose a database"; no connection leaves **Import a schema** as the only, primary action. The toolbar's one Refresh (`data-action="refresh"`) reads **Load** or **Loading…** until the diagram on screen is the chosen database read from the connection in use, then **Refresh** or **Refreshing…**. Another database chosen while a diagram is shown (and only after the user chose it) shows `<db> is chosen. The diagram shows <shown>.` with **Load <db>** (`.diagram-choice`), and the "Replace this diagram?" sheet confirms with **Load <db>**. A diagram from another connection says "This diagram was read from <connection>." with **Load <db>**. **Diagram | Mermaid** shows only with a diagram (Mermaid files import through Import a schema, format Mermaid). **Reload database list** is an icon button (`.diagram-reload-list`) and "Database list updated." shows only after it was pressed. Shared kit: `ViewLayout` takes `refreshLabel` (default "Refresh") and `refreshBusyLabel` (default "Refreshing…"), used as the button's `aria-label` and in the other-connection note, and `otherAction.text` replaces the note's generated sentence. Tests: `schema-diagram.mjs`, `action-feedback-batch-b.mjs` (`diagram-load`, `diagram-rebuild`).
 
@@ -6500,7 +8738,7 @@ The additional server tools are read-only. Each requires `profile: str` (a saved
 
 Core projections reuse `report.format_digest` and the compact text formatters in Sessions, Locks, Health, InnoDB, Replication, Cluster and Readyset. Statements retain normalized SQL, counters, coverage, and table-match caveats while omitting sample literals; Privileges retains credential-stripped grants, session scope, roles and grouped decision states. Reports can exceed 500 tokens: their size follows the observations and findings, without a fixed truncation cap. Full preserves the module's schema and evidence (including suggested SQL as data).
 
-`_ReadConnection` checks every submitted statement, allowing only SELECT/SHOW. The Sessions and InnoDB readers normally prefix transaction-age queries with `SET SESSION time_zone = 'SYSTEM'`; this adapter removes those exact module-owned prefixes and converts `NOW()` with `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')` inside the SELECT instead. It rejects any other SET or non-read statement before sending it. The existing five MCP tools are unchanged, including `explain_query`, which executes a query through EXPLAIN ANALYZE.
+`_ReadConnection` checks every submitted statement, allowing only SELECT/SHOW. `_read_sql` also requires `dbops.classify(...)["kind"] == "read"`, so a SELECT prefix cannot admit file writes, variable assignments, locking reads, named locks or unknown function effects. Native readers that require server facts obtain the connector's version and are classified again with that engine/version; an unknown or unsupported version refuses. The fixed privilege identity query substitutes NULL for CURRENT_ROLE on MySQL 5.7, where that name could resolve to a stored function. Every adapted query passes the same classifier before transport. It uses `dbops.split_statements` under both backslash readings to recognize the client's DELIMITER framing, then checks every server statement inside each packet, including executable comments. This accepts Replication's identity-bound evidence packets without allowing a write to hide after a SELECT in the same packet. Uncertain boundaries, client commands and statements other than SELECT/SHOW refuse before transport. The Sessions and InnoDB readers normally prefix transaction-age queries with `SET SESSION time_zone = 'SYSTEM'`; this adapter removes those exact module-owned prefixes and converts `NOW()` with `CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')` inside the SELECT instead. It rejects any other SET or non-read statement before sending it. The existing five MCP tools are unchanged, including `explain_query`, which executes a query through EXPLAIN ANALYZE.
 
 Tests: `HOME=$(mktemp -d) MYFLAMES_SECRET_BACKEND=vault python3 -m unittest discover -s test -p 'test_mcp_server.py' -v`. Replays and module-test fakes cover MySQL and MariaDB, both detail projections, attribution orders, registered tool identities, all submitted SQL, the no-SET adapter, argument validation and password redaction. The transport extra is not required for those tests.
 
@@ -6560,6 +8798,95 @@ container start failure or a readiness timeout fails the class from
 With neither set, a missing Docker setup or a failed container start skips
 the class ("Docker or mysql client not available"). The classes pin their
 images: `mysql:8.4.11` and `mariadb:11.4.13`.
+
+**Live lab suites** (`test/live/`, run by `scripts/live-tests.sh`). The
+cluster lab checks are repeatable unittest suites in the spirit of mtr:
+`scripts/live-tests.sh [ic|galera|proxysql|shell|writes|ga|all] [--record]` brings up
+only the labs the chosen suites need (idempotent `cluster-matrix.sh up`, then
+`check`), leaves them running for the next run, runs different clusters in
+parallel lanes with the scenarios on one cluster in order, prints one line per
+test plus a summary with durations, and exits non-zero on any failure. Labs
+and credentials come from `CLUSTER_LAB` (default `local/cluster-matrix`);
+every suite uses a throwaway HOME with `MYFLAMES_SECRET_BACKEND=vault` (the
+profiles `cluster-matrix.sh profiles --home` saves there), never the real
+`~/.myflames`, and redacts the lab password from every message. The suites
+skip unless `MYFLAMES_LIVE_LABS=1` (the script sets it), and their module
+names do not match `test_*.py`, so `./run-tests.sh` and plain unittest
+discovery never pick them up. `test/live/_lab.py` holds the shared helpers in
+the spirit of mtr's include files: the lab health check, the throwaway home,
+an API helper over `myflames.ui.api_response`, `wait_for` on server state
+instead of sleeps, and password redaction. Suites: `live_ic_group_routing`
+(InnoDB Cluster group saved, per-member identities recorded, Stop and Start
+Group Replication on mf-ic-2 routed through its own saved connection, two
+saved connections claiming one member failing closed; Start after Stop also on
+failure), `live_galera` (Desync and Resync of galera-2 through the group,
+verified on the peer's own `wsrep_desync` and `wsrep_local_state_comment`
+because a peer's action flags are not state-gated; Resync after Desync also on
+failure), `live_shell` (MySQL Shell Rejoin of
+mf-ic-3 through the group, and a line-1 identity mismatch on a real mysqlsh
+stopping before line 2, classified `identity_mismatch`; both run in the
+lab-runner container, `scripts/lab-runner/Dockerfile`, on `mf-ic-net` with the
+worktree mounted read-only; the rejoin is restored also on failure) and
+`live_editor_proxysql` (Query editor runs through the ProxySQL frontend; Stop
+during a sleep refuses with "could not be confirmed" and the sleep completes,
+so no KILL is reported that did not stop the statement) and `live_writes`
+(reviewed writes on real servers: on the InnoDB Cluster primary (MySQL) and on
+one Galera node (MariaDB), a throwaway account created, re-passworded and
+dropped through Users and roles with passwords containing a backslash and a
+single quote (the final password logs in with the client, the first no longer
+does; the account is dropped also on failure), a `long_query_time` global set
+and restored through Variables (always restored), and a confirmed editor write
+sequence in a throwaway schema plus Stop during a sleep on a direct connection
+(the sleep ends early, interrupted, and Stop reports the kill sent); the suite
+runs only after the membership-changing suites on both clusters are done) and
+`live_writes_ga` (the same reviewed writes on every GA server running in the
+GA matrix: one class per server of mysql-5.7, mysql-8.0, mysql-8.4, mysql-9.7,
+percona-8.0, percona-8.4, mariadb-10.11, mariadb-11.4 and mariadb-11.8,
+skipped when the server is not up; create, rename, re-password and drop of a
+throwaway account, where create and rename exercise the expected-1141 SHOW
+GRANTS fallback for an account that does not exist yet (a MySQL 5.7 refusal
+of an operation it lacks must state its reason), an expired-password account
+whose privileges read returns the 1820/1862 message and whose reviewed writes
+refuse with nothing sent, a `long_query_time` global set and restored, and
+the editor cases in a throwaway schema with a canary table: a DELIMITER
+procedure wrapper must refuse even when confirmed, a versioned-comment
+DELETE (a DELETE on the server's own reading of the executable comment)
+must come back for confirmation as a write with nothing sent and the canary
+intact, and a CREATE DATABASE with a versioned ENCRYPTION comment
+(mysqldump's clause) is accepted on every server, with confirmation, then
+dropped. A procedure in a throwaway schema is dumped by that server's own
+`mysqldump` or `mariadb-dump` inside its existing container. Its routine
+section, including the saved SQL mode, `DELIMITER ;;`, CREATE PROCEDURE,
+`DELIMITER ;` and session restores, is replayed through one Query editor
+confirmation. The routine must be absent before confirmation and present
+after execution; the schema is dropped even on failure). The GA matrix lives
+in `GA_LAB` (default `local/ga-matrix`) and
+its credentials in `GA_CREDS_FILE` (default `$GA_LAB/credentials.env`); the
+variable is GA-only because `cluster-matrix.sh` reads `CREDS_FILE` too, so
+the file reaches `ga-matrix.sh` as `CREDS_FILE` in its environment only.
+The `ga` selection brings up nothing itself: it checks `ga-matrix.sh status`
+and runs the lane against the servers already up, with the matrix's saved
+profiles in its own throwaway home (`ga-matrix.sh profiles` with
+`MYFLAMES_HOME` set, credentials from the matrix's 0600 file only); `all`
+includes the ga lane only when the GA matrix is up. A
+full `all` run
+takes a few minutes against warm labs (the labs stay up between runs; a cold
+`up` dominates a first run). `--record` saves the normalized JSON of the
+read-only Cluster, Replication and ProxySQL reports per server version under
+`test/live/expected/` with volatile fields (UUIDs, timestamps, ports,
+durations, connection ids, log positions and counters) masked; a normal run
+compares against them when they exist and a drift fails the `live_expected`
+suite with the masked live report written next to the expected file as
+`<name>.drift` (mtr's `.result` idea, for JSON). Every run writes
+`local/live-evidence/<commit>.json`, named by the full commit SHA with a
+`-dirty` suffix when the checkout is dirty (`worktree.json` when the folder
+is not a git checkout), recording commit, dirty flag, date, the run's total
+wall time, each lab's server and MySQL Shell versions, and each test with
+outcome and duration, for the release verification record. The evidence file
+is the only file a run writes under the repository: the lanes work against a
+throwaway shadow of `CLUSTER_LAB` (a symlink to the real credentials.env), so
+the profiles smoke output lands in the run's tmp dir, not in
+`local/cluster-matrix/state`.
 
 **Fast pre-handback check.** `scripts/check_fast.sh [FILE...]` checks the
 named files (paths relative to the repository root), or without arguments the
@@ -6900,6 +9227,8 @@ for supported table types, privilege requirements and limits.
 
 ## Import CSV
 
+Group member imports recheck consent at transport setup and immediately before the private import session and each privilege or cancellation helper client spawns, using the reviewed membership and strictest policy.
+
 Import CSV loads a .csv, .tsv or .txt file into an existing table or a new
 one. Entry points: the Query editor's Schemas panel (a table's menu:
 **Import CSV…**; a user database's menu: **Import CSV into a new table…**)
@@ -6984,7 +9313,10 @@ primary key.
 `/*myflames:import_csv*/` tag; identifiers are backquoted. Text literals use
 plain quotes when the value has no backslash or control character, escapes
 when the session's NO_BACKSLASH_ESCAPES state is known, and
-`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. Apply
+`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. A value
+with a backslash is always `CONVERT(X'..' USING utf8mb4)`, whatever the
+session's state: the client's view of NO_BACKSLASH_ESCAPES can be stale, and
+a raw backslash can change how the client splits the statement. Apply
 refuses when the session's NO_BACKSLASH_ESCAPES state differs from the
 plan's. INSERT batches hold at most 1,000 rows and 1 MiB per statement and
 never cross a commit boundary; a single larger row goes alone up to
