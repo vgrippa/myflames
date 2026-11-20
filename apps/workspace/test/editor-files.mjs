@@ -173,7 +173,8 @@ try {
   const failedRequests = [];
   const badResponses = [];
   const inFlightNames = new Set();
-  let teardownRequests = new Set();
+  const teardownRequests = new Set(); // Names reads of an editor or document being torn down; kept so a late abort still matches.
+  let tearingDown = false;
   page.on("console", (m) => { if (["error", "warn"].includes(m.type())) consoleMessages.push(m.text()); });
   page.on("requestfinished", (r) => inFlightNames.delete(r));
   page.on("requestfailed", (r) => {
@@ -188,7 +189,7 @@ try {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const p = new URL(request.url()).pathname;
-    if (p === "/api/config/versions/names") inFlightNames.add(request);
+    if (p === "/api/config/versions/names") { inFlightNames.add(request); if (tearingDown) teardownRequests.add(request); }
     if (!p.startsWith("/api/")) return request.continue();
     // Sign-in and the session store are the real server's (a throwaway HOME);
     // every editor and live endpoint is mocked so nothing runs.
@@ -260,10 +261,10 @@ try {
   await page.waitForSelector('.confirm-sheet');
   const promptText = await page.$eval('.confirm-sheet', (e) => e.textContent);
   assert.match(promptText, /Save .* before closing/);
-  teardownRequests = new Set(inFlightNames);
+  for (const r of inFlightNames) teardownRequests.add(r); tearingDown = true;
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  teardownRequests.clear();
+  tearingDown = false;
   assert.deepEqual(await tabNames(), ["Query 1"], "Don't save closes without a save request");
   assert.equal(calls("/api/editor/file/save").length, 2);
 
@@ -275,10 +276,10 @@ try {
   assert.equal((await tabNames())[1], "bad");
   assert.equal(calls("/api/editor/file/open").length, opensBefore + 1, "the backend owns the chooser and the read");
   // Close it again without edits: no prompt.
-  teardownRequests = new Set(inFlightNames);
+  for (const r of inFlightNames) teardownRequests.add(r); tearingDown = true;
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  teardownRequests.clear();
+  tearingDown = false;
 
   // -- On error: Continue ------------------------------------------------------
   await setText("SELECT 1;\nSELECT 2;\nSELECT 3;");
@@ -377,10 +378,10 @@ try {
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelector(".confirm-sheet")?.textContent.includes("with a transaction open"));
-  teardownRequests = new Set(inFlightNames);
+  for (const r of inFlightNames) teardownRequests.add(r); tearingDown = true;
   await page.locator('.confirm-sheet button ::-p-text(Roll back and close)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  teardownRequests.clear();
+  tearingDown = false;
 
   // Continue counts actual terminal statuses, including Stop before any
   // error and a lost connection whose outcome cannot be claimed as success.
@@ -461,9 +462,14 @@ try {
     const lab = saved.state?.query_lab;
     return lab?.tabs.find((t) => t.id === lab.tab_id)?.database === "";
   });
-  teardownRequests = new Set(inFlightNames);
+  for (const r of inFlightNames) teardownRequests.add(r); tearingDown = true;
+  const committed = new Promise((resolve) => {
+    const onNavigated = (frame) => { if (frame === page.mainFrame()) { tearingDown = false; page.off("framenavigated", onNavigated); resolve(); } };
+    page.on("framenavigated", onNavigated);
+  });
   await page.reload({ waitUntil: "networkidle0" });
-  teardownRequests.clear();
+  await committed;
+  tearingDown = false;
   await page.waitForSelector(DATABASE, { visible: true });
   assert.equal(await page.$eval(DATABASE, (e) => e.value), "", "explicit None survives normalization and restore");
   const runBeforeNone = calls("/api/editor/run").length;
