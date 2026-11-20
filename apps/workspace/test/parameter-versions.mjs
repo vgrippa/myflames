@@ -413,6 +413,10 @@ async function browserSuite() {
   assert.match(await page.$eval(`${view} .pv-filters label.checkbox`, e => e.textContent), /set on db2/);
 
   // Layout: no page overflow, tables scroll inside their frame; badge contrast in both appearances.
+  for (const family of await page.evaluate(async () => {
+    await document.fonts.ready;
+    return [...document.fonts].filter(f => f.status === "error").map(f => f.family);
+  })) errors.push(`Font failed to load: ${family}`);
   for (const [width, height] of [[1440, 900], [720, 600]]) for (const theme of ["light", "dark"]) {
     await page.setViewport({ width, height });
     await page.evaluate(t => { document.documentElement.dataset.theme = t; window.scrollTo(0, 0); }, theme);
@@ -459,6 +463,10 @@ async function browserSuite() {
   await page.waitForFunction(() => document.activeElement?.dataset?.rowKey === "innodb_io_capacity");
 
   assert.equal(seen.filter(r => r.pathname.startsWith("/api/live/") && r.pathname !== "/api/live/config").length, 0, "nothing in Versions reads a server");
+  for (const family of await page.evaluate(async () => {
+    await document.fonts.ready;
+    return [...document.fonts].filter(f => f.status === "error").map(f => f.family);
+  })) errors.push(`Font failed to load: ${family}`);
   assert.deepEqual(errors, []);
   console.log("parameter-versions browser: first-visit mount, kept Parameters state, defaults, Swap, busy and error states, kind counts, name and set-on-server filters, inspector and Escape, Show full history, Version history, suggestions, combobox and mode keyboard, Percona and newer-server notes, 1440/720 light/dark layout passed");
 }

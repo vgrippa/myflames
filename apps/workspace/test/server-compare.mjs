@@ -262,6 +262,10 @@ assert 'IDENTIFIED' not in f['export']['text']
       await compare("parameters"); await waitReport("parameters");
       assert.match(await page.$eval(`${panel("parameters")} [aria-label="Compared servers"]`, e => e.textContent), /Source.*db1:3306.*read.*Target.*Snapshot #1 \(“Before upgrade”\) of db1:3306.*captured/s);
       await checkSetup("parameters");
+      for (const family of await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].filter(f => f.status === "error").map(f => f.family);
+      })) errors.push(`Font failed to load: ${family}`);
       await reviewCompare(page, "parameters", panel("parameters"), ".server-compare-filters");
       assert.deepEqual(seen.find(r => r.pathname === "/api/config/compare").body.target, { snapshot: fixture.snapshot_list.items[0].id });
       assert.equal(await page.$(`${panel("parameters")} [data-row-key="server_id"]`), null);
@@ -381,6 +385,10 @@ assert 'IDENTIFIED' not in f['export']['text']
           assert.equal(await page.$eval(`${panel(kind)} .view-main`, e => e.scrollWidth > e.clientWidth + 1), false, `${kind} ${width} ${theme} compare pane overflow`);
         }
       }
+      for (const family of await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].filter(f => f.status === "error").map(f => f.family);
+      })) errors.push(`Font failed to load: ${family}`);
       assert.deepEqual(errors, []);
       console.log("server-compare browser: pickers, snapshot save, filters, keyboard details, side error, Stop, connection binding, export Copy/Download, light/dark and 720px overflow passed");
       if (process.env.COMPARE_SHOTS) {

@@ -138,8 +138,8 @@ function reply(p, body) {
     case "/api/live/schemas":
       return {
         schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "x", uptime_s: 1, performance_schema: true,
-        schemas: [{ name: "app", tables: 2, system: false }, { name: "shop", tables: 3, system: false }, { name: "mysql", tables: 38, system: true }],
-        user_tables: 5, all_limit: 2000, all_note: "", system: ["mysql"],
+        schemas: [{ name: "app", tables: 2, system: false }, { name: "shop", tables: 3, system: false }, { name: "audit", tables: 1, system: false }, { name: "mysql", tables: 38, system: true }],
+        user_tables: 6, all_limit: 2000, all_note: "", system: ["mysql"],
       };
   }
   return undefined;
@@ -172,12 +172,15 @@ try {
   const consoleMessages = [];
   const failedRequests = [];
   const badResponses = [];
-  let expectedTeardown = false;
+  const inFlightNames = new Set();
+  let teardownRequests = new Set();
   page.on("console", (m) => { if (["error", "warn"].includes(m.type())) consoleMessages.push(m.text()); });
+  page.on("requestfinished", (r) => inFlightNames.delete(r));
   page.on("requestfailed", (r) => {
+    inFlightNames.delete(r);
     const pathname = new URL(r.url()).pathname, reason = r.failure()?.errorText || "";
-    // The completion's parameter-name read is cancelled by its AbortSignal when the page reloads or the editor unmounts.
-    if (expectedTeardown && pathname === "/api/config/versions/names" && reason === "net::ERR_ABORTED") return;
+    // Only parameter-name reads already in flight at teardown may be cancelled.
+    if (teardownRequests.has(r) && pathname === "/api/config/versions/names" && reason === "net::ERR_ABORTED") return;
     failedRequests.push(`${pathname} ${reason}`.trim());
   });
   page.on("response", (r) => { if (r.status() >= 400) badResponses.push([new URL(r.url()).pathname, r.status()]); });
@@ -185,6 +188,7 @@ try {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const p = new URL(request.url()).pathname;
+    if (p === "/api/config/versions/names") inFlightNames.add(request);
     if (!p.startsWith("/api/")) return request.continue();
     // Sign-in and the session store are the real server's (a throwaway HOME);
     // every editor and live endpoint is mocked so nothing runs.
@@ -256,10 +260,10 @@ try {
   await page.waitForSelector('.confirm-sheet');
   const promptText = await page.$eval('.confirm-sheet', (e) => e.textContent);
   assert.match(promptText, /Save .* before closing/);
-  expectedTeardown = true;
+  teardownRequests = new Set(inFlightNames);
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  expectedTeardown = false;
+  teardownRequests.clear();
   assert.deepEqual(await tabNames(), ["Query 1"], "Don't save closes without a save request");
   assert.equal(calls("/api/editor/file/save").length, 2);
 
@@ -271,10 +275,10 @@ try {
   assert.equal((await tabNames())[1], "bad");
   assert.equal(calls("/api/editor/file/open").length, opensBefore + 1, "the backend owns the chooser and the read");
   // Close it again without edits: no prompt.
-  expectedTeardown = true;
+  teardownRequests = new Set(inFlightNames);
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  expectedTeardown = false;
+  teardownRequests.clear();
 
   // -- On error: Continue ------------------------------------------------------
   await setText("SELECT 1;\nSELECT 2;\nSELECT 3;");
@@ -373,10 +377,10 @@ try {
   await page.locator(`${ACTIVE_TAB} ~ .query-tab-close`).click();
   await page.locator('.confirm-sheet button ::-p-text(Don\'t save)').click();
   await page.waitForFunction(() => document.querySelector(".confirm-sheet")?.textContent.includes("with a transaction open"));
-  expectedTeardown = true;
+  teardownRequests = new Set(inFlightNames);
   await page.locator('.confirm-sheet button ::-p-text(Roll back and close)').click();
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
-  expectedTeardown = false;
+  teardownRequests.clear();
 
   // Continue counts actual terminal statuses, including Stop before any
   // error and a lost connection whose outcome cannot be claimed as success.
@@ -432,9 +436,10 @@ try {
   await page.waitForFunction(() => document.querySelector('select[data-action="database"]')?.value === "app");
   await chooseConnection(page, B);
   const usesBeforeMismatch = calls("/api/editor/use").length;
-  const mismatchChoice = await page.$eval(DATABASE, e => [...e.options].map(option => option.value).find(value => value !== "shop" && value !== "") ?? "");
+  await page.waitForFunction(sel => [...(document.querySelector(sel)?.options || [])].some(option => !["shop", "app", ""].includes(option.value)), {}, DATABASE);
+  const mismatchChoice = await page.$eval(DATABASE, e => [...e.options].map(option => option.value).find(value => !["shop", "app", ""].includes(value)));
   assert.notEqual(mismatchChoice, "shop", "exercise a different database during the mismatch");
-  await page.select(DATABASE, mismatchChoice);
+  assert.deepEqual(await page.select(DATABASE, mismatchChoice), [mismatchChoice], "the picker selected the different database");
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("This tab is still connected to A"));
   assert.equal(calls("/api/editor/use").length, usesBeforeMismatch, "database change cannot target the old server");
   // Refusing a different choice restores B's database, which Run will use once A's session closes.
@@ -456,9 +461,9 @@ try {
     const lab = saved.state?.query_lab;
     return lab?.tabs.find((t) => t.id === lab.tab_id)?.database === "";
   });
-  expectedTeardown = true;
+  teardownRequests = new Set(inFlightNames);
   await page.reload({ waitUntil: "networkidle0" });
-  expectedTeardown = false;
+  teardownRequests.clear();
   await page.waitForSelector(DATABASE, { visible: true });
   assert.equal(await page.$eval(DATABASE, (e) => e.value), "", "explicit None survives normalization and restore");
   const runBeforeNone = calls("/api/editor/run").length;
