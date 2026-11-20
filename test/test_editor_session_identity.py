@@ -17,6 +17,15 @@ from myflames import dbops, editor_session as ed
 
 
 @unittest.skipIf(os.name == 'nt', 'the fake client is a POSIX script')
+
+def _read_if_present(path):
+    """The fake client removes its active-statement file between polls;
+    an exists() check followed by a read can race with that."""
+    try:
+        return path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return ''
+
 class EditorIdentityTests(unittest.TestCase):
     engine = 'mysql'
     setUp = fixtures.ProcessTests.setUp
@@ -644,7 +653,7 @@ class EditorIdentityTests(unittest.TestCase):
                 self.run_sql(sql + ' /*gate*/', wait=0)
                 session = self.registry.get('tab1')
                 active = self.state / ('active-%d' % session.connection_id)
-                self.until(lambda: active.exists() and sql in active.read_text(encoding='utf-8'),
+                self.until(lambda: sql in _read_if_present(active),
                            'outer statement to start')
                 # Engines display the untagged inner SQL, not the caller's
                 # private token. It is not safe to kill by connection id alone.
@@ -828,7 +837,7 @@ class EditorIdentityTests(unittest.TestCase):
             self.run_sql('SELECT 7 /*gate*/', wait=0)
             session = self.registry.get('tab1')
             active = self.state / ('active-%d' % session.connection_id)
-            self.until(lambda: active.exists() and 'SELECT 7 /*gate*/' in active.read_text(encoding='utf-8'),
+            self.until(lambda: 'SELECT 7 /*gate*/' in _read_if_present(active),
                        'owned statement to be visible')
             active.write_text(actual % session.statement_tag if '%s' in actual else actual, encoding='utf-8')
             try:
