@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from myflames import account_compare as A, accounts, param_compare as P, privileges
+from myflames import account_compare as A, accounts, dbops, param_compare as P, privileges
 from myflames.connector import ConnectorError
 from test_accounts import FakeConn
 from test_chart_data import validate
@@ -50,6 +50,42 @@ class CaptureConn(FakeConn):
 
 
 class CompareTest(unittest.TestCase):
+    def test_oversized_grants_are_not_compared_or_exported(self):
+        hostile = 'PASSWORD' + ' ' * accounts.MAX_ACCOUNT_TEXT_CHARS + 'never-return-this-secret'
+        original = dbops.strip_credentials
+
+        def bounded(text):
+            self.assertLessEqual(len(text), accounts.MAX_ACCOUNT_TEXT_CHARS)
+            return original(text)
+
+        source = side([account(grants=[hostile])])
+        with mock.patch.object(dbops, 'strip_credentials', side_effect=bounded):
+            report = A.compare(source, copy.deepcopy(source))
+            self.assertEqual(A.normalize_grant(hostile), A.normalize_grant(accounts.OMITTED_ACCOUNT_TEXT))
+            with self.assertRaisesRegex(ValueError, 'completely read'):
+                A.compare_many({'a': source, 'b': copy.deepcopy(source)})
+            with self.assertRaisesRegex(ValueError, 'could not be read'):
+                A.export_sql(source)
+            with self.assertRaisesRegex(ValueError, 'safely exported'):
+                A._grant_sql(hostile, account(), 'mysql')
+        row = report['items'][0]
+        self.assertEqual(row['status'], 'not_compared')
+        self.assertEqual(row['source']['grants'], [accounts.OMITTED_ACCOUNT_TEXT])
+        self.assertIn('omitted: too long', row['reason'])
+        self.assertFalse(report['identical'])
+        self.assertFalse(report['complete'])
+        self.assertNotIn('never-return-this-secret', json.dumps(report))
+
+    def test_capture_marks_oversized_grants_unreadable(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                conn = CaptureConn(engine)
+                conn.grants = ['PASSWORD' + ' ' * accounts.MAX_ACCOUNT_TEXT_CHARS + 'x']
+                result = A.capture(conn)
+                self.assertEqual(result['items'][0]['grants'], [accounts.OMITTED_ACCOUNT_TEXT])
+                self.assertTrue(A.incomplete_account(result['items'][0]))
+                self.assertEqual(A.compare(result, result)['items'][0]['status'], 'not_compared')
+
     def test_system_accounts_remain_compared_with_boolean_flags(self):
         system_names = sorted(accounts.SYSTEM_ACCOUNTS)
         source = side([account(n, host='localhost') for n in system_names] + [account('root')])

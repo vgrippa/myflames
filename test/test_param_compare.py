@@ -455,6 +455,109 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.parameter_snapshot_get(saved['id'])['snapshot'],value)
 
 class ValidationEdgeTest(unittest.TestCase):
+    def test_all_row_strings_are_capped_before_any_redaction(self):
+        metadata = ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group')
+        full = 'PASSWORD' + ' ' * P.MAX_VALUE_CHARS + 'x'
+        raw = snapshot([dict(item('custom_setting', full, default=full, values=[full]),
+                             **{key: full for key in metadata})])
+        with mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact, \
+                mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as parameter_redact:
+            clean = P.validate_snapshot(raw)
+        row = clean['items'][0]
+        self.assertTrue(row['truncated'])
+        for key in metadata + ('value', 'default', 'values'):
+            self.assertIsNone(row[key], key)
+        self.assertNotIn('dynamic', row)
+        for calls in (redact.call_args_list, parameter_redact.call_args_list):
+            self.assertFalse(any(isinstance(call[0][0], str) and len(call[0][0]) > P.MAX_VALUE_CHARS
+                                 for call in calls))
+        self.assertNotIn(full, json.dumps(clean))
+        self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+        self.assertEqual(P.compare_many({'a': clean, 'b': clean})[0]['status'], 'missing')
+        # Projection must leave the caller's untrusted data unchanged.
+        self.assertEqual(raw['items'][0]['source'], full)
+
+    def test_metadata_limit_preserves_boundary_and_drops_only_overflow(self):
+        metadata = ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group')
+        for key in metadata:
+            with self.subTest(field=key):
+                boundary = dict(item('at_limit', '151'), **{key: 'x' * P.MAX_VALUE_CHARS})
+                overflow = dict(item('over_limit', '151'), **{key: 'x' * (P.MAX_VALUE_CHARS + 1)})
+                clean = P.validate_snapshot(snapshot([boundary, overflow]))['items']
+                self.assertEqual(clean[0][key], boundary[key])
+                self.assertFalse(clean[0].get('truncated', False))
+                self.assertIsNone(clean[1][key])
+                self.assertTrue(clean[1]['truncated'])
+
+    def test_name_limit_rejects_overflow_without_an_invented_identity(self):
+        name = 'x' * P.MAX_VALUE_CHARS
+        self.assertEqual(P.validate_snapshot(snapshot([item(name, '151')]))['items'][0]['name'], name)
+        with mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact:
+            with self.assertRaisesRegex(ValueError, 'Invalid parameter name'):
+                P.validate_snapshot(snapshot([item(name + 'x', '151')]))
+        redact.assert_not_called()
+
+    def test_capture_caps_server_source_metadata_before_redaction(self):
+        full = 'PASSWORD' + ' ' * 70000 + 'x'
+        report = {'engine': 'mysql', 'server_version': '8.4.11', 'notes': [],
+                  'parameters': {'complete': True, 'items': [item('max_connections', '151', source=full)]}}
+        with mock.patch('myflames.config_review.config_report', return_value=report), \
+                mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact:
+            captured = P.capture(mock.Mock(host='db', port=3306), {'host': 'db', 'port': 3306})
+        self.assertIsNone(captured['items'][0]['source'])
+        self.assertTrue(captured['items'][0]['truncated'])
+        self.assertEqual(captured['items'][0]['value'], '151')
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertEqual(P.compare(captured, captured)['items'][0]['status'], 'not_compared')
+
+    def test_hostile_value_and_source_shapes_at_cap_finish_within_deadline(self):
+        # Run each shape behind a process deadline: a regex regression can
+        # hold the GIL, preventing a timer thread from interrupting it.
+        code = r'''
+import json
+import sys
+import time
+from myflames import param_compare as p
+n = p.MAX_VALUE_CHARS
+shape = sys.argv[1]
+pairs = n // 57
+shapes = {
+    'password_spaces': ('PASSWORD' + ' ' * n)[:n - 1] + 'x',
+    'set_password': ('SET PASSWORD ' * n)[:n],
+    'identified_require': ('IDENTIFIED REQUIRE ' * n)[:n],
+    'quote_lone_backslash': ("'" + "\\'" * n)[:n],
+    'quote_backslash_newline': ("'" + "\\'" * n)[:n - 3] + '\\\nx',
+    'combined': ('IDENTIFIED REQUIRE ' * pairs) + ("'" + "\\'" * n)[:n - 19 * pairs],
+}
+hostile = shapes[shape]
+assert len(hostile) == n
+raw = dict(schema_version=p.SNAPSHOT_SCHEMA, server=dict(host='db', port=3306, engine='mysql'),
+           captured_at='2026-11-21T00:00:00+00:00', complete=True, notes=[],
+           items=[dict(name='custom_setting', value=hostile, default=hostile, source=hostile)])
+began = time.monotonic()
+clean = p.validate_snapshot(raw)['items'][0]
+assert not clean.get('truncated', False)
+assert clean['source'] == hostile
+assert clean['value'] == clean['default']
+if shape in ('identified_require', 'combined'):
+    assert 'IDENTIFIED' not in clean['value']
+    assert clean['value'].count('REQUIRE') == hostile.count('REQUIRE')
+else:
+    assert clean['value'] == hostile
+raw['items'][0]['source'] = hostile + 'x'
+oversized = p.validate_snapshot(raw)['items'][0]
+assert oversized['source'] is None and oversized['truncated'] is True
+print(time.monotonic() - began)
+'''
+        for shape in ('password_spaces', 'set_password', 'identified_require',
+                      'quote_lone_backslash', 'quote_backslash_newline', 'combined'):
+            with self.subTest(shape=shape):
+                result = subprocess.run([sys.executable, '-c', code, shape],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(float(result.stdout.strip()), 3)
+
     def test_compare_many_discards_overflow_before_redaction(self):
         full = 'mysql://user:' + 'p' * (P.MAX_VALUE_CHARS + 1) + '@host'
         with mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
@@ -656,3 +759,37 @@ class ValidationEdgeTest(unittest.TestCase):
         self.assertEqual(rows[0]['status'], 'missing')
         self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
         self.assertNotIn('same-passphrase', json.dumps(rows))
+
+    def test_telemetry_header_values_and_named_secrets_are_never_compared(self):
+        from myflames import topology_change
+        for signal in ('traces', 'metrics', 'logs'):
+            for suffix in ('headers', 'secret_headers'):
+                name = 'telemetry.otel_exporter_otlp_' + signal + '_' + suffix
+                with self.subTest(name=name):
+                    self.assertTrue(P.sensitive(name))
+                    self.assertTrue(P.sensitive(name.upper()))
+                    secret = 'api-key=telemetry-header-secret'
+                    raw = snapshot([item(name, secret, 'string', secret, values=[secret])])
+                    report = {'engine': 'mysql', 'server_version': '9.7.0', 'notes': [],
+                              'parameters': {'complete': True, 'items': raw['items']}}
+                    with mock.patch('myflames.config_review.config_report', return_value=report):
+                        captured = P.capture(mock.Mock(host='db', port=3306), {'host': 'db', 'port': 3306})
+                    for clean in (P.validate_snapshot(raw), captured):
+                        row = clean['items'][0]
+                        self.assertEqual(row['value'], '[redacted]')
+                        self.assertEqual(row['default'], '[redacted]')
+                        self.assertIsNone(row['values'])
+                        self.assertTrue(row['redacted'])
+                        self.assertNotIn(secret, json.dumps(clean))
+                        self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+                        group = P.compare_many({'a': raw, 'b': clean})[0]
+                        self.assertEqual(group['status'], 'missing')
+                        self.assertEqual(group['values'], {'a': '[redacted]', 'b': '[redacted]'})
+                        self.assertNotIn(secret, json.dumps(group))
+                    # The real rolling planner must refuse before consulting
+                    # profiles, opening a client, or reading saved passwords.
+                    store = mock.Mock()
+                    with self.assertRaisesRegex(ValueError, 'Sensitive variables') as refused:
+                        topology_change.plan(store, 'G', 'a', name, secret, 'global', ['a'])
+                    self.assertNotIn(secret, str(refused.exception))
+                    self.assertEqual(store.mock_calls, [])

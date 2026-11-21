@@ -69,6 +69,20 @@ _DENIED = (1044, 1045, 1095, 1142, 1227, 1290, 1698, 1792, 3630)
 _INTERRUPTED = (1205, 1213, 1317)
 MAX_ROLE_READS = 256
 ROLE_READ_SECONDS = 30
+MAX_ACCOUNT_TEXT_CHARS = 16384
+OMITTED_ACCOUNT_TEXT = '[omitted: too long]'
+
+
+def _strip_account_credentials(text):
+    """Bound a server grant or account label before credential processing.
+
+    An oversized line is unavailable evidence. Keep a marker, never a prefix
+    that could be mistaken for the complete grant or expose a partial secret.
+    """
+    text = str(text or '')
+    if len(text) > MAX_ACCOUNT_TEXT_CHARS:
+        return OMITTED_ACCOUNT_TEXT
+    return dbops.strip_credentials(text)
 
 
 def _json(value):
@@ -81,7 +95,7 @@ def fingerprint(account):
     password change does not alter it."""
     safe = {'name': account['name'], 'host': account['host'], 'role': account.get('role', False),
             'exists': account.get('exists', True),
-            'grants': sorted(set(dbops.strip_credentials(g) for g in account.get('grants', []))),
+            'grants': sorted(set(_strip_account_credentials(g) for g in account.get('grants', []))),
             'attributes': account.get('attributes', {}), 'roles': sorted(account.get('roles', []), key=_json),
             'default_roles': sorted(account.get('default_roles', []), key=_json),
             'attributes_checked': account.get('attributes_checked', True),
@@ -249,7 +263,10 @@ def read_account(conn, name, host='%', role=False, engine=None, version=None, in
             out['fingerprint'] = fingerprint(out)
             return out
         raise ConnectorError('Could not read the account grants (error %s).' % (code or 'unavailable')) from None
-    out['grants'] = [dbops.strip_credentials(row[0]) for row in lines if row and row[0]]
+    out['grants'] = [_strip_account_credentials(row[0]) for row in lines if row and row[0]]
+    if OMITTED_ACCOUNT_TEXT in out['grants']:
+        out['error'] = 'Account grants omitted: too long.'
+        out['warnings'].append(out['error'])
     partial = False
     if engine == 'mysql':
         partial = str(reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'")
@@ -339,7 +356,10 @@ def read_account(conn, name, host='%', role=False, engine=None, version=None, in
             out['warnings'].append('Could not read the privileges of role %s; inherited privileges are incomplete.'
                                    % key[0])
             continue
-        lines = [dbops.strip_credentials(row[0]) for row in rows if row and row[0]]
+        lines = [_strip_account_credentials(row[0]) for row in rows if row and row[0]]
+        if OMITTED_ACCOUNT_TEXT in lines:
+            complete = False
+            out['warnings'].append('Inherited account grants omitted: too long.')
         role_cache[key] = privileges.parse_grants(lines, engine, version, partial)
         out['role_grants'].extend(lines)
         enqueue(role_cache[key]['roles'])
@@ -646,12 +666,12 @@ def dangerous_grants(model):
 def grant_diff(before, after):
     """Observed line and per-level differences, credentials stripped first."""
     def lines(a):
-        return set(dbops.strip_credentials(g) for g in a.get('grants', []))
+        return set(_strip_account_credentials(g) for g in a.get('grants', []))
     old, new = lines(before), lines(after)
     by_level = {}
     for key in ('global', 'dynamic', 'schemas', 'tables', 'columns', 'routines', 'proxies', 'restrictions', 'roles'):
         def entries(a):
-            model = a.get('model') or privileges.parse_grants(a.get('grants', []), a.get('engine', 'mysql'),
+            model = a.get('model') or privileges.parse_grants(lines(a), a.get('engine', 'mysql'),
                                                               a.get('version', ''))
             return {_json(e) for e in model[key]}
         b, a = entries(before), entries(after)

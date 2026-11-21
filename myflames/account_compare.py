@@ -30,7 +30,7 @@ def normalize_grant(line):
     Preserve object and account name case. Do not casefold a database name or
     erase REQUIRE/WITH options. Unusual syntax retains every token.
     """
-    parts = privileges.tokens(dbops.strip_credentials(line).strip().rstrip(';'))
+    parts = privileges.tokens(accounts._strip_account_credentials(line).strip().rstrip(';'))
     upper = [t.upper() for t in parts]
     if not parts or upper[0] not in ('GRANT', 'REVOKE'):
         return _tokens(parts)
@@ -67,7 +67,9 @@ def _safe_account(value):
     out['system'] = out['name'] in accounts.SYSTEM_ACCOUNTS
     out['grants'] = []
     for raw in value.get('grants', []):
-        line = dbops.strip_credentials(raw)
+        line = accounts._strip_account_credentials(raw)
+        if line == accounts.OMITTED_ACCOUNT_TEXT:
+            out['error'] = 'Account grants omitted: too long.'
         try:
             grantee = privileges.grant_source(line)
         except ValueError:
@@ -242,6 +244,8 @@ def compare_many(snapshots):
             if incomplete_account(raw):
                 raise ValueError('Only completely read accounts can be compared.')
             item = _safe_account(raw)
+            if incomplete_account(item):
+                raise ValueError('Only completely read accounts can be compared.')
             item['grants'] = _many_privilege_grants(item)
             items[key] = item
         indexed[pid] = items
@@ -285,7 +289,7 @@ def _grant_sql(line, item, engine):
     Authentication, TLS and resource clauses are intentionally absent from this
     grants-only export. The comparison keeps them in its raw grant projection.
     """
-    safe = dbops.strip_credentials(line).strip().rstrip(';')
+    safe = accounts._strip_account_credentials(line).strip().rstrip(';')
     model = privileges.parse_grants([safe], engine)
     if model['unparsed']:
         raise ValueError('A grant could not be safely exported; inspect its original text.')
@@ -301,7 +305,7 @@ def _grant_sql(line, item, engine):
         return None  # Roles and default roles are rebuilt from structured fields.
     if on > boundary:
         return None
-    grantee = privileges.grant_source(line)
+    grantee = privileges.grant_source(safe)
     if (grantee['name'], grantee['host']) != (item['name'], item['host']):
         return None  # MariaDB SHOW GRANTS FOR role also prints inherited lines.
     prefix, depth = [upper[0]], 0

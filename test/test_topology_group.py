@@ -100,7 +100,7 @@ if evidence:
 
 def fail(message):
     if evidence:
-        message = re.sub(r'(ERROR\s+\d+(?:\s+\([^)]*\))?):', r'\1 at line 2:', message)
+        message = re.sub(r'(ERROR\s+\d+(?:\s+\([^)]*\))?)(?: at line \d+)?:', r'\1 at line 2:', message)
     sys.stderr.write(message + '\n')
     sys.exit(1)
 
@@ -392,6 +392,43 @@ class ParameterManyTests(unittest.TestCase):
 
 
 class AccountManyTests(unittest.TestCase):
+    def test_incomplete_account_labels_are_bounded_before_redaction(self):
+        from myflames import accounts
+        limit = accounts.MAX_ACCOUNT_TEXT_CHARS
+        hostile = 'PASSWORD' + ' ' * (1024 * 1024) + 'x'
+        for name, host in ((hostile, '%'), ('app', hostile),
+                           ('a' * (limit // 2), 'h' * (limit // 2))):
+            with self.subTest(name_chars=len(name), host_chars=len(host)):
+                captured = side([account('readable'), account(name, host=host, grants_checked=False)])
+                results = [({'profile_id': 'member', 'outcome': 'read'}, captured, None, None, False)]
+                with mock.patch.object(dbops, 'strip_credentials', wraps=dbops.strip_credentials) as strip, \
+                        mock.patch.object(dbops, 'redact', wraps=dbops.redact) as redact:
+                    snapshots, excluded = topology_group._comparison_inputs(results, 'accounts')
+                self.assertEqual([item['name'] for item in snapshots['member']['items']], ['readable'])
+                self.assertEqual(len(excluded), 1)
+                self.assertIn(accounts.OMITTED_ACCOUNT_TEXT, excluded[0]['reason'])
+                self.assertNotIn(hostile, json.dumps(excluded))
+                strip.assert_not_called()
+                self.assertTrue(redact.called)
+                self.assertTrue(all(len(call[0][0]) <= limit for call in redact.call_args_list))
+
+    def test_incomplete_account_label_at_cap_is_preserved(self):
+        from myflames import accounts
+        limit = accounts.MAX_ACCOUNT_TEXT_CHARS
+        name, host = 'a' * (limit // 2), 'h' * (limit // 2 - 1)
+        label = name + '@' + host
+        self.assertEqual(len(label), limit)
+        captured = side([account(name, host=host, grants_checked=False)])
+        results = [({'profile_id': 'member', 'outcome': 'read'}, captured, None, None, False)]
+        with mock.patch.object(dbops, 'strip_credentials', wraps=dbops.strip_credentials) as strip, \
+                mock.patch.object(dbops, 'redact', wraps=dbops.redact) as redact:
+            snapshots, excluded = topology_group._comparison_inputs(results, 'accounts')
+        self.assertEqual(snapshots['member']['items'], [])
+        self.assertIn(label, excluded[0]['reason'])
+        self.assertNotIn(accounts.OMITTED_ACCOUNT_TEXT, excluded[0]['reason'])
+        strip.assert_called_once_with(label)
+        redact.assert_called_once_with(label)
+
     def test_real_account_capture_reuses_existing_member_evidence_scope(self):
         for engine in ('mysql', 'mariadb'):
             with self.subTest(engine=engine):
@@ -1090,7 +1127,8 @@ class TopologyReadTests(GroupCase):
 
     def test_login_and_transport_errors_cost_one_client_invocation_per_member(self):
         self.save('peer', 'G')
-        for code in (1045, 1044, 1049, 1698, 2002, 2003, 2005, 2013, 2026, 1129, 1130, 1251, 3159):
+        for code in (1040, 1045, 1044, 1049, 1226, 1698, 1862, 2002, 2003, 2005, 2013, 2026,
+                     1129, 1130, 1251, 3118, 3159, 3955, 4151):
             with self.subTest(code=code):
                 fixtures = {host: member_fixture(error='ERROR %d (HY000): secret_payload' % code)
                             for host in ('active.example', 'peer.example')}
@@ -1099,6 +1137,47 @@ class TopologyReadTests(GroupCase):
                 self.assertEqual(sorted(observed.logins), ['active.example', 'peer.example'])
                 self.assertEqual(report['summary']['failed'], 2)
                 self.assertNotIn('secret_payload', json.dumps(report))
+
+    def test_unlisted_initial_coded_failure_is_not_retried(self):
+        connection = mock.Mock()
+        connection.run.side_effect = connector.ConnectorError('ERROR 1999 (HY000): login refused')
+        reader = topology_group._ReadConnection(connection)
+        for unused in range(3):
+            with self.assertRaises(connector.ConnectorError):
+                reader.run('SELECT @@version_comment')
+        self.assertEqual(connection.run.call_count, 1)
+
+    def test_initial_sql_error_evidence_does_not_latch(self):
+        for evidence in ('line', 'guard'):
+            with self.subTest(evidence=evidence):
+                error = connector.ConnectorError(
+                    'ERROR 1045 (28000)%s: Access denied for user test' %
+                    (' at line 1' if evidence == 'line' else ''))
+                if evidence == 'guard':
+                    error.guard_markers = ('private_guard',)
+                connection = mock.Mock()
+                connection.run.side_effect = [error, '1\n']
+                reader = topology_group._ReadConnection(connection)
+                with self.assertRaises(connector.ConnectorError):
+                    reader.run('SELECT unavailable')
+                reader.check()
+                self.assertEqual(reader.run('SELECT 1'), '1\n')
+                self.assertEqual(connection.run.call_count, 2)
+
+    def test_explicit_login_failure_after_success_is_not_retried(self):
+        for code in (1040, 1226, 1698, 1862, 3118, 3955, 4151):
+            with self.subTest(code=code):
+                message = ('ERROR %d (HY000): ' % code) + (
+                    "User 'test' has exceeded the 'max_user_connections' resource" if code == 1226
+                    else 'login refused')
+                connection = mock.Mock()
+                connection.run.side_effect = ['1\n', connector.ConnectorError(message), '1\n']
+                reader = topology_group._ReadConnection(connection)
+                self.assertEqual(reader.run('SELECT 1'), '1\n')
+                for unused in range(2):
+                    with self.assertRaises(connector.ConnectorError):
+                        reader.run('SELECT @@version_comment')
+                self.assertEqual(connection.run.call_count, 2)
 
     def test_proxy_echo_login_failure_cannot_fall_through_to_database_probe(self):
         for code in (1045, 1129, 1251, 3159, 2013):
@@ -1170,7 +1249,9 @@ class TopologyReadTests(GroupCase):
     def test_authenticated_sql_timeout_word_is_not_a_transport_timeout(self):
         for message in ('ERROR 1045 (28000): ProxySQL Admin Error: no such column: timeout',
                         "ERROR 1193 (HY000): Unknown system variable 'lock_wait_timeout'",
-                        'ERROR 1205 (HY000): Lock wait timeout exceeded'):
+                        'ERROR 1205 (HY000): Lock wait timeout exceeded',
+                        "ERROR 1226 (42000): User 'test' has exceeded the 'max_questions' resource",
+                        'ERROR 1045 (28000) at line 1: Access denied for user test'):
             with self.subTest(message=message):
                 connection = mock.Mock()
                 connection.run.side_effect = ['1\n', connector.ConnectorError(message), '1\n']
@@ -1184,7 +1265,7 @@ class TopologyReadTests(GroupCase):
 
     def test_authenticated_optional_identity_sql_error_remains_unavailable_fact(self):
         fixture = member_fixture(error_on='SELECT @@version_comment',
-                                 query_error='ERROR 1193 (HY000): optional variable unavailable')
+                                 query_error='ERROR 1193 (HY000) at line 1: optional variable unavailable')
         with self.clients({'active.example': fixture}) as observed:
             report = self.read()
         self.assertEqual(report['summary']['read'], 1, report)

@@ -60,11 +60,19 @@ class _ReadConnection(object):
             # ProxySQL Admin uses 1045 for unsupported SQL, including the
             # initial optional version-comment probe. This is a SQL reply.
             admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
-            login_refused = (code in (1044, 1045, 1049, 1698, 1129, 1130, 1251, 3159) and
-                not admin_sql_error and (not self.authenticated or
-                (re.search(r'\bAccess denied for user\b', message, re.I) and
-                 not re.search(r'\bat line \d+|\bto database\b', message, re.I) and
-                 not getattr(exc, 'guard_markers', ()))))
+            sql_reply = (admin_sql_error or re.search(r'\bat line \d+\b', message, re.I) or
+                         getattr(exc, 'guard_markers', ()))
+            # Before any successful statement, a coded failure without SQL
+            # position evidence can be a login refusal outside our inventory.
+            # Later invocations still log in again, so explicit login failures
+            # must also latch after an earlier successful statement.
+            login_refused = not sql_reply and (
+                (code is not None and not self.authenticated) or
+                code in (1040, 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151) or
+                (code == 1226 and re.search(r'\bmax_user_connections\b', message, re.I)) or
+                (code in (1044, 1045, 1049) and
+                 re.search(r'\bAccess denied for user\b', message, re.I) and
+                 not re.search(r'\bto database\b', message, re.I)))
             # SQL permission/unsupported-feature errors may be optional. A
             # refused login, client error or timeout must end this member read.
             if code is None or client_error(code) or login_refused:
@@ -860,7 +868,7 @@ def _entry(profile):
 
 def _comparison_inputs(results, section):
     """Keep unavailable inventories separate from trustworthy absence evidence."""
-    from . import account_compare
+    from . import account_compare, accounts
     snapshots, not_compared, unreadable = {}, [], set()
     for entry, snapshot, position, reason, multi in results:
         pid = entry['profile_id']
@@ -886,7 +894,7 @@ def _comparison_inputs(results, section):
             if excluded:
                 # Account names are display data. Never include diagnostic or
                 # grant text, and escape controls before adding them to prose.
-                labels = [json.dumps(dbops.redact(dbops.strip_credentials('%s@%s' % key)), ensure_ascii=True)
+                labels = [json.dumps(dbops.redact(accounts._strip_account_credentials('%s@%s' % key)), ensure_ascii=True)
                           for key in sorted(excluded)]
                 not_compared.append({'profile_id': pid, 'reason':
                     'Accounts not compared because their reads were incomplete: %s. '

@@ -61,6 +61,9 @@ _SECRET_VARIABLES = frozenset((
     'keyring_encrypted_file_password', 'keyring_hashicorp_secret_id', 's3_secret_key',
     'handlersocket_plain_secret', 'handlersocket_plain_secret_wr', 'utility_user_password',
     'file_key_management_filekey',
+    'telemetry.otel_exporter_otlp_logs_headers',
+    'telemetry.otel_exporter_otlp_metrics_headers',
+    'telemetry.otel_exporter_otlp_traces_headers',
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
@@ -151,7 +154,8 @@ def validate_snapshot(value):
         raise ValueError('Use an ISO 8601 snapshot timestamp with a time zone.') from None
     names = set()
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get('name'), str) or not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name']):
+        if (not isinstance(item, dict) or not isinstance(item.get('name'), str) or
+                len(item['name']) > MAX_VALUE_CHARS or not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name'])):
             raise ValueError('Invalid parameter name.')
         name = item['name'].lower()
         if name in names:
@@ -162,8 +166,6 @@ def validate_snapshot(value):
         if 'value' not in row:
             raise ValueError('Every parameter needs a raw value; use null for SQL NULL.')
         row.setdefault('default', None)
-        if 'dynamic' not in row and row.get('apply_type') in ('dynamic', 'static'):
-            row['dynamic'] = row['apply_type'] == 'dynamic'
         for key in ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group'):
             if row.get(key) is not None and not isinstance(row[key], str):
                 raise ValueError('Invalid parameter metadata.')
@@ -173,25 +175,35 @@ def validate_snapshot(value):
         for key in ('dynamic', 'truncated', 'redacted'):
             if row.get(key) is not None and type(row[key]) is not bool:
                 raise ValueError('Invalid parameter state.')
-        if sensitive(name):
-            row['values'] = None
         for key in ('value', 'default'):
             if row.get(key) is not None and not isinstance(row[key], (str, int, float, bool)):
                 raise ValueError('Parameter values must be scalar.')
-            if isinstance(row.get(key), str) and len(row[key]) > MAX_VALUE_CHARS:
-                # Drop oversized values before any credential regex runs. A
-                # prefix is not evidence of the complete setting's value.
-                row[key], row['truncated'] = None, True
-            elif sensitive(name):
+
+        # Server metadata, including VARIABLE_SOURCE / GLOBAL_VALUE_ORIGIN,
+        # reaches the final recursive redaction too. Bound every retained
+        # string before any redaction, and never compare an incomplete row.
+        # Names were bounded above: dropping their identity would be invalid.
+        oversized = {key for key, raw in row.items()
+                     if isinstance(raw, str) and len(raw) > MAX_VALUE_CHARS}
+        for key in oversized:
+            row[key], row['truncated'] = None, True
+        if row.get('values') is not None and any(len(v) > MAX_VALUE_CHARS for v in row['values']):
+            row['values'], row['truncated'] = None, True
+        if 'dynamic' not in row and row.get('apply_type') in ('dynamic', 'static'):
+            row['dynamic'] = row['apply_type'] == 'dynamic'
+        if sensitive(name):
+            row['values'] = None
+        for key in ('value', 'default'):
+            if key in oversized:
+                continue
+            if sensitive(name):
                 row[key], row['redacted'] = '[redacted]', True
             elif isinstance(row.get(key), str):
                 row[key] = _redact_parameter_value(row[key])
                 if row[key] != item.get(key):
                     row['redacted'] = True
         if row.get('values') is not None:
-            if any(len(v) > MAX_VALUE_CHARS for v in row['values']):
-                row['values'], row['truncated'] = None, True
-            elif any(_redact_parameter_value(v) != v for v in row['values']):
+            if any(_redact_parameter_value(v) != v for v in row['values']):
                 row['values'], row['redacted'] = None, True
         clean['items'].append(row)
     # Reject excessive or non-JSON data before persistence or comparison.

@@ -2968,7 +2968,11 @@ def cli_confirm(description, prompt, assume_yes=False, quiet=False, stdin=None, 
 #: Tokens of SHOW GRANTS and SHOW CREATE USER output: quoted identifiers and
 #: strings stay whole (backslashes kept), so a keyword inside a quoted
 #: credential or name is never read as SQL.
-GRANT_TOKEN = re.compile(r'''`(?:``|[^`])*`|"(?:""|[^"])*"|'(?:''|\\.|[^'\\])*'|[.,@()*;]|[^\s.,@()*;`"']+''')
+# An unfinished quoted run is one token through EOF. String escapes include
+# line breaks and a final lone backslash, so a failed match never retries at
+# each escaped quote. Quoted identifiers keep literal backslashes: SHOW
+# GRANTS escapes their quote only by doubling it (privileges.quote_identifier).
+GRANT_TOKEN = re.compile(r'''`(?:``|[^`])*(?:`|\Z)|"(?:""|[^"])*(?:"|\Z)|'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|[.,@()*;]|[^\s.,@()*;`"']+''')
 
 # Words that end an IDENTIFIED clause in SHOW GRANTS (MariaDB) and SHOW CREATE
 # USER (both engines). Everything from IDENTIFIED up to the first of them is a
@@ -3295,7 +3299,7 @@ def read_grants(conn, tag="/*myflames:dbops*/ ", galera_identity=False):
 # ---- redaction -------------------------------------------------------------------------
 
 REDACTED = "[redacted]"
-_STRING = r"""(?:'(?:''|\\.|[^'\\])*(?:'|$)|"(?:""|\\.|[^"\\])*(?:"|$))"""
+_STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
 _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
@@ -3305,13 +3309,15 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     # PASSWORD('x'), OLD_PASSWORD('x').
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
     # SET PASSWORD [FOR user] = 'x'.
-    r"(\bSET\s+PASSWORD\b[^=;]*=\s*)",
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
-    r"((?<![\w'\"`])\w*PASSWORD\s*=?\s*)",
+    r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
     # ALTER USER ... IDENTIFIED BY 'new' or RANDOM PASSWORD REPLACE 'current'.
     r"((?:\bRANDOM\s+PASSWORD|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
+_SET_PASSWORD_PART = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
+_SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3342,6 +3348,29 @@ def _redact_literal(match):
     return match.group(1) + quote + REDACTED + quote
 
 
+def _redact_long_set_password(text):
+    """Keep long account spellings covered without retrying each SET prefix.
+
+    The bounded pattern handles short clauses. Escaped account identifiers
+    or legal whitespace can exceed its 512-character span. Visit separators
+    once for those clauses, retaining the original first = / ; boundaries.
+    """
+    parts, kept, start = [], 0, None
+    for token in _SET_PASSWORD_PART.finditer(text):
+        if token.start() < kept:
+            continue
+        if token.group() in ('=', ';'):
+            if token.group() == '=' and start is not None and token.start() - start > 512:
+                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                if literal is not None:
+                    parts.extend((text[kept:token.end()], _redact_literal(literal)))
+                    kept = literal.end()
+            start = None
+        elif start is None:
+            start = token.end()
+    return ''.join(parts) + text[kept:] if parts else text
+
+
 def redact(text, password=None):
     """*text* with secrets replaced by ``[redacted]``: the literals after
     IDENTIFIED BY / AS / USING, PASSWORD('...'), SET PASSWORD, SOURCE_PASSWORD,
@@ -3357,6 +3386,7 @@ def redact(text, password=None):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
+    text = _redact_long_set_password(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0
