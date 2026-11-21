@@ -879,7 +879,7 @@ export function Connections({
       render: row => row.fields.database
         ? <span className="cell-truncate" title={row.fields.database}>{row.fields.database}</span>
         : <span className="cell-truncate cell-empty" title="No default database">—<span className="visually-hidden">No default database</span></span> },
-    { key: "server", label: "Server", width: 112, minWidth: 112,
+    { key: "server", label: "Server", width: 108, minWidth: 108,
       render: row => <ReadinessFacts connection={{ ...row.fields, profile_id: row.profile?.id, type: row.profile?.type }} /> },
     { key: "password", label: "Password", width: 80, sort: row => row.profile?.has_saved_password ? 1 : 0,
       render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "Not saved"}</span> },
