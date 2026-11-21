@@ -138,8 +138,8 @@ function reply(p, body) {
     case "/api/live/schemas":
       return {
         schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "x", uptime_s: 1, performance_schema: true,
-        schemas: [{ name: "app", tables: 2, system: false }, { name: "shop", tables: 3, system: false }, { name: "mysql", tables: 38, system: true }],
-        user_tables: 5, all_limit: 2000, all_note: "", system: ["mysql"],
+        schemas: [{ name: "app", tables: 2, system: false }, { name: "shop", tables: 3, system: false }, { name: "audit", tables: 1, system: false }, { name: "mysql", tables: 38, system: true }],
+        user_tables: 6, all_limit: 2000, all_note: "", system: ["mysql"],
       };
   }
   return undefined;
@@ -173,12 +173,16 @@ try {
   const failedRequests = [];
   const badResponses = [];
   page.on("console", (m) => { if (["error", "warn"].includes(m.type())) consoleMessages.push(m.text()); });
-  page.on("requestfailed", (r) => failedRequests.push(new URL(r.url()).pathname));
+  page.on("requestfailed", (r) => failedRequests.push(`${new URL(r.url()).pathname} ${r.failure()?.errorText || ""}`.trim()));
   page.on("response", (r) => { if (r.status() >= 400) badResponses.push([new URL(r.url()).pathname, r.status()]); });
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const p = new URL(request.url()).pathname;
+    if (p === "/api/config/versions/names") {
+      // Answered at once: the completion's read is never in flight when the test reloads or closes a tab.
+      return request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ schema_version: "param-names-1.0", engine: "mysql", requested: "8.4.3", release: "8.4.3", exact: true, names: [{ name: "sql_mode", scope: "both", type: "set", dynamic: true, deprecated: false }, { name: "max_execution_time", scope: "both", type: "integer", dynamic: true, deprecated: false }] }) });
+    }
     if (!p.startsWith("/api/")) return request.continue();
     // Sign-in and the session store are the real server's (a throwaway HOME);
     // every editor and live endpoint is mocked so nothing runs.
@@ -420,10 +424,14 @@ try {
   await page.waitForFunction(() => document.querySelector('select[data-action="database"]')?.value === "app");
   await chooseConnection(page, B);
   const usesBeforeMismatch = calls("/api/editor/use").length;
-  await page.select(DATABASE, "shop");
+  await page.waitForFunction(sel => [...(document.querySelector(sel)?.options || [])].some(option => !["shop", "app", ""].includes(option.value)), {}, DATABASE);
+  const mismatchChoice = await page.$eval(DATABASE, e => [...e.options].map(option => option.value).find(value => !["shop", "app", ""].includes(value)));
+  assert.notEqual(mismatchChoice, "shop", "exercise a different database during the mismatch");
+  assert.deepEqual(await page.select(DATABASE, mismatchChoice), [mismatchChoice], "the picker selected the different database");
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("This tab is still connected to A"));
   assert.equal(calls("/api/editor/use").length, usesBeforeMismatch, "database change cannot target the old server");
-  assert.equal(await page.$eval(DATABASE, (e) => e.value), "app");
+  // Refusing a different choice restores B's database, which Run will use once A's session closes.
+  assert.equal(await page.$eval(DATABASE, (e) => e.value), "shop", "during a mismatch the picker shows the toolbar connection's database");
   await chooseConnection(page, A);
   await page.select(DATABASE, "");
   await page.waitForFunction(() => document.querySelector(".editor-feedback")?.textContent.includes("a new session starts with none"));

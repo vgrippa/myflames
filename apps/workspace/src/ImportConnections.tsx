@@ -109,7 +109,7 @@ export function ImportConnections({ profiles, refresh, onClose }: {
   const [tool, setTool] = useState<ConnectionImportTool>("workbench");
   const [items, setItems] = useState<ImportedConnection[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -124,7 +124,7 @@ export function ImportConnections({ profiles, refresh, onClose }: {
   const planned = planImportRows(items, profiles, selected, savedKeys.current);
   const rows = planned.rows;
   async function read(source: ConnectionImportTool, choose = false) {
-    if (reading.current || importing.current) return;
+    if (importing.current) return;
     reading.current = true;
     const seq = ++generation.current;
     setLoading(true); setError(""); setMessage(""); setItems([]); setSelected([]); savedKeys.current.clear();
@@ -139,8 +139,8 @@ export function ImportConnections({ profiles, refresh, onClose }: {
     } catch (e) {
       if (seq === generation.current) setError((e as Error).message);
     } finally {
-      reading.current = false;
-      if (seq === generation.current) setLoading(false);
+      // A superseded read must not clear the newest read's busy state.
+      if (seq === generation.current) { reading.current = false; setLoading(false); }
     }
   }
   useEffect(() => { void read(tool); return () => { generation.current++; }; }, [tool]);

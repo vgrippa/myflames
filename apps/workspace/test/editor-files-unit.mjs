@@ -93,7 +93,10 @@ test('database mismatch guards both the remembered choice and USE', async () => 
 test('explicit None overrides connection and source databases; old tabs inherit', async () => {
   const h = harness();
   await handler('chooseDatabase', { ...h.env, tab: h.tab, sessionProblem: () => '' })('');
-  const connectionFor = handler('connectionFor', { runtimeRef: h.env.runtimeRef, connection: { database: 'app' } });
+  const connectionFor = handler('connectionFor', {
+    runtimeRef: h.env.runtimeRef, connection: { database: 'app' },
+    boundMember: () => null, // These tabs have no group member binding.
+  });
   assert.equal(connectionFor(h.tab).database, '');
   assert.equal(connectionFor({ id: 'legacy', source: { schema: 'source' } }).database, 'app');
   assert.equal(connectionFor({ id: 'explicit', database: '', source: { schema: 'source' } }).database, '');
@@ -102,10 +105,14 @@ for (const fail of [false, true]) test(`Don't save keeps dirty state after ${fai
   const h = harness();
   let closing = null;
   const closingFile = { tabId: '1', keepTab: false };
+  const connection = { database: 'app' }, requests = [];
   const requestClose = handler('requestClose', { ...h.env,
     IDLE_ACTION: { phase: "idle" }, closingFile, setClosingFile: () => {}, setClosing: value => { closing = value; }, setError: () => {},
-    sessionConnectionOf: () => null, connectionRef: { current: {} },
-    api: async () => {
+    // An unbound tab has no member problem and resolves to this connection.
+    groupMemberProblem: () => '', currentTabConnection: () => connection,
+    sessionConnectionOf: () => null,
+    api: async (endpoint, body) => {
+      requests.push({ endpoint, body });
       if (fail) throw Error('Close failed');
       return { closed: false, reason: 'transaction_open', session: { in_transaction: true } };
     }, adoptSession: () => {}, writeFailure: error => ({ phase: 'failed', message: error.message }),
@@ -119,6 +126,7 @@ for (const fail of [false, true]) test(`Don't save keeps dirty state after ${fai
     tabsRef: h.env.tabsRef, patchRuntime: h.env.patchRuntime, requestClose,
   })();
   await Promise.resolve();
+  assert.deepEqual(requests, [{ endpoint: 'editor/close', body: { tab_id: '1', connection } }]);
   assert.equal(h.rt.file.savedSql, 'SELECT 1;');
   assert.notEqual(h.rt.file.savedSql, h.tab.sql);
   if (!fail) {
@@ -126,7 +134,25 @@ for (const fail of [false, true]) test(`Don't save keeps dirty state after ${fai
     const calls = [];
     handler('commitAndClose', { closing, setClosing: () => {}, commit: (_, after) => after(), requestClose: (...args) => calls.push(args) })();
     assert.deepEqual(calls, [['1', false, true]], 'Commit carries this close attempt\'s discard');
+  } else {
+    assert.equal(h.rt.sessionFeedback.phase, 'failed');
+    assert.equal(h.rt.sessionFeedback.message, 'Close failed');
   }
+});
+test('a group member problem blocks closing a session without sending a request', async () => {
+  const h = harness();
+  const problem = 'This tab ran on a server which is not open now.';
+  let apiCalls = 0;
+  const requestClose = handler('requestClose', { ...h.env,
+    IDLE_ACTION: { phase: 'idle' },
+    groupMemberProblem: () => problem, sessionConnectionOf: () => null,
+    currentTabConnection: () => ({}),
+    api: async () => { apiCalls++; return { closed: true }; },
+  });
+  assert.equal(await requestClose('1', true), 'error');
+  assert.equal(apiCalls, 0, 'a member problem prevents the session close request');
+  assert.deepEqual(h.notes, [{ text: problem, error: true }]);
+  assert.equal(h.rt.operation, undefined);
 });
 test('None survives serialized restore and differs from the older inherited default', async () => {
   const result = await build({ stdin: { contents: fs.readFileSync(path.join(baseline || src, 'session.ts'), 'utf8'), resolveDir: src, loader: 'ts' },

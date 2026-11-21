@@ -33,11 +33,16 @@ const report = { ...facts, engine: 'mysql', flavor: 'mysql', notes: [], privileg
 const imported = { name: 'Migrated SSH', host: 'mysql.internal', port: 3307, user: 'app', database: 'shop',
   ssh_host: 'bastion.example', ssh_user: 'deploy', ssh_port: 2222 };
 const hostile = { name: '<img src=x onerror="window.injected=true">', host: 'hostile.example', port: 3306, user: 'reader', database: '' };
+const workbenchItems = [
+  { ...imported, name: 'Primary' },
+  { name: 'Endpoint duplicate', host: 'db.example', port: 3306, user: 'reader', database: '' }, imported, hostile,
+];
 const server = spawn(process.env.PYTHON || 'python3', ['-c',
   'from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()', database], { cwd: root, env });
 let browser;
 const readinessRequests = [], imports = [], saves = [], diagnostics = [], failed = [], httpErrors = [];
 let offline = false;
+let holdWorkbenchImport = false, releaseWorkbenchImport;
 try {
   const url = await new Promise((resolve, reject) => {
     let output = '';
@@ -74,10 +79,13 @@ try {
     if (route === '/api/connections/import') {
       imports.push(body);
       if (body.tool === 'dbeaver') return respond(body.choose ? { found: true, cancelled: false, items: [{ ...imported, name: 'DBeaver MariaDB', host: 'maria.internal' }] } : { found: false, cancelled: false, items: [] });
-      return respond({ found: true, cancelled: false, items: [
-        { ...imported, name: 'Primary' },
-        { name: 'Endpoint duplicate', host: 'db.example', port: 3306, user: 'reader', database: '' }, imported, hostile,
-      ] });
+      const preview = { found: true, cancelled: false, items: workbenchItems };
+      if (holdWorkbenchImport) {
+        holdWorkbenchImport = false;
+        releaseWorkbenchImport = () => respond(preview);
+        return;
+      }
+      return respond(preview);
     }
     if (route === '/api/profiles/save') saves.push(body);
     // Every other server access is explicitly refused, including background
@@ -116,6 +124,58 @@ try {
   await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('Synthetic offline check') && document.querySelector(selector)?.textContent.includes('stale'), {}, `${connectionRow('Primary')} [data-col=server]`);
   assert.match(await page.$eval(`${connectionRow('Primary')} [data-col=server]`, e => e.textContent), /MySQL 8.4.3/);
   offline = false;
+  // Keep the first read pending while a queued source change supersedes it.
+  holdWorkbenchImport = true;
+  const importRequest = tool => request => new URL(request.url()).pathname === '/api/connections/import'
+    && JSON.parse(request.postData() || '{}').tool === tool;
+  const workbenchStarted = page.waitForRequest(importRequest('workbench'));
+  await menu();
+  await workbenchStarted;
+  assert.equal(typeof releaseWorkbenchImport, 'function');
+  const importPicker = 'dialog.connection-import-sheet select[aria-label="Import from"]';
+  assert.equal(await page.$eval(importPicker, e => e.disabled), true);
+  const workbenchNames = workbenchItems.map(item => item.name);
+  const stalePreview = await page.evaluateHandle(names => {
+    const sheet = document.querySelector('dialog.connection-import-sheet');
+    const status = sheet.querySelector('[role="status"]');
+    const result = { shown: false, rowsShown: false };
+    const hasWorkbenchName = text => names.some(name => (text || '').includes(name));
+    const observe = records => {
+      if (status.textContent.includes('connections found')) result.shown = true;
+      // Inspect mutation nodes too: a row added and removed in one turn must still fail.
+      if (hasWorkbenchName(sheet.querySelector('.connection-import-preview')?.textContent)
+        || records.some(record => [...record.addedNodes, ...record.removedNodes].some(node => hasWorkbenchName(node.textContent))))
+        result.rowsShown = true;
+    };
+    const observer = new MutationObserver(observe);
+    observer.observe(sheet, { childList: true, characterData: true, subtree: true });
+    observe([]);
+    return { result, observer };
+  }, workbenchNames);
+  const dbeaverResponse = page.waitForResponse(response => importRequest('dbeaver')(response.request()));
+  // page.select dispatches the queued change even though loading disables the picker.
+  await page.select(importPicker, 'dbeaver');
+  await dbeaverResponse;
+  await page.waitForFunction(() => document.querySelector('dialog.connection-import-sheet')?.textContent.includes('Default file not found'));
+  await page.waitForSelector(`${importPicker}:not(:disabled)`);
+  const workbenchResponse = page.waitForResponse(response => importRequest('workbench')(response.request()));
+  await releaseWorkbenchImport();
+  await (await workbenchResponse).json();
+  await page.waitForNetworkIdle();
+  assert.match(await page.$eval('dialog.connection-import-sheet', e => e.textContent), /Default file not found/);
+  assert.equal(await page.$eval(importPicker, e => e.value), 'dbeaver');
+  assert.equal(await page.$eval(importPicker, e => e.disabled), false);
+  assert.doesNotMatch(await page.$eval('dialog.connection-import-sheet', e => e.textContent), /connections found/);
+  const previewText = await page.$eval('.connection-import-preview', e => e.textContent);
+  for (const name of workbenchNames) assert.ok(!previewText.includes(name), `the held Workbench row ${name} is absent`);
+  assert.equal(await page.$$eval('.connection-import-preview input[type=checkbox]:checked', inputs => inputs.length), 0, 'no Workbench rows remain selected for import');
+  assert.equal(await page.$eval('dialog.connection-import-sheet .sheet-buttons .primary', e => e.textContent.trim()), 'Import 0 connections', 'the Import button does not offer the Workbench count');
+  assert.equal(await page.$eval('dialog.connection-import-sheet .sheet-buttons .primary', e => e.disabled), true, 'there is nothing to import');
+  assert.equal(await stalePreview.evaluate(({ result }) => result.rowsShown), false, 'no held Workbench row ever appears');
+  assert.equal(await stalePreview.evaluate(({ result, observer }) => { observer.disconnect(); return result.shown; }), false, 'the held Workbench preview never appears');
+  await stalePreview.dispose();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('dialog.connection-import-sheet'));
   for (const theme of ['light', 'dark']) {
     await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }]);
     for (const width of [1440, 720]) {
