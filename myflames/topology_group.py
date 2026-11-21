@@ -819,34 +819,40 @@ def _duplicate_notes(entries, profiles=None, facts=None):
     for aliases in seen.values():
         if len(aliases) < 2:
             continue
-        eligible, direct = [], []
+        direct, matched, unknown = [], [], []
+        reported_port = None
         for entry in aliases:
             own = facts.get(entry['profile_id'], {})
             port = _map_port(own.get('port'))
-            # A router port must never win merely because its profile was
-            # saved first. Unknown server ports provide no contrary evidence.
-            if port is not None and entry['port'] != port:
+            if port is None:
+                unknown.append(entry)
                 continue
-            eligible.append(entry)
-            hosts = {str(host).lower().rstrip('.') for host in
-                     (own.get('hostname') or entry.get('hostname'), own.get('report_host')) if host}
-            if port == entry['port'] and (not hosts or entry['host'].lower().rstrip('.') in hosts):
-                direct.append(entry)
-        # Profiles expose their last save time, not their creation time. Use
-        # the oldest available save as the fallback, independent of list order.
-        first = min(direct or eligible, key=lambda entry: (
-                    stored.get(entry['profile_id'], {}).get('updated_at') or '', entry['profile_id'])) if eligible else None
-        if first is None:
-            for entry in aliases:
-                notes.append({'profile_id': entry['profile_id'], 'message':
-                    'These connections reach the same server (same server_uuid); '
-                    'none uses its reported server port, so no canonical connection was selected.'})
-            continue
+            if reported_port is None:
+                reported_port = port
+            if entry['port'] == port:
+                matched.append(entry)
+                hosts = {str(host).lower().rstrip('.') for host in
+                         (own.get('hostname') or entry.get('hostname'), own.get('report_host')) if host}
+                if hosts and entry['host'].lower().rstrip('.') in hosts:
+                    direct.append(entry)
+        # Prefer (1) matching reported port and host, (2) matching reported port
+        # (or unknown server port, which provides no contrary evidence), then
+        # (3) every alias when port forwarding leaves no port match. Break ties
+        # by the oldest saved update timestamp, then profile id.
+        eligible = direct or matched or unknown
+        fallback_note = not eligible
+        first = min(eligible or aliases, key=lambda entry: (
+                    stored.get(entry['profile_id'], {}).get('updated_at') or '', entry['profile_id']))
+        fallback_port = _map_port(facts.get(first['profile_id'], {}).get('port')) or reported_port
         for entry in aliases:
             if entry is first:
                 continue
             message = ('%s and %s reach the same server (same server_uuid); one may be a router or proxy port.' %
                        (first['profile_name'], entry['profile_name']))
+            if fallback_note and fallback_port is not None:
+                message += (" No saved connection uses the server's reported port %d; "
+                            "%s was kept as the server and the others are treated as aliases." %
+                            (fallback_port, first['profile_name']))
             entry['duplicate_of'] = first['profile_id']
             entry['message'] += ' ' + message
             notes.append({'profile_id': entry['profile_id'], 'message': message})

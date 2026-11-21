@@ -1992,14 +1992,42 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(members['active']['duplicate_of'], 'direct')
         self.assertIsNone(members['direct']['duplicate_of'])
 
-    def test_aliases_without_any_matching_server_port_have_no_canonical_endpoint(self):
-        self.save('active', 'G', type='development', port=6446)
-        self.save('router', 'G', port=6447)
-        with self.clients({'active.example': member_fixture(UUID_A),
-                           'router.example': member_fixture(UUID_A)}):
-            report = self.read()
-        self.assertEqual(report['summary']['read'], 2)
-        self.assertTrue(all(member['duplicate_of'] is None for member in report['members']))
+    def test_forwarded_aliases_without_matching_port_pick_oldest_canonical(self):
+        # Neither saved endpoint uses the server's reported port (3306), as
+        # happens behind Docker or NAT port forwarding. The oldest saved
+        # profile wins even when the newer endpoint has an earlier profile ID.
+        self.save('z-node', 'G', name='cluster-ic-1', port=34301)
+        time.sleep(0.002)
+        self.save('active', 'G', type='development', name='cluster-ic-router-rw', port=34306)
+        rows = [[UUID_A, 'cluster-ic-1', 3306, 'ONLINE', 'PRIMARY']]
+        fixture = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10')
+        expected_note = (
+            'cluster-ic-1 and cluster-ic-router-rw reach the same server (same server_uuid); '
+            'one may be a router or proxy port. '
+            "No saved connection uses the server's reported port 3306; "
+            'cluster-ic-1 was kept as the server and the others are treated as aliases.'
+        )
+        for section in ('members', 'map'):
+            with self.subTest(section=section), self.clients(
+                    {'z-node.example': copy.deepcopy(fixture), 'active.example': copy.deepcopy(fixture)}):
+                report = self.read(section)
+            self.assertEqual(report['summary']['read'], 2)
+            self.assertEqual(report['primary_profile_id'], 'z-node')
+            members = {member['profile_id']: member for member in report['members']}
+            self.assertIsNone(members['z-node']['duplicate_of'])
+            self.assertEqual(members['active']['duplicate_of'], 'z-node')
+            self.assertNotIn('same server_uuid', members['z-node']['message'])
+            self.assertIn(expected_note, members['active']['message'])
+            for member in members.values():
+                self.assertIsNone(member['behind_reason'])
+                self.assertEqual(member['behind']['value'], 0)
+            if section == 'map':
+                nodes = self.assert_map_schema(report)
+                self.assertIsNone(nodes['z-node']['duplicate_of'])
+                self.assertEqual(nodes['active']['duplicate_of'], 'z-node')
+                self.assertIn({'profile_id': 'active', 'message': expected_note}, report['map']['notes'])
+                self.assertFalse(any(note['profile_id'] == 'z-node' and 'same server_uuid' in note['message']
+                                     for note in report['map']['notes']))
 
     def test_live_mariadb_dns_and_ipv6_rows_make_one_id_match_edge(self):
         self.save('replica', 'G')
