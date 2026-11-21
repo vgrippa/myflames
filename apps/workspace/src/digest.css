@@ -28,6 +28,11 @@
   margin: 0;
   padding-left: var(--space-4);
 }
+/* The chips' side padding steps down a notch, so a wider UI font (Inter on
+   Linux) narrows the Flags column before the table scrolls sideways. */
+.data-table .flag-chip {
+  padding: 0 var(--space-1);
+}
 .batch-controls {
   display: inline-flex;
   flex-wrap: wrap;
