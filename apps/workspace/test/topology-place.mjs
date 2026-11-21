@@ -959,7 +959,10 @@ try {
   assert.equal(action.disabled, true, "a Read-only group connection cannot change");
   assert.match(await h.inspector(), /This Group connection is Read-only\./);
   reports.parameters.effective_safety = { type: "production", read_only: false };
+  const beforeUnlockRefresh = topologyCalls.length;
   await h.refresh();
+  await waitFor(() => topologyCalls.length === beforeUnlockRefresh + 1, "Parameters Refresh sent one read");
+  await h.idle(".topology-place");
 
   // --- The rolling change sheet: value, mode and members, one review, apply
   // with progress, Stop, and the per-member result.
@@ -993,6 +996,40 @@ try {
   }, theme);
   const rollingShots = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "local", "topo-rolling");
   await fs.mkdir(rollingShots, { recursive: true });
+
+  // Put the place in a known state before selecting max_connections: wait for
+  // any active read, close an open detail inspector (retried Back or Escape),
+  // switch to Parameters, and wait for the max_connections row to be visible.
+  const closeDetailInspector = async () => {
+    const pressEscapeOnInspector = async () => {
+      await page.$eval(".topology-place .server-view", (section) => {
+        const target = section.querySelector(".view-inspector.is-detail button, h2");
+        if (target instanceof HTMLElement) target.focus();
+      }).catch(() => {});
+      await page.keyboard.press("Escape");
+    };
+    const waitClosed = () => page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"), { timeout: 5000 })
+      .then(() => true, () => false);
+    for (let attempt = 0; attempt < 3 && (await page.$(".view-inspector.is-detail")); attempt += 1) {
+      const back = await page.$(".view-inspector.is-detail .detail-back");
+      if (back) await back.click().catch(() => {});
+      else await pressEscapeOnInspector();
+      if (await waitClosed()) break;
+    }
+    if (await page.$(".view-inspector.is-detail")) {
+      await pressEscapeOnInspector();
+      await waitClosed();
+    }
+    assert.equal(await page.$(".view-inspector.is-detail"), null, "detail inspector closed before selecting max_connections");
+  };
+  await h.idle(".topology-place");
+  await closeDetailInspector();
+  await topoTab("Parameters");
+  await page.waitForFunction(() =>
+    document.querySelector('.topology-place .segmented button[data-value="parameters"][aria-pressed="true"]'));
+  await h.idle(".topology-place");
+  await closeDetailInspector();
+  await page.waitForSelector('.topology-place tr[data-row-key="max_connections"]', { visible: true });
 
   await h.select('.topology-place tr[data-row-key="max_connections"]');
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
