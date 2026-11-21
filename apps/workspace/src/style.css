@@ -5269,17 +5269,58 @@ kbd {
   color: var(--ink-muted);
 }
 .update-notes-content {
-  max-height: 180px;
+  max-height: 260px;
   overflow-y: auto;
-  font-size: var(--text-xs);
-  line-height: 1.4;
+  font-size: var(--text-sm);
+  line-height: 1.45;
   padding: var(--space-2);
   background: var(--surface-subtle);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   color: var(--ink);
+}
+.update-notes-content :is(h3, h4) {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 600;
+  margin: var(--space-2) 0 var(--space-1);
+}
+.update-notes-content :is(h3, h4):first-child {
+  margin-top: 0;
+}
+.update-notes-content p {
+  line-height: 1.45;
+}
+.update-notes-content :is(p, ul, ol, pre) {
+  margin: 0 0 var(--space-1);
+}
+.update-notes-content :is(p, ul, ol, pre):last-child {
+  margin-bottom: 0;
+}
+.update-notes-content :is(ul, ol) {
+  padding-left: calc(var(--space-4) + var(--space-1));
+}
+.update-notes-content li + li {
+  margin-top: var(--space-1);
+}
+.update-notes-content code {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-xs);
+  background: var(--surface-muted);
+  border-radius: var(--radius-xs);
+  padding-inline: var(--space-1);
+}
+.update-notes-content pre {
+  padding: var(--space-2);
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-code-xs);
+  line-height: 1.45;
+}
+.update-notes-content pre code {
+  padding-inline: 0;
+  background: none;
 }
 .update-download-result {
   display: flex;

@@ -757,6 +757,20 @@ class TestUpdateCheckOutcome(unittest.TestCase):
         with self.no_network():
             self.assertEqual(check_for_updates()['checked_at'], result['checked_at'])
 
+    def test_check_release_page_accepts_only_official_https_urls(self):
+        official = 'https://github.com/vgrippa/myflames/releases/tag/v3.5.1'
+        for url, expected in (
+                ('javascript:alert(1)', app_update.GITHUB_RELEASES_URL),
+                ('https://github.com/someone-else/repo/releases/tag/v9', app_update.GITHUB_RELEASES_URL),
+                ('http://github.com/vgrippa/myflames/releases/tag/v9', app_update.GITHUB_RELEASES_URL),
+                ('', app_update.GITHUB_RELEASES_URL),
+                (None, app_update.GITHUB_RELEASES_URL),
+                (official, official)):
+            with self.subTest(url=url), self.release({
+                    'tag_name': 'v3.5.1', 'html_url': url, 'assets': []}):
+                result = check_for_updates(force=True)
+            self.assertEqual(result['html_url'], expected)
+
     def test_failures_have_a_plain_reason_and_are_never_cached(self):
         def http_error(code):
             return urllib.error.HTTPError(app_update.GITHUB_RELEASES_API, code, 'x', None, io.BytesIO())
