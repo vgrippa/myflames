@@ -4950,7 +4950,9 @@ kbd {
 .connections .data-table-wrap { max-height: var(--home-table-max-h); }
 /* Type and Read-only stay two compact pills, never one truncating string. */
 .connections .data-table .safety-tags { flex-wrap: nowrap; }
-.connections .data-table .type-tag { flex: none; }
+/* The badge's side padding steps down a notch, so a wider UI font (Inter on
+   Linux) narrows the Type column before Name loses its spare width. */
+.connections .data-table .type-tag { flex: none; padding: 0 var(--space-1); }
 .connections .connection-type-short { display: none; }
 /* Read-only keeps its type word, outlined, as in the connection picker. */
 .connections .connection-type-short.is-read-only {
