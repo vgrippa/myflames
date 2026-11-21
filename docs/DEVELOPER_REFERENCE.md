@@ -95,7 +95,7 @@ and the client cache (`scripts/release_state.py preflight`), then the shared
 signing checks (`scripts/package-mac-release.sh --preflight`: the identity
 and the notary sign-in, without building anything). Every invocation then
 runs `npm ci` in `apps/desktop`, followed by
-`PUPPETEER_SKIP_DOWNLOAD=true npm ci` and `npm run build` in `apps/workspace`,
+`PUPPETEER_SKIP_DOWNLOAD=true npm ci` and `NODE_ENV=production npm run build:ui` in `apps/workspace`,
 installing both dependency sets from their committed lockfiles and building the
 workspace before the backend build or resume decision. The workspace dependencies
 let the packaged settings smokes attach to Electron without downloading a browser. Unless `--resume` finds a
@@ -110,8 +110,10 @@ build-requirements digests, the backend hash, the Python license hash, the
 Python version and the resolved `pip freeze`), and the packager's
 `manifest-check` refuses a backend whose manifest does not match HEAD, the
 sources, built output and the build venv. The macOS and Windows desktop workflows
-also run `npm ci` and `npm run build` in `apps/workspace` before bundling the
-backend. `build-backend.py` refuses a missing index, missing JavaScript or a stale
+also run `npm ci` and `NODE_ENV=production npm run build:ui` in `apps/workspace` before bundling the
+backend. Release builds generate only the untracked workspace UI; they do not
+rebuild the committed `myflames/assets/myflames-charts.js` chart runtime.
+`build-backend.py` refuses a missing index, missing JavaScript or a stale
 source stamp before invoking PyInstaller. The release entry then runs
 `scripts/package-mac-release.sh`, which checks the manifest before packaging
 and again after verification:
@@ -1151,7 +1153,7 @@ are the contracts of the tools that check them.
   or on a page error; `--out DIR` writes elsewhere. Two runs of one build on one machine
   write identical PNGs (only `manifest.json` changes); fonts differ between
   systems, so capture on macOS, where the README's app runs. Run it after
-  `npm run build` at the release commit.
+  `NODE_ENV=production npm run build:ui` at the release commit.
 - **`scripts/check_release_sync.py X.Y.Z`** exits 0 only when the three
   versions equal X.Y.Z, `docs/release-notes/X.Y.Z.md` passes
   `release_notes.py`'s format check, `docs/release-notes/index.md` lists it

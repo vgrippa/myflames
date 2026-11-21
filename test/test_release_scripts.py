@@ -587,7 +587,7 @@ class WorkspaceBuildWorkflowTest(unittest.TestCase):
                 self.assertLess(workflow.index('- name: Build the workspace'),
                                 workflow.index('- name: ' + consumer))
                 build = workflow_step(path, 'Build the workspace')
-                self.assertLess(build.index('npm ci'), build.index('npm run build'))
+                self.assertLess(build.index('npm ci'), build.index('npm run build:ui'))
                 setup = workflow.split('- name: Build the workspace')[0]
                 self.assertIn('node-version: "22"', setup)
                 self.assertIn('apps/workspace/package-lock.json', setup)

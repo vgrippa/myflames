@@ -38,7 +38,7 @@ fi
 # smokes attach to Electron, so workspace dependencies need no browser download.
 python3 scripts/release_state.py run --label 'installing desktop build dependencies' -- npm ci
 PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace dependencies' -- npm --prefix "$root/apps/workspace" ci
-NODE_ENV=production python3 scripts/release_state.py run --label 'building the workspace' -- npm --prefix "$root/apps/workspace" run build
+NODE_ENV=production python3 scripts/release_state.py run --label 'building the workspace' -- npm --prefix "$root/apps/workspace" run build:ui
 
 # A valid backend is reusable only for an explicit resume. A normal invocation
 # always provisions and builds before the packager's clean start.

@@ -69,7 +69,7 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: "true"
         run: |
           npm ci
-          NODE_ENV=production npm run build
+          NODE_ENV=production npm run build:ui
       - name: Check workspace build left a clean tree
         run: |
           status=$(git status --porcelain)

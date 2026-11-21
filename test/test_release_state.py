@@ -45,7 +45,13 @@ class ReleaseEntryPointTest(unittest.TestCase):
     WORKSPACE_INSTALL = (r"^PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state\.py run "
                          r"--label '[^'\n]+' -- npm --prefix \"\$root/apps/workspace\" ci$")
     WORKSPACE_BUILD = (r"^NODE_ENV=production python3 scripts/release_state\.py run --label '[^'\n]+' "
-                       r"-- npm --prefix \"\$root/apps/workspace\" run build$")
+                       r"-- npm --prefix \"\$root/apps/workspace\" run build:ui$")
+
+    def test_workspace_ui_build_does_not_rebuild_tracked_charts(self):
+        scripts = json.loads((ROOT / 'apps/workspace/package.json').read_text(encoding='utf-8'))['scripts']
+        self.assertEqual(scripts['build:ui'], 'tsc --noEmit && vite build')
+        self.assertEqual(scripts['build'], 'tsc --noEmit && vite build && vite build -c vite.charts.config.ts')
+        self.assertEqual(scripts['build:charts'], 'tsc --noEmit && vite build -c vite.charts.config.ts')
 
     def assert_unconditional_install(self, script, pattern):
         install = re.search(pattern, script, re.MULTILINE)
@@ -98,7 +104,7 @@ class ReleaseEntryPointTest(unittest.TestCase):
             workflow = (ROOT / '.github' / 'workflows' / name).read_text(encoding='utf-8')
             build = workflow.split('- name: Build the workspace\n', 1)[1].split('\n      - ', 1)[0]
             with self.subTest(workflow=name):
-                self.assertRegex(build, r'(?m)^\s+NODE_ENV=production npm run build$')
+                self.assertRegex(build, r'(?m)^\s+NODE_ENV=production npm run build:ui$')
         publish = (ROOT / '.github' / 'workflows' / 'publish.yml').read_text(encoding='utf-8')
         self.assertIn('python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz --reference myflames/ui_assets',
                       publish)
