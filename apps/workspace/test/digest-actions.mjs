@@ -372,7 +372,11 @@ try {
   await chooseConnection(page, privilegeProfile);
   // Query editor settings that the row actions must reuse (Run analysis and
   // the captures Explore and Explain top N start).
-  await page.click('button[aria-label="Run analysis options"]');
+  // A locator click waits for a stable bounding box before it clicks: the
+  // toolbar still settles after the connection choice, and a trigger moving
+  // mid-click puts the click on Run analysis, opening its review sheet
+  // instead of the options popover.
+  await page.locator('button[aria-label="Run analysis options"]').click();
   // The options panel stays mounted while closed (hidden attribute), so its
   // fields answer selectors before the popover is open; the checkbox click
   // below is only possible once the popover is open and placed. Wait for
