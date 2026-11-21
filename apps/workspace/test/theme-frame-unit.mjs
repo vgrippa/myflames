@@ -74,9 +74,9 @@ ThemeTest.applyTheme('unknown');await tick();
 assert.equal(ThemeTest.savedTheme(),'fire','invalid id cannot replace saved choice');
 assert.equal(requests.length,writes,'invalid id cannot reach the backend');
 // Import the real Vite plugin's exported validator, without starting Vite.
-const config=await build({entryPoints:[fileURLToPath(new URL('../vite.config.ts',import.meta.url))],bundle:true,write:false,format:'cjs',platform:'node',packages:'external'});
+const config=await build({entryPoints:[fileURLToPath(new URL('../vite.config.ts',import.meta.url))],bundle:true,write:false,format:'cjs',platform:'node',packages:'external',define:{'import.meta.url':JSON.stringify(new URL('../vite.config.ts',import.meta.url).href)}});
 const module={exports:{}};
-vm.runInNewContext(config.outputFiles[0].text,{module,exports:module.exports,require:createRequire(new URL('../vite.config.ts',import.meta.url))});
+vm.runInNewContext(config.outputFiles[0].text,{module,exports:module.exports,require:createRequire(new URL('../vite.config.ts',import.meta.url)),URL});
 const {validateThemeIds}=module.exports;
 validateThemeIds([...ThemeTest.THEME_IDS]);
 for(const bad of ['Dark','dark_','dark--blue','dark2','dark\n',String.raw`dark\x`,'$&',"dark</script>"]){

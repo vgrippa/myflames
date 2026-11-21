@@ -9,6 +9,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 ### Bug fixes
 
 - Fixed an issue where the **Software update** dialog showed release notes as raw Markdown, with `##` and `**` marks, instead of headings, lists and bold text.
+- Fixed an issue where choosing another source in **Import connections** right after opening it could leave the sheet loading, with the **Import from** picker disabled.
 
 ### Security fixes
 
