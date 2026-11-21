@@ -3300,7 +3300,7 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
 #: Database URLs with user:secret@host (including Readyset N*mysql://... pool prefixes).
-_URL_SECRET = re.compile(r"(\b(?:\d+\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]+:)([^@\s'\"`]+)(@)", re.I)
+_URL_SECRET = re.compile(r"(\b(?:\d{1,31}\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]{1,255}:)([^@\s'\"`]{1,1024})(@)", re.I)
 
 
 def _redact_literal(match):

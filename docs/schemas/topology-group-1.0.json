@@ -147,7 +147,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Members whose complete account inventories contribute readable accounts. A member can also appear in not_compared when individual accounts were unreadable."
         },
         "not_compared": {
           "type": "array",
@@ -166,7 +167,8 @@
               }
             },
             "additionalProperties": false
-          }
+          },
+          "description": "Incomplete inventories are excluded entirely. Individual unreadable accounts are named in the affected member reason and omitted from all group rows so they cannot be mistaken for absent accounts."
         }
       },
       "additionalProperties": false

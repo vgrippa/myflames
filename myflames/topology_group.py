@@ -4,6 +4,7 @@ Each member owns one standard connector for the request. Every query uses
 the connector's guarded client path. Reported peers are drawn without logging
 in to them; background polling and server writes are not permitted here.
 """
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,38 @@ _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
 
 class _NotReached(ConnectorError):
     """The request budget refused a login that has not started."""
+
+
+class _ReadConnection(object):
+    """Latch login and transport failures so optional probes cannot retry them."""
+    def __init__(self, conn):
+        self.connection, self.failure = conn, None
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def check(self):
+        if self.failure is not None:
+            raise self.failure
+
+    def run(self, sql, **kwargs):
+        from .reviewed_writes import client_error
+        self.check()
+        try:
+            return self.connection.run(sql, **kwargs)
+        except ConnectorError as exc:
+            code = dbops.error_code(str(exc))
+            # SQL permission/unsupported-feature errors may be optional. A
+            # refused login, client error or timeout must end this member read.
+            if (code is None or client_error(code) or dbops.target_not_connected(exc) or
+                    code in (1044, 1045, 1129, 1130, 1251, 3159) or
+                    'timeout' in str(exc).lower() or 'timed out' in str(exc).lower()):
+                self.failure = exc
+            raise
+
+    def server_version(self):
+        from .connector import unescape_mysql
+        return unescape_mysql(self.run('SELECT @@version').strip().split('\n')[0])
 
 
 def _merge(intervals):
@@ -161,13 +194,16 @@ def _optional(reader, sql, notes, named=False):
 def _identity(conn, member):
     """Identify proxies before asking database-specific identity questions."""
     from . import proxysql
+    conn = conn if isinstance(conn, _ReadConnection) else _ReadConnection(conn)
     reader = Reader(conn, TAG)
     notes = []
     comment_rows = _optional(reader, 'SELECT @@version_comment', notes)
+    conn.check()
     comment = comment_rows[0][0] if comment_rows and comment_rows[0] else ''
     if is_readyset_comment(comment):
         from .topology_links import parse_readyset_version
         rows = _optional(reader, 'SHOW READYSET VERSION', notes, named=True)
+        conn.check()
         version = parse_readyset_version(rows or []) or 'Readyset'
         member.update(engine='mysql', product='Readyset', version=version, version_comment=comment,
                       role='cache', state='reachable')
@@ -175,6 +211,7 @@ def _identity(conn, member):
     # The existing admin identity probe verifies admin-version against
     # @@version; a backend exposed through a proxy must not supply its UUID.
     proxy, version = proxysql.identify(conn)
+    conn.check()
     if proxy:
         member.update(engine='mysql', product='ProxySQL Admin', version=version, version_comment=comment,
                       role='proxy', state='reachable')
@@ -203,6 +240,7 @@ def _identity(conn, member):
     values.pop('gtid_current_pos', None)
     # XML retains an empty GTID set; the batch reader skips empty rows.
     position = _optional(reader, sql, notes, named=True)
+    conn.check()
     values[position_name] = (next(iter(position[0].values()))
                              if position and len(position) == 1 and len(position[0]) == 1 else None)
     return values, None
@@ -665,10 +703,54 @@ def _entry(profile):
     return entry
 
 
-def read_group(store, group_name, section, active_member_profile_id):
+def _comparison_inputs(results, section):
+    """Keep unavailable inventories separate from trustworthy absence evidence."""
+    from . import account_compare
+    snapshots, not_compared, unreadable = {}, [], set()
+    for entry, snapshot, position, reason, multi in results:
+        pid = entry['profile_id']
+        if entry['outcome'] != 'read' or snapshot is None or reason is not None:
+            not_compared.append({'profile_id': pid, 'reason': reason or entry['message']})
+            continue
+        if section in ('parameters', 'accounts'):
+            if (snapshot.get('complete') is not True or snapshot.get('error') or
+                    not isinstance(snapshot.get('items'), list)):
+                reason = 'The %s inventory is incomplete.' % ('parameter' if section == 'parameters' else 'account')
+                if snapshot.get('error'):
+                    reason += ' ' + connection_groups.safe_problem(snapshot['error'])
+                not_compared.append({'profile_id': pid, 'reason': reason})
+                continue
+        if section == 'accounts':
+            if any(not isinstance(item, dict) or not isinstance(item.get('name'), str) or
+                   not isinstance(item.get('host'), str) for item in snapshot['items']):
+                not_compared.append({'profile_id': pid, 'reason': 'The account inventory could not be read.'})
+                continue
+            excluded = {(item['name'], item['host']) for item in snapshot['items']
+                        if account_compare.incomplete_account(item)}
+            unreadable.update(excluded)
+            if excluded:
+                # Account names are display data. Never include diagnostic or
+                # grant text, and escape controls before adding them to prose.
+                labels = [json.dumps(dbops.redact(dbops.strip_credentials('%s@%s' % key)), ensure_ascii=True)
+                          for key in sorted(excluded)]
+                not_compared.append({'profile_id': pid, 'reason':
+                    'Accounts not compared because their reads were incomplete: %s. '
+                    'These accounts are omitted from all group rows; other readable accounts are compared.' %
+                    ', '.join(labels)})
+        snapshots[pid] = snapshot
+    if section == 'accounts' and unreadable:
+        # Drop the same keys on every member. Removing a failed account on
+        # only one side would invent an absent account and false drift.
+        snapshots = {pid: dict(snapshot, items=[item for item in snapshot['items']
+                         if (item['name'], item['host']) not in unreadable])
+                     for pid, snapshot in snapshots.items()}
+    return snapshots, not_compared
+
+
+def read_group(store, group_name, section, active_member_profile_id,
+               expected_current, expected_generation):
     """Read only the stored members, once each, on an explicit tab request."""
-    from .accounts_api import _group_login_guard
-    from .workspace_store import ENDPOINT_FIELDS
+    from .workspace_store import ENDPOINT_FIELDS, _same_endpoint
     from . import param_compare, account_compare
     if not isinstance(section, str) or section not in SECTIONS:
         raise ValueError('Choose a topology section: map, members, parameters, accounts or plugins.')
@@ -676,12 +758,25 @@ def read_group(store, group_name, section, active_member_profile_id):
     profiles = [p for p in store.list('profile') if isinstance(p, dict) and isinstance(p.get('id'), str)]
     members = [p for p in profiles if group_name and p.get('group') == group_name]
     active = next((p for p in members if p['id'] == active_member_profile_id), None)
-    if active is None:
+    if (active is None or not isinstance(expected_current, dict) or
+            not isinstance(expected_generation, str) or not expected_generation or
+            not _same_endpoint(active, expected_current) or
+            any(p.get('group_generation') != expected_generation for p in members)):
         raise ValueError('This saved connection is outside the current connection group.')
     if len(members) > connection_groups.GROUP_MAX_MEMBERS:
         raise ValueError('A topology read supports at most 16 saved group members.')
-    route = dict({key: active.get(key) for key in ENDPOINT_FIELDS}, profile_id=active['id'], group_name=group_name)
-    active_guard = _group_login_guard(store, route)
+    # The endpoint's validated snapshot remains the authority, including if a
+    # group is deleted and recreated before this helper or a queued login.
+    route = dict({key: expected_current.get(key) for key in ENDPOINT_FIELDS},
+                 profile_id=active_member_profile_id, group_name=group_name)
+
+    def active_guard():
+        _profiles, current = connection_groups.request_profiles(store, route)
+        if current is None or current.get('group_generation') != expected_generation:
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group.')
+
+    active_guard()
     started, taken_at = time.monotonic(), now()
     deadline = started + REQUEST_SECONDS
 
@@ -713,9 +808,22 @@ def read_group(store, group_name, section, active_member_profile_id):
                 remaining = deadline - time.monotonic()
                 if remaining < QUERY_SECONDS:
                     raise _NotReached(entry['message'])
-                conn = param_compare.BoundedConnection(member_conn, seconds=min(remaining, REQUEST_SECONDS))
+                transport = _ReadConnection(param_compare.BoundedConnection(
+                    member_conn, seconds=min(remaining, REQUEST_SECONDS)))
+                conn = transport
                 variables, exclusion = _identity(conn, entry)
                 if exclusion is None:
+                    preflight = variables
+                    conn = dbops.TargetEvidenceConnection(transport)
+                    variables, exclusion = _identity(conn, entry)
+                    conn.check()
+                    observed = conn.variables or {}
+                    keys = (('server_id', 'hostname', 'version') if entry['engine'] == 'mariadb'
+                            else ('server_uuid',))
+                    if exclusion is not None or any(
+                            str(preflight.get(key)) != str(observed.get(key)) or
+                            str(variables.get(key)) != str(observed.get(key)) for key in keys):
+                        raise ConnectorError('The member identity changed during the read.')
                     if section in ('members', 'map', 'parameters'):
                         position, notes = _member_facts(conn, entry, variables)
                         multi_primary = (entry['role'] in ('primary', 'secondary')
@@ -731,12 +839,20 @@ def read_group(store, group_name, section, active_member_profile_id):
                 if section == 'map':
                     probe, notes = _map_probe(conn, profile, entry, variables)
                     snapshot, exclusion = {'probe': probe, 'notes': notes}, None
+                # Optional inventory readers may catch a failure, but cannot
+                # make mixed-server data or a failed transport usable again.
+                if isinstance(conn, dbops.TargetEvidenceConnection):
+                    conn.check()
+                transport.check()
                 entry['outcome'] = 'read'
                 if entry['message'].startswith('Not read:'):
                     entry['message'] = exclusion or 'Read from this member.'
         except _NotReached:
             exclusion = entry['message']
         except Exception as exc:
+            # No observed identity, role or inventory from a rejected read
+            # may influence the group summary or another member's comparison.
+            entry = _entry(profile)
             entry.update(outcome='failed', message=connection_groups.probe_note(profile, exc))
             snapshot, position, exclusion = None, None, connection_groups.safe_problem(exc)
             multi_primary = False
@@ -796,10 +912,7 @@ def read_group(store, group_name, section, active_member_profile_id):
             for entry, snapshot, position, reason, multi in results if snapshot is not None
             for note in snapshot['notes'])
     elif section != 'members':
-        snapshots = {entry['profile_id']: snapshot for entry, snapshot, position, reason, multi in results
-                     if entry['outcome'] == 'read' and snapshot is not None and reason is None}
-        not_compared = [{'profile_id': entry['profile_id'], 'reason': reason or entry['message']}
-                        for entry, snapshot, position, reason, multi in results if entry['profile_id'] not in snapshots]
+        snapshots, not_compared = _comparison_inputs(results, section)
         compare = {'parameters': param_compare.compare_many, 'accounts': account_compare.compare_many,
                    'plugins': compare_plugins}[section]
         plugin_notes = [{'profile_id': pid, 'message': note} for pid in sorted(snapshots)

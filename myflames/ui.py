@@ -2574,7 +2574,9 @@ def api_response(path, payload, workspace=None):
         _profiles, current = connection_groups.request_profiles(workspace.store, connection)
         if current is None:
             raise ValueError("This saved connection is outside the current connection group.")
-        return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"])
+        return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"],
+                                         expected_current=current,
+                                         expected_generation=current.get("group_generation"))
     if path in _TOPOLOGY_CHANGE_PATHS:
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")

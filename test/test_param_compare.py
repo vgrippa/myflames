@@ -3,7 +3,10 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -185,6 +188,24 @@ class NormalizeTest(unittest.TestCase):
         self.assertTrue(result['items'][0]['truncated'])
         self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'missing')
 
+    def test_full_provider_capture_discards_oversized_exact_value_before_redaction(self):
+        from myflames.topology_group import TAG
+        full = 'a.' * (1024 * 1024 // 2)
+        catalog = {'complete': True, 'items': [item('wsrep_provider_options', full[:2048],
+                                                   'string', truncated=True)]}
+        report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB', 'parameters': catalog, 'notes': []}
+        conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options', batch([[full]])]])
+        began = time.monotonic()
+        with mock.patch('myflames.config_review.config_report', return_value=report), \
+                mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertTrue(result['items'][0]['truncated'])
+        self.assertIsNone(result['items'][0]['value'])
+        self.assertNotIn(full[:2048], json.dumps(result))
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'missing')
+
     def test_file_validation_and_scrubbing(self):
         a = snapshot([item('wsrep_sst_auth', 'root:secret', 'string', 'other'),
                       item('init_connect', "SET PASSWORD = 'not-this-form'", 'string')])
@@ -297,6 +318,48 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.parameter_snapshot_get(saved['id'])['snapshot'],value)
 
 class ValidationEdgeTest(unittest.TestCase):
+    def test_oversized_values_are_discarded_before_redaction_in_all_snapshot_paths(self):
+        from myflames import compare_api
+        full = 'a.' * (1024 * 1024 // 2)
+        raw = snapshot([item('custom_setting', full, 'string', full, values=[full]),
+                        item('wsrep_sst_auth', full, 'string', full)])
+        began = time.monotonic()
+        with mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            direct = P.validate_snapshot(raw)
+            imported = compare_api.parse_file(json.dumps(raw))
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertEqual(direct, imported)
+        for row in direct['items']:
+            self.assertTrue(row['truncated'])
+            self.assertIsNone(row['value'])
+            self.assertIsNone(row['default'])
+            self.assertIsNone(row.get('values'))
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertNotIn(full[:2048], json.dumps(direct))
+
+    def test_value_limit_preserves_exact_boundary_and_discards_only_overflow(self):
+        limit = P.MAX_VALUE_CHARS
+        clean = P.validate_snapshot(snapshot([item('at_limit', 'x' * limit, 'string'),
+                                              item('over_limit', 'x' * (limit + 1), 'string')]))
+        self.assertEqual(clean['items'][0]['value'], 'x' * limit)
+        self.assertFalse(clean['items'][0].get('truncated', False))
+        self.assertIsNone(clean['items'][1]['value'])
+        self.assertTrue(clean['items'][1]['truncated'])
+
+    def test_credential_url_regex_bounds_scheme_like_megabyte(self):
+        # A subprocess deadline also makes a regression fail promptly instead
+        # of blocking the full test worker while the regex holds the GIL.
+        code = (
+            "import time\nfrom myflames import param_compare as p\n"
+            "value = 'a.' * (1024 * 1024 // 2)\n"
+            "began = time.monotonic()\n"
+            "assert p._CREDENTIAL_URL.search(value) is None\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 5)
+
     def test_password_plugin_settings_compared_and_sst_auth_stays_redacted(self):
         settings = [item('caching_sha2_password_auto_generate_rsa_keys', 'ON', 'boolean'),
                     item('caching_sha2_password_digest_rounds', '5000'),

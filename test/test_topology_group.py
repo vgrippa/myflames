@@ -17,10 +17,10 @@ import types
 import unittest
 from unittest import mock
 
-from myflames import account_compare, connector, group_members, param_compare, topology_group, ui
+from myflames import account_compare, connection_groups, connector, dbops, group_members, param_compare, topology_group, ui
 from myflames.accounts_api import _group_login_guard
 from myflames.connection_groups import ProfileReadError
-from test_account_compare import account, side
+from test_account_compare import CaptureConn, account, side
 from test_chart_data import validate
 from test_connection_groups import GroupCase, _FakeMemberConn
 from test_param_compare import item, snapshot
@@ -77,9 +77,37 @@ def emit(columns, rows):
     out.append('</resultset>\n')
     sys.stdout.write(''.join(out))
 
+variables = cfg['variables']
+evidence = sql.startswith('DELIMITER ')
+if evidence:
+    header, packet = sql.split('\n', 1)
+    delimiter = header[len('DELIMITER '):]
+    assert packet.endswith(delimiter + '\n') and packet.count(delimiter) == 1
+    marker = re.search(r"SELECT '(myflames_evidence_[0-9a-f]{32})';\n", packet)
+    assert marker is not None
+    sql = packet[marker.end():-len(delimiter) - 1].strip()
+    identity = dict(variables)
+    if cfg.get('evidence_variables') and (not cfg.get('switch_on') or cfg['switch_on'] in sql):
+        identity.update(cfg.get('evidence_variables', {}))
+    names = ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'version_comment',
+             'wsrep_on', 'wsrep_provider', 'wsrep_node_name')
+    emit(['Variable_name', 'Value'], [[name, identity[name]] for name in names if name in identity])
+    # Earlier synthetic Galera fixtures omit the node UUID. Supply a stable,
+    # explicitly synthetic value for the new identity prefix only.
+    wsrep = cfg.get('status', {}).get('wsrep_gcomm_uuid', 'aaaaaaaa-0000-4000-8000-000000000001')
+    emit(['Variable_name', 'Value'], [['wsrep_gcomm_uuid', wsrep]])
+    emit(['marker'], [[marker.group(1)]])
+
+def fail(message):
+    if evidence:
+        message = re.sub(r'(ERROR\s+\d+(?:\s+\([^)]*\))?):', r'\1 at line 2:', message)
+    sys.stderr.write(message + '\n')
+    sys.exit(1)
+
 text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', sql).rstrip(';')
 lower = text.lower()
-variables = cfg['variables']
+if cfg.get('error_on') and cfg['error_on'].lower() == lower:
+    fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
 if lower == 'select @@version_comment':
     comment = 'Readyset' if cfg.get('probe_readyset') and not sql.lstrip().startswith('/*') else variables['version_comment']
     emit(['@@version_comment'], [[comment]])
@@ -88,8 +116,7 @@ elif lower == 'select @@version':
 elif lower.startswith('select @@global.'):
     name = lower[len('select @@global.'):]
     if cfg.get('exact_denied'):
-        sys.stderr.write('ERROR 1227 (42000): Access denied for exact variable read\n')
-        sys.exit(1)
+        fail('ERROR 1227 (42000): Access denied for exact variable read')
     value = cfg.get('exact_variables', {}).get(name, variables.get(name))
     emit(['@@GLOBAL.' + name], [[value]])
 elif "variable_name = 'admin-version'" in lower:
@@ -121,8 +148,7 @@ elif lower.startswith('show global variables'):
     emit(['Variable_name', 'Value'], rows)
 elif 'from performance_schema.replication_group_members' in lower:
     if cfg.get('no_gr_role') and 'member_role' in lower:
-        sys.stderr.write('ERROR 1054 (42S22): Unknown column MEMBER_ROLE\n')
-        sys.exit(1)
+        fail('ERROR 1054 (42S22): Unknown column MEMBER_ROLE')
     role = cfg.get('role')
     state = cfg.get('state', 'ONLINE')
     present = role or cfg.get('has_gr')
@@ -168,22 +194,20 @@ elif 'from information_schema.plugins' in lower:
          cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]))
 elif 'from mysql.component' in lower:
     if cfg.get('component_denied'):
-        sys.stderr.write('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component\n')
-        sys.exit(1)
+        fail('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component')
     else:
         emit(['component_urn'], [[value] for value in cfg.get('components', [])])
 elif lower == 'select 1':
     emit(['1'], [['1']])
 else:
-    sys.stderr.write('ERROR 1064 (42000): unexpected synthetic read\n')
-    sys.exit(1)
+    fail('ERROR 1064 (42000): unexpected synthetic read')
 '''
 
 
 def member_fixture(uuid=UUID_A, engine='mysql', role=None, gtid=None, **fields):
     variables = {'version': '11.4.9-MariaDB' if engine == 'mariadb' else '8.4.11',
                  'version_comment': 'MariaDB Server' if engine == 'mariadb' else 'MySQL Community Server (GPL)',
-                 'server_id': '1', 'hostname': 'own-member', 'read_only': 'OFF',
+                 'server_id': '1', 'hostname': 'own-member', 'port': '3306', 'read_only': 'OFF',
                  'gtid_current_pos' if engine == 'mariadb' else 'gtid_executed': gtid or ''}
     if engine == 'mysql':
         variables.update(server_uuid=uuid, super_read_only='OFF', gtid_mode='ON')
@@ -361,6 +385,41 @@ class ParameterManyTests(unittest.TestCase):
 
 
 class AccountManyTests(unittest.TestCase):
+    def test_real_account_capture_reuses_existing_member_evidence_scope(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                connection = CaptureConn(engine)
+                evidence = dbops.TargetEvidenceConnection(param_compare.BoundedConnection(connection))
+                captured = account_compare.capture(evidence)
+                evidence.check()
+                self.assertTrue(captured['complete'])
+                self.assertTrue(captured['items'])
+                for item in captured['items']:
+                    self.assertFalse(item.get('error'), item)
+                    for field in ('attributes_checked', 'defaults_checked', 'tls_checked'):
+                        self.assertTrue(item[field], (field, item))
+                rows = account_compare.compare_many({'a': captured, 'b': copy.deepcopy(captured)})
+                self.assertTrue(rows)
+                self.assertTrue(all(row['status'] == 'same' for row in rows))
+
+    def test_disappeared_account_keeps_evidence_valid_and_remains_unreadable(self):
+        evidence = dbops.TargetEvidenceConnection(param_compare.BoundedConnection(CaptureConn(exists=False)))
+        captured = account_compare.capture(evidence)
+        evidence.check()
+        self.assertTrue(captured['complete'])
+        self.assertIn('disappeared', captured['items'][0]['error'])
+        self.assertTrue(account_compare.incomplete_account(captured['items'][0]))
+
+    def test_incomplete_inventory_and_account_fields_still_refuse_direct_comparison(self):
+        for complete in (False, None, 1):
+            with self.subTest(complete=complete), self.assertRaises(ValueError):
+                account_compare.compare_many({'a': side([account()], complete=complete)})
+        for fields in ({'error': 'unavailable'}, {'exists': False},
+                       {'attributes_checked': False}, {'defaults_checked': False},
+                       {'tls_checked': False}, {'grants_checked': False}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                account_compare.compare_many({'a': side([account(**fields)])})
+
     def test_mariadb_default_role_difference_is_counted_once_as_roles(self):
         a = account(grants=['GRANT SELECT ON *.* TO `app`@`%`',
                             'SET DEFAULT ROLE `reader` FOR `app`@`%`'],
@@ -587,6 +646,39 @@ class TopologyEndpointTests(GroupCase):
         self.assertNotIn('/api/live/topology', ui._SERVER_VIEW_PATHS)
         self.assertNotIn('/api/live/topology', ui._WRITE_PATHS)
 
+    def test_validated_endpoint_and_generation_survive_dispatch_races(self):
+        read = topology_group.read_group
+        for change in ('endpoint', 'recreate'):
+            with self.subTest(change=change):
+                current = self.store.get('profile', 'active')
+                route = dict(self.request(current), group_name='G')
+
+                def race(*args, **kwargs):
+                    self.assertEqual(kwargs['expected_current'], current)
+                    self.assertEqual(kwargs['expected_generation'], current['group_generation'])
+                    if change == 'endpoint':
+                        self.store.save('profile', dict(current, host='changed.example'), 'active',
+                                        password='test-password', remember=True)
+                    else:
+                        self.store.delete_connection_group('G')
+                        self.store.save_connection_group('G', ['active'])
+                    return read(*args, **kwargs)
+
+                with mock.patch.object(topology_group, 'read_group', side_effect=race), \
+                        mock.patch.object(self.store, 'connection_with_saved_password') as password, \
+                        mock.patch.object(connector, '_run_bounded') as login:
+                    status, result = self.post({'connection': route, 'section': 'members'})
+                self.assertEqual(status, 400, result)
+                password.assert_not_called()
+                login.assert_not_called()
+
+    def test_endpoint_uses_store_generation_never_request_generation(self):
+        with mock.patch.object(topology_group, 'read_group', return_value={}) as read:
+            status, result = self.post({'connection': dict(self.connection, group_generation='forged'),
+                                        'section': 'members'})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(read.call_args[1]['expected_generation'], self.profile['group_generation'])
+
 
 class TopologyReadTests(GroupCase):
     def setUp(self):
@@ -653,7 +745,9 @@ class TopologyReadTests(GroupCase):
                         os.kill(int(pid), 0)
 
     def read(self, section='members', active='active'):
-        return topology_group.read_group(self.store, 'G', section, active)
+        expected = self.store.get('profile', active)
+        return topology_group.read_group(self.store, 'G', section, active,
+                                         expected, expected.get('group_generation'))
 
     def statements(self, observed, host=None):
         paths = [observed.logs[host]] if host else observed.logs.values()
@@ -729,7 +823,7 @@ class TopologyReadTests(GroupCase):
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 100)
         sql = self.statements(observed)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 2)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 4)
         self.assertFalse(any("'gtid_executed'" in statement for statement in sql))
 
     def test_mariadb_gtid_reads_full_global_position(self):
@@ -745,7 +839,7 @@ class TopologyReadTests(GroupCase):
             report = self.read()
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 10)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 2)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 4)
 
     def test_failed_exact_gtid_read_never_falls_back_to_show(self):
         fixture = member_fixture(role='PRIMARY', gtid=UUID_A + ':1-100', exact_denied=True)
@@ -862,6 +956,36 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(report['summary']['failed'], 1, report)
         self.assertIn('group membership changed', report['members'][0]['message'])
 
+    def test_active_endpoint_or_generation_change_revokes_later_member_logins(self):
+        self.save('peer', 'G')
+        for change in ('endpoint', 'recreate'):
+            with self.subTest(change=change):
+                current = self.store.get('profile', 'active')
+                order = self.store.list('profile')
+                first = order[0]
+                fixtures = {profile['host']: member_fixture() for profile in order}
+                changed = [False]
+
+                def revoke(host):
+                    if changed[0]:
+                        return
+                    changed[0] = True
+                    if change == 'endpoint':
+                        self.store.save('profile', dict(current, host='changed.example'), 'active',
+                                        password='test-password', remember=True)
+                    else:
+                        self.store.delete_connection_group('G')
+                        self.store.save_connection_group('G', ['active', 'peer'])
+
+                with self.clients(fixtures, after_spawn=revoke) as observed, \
+                        mock.patch.object(topology_group, 'MAX_CONCURRENCY', 1), \
+                        mock.patch.object(self.store, 'connection_with_saved_password',
+                                          wraps=self.store.connection_with_saved_password) as password:
+                    report = self.read()
+                self.assertEqual(observed.logins, [first['host']])
+                self.assertEqual(password.call_count, 1)
+                self.assertEqual(report['summary']['failed'], 2, report)
+
     def test_revoked_queued_member_gets_no_login(self):
         self.save('peer', 'G')
         order = self.store.list('profile')
@@ -885,11 +1009,43 @@ class TopologyReadTests(GroupCase):
         with self.clients({'active.example': bad}) as observed:
             report = self.read()
         self.assertEqual(len(observed.connections), 1)
+        self.assertEqual(observed.logins, ['active.example'])
         self.assertEqual(report['members'][0]['outcome'], 'failed')
         text = json.dumps(report)
         for secret in ('test-password', 'secret_payload', 'ERROR 1045', 'SELECT'):
             self.assertNotIn(secret, text)
         self.assertIn('access was denied', report['members'][0]['message'])
+
+    def test_login_and_transport_errors_cost_one_client_invocation_per_member(self):
+        self.save('peer', 'G')
+        for code in (1045, 1044, 2002, 2003, 2005, 2013, 2026, 1129, 1130, 1251, 3159):
+            with self.subTest(code=code):
+                fixtures = {host: member_fixture(error='ERROR %d (HY000): secret_payload' % code)
+                            for host in ('active.example', 'peer.example')}
+                with self.clients(fixtures) as observed:
+                    report = self.read()
+                self.assertEqual(sorted(observed.logins), ['active.example', 'peer.example'])
+                self.assertEqual(report['summary']['failed'], 2)
+                self.assertNotIn('secret_payload', json.dumps(report))
+
+    def test_proxy_echo_login_failure_cannot_fall_through_to_database_probe(self):
+        for code in (1045, 1129, 1251, 3159, 2013):
+            with self.subTest(code=code):
+                fixture = member_fixture(proxy='proxysql', error_on='SELECT @@version',
+                    query_error='ERROR %d (HY000): secret_payload' % code)
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read()
+                self.assertEqual(len(observed.logins), 3)
+                self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql for sql in self.statements(observed)))
+                self.assertEqual(report['summary']['failed'], 1)
+
+    def test_authenticated_optional_identity_sql_error_remains_unavailable_fact(self):
+        fixture = member_fixture(error_on='SELECT @@version_comment',
+                                 query_error='ERROR 1193 (HY000): optional variable unavailable')
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read()
+        self.assertEqual(report['summary']['read'], 1, report)
+        self.assertGreater(len(observed.logins), 1)
 
     def test_slow_query_is_bounded_and_client_is_reaped(self):
         with self.clients({'active.example': member_fixture(pause_each=1)}) as observed, \
@@ -899,6 +1055,7 @@ class TopologyReadTests(GroupCase):
             report = self.read()
             elapsed = time.monotonic() - started
         self.assertEqual(len(observed.connections), 1)
+        self.assertEqual(observed.logins, ['active.example'])
         self.assertLess(elapsed, 1)
         self.assertEqual(report['summary']['failed'], 1)
         self.assertTrue(all(timeout <= 0.08 for timeout in observed.timeouts))
@@ -1062,6 +1219,109 @@ class TopologyReadTests(GroupCase):
             compare.assert_called_once()
             self.assertEqual(set(compare.call_args[0][0]), {'active', 'peer'})
             self.assertEqual(report[section]['compared'], ['active', 'peer'])
+
+    def test_incomplete_inventories_are_not_compared_without_failing_other_members(self):
+        self.save('peer', 'G')
+        fixtures = {'active.example': member_fixture(), 'peer.example': member_fixture(UUID_B)}
+        for section, module, good in (
+                ('parameters', param_compare, snapshot([item('max_connections', '200')])),
+                ('accounts', account_compare, side([account('app')]))):
+            for failure in ({'complete': False}, {'complete': None},
+                            {'error': 'ERROR 1142: SELECT secret_payload password=secret_value'}):
+                with self.subTest(section=section, failure=failure):
+                    def capture(conn, **kwargs):
+                        return dict(copy.deepcopy(good), **failure) if conn.host == 'active.example' else copy.deepcopy(good)
+
+                    with self.clients(fixtures), mock.patch.object(module, 'capture', side_effect=capture):
+                        report = self.read(section)
+                    self.assertEqual(report['summary']['failed'], 0, report)
+                    self.assertEqual(report[section]['compared'], ['peer'])
+                    self.assertEqual([row['profile_id'] for row in report[section]['not_compared']], ['active'])
+                    self.assertIn('inventory is incomplete', report[section]['not_compared'][0]['reason'])
+                    self.assertNotIn('secret_payload', json.dumps(report))
+                    self.assertNotIn('secret_value', json.dumps(report))
+                    self.assertTrue(report[section]['rows'])
+
+    def test_unreadable_accounts_are_omitted_globally_while_readable_accounts_compare(self):
+        self.save('peer', 'G')
+        fixtures = {'active.example': member_fixture(), 'peer.example': member_fixture(UUID_B)}
+        for failure in ({'error': 'ERROR 1142: secret_payload'}, {'exists': False},
+                        {'attributes_checked': False}, {'defaults_checked': False},
+                        {'tls_checked': False}, {'grants_checked': False}):
+            with self.subTest(failure=failure):
+                def capture(conn, **kwargs):
+                    unreadable = account('unreadable', **failure) if conn.host == 'active.example' else account('unreadable')
+                    return side([account('readable'), unreadable])
+
+                with self.clients(fixtures), mock.patch.object(account_compare, 'capture', side_effect=capture):
+                    report = self.read('accounts')
+                self.assertEqual(report['accounts']['compared'], ['active', 'peer'])
+                self.assertEqual([(row['account'], row['status']) for row in report['accounts']['rows']],
+                                 [('readable@%', 'same')])
+                excluded = report['accounts']['not_compared']
+                self.assertEqual([row['profile_id'] for row in excluded], ['active'])
+                self.assertIn('unreadable@%', excluded[0]['reason'])
+                self.assertNotIn('secret_payload', json.dumps(report))
+                validate(report, json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text()))
+
+    def test_evidence_scope_refuses_a_changed_identity_after_preflight(self):
+        for engine, change in (('mysql', {'server_uuid': UUID_B}),
+                               ('mariadb', {'hostname': 'changed-member'})):
+            with self.subTest(engine=engine):
+                fixture = member_fixture(engine=engine, evidence_variables=change)
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read('plugins')
+                self.assertEqual(report['summary']['failed'], 1, report)
+                self.assertEqual(report['plugins']['compared'], [])
+                self.assertEqual(report['plugins']['rows'], [])
+                self.assertIsNone(report['members'][0]['server_uuid'])
+                self.assertIsNone(report['members'][0]['engine'])
+                self.assertFalse(any('FROM information_schema.PLUGINS' in sql for sql in self.statements(observed)))
+
+    def test_evidence_scope_discards_changed_role_and_plugin_reads(self):
+        for section, sql in (('members', 'FROM performance_schema.replication_group_members'),
+                             ('map', 'FROM performance_schema.replication_group_members'),
+                             ('parameters', 'FROM performance_schema.replication_group_members'),
+                             ('plugins', 'FROM information_schema.PLUGINS')):
+            with self.subTest(section=section):
+                fixture = member_fixture(role='PRIMARY', switch_on=sql, evidence_variables={'server_uuid': UUID_B})
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read(section)
+                self.assertEqual(report['summary']['failed'], 1, report)
+                member = report['members'][0]
+                for field in ('engine', 'server_uuid', 'version', 'role', 'state', 'read_only', 'lag', 'behind'):
+                    self.assertIsNone(member[field], field)
+                self.assertEqual(member['channels'], [])
+                self.assertEqual(report['summary']['versions'], [])
+                self.assertEqual(sum(sql in statement for statement in self.statements(observed)), 1)
+                if section in ('parameters', 'plugins'):
+                    self.assertEqual(report[section]['compared'], [])
+                    self.assertEqual(report[section]['rows'], [])
+
+    def test_optional_capture_cannot_hide_identity_failure(self):
+        self.save('peer', 'G')
+        for section, module, good in (
+                ('parameters', param_compare, snapshot([item('max_connections', '200')])),
+                ('accounts', account_compare, side([account('app')]))):
+            with self.subTest(section=section):
+                fixtures = {'active.example': member_fixture(switch_on='SELECT 1', evidence_variables={'server_uuid': UUID_B}),
+                            'peer.example': member_fixture(UUID_C)}
+
+                def capture(conn, **kwargs):
+                    try:
+                        conn.run('SELECT 1')
+                    except connector.ConnectorError:
+                        pass
+                    return copy.deepcopy(good)
+
+                with self.clients(fixtures) as observed, mock.patch.object(module, 'capture', side_effect=capture):
+                    report = self.read(section)
+                self.assertEqual(report['summary']['failed'], 1, report)
+                self.assertEqual(report['summary']['read'], 1, report)
+                self.assertEqual(report[section]['compared'], ['peer'])
+                self.assertEqual([row['profile_id'] for row in report[section]['not_compared']], ['active'])
+                member = next(row for row in report['members'] if row['profile_id'] == 'active')
+                self.assertIsNone(member['engine'])
 
     def test_group_parameters_reread_provider_options_and_use_observed_roles(self):
         self.save('peer', 'G')
@@ -1374,7 +1634,7 @@ class TopologyReadTests(GroupCase):
     def test_failed_map_read_with_an_observed_uuid_is_not_duplicate_evidence(self):
         self.save('healthy', 'G')
         # The first identity read succeeds, but the later map probe reaches
-        # another node. The failed member still carries its initial UUID.
+        # another node. The failed member discards all observed facts.
         fixtures = {'active.example': member_fixture(UUID_A, probe_uuid=UUID_C),
                     'healthy.example': member_fixture(UUID_A)}
         with self.clients(fixtures):
@@ -1382,7 +1642,7 @@ class TopologyReadTests(GroupCase):
         nodes = self.assert_map_schema(report)
         members = {member['profile_id']: member for member in report['members']}
         self.assertEqual(members['active']['outcome'], 'failed')
-        self.assertEqual(members['active']['server_uuid'], UUID_A)
+        self.assertIsNone(members['active']['server_uuid'])
         self.assertEqual(members['healthy']['outcome'], 'read')
         for member in members.values():
             self.assertIsNone(member['duplicate_of'])

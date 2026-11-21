@@ -88,7 +88,9 @@ def _safe_account(value):
 
 
 def capture(conn, server=None):
-    bounded = BoundedConnection(conn)
+    # Group reads already bound this evidence scope's transport. Preserve its
+    # type so read_account reuses it instead of nesting identity packets.
+    bounded = conn if isinstance(conn, dbops.TargetEvidenceConnection) else BoundedConnection(conn)
     listing = accounts.list_accounts(bounded)
     version, engine = listing['version'], listing['engine']
     comment = Reader(bounded, accounts.TAG).pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'version_comment'").get('version_comment')
@@ -212,6 +214,12 @@ def _many_privilege_grants(item):
     return out
 
 
+def incomplete_account(item):
+    """A failed field read must never be interpreted as an absent account."""
+    return bool(item.get('error') or item.get('exists') is False or any(
+        key.endswith('_checked') and value is False for key, value in item.items()))
+
+
 def compare_many(snapshots):
     """Compare credential-free account inventories by saved profile ID.
 
@@ -231,11 +239,9 @@ def compare_many(snapshots):
             key = (raw['name'], raw['host'])
             if key in items:
                 raise ValueError('Duplicate account in member inventory.')
-            item = _safe_account(raw)
-            if (item.get('error') or item.get('exists') is False or any(
-                    item.get(field) is False for field in
-                    ('attributes_checked', 'defaults_checked', 'tls_checked'))):
+            if incomplete_account(raw):
                 raise ValueError('Only completely read accounts can be compared.')
+            item = _safe_account(raw)
             item['grants'] = _many_privilege_grants(item)
             items[key] = item
         indexed[pid] = items

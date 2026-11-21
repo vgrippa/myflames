@@ -15,6 +15,7 @@ COMPARE_SCHEMA = 'parameter-compare-1.0'
 READ_SECONDS = 120
 MAX_ITEMS = 10000
 MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_VALUE_CHARS = 65536
 STATUS_TEXT = {'different': 'Different', 'only_in_source': 'Only in source',
                'only_in_target': 'Only in target', 'identical': 'Identical', 'not_compared': 'Not compared'}
 # One inventory for folding server identity and installation-specific locations.
@@ -62,7 +63,9 @@ _SECRET_VARIABLES = frozenset((
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
-_CREDENTIAL_URL = re.compile(r'\b[a-z][a-z0-9+.-]*://[^\s/@:]*:[^\s/@]+@', re.I)
+# Bound each URL field: long scheme-like text and unfinished credentials must
+# not cause quadratic backtracking while processing server-controlled values.
+_CREDENTIAL_URL = re.compile(r'\b[a-z][a-z0-9+.-]{0,31}://[^\s/@:]{0,255}:[^\s/@]{1,1024}@', re.I)
 _CREDENTIAL_PAIR = re.compile(r'[^\s:/\\;=@]+:[^\s:/\\;]+')
 
 # Earlier snapshots inherited these config-review explanations. Remove the
@@ -174,14 +177,20 @@ def validate_snapshot(value):
         for key in ('value', 'default'):
             if row.get(key) is not None and not isinstance(row[key], (str, int, float, bool)):
                 raise ValueError('Parameter values must be scalar.')
-            if sensitive(name):
+            if isinstance(row.get(key), str) and len(row[key]) > MAX_VALUE_CHARS:
+                # Drop oversized values before any credential regex runs. A
+                # prefix is not evidence of the complete setting's value.
+                row[key], row['truncated'] = None, True
+            elif sensitive(name):
                 row[key], row['redacted'] = '[redacted]', True
             elif isinstance(row.get(key), str):
                 row[key] = _redact_parameter_value(row[key])
                 if row[key] != item.get(key):
                     row['redacted'] = True
         if row.get('values') is not None:
-            if any(_redact_parameter_value(v) != v for v in row['values']):
+            if any(len(v) > MAX_VALUE_CHARS for v in row['values']):
+                row['values'], row['truncated'] = None, True
+            elif any(_redact_parameter_value(v) != v for v in row['values']):
                 row['values'], row['redacted'] = None, True
         clean['items'].append(row)
     # Reject excessive or non-JSON data before persistence or comparison.
@@ -214,7 +223,9 @@ def capture(conn, server=None, label='', full_provider_options=False):
             rows = Reader(conn, '/*myflames:topology*/ ').optional(
                 'SELECT @@GLOBAL.wsrep_provider_options', 'full wsrep_provider_options', notes)
             if rows and len(rows) == 1 and len(rows[0]) == 1 and rows[0][0] is not None:
-                item.update(value=rows[0][0], truncated=False)
+                value = rows[0][0]
+                oversized = len(value) > MAX_VALUE_CHARS
+                item.update(value=None if oversized else value, truncated=oversized)
             else:
                 # Never compare a prefix when the exact read was unavailable.
                 item['truncated'] = True

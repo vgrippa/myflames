@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1125,6 +1126,28 @@ class TestPrivileges(unittest.TestCase):
 # ---- redaction -----------------------------------------------------------------------------
 
 class TestRedaction(unittest.TestCase):
+    def test_url_secret_regex_bounds_unfinished_megabyte_credentials(self):
+        # Bound the test process as well as the measured regex so a regression
+        # cannot monopolize a worker for minutes.
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "value = ('mysql://a:b,' * (1024 * 1024 // 12 + 1))[:1024 * 1024]\n"
+            "began = time.monotonic()\n"
+            "assert dbops._URL_SECRET.search(value) is None\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 5)
+
+    def test_bounded_url_fields_still_redact_supported_schemes_and_pool_prefixes(self):
+        for scheme in ('mysql', 'mariadb', 'postgres', 'postgresql'):
+            for prefix in ('', '3*'):
+                with self.subTest(scheme=scheme, prefix=prefix):
+                    raw = prefix + scheme + '://' + 'u' * 255 + ':' + 'p' * 1024 + '@db'
+                    clean = dbops.redact(raw)
+                    self.assertEqual(clean, prefix + scheme + '://' + 'u' * 255 + ':[redacted]@db')
+
     def test_hex_hashes(self):
         text = ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS "
                 "0x244124303041242A493F2F2725193549337A REQUIRE NONE")
