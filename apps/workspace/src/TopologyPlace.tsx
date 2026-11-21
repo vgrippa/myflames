@@ -5,8 +5,9 @@
 // on Refresh, never on automatic refresh, never polling. A saved connection
 // in a group offers to open it as a Group connection; one without a group
 // offers New group... and the topology suggestions of ConnectionGroupBar.
-// Reports are kept per group connection key and tab; switching the group
-// drops the reads on their way.
+// Reports are kept per group connection key, membership and tab: an edit of
+// the group's members makes the old membership's reports stale, and
+// switching the group drops the reads on their way.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
@@ -69,6 +70,15 @@ function readOnlyText(m: TopologyMember): string {
   return value === null ? "—" : value ? "On" : "Off";
 }
 
+/** A report's key: the connection's identity plus the group's membership
+ * (sorted member profile ids). Editing the group's members under the same
+ * name, or recreating a group under a name already read, changes the key,
+ * so the old membership's reports never answer for the group as it is now. */
+function reportKey(connection: Connection, group: GroupConnection | null | undefined): string {
+  const membership = (group?.members.map((m) => m.profile_id) || []).sort().join(",");
+  return `${connectionKey(connection)}|${membership}`;
+}
+
 export function TopologyPlace({ connection, group = null, profiles, disabled = false, onOpenGroup, onNewGroup, onUseInServer, onOpenCluster, onOpenReplication, onOpenAccounts }: {
   connection: Connection;
   /** The active Group connection, when the connection in use is one. */
@@ -109,7 +119,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     width: inspectorWidth, setWidth: setInspectorWidth, sheet: false,
   }), [inspectorOpen, selectedKey, inspectorWidth]);
 
-  const key = connectionKey(connection);
+  const key = reportKey(connection, group);
   const isGroup = !!connection.group_name;
   const [reports, setReports] = useState<Record<string, TopologyGroupReport>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -120,9 +130,11 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const tried = useRef(new Set<string>());
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
+  const groupRef = useRef(group);
+  groupRef.current = group;
 
   const readTab = useCallback(async (section: TopologySection) => {
-    const startKey = connectionKey(connectionRef.current);
+    const startKey = reportKey(connectionRef.current, groupRef.current);
     const id = `${startKey}:${section}`;
     controllers.current.get(id)?.abort();
     const controller = new AbortController();
@@ -135,20 +147,33 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
       delete next[id];
       return next;
     });
+    let published = false;
     try {
       const report = await readTopology(connectionRef.current, section, controller.signal);
-      if (controller.signal.aborted) return;
-      // A group switch aborts this read through the effect below; an answer
-      // that still arrives is dropped with its connection.
-      if (connectionKey(connectionRef.current) !== startKey) return;
+      // Only the request still registered for the tab publishes and clears
+      // the spinner: a Refresh registered a newer controller, a group switch
+      // cleared the map, and a superseded request leaves both to its
+      // replacement.
+      if (controller.signal.aborted || controllers.current.get(id) !== controller) return;
+      if (reportKey(connectionRef.current, groupRef.current) !== startKey) return;
       setReports((current) => ({ ...current, [id]: report }));
       setDoneAt((current) => ({ ...current, [id]: Date.now() }));
+      published = true;
     } catch (error) {
-      if ((error as Error).name === "AbortError") return;
+      if (controller.signal.aborted || (error as Error).name === "AbortError") return;
+      if (controllers.current.get(id) !== controller) return;
       setErrors((current) => ({ ...current, [id]: (error as Error).message }));
+      published = true;
     } finally {
-      setBusy((current) => (current && current.id === id ? null : current));
-      controllers.current.delete(id);
+      const registered = controllers.current.get(id);
+      if (registered === controller) controllers.current.delete(id);
+      if (registered === controller || registered === undefined) {
+        setBusy((current) => (current && current.id === id ? null : current));
+        // An attempt that produced neither a report nor an error (a group
+        // switch aborted it) frees the tab's first read: shown again, the
+        // tab reads again.
+        if (!published) tried.current.delete(id);
+      }
     }
   }, []);
 
@@ -162,10 +187,41 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     };
   }, [key]);
 
+  const seenKey = useRef<string | null>(null);
+  const lastGroupName = useRef<string | null>(null);
   // Switching the connection or group closes the change sheet; an unfinished
   // run keeps going in rollingRuns and the banner below reopens it.
+  // A key change with the same group name is a membership edit: every report
+  // of the old membership is stale, so drop it together with the selection
+  // and the change sheet. An edit never reads on its own; marking the edited
+  // group's tabs as tried keeps their first-show read for the next explicit
+  // open or Refresh. A switch to another group keeps the first-show read.
   useEffect(() => {
+    const previous = seenKey.current;
+    const name = group?.group_name || null;
+    const edited = previous !== null && previous !== key && lastGroupName.current !== null && lastGroupName.current === name;
+    seenKey.current = key;
+    lastGroupName.current = name;
+    if (previous === null || previous === key) return;
+    const prefix = `${key}:`;
+    const dropOld = <T,>(current: Record<string, T>): Record<string, T> => {
+      const ids = Object.keys(current);
+      if (ids.every((id) => id.startsWith(prefix))) return current;
+      const next: Record<string, T> = {};
+      for (const id of ids) if (id.startsWith(prefix)) next[id] = current[id];
+      return next;
+    };
+    setReports(dropOld);
+    setErrors(dropOld);
+    setDoneAt(dropOld);
+    setStartedAt(dropOld);
+    for (const id of Array.from(tried.current)) if (!id.startsWith(prefix)) tried.current.delete(id);
+    setSelectedKey("");
+    setInspectorOpen(false);
     setChangeRow(null);
+    setChangeDone(false);
+    if (edited) for (const t of TABS) tried.current.add(`${prefix}${t.value}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   const onScreen = useViewOnScreen();

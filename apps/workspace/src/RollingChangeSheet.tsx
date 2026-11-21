@@ -452,7 +452,7 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
                   return (
                     <li key={m.profile_id} data-member={m.profile_id} data-status={m.status}>
                       <strong>{m.profile_name}</strong>
-                      <span className="rolling-review-address">{m.host}:{m.port}</span>
+                      <span className="rolling-review-address">{m.host}:{m.port}</span>{" "}
                       <StatusPill tone={tone} label={word} />
                       {m.message && <p className="hint">{m.message}</p>}
                     </li>

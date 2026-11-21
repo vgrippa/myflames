@@ -549,9 +549,12 @@ try {
   // Health read the primary, with the group name for the membership re-check.
   await waitFor(() => healthCalls.length >= 1, "Health read on open");
   assert.deepEqual(healthCalls[0], { profile: "p-ic-2", group: "mf-ic" });
-  // At 720 px the control is a select of the same members.
+  // At 720 px the control is a select of the same members. Health is already
+  // the view on screen: it stays on screen over its list in the narrow
+  // layout, so wait for the compact layout itself rather than re-choosing the
+  // view (the Back-and-choose round trip raced the resize and the automatic
+  // refresh, and sometimes never came back to Health).
   await page.setViewport({ width: 720, height: 900 });
-  await h.view("health");
   await page.waitForSelector('.server-view[data-view="health"] .group-server-select', { visible: true });
   assert.deepEqual(
     await page.$$eval('.server-view[data-view="health"] .group-server-select option', (els) => els.map((e) => e.textContent)),

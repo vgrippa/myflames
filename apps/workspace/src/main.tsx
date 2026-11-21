@@ -591,14 +591,15 @@ function App() {
   }
   /** Open a connection group as one Group connection (an explicit open or
    * Refresh probes the other members). Starts on the member the backend
-   * picks (the primary or source) unless *activeMember* names one. */
-  async function openGroup(name: string, options: { activeMember?: string; probe?: boolean } = {}) {
+   * picks (the primary or source) unless *activeMember* names one. Resolves
+   * true only when this group became the connection in use. */
+  async function openGroup(name: string, options: { activeMember?: string; probe?: boolean } = {}): Promise<boolean> {
     const choice = ++connectionChoice.current;
     const probe = options.probe !== false;
     setConnectionNote("");
     try {
       const result = await openConnectionGroup(name, { activeMember: options.activeMember, probe });
-      if (choice !== connectionChoice.current) return;
+      if (choice !== connectionChoice.current) return false;
       const gc = result.group_connection;
       if (groupActiveRef.current?.group_name !== gc.group_name) {
         setMemberByPlace({});
@@ -613,9 +614,11 @@ function App() {
       setConnectionNote(
         `${groupConnectionLabel(gc.group_name, gc.members.length)}: ${member?.profile_name || gc.active_member_profile_id} is the active member.`,
       );
+      return true;
     } catch (e) {
-      if (choice !== connectionChoice.current) return;
+      if (choice !== connectionChoice.current) return false;
       setConnectionNote(`Could not open group ${name}: ${(e as Error).message}`);
+      return false;
     }
   }
   /** After a group edit: refresh the saved connections and move an active
@@ -2627,8 +2630,10 @@ function App() {
                   onGroupSaved={groupSaved}
                   onGroupDeleted={groupDeleted}
                   onOpenGroup={(name) => {
-                    void openGroup(name, { probe: true });
-                    go("topology");
+                    // Topology reads the group in use: navigate only once the
+                    // requested group is it, so the place's first read never
+                    // lands on the previous group.
+                    void openGroup(name, { probe: true }).then((opened) => { if (opened) go("topology"); });
                   }}
                   activeGroup={groupActive ? { name: groupActive.group_name, count: groupActive.members.length } : null}
                   addRequest={addConnection}

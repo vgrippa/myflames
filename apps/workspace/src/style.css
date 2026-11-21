@@ -4957,6 +4957,20 @@ kbd {
 #connections-table { min-width: 0; }
 #connections-table:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .connections .data-table-wrap { max-height: var(--home-table-max-h); }
+/* A wide Connections table (the Name column beside the group tag) scrolls
+   sideways inside its frame; the row action stays pinned at the right edge,
+   fully visible beside the Columns control, instead of scrolling away. */
+.connections .data-table :is(th.col-menu, td.col-menu) {
+  position: sticky;
+  right: 0;
+  z-index: 5;
+  background: var(--surface);
+}
+.connections .data-table th.col-menu { background: var(--surface-subtle); }
+.connections .data-table tbody tr[tabindex]:hover td.col-menu { background: var(--surface-subtle); }
+.connections .data-table tbody tr[tabindex]:active:not(.is-selected) td.col-menu { background: var(--surface-hover); }
+.connections .data-table tbody tr.is-selected td.col-menu,
+.connections .data-table tbody tr.is-selected:hover td.col-menu { background: var(--accent-soft); }
 /* Type and Read-only stay two compact pills, never one truncating string. */
 .connections .data-table .safety-tags { flex-wrap: nowrap; }
 /* The badge's side padding steps down a notch, so a wider UI font (Inter on

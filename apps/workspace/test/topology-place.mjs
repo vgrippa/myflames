@@ -14,7 +14,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { open, pause } from "./perf-harness.mjs";
-import { chooseConnection, layoutMatrix } from "./chrome-helpers.mjs";
+import { chooseConnection, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
 import { connectionAction } from "./connection-helpers.mjs";
 
 const base = {
@@ -35,11 +35,14 @@ const profiles = [
   { ...base, id: "p-topo-3", name: "db-3", host: "10.0.0.13", type: "production", group: "mf-topo" },
   { ...base, id: "p-topo-4", name: "db-4", host: "10.0.0.14", type: "development", group: "mf-topo" },
   { ...base, id: "p-solo", name: "solo-db", host: "10.0.0.99", type: "development", group: "" },
+  { ...base, id: "p-two-1", name: "two-1", host: "10.0.0.21", type: "development", group: "mf-two" },
+  { ...base, id: "p-two-2", name: "two-2", host: "10.0.0.22", type: "development", group: "mf-two" },
 ];
-const memberIds = ["p-topo-1", "p-topo-2", "p-topo-3", "p-topo-4"];
+const memberIds = ["p-topo-1", "p-topo-2", "p-topo-3", "p-topo-4", "p-two-1", "p-two-2"];
 const connectCalls = [];
 const topologyCalls = [];
 let topologyDelay = 0;
+let connectDelay = 0;
 
 function member(over) {
   return {
@@ -260,13 +263,13 @@ const h = await open("/api/unused-topology-place", "topology-place", {
           reachable: body.probe_members === true ? true : null,
         })),
       },
-    } };
+    }, ...(connectDelay ? { delay: connectDelay } : {}) };
   },
   // The Topology place's one endpoint: one bounded read of the whole group
   // per section, on the Group connection (its group name and active member).
   "/api/live/topology": (body) => {
     topologyCalls.push(body);
-    assert.equal(body.connection.group_name, "mf-topo", "topology reads name the group");
+    assert.ok(["mf-topo", "mf-two"].includes(body.connection.group_name), "topology reads name the group");
     assert.ok(memberIds.includes(body.connection.profile_id), "topology reads name the active member");
     assert.equal(body.connection.password, "", "topology reads never carry a typed password");
     assert.equal(body.connection.group, undefined, "the request never carries the saved group metadata");
@@ -277,7 +280,10 @@ const h = await open("/api/unused-topology-place", "topology-place", {
   "/api/profiles/groups/save": (body) => {
     const name = (body.name || "").trim();
     const ids = new Set(body.profile_ids || []);
-    for (const p of profiles) p.group = ids.has(p.id) ? name : p.group;
+    for (const p of profiles) {
+      if (ids.has(p.id)) p.group = name;
+      else if ((p.group || "") === name) p.group = "";
+    }
     return { status: 200, body: { group: name, name, profile_ids: [...ids], updated: [...ids], groups: [], profiles } };
   },
   "/api/live/topology/variable/plan": (body) => {
@@ -983,6 +989,82 @@ try {
   await page.waitForSelector(`${sheetSel} .rolling-result`, { visible: true, timeout: 20000 });
   await sheetClick("Close");
   await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+
+  // --- A group switch during a slow read, then back: the aborted read never
+  // publishes and never clears the next read's spinner; the tab reads again.
+  // (A literal second Refresh during a read is refused by the busy toolbar
+  // button, so the supersede goes through the same readTab path instead.)
+  await topoTab("Members");
+  await page.waitForSelector('.topology-place tr[data-row-key="p-topo-2"]', { visible: true });
+  reports.members = { ...reports.members, summary: { ...summary, text: "2 read, 1 failed, 1 not reached. Read again." } };
+  const membersBefore = sections().filter((s) => s === "members").length;
+  topologyDelay = 2000;
+  await h.refresh();
+  await waitFor(() => sections().filter((s) => s === "members").length === membersBefore + 1, "the slow Refresh read started");
+  await page.waitForFunction(() => document.querySelector(".topology-place")?.textContent.includes("Reading 4 servers…"));
+  await chooseConnection(page, "p-solo");
+  await page.waitForSelector(".topology-place .topology-member-note", { visible: true });
+  await pause(2200);
+  assert.equal(sections().filter((s) => s === "members").length, membersBefore + 1, "the aborted read never published");
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-topo"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo"));
+  await waitFor(() => sections().filter((s) => s === "members").length === membersBefore + 2, "back on the group, the tab reads again");
+  await page.waitForFunction(() => document.querySelector(".topology-place")?.textContent.includes("Reading 4 servers…"),
+    { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector(".topology-place .summary-line")?.textContent.includes("Read again."),
+    { timeout: 10000 });
+  topologyDelay = 0;
+
+  // --- A group switch during a first read, and back: the tab reads again.
+  topologyDelay = 2500;
+  await topoTab("Plugins");
+  await waitFor(() => sections().filter((s) => s === "plugins").length === 1, "the Plugins tab read on first show");
+  await chooseConnection(page, "p-solo");
+  await page.waitForSelector(".topology-place .topology-member-note", { visible: true });
+  topologyDelay = 0;
+  await pause(2700);
+  assert.equal(sections().filter((s) => s === "plugins").length, 1, "the aborted first read never published");
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-topo"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo"));
+  await waitFor(() => sections().filter((s) => s === "plugins").length === 2, "back on the group, the shown tab reads again");
+  await page.waitForSelector('.topology-place tr[data-row-key="plugin:audit_log"]', { visible: true });
+
+  // --- A membership edit drops the old report and never reads on its own.
+  await page.waitForSelector(".window-statusbar .statusbar-group-edit", { visible: true });
+  await page.click(".window-statusbar .statusbar-group-edit");
+  const editor = 'dialog.group-editor-sheet[open]';
+  await page.waitForSelector(editor, { visible: true });
+  await page.click(`${editor} .group-editor-item[data-profile-id="p-topo-4"] input[type="checkbox"]`);
+  await clickText(editor, "Save group");
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo · 3 servers"));
+  await page.waitForSelector(".topology-place .view-empty", { visible: true });
+  assert.match(await placeText(), /Read the group/, "the edited group's old report is dropped");
+  await pause(800);
+  assert.equal(sections().filter((s) => s === "plugins").length, 2, "the membership edit never reads on its own");
+  await h.refresh();
+  await waitFor(() => sections().filter((s) => s === "plugins").length === 3, "Refresh reads the edited group");
+
+  // --- Opening another group from Home never reads the previous group.
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="query"]');
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-topo"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo"));
+  await page.click('.main-nav button[data-place="home"]');
+  const twoCard = '[data-testid="home-group-connections"] .group-connection-row[data-group="mf-two"]';
+  await page.waitForSelector(`${twoCard} button[data-action="open-group"]`, { visible: true });
+  const readsBeforeOpen = topologyCalls.length;
+  connectDelay = 1000;
+  await page.click(`${twoCard} button[data-action="open-group"]`);
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-two"),
+    { timeout: 10000 });
+  connectDelay = 0;
+  await waitFor(() => topologyCalls.length > readsBeforeOpen, "Topology read the newly opened group");
+  assert.ok(topologyCalls.slice(readsBeforeOpen).every((c) => c.connection.group_name === "mf-two"),
+    "opening mf-two from Home never read the previous group");
 
   // --- No connection: deleting the saved connection in use leaves an empty
   // connection, and the place shows the usual no-connection state.
