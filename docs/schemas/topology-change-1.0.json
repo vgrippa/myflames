@@ -147,6 +147,13 @@
             "string",
             "null"
           ]
+        },
+        "server_uid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MariaDB MAC-and-port hash, bound with the full server identity and version."
         }
       }
     },
@@ -170,7 +177,8 @@
         "reason",
         "message",
         "audit_id",
-        "duplicate_of"
+        "duplicate_of",
+        "effective_mode"
       ],
       "properties": {
         "profile_id": {
@@ -215,13 +223,33 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "global": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "persisted": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          }
         },
         "effect": {
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "description": "The variables effect object; render its text field."
         },
         "caveats": {
           "type": "array",
@@ -265,6 +293,15 @@
             "string",
             "null"
           ]
+        },
+        "effective_mode": {
+          "enum": [
+            "global",
+            "persist",
+            "persist_only",
+            null
+          ],
+          "description": "Scopes applied on this member; MariaDB persistence requests use global."
         }
       }
     }

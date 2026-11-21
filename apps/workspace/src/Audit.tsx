@@ -80,6 +80,7 @@ function statusOf(r: Pick<AuditRecord, "status" | "outcome">) {
 const OPERATIONS: Record<string, string> = {
   kill: "Kill connection", kill_query: "Kill query",
   set_global: "SET GLOBAL", set_persist: "SET PERSIST", set_persist_only: "SET PERSIST_ONLY",
+  'topology.variable': "Rolling parameter change",
   set_session: "SET SESSION", reset_persist: "RESET PERSIST",
   editor_run: "Query editor run", editor_commit: "Commit", editor_rollback: "Roll back", editor_safe_updates: "Safe updates",
   replication_skip: "Skip this transaction", replication_skip_loop: "Skip until stopped",

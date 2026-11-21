@@ -994,6 +994,57 @@ class TestApply(unittest.TestCase):
             V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=audit)
         self.assertEqual(self.sent(conn), [])
 
+    def test_secret_variable_audit_redacts_statement_target_after_and_message(self):
+        old_secret = 'old-secret-audit-evidence'
+        new_secret = 'new-secret-audit-evidence'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old_secret,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new_secret, 'global')
+        self.assertEqual(plan['status'], 'ready')
+        after = {'global': new_secret, 'global_read': True, 'session': None, 'session_read': False,
+                 'persisted': None, 'persisted_state': {'state': 'unsupported', 'read': False,
+                                                       'present': None, 'value': None},
+                 'engine': variable['engine'], 'server_version': variable['server_version'],
+                 'server_identity': variable['server_identity']}
+        conn = ReplayConn([[TAG + plan['statement'], '']])
+        with mock.patch.object(V, 'read_variable', return_value=variable), \
+                mock.patch.object(V, '_after', return_value=after):
+            result = V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
+        self.assertEqual(result['status'], 'changed')
+        # This regression changes only persisted audit privacy. The shipped
+        # single-server response and the SQL actually sent stay unchanged.
+        self.assertEqual(result['after']['global'], new_secret)
+        self.assertEqual(self.sent(conn), [(TAG + plan['statement'], list(dbops.WRITE_CLIENT_FLAGS))])
+        records = self.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['status'], 'ok')
+        self.assertEqual(records[0]['target']['name'], 'wsrep_sst_auth')
+        text = json.dumps(records)
+        self.assertNotIn(old_secret, text)
+        self.assertNotIn(new_secret, text)
+        self.assertNotIn(new_secret.encode('utf-8').hex(), text)
+        self.assertIn(dbops.REDACTED, text)
+
+    def test_secret_variable_unsent_audit_redacts_reviewed_target_and_statement(self):
+        old_secret = 'old-unsent-audit-secret'
+        new_secret = 'new-unsent-audit-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old_secret,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new_secret, 'global')
+        self.assertEqual(plan['status'], 'ready')
+        conn = ReplayConn([])
+        decision = dbops.decide(dbops.classify(plan['statement']), 'development', True)
+        result = V.apply_change(conn, plan, plan['expect'], decision=decision,
+                                confirmed=True, audit=self.audit('global'))
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.sent(conn), [])
+        records = self.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['outcome'], 'read_only')
+        self.assertEqual(records[0]['target']['name'], 'wsrep_sst_auth')
+        self.assertNotIn(old_secret, json.dumps(records))
+        self.assertNotIn(new_secret, json.dumps(records))
+
     def test_lost_connection_is_unknown_not_an_error(self):
         from myflames.connector import ConnectorError
         conn, plan, _data = plan_from('mysql-8.4', 'global')

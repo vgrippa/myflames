@@ -3641,7 +3641,8 @@ def audit_object_matches(operation, target, engine, kind, key):
     if not isinstance(target, dict):
         return False
     if kind == 'parameter':
-        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist') and
+        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist',
+                              'topology.variable') and
                 target.get('name') == key['name'])
     if kind == 'account':
         from .accounts import _name

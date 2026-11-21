@@ -2102,11 +2102,13 @@ def _topology_variable_response(path, payload, workspace):
     _profiles, current = connection_groups.request_profiles(workspace.store, connection)
     if current is None:
         raise ValueError('This saved connection is outside the current connection group.')
+    topology_change.share_progress(workspace.store, _action_progress(workspace))
     if operation == 'plan':
         if connection.get('read_only') is True:
             raise ValueError('This Group connection is Read-only. No connections were opened.')
         return topology_change.plan(workspace.store, connection['group_name'], current['id'],
-            payload['name'], payload['value'], payload['mode'], payload['member_ids'])
+            payload['name'], payload['value'], payload['mode'], payload['member_ids'],
+            active_endpoint=topology_change._endpoint(current), group_generation=current.get('group_generation'))
     if operation == 'stop':
         return topology_change.stop(workspace.store, payload['progress_id'], connection['group_name'], current['id'])
     audit = dbops.AuditTrail(workspace.store, topology_change.OPERATION, 'ui')
@@ -2774,11 +2776,9 @@ def api_response(path, payload, workspace=None):
         if path in _ACTION_PATHS:
             return _action_response(path, payload, workspace)
         if path == _ACTION_PROGRESS_PATH:
-            result = _action_progress(workspace).get(payload.get("progress_id"))
-            if result['phase'] == 'unknown':
-                from . import topology_change
-                return topology_change.progress(workspace.store, payload.get('progress_id'))
-            return result
+            from . import topology_change
+            return topology_change.share_progress(workspace.store, _action_progress(workspace)).get(
+                payload.get('progress_id'))
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload, workspace=workspace)
         raise ValueError("Unknown workspace operation.")

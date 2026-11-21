@@ -4,9 +4,11 @@ The clients below are synthetic transport boundaries. Store membership,
 secrets, policy, review tokens, variable validation, identity packets and
 audit records are the production implementations, never patched checks.
 """
+import base64
 import copy
 import json
 import re
+import threading
 import types
 import unittest
 from email.message import Message
@@ -43,6 +45,7 @@ class MemberClient(object):
                                   gtid_mode='ON', gtid_executed='', persisted_globals_load='ON')
         else:
             self.variables['gtid_current_pos'] = ''
+            self.variables['server_uid'] = base64.b64encode(bytes([index + 1]) * 20).decode('ascii')
         if role:
             self.variables.update(group_replication_group_name=UUIDS[6],
                                   group_replication_single_primary_mode='ON')
@@ -66,6 +69,8 @@ class MemberClient(object):
         self.closed = 0
         self.metadata = {'source': 'COMPILED', 'path': '', 'min': '1', 'max': '100000'}
         self.catalog_read_only = False
+        self.catalog_type = 'BIGINT UNSIGNED'
+        self.show_hidden_variables = set()
         self.proxy = None
 
     def _guard(self):
@@ -96,6 +101,12 @@ class MemberClient(object):
                           wsrep_provider=self.variables['wsrep_provider'])
         return result
 
+    def rolling_identity(self):
+        identity = dict(self.identity(), version=self.variables['version'])
+        if self.is_mariadb():
+            identity['server_uid'] = self.variables['server_uid']
+        return identity
+
     @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         if self.before_read:
@@ -104,6 +115,17 @@ class MemberClient(object):
         self.calls.append(sql)
         if self.read_error:
             raise connector.ConnectorError(self.read_error)
+        # Rolling reads keep their identity predicate in the same packet as
+        # the evidence prefix. A changed server refuses before any body read.
+        prefixed = re.match(r'^(DELIMITER [^\n]+\n)(SET @myflames_target = [^\n]+?;)[ \n]+', sql)
+        if prefixed:
+            identity = {key: self.variables[key] for key in
+                        ('server_uid', 'server_id', 'hostname', 'port', 'version')}
+            expected = {topology_change._session_guard('mariadb', item)[0]
+                        for item in (identity, self.rolling_identity())}
+            if prefixed.group(2) not in expected:
+                raise connector.ConnectorError('ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+            sql = prefixed.group(1) + sql[prefixed.end():]
         values = dict(self.variables, **self.status)
         evidence = answer_evidence(sql, extra_flags, timeout, self._plain, values)
         return evidence if evidence is not None else self._plain(sql, extra_flags, timeout)
@@ -133,6 +155,8 @@ class MemberClient(object):
             return ['@@version_comment'], [[self.variables['version_comment']]]
         if lower == 'select @@version':
             return ['@@version'], [[self.variables['version']]]
+        if lower == 'select @@global.server_uid':
+            return ['@@global.server_uid'], [[self.variables['server_uid']]]
         if lower in ('select @@global.gtid_executed', 'select @@global.gtid_current_pos'):
             if self.gtid_error:
                 raise connector.ConnectorError(self.gtid_error)
@@ -145,7 +169,8 @@ class MemberClient(object):
         if lower.startswith('show global variables') or lower.startswith('show session variables'):
             names = re.findall(r"'([^']+)'", text)
             return ['Variable_name', 'Value'], [[name, self.variables[name]] for name in names
-                if name in self.variables and name not in ('gtid_executed', 'gtid_current_pos')]
+                if name in self.variables and name not in ('gtid_executed', 'gtid_current_pos') and
+                (not lower.startswith('show global variables') or name not in self.show_hidden_variables)]
         if lower.startswith('show global status'):
             names = re.findall(r"'([^']+)'", text)
             return ['Variable_name', 'Value'], [[name, self.status[name]] for name in names if name in self.status]
@@ -173,7 +198,7 @@ class MemberClient(object):
             if name not in self.variables:
                 return [], []
             return [], [[name.upper(), None, self.variables[name], 'COMPILE-TIME', '151',
-                'GLOBAL', 'BIGINT UNSIGNED', '1', '100000', '1', None,
+                'GLOBAL', self.catalog_type, '1', '100000', '1', None,
                 'YES' if self.catalog_read_only else 'NO', None, '', 'REQUIRED']]
         if lower == 'show grants':
             return ['Grants'], [["GRANT ALL PRIVILEGES ON *.* TO 'dba'@'%'"]]
@@ -189,7 +214,8 @@ class MemberClient(object):
             self.before_write(sql)
         self._guard()
         packets = guarded_packets(sql)
-        expected = dbops.target_session_guard('mariadb' if self.is_mariadb() else 'mysql', self.identity())[0]
+        engine = 'mariadb' if self.is_mariadb() else 'mysql'
+        expected = topology_change._session_guard(engine, self.rolling_identity())[0]
         for guard, body, line in packets:
             if guard != expected:
                 raise connector.ConnectorError('ERROR 1242 (21000) at line %d: Subquery returns more than 1 row' % line)
@@ -396,6 +422,201 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(plan['members'][0]['status'], 'unchanged')
         self.assertIsNone(plan['members'][0]['statement'])
 
+    def test_unchanged_member_value_changed_before_its_turn_refuses(self):
+        self.client(1).variables['max_connections'] = '300'
+        plan = self.plan()
+        self.assertEqual(plan['members'][1]['status'], 'unchanged')
+        self.client(0).after_write = lambda sql: self.client(1).variables.update(max_connections='301')
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'partial', result)
+        self.assertEqual(self.statuses(result), {'member-1': 'applied', 'member-2': 'refused', 'member-3': 'not_sent'})
+        self.assertEqual(self.written_ids(), ['member-1'])
+        self.assertNotIn('already set', result['members'][1]['message'])
+
+    def test_unchanged_persist_member_rereads_persisted_scope(self):
+        self.client(0).variables['max_connections'] = '300'
+        self.client(0).persisted['max_connections'] = '300'
+        plan = self.plan(mode='persist', member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'unchanged')
+        self.client(0).persisted['max_connections'] = '301'
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_unchanged_member_identity_and_role_still_bound(self):
+        for field in ('identity', 'role'):
+            with self.subTest(field=field):
+                self.client(0).variables['server_uuid'] = UUIDS[0]
+                self.client(0).role = None
+                self.client(0).variables['max_connections'] = '300'
+                plan = self.plan(member_ids=['member-1'])
+                self.assertEqual(plan['members'][0]['status'], 'unchanged')
+                if field == 'identity':
+                    self.client(0).variables['server_uuid'] = UUIDS[4]
+                else:
+                    self.client(0).role = 'primary'
+                    self.client(0).variables.update(group_replication_group_name=UUIDS[6],
+                                                   group_replication_single_primary_mode='ON')
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['members'][0]['status'], 'refused')
+                self.assertEqual(self.written_ids(), [])
+
+    def test_default_refused_before_password_lookup(self):
+        for value in ('DEFAULT', 'default', 'DeFaUlT'):
+            with self.subTest(value=value), mock.patch.object(self.store, 'connection_with_saved_password',
+                    wraps=self.store.connection_with_saved_password) as password:
+                with self.assertRaisesRegex(ValueError,
+                        'DEFAULT cannot be verified across servers; set an explicit value.'):
+                    self.plan(value=value)
+                password.assert_not_called()
+        self.assertEqual(self.opened, [])
+
+    def test_secret_variables_refused_before_password_lookup(self):
+        from myflames.param_compare import sensitive
+        for name in ('wsrep_sst_auth', 'report_password', 's3_secret_key'):
+            with self.subTest(name=name), mock.patch.object(self.store, 'connection_with_saved_password',
+                    wraps=self.store.connection_with_saved_password) as password:
+                self.assertTrue(sensitive(name))
+                with self.assertRaisesRegex(ValueError, '(?i)secret|sensitive|credential') as refused:
+                    self.plan(name=name, value='never-store-this-secret')
+                self.assertNotIn('never-store-this-secret', str(refused.exception))
+                password.assert_not_called()
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.records(), [])
+        self.assertFalse(topology_change._registry(self.store).plans)
+
+    def test_source_width_value_refused_with_truncation_reason(self):
+        for engine, cap in (('mysql', 1024), ('mariadb', 4096)):
+            with self.subTest(engine=engine):
+                self.clients[self.profiles[0]['host']] = MemberClient(0, engine)
+                self.client(0).variables['max_connections'] = '1' * cap
+                plan = self.plan(member_ids=['member-1'])
+                member = plan['members'][0]
+                self.assertEqual(member['status'], 'refused', plan)
+                self.assertRegex(member['reason'].lower(), 'truncat|source.*(cap|limit)|length.*(cap|limit)')
+                self.assertIsNone(member['statement'])
+                self.assertEqual(self.apply(plan)['status'], 'refused')
+                self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_catalog_fallback_at_2048_characters_refuses_review(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        self.client(0).catalog_type = 'VARCHAR'
+        self.client(0).variables['init_connect'] = 'x' * 2048
+        self.client(0).show_hidden_variables.add('init_connect')
+        plan = self.plan(name='init_connect', value='SELECT 1', member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+        self.assertIn('truncat', plan['members'][0]['reason'].lower())
+        self.assertIsNone(plan['members'][0]['statement'])
+        self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_complete_show_value_at_2048_characters_can_be_reviewed(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        self.client(0).catalog_type = 'VARCHAR'
+        self.client(0).variables['init_connect'] = 'x' * 2048
+        plan = self.plan(name='init_connect', value='SELECT 1', member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'planned', plan)
+        self.assertEqual(plan['members'][0]['statement'], "SET GLOBAL init_connect = 'SELECT 1'")
+        self.assertEqual(plan['members'][0]['after'], {'global': 'SELECT 1'})
+        self.assertEqual(self.written_ids(), [])
+
+    def test_plan_deadline_includes_saved_password_lookup(self):
+        now = [1000.0]
+        original = self.store.connection_with_saved_password
+
+        def slow_password(connection, **kwargs):
+            value = original(connection, **kwargs)
+            now[0] += topology_change.topology_group.REQUEST_SECONDS
+            return value
+
+        with mock.patch.object(topology_change.time, 'monotonic', side_effect=lambda: now[0]), \
+                mock.patch.object(self.store, 'connection_with_saved_password', side_effect=slow_password):
+            plan = self.plan(member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+        self.assertRegex(plan['members'][0]['reason'].lower(), 'time|budget|deadline')
+        self.assertEqual(self.client(0).calls, [], 'No query may log in after the password lookup uses the budget.')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_plan_requires_a_full_query_window_after_transport_setup(self):
+        now = [1000.0]
+        original_enter = MemberClient.__enter__
+
+        def slow_transport(client):
+            now[0] += topology_change.topology_group.REQUEST_SECONDS - topology_change.topology_group.QUERY_SECONDS + 0.1
+            return original_enter(client)
+
+        with mock.patch.object(topology_change.time, 'monotonic', side_effect=lambda: now[0]), \
+                mock.patch.object(MemberClient, '__enter__', slow_transport):
+            plan = self.plan(member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+        self.assertRegex(plan['members'][0]['reason'].lower(), 'time|budget|deadline')
+        self.assertEqual(self.client(0).calls, [])
+
+    def test_validated_plan_consent_snapshot_cannot_be_replaced_before_planner(self):
+        original = topology_change.plan
+        for changed in ('endpoint', 'generation'):
+            with self.subTest(changed=changed):
+                self.connection = dict(self.request(self.store.get('profile', 'member-1')), group_name='G')
+
+                def change_after_request_validation(*args, **kwargs):
+                    if changed == 'endpoint':
+                        self.change_profile(0, host='unreviewed.example')
+                    else:
+                        self.store.delete_connection_group('G')
+                        self.store.save_connection_group('G', [p['id'] for p in self.profiles])
+                    return original(*args, **kwargs)
+
+                with mock.patch.object(topology_change, 'plan', side_effect=change_after_request_validation), \
+                        mock.patch.object(self.store, 'connection_with_saved_password',
+                                          wraps=self.store.connection_with_saved_password) as password:
+                    with self.assertRaisesRegex(ValueError, '(?i)changed|connection|group'):
+                        self.plan()
+                    password.assert_not_called()
+                self.change_profile(0, host=self.profiles[0]['host'])
+        self.assertEqual(self.opened, [])
+
+    def test_plan_consent_rechecked_after_password_lookup_before_login(self):
+        original = self.store.connection_with_saved_password
+        changed = [False]
+
+        def recreate_group_after_password(connection, **kwargs):
+            result = original(connection, **kwargs)
+            if not changed[0]:
+                changed[0] = True
+                self.store.delete_connection_group('G')
+                self.store.save_connection_group('G', [p['id'] for p in self.profiles])
+            return result
+
+        with mock.patch.object(self.store, 'connection_with_saved_password', side_effect=recreate_group_after_password):
+            with self.assertRaisesRegex(ValueError, '(?i)changed|connection|group'):
+                self.plan()
+        self.assertTrue(changed[0])
+        self.assertTrue(all(client.calls == [] for client in self.clients.values()))
+        self.assertEqual(self.written_ids(), [])
+
+    def test_effective_modes_and_scopes_for_mixed_engines(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        for mode in ('global', 'persist', 'persist_only'):
+            with self.subTest(mode=mode):
+                plan = self.plan(mode=mode, value={'global': '301', 'persist': '302', 'persist_only': '303'}[mode])
+                expected = {'member-1': ('global', {'global'}),
+                            'member-2': (mode, {'global', 'persisted'} if mode == 'persist' else
+                                         {'persisted'} if mode == 'persist_only' else {'global'}),
+                            'member-3': (mode, {'global', 'persisted'} if mode == 'persist' else
+                                         {'persisted'} if mode == 'persist_only' else {'global'})}
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'applied', result)
+                for document in (plan, result):
+                    for member in document['members']:
+                        effective, scopes = expected[member['profile_id']]
+                        self.assertEqual(member['effective_mode'], effective)
+                        self.assertEqual(set(member['after']), scopes)
+                        self.assertIsInstance(member['effect'], dict)
+                        self.assertTrue(member['effect']['text'])
+                for value, schema in ((plan, 'topology-change-plan-1.0.json'), (result, 'topology-change-1.0.json')):
+                    validate(value, json.loads((ROOT / 'docs' / 'schemas' / schema).read_text(encoding='utf-8')))
+
     def test_invalid_member_plan_is_listed_and_stops_before_later_members(self):
         self.client(1).variables.pop('max_connections')
         plan = self.plan()
@@ -493,29 +714,148 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(self.apply(plan)['status'], 'refused')
         self.assertEqual(self.written_ids(), [])
 
-    def test_mariadb_duplicates_require_server_id_hostname_and_port(self):
+    def test_mariadb_duplicates_require_uid_version_and_local_identity(self):
         for index in range(3):
             self.clients[self.profiles[index]['host']] = MemberClient(index, 'mariadb')
         original = self.client(0).variables
         for key in ('server_id', 'hostname', 'port'):
             self.client(1).variables[key] = original[key]
-        # Version is metadata, not a discriminator for duplicate destinations.
-        self.client(1).variables['version'] = '11.4.8-MariaDB'
         self.client(2).variables['server_id'] = original['server_id']
+        plan = self.plan()
+        self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+        # Containers can have the same server_id, hostname and port. Their
+        # independent network identities still distinguish the two servers.
+        self.client(1).variables['server_uid'] = original['server_uid']
         plan = self.plan()
         self.assertEqual([m['status'] for m in plan['members']], ['planned', 'refused', 'planned'], plan)
         self.assertEqual(plan['members'][1]['duplicate_of'], 'member-1')
         self.assertEqual(self.apply(plan)['status'], 'refused')
         self.assertEqual(self.written_ids(), [])
-        self.client(1).variables['port'] = '3307'
+        self.client(1).variables['version'] = '11.4.8-MariaDB'
         plan = self.plan()
         self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
         self.assertEqual(self.apply(plan)['status'], 'applied')
 
-    def test_galera_duplicate_identity_is_node_uuid(self):
+    def test_mariadb_uid_and_version_bound_in_review_and_write_packet(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        plan = self.plan(member_ids=['member-1'])
+        identity = plan['members'][0]['identity']
+        self.assertEqual(identity['server_uid'], self.client(0).variables['server_uid'])
+        self.assertEqual(identity['version'], self.client(0).variables['version'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+        guard = guarded_packets(self.client(0).writes[0])[0][0]
+        self.assertIn('@@global.server_uid', guard.lower())
+        self.assertIn(identity['server_uid'].encode('utf-8').hex(), guard)
+        self.assertIn('version', guard.lower())
+        self.assertIn(identity['version'].encode('utf-8').hex(), guard)
+
+    def test_mariadb_uid_or_version_change_after_review_refuses(self):
+        for field, changed in (('server_uid', base64.b64encode(b'z' * 20).decode('ascii')),
+                               ('version', '11.4.10-MariaDB')):
+            with self.subTest(field=field):
+                self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+                plan = self.plan(member_ids=['member-1'])
+                self.client(0).variables[field] = changed
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_uid_change_at_write_login_is_refused_by_packet_guard(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        plan = self.plan(member_ids=['member-1'])
+        self.client(0).before_write = lambda sql: self.client(0).variables.update(
+            server_uid=base64.b64encode(b'z' * 20).decode('ascii'))
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(self.records()[0]['status'], 'refused')
+
+    def test_mariadb_server_id_change_verifies_after_with_reviewed_new_identity(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        plan = self.plan(name='server_id', value='11', member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'planned', plan)
+        self.assertEqual(plan['members'][0]['identity']['server_id'], '1')
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual(result['members'][0]['status'], 'applied')
+        self.assertEqual(result['members'][0]['after'], {'global': '11'})
+        self.assertEqual(self.client(0).variables['server_id'], '11')
+        self.assertEqual(len(self.client(0).writes), 1)
+        guard, body, _line = guarded_packets(self.client(0).writes[0])[0]
+        self.assertIn('@@global.server_id <> 1', guard)
+        self.assertNotIn('@@global.server_id <> 11', guard)
+        self.assertIn('SET GLOBAL server_id = 11', body)
+        records = self.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['status'], 'ok')
+        self.assertEqual(records[0]['target']['identity']['server_id'], '1')
+        self.assertTrue(any('@@global.server_id <> 1' in statement for statement in records[0]['statements']))
+
+    def test_missing_or_unknown_mariadb_uid_refuses_review(self):
+        for uid in (None, '', 'unknown', 'not-a-base64-sha1'):
+            with self.subTest(uid=uid):
+                self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+                if uid is None:
+                    self.client(0).variables.pop('server_uid')
+                else:
+                    self.client(0).variables['server_uid'] = uid
+                plan = self.plan(member_ids=['member-1'])
+                self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+                self.assertIsNone(plan['members'][0]['statement'])
+                self.assertEqual(self.written_ids(), [])
+
+    def test_mixed_gr_and_chained_async_constraints_share_one_order(self):
+        for index, role in ((0, 'primary'), (1, 'secondary')):
+            self.client(index).role = role
+            self.client(index).variables.update(group_replication_group_name=UUIDS[6],
+                                               group_replication_single_primary_mode='ON')
+        profile = self.save('member-4', 'G', type='development')
+        self.profiles.append(profile)
+        self.clients[profile['host']] = MemberClient(3)
+        for index, source in ((2, 0), (3, 2)):
+            self.client(index).channels = [dict(Channel_Name='', Source_Host=self.profiles[source]['host'],
+                Source_Port='3306', Source_UUID=UUIDS[source], Source_Server_Id=str(source + 1),
+                Replica_IO_Running='Yes', Replica_SQL_Running='Yes', Seconds_Behind_Source='0')]
+        self.client(0).replicas = [['3', self.profiles[2]['host'], '3306']]
+        self.client(2).replicas = [['4', self.profiles[3]['host'], '3306']]
+        plan = self.plan()
+        order = [member['profile_id'] for member in plan['members']]
+        self.assertLess(order.index('member-4'), order.index('member-3'))
+        self.assertLess(order.index('member-3'), order.index('member-1'))
+        self.assertLess(order.index('member-2'), order.index('member-1'))
+        self.assertIn('replica', plan['order_rule'].lower())
+        self.assertIn('primary', plan['order_rule'].lower())
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_conflicting_gr_and_async_constraints_refuse_review(self):
+        self.make_gr()
+        self.client(0).channels = [dict(Channel_Name='external', Source_Host=self.profiles[1]['host'],
+            Source_Port='3306', Source_UUID=UUIDS[1], Source_Server_Id='2',
+            Replica_IO_Running='Yes', Replica_SQL_Running='Yes', Seconds_Behind_Source='0')]
+        with self.assertRaisesRegex(ValueError, '(?i)order|cycle|conflict'):
+            self.plan()
+        self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_server_id_order_evidence_is_explicit(self):
+        for index in range(3):
+            self.clients[self.profiles[index]['host']] = MemberClient(index, 'mariadb')
+        self.client(1).channels = [dict(Connection_name='', Master_Host='reported-source-alias',
+            Master_Port='3306', Master_Server_Id='1', Slave_IO_Running='Yes',
+            Slave_SQL_Running='Yes', Seconds_Behind_Master='0')]
+        self.client(0).replicas = [['2', self.profiles[1]['host'], '3306']]
+        plan = self.plan(member_ids=['member-1', 'member-2'])
+        self.assertEqual([m['profile_id'] for m in plan['members']], ['member-2', 'member-1'])
+        self.assertIn('MariaDB sources matched by server ID', plan['order_rule'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_galera_duplicate_identity_includes_node_uuid_and_instance(self):
         for index, node in enumerate(('alpha', 'beta', 'gamma')):
             self.clients[self.profiles[index]['host']] = MemberClient(index, 'mariadb', node_name=node)
         self.client(1).status['wsrep_gcomm_uuid'] = self.client(0).status['wsrep_gcomm_uuid'].upper()
+        plan = self.plan()
+        self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+        for key in ('server_uid', 'server_id', 'hostname', 'port', 'version'):
+            self.client(1).variables[key] = self.client(0).variables[key]
         plan = self.plan()
         self.assertEqual([m['status'] for m in plan['members']], ['planned', 'refused', 'planned'], plan)
         self.assertEqual(plan['members'][1]['duplicate_of'], 'member-1')
@@ -637,13 +977,288 @@ class TopologyChangeTests(GroupCase):
         plan = self.plan()
         self.assertEqual(self.apply(plan)['status'], 'applied')
         written = sum(len(client.writes) for client in self.clients.values())
-        try:
-            result = self.apply(plan)
-        except ValueError:
-            pass
-        else:
-            self.assertIn(result['status'], ('refused', 'stale'))
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'stale', result)
         self.assertEqual(sum(len(client.writes) for client in self.clients.values()), written)
+
+    def test_refusal_before_first_send_still_uses_review(self):
+        plan = self.plan()
+        self.client(0).variables['max_connections'] = '200'
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.written_ids(), [])
+        registry = topology_change._registry(self.store)
+        self.assertNotIn(plan['plan_id'], registry.plans)
+        self.assertNotIn(plan['plan_id'], registry.tokens.entries)
+        self.client(0).variables['max_connections'] = '151'
+        self.assertEqual(self.apply(plan)['status'], 'stale')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_concurrent_apply_cannot_start_second_run_for_one_review(self):
+        plan = self.plan()
+        checking, release, finished = threading.Event(), threading.Event(), threading.Event()
+        answers, errors = {}, []
+
+        def hold_first_read(sql):
+            if not checking.is_set():
+                checking.set()
+                if not release.wait(5):
+                    raise AssertionError('Concurrent apply did not release its first read.')
+
+        def applying(label, progress_id):
+            try:
+                answers[label] = self.apply(plan, progress_id=progress_id)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                if label == 'second':
+                    finished.set()
+
+        self.client(0).before_read = hold_first_read
+        first = threading.Thread(target=applying, args=('first', 'concurrent-first-progress'))
+        second = threading.Thread(target=applying, args=('second', 'concurrent-second-progress'))
+        first.start()
+        try:
+            self.assertTrue(checking.wait(5), 'The first apply did not reach its member read.')
+            second.start()
+            self.assertTrue(finished.wait(5), 'The replay waited for a member write instead of refusing.')
+        finally:
+            release.set()
+            first.join(5)
+            if second.ident is not None:
+                second.join(5)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(answers['second']['status'], 'stale', answers)
+        self.assertEqual(answers['first']['status'], 'applied', answers)
+        self.assertTrue(all(len(client.writes) == 1 for client in self.clients.values()))
+
+    def test_policy_changed_outcome_survives_preflight_refusal(self):
+        plan = self.plan()
+        self.change_profile(2, type='production')
+        opened = len(self.opened)
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual({row['outcome'] for row in self.records()}, {'policy_changed'})
+        self.assertEqual(self.written_ids(), [])
+
+    def test_action_owned_progress_id_refuses_roll_without_consuming_review(self):
+        plan = self.plan()
+        progress_id = 'action-owned-progress-0001'
+        ordinary = ui._action_progress(self.workspace).start(progress_id, 2)
+        ordinary.set('checking', ['waiting', 'waiting'])
+        opened = len(self.opened)
+        result = self.apply(plan, progress_id=progress_id)
+        self.assertIn(result['status'], ('stale', 'refused'), result)
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.written_ids(), [])
+        snapshot = ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)
+        self.assertEqual(snapshot['states'], ['waiting', 'waiting'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_progress_is_published_atomically_with_stop_handle(self):
+        plan = self.plan()
+        progress_id = 'atomic-published-progress-01'
+        registry = topology_change._registry(self.store)
+        started, observed = threading.Event(), threading.Event()
+        answers, failures, observers = [], [], []
+        original = registry.progress.start_member
+
+        def observe_then_stop():
+            started.set()
+            try:
+                answers.append(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace))
+                answers.append(ui.api_response(STOP_PATH,
+                    dict(connection=self.connection, progress_id=progress_id), self.workspace))
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                observed.set()
+
+        def publish(progress_id, count, timeout=None):
+            progress = original(progress_id, count, timeout)
+            observer = threading.Thread(target=observe_then_stop)
+            observers.append(observer)
+            observer.start()
+            self.assertTrue(started.wait(2))
+            self.assertFalse(observed.wait(0.1), 'Progress escaped before its Stop handle was published.')
+            return progress
+
+        try:
+            with mock.patch.object(registry.progress, 'start_member', side_effect=publish):
+                self.apply(plan, progress_id=progress_id)
+        finally:
+            for observer in observers:
+                observer.join(5)
+        self.assertTrue(all(not observer.is_alive() for observer in observers))
+        self.assertEqual(failures, [])
+        self.assertTrue(observed.is_set())
+        self.assertNotEqual(answers[0]['phase'], 'unknown')
+        self.assertIn(answers[1]['status'], ('stopping', 'finished'))
+
+    def test_rolling_progress_id_cannot_be_reused_by_ordinary_action(self):
+        plan = self.plan()
+        progress_id = 'rolling-owned-progress-01'
+        observations = []
+
+        def try_action_reuse(sql):
+            observations.append(ui._action_progress(self.workspace).start(progress_id, 8))
+            observations.append(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace))
+
+        self.client(0).before_write = try_action_reuse
+        self.assertEqual(self.apply(plan, progress_id=progress_id)['status'], 'applied')
+        self.assertIsNone(observations[0])
+        self.assertEqual(observations[1]['profile_id'], 'member-1')
+        self.assertEqual(observations[1]['states'], ['sent', 'waiting', 'waiting'])
+
+    def test_active_progress_and_stop_handle_survive_finished_run_eviction(self):
+        plan = self.plan(member_ids=['member-1'])
+        progress_id = 'active-rolling-progress-0001'
+        registry = topology_change._registry(self.store)
+        registry.progress.LIMIT = 2
+        observed = []
+
+        def fill_finished_runs(sql):
+            for value in ('301', '302', '303'):
+                nested = self.plan(value=value, member_ids=['member-2'])
+                self.assertEqual(self.apply(nested)['status'], 'applied')
+            observed.append(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace))
+            observed.append(ui.api_response(STOP_PATH,
+                dict(connection=self.connection, progress_id=progress_id), self.workspace))
+
+        self.client(0).before_write = fill_finished_runs
+        self.apply(plan, progress_id=progress_id)
+        self.assertEqual(observed[0]['phase'], 'sending')
+        self.assertEqual(observed[0]['profile_id'], 'member-1')
+        self.assertEqual(observed[1]['status'], 'stopping')
+        self.assertEqual(len(self.client(0).writes), 1)
+
+    def test_run_owned_progress_id_cannot_be_reused_when_snapshot_is_missing(self):
+        plan = self.plan(member_ids=['member-1'])
+        progress_id = 'retained-run-progress-0001'
+        registry = topology_change._registry(self.store)
+        observed = []
+
+        def try_reuse_while_active(sql):
+            with registry.progress._lock:
+                registry.progress._items.pop(progress_id, None)
+            another = self.plan(value='301', member_ids=['member-2'])
+            observed.append(another)
+            observed.append(self.apply(another, progress_id=progress_id))
+
+        self.client(0).before_write = try_reuse_while_active
+        self.assertEqual(self.apply(plan, progress_id=progress_id)['status'], 'applied')
+        self.assertIn(observed[1]['status'], ('stale', 'refused'), observed)
+        self.assertEqual(self.client(1).writes, [])
+        self.assertEqual(self.apply(observed[0])['status'], 'applied')
+
+    def test_stop_from_another_current_member_of_same_group(self):
+        plan = self.plan()
+        progress_id = 'refreshed-group-progress-01'
+        refreshed = dict(self.request(self.profiles[2]), group_name='G')
+        answers = []
+
+        def stop_from_refreshed_connection(sql):
+            answers.append(ui.api_response(STOP_PATH,
+                dict(connection=refreshed, progress_id=progress_id), self.workspace))
+
+        self.client(0).before_write = stop_from_refreshed_connection
+        result = self.apply(plan, progress_id=progress_id)
+        self.assertEqual(answers[0]['status'], 'stopping')
+        self.assertEqual(result['status'], 'stopped', result)
+        self.assertEqual(self.written_ids(), ['member-1'])
+
+    def test_pre_send_recheck_timeout_is_one_unsent_refusal(self):
+        plan = self.plan()
+        progress_id = 'recheck-timeout-progress-01'
+
+        def timeout_after_pending(sql):
+            if any(record['status'] == 'pending' for record in self.records()):
+                raise connector.ConnectorError('The query timed out after 10 seconds.')
+
+        self.client(0).before_read = timeout_after_pending
+        result = self.apply(plan, progress_id=progress_id)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+        records = self.records()
+        self.assertEqual(len(records), 3)
+        self.assertTrue(all(record['status'] == 'refused' for record in records), records)
+        self.assertNotIn('may have run', json.dumps([result, records]))
+        self.assertEqual(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)['states'],
+                         ['not_sent', 'not_sent', 'not_sent'])
+
+    def test_dependency_login_refusal_at_send_boundary_is_one_unsent_record(self):
+        self.make_async()
+        plan = self.plan(member_ids=['member-3'])
+
+        def refuse_dependency(**options):
+            if options['host'] == self.profiles[1]['host'] and any(
+                    record['status'] == 'pending' for record in self.records()):
+                raise connector.ConnectorError('ERROR 1045 (28000): synthetic login denied')
+            return self.factory(**options)
+
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=refuse_dependency):
+            result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+        records = self.records()
+        self.assertEqual(len(records), 1, records)
+        self.assertEqual(records[0]['status'], 'refused')
+        self.assertNotIn('may have run', json.dumps([result, records]))
+
+    def test_write_login_failure_is_refused_without_unknown_wording(self):
+        for code in (2002, 2003, 1045):
+            with self.subTest(code=code):
+                plan = self.plan(member_ids=['member-1'])
+
+                def fail_login(sql):
+                    raise connector.ConnectorError('ERROR %d: synthetic login failure' % code)
+
+                self.client(0).before_write = fail_login
+                before = {record['id'] for record in self.records()}
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['members'][0]['status'], 'refused')
+                records = [record for record in self.records() if record['id'] not in before]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]['status'], 'refused', records)
+                self.assertNotIn('may have run', json.dumps([result, records]))
+                self.assertNotIn('server returned error', json.dumps([result, records]))
+                self.assertEqual(self.written_ids(), [])
+
+    def test_lost_connection_after_send_says_statement_may_have_run(self):
+        for error in ('ERROR 2013 (HY000): Lost connection during query',
+                      'The query timed out after 30 seconds.'):
+            with self.subTest(error=error):
+                plan = self.plan(member_ids=['member-1'])
+                self.client(0).write_error = error
+                before = {record['id'] for record in self.records()}
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'partial', result)
+                self.assertEqual(result['members'][0]['status'], 'unknown', result)
+                self.assertIn('may have run', result['members'][0]['message'])
+                self.assertNotIn('server returned error', result['members'][0]['message'])
+                records = [record for record in self.records() if record['id'] not in before]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]['status'], 'unknown')
+                self.assertIn('may have run', records[0]['message'])
+
+    def test_parameter_audit_history_finds_rolling_record_by_name(self):
+        plan = self.plan(mode='persist', member_ids=['member-1'])
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'applied')
+        server = '%s:%s' % (self.profiles[0]['host'], self.profiles[0]['port'])
+        records = dbops.audit_object_report(self.store, server, 'parameter', 'max_connections')['records']
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['id'], result['audit_ids'][0])
+        self.assertEqual(records[0]['operation'], 'topology.variable')
+        self.assertEqual(records[0]['target']['name'], 'max_connections')
+        self.assertEqual(records[0]['target']['mode'], 'persist')
+        self.assertEqual(dbops.audit_object_report(self.store, server, 'parameter', 'max_connect_errors')['records'], [])
 
     def test_deleted_and_recreated_group_refuses_old_generation(self):
         plan = self.plan()
