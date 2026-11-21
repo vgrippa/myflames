@@ -8791,8 +8791,11 @@ logs in.
   `SET PASSWORD` clauses linearly. URL matching starts at the beginning of a
   scheme-character run containing a letter, including numeric or punctuation
   prefixes; parameter values allow quotes in userinfo while SQL/audit text
-  keeps quote boundaries. SET PASSWORD scans quoted names and comments as
-  opaque tokens to the first bare assignment, including in SQL diagnostics.
+  keeps quote boundaries. SET PASSWORD unions three linear scans of the same
+  input: the lexical walk from the start, an unbounded first-separator scan,
+  and a keyword-anchored lexical walk, covering SQL diagnostics, unmatched
+  preceding quotes and executable comments; the latter two scans leave empty
+  literals alone.
 
 **Workspace place (`TopologyPlace.tsx`, `TopologyMap.tsx`,
 `RollingChangeSheet.tsx`, `rollingRuns.ts`, `GroupDriftTable.tsx`,

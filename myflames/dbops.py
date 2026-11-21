@@ -53,6 +53,7 @@ import csv
 import datetime
 import functools
 import getpass
+import heapq
 import io
 import json
 import re
@@ -3313,8 +3314,8 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
-    # ALTER USER ... IDENTIFIED BY 'new' or RANDOM PASSWORD REPLACE 'current'.
-    r"((?:\bRANDOM\s+PASSWORD|\[redacted\]['\"])\s+REPLACE\s+)",
+    # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
+    r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
 # Quotes and comments consume their whole span, including an unfinished
 # tail, before recognizing commands. Start at the beginning of the text so
@@ -3323,6 +3324,11 @@ _SET_PASSWORD_PART = re.compile(
     _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
     r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|(?P<command>\bSET\s+PASSWORD\b)|[=;]", re.I)
 _SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
+_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+_SET_PASSWORD_SEPARATOR = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
+_SET_PASSWORD_FROM_KEYWORD = re.compile(
+    _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
+    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
 _URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
 _URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
 _URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`@]")
@@ -3379,6 +3385,83 @@ def _redact_set_password(text):
     return ''.join(parts) + text[kept:] if parts else text
 
 
+def _set_password_lexical_spans(text):
+    """Keep the lexical helper's decisions as spans in the original text."""
+    pending = False
+    for token in _SET_PASSWORD_PART.finditer(text):
+        if token.lastgroup == 'command':
+            pending = True
+        elif token.group() == ';':
+            pending = False
+        elif pending and token.group() == '=':
+            pending = False
+            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+            if literal is not None:
+                yield literal.start(2), literal.end(2)
+
+
+def _set_password_separator_spans(text):
+    """Cover diagnostic and executable-comment assignments without a length cap."""
+    pending, kept = False, 0
+    for token in _SET_PASSWORD_SEPARATOR.finditer(text):
+        if token.start() < kept:
+            continue
+        value = token.group()
+        if value == ';':
+            pending = False
+        elif value == '=':
+            if pending:
+                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
+                    yield literal.start(2), literal.end(2)
+                    kept = literal.end()
+            pending = False
+        else:
+            pending = True
+
+
+def _set_password_keyword_spans(text):
+    """Lex from a keyword even when preceding prose has unmatched quotes."""
+    cursor = 0
+    while cursor < len(text):
+        command = _SET_PASSWORD_KEYWORD.search(text, cursor)
+        if command is None:
+            return
+        cursor = len(text)
+        for token in _SET_PASSWORD_FROM_KEYWORD.finditer(text, command.end()):
+            if token.group() not in ('=', ';'):
+                continue
+            cursor = token.end()
+            if token.group() == '=':
+                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
+                    yield literal.start(2), literal.end(2)
+                    cursor = literal.end()
+            break
+
+
+def _redact_set_password_all(text):
+    """Redact the union of three linear scans over the same original input.
+
+    SQL, malformed diagnostics and executable comments need different quote
+    contexts. Sequential substitutions would change the later scans' context.
+    Each scan yields ordered spans, so merging three streams stays linear;
+    overlapping literals consume their whole union without exposing a tail.
+    """
+    spans = heapq.merge(_set_password_lexical_spans(text),
+                        _set_password_separator_spans(text),
+                        _set_password_keyword_spans(text))
+    parts, kept = [], 0
+    for start, end in spans:
+        if start < kept:
+            kept = max(kept, end)
+            continue
+        quote = text[start]
+        parts.extend((text[kept:start], quote, REDACTED, quote))
+        kept = end
+    return ''.join(parts) + text[kept:] if parts else text
+
+
 def redact(text, password=None):
     """*text* with secrets replaced by ``[redacted]``: the literals after
     IDENTIFIED BY / AS / USING, PASSWORD('...'), SET PASSWORD, SOURCE_PASSWORD,
@@ -3394,7 +3477,7 @@ def redact(text, password=None):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
-    text = _redact_set_password(text)
+    text = _redact_set_password_all(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0
