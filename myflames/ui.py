@@ -1717,10 +1717,12 @@ def _connect_response(payload, workspace):
 
 def _action_progress(workspace):
     from .reviewed_writes import ProgressRegistry
+    from . import topology_change
     with _ACTION_PROGRESS_LOCK:
         registry = getattr(workspace, "action_progress", None)
         if registry is None:
-            registry = workspace.action_progress = ProgressRegistry()
+            registry = topology_change.share_progress(workspace.store, ProgressRegistry())
+            workspace.action_progress = registry
         return registry
 
 def _active_lifecycle_operations(workspace):
@@ -2000,7 +2002,7 @@ def _variable_apply(payload, workspace):
     confirmed: true); on a read-only connection nothing is opened. Only then
     is the saved password filled. The change is re-planned from a fresh read
     and refused unless it matches ``expect``. Every attempt is audited."""
-    from . import dbops, variables
+    from . import dbops, param_compare, variables
     from .live import connection_options
     from .connector import MySQLConnection
     name = variables.check_name(payload.get("name"))
@@ -2015,6 +2017,8 @@ def _variable_apply(payload, workspace):
                              connection={k: plain.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}, safety=safety,
                              password=plain.get("password") if isinstance(plain.get("password"), str) else None,
                              policy=dbops.policy_summary(decision))
+    if param_compare.sensitive(name):
+        audit = variables._SensitiveAudit(audit)
     request = {"name": name, "mode": mode, "requested": None if mode == "reset_persist" else value}
     if payload.get("declined") is True:
         # Planning can be pending, invalid or failed when a sheet is closed.
@@ -2233,183 +2237,189 @@ def _action_response(path, payload, workspace):
     progress = (_action_progress(workspace).start(payload.get("progress_id"), len(statements), module.ACTION_TIMEOUT)
                 if reviewed is not None else None)
 
-    def make_audit(route, safety, decision):
-        return dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
-                               connection={k: route.get(k) for k in
-                                           ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")},
-                               safety=safety, password=plain.get("password") if isinstance(plain.get("password"), str)
-                               else None, policy=dbops.policy_summary(decision))
-
     try:
-        target_profile = _action_target(payload, plain, kind, workspace.store)
-    except ValueError as exc:
+        def make_audit(route, safety, decision):
+            return dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
+                                   connection={k: route.get(k) for k in
+                                               ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")},
+                                   safety=safety, password=plain.get("password") if isinstance(plain.get("password"), str)
+                                   else None, policy=dbops.policy_summary(decision))
+
+        try:
+            target_profile = _action_target(payload, plain, kind, workspace.store)
+        except ValueError as exc:
+            if planning:
+                raise
+            # Consent can disappear between review and apply. Audit the refusal
+            # before any credentials are read, using the requested saved target.
+            target_id = payload.get("target_profile_id", plain.get("profile_id"))
+            target = workspace.store.get("profile", target_id) if isinstance(target_id, str) and len(target_id) <= 200 else None
+            route = dict(target, group_name=plain.get("group_name")) if isinstance(target, dict) else plain
+            safety = dbops.connection_safety(target, route, store=workspace.store)
+            decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
+                                    safety.get("profile_name"))
+            audit = make_audit(route, safety, decision)
+            out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
+            return reviewed_writes.refused(out, str(exc), "changed", audit, expect, progress)
+        routed = target_profile is not None
+        route = _action_target_connection(target_profile, plain) if routed else plain
+        identity_kind = expect.get("kind") if expect is not None else None
+        binding = _action_target_binding(target_profile, plain, identity_kind) if routed else None
+        if routed and planning:
+            # The fresh report selects the identity key. Until then neither UUID
+            # is evidence of the kind of cluster this endpoint currently serves.
+            binding = dict(binding, server_identity={})
+        safety = dbops.connection_safety(target_profile if routed else _request_profile(connection, workspace.store), route,
+                                         store=workspace.store)
+        identity = dbops.connection_identity(plain, safety)
+
+        def group_checks():
+            return {"group_name": route["group_name"], "group_profiles": workspace.store.list("profile"),
+                    "current_profile": workspace.store.get("profile", target_profile["id"])}
+
+        def current_target():
+            if not routed:
+                return None
+            try:
+                current = _action_target(payload, plain, kind, workspace.store)
+            except ValueError as exc:
+                raise reviewed_writes.Refusal(str(exc), "changed") from None
+            fresh_binding = _action_target_binding(current, plain, identity_kind)
+            if planning and identity_kind is None:
+                fresh_binding["server_identity"] = {}
+            if fresh_binding != binding:
+                raise reviewed_writes.Refusal("The target saved connection changed after the review, so nothing was sent. "
+                                              "Review the action again.", "changed")
+            # Conflicting claims must also refuse a route added after planning or
+            # during a read. No store ordering or credential availability wins.
+            node_identity = binding["server_identity"]
+            member = {"uuid": next(iter(node_identity.values()), None)}
+            report = {"kind": identity_kind}
+            checks = group_checks()
+            if len(module._member_profiles(report, member, checks)) > 1:
+                raise reviewed_writes.Refusal(" ".join(module._member_route_issue(report, member, checks)), "changed")
+            now = dbops.connection_safety(current, route, store=workspace.store)
+            if dbops.connection_identity(plain, now) != identity:
+                raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
+                                              "sent. Review the change again.", "policy_changed")
+            return fresh_binding
+
+        def open_options():
+            # Validation precedes the lookup, and runs again after the secret store
+            # returns. Per-login consent also covers each subprocess in read_status.
+            current_target()
+            filled = _with_saved_password(dict(payload, connection=route), workspace)
+            options = connection_options(filled.get("connection"))
+            current_target()
+            if routed and target_profile["id"] != plain.get("profile_id") and not options.get("password"):
+                raise reviewed_writes.Refusal("The target server's saved password is unavailable.", "changed")
+            return options
+
+        def guarded_connection(options):
+            if routed:
+                conn = MySQLConnection(**options)
+                conn._login_guard = current_target
+                conn._group_login_started = False
+                return conn
+            return _group_guarded_connection(options, connection, workspace.store,
+                                             identity=None if planning else identity)
+
         if planning:
-            raise
-        # Consent can disappear between review and apply. Audit the refusal
-        # before any credentials are read, using the requested saved target.
-        target_id = payload.get("target_profile_id", plain.get("profile_id"))
-        target = workspace.store.get("profile", target_id) if isinstance(target_id, str) and len(target_id) <= 200 else None
-        route = dict(target, group_name=plain.get("group_name")) if isinstance(target, dict) else plain
-        safety = dbops.connection_safety(target, route, store=workspace.store)
+            options = open_options()
+            from .connection_groups import begin_read
+            observation = begin_read(workspace.store, target_profile).get("_topology_observation")
+            try:
+                with guarded_connection(options) as conn:
+                    plan = _action_plan(kind, module, conn, payload, target=binding,
+                                        group_checks=group_checks if routed else None)
+                if routed:
+                    current_target()
+                    live_identity = plan["expect"]["target"]["server_identity"]
+                    try:
+                        workspace.store.record_topology_identity(target_profile["id"], live_identity,
+                                                                  expected=target_profile, observation=observation)
+                    except Exception:
+                        raise ValueError("Could not save the target server's identity. Nothing was sent. "
+                                         "Try reviewing the action again.") from None
+                    # Persist the actual node identity before issuing the token, so
+                    # apply can rebuild the whole binding before looking up a secret.
+                    binding = dict(binding, server_identity=live_identity)
+                    identity_kind = plan["expect"].get("kind")
+                    current_target()
+            except (ValueError, ConnectorError) as exc:
+                _reraise_redacted(exc, options.get("password"))
+            decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
+                                    safety.get("profile_name"))
+            plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
+                                                           "read_only")}
+            plan["review_token"] = _review_tokens(workspace).issue(_ACTION_OPERATION[kind], identity,
+                                                                   reviewed_writes.review_details(plan))
+            return plan
         decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
                                 safety.get("profile_name"))
         audit = make_audit(route, safety, decision)
         out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
-        return reviewed_writes.refused(out, str(exc), "changed", audit, expect, progress)
-    routed = target_profile is not None
-    route = _action_target_connection(target_profile, plain) if routed else plain
-    identity_kind = expect.get("kind") if expect is not None else None
-    binding = _action_target_binding(target_profile, plain, identity_kind) if routed else None
-    if routed and planning:
-        # The fresh report selects the identity key. Until then neither UUID
-        # is evidence of the kind of cluster this endpoint currently serves.
-        binding = dict(binding, server_identity={})
-    safety = dbops.connection_safety(target_profile if routed else _request_profile(connection, workspace.store), route,
-                                     store=workspace.store)
-    identity = dbops.connection_identity(plain, safety)
-
-    def group_checks():
-        return {"group_name": route["group_name"], "group_profiles": workspace.store.list("profile"),
-                "current_profile": workspace.store.get("profile", target_profile["id"])}
-
-    def current_target():
-        if not routed:
-            return None
+        out["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text")}
+        if kind == "cluster" and expect.get("target") != binding:
+            return reviewed_writes.refused(out, "The target saved connection changed after the review, so nothing was sent. "
+                                          "Review the action again.", "changed", audit, reviewed.get("expect"), progress)
+        blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
+        if blocked:
+            return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
+                                           audit, reviewed.get("expect"), progress)
         try:
-            current = _action_target(payload, plain, kind, workspace.store)
+            consume = _review_tokens(workspace).consumer(payload.get("review_token"), _ACTION_OPERATION[kind], identity,
+                                                         reviewed_writes.review_details(reviewed))
         except ValueError as exc:
-            raise reviewed_writes.Refusal(str(exc), "changed") from None
-        fresh_binding = _action_target_binding(current, plain, identity_kind)
-        if planning and identity_kind is None:
-            fresh_binding["server_identity"] = {}
-        if fresh_binding != binding:
-            raise reviewed_writes.Refusal("The target saved connection changed after the review, so nothing was sent. "
-                                          "Review the action again.", "changed")
-        # Conflicting claims must also refuse a route added after planning or
-        # during a read. No store ordering or credential availability wins.
-        node_identity = binding["server_identity"]
-        member = {"uuid": next(iter(node_identity.values()), None)}
-        report = {"kind": identity_kind}
-        checks = group_checks()
-        if len(module._member_profiles(report, member, checks)) > 1:
-            raise reviewed_writes.Refusal(" ".join(module._member_route_issue(report, member, checks)), "changed")
-        now = dbops.connection_safety(current, route, store=workspace.store)
-        if dbops.connection_identity(plain, now) != identity:
-            raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
-                                          "sent. Review the change again.", "policy_changed")
-        return fresh_binding
+            return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"), progress)
+        typed = payload.get("typed")
+        typed = typed if isinstance(typed, str) else None
 
-    def open_options():
-        # Validation precedes the lookup, and runs again after the secret store
-        # returns. Per-login consent also covers each subprocess in read_status.
-        current_target()
-        filled = _with_saved_password(dict(payload, connection=route), workspace)
-        options = connection_options(filled.get("connection"))
-        current_target()
-        if routed and target_profile["id"] != plain.get("profile_id") and not options.get("password"):
-            raise reviewed_writes.Refusal("The target server's saved password is unavailable.", "changed")
-        return options
-
-    def guarded_connection(options):
-        if routed:
-            conn = MySQLConnection(**options)
-            conn._login_guard = current_target
-            conn._group_login_started = False
-            return conn
-        return _group_guarded_connection(options, connection, workspace.store,
-                                         identity=None if planning else identity)
-
-    if planning:
-        options = open_options()
-        from .connection_groups import begin_read
-        observation = begin_read(workspace.store, target_profile).get("_topology_observation")
+        def before_send():
+            # The saved policy is read again right before sending: a profile made
+            # Read-only (or changed) while the target was read sends nothing.
+            current_target()
+            now = dbops.connection_safety(_action_target(payload, plain, kind, workspace.store) if routed else
+                                          _request_profile(connection, workspace.store), route, store=workspace.store)
+            if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
+                    reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
+                    confirmed=True):
+                raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
+                                              "sent. Review the change again.", "policy_changed")
+            consume()
+        password = audit.password
         try:
+            options = open_options()
+            password = audit.password = options.get("password")
+            audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
             with guarded_connection(options) as conn:
-                plan = _action_plan(kind, module, conn, payload, target=binding,
-                                    group_checks=group_checks if routed else None)
-            if routed:
-                current_target()
-                live_identity = plan["expect"]["target"]["server_identity"]
-                try:
-                    workspace.store.record_topology_identity(target_profile["id"], live_identity,
-                                                              expected=target_profile, observation=observation)
-                except Exception:
-                    raise ValueError("Could not save the target server's identity. Nothing was sent. "
-                                     "Try reviewing the action again.") from None
-                # Persist the actual node identity before issuing the token, so
-                # apply can rebuild the whole binding before looking up a secret.
-                binding = dict(binding, server_identity=live_identity)
-                identity_kind = plan["expect"].get("kind")
-                current_target()
+                extra = {"target": current_target, "group_checks": group_checks} if routed else {}
+                result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
+                                               progress=progress, **extra)
+            result["policy"] = out["policy"]
+            return result
+        except KeyboardInterrupt as exc:
+            if progress is not None:
+                progress.fail()
+            audit.fail(exc, statements)
+            raise
+        except reviewed_writes.Refusal as exc:
+            return reviewed_writes.refused(out, str(exc), exc.outcome, audit, expect, progress)
+        except ProfileReadError as exc:
+            audit_id = _group_login_refusal(audit, statements, exc, expect)
+            result = reviewed_writes.refused(out, str(exc), "changed", target=expect, progress=progress)
+            result["audit_id"] = audit_id
+            return result
         except (ValueError, ConnectorError) as exc:
-            _reraise_redacted(exc, options.get("password"))
-        decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
-                                safety.get("profile_name"))
-        plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
-                                                       "read_only")}
-        plan["review_token"] = _review_tokens(workspace).issue(_ACTION_OPERATION[kind], identity,
-                                                               reviewed_writes.review_details(plan))
-        return plan
-    decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
-                            safety.get("profile_name"))
-    audit = make_audit(route, safety, decision)
-    out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
-    out["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text")}
-    if kind == "cluster" and expect.get("target") != binding:
-        return reviewed_writes.refused(out, "The target saved connection changed after the review, so nothing was sent. "
-                                      "Review the action again.", "changed", audit, reviewed.get("expect"), progress)
-    blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
-    if blocked:
-        return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
-                                       audit, reviewed.get("expect"), progress)
-    try:
-        consume = _review_tokens(workspace).consumer(payload.get("review_token"), _ACTION_OPERATION[kind], identity,
-                                                     reviewed_writes.review_details(reviewed))
-    except ValueError as exc:
-        return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"), progress)
-    typed = payload.get("typed")
-    typed = typed if isinstance(typed, str) else None
-
-    def before_send():
-        # The saved policy is read again right before sending: a profile made
-        # Read-only (or changed) while the target was read sends nothing.
-        current_target()
-        now = dbops.connection_safety(_action_target(payload, plain, kind, workspace.store) if routed else
-                                      _request_profile(connection, workspace.store), route, store=workspace.store)
-        if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
-                reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
-                confirmed=True):
-            raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
-                                          "sent. Review the change again.", "policy_changed")
-        consume()
-    password = audit.password
-    try:
-        options = open_options()
-        password = audit.password = options.get("password")
-        audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
-        with guarded_connection(options) as conn:
-            extra = {"target": current_target, "group_checks": group_checks} if routed else {}
-            result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
-                                           progress=progress, **extra)
-        result["policy"] = out["policy"]
-        return result
-    except KeyboardInterrupt as exc:
+            if progress is not None:
+                progress.fail()
+            audit.fail(exc, statements)
+            _reraise_redacted(exc, password)
+    finally:
+        # Finish progress even when validation, routing or audit creation
+        # raises before the executor owns it. fail() preserves final results.
         if progress is not None:
             progress.fail()
-        audit.fail(exc, statements)
-        raise
-    except reviewed_writes.Refusal as exc:
-        return reviewed_writes.refused(out, str(exc), exc.outcome, audit, expect, progress)
-    except ProfileReadError as exc:
-        audit_id = _group_login_refusal(audit, statements, exc, expect)
-        result = reviewed_writes.refused(out, str(exc), "changed", target=expect, progress=progress)
-        result["audit_id"] = audit_id
-        return result
-    except (ValueError, ConnectorError) as exc:
-        if progress is not None:
-            progress.fail()
-        audit.fail(exc, statements)
-        _reraise_redacted(exc, password)
 
 
 def _with_saved_password(payload, workspace):

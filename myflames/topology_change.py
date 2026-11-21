@@ -9,6 +9,7 @@ import base64
 import binascii
 import copy
 import json
+import re
 import threading
 import time
 import uuid
@@ -54,8 +55,13 @@ class _MemberProgress(reviewed_writes.Progress):
 class _ProgressRegistry(reviewed_writes.ProgressRegistry):
     def _prune(self):
         cutoff = time.monotonic() - self.TTL
+        owner = getattr(self, '_topology_owner', None)
         for key, value in list(self._items.items()):
-            if value.phase == 'finished' and value.touched < cutoff:
+            # An ordinary request can die before its first state change.
+            # Rolling entries belong to a live Stop handle even in received.
+            run = owner.runs.get(key) if owner is not None else None
+            abandoned = value.phase == 'received' and (run is None or run.finished)
+            if (value.phase == 'finished' or abandoned) and value.touched < cutoff:
                 del self._items[key]
         while len(self._items) >= self.LIMIT:
             old = next((key for key, value in self._items.items() if value.phase == 'finished'), None)
@@ -67,9 +73,9 @@ class _ProgressRegistry(reviewed_writes.ProgressRegistry):
         if not isinstance(progress_id, str) or not reviewed_writes._PROGRESS_ID.fullmatch(progress_id):
             return None
         with self._lock:
+            self._prune()
             if progress_id in self._items:
                 return None
-            self._prune()
             if len(self._items) >= self.LIMIT:
                 return None
             value = self._items[progress_id] = factory(count, timeout)
@@ -184,10 +190,10 @@ def _snapshot(store, group, active_id):
     members = [p for p in profiles if isinstance(p, dict) and p.get('group') == group]
     active = next((p for p in members if p.get('id') == active_id), None)
     if not group or active is None:
-        raise reviewed_writes.Refusal('This saved connection is outside the current connection group.', 'changed')
+        raise reviewed_writes.Refusal('This saved connection is outside the current connection group.', 'changed_target')
     generation = active.get('group_generation')
     if not generation or any(p.get('group_generation') != generation for p in members):
-        raise reviewed_writes.Refusal('The connection group changed. Review the change again.', 'changed')
+        raise reviewed_writes.Refusal('The connection group changed. Review the change again.', 'changed_target')
     if len(members) > connection_groups.GROUP_MAX_MEMBERS:
         raise ValueError('A rolling change supports at most 16 saved group members.')
     # The shared helper keeps Read-only per member. This batch has a stricter
@@ -212,13 +218,13 @@ def _guard(store, reviewed, member=None):
     if blocked:
         raise reviewed_writes.Refusal('A member of this group is Read-only. Nothing more was sent.', 'read_only')
     if generation != expect['group_generation'] or _endpoint(active) != expect['active_endpoint']:
-        raise reviewed_writes.Refusal('The connection group or active connection changed. Review again.', 'changed')
+        raise reviewed_writes.Refusal('The connection group or active connection changed. Review again.', 'changed_target')
     if safety != reviewed['effective_safety']:
         raise reviewed_writes.Refusal('The group write policy changed. Review the change again.', 'policy_changed')
     if member is not None:
         current = next((p for p in members if p['id'] == member['profile_id']), None)
         if current is None or _endpoint(current) != member['endpoint']:
-            raise reviewed_writes.Refusal('The saved member or its endpoint changed. Review the change again.', 'changed')
+            raise reviewed_writes.Refusal('The saved member or its endpoint changed. Review the change again.', 'changed_target')
         return current
     return active
 
@@ -465,7 +471,7 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
     members, active, generation, safety = _snapshot(store, group, active_member_profile_id)
     if ((active_endpoint is not None and _endpoint(active) != active_endpoint) or
             (group_generation is not None and generation != group_generation)):
-        raise reviewed_writes.Refusal('The validated group or active endpoint changed. Review again.', 'changed')
+        raise reviewed_writes.Refusal('The validated group or active endpoint changed. Review again.', 'changed_target')
     if set(member_ids) - {p['id'] for p in members}:
         raise ValueError('Every selected server must be a current member of this connection group.')
     decision = _decision(name, mode, safety, group)
@@ -506,6 +512,11 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
                                   ('before', 'effect', 'caveats', 'privileges', 'config_line')})
                     if change['engine'] == 'mariadb':
                         entry['caveats'].append(_NOT_PERSISTED)
+                    if (change['mode'] in ('global', 'persist') and
+                            change['variable'].get('type') in ('set', 'flagset') and
+                            isinstance(value, str) and re.search(r'\bdefault\b', value, re.I)):
+                        raise reviewed_writes.Refusal(
+                            'DEFAULT values cannot be verified across servers; set explicit values.', 'invalid')
                     if change['status'] != 'ready':
                         entry['reason'] = ' '.join(p['message'] for p in change['problems'])
                     else:
@@ -575,8 +586,9 @@ def _message(status, outcome=None, error=None):
     code = dbops.error_code(str(error)) if error is not None else None
     if status == 'unknown' or outcome in ('unknown', 'timeout'):
         return 'The statement may have run. Check this server before reviewing another change.'
-    if (code is not None and not reviewed_writes.client_error(code) and
-            outcome not in ('recheck_failed', 'connect_failed') and
+    if (status != 'refused' and code is not None and not reviewed_writes.client_error(code) and
+            outcome not in ('identity_mismatch', 'identity_unavailable', 'recheck_failed', 'connect_failed',
+                            'role_changed', 'dependency_changed', 'changed', 'changed_target', 'changed_variable', 'invalid') and
             not dbops.target_not_connected(error)):
         return 'The server returned error %d. No later member was sent.' % code
     if status == 'refused' and outcome == 'changed':
@@ -591,8 +603,11 @@ def _message(status, outcome=None, error=None):
             'needs_typed_name': 'Type the connection group name exactly to confirm.',
             'read_only': 'A member of this group is Read-only. Nothing more was sent.',
             'identity_mismatch': 'The server identity changed. Nothing was sent to this member.',
+            'identity_unavailable': 'The server identity could not be verified. Nothing was sent to this member.',
             'role_changed': 'The live role or replication source changed. Review the rolling order again.',
+            'dependency_changed': 'A server the rolling order depends on changed. Review again.',
             'changed_target': 'The saved member, group or endpoint changed. Review again.',
+            'changed_variable': 'The variable changed after the review. Nothing was sent to this member.',
             'policy_changed': 'The group write policy changed. Review again.',
             'recheck_failed': 'The member could not be rechecked. Nothing was sent to this member.',
             'connect_failed': 'Could not connect or log in to this member. Nothing was sent to this member.',
@@ -823,36 +838,49 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                                 later = reviewed['expect']['members'][index + 1:]
                                 dependencies.extend(later)
                             for dependency in dependencies:
-                                if dependency in later:
-                                    candidate = store.get('profile', dependency['profile_id'])
-                                    if (not isinstance(candidate, dict) or
-                                            candidate.get('group') != reviewed['group_name'] or
-                                            _endpoint(candidate) != dependency['endpoint'] or
-                                            dependency['order_facts'] is None):
-                                        continue
-                                peer = _guard(store, reviewed, dependency)
-                                with open_group_member(store, reviewed['group_name'], peer,
-                                        lambda: _guard(store, reviewed, dependency),
-                                        {'query_timeout': 10, 'connect_timeout': 10}) as dependency_opened:
-                                    peer_conn = BoundedConnection(dependency_opened[0], seconds=30)
-                                    peer_identity, peer_facts, _ = _facts(peer_conn, peer)
-                                    if (peer_identity != dependency['identity'] or
-                                            peer_facts != dependency['order_facts']):
-                                        raise reviewed_writes.Refusal(_message('role_changed'), 'role_changed')
-                            identity, facts, fresh = _facts(conn, current,
-                                reviewed['name'] if variable else None, reviewed['value'], reviewed['mode'])
+                                candidate = store.get('profile', dependency['profile_id'])
+                                if (not isinstance(candidate, dict) or
+                                        candidate.get('group') != reviewed['group_name'] or
+                                        candidate.get('group_generation') != reviewed['expect']['group_generation'] or
+                                        _endpoint(candidate) != dependency['endpoint'] or
+                                        dependency['order_facts'] is None or dependency['identity'] is None):
+                                    raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed')
+                                try:
+                                    peer = _guard(store, reviewed, dependency)
+                                    with open_group_member(store, reviewed['group_name'], peer,
+                                            lambda: _guard(store, reviewed, dependency),
+                                            {'query_timeout': 10, 'connect_timeout': 10}) as dependency_opened:
+                                        peer_conn = BoundedConnection(dependency_opened[0], seconds=30)
+                                        peer_identity, peer_facts, _ = _facts(peer_conn, peer)
+                                        if (peer_identity != dependency['identity'] or
+                                                peer_facts != dependency['order_facts']):
+                                            raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed')
+                                except (reviewed_writes.Refusal, connection_groups.ProfileReadError, ConnectorError) as exc:
+                                    raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed') from exc
+                            identity, facts, _ = _facts(conn, current)
                             if identity != binding['identity']:
                                 raise reviewed_writes.Refusal(_message('identity_mismatch'), 'identity_mismatch')
                             if facts != binding['order_facts']:
                                 raise reviewed_writes.Refusal(_message('role_changed'), 'role_changed')
+                            fresh = None
+                            if variable:
+                                # Read reviewed scopes after the potentially slow
+                                # dependency and role checks, at the send boundary.
+                                reader = (_IdentityConnection(conn, identity)
+                                          if change['engine'] == 'mariadb' else conn)
+                                variable_now = variables.read_variable(reader, reviewed['name'])
+                                if any(variable_now.get(key) != binding['variable_expect'].get(key) for key in
+                                       ('engine', 'server_version', 'server_identity')):
+                                    raise reviewed_writes.Refusal(_message('identity_mismatch'), 'identity_mismatch')
+                                fresh = variables.build_plan(variable_now, change['requested'], change['mode'])
+                                if fresh.get('status') != 'ready' or fresh.get('expect') != binding['variable_expect']:
+                                    raise reviewed_writes.Refusal(_message('changed_variable'), 'changed_variable')
                             _guard(store, reviewed, binding)
                             return fresh
 
                         change = changes[member['profile_id']]
                         if member['status'] == 'unchanged':
                             fresh = check_target(variable=True)
-                            if fresh.get('status') != 'ready' or fresh.get('expect') != binding['variable_expect']:
-                                raise reviewed_writes.Refusal('The reviewed variable changed. Nothing was sent.', 'changed')
                             # No statement was reviewed for this member. A
                             # fresh match is required before claiming success.
                             after = {key: fresh['before'].get(key) for key in member['after']}
@@ -864,7 +892,7 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                             after_identity = (dict(binding['identity'], server_id=change['value'])
                                 if change['engine'] == 'mariadb' and reviewed['name'] == 'server_id' and
                                 change['mode'] == 'global' else None)
-                            sent = _SendingConnection(conn, check_target, running, states, index,
+                            sent = _SendingConnection(conn, lambda: check_target(variable=True), running, states, index,
                                                       change['engine'], binding['identity'], after_identity)
                             trail.variable_plan = change
                             answer = variables.apply_change(sent, change,
@@ -879,13 +907,13 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                                 applied = applied or status == 'changed'
                             else:
                                 result['status'] = 'unknown' if status == 'applied_unverified' else 'refused'
-                                states[index] = 'unknown' if status == 'applied_unverified' else 'failed' if sent.sent else 'not_sent'
+                                states[index] = 'unknown' if status == 'applied_unverified' else 'failed' if answer.get('sent') else 'not_sent'
                                 stop_reason = 'refused'
                                 uncertain = uncertain or bool(answer.get('sent'))
                             after = answer.get('after')
                             result.update(after={key: after.get(key) for key in member['after']} if after else None,
                                 message=_message('not_matched' if status in ('changed', 'unchanged') and not matched else status,
-                                                 answer.get('outcome')))
+                                                 answer.get('outcome'), error=sent.failure))
                 except Exception as exc:
                     outcome = getattr(exc, 'outcome', None)
                     refused = isinstance(exc, (reviewed_writes.Refusal, connection_groups.ProfileReadError))

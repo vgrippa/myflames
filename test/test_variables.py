@@ -730,6 +730,7 @@ class TestApply(unittest.TestCase):
                                                                                       1238))
         conn, _plan, result = self.apply('mysql-8.4', 'denied', audit=self.audit('global', password='hunter2-not-real'))
         self.assertEqual(result['status'], 'denied')
+        self.assertEqual(result['sent'], [_plan['statement']])
         self.assertIn('SYSTEM_VARIABLES_ADMIN', result['message'])
         self.assertIs(_plan['privileges']['allowed'], False, 'the hint saw the missing privilege first')
         self.assertNotIn('hunter2', json.dumps(self.records()))
@@ -740,7 +741,7 @@ class TestApply(unittest.TestCase):
         self.assertIn('changed since you reviewed it (400, now 222)', result['message'])
         self.assertEqual(self.sent(conn), [])
         record = self.records()[0]
-        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed_variable'))
         self.assertEqual(record['statements'][-1:], [TAG + 'SET GLOBAL max_connections = 250'])
 
     def test_statement_mismatch_sends_nothing(self):
@@ -1302,6 +1303,69 @@ class TestEndpoints(unittest.TestCase):
         conn, _data = replay('mysql-8.4', 'restart')
         read, _ = self.call('/api/live/variable', {'connection': self.connection, 'name': 'max_connections'}, conn)
         self.assertEqual((read['schema_version'], read['persisted']['value']), ('variable-1.0', '400'))
+
+    def test_sensitive_endpoint_early_refusals_redact_all_reviewed_values(self):
+        from myflames import ui
+        old, new = 'old-endpoint-secret', 'new-endpoint-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new, 'global')
+        safety, _ = ui._variable_policy('wsrep_sst_auth', 'global', self.connection, self.workspace.store)
+        expect = dict(plan['expect'], connection_identity=dbops.connection_identity(self.connection, safety))
+        payload = dict(connection=self.connection, name='wsrep_sst_auth', mode='global', value=new,
+                       expect=expect, confirmed=True, reviewed_statement=plan['statement'])
+        cases = (({'declined': True}, 'declined'), ({'confirmed': False}, 'needs_confirmation'),
+                 ({'connection': dict(self.connection, read_only=True)}, 'read_only'),
+                 ({'connection': dict(self.connection, host='other-server')}, 'changed'))
+        for changes, outcome in cases:
+            with self.subTest(outcome=outcome):
+                client = ReplayConn([])
+                factory = FakeFactory(client)
+                with mock.patch('myflames.connector.MySQLConnection', factory):
+                    result = ui.api_response('/api/live/variable/apply', dict(payload, **changes), self.workspace)
+                self.assertIsNone(factory.options)
+                self.assertEqual(client.calls, [])
+                record = next(row for row in dbops.audit_report(self.workspace.store)['records']
+                              if row['id'] == result['audit_id'])
+                self.assertEqual(record['outcome'], outcome)
+                self.assertEqual(record['target']['name'], 'wsrep_sst_auth')
+                for secret in (old, new, old.encode().hex(), new.encode().hex()):
+                    self.assertNotIn(secret, json.dumps(record))
+                self.assertIn(dbops.REDACTED, json.dumps(record))
+
+    def test_sensitive_endpoint_exception_redacts_statement_and_diagnostic(self):
+        from myflames import ui
+        from myflames.connector import ConnectorError
+        old, new = 'old-exception-secret', 'new-exception-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new, 'global')
+        safety, _ = ui._variable_policy('wsrep_sst_auth', 'global', self.connection, self.workspace.store)
+        expect = dict(plan['expect'], connection_identity=dbops.connection_identity(self.connection, safety))
+        conn = ReplayConn([], error=ConnectorError('ERROR 1045: %s %s' % (old, new)))
+        with self.assertRaises(ConnectorError):
+            self.call('/api/live/variable/apply', dict(connection=self.connection, name='wsrep_sst_auth',
+                mode='global', value=new, expect=expect, confirmed=True), conn)
+        records = dbops.audit_report(self.workspace.store)['records']
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('error', 'error'))
+        self.assertNotIn(old, json.dumps(records))
+        self.assertNotIn(new, json.dumps(records))
+        self.assertIn(dbops.REDACTED, json.dumps(records))
+
+    def test_sensitive_audit_forwards_late_connection_credentials(self):
+        audit = dbops.AuditTrail(self.workspace.store, 'set_global', 'ui')
+        wrapped = V._SensitiveAudit(audit)
+        wrapped.password = 'filled-from-secret-store'
+        wrapped.connection = {'host': 'saved-db', 'port': 3306}
+        self.assertEqual(audit.password, 'filled-from-secret-store')
+        self.assertEqual(audit.connection['host'], 'saved-db')
+        wrapped.attempt(['secret statement'], target={'name': 'wsrep_sst_auth', 'value': 'secret value'})
+        wrapped.fail(ValueError('ERROR 1231: secret statement and secret value'))
+        record = dbops.audit_report(self.workspace.store)['records'][0]
+        self.assertNotIn('secret statement', json.dumps(record))
+        self.assertNotIn('secret value', json.dumps(record))
+        self.assertEqual(record['status'], 'error')
 
     def test_confirmed_plan_is_bound_to_connection_host_port_tls_and_profile(self):
         profile = self.workspace.store.save('profile', dict(self.connection, name='same endpoint'))

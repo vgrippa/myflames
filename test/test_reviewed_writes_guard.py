@@ -366,7 +366,23 @@ class GuardTests(unittest.TestCase):
                 with mock.patch.object(variables, 'read_variable', return_value=value), \
                         mock.patch.object(variables, '_after') as after:
                     out = variables.apply_change(writer, plan, plan['expect'], confirmed=True, audit=self.audit())
-                self.assert_packet_error(out, writer, 1142, 'denied')
+                self.assert_packet_error(out, writer, 1142, 'denied', sent=[plan['statement']])
+                after.assert_not_called()
+
+    def test_variables_initial_login_failure_keeps_empty_sent_list(self):
+        from test_variables import mysql_variable, mariadb_variable
+        for value in (mysql_variable('max_connections'), mariadb_variable('max_connections')):
+            with self.subTest(engine=value['engine']):
+                plan = variables.build_plan(value, '200', 'global')
+                writer = Writer('ERROR 1045 (28000): Access denied for fixture-secret')
+                writer.password = 'fixture-secret'
+                with mock.patch.object(variables, 'read_variable', return_value=value), \
+                        mock.patch.object(variables, '_after') as after:
+                    out = variables.apply_change(writer, plan, plan['expect'], confirmed=True, audit=self.audit())
+                self.assertEqual(out['status'], 'denied')
+                self.assertEqual(out['sent'], [])
+                self.assertNotIn('fixture-secret', repr(out))
+                self.assertEqual(len(writer.writes), 1)
                 after.assert_not_called()
 
     def test_accounts_guard_each_engine_and_refuse_swapped_server(self):
@@ -517,10 +533,11 @@ class GuardTests(unittest.TestCase):
         self.assertFalse(scenario.killed)
         self.assertEqual((self.records()[0]['status'], self.records()[0]['error_code']), ('error', 1142))
 
-    def assert_packet_error(self, out, writer, code, status):
+    def assert_packet_error(self, out, writer, code, status, sent=None):
         self.assertEqual(out['status'], status)
         self.assertNotIn(out.get('outcome'), ('identity_mismatch', 'identity_unavailable'))
-        self.assertEqual(out['sent'], True if 'channel' in out else [])
+        expected_sent = (True if 'channel' in out else []) if sent is None else sent
+        self.assertEqual(out['sent'], expected_sent)
         self.assertNotIn('not the one you reviewed', out['message'])
         self.assertNotIn('fixture-secret', repr(out))
         self.assertEqual(len(writer.writes), 1)

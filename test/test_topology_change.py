@@ -473,6 +473,47 @@ class TopologyChangeTests(GroupCase):
                 password.assert_not_called()
         self.assertEqual(self.opened, [])
 
+    def test_flagset_defaults_refused_in_running_value_modes(self):
+        self.client(0).variables['optimizer_switch'] = 'index_merge=on,index_merge_union=on'
+        for mode in ('global', 'persist'):
+            for value in ('index_merge=default', 'index_merge = DeFaUlT,index_merge_union=off'):
+                with self.subTest(mode=mode, value=value):
+                    plan = self.plan(name='optimizer_switch', value=value, mode=mode, member_ids=['member-1'])
+                    member = plan['members'][0]
+                    self.assertEqual(member['status'], 'refused', plan)
+                    self.assertIsNone(member['statement'])
+                    self.assertEqual(member['reason'],
+                                     'DEFAULT values cannot be verified across servers; set explicit values.')
+                    self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_flagset_explicit_values_and_persist_only_defaults_can_be_planned(self):
+        self.client(0).variables['optimizer_switch'] = 'index_merge=on,index_merge_union=on'
+        for mode, value in (('global', 'index_merge=off'), ('persist', 'index_merge=off'),
+                            ('persist_only', 'index_merge=default')):
+            with self.subTest(mode=mode, value=value):
+                plan = self.plan(name='optimizer_switch', value=value, mode=mode, member_ids=['member-1'])
+                self.assertEqual(plan['members'][0]['status'], 'planned', plan)
+                self.assertIsNotNone(plan['members'][0]['statement'])
+        self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_set_and_flagset_defaults_refuse_global_fallback(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, engine='mariadb')
+        client = self.client(0)
+        for name, kind, current, value in (
+                ('optimizer_switch', 'FLAGSET', 'index_merge=on', 'index_merge=default'),
+                ('sql_mode', 'SET', 'STRICT_TRANS_TABLES', 'STRICT_TRANS_TABLES,default')):
+            client.catalog_type = kind
+            client.variables[name] = current
+            for mode in ('global', 'persist', 'persist_only'):
+                with self.subTest(name=name, mode=mode):
+                    plan = self.plan(name=name, value=value, mode=mode, member_ids=['member-1'])
+                    self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+                    self.assertEqual(plan['members'][0]['reason'],
+                                     'DEFAULT values cannot be verified across servers; set explicit values.')
+                    self.assertIsNone(plan['members'][0]['statement'])
+        self.assertEqual(self.written_ids(), [])
+
     def test_secret_variables_refused_before_password_lookup(self):
         from myflames.param_compare import sensitive
         for name in ('wsrep_sst_auth', 'report_password', 's3_secret_key'):
@@ -987,6 +1028,10 @@ class TopologyChangeTests(GroupCase):
         result = self.apply(plan)
         self.assertEqual(result['status'], 'refused', result)
         self.assertEqual(self.written_ids(), [])
+        self.assertEqual(result['members'][0]['message'],
+                         'The variable changed after the review. Nothing was sent to this member.')
+        record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+        self.assertEqual(record['outcome'], 'changed_variable')
         registry = topology_change._registry(self.store)
         self.assertNotIn(plan['plan_id'], registry.plans)
         self.assertNotIn(plan['plan_id'], registry.tokens.entries)
@@ -1043,6 +1088,49 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(len(self.opened), opened)
         self.assertEqual({row['outcome'] for row in self.records()}, {'policy_changed'})
         self.assertEqual(self.written_ids(), [])
+
+    def test_progress_is_shared_before_any_topology_endpoint(self):
+        registry = ui._action_progress(self.workspace)
+        self.assertIs(registry, topology_change._registry(self.store).progress)
+        progress_id = 'ordinary-before-topology-01'
+        ordinary = registry.start(progress_id, 1)
+        self.assertIsNotNone(ordinary)
+        plan = topology_change.plan(self.store, 'G', 'member-1', 'max_connections', '300', 'global', ['member-1'])
+        audit = dbops.AuditTrail(self.store, topology_change.OPERATION, 'ui')
+        result = topology_change.apply(self.store, audit, plan['plan_id'], plan['expect'], True, 'G', progress_id)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertIs(topology_change.share_progress(self.store, registry), registry)
+        self.assertEqual(self.written_ids(), [])
+
+    def test_64_early_failing_actions_do_not_block_rolling_start(self):
+        for index in range(64):
+            progress_id = 'early-failing-action-%04d' % index
+            with self.assertRaises(ValueError):
+                ui.api_response('/api/live/proxysql/action', {
+                    'connection': {'profile_id': 42},
+                    'plan': {'action': 'load', 'statements': ['LOAD MYSQL SERVERS TO RUNTIME'], 'expect': {}},
+                    'progress_id': progress_id, 'confirmed': True}, self.workspace)
+            snapshot = ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)
+            self.assertEqual(snapshot['phase'], 'finished')
+            self.assertEqual(snapshot['states'], ['not_sent'])
+        plan = self.plan(member_ids=['member-1'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+        self.assertEqual(self.written_ids(), ['member-1'])
+
+    def test_expired_received_entries_pruned_without_evicting_active_roll(self):
+        registry = ui._action_progress(self.workspace)
+        registry.LIMIT = 2
+        abandoned = registry.start('abandoned-ordinary-action', 1)
+        active = registry.start_member('active-received-rolling', 1)
+        owner = topology_change._registry(self.store)
+        owner.runs['active-received-rolling'] = topology_change._Run(
+            {'group_name': 'G', 'expect': {'group_generation': 'test-generation'}}, active)
+        abandoned.touched -= registry.TTL + 1
+        active.touched -= registry.TTL + 1
+        self.assertIsNotNone(registry.start('replacement-ordinary-action', 1))
+        self.assertEqual(registry.get('abandoned-ordinary-action')['phase'], 'unknown')
+        self.assertEqual(registry.get('active-received-rolling')['phase'], 'received')
+        self.assertIsNone(registry.start('no-room-ordinary-action', 1))
 
     def test_action_owned_progress_id_refuses_roll_without_consuming_review(self):
         plan = self.plan()
@@ -1210,6 +1298,69 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(records[0]['status'], 'refused')
         self.assertNotIn('may have run', json.dumps([result, records]))
 
+    def test_identity_packet_refusal_is_unsent_in_progress_and_audit(self):
+        plan = self.plan(member_ids=['member-1'])
+        self.client(0).before_write = lambda sql: self.client(0).variables.update(server_uuid=UUIDS[4])
+        progress_id = 'identity-refusal-progress-01'
+        result = self.apply(plan, progress_id=progress_id)
+        message = 'The server identity changed. Nothing was sent to this member.'
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['message'], message)
+        self.assertEqual(self.records()[0]['message'], message)
+        self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
+        self.assertEqual(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)['states'],
+                         ['not_sent'])
+        self.assertEqual(self.written_ids(), [])
+
+    def test_identity_change_during_final_variable_read_is_unsent_identity_refusal(self):
+        plan = self.plan(member_ids=['member-1'])
+        changed = []
+
+        def switch_after_role_checks(sql):
+            if (not changed and '/*myflames:variable*/' in sql and
+                    any(row['status'] == 'pending' for row in self.records())):
+                self.client(0).variables['server_uuid'] = UUIDS[4]
+                changed.append(True)
+
+        self.client(0).before_read = switch_after_role_checks
+        result = self.apply(plan)
+        self.assertEqual(changed, [True])
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['message'],
+                         'The server identity changed. Nothing was sent to this member.')
+        self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_pre_send_server_read_error_is_not_a_write_error(self):
+        plan = self.plan(member_ids=['member-1'])
+
+        def denied_after_pending(sql):
+            if any(row['status'] == 'pending' for row in self.records()):
+                raise connector.ConnectorError('ERROR 1142: synthetic read denied')
+
+        self.client(0).before_read = denied_after_pending
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['message'],
+                         'The member could not be rechecked. Nothing was sent to this member.')
+        self.assertNotIn('server returned error', json.dumps([result, self.records()]))
+        self.assertEqual(self.written_ids(), [])
+
+    def test_server_write_rejections_keep_error_code_and_failed_progress(self):
+        for code in (1227, 1238, 1231):
+            with self.subTest(code=code):
+                plan = self.plan(member_ids=['member-1'])
+                self.client(0).write_error = 'ERROR %d (42000) at line 2: synthetic write denied' % code
+                progress_id = 'server-write-error-%04d' % code
+                result = self.apply(plan, progress_id=progress_id)
+                message = 'The server returned error %d. No later member was sent.' % code
+                self.assertEqual(result['members'][0]['message'], message)
+                record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+                self.assertEqual(record['message'], message)
+                self.assertEqual(record['status'], 'error')
+                self.assertEqual(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)['states'],
+                                 ['failed'])
+
     def test_write_login_failure_is_refused_without_unknown_wording(self):
         for code in (2002, 2003, 1045):
             with self.subTest(code=code):
@@ -1309,6 +1460,16 @@ class TopologyChangeTests(GroupCase):
         self.assertFalse(any(options['host'] == 'unreviewed.example' for options in self.opened))
         self.assertEqual(self.written_ids(), ['member-1'])
 
+    def test_saved_endpoint_drift_reports_target_not_variable_change(self):
+        plan = self.plan(member_ids=['member-2'])
+        self.change_profile(1, host='unreviewed.example')
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['message'],
+                         'The saved member, group or endpoint changed. Review again.')
+        self.assertEqual(self.records()[0]['outcome'], 'changed_target')
+        self.assertEqual(self.written_ids(), [])
+
     def test_saved_endpoint_reaches_other_identity_and_stops(self):
         plan = self.plan()
         self.client(0).after_write = lambda sql: self.client(1).variables.update(server_uuid=UUIDS[4])
@@ -1372,17 +1533,84 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(self.written_ids(), [])
         self.assertFalse(any(m['status'] in ('applied', 'unchanged') for m in result['members']))
 
-    def test_async_removed_selected_relay_stops_at_its_reviewed_turn(self):
+    def test_async_removed_selected_relay_refuses_before_first_leaf(self):
         self.make_async_with_two_chains()
         plan = self.plan(member_ids=['member-3', 'member-6', 'member-2', 'member-5'])
         self.assertEqual([m['profile_id'] for m in plan['members']],
                          ['member-3', 'member-6', 'member-2', 'member-5'])
         self.store.assign_profile_group(['member-2'], '')
         result = self.apply(plan)
-        self.assertEqual(result['status'], 'partial', result)
-        self.assertEqual(self.written_ids(), ['member-3', 'member-6'])
-        self.assertEqual(self.statuses(result), {'member-3': 'applied', 'member-6': 'applied',
-                                               'member-2': 'refused', 'member-5': 'not_sent'})
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(self.statuses(result), {'member-3': 'refused', 'member-6': 'not_sent',
+                                               'member-2': 'not_sent', 'member-5': 'not_sent'})
+        self.assertEqual(result['members'][0]['message'],
+                         'A server the rolling order depends on changed. Review again.')
+
+    def test_later_selected_dependency_endpoint_change_refuses_before_first_leaf(self):
+        self.make_async_with_two_chains()
+        plan = self.plan(member_ids=['member-3', 'member-6', 'member-2', 'member-5'])
+        self.change_profile(1, host='unreviewed.example')
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(result['members'][0]['message'],
+                         'A server the rolling order depends on changed. Review again.')
+        self.assertFalse(any(options['host'] == 'unreviewed.example' for options in self.opened))
+
+    def test_later_selected_dependency_unreadable_facts_refuse_before_first_leaf(self):
+        self.make_async_with_two_chains()
+        plan = self.plan(member_ids=['member-3', 'member-6', 'member-2', 'member-5'])
+        self.client(1).read_error = 'ERROR 1142: synthetic role permission lost'
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(result['members'][0]['message'],
+                         'A server the rolling order depends on changed. Review again.')
+
+    def test_final_scope_recheck_catches_drift_during_dependency_reads(self):
+        self.make_async()
+        current = self.client(2)
+        for mode, scope in (('global', 'global'), ('persist', 'global'),
+                            ('persist', 'persisted'), ('persist_only', 'persisted')):
+            with self.subTest(mode=mode, scope=scope):
+                current.variables['max_connections'] = '151'
+                current.persisted.clear()
+                plan = self.plan(mode=mode, member_ids=['member-3'])
+                mutated = []
+
+                def drift_after_initial_variable_read(sql):
+                    if not mutated and any(row['status'] == 'pending' for row in self.records()):
+                        # The audit becomes pending after apply_change's first
+                        # variable read, before its final dependency scan.
+                        target = current.persisted if scope == 'persisted' else current.variables
+                        target['max_connections'] = '300'
+                        mutated.append(True)
+
+                self.client(1).before_read = drift_after_initial_variable_read
+                progress_id = 'final-recheck-%s-%s' % (mode, scope)
+                result = self.apply(plan, progress_id=progress_id)
+                self.assertEqual(mutated, [True])
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['members'][0]['message'],
+                                 'The variable changed after the review. Nothing was sent to this member.')
+                record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'changed_variable'))
+                self.assertEqual(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)['states'],
+                                 ['not_sent'])
+                self.assertEqual(self.written_ids(), [])
+                self.client(1).before_read = None
+
+    def test_unchanged_member_drift_reports_variable_not_saved_connection(self):
+        plan = self.plan(value='151', member_ids=['member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'unchanged')
+        self.client(0).variables['max_connections'] = '200'
+        result = self.apply(plan)
+        self.assertEqual(result['members'][0]['message'],
+                         'The variable changed after the review. Nothing was sent to this member.')
+        record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+        self.assertEqual(record['outcome'], 'changed_variable')
+        self.assertEqual(self.written_ids(), [])
 
     def test_member_becomes_read_only_mid_run(self):
         plan = self.plan()
@@ -1406,6 +1634,10 @@ class TopologyChangeTests(GroupCase):
         result = self.apply(plan)
         self.assertEqual(result['status'], 'refused', result)
         self.assertEqual(self.written_ids(), [])
+        self.assertEqual(result['members'][0]['message'],
+                         'The variable changed after the review. Nothing was sent to this member.')
+        record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+        self.assertEqual(record['outcome'], 'changed_variable')
 
     def test_warning_only_noop_stops_without_success_messages(self):
         plan = self.plan()

@@ -85,7 +85,7 @@
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "Sequential member results. A stop never interrupts an already sent statement. Unknown effects require inspection before another review. Any selected member refused at plan time refuses the whole apply before login or writes; every result member is not_sent and refused members retain their reason.",
+  "description": "Sequential member results. A stop never interrupts an already sent statement. Unknown effects require inspection before another review. Variable drift is reported separately from saved connection or group changes. Refusals during dependency, identity or variable rechecks mean no reviewed statement was sent to that member; an identity guard rejection is also unsent. Server error messages describe rejected writes only. Any selected member refused at plan time refuses the whole apply before login or writes; every result member is not_sent and refused members retain their reason.",
   "definitions": {
     "identity": {
       "type": [

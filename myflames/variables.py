@@ -1536,7 +1536,7 @@ def _result(plan, status, message, **extra):
 
 
 def _unsent(plan, audit, status, outcome, message, expect, verified=None):
-    result = _result(plan, status, message, verified=list(verified or []))
+    result = _result(plan, status, message, outcome=outcome, verified=list(verified or []))
     if audit is not None:
         statement = plan.get("statement") or (expect or {}).get("statement")
         if not statement and plan.get("name") and plan.get("mode") in MODES:
@@ -1562,6 +1562,12 @@ class _SensitiveAudit(object):
 
     def __getattr__(self, name):
         return getattr(self.audit, name)
+
+    def __setattr__(self, name, value):
+        if name == 'audit':
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.audit, name, value)
 
     @classmethod
     def _safe(cls, value):
@@ -1589,6 +1595,11 @@ class _SensitiveAudit(object):
             message='Sensitive variable change: values are redacted.', error=code,
             target=self._safe(target), verified=self._safe(verified))
 
+    def fail(self, exc, statements=()):
+        # Reuse the outcome classification while keeping every persistence
+        # call on this wrapper, including exceptions before apply_change.
+        return dbops.AuditTrail.fail(self, exc, statements)
+
 
 def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None):
     """Send one confirmed change and report before and after (``variable-change-1.0``).
@@ -1610,7 +1621,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     name, mode = check_name(plan.get("name")), check_mode(plan.get("mode"))
     if audit is not None:
         from .param_compare import sensitive
-        if sensitive(name):
+        if sensitive(name) and not isinstance(audit, _SensitiveAudit):
             audit = _SensitiveAudit(audit)
     requested = plan.get("requested") if mode != "reset_persist" else None
     expect = check_expect(expect, name, mode)
@@ -1636,6 +1647,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
             p["message"] for p in fresh["problems"]), expect)
     verified = []
     problem = None
+    drift_outcome = "changed_variable"
     if fresh["statement"] != expect["statement"]:
         problem = ("The statement myflames would send now (%s) differs from the one you confirmed (%s), so nothing "
                    "was sent. Review it again." % (fresh["statement"], expect["statement"]))
@@ -1654,13 +1666,17 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         if problem:
             break
         if not _same(now, expect.get(key)):
+            if key == "server_identity":
+                drift_outcome = "identity_mismatch"
+            elif key in ("engine", "server_version"):
+                drift_outcome = "changed_target"
             problem = ("The %s of %s changed since you reviewed it (%s, now %s), so nothing was sent. Review it "
                        "again." % (label, name, expect.get(key) if expect.get(key) is not None else "none",
                                    now if now is not None else "none"))
         else:
             verified.append(label)
     if problem:
-        return _unsent(fresh, audit, "refused", "changed", problem, expect, verified)
+        return _unsent(fresh, audit, "refused", drift_outcome, problem, expect, verified)
     statement = fresh["statement"]
     try:
         guard = dbops.target_session_guard(expect["engine"], expect["server_identity"])
@@ -1715,6 +1731,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
                                error=str(exc), message=message)
             raise ValueError(message)
         result["status"], result["message"] = error_status(exc)
+        result["sent"] = [] if dbops.target_not_connected(exc) else [statement]
         if audit is not None:
             audit.complete("error", outcome=result["status"], error=str(exc), message=result["message"])
         return result
