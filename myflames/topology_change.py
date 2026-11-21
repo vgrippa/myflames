@@ -166,10 +166,17 @@ def _facts(conn, profile, name=None, value=None, mode=None):
     TargetEvidenceConnection refuses a router switching nodes between reads.
     """
     member = topology_group._entry(profile)
-    initial, exclusion = topology_group._identity(conn, member)
+    preflight, exclusion = topology_group._identity(conn, member)
     if exclusion is not None:
         raise reviewed_writes.Refusal('Proxy members cannot receive a rolling variable change.', 'proxy')
     evidence = dbops.TargetEvidenceConnection(conn)
+    # Proxy detection must precede database identity packets. Repeat the
+    # snapshot inside the scope so role inputs and the separate GTID SELECT
+    # have the same node evidence as all subsequent variable reads. GTIDs
+    # remain optional data, never fields in the stable server identity.
+    initial, exclusion = topology_group._identity(evidence, member)
+    if exclusion is not None:
+        raise reviewed_writes.Refusal('The member identity changed during the read. Review again.', 'identity_mismatch')
     topology_group._member_facts(evidence, member, initial)
     evidence.check()
     observed = evidence.variables or {}
@@ -178,9 +185,14 @@ def _facts(conn, profile, name=None, value=None, mode=None):
                                            {key: observed.get(key) for key in keys}, observed)
     if member['engine'] == 'mariadb' and observed.get('wsrep_node_name'):
         identity['wsrep_node_name'] = observed['wsrep_node_name']
+    if (member['engine'] == 'mysql' and not topology_group._uuid(identity.get('server_uuid')) or
+            dbops.target_has_galera(observed, member['engine']) and
+            not topology_group._uuid(identity.get('wsrep_gcomm_uuid'))):
+        raise reviewed_writes.Refusal('The member identity is missing or invalid. Review after it can be read.',
+                                     'identity_unavailable')
     dbops.target_session_guard(member['engine'], identity)
-    for key in ('server_uuid',) if member['engine'] == 'mysql' else ('server_id', 'hostname'):
-        if str(initial.get(key)) != str(observed.get(key)):
+    for key in ('server_uuid',) if member['engine'] == 'mysql' else ('server_id', 'hostname', 'version'):
+        if str(preflight.get(key)) != str(observed.get(key)) or str(initial.get(key)) != str(observed.get(key)):
             raise reviewed_writes.Refusal('The member identity changed during the read. Review again.', 'identity_mismatch')
     channels = [{key: row.get(key) for key in ('name', 'source_uuid', 'source_server_id', 'source_host', 'source_port')}
                 for row in member['channels']]
@@ -220,6 +232,7 @@ def _order(entries):
         return sorted(entries, key=lambda e: ((facts[e['profile_id']].get('node_name') or e['profile_name']).lower(), saved(e))), rule
     if any(f.get('channels') or f.get('role') == 'source' for f in facts.values()):
         by_uuid, by_id = {}, {}
+        identities = {entry['profile_id']: _identity_key(entry.get('identity')) for entry in entries}
         for entry in entries:
             identity = entry.get('identity') or {}
             for index, key in ((by_uuid, 'server_uuid'), (by_id, 'server_id')):
@@ -233,8 +246,12 @@ def _order(entries):
                 key = channel.get('source_uuid') or channel.get('source_server_id')
                 index = by_uuid if channel.get('source_uuid') else by_id
                 candidates = index.get(str(key).lower(), []) if key else []
-                if len(candidates) == 1:
-                    parents[pid].append(candidates[0])
+                if candidates and len({identities[candidate] for candidate in candidates}) == 1:
+                    # Saved aliases of one source are not competing parents.
+                    # Retain every alias's path and recheck its facts on apply.
+                    # A reused MariaDB server_id on different nodes remains
+                    # ambiguous because its complete identity keys differ.
+                    parents[pid].extend(candidates)
 
         def depth(pid, path):
             if pid in path:
@@ -250,8 +267,23 @@ def _order(entries):
 def _member(profile):
     return {'profile_id': profile['id'], 'profile_name': profile.get('name') or profile['id'],
             'host': profile.get('host') or '', 'port': profile.get('port') or 3306,
-            'identity': None, 'status': 'refused', 'statement': None, 'before': None, 'after': None,
+            'identity': None, 'duplicate_of': None, 'status': 'refused', 'statement': None, 'before': None, 'after': None,
             'effect': None, 'caveats': [], 'privileges': None, 'config_line': None, 'reason': None}
+
+
+def _identity_key(identity):
+    """Compare server identities, never saved endpoints or cluster UUIDs."""
+    identity = identity or {}
+    node = topology_group._uuid(identity.get('wsrep_gcomm_uuid'))
+    if node:
+        return ('galera', node)
+    server = topology_group._uuid(identity.get('server_uuid'))
+    if server:
+        return ('mysql', server)
+    if all(identity.get(key) is not None for key in ('server_id', 'hostname', 'port')):
+        # The guard has already validated these integers and the hostname.
+        return ('mariadb', int(identity['server_id']), identity['hostname'], int(identity['port']))
+    return None
 
 
 def _binding(profile, entry, change=None):
@@ -344,9 +376,16 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
                 if entry['profile_id'] in member_ids:
                     entry.update(status='refused', statement=None,
                                  reason='The replication order could not be verified on every group member.')
+    seen = {}
     for entry in ordered:
         if entry['profile_id'] not in member_ids:
             continue
+        identity_key = _identity_key(entry['identity'])
+        if identity_key is not None:
+            first = seen.setdefault(identity_key, entry)
+            if first is not entry:
+                entry.update(status='refused', statement=None, after=None, duplicate_of=first['profile_id'],
+                             reason='This saved connection reaches the same server as %s.' % first['profile_name'])
         profile = next(p for p in members if p['id'] == entry['profile_id'])
         change = private.get(entry['profile_id'])
         reviewed['expect']['members'].append(_binding(profile, entry, change))
@@ -380,6 +419,7 @@ def _message(status, outcome=None, error=None):
             'not_matched': 'The server did not take the exact reviewed value. No later member was sent.',
             'applied_unverified': 'The statement was sent but its effect could not be verified. Check this server.',
             'not_sent': 'Not sent because this rolling change stopped.',
+            'invalid_plan': 'Untick the refused servers and review again.',
             'stale': 'The review changed or expired. Review the change again.',
             'needs_confirmation': 'Confirm the reviewed change before applying it.',
             'needs_typed_name': 'Type the connection group name exactly to confirm.',
@@ -480,7 +520,8 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
         for member in reviewed['members']:
             trail = _MemberAudit(audit, store, reviewed, member, safety)
             aid = trail.outcome([], 'refused', outcome=outcome)
-            out['members'].append(dict(member, status='not_sent', after=None, message=out['message'], audit_id=aid))
+            message = member['reason'] if member['status'] == 'refused' else out['message']
+            out['members'].append(dict(member, status='not_sent', after=None, message=message, audit_id=aid))
             if aid:
                 out['audit_ids'].append(aid)
         return out
@@ -489,15 +530,17 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
         _, _, _, safety = _snapshot(store, reviewed['group_name'], reviewed['expect']['active_member_profile_id'])
         if connection is not None and connection.get('read_only') is True:
             safety = dict(safety, read_only=True)
-        blocked = dbops.gate(_decision(reviewed['name'], reviewed['mode'], safety, reviewed['group_name']), confirmed)
-        if blocked:
-            return refuse_all('refused', 'read_only' if blocked[0] == 'refused' else 'needs_confirmation')
         if connection is not None and (connection.get('group_name') != reviewed['group_name'] or
                 connection.get('profile_id') != reviewed['expect']['active_member_profile_id'] or
                 _endpoint(connection) != reviewed['expect']['active_endpoint']):
             return refuse_all('refused', 'changed_target')
         if ReviewTokens.fingerprint(OPERATION, None, expect) != ReviewTokens.fingerprint(OPERATION, None, reviewed['expect']):
             return refuse_all('stale', 'stale')
+        if any(member['status'] == 'refused' for member in reviewed['members']):
+            return refuse_all('refused', 'invalid_plan')
+        blocked = dbops.gate(_decision(reviewed['name'], reviewed['mode'], safety, reviewed['group_name']), confirmed)
+        if blocked:
+            return refuse_all('refused', 'read_only' if blocked[0] == 'refused' else 'needs_confirmation')
         consume = registry.tokens.consumer(plan_id, OPERATION, reviewed['expect'], details)
         _guard(store, reviewed)
         if reviewed['confirmation']['typed_name'] is not None and typed_name != reviewed['group_name']:

@@ -1327,6 +1327,92 @@ class TopologyReadTests(GroupCase):
                                     group_replication_single_primary_mode='ON')
         return fixture
 
+    def test_duplicate_mysql_uuid_notes_keep_all_saved_members_and_map_nodes(self):
+        self.save('router-one', 'G', name='Router one')
+        self.save('router-two', 'G', name='Router two')
+        self.save('distinct', 'G')
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'router-one.example': member_fixture(UUID_A.upper()),
+                    'router-two.example': member_fixture(UUID_A),
+                    'distinct.example': member_fixture(UUID_B)}
+        expected_order = [profile['id'] for profile in self.store.list('profile')]
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        for section in ('members', 'map'):
+            with self.subTest(section=section), self.clients(fixtures) as observed:
+                report = self.read(section)
+            validate(report, schema)
+            self.assertEqual([member['profile_id'] for member in report['members']], expected_order)
+            self.assertEqual(report['summary']['read'], 4)
+            aliases = [member for member in report['members'] if member['server_uuid'] == UUID_A]
+            self.assertEqual(len(aliases), 3)
+            first = aliases[0]
+            self.assertIsNone(first['duplicate_of'])
+            self.assertNotIn('same server_uuid', first['message'])
+            distinct = next(member for member in report['members'] if member['profile_id'] == 'distinct')
+            self.assertIsNone(distinct['duplicate_of'])
+            self.assertNotIn('same server_uuid', distinct['message'])
+            for duplicate in aliases[1:]:
+                note = ('%s and %s reach the same server (same server_uuid); '
+                        'one may be a router or proxy port.' %
+                        (first['profile_name'], duplicate['profile_name']))
+                self.assertEqual(duplicate['duplicate_of'], first['profile_id'])
+                self.assertIn(note, duplicate['message'])
+                if section == 'map':
+                    self.assertIn({'profile_id': duplicate['profile_id'], 'message': note}, report['map']['notes'])
+            self.assertEqual(len(observed.connections), 4, 'duplicate reporting must not open extra connections')
+            if section == 'map':
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(set(nodes), set(expected_order), 'each saved endpoint keeps its own map node')
+                self.assertEqual(len(report['map']['nodes']), 4)
+                for member in report['members']:
+                    node = nodes[member['profile_id']]
+                    self.assertEqual(node['duplicate_of'], member['duplicate_of'])
+                    self.assertEqual(node['kind'], 'member')
+                duplicate_notes = [note for note in report['map']['notes'] if 'same server_uuid' in note['message']]
+                self.assertEqual(len(duplicate_notes), 2)
+
+    def test_failed_map_read_with_an_observed_uuid_is_not_duplicate_evidence(self):
+        self.save('healthy', 'G')
+        # The first identity read succeeds, but the later map probe reaches
+        # another node. The failed member still carries its initial UUID.
+        fixtures = {'active.example': member_fixture(UUID_A, probe_uuid=UUID_C),
+                    'healthy.example': member_fixture(UUID_A)}
+        with self.clients(fixtures):
+            report = self.read('map')
+        nodes = self.assert_map_schema(report)
+        members = {member['profile_id']: member for member in report['members']}
+        self.assertEqual(members['active']['outcome'], 'failed')
+        self.assertEqual(members['active']['server_uuid'], UUID_A)
+        self.assertEqual(members['healthy']['outcome'], 'read')
+        for member in members.values():
+            self.assertIsNone(member['duplicate_of'])
+            self.assertNotIn('same server_uuid', member['message'])
+            self.assertIsNone(nodes[member['profile_id']]['duplicate_of'])
+        self.assertFalse(any('same server_uuid' in note['message'] for note in report['map']['notes']))
+
+    def test_nil_and_missing_mysql_uuid_never_mark_duplicate_connections(self):
+        for pid in ('nil-peer', 'missing-one', 'missing-two'):
+            self.save(pid, 'G')
+        nil = '00000000-0000-0000-0000-000000000000'
+        fixtures = {'active.example': member_fixture(nil), 'nil-peer.example': member_fixture(nil),
+                    'missing-one.example': member_fixture(), 'missing-two.example': member_fixture()}
+        for host in ('missing-one.example', 'missing-two.example'):
+            fixtures[host]['variables'].pop('server_uuid')
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        for section in ('members', 'map'):
+            with self.subTest(section=section), self.clients(fixtures):
+                report = self.read(section)
+            validate(report, schema)
+            for member in report['members']:
+                self.assertIsNone(member['server_uuid'])
+                self.assertIsNone(member['duplicate_of'])
+                self.assertNotIn('same server_uuid', member['message'])
+            if section == 'map':
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(len(nodes), 4)
+                self.assertTrue(all(node['duplicate_of'] is None for node in nodes.values()))
+                self.assertFalse(any('same server_uuid' in note['message'] for note in report['map']['notes']))
+
     def test_map_innodb_cluster_two_saved_members_one_peer_keeps_member_facts(self):
         self.save('second', 'G')
         self.save('outsider', 'outside')

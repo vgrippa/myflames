@@ -85,7 +85,7 @@
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "Sequential member results. A stop never interrupts an already sent statement. Unknown effects require inspection before another review.",
+  "description": "Sequential member results. A stop never interrupts an already sent statement. Unknown effects require inspection before another review. Any selected member refused at plan time refuses the whole apply before login or writes; every result member is not_sent and refused members retain their reason.",
   "definitions": {
     "identity": {
       "type": [
@@ -169,7 +169,8 @@
         "config_line",
         "reason",
         "message",
-        "audit_id"
+        "audit_id",
+        "duplicate_of"
       ],
       "properties": {
         "profile_id": {
@@ -253,6 +254,13 @@
           ]
         },
         "audit_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Profile ID of the first selected member in rolling order with the same server identity; null otherwise. Later aliases are refused with no statement.",
           "type": [
             "string",
             "null"

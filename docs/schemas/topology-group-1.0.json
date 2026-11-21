@@ -374,7 +374,8 @@
         "behind",
         "behind_reason",
         "channels",
-        "read_only_value"
+        "read_only_value",
+        "duplicate_of"
       ],
       "properties": {
         "profile_id": {
@@ -517,6 +518,13 @@
           }
         },
         "read_only_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Profile ID of the first successfully read MySQL member with the same non-nil server_uuid; null otherwise. Each saved connection remains a separate member and map node.",
           "type": [
             "string",
             "null"
@@ -786,7 +794,8 @@
         "state",
         "outcome",
         "server_uuid",
-        "cluster_id"
+        "cluster_id",
+        "duplicate_of"
       ],
       "properties": {
         "id": {
@@ -862,6 +871,13 @@
           ]
         },
         "cluster_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Profile ID of the first successfully read MySQL member with the same non-nil server_uuid; null otherwise. Each saved connection remains a separate member and map node.",
           "type": [
             "string",
             "null"

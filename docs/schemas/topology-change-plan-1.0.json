@@ -84,7 +84,7 @@
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "One review of a rolling variable change. Read-only anywhere refuses before login; members without statements are unchanged or refused.",
+  "description": "One review of a rolling variable change. Read-only anywhere refuses before login; members without statements are unchanged or refused. Any selected member refused at plan time refuses the whole apply before login or writes; every result member is not_sent and refused members retain their reason.",
   "definitions": {
     "safety": {
       "type": "object",
@@ -309,7 +309,8 @@
         "caveats",
         "privileges",
         "config_line",
-        "reason"
+        "reason",
+        "duplicate_of"
       ],
       "properties": {
         "profile_id": {
@@ -379,6 +380,13 @@
           ]
         },
         "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Profile ID of the first selected member in rolling order with the same server identity; null otherwise. Later aliases are refused with no statement.",
           "type": [
             "string",
             "null"

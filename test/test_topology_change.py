@@ -58,7 +58,7 @@ class MemberClient(object):
         self.persisted = {}
         self.calls, self.writes, self.options = [], [], []
         self.before_read = self.before_write = self.after_write = None
-        self.read_error = self.write_error = None
+        self.read_error = self.write_error = self.gtid_error = None
         self.noop_write = False
         self.adjusted_value = None
         self.password = None
@@ -133,13 +133,19 @@ class MemberClient(object):
             return ['@@version_comment'], [[self.variables['version_comment']]]
         if lower == 'select @@version':
             return ['@@version'], [[self.variables['version']]]
+        if lower in ('select @@global.gtid_executed', 'select @@global.gtid_current_pos'):
+            if self.gtid_error:
+                raise connector.ConnectorError(self.gtid_error)
+            name = lower.split('.')[-1]
+            return ['@@GLOBAL.' + name], [[self.variables[name]]]
         if "variable_name = 'admin-version'" in lower:
             return ['variable_value'], [[self.variables['version']]] if self.proxy == 'proxysql' else []
         if lower == 'show readyset version':
             return ['name', 'value'], [['release version', 'stable-test']]
         if lower.startswith('show global variables') or lower.startswith('show session variables'):
             names = re.findall(r"'([^']+)'", text)
-            return ['Variable_name', 'Value'], [[name, self.variables[name]] for name in names if name in self.variables]
+            return ['Variable_name', 'Value'], [[name, self.variables[name]] for name in names
+                if name in self.variables and name not in ('gtid_executed', 'gtid_current_pos')]
         if lower.startswith('show global status'):
             names = re.findall(r"'([^']+)'", text)
             return ['Variable_name', 'Value'], [[name, self.status[name]] for name in names if name in self.status]
@@ -397,9 +403,179 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(member['status'], 'refused')
         self.assertTrue(member['reason'])
         self.assertIsNone(member['statement'])
+        opened = len(self.opened)
         result = self.apply(plan)
-        self.assertEqual(result['status'], 'partial')
-        self.assertEqual(self.statuses(result), {'member-1': 'applied', 'member-2': 'refused', 'member-3': 'not_sent'})
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['message'], 'Untick the refused servers and review again.')
+        self.assertEqual(self.statuses(result), dict.fromkeys(('member-1', 'member-2', 'member-3'), 'not_sent'))
+        refused = next(m for m in result['members'] if m['profile_id'] == 'member-2')
+        self.assertEqual(refused['reason'], member['reason'])
+        self.assertEqual(refused['message'], member['reason'])
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(len(self.records()), 3)
+        self.assertTrue(all(r['status'] == 'refused' for r in self.records()))
+
+    def test_duplicate_mysql_targets_refuse_whole_plan_in_reviewed_order(self):
+        self.change_profile(0, name='Zulu')
+        self.change_profile(1, name='Alpha')
+        self.change_profile(2, name='Beta')
+        for index in (0, 2):
+            self.client(index).variables['server_uuid'] = self.client(1).variables['server_uuid'].upper()
+        plan = self.plan()
+        self.assertEqual([m['profile_id'] for m in plan['members']], ['member-2', 'member-3', 'member-1'])
+        self.assertEqual(plan['members'][0]['status'], 'planned')
+        self.assertIsNone(plan['members'][0]['duplicate_of'])
+        for member in plan['members'][1:]:
+            self.assertEqual(member['status'], 'refused')
+            self.assertEqual(member['duplicate_of'], 'member-2')
+            self.assertEqual(member['reason'], 'This saved connection reaches the same server as Alpha.')
+            self.assertIsNone(member['statement'])
+            self.assertIsNone(member['after'])
+        opened = len(self.opened)
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['message'], 'Untick the refused servers and review again.')
+        self.assertTrue(all(m['status'] == 'not_sent' for m in result['members']))
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.written_ids(), [])
+        self.assertEqual(len(self.records()), 3)
+        self.assertTrue(all(record['status'] == 'refused' for record in self.records()))
+        for value, schema in ((plan, 'topology-change-plan-1.0.json'), (result, 'topology-change-1.0.json')):
+            validate(value, json.loads((ROOT / 'docs' / 'schemas' / schema).read_text(encoding='utf-8')))
+
+    def test_invalid_plan_needs_no_confirmation_even_after_policy_becomes_read_only(self):
+        self.change_profile(2, type='production')
+        self.client(1).variables.pop('max_connections')
+        plan = self.plan()
+        opened = len(self.opened)
+        for read_only in (False, True):
+            with self.subTest(read_only=read_only):
+                self.change_profile(2, read_only=read_only)
+                result = self.apply(plan, confirmed=False, typed_name='')
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['message'], 'Untick the refused servers and review again.')
+                self.assertTrue(all(m['status'] == 'not_sent' for m in result['members']))
+                self.assertEqual(len(self.opened), opened)
+                self.assertEqual(self.written_ids(), [])
+
+    def test_unselected_alias_does_not_refuse_selected_target(self):
+        self.client(1).variables['server_uuid'] = self.client(0).variables['server_uuid']
+        plan = self.plan(member_ids=['member-2'])
+        self.assertEqual(plan['members'][0]['status'], 'planned', plan)
+        self.assertIsNone(plan['members'][0]['duplicate_of'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+        self.assertEqual(self.written_ids(), ['member-2'])
+
+    def test_unselected_source_alias_keeps_async_replica_before_source(self):
+        self.make_async()
+        self.client(2).variables['server_uuid'] = self.client(0).variables['server_uuid']
+        self.client(2).channels = []
+        self.client(2).replicas = list(self.client(0).replicas)
+        self.client(1).replicas = []
+        plan = self.plan(member_ids=['member-1', 'member-2'])
+        self.assertEqual([m['profile_id'] for m in plan['members']], ['member-2', 'member-1'])
+        self.assertEqual([m['profile_id'] for m in plan['expect']['order_dependencies']], ['member-3'])
+        order = []
+        for index in (0, 1):
+            self.client(index).after_write = lambda sql, i=index: order.append('member-%d' % (i + 1))
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+        self.assertEqual(order, ['member-2', 'member-1'])
+        self.assertEqual(self.client(2).writes, [])
+
+    def test_unchanged_alias_still_refuses_duplicate_selection(self):
+        self.client(0).variables['max_connections'] = '300'
+        self.client(1).variables['server_uuid'] = self.client(0).variables['server_uuid']
+        plan = self.plan()
+        self.assertEqual(plan['members'][0]['status'], 'unchanged')
+        self.assertEqual(plan['members'][1]['status'], 'refused')
+        self.assertEqual(plan['members'][1]['duplicate_of'], 'member-1')
+        self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_duplicates_require_server_id_hostname_and_port(self):
+        for index in range(3):
+            self.clients[self.profiles[index]['host']] = MemberClient(index, 'mariadb')
+        original = self.client(0).variables
+        for key in ('server_id', 'hostname', 'port'):
+            self.client(1).variables[key] = original[key]
+        # Version is metadata, not a discriminator for duplicate destinations.
+        self.client(1).variables['version'] = '11.4.8-MariaDB'
+        self.client(2).variables['server_id'] = original['server_id']
+        plan = self.plan()
+        self.assertEqual([m['status'] for m in plan['members']], ['planned', 'refused', 'planned'], plan)
+        self.assertEqual(plan['members'][1]['duplicate_of'], 'member-1')
+        self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+        self.client(1).variables['port'] = '3307'
+        plan = self.plan()
+        self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_galera_duplicate_identity_is_node_uuid(self):
+        for index, node in enumerate(('alpha', 'beta', 'gamma')):
+            self.clients[self.profiles[index]['host']] = MemberClient(index, 'mariadb', node_name=node)
+        self.client(1).status['wsrep_gcomm_uuid'] = self.client(0).status['wsrep_gcomm_uuid'].upper()
+        plan = self.plan()
+        self.assertEqual([m['status'] for m in plan['members']], ['planned', 'refused', 'planned'], plan)
+        self.assertEqual(plan['members'][1]['duplicate_of'], 'member-1')
+        self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_nil_mysql_and_galera_node_identity_refuses_before_send(self):
+        self.client(0).variables['server_uuid'] = '00000000-0000-0000-0000-000000000000'
+        self.clients[self.profiles[1]['host']] = MemberClient(1, 'mariadb', node_name='beta')
+        self.client(1).status['wsrep_gcomm_uuid'] = '00000000-0000-0000-0000-000000000000'
+        plan = self.plan()
+        by_id = {member['profile_id']: member for member in plan['members']}
+        for pid in ('member-1', 'member-2'):
+            self.assertEqual(by_id[pid]['status'], 'refused', plan)
+            self.assertIsNone(by_id[pid]['statement'])
+        self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_gtid_reads_are_bound_but_positions_do_not_invalidate_review(self):
+        self.clients[self.profiles[1]['host']] = MemberClient(1, 'mariadb')
+        plan = self.plan()
+        self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+        for index, name in ((0, 'gtid_executed'), (1, 'gtid_current_pos')):
+            client = self.client(index)
+            self.assertTrue(any(sql.startswith('DELIMITER ') and 'SELECT @@GLOBAL.' + name in sql
+                                for sql in client.calls))
+            client.variables[name] = UUIDS[0] + ':1-200' if index == 0 else '0-1-200'
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_optional_gtid_server_error_does_not_poison_proven_identity(self):
+        self.clients[self.profiles[1]['host']] = MemberClient(1, 'mariadb')
+        for index in (0, 1):
+            self.client(index).gtid_error = 'ERROR 1193 (HY000): Unknown system variable'
+        plan = self.plan()
+        self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+        self.assertEqual(self.apply(plan)['status'], 'applied')
+
+    def test_router_switch_during_bound_gtid_read_poisoned_even_when_optional(self):
+        def switch(sql):
+            if sql.startswith('DELIMITER ') and 'SELECT @@GLOBAL.gtid_executed' in sql:
+                self.client(0).variables['server_uuid'] = UUIDS[4]
+        self.client(0).before_read = switch
+        plan = self.plan()
+        self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+        self.assertIsNone(plan['members'][0]['statement'])
+        self.assertEqual(self.apply(plan)['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+
+    def test_offline_gr_row_uses_async_order_and_connecting_channel(self):
+        self.make_async()
+        self.make_gr()
+        for index in range(3):
+            self.client(index).state = 'OFFLINE'
+        self.client(2).channels[0]['Replica_IO_Running'] = 'Connecting'
+        plan = self.plan()
+        self.assertEqual([m['profile_id'] for m in plan['members']], ['member-3', 'member-2', 'member-1'])
+        self.assertIn('Asynchronous', plan['order_rule'])
+        self.assertEqual([m['order_facts']['role'] for m in plan['expect']['members']],
+                         ['replica', 'replica', 'source'])
+        self.assertEqual(self.apply(plan)['status'], 'applied')
 
     def test_read_only_anywhere_refuses_plan_before_secret_lookup(self):
         self.change_profile(2, read_only=True)

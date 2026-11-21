@@ -491,7 +491,7 @@ def _build_map(entries, probes, profiles):
     by_id = {entry['profile_id']: entry for entry in entries}
     stored = {profile['id']: profile for profile in profiles}
     nodes = [dict(id=entry['profile_id'], kind='member', profile_id=entry['profile_id'],
-                  label=entry['profile_name'], cluster_id=None,
+                  label=entry['profile_name'], cluster_id=None, duplicate_of=entry.get('duplicate_of'),
                   **{key: entry[key] for key in ('host', 'port', 'engine', 'product', 'version',
                                                 'role', 'state', 'outcome', 'server_uuid')}) for entry in entries]
     node_index = {node['id']: node for node in nodes}
@@ -634,12 +634,31 @@ def _build_map(entries, probes, profiles):
                 edges=[edges[key] for key in sorted(edges)], clusters=[boxes[key] for key in sorted(boxes)], notes=notes)
 
 
+def _duplicate_notes(entries):
+    """Annotate aliases of an observed MySQL server without merging members."""
+    seen, notes = {}, []
+    for entry in entries:
+        server = _uuid(entry['server_uuid']) if entry['engine'] == 'mysql' and entry['outcome'] == 'read' else None
+        if server is None:
+            continue
+        first = seen.setdefault(server, entry)
+        if first is entry:
+            continue
+        message = ('%s and %s reach the same server (same server_uuid); one may be a router or proxy port.' %
+                   (first['profile_name'], entry['profile_name']))
+        entry['duplicate_of'] = first['profile_id']
+        entry['message'] += ' ' + message
+        notes.append({'profile_id': entry['profile_id'], 'message': message})
+    return notes
+
+
 def _entry(profile):
     entry = dict(profile_id=profile['id'], profile_name=profile.get('name') or profile['id'],
                  host=profile.get('host') or '', port=profile.get('port') or 3306,
                  safety={'type': profile.get('type') if profile.get('type') in dbops.CONNECTION_TYPES else dbops.DEFAULT_CONNECTION_TYPE,
                          'read_only': bool(profile.get('read_only'))},
-                 outcome='not_reached', message='Not read: the time budget did not allow this member to start.', elapsed_s=0)
+                 outcome='not_reached', message='Not read: the time budget did not allow this member to start.', elapsed_s=0,
+                 duplicate_of=None)
     entry.update(dict.fromkeys(('engine', 'product', 'version', 'version_comment', 'server_uuid', 'server_id',
                                'hostname', 'read_only', 'read_only_value', 'super_read_only', 'role', 'state', 'lag', 'behind', 'behind_reason')))
     entry['channels'] = []
@@ -728,7 +747,9 @@ def read_group(store, group_name, section, active_member_profile_id):
         results = list(pool.map(read_one, members))
     entries = [result[0] for result in results]
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))
+    duplicate_notes = []
     if section in ('members', 'map'):
+        duplicate_notes = _duplicate_notes(entries)
         positions = {entry['profile_id']: position for entry, snapshot, position, reason, multi in results}
         primary_entry = next((entry for entry in entries if entry['profile_id'] == primary_id), None)
         for entry in entries:
@@ -770,6 +791,7 @@ def read_group(store, group_name, section, active_member_profile_id):
         probes = {entry['profile_id']: snapshot['probe'] for entry, snapshot, position, reason, multi in results
                   if entry['outcome'] == 'read' and snapshot is not None}
         report['map'] = _build_map(entries, probes, members)
+        report['map']['notes'].extend(duplicate_notes)
         report['map']['notes'].extend({'profile_id': entry['profile_id'], 'message': note}
             for entry, snapshot, position, reason, multi in results if snapshot is not None
             for note in snapshot['notes'])
