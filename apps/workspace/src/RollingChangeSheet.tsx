@@ -14,7 +14,7 @@ import { recordDeclined, type Connection } from "./api";
 import { openAuditLog } from "./ActionReview";
 import { Checkbox, ConfirmSheet, StatusPill, type Tone } from "./kit";
 import { Commands } from "./OpsShared";
-import { clearRollingRun, runTerminal, startRollingRun, stopRollingRun, useRollingRun } from "./rollingRuns";
+import { clearRollingRun, runBinding, runTerminal, startRollingRun, stopRollingRun, useRollingRun } from "./rollingRuns";
 import {
   planTopologyChange,
   type ParameterRow, type RollingChangeMode, type RollingChangePlan, type RollingPlanMember,
@@ -160,10 +160,17 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
   const modes = allMaria ? MODES.filter((m) => m.value === "global") : MODES;
 
   const run = useRollingRun();
-  // This sheet's run is the one started from its row; an unfinished run of
-  // another row blocks Apply here until it ends.
-  const ownRun = run && run.row.name === row.name ? run : null;
+  // This sheet's run is the one started from its row on this exact group
+  // incarnation; an unfinished run anywhere else blocks Apply here, and a
+  // run of another group is named but never attached.
+  const binding = runBinding(group, report.members);
+  const ownRun = run && run.binding === binding && run.row.name === row.name ? run : null;
   const otherRun = run && !ownRun && !runTerminal(run) ? run : null;
+  const otherRunText = otherRun
+    ? otherRun.binding === binding
+      ? `A rolling change is already running: ${otherRun.plan.name}. Its sheet opens from the Topology place banner.`
+      : `A rolling change is already running in group ${otherRun.plan.group_name || otherRun.connection.group_name}: ${otherRun.plan.name}.`
+    : "";
   const [value, setValue] = useState(() => commonValue(row, members.map((m) => m.profile_id)));
   const [mode, setMode] = useState<RollingChangeMode>(allMaria ? "global" : "persist");
   const [ticked, setTicked] = useState<Record<string, boolean> | null>(null);
@@ -290,7 +297,10 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
         : `One value for the selected members of ${group}, one server at a time, with one review before anything is sent.`}
       busy={busy}
       busyLabel={applying ? "Applying…" : "Reading the members…"}
-      progress={progress?.message || "Applying the reviewed change, one member at a time"}
+      progress={applying
+        ? progress?.message || "Applying the reviewed change, one member at a time"
+        : "Reading the selected servers and building the review"}
+      onLeave={closeSheet}
       confirmLabel={plan ? "Apply" : "Review"}
       confirmTone={plan ? "danger" : "primary"}
       confirmDisabled={confirmDisabled}
@@ -342,7 +352,7 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
           </fieldset>
           {chosen.length === 0 && <p className="hint">None of the changeable members is chosen.</p>}
           {otherRun && (
-            <p className="hint">A rolling change is already running: {otherRun.plan.name}. Its sheet opens from the Topology place banner.</p>
+            <p className="hint">{otherRunText}</p>
           )}
           {planning && <p className="hint" role="status">Reading the members and planning the change…</p>}
           {planError && <p className="rolling-problem" role="alert">{planError}</p>}
@@ -404,13 +414,15 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
             </div>
           )}
           {otherRun && (
-            <p className="rolling-problem" role="alert">A rolling change is already running: {otherRun.plan.name}. Apply waits until it ends.</p>
+            <p className="rolling-problem" role="alert">{otherRunText} Apply waits until it ends.</p>
           )}
           {applying && (
             <div className="rolling-applying">
               <p className="rolling-phase" role="status" aria-live="polite">
                 <span className="spinner" aria-hidden="true" />
-                {progress?.message || `Applying on ${plan.members[0]?.profile_name || "the first member"}…`}
+                {ownRun?.progressSilent
+                  ? "The server is not answering progress; the change may still be running."
+                  : progress?.message || `Applying on ${plan.members[0]?.profile_name || "the first member"}…`}
               </p>
               <button type="button" className="button" disabled={stopping || !!ownRun?.stopAcked} onClick={() => void stop()}>
                 {stopping ? "Stopping…" : "Stop"}
@@ -430,11 +442,17 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
             <p className="rolling-problem" role="alert">{applyError}</p>
           ) : lostDone ? (
             <>
-              <p className="rolling-warning" role="status">{LOST_NOTE}</p>
-              {progress?.message && <p className="hint">{progress.message}</p>}
+              {ownRun?.lostUnknown ? (
+                <p className="rolling-warning" role="status">The server no longer reports this change; check the Audit log for each member.</p>
+              ) : (
+                <>
+                  <p className="rolling-warning" role="status">{LOST_NOTE}</p>
+                  {progress?.message && <p className="hint">{progress.message}</p>}
+                </>
+              )}
               <p className="hint rolling-audit">
                 Each member's attempt is one audit record.{" "}
-                <button type="button" className="text-button" onClick={() => openAuditLog(null)}>
+                <button type="button" className="text-button" onClick={() => { closeSheet(); openAuditLog(null); }}>
                   Open the Audit log
                 </button>
               </p>
@@ -461,7 +479,7 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
               </ol>
               <p className="hint rolling-audit">
                 One audit record per member.{" "}
-                <button type="button" className="text-button" onClick={() => openAuditLog(result.audit_ids[0] || null)}>
+                <button type="button" className="text-button" onClick={() => { closeSheet(); openAuditLog(result.audit_ids[0] || null); }}>
                   Open the Audit log
                 </button>
               </p>

@@ -166,11 +166,13 @@ const reports = {
 const rollingCalls = { plan: [], apply: [], stop: [], progress: [] };
 let applyReply = null;
 let applyDelay = 0;
+let planDelay = 0;
 // The failure switches: dropApply aborts the apply request without a reply,
-// stopFailures fails that many Stop calls, progressReply is the progress
-// snapshot the polls see.
+// stopFailures fails that many Stop calls, progressFails fails the progress
+// polls, progressReply is the progress snapshot the polls see.
 let dropApply = false;
 let stopFailures = 0;
+let progressFails = false;
 let progressReply = { phase: "sending", states: ["sent", "waiting"], status: null,
   profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." };
 function rollingMember(over) {
@@ -298,7 +300,7 @@ const h = await open("/api/unused-topology-place", "topology-place", {
     const reply = rollingPlanQueue.length
       ? rollingPlanQueue.shift()
       : rollingPlan([plannedDb2(), plannedDb1()].filter((m) => body.member_ids.includes(m.profile_id)));
-    return { status: 200, body: reply };
+    return { status: 200, body: reply, ...(planDelay ? { delay: planDelay } : {}) };
   },
   "/api/live/topology/variable/apply": (body, request) => {
     rollingCalls.apply.push(body);
@@ -326,6 +328,7 @@ const h = await open("/api/unused-topology-place", "topology-place", {
   },
   "/api/live/action/progress": (body) => {
     rollingCalls.progress.push(body);
+    if (progressFails) return { status: 500, body: { error: "Progress is not answering." } };
     return { status: 200, body: progressReply };
   },
   "/api/profiles/delete": (body) => {
@@ -1179,7 +1182,173 @@ try {
   await sheetClick("Close");
   await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
 
-  // --- A group switch during a slow read, then back: the aborted read never
+  // --- Two Apply clicks before React commits the busy state send one apply:
+  // the run is single flight for its group.
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  const appliesBeforeDouble = rollingCalls.apply.length;
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll("dialog.rolling-change-sheet .sheet-buttons button")]
+      .find((b) => b.textContent.trim() === "Apply");
+    button.click();
+    button.click();
+  });
+  await page.waitForSelector(`${sheetSel} .rolling-result`, { visible: true, timeout: 10000 });
+  assert.equal(rollingCalls.apply.length, appliesBeforeDouble + 1, "two Apply clicks send one apply");
+  await sheetClick("Close");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+
+  // --- While Review reads the members and builds the review, the sheet says
+  // so; it never reads as an apply.
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  planDelay = 2500;
+  await sheetClick("Review");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("Reading the selected servers and building the review"), { timeout: 10000 });
+  assert.doesNotMatch(await sheetText(), /Applying the reviewed change/, "planning never reads as applying");
+  planDelay = 0;
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await sheetClick("Cancel");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+
+  // --- A slow apply can be left: after the slow-reply grace, Cancel becomes
+  // Close and Escape closes the sheet; the run continues under the banner.
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  applyDelay = 11000;
+  progressReply = { phase: "sending", states: ["sent", "waiting"], status: null,
+    profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." };
+  await sheetClick("Apply");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent.includes("db-2: sending."),
+    { timeout: 10000 });
+  await page.waitForFunction(() => [...document.querySelectorAll("dialog.rolling-change-sheet .sheet-buttons button")]
+    .some((b) => b.textContent.trim() === "Close"), { timeout: 15000 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+  // The inspector keeps the list hidden; the banner is there all the same.
+  await page.waitForFunction(() => document.querySelector(".topology-place .rolling-run-banner"));
+  assert.match(await banner(), /Rolling change running: max_connections/, "the run continues under the banner after Escape");
+  applyDelay = 0;
+  await page.waitForFunction(() => document.querySelector(".topology-place .rolling-run-banner")?.textContent.includes("finished"),
+    { timeout: 10000 });
+  await clickText(".topology-place .rolling-run-banner", "Show");
+  await page.waitForSelector(`${sheetSel} .rolling-result`, { visible: true });
+  await sheetClick("Close");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+  assert.equal(await page.$(".topology-place .rolling-run-banner"), null, "closing the result clears the banner");
+
+  // --- A lost reply with failing progress polls: the run never ends on
+  // failed polls, Stop stays available, and the sheet says the server is not
+  // answering. Progress answering "unknown" ends the run with the Audit
+  // message, and the Audit link closes the sheet before navigating.
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  dropApply = true;
+  progressFails = true;
+  await sheetClick("Apply");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("The server is not answering progress; the change may still be running."), { timeout: 15000 });
+  const silentStop = await page.$eval(`${sheetSel} .rolling-applying button`, (e) => e.disabled);
+  assert.equal(silentStop, false, "Stop stays available while progress is not answering");
+  await pause(4500);
+  assert.equal(await page.$(`${sheetSel} .rolling-result`), null, "failed polls never end the run");
+  const silentPolls = rollingCalls.progress.length;
+  await waitFor(() => rollingCalls.progress.length > silentPolls, "the polls keep trying after a lost reply");
+  progressFails = false;
+  progressReply = { phase: "unknown", states: [], status: null, profile_id: null, profile_name: null, message: null };
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("The server no longer reports this change; check the Audit log for each member."), { timeout: 20000 });
+  assert.match(await sheetText(), /Open the Audit log/, "the unknown phase links to the Audit log");
+  await page.evaluate(() => [...document.querySelectorAll("dialog.rolling-change-sheet .text-button")]
+    .find((b) => b.textContent.trim() === "Open the Audit log").click());
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"),
+    { timeout: 5000 });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForFunction(() => document.querySelector(".topology-place .segmented"));
+  assert.equal(await page.$(".topology-place .rolling-run-banner"), null, "the Audit link closed the sheet and the run");
+
+  // --- A run is bound to its group incarnation: in mf-two the same
+  // parameter does not attach mf-topo's run; the banner names mf-topo and
+  // offers no Show.
+  await topoTab("Parameters");
+  await page.waitForFunction(() => document.querySelector('.topology-place tr[data-row-key="max_connections"]'));
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  applyDelay = 20000;
+  progressReply = { phase: "sending", states: ["sent", "waiting"], status: null,
+    profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." };
+  await sheetClick("Apply");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent.includes("db-2: sending."),
+    { timeout: 10000 });
+  // Switch the connection with the run going (the picker sits behind the
+  // modal sheet, so click it directly): the sheet closes, and another group
+  // never attaches the run.
+  await page.evaluate(() => document.querySelector(".window-toolbar .connection-pill").click());
+  await page.waitForSelector(".window-toolbar .picker-panel", { visible: true });
+  await page.select('.window-toolbar select[aria-label="Connection"]', "p-two-1");
+  await page.waitForSelector(".topology-place .view-empty", { visible: true });
+  await clickText(".topology-place", "Open group connection mf-two");
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-two"));
+  await page.waitForSelector(".topology-place .segmented", { visible: true });
+  await topoTab("Parameters");
+  await page.waitForSelector('.topology-place tr[data-row-key="max_connections"]', { visible: true });
+  await page.waitForSelector(".topology-place .rolling-run-banner", { visible: true });
+  assert.match(await banner(), /Rolling change running in group mf-topo\./, "another group's run is its own banner");
+  assert.equal(await page.$(".topology-place .rolling-run-banner button"), null, "another group's banner offers no Show");
+  await page.evaluate(() => document.querySelector('.topology-place tr[data-row-key="max_connections"]').click());
+  await page.waitForFunction(() => document.querySelector(".view-inspector .inspector-title"));
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  text = await sheetText();
+  assert.match(text, /A rolling change is already running in group mf-topo: max_connections\./,
+    "another group's run is named in the sheet");
+  assert.doesNotMatch(text, /db-2: sending\./, "another group's run progress is never attached");
+  await sheetClick("Cancel");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+  await chooseConnection(page, "p-topo-2");
+  await page.waitForSelector(".topology-place .view-empty", { visible: true });
+  await clickText(".topology-place", "Open group connection mf-topo");
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo"));
+  await page.waitForSelector(".topology-place .rolling-run-banner", { visible: true });
+  assert.match(await banner(), /Rolling change running: max_connections, server \d of 2\./,
+    "back in mf-topo the run is attached again");
+  applyDelay = 0;
+  await page.waitForFunction(() => document.querySelector(".topology-place .rolling-run-banner")?.textContent.includes("finished"),
+    { timeout: 30000 });
+  await clickText(".topology-place .rolling-run-banner", "Show");
+  await page.waitForSelector(`${sheetSel} .rolling-result`, { visible: true });
+  await sheetClick("Close");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+  assert.equal(await page.$(".topology-place .rolling-run-banner"), null, "closing the result clears the banner");
+
   // publishes and never clears the next read's spinner; the tab reads again.
   // (A literal second Refresh during a read is refused by the busy toolbar
   // button, so the supersede goes through the same readTab path instead.)

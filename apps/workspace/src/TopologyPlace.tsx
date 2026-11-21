@@ -15,7 +15,7 @@ import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
 import { TopologyMap, mapAddress, mapEdgeLabel, mapEdgeText, mapEdgeVerification } from "./TopologyMap";
 import { RollingChangeSheet } from "./RollingChangeSheet";
-import { runMemberSpot, runTerminal, useRollingRun } from "./rollingRuns";
+import { runBinding, runMemberSpot, runTerminal, useRollingRun } from "./rollingRuns";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, Pill, Segmented, SummaryLine, ToolbarButton,
   ViewLayout, ViewStatus, type BadgeTone, type Column, type InspectorContent, type InspectorShared, type Selection,
@@ -121,7 +121,14 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   // change, a group switch or a Refresh here never loses it; the banner
   // reopens the sheet on the run's own connection and report snapshot.
   const rollingRun = useRollingRun();
-  const rollingSheetRun = changeRow && rollingRun && rollingRun.row.name === changeRow.name ? rollingRun : null;
+  // A run answers only for its own group incarnation: another group (or the
+  // same name after a membership edit) gets the run's banner, never its
+  // sheet, progress or Stop. A place without a group of its own keeps the
+  // banner with Show, which reopens the sheet on the run's own connection
+  // and report snapshot.
+  const placeBinding = connection.group_name && group ? runBinding(connection.group_name, group.members) : null;
+  const ownPlaceRun = rollingRun && (placeBinding === null || rollingRun.binding === placeBinding) ? rollingRun : null;
+  const rollingSheetRun = changeRow && ownPlaceRun && ownPlaceRun.row.name === changeRow.name ? ownPlaceRun : null;
   const selection: Selection = {
     key: selectedKey,
     select: (key: string, open?: boolean) => {
@@ -481,15 +488,19 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             onRetry={error ? () => { void readTab(tab); } : undefined}
           />}
         >
-          {rollingRun && !rollingSheetRun && (
+          {rollingRun && !rollingSheetRun && (ownPlaceRun ? (
             <p className="rolling-run-banner" role="status">
-              {runTerminal(rollingRun)
-                ? `Rolling change finished: ${rollingRun.plan.name}.`
-                : `Rolling change running: ${rollingRun.plan.name}, server ${runMemberSpot(rollingRun).at} of ${runMemberSpot(rollingRun).of}.`}
+              {runTerminal(ownPlaceRun)
+                ? `Rolling change finished: ${ownPlaceRun.plan.name}.`
+                : `Rolling change running: ${ownPlaceRun.plan.name}, server ${runMemberSpot(ownPlaceRun).at} of ${runMemberSpot(ownPlaceRun).of}.`}
               {" "}
-              <button type="button" className="text-button" onClick={() => setChangeRow(rollingRun.row)}>Show</button>
+              <button type="button" className="text-button" onClick={() => setChangeRow(ownPlaceRun.row)}>Show</button>
             </p>
-          )}
+          ) : !runTerminal(rollingRun) ? (
+            <p className="rolling-run-banner" role="status">
+              {`Rolling change running in group ${rollingRun.plan.group_name || rollingRun.connection.group_name}.`}
+            </p>
+          ) : null)}
           {!isGroup ? (
             <NonGroupState
               connection={connection}
@@ -505,7 +516,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
               <MapTab report={report} memberName={memberName} selection={selection} />
             ) : drift ? (
               <>
-                {tab === "parameters" && (changeDone || !!(rollingRun && runTerminal(rollingRun))) && (
+                {tab === "parameters" && (changeDone || !!(ownPlaceRun && runTerminal(ownPlaceRun))) && (
                   <p className="hint topology-change-done">A rolling change finished. Refresh reads the group again; nothing was re-read on its own.</p>
                 )}
                 <DriftTab tab={tab} drift={drift} report={report} memberName={memberName} selection={selection} />

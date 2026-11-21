@@ -4,7 +4,10 @@
 // payload, the reviewed plan, the latest progress and the eventual result all
 // live here. The sheet and the Topology place banner read the run through
 // useRollingRun; only the sheet starts a run, and only from a reviewed plan.
-// Stop stays available until the backend reports a terminal state.
+// A run answers only for its group incarnation (the group name plus the
+// sorted member ids with their host:port): another group, or the same name
+// after a membership edit, gets the run's banner, never its sheet. Stop
+// stays available until the backend reports a terminal state.
 import { useSyncExternalStore } from "react";
 import { ApiError, type Connection } from "./api";
 import { writeFailure } from "./kit";
@@ -22,14 +25,24 @@ export type RollingRun = {
   report: TopologyGroupReport;
   row: ParameterRow;
   plan: RollingChangePlan;
+  /** The group incarnation this run answers for (runBinding): another group
+   * or an edited membership never attaches it to a sheet. */
+  binding: string;
   progress: RollingProgress | null;
   result: RollingChangeResult | null;
   /** The apply's reply never arrived (network error, abort); progress with
    * the same id and the original connection stays the only truth. */
   lostReply: boolean;
-  /** A terminal state after a lost reply: progress finished or stayed
-   * unreachable. The last snapshot is shown as the final state. */
+  /** A terminal state after a lost reply: progress finished, or answered
+   * that it does not know this progress id. The last snapshot is kept. */
   lostDone: boolean;
+  /** The terminal phase was "unknown": the server does not know this
+   * progress id (the apply never started, the server restarted, or the
+   * entry expired). */
+  lostUnknown: boolean;
+  /** After a lost reply, the progress reads are failing. The run keeps
+   * polling with backoff; failed polls never end it. */
+  progressSilent: boolean;
   /** The apply was answered with an error. */
   applyError: string | null;
   /** The backend acknowledged the Stop; only then is the Stop button off. */
@@ -39,9 +52,16 @@ export type RollingRun = {
 };
 
 const POLL_MS = 1000;
-/** Progress reads that fail in a row after a lost reply before the last
- * snapshot is accepted as the final state (about a minute). */
-const LOST_PROGRESS_MISSES = 60;
+/** The slowest progress poll after a lost reply: 1 s, doubling to 10 s. */
+const MAX_POLL_MS = 10000;
+
+/** The group incarnation a run answers for: the group name plus the sorted
+ * member ids with their host:port. The same name with another membership (an
+ * edit) is another incarnation; another group never attaches the run. */
+export function runBinding(groupName: string, members: { profile_id: string; host: string; port: number }[]): string {
+  const ids = members.map((m) => `${m.profile_id}@${m.host}:${m.port}`).sort().join(",");
+  return `${groupName}|${ids}`;
+}
 
 let run: RollingRun | null = null;
 const listeners = new Set<() => void>();
@@ -90,17 +110,22 @@ function newProgressId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Start the reviewed plan as the one run. A previous terminal run is
- * dropped; the sheet never calls this while an unfinished run exists. */
+/** Start the reviewed plan as the one run. Single flight, synchronous: a
+ * second Apply before React commits the busy state finds the accepted run
+ * and is refused; an unfinished run of this group is never replaced. A
+ * previous terminal run is dropped; the sheet never calls this while an
+ * unfinished run exists. */
 export function startRollingRun(
   connection: Connection, report: TopologyGroupReport, row: ParameterRow,
   plan: RollingChangePlan, typedName: string | undefined,
 ): void {
+  const binding = runBinding(connection.group_name || report.group_name, report.members);
+  if (run && !runTerminal(run) && run.binding === binding) return;
   run = {
     progressId: newProgressId(),
-    connection, report, row, plan,
-    progress: null, result: null, lostReply: false, lostDone: false,
-    applyError: null, stopAcked: false, stopError: null,
+    connection, report, row, plan, binding,
+    progress: null, result: null, lostReply: false, lostDone: false, lostUnknown: false,
+    progressSilent: false, applyError: null, stopAcked: false, stopError: null,
   };
   emit();
   void drive(run.progressId, plan, typedName);
@@ -120,19 +145,29 @@ function patch(progressId: string, next: Partial<RollingRun>): void {
 
 async function drive(progressId: string, plan: RollingChangePlan, typedName: string | undefined): Promise<void> {
   const poll = async () => {
-    let misses = 0;
+    // Failed progress reads never end the run: after a lost apply reply the
+    // change may still be running, so the polls back off (1 s, doubling to
+    // 10 s) and Stop stays available.
+    let delay = POLL_MS;
     for (;;) {
       const current = currentRun(progressId);
       if (!current || runTerminal(current)) return;
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      await new Promise((resolve) => setTimeout(resolve, delay));
       const waiting = currentRun(progressId);
       if (!waiting || runTerminal(waiting)) return;
       try {
         const snap = await rollingChangeProgress(progressId);
         const latest = currentRun(progressId);
         if (!latest || runTerminal(latest)) return;
-        misses = 0;
-        patch(progressId, { progress: snap });
+        delay = POLL_MS;
+        if (latest.lostReply && snap.phase === "unknown") {
+          // The server does not know this progress id: the apply never
+          // started, the server restarted, or the entry expired. The run
+          // ends without overwriting the last known snapshot.
+          patch(progressId, { lostDone: true, lostUnknown: true, progressSilent: false });
+          return;
+        }
+        patch(progressId, { progress: snap, progressSilent: false });
         // The reply was lost: the server's own terminal phase ends the run.
         if (latest.lostReply && (snap.phase === "finished" || snap.status)) {
           patch(progressId, { lostDone: true });
@@ -140,13 +175,11 @@ async function drive(progressId: string, plan: RollingChangePlan, typedName: str
         }
       } catch {
         // Progress only describes the send; the apply's own reply decides.
-        // After a lost reply, enough missed reads accept the last snapshot.
-        misses += 1;
+        // After a lost reply the polls keep trying, slower each time, and
+        // the sheet says the server is not answering.
+        delay = Math.min(delay * 2, MAX_POLL_MS);
         const latest = currentRun(progressId);
-        if (latest && latest.lostReply && misses >= LOST_PROGRESS_MISSES) {
-          patch(progressId, { lostDone: true });
-          return;
-        }
+        if (latest && latest.lostReply) patch(progressId, { progressSilent: true });
       }
     }
   };
