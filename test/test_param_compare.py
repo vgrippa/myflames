@@ -549,3 +549,36 @@ class ValidationEdgeTest(unittest.TestCase):
         self.assertEqual(rows['validate_password.policy']['value'],'MEDIUM')
         self.assertNotIn('redacted',rows['password_history'])
         self.assertTrue(rows['audit_log_encryption_password']['redacted'])
+
+    def test_file_key_management_filekey_is_redacted_and_not_compared(self):
+        self.assertTrue(P.sensitive('file_key_management_filekey'))
+        self.assertTrue(P.sensitive('FILE_KEY_MANAGEMENT_FILEKEY'))
+        captured = {}
+        for side, secret in (('a', 'passphrase-secret'), ('b', 'FILE:/etc/mysql/keyfile.enc')):
+            catalog = {'complete': True,
+                       'items': [item('file_key_management_filekey', secret, 'string', secret)]}
+            report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB',
+                      'parameters': catalog, 'notes': []}
+            with mock.patch('myflames.config_review.config_report', return_value=report):
+                snap = P.capture(mock.Mock(host=side, port=3306), {'host': side, 'port': 3306})
+            row = snap['items'][0]
+            self.assertEqual(row['value'], '[redacted]')
+            self.assertEqual(row['default'], '[redacted]')
+            self.assertTrue(row['redacted'])
+            self.assertNotIn(secret, json.dumps(snap))
+            captured[side] = snap
+        for pair in ({'a': captured['a'], 'b': copy.deepcopy(captured['a'])}, captured):
+            rows = P.compare_many(pair)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['status'], 'missing')
+            self.assertEqual(rows[0]['reason'],
+                             'A value was redacted, truncated or unavailable; it cannot be compared.')
+            self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        raw_same = {'a': snapshot([item('file_key_management_filekey', 'same-passphrase', 'string')],
+                                  engine='mariadb'),
+                    'b': snapshot([item('file_key_management_filekey', 'same-passphrase', 'string')],
+                                  engine='mariadb')}
+        rows = P.compare_many(raw_same)
+        self.assertEqual(rows[0]['status'], 'missing')
+        self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        self.assertNotIn('same-passphrase', json.dumps(rows))

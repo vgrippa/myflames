@@ -60,6 +60,7 @@ _SECRET_VARIABLES = frozenset((
     'wsrep_sst_auth', 'report_password', 'audit_log_encryption_password',
     'keyring_encrypted_file_password', 'keyring_hashicorp_secret_id', 's3_secret_key',
     'handlersocket_plain_secret', 'handlersocket_plain_secret_wr', 'utility_user_password',
+    'file_key_management_filekey',
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
