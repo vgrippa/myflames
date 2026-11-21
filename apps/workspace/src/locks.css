@@ -34,8 +34,10 @@
 .lock-col-session {
   width: 140px;
 }
+/* Content-sized (the cap below bounds it), so a wider UI font narrows this
+   column before the tree scrolls sideways. */
 .lock-col-target {
-  width: calc(var(--space-6) * 8 + var(--space-3));
+  width: auto;
 }
 .lock-col-wait {
   width: calc(var(--space-6) * 3 + var(--space-3));
@@ -54,9 +56,11 @@
   min-width: 140px;
 }
 /* Waits for is capped so Statement keeps real width at 1440 px; the full
-   lock description is in the tooltip and the inspector. */
+   lock description is in the tooltip and the inspector. The cap narrows with
+   the frame, so a wider UI font shrinks this column before the tree scrolls
+   sideways (the session pills never give up their width). */
 .lock-tree-table .cell-flex .cell-truncate {
-  max-width: 38ch;
+  max-width: min(38ch, 24cqw);
   overflow: hidden;
   text-overflow: ellipsis;
 }

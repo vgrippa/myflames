@@ -8,6 +8,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where the **Locks** blocking tree scrolled sideways at 1440 px when the interface font is Inter (the Linux fallback, and an option in **Settings** > **Appearance**).
 - Fixed an issue where choosing another source in **Import connections** right after opening it could leave the sheet loading, with the **Import from** picker disabled.
 
 ### Security fixes
