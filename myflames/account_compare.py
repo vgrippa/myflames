@@ -200,6 +200,10 @@ def _many_privilege_grants(item):
     out = []
     for line in item['grants']:
         parts = [part.upper() for part in privileges.tokens(line)]
+        # MariaDB sql/sql_acl.cc:9829-9850 emits defaults in SHOW GRANTS.
+        # They already participate in the structured default_roles comparison.
+        if parts[:3] == ['SET', 'DEFAULT', 'ROLE']:
+            continue
         boundary = 'FROM' if parts and parts[0] == 'REVOKE' else 'TO'
         if parts and parts[0] in ('GRANT', 'REVOKE') and boundary in parts:
             if 'ON' not in parts[:parts.index(boundary)]:

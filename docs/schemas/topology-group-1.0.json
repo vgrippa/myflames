@@ -478,6 +478,7 @@
           ]
         },
         "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
           "type": [
             "string",
             "null"
@@ -841,6 +842,7 @@
           ]
         },
         "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
           "type": [
             "string",
             "null"
@@ -952,6 +954,7 @@
           ]
         },
         "evidence": {
+          "description": "server_id verifies a MariaDB member only together with an address match to that same member.",
           "enum": [
             "server_uuid",
             "server_id",
@@ -964,6 +967,7 @@
           "type": "boolean"
         },
         "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
           "type": [
             "string",
             "null"

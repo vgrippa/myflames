@@ -181,9 +181,9 @@ def _identity(conn, member):
         return {}, 'ProxySQL Admin is read for identity only.'
     values = reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
         "('version','version_comment','server_uuid','server_id','hostname','read_only','super_read_only',"
-        "'gtid_executed','gtid_mode','gtid_current_pos','group_replication_group_name',"
+        "'gtid_mode','group_replication_group_name',"
         "'group_replication_single_primary_mode','wsrep_on','wsrep_auto_increment_control',"
-        "'wsrep_provider','wsrep_cluster_name')")
+        "'wsrep_provider','wsrep_cluster_name','wsrep_node_name','wsrep_node_incoming_address')")
     version, comment = values.get('version'), values.get('version_comment') or comment
     if not version:
         raise ConnectorError('The member identity could not be read.')
@@ -193,8 +193,18 @@ def _identity(conn, member):
                   hostname=values.get('hostname'), read_only_value=values.get('read_only'),
                   read_only=_read_only(values.get('read_only')),
                   super_read_only=_on(values.get('super_read_only')) if identity['engine'] == 'mysql' else None)
-    uuid = values.get('server_uuid')
-    member['server_uuid'] = uuid if identity['engine'] == 'mysql' and isinstance(uuid, str) and _UUID.fullmatch(uuid) else None
+    member['server_uuid'] = _uuid(values.get('server_uuid')) if identity['engine'] == 'mysql' else None
+    # SHOW reads a capped catalog column (MySQL sql/sql_show_status.cc:297;
+    # MariaDB sql/sql_show.cc:10528). Even a valid prefix is not a GTID set.
+    position_name, sql = (('gtid_current_pos', 'SELECT @@GLOBAL.gtid_current_pos')
+                          if identity['engine'] == 'mariadb' else
+                          ('gtid_executed', 'SELECT @@GLOBAL.gtid_executed'))
+    values.pop('gtid_executed', None)
+    values.pop('gtid_current_pos', None)
+    # XML retains an empty GTID set; the batch reader skips empty rows.
+    position = _optional(reader, sql, notes, named=True)
+    values[position_name] = (next(iter(position[0].values()))
+                             if position and len(position) == 1 and len(position[0]) == 1 else None)
     return values, None
 
 
@@ -205,12 +215,22 @@ def _channel_facts(row, engine):
         'name': row.get('Channel_Name') or row.get('Connection_name') or '',
         'source_host': row.get('Source_Host', row.get('Master_Host')),
         'source_port': _number(row.get('Source_Port', row.get('Master_Port'))),
-        'source_uuid': uuid if isinstance(uuid, str) and _UUID.fullmatch(uuid) else None,
+        'source_uuid': _uuid(uuid),
         'source_server_id': _number(row.get('Source_Server_Id', row.get('Master_Server_Id'))),
         'io_running': row.get('Replica_IO_Running', row.get('Slave_IO_Running')),
         'sql_running': row.get('Replica_SQL_Running', row.get('Slave_SQL_Running')),
         'seconds_behind': _number(row.get('Seconds_Behind_Source', row.get('Seconds_Behind_Master'))),
     }
+
+
+def _replica_state(channels):
+    # MySQL sql/rpl_replica.cc:3545; MariaDB sql/slave.cc:2863-2869.
+    if any(str(ch.get('io_running') or '').upper() in ('CONNECTING', 'PREPARING') for ch in channels):
+        return 'connecting'
+    running = [(_on(ch.get('io_running')), _on(ch.get('sql_running'))) for ch in channels]
+    if any(False in pair for pair in running):
+        return 'stopped'
+    return 'running' if running and all(all(pair) for pair in running) else None
 
 
 def _member_facts(conn, member, variables):
@@ -230,7 +250,10 @@ def _member_facts(conn, member, variables):
         role_column = 'MEMBER_ROLE, MEMBER_STATE' if version >= (8, 0, 2) else 'MEMBER_STATE'
         rows = _optional(reader, 'SELECT ' + role_column +
             ' FROM performance_schema.replication_group_members WHERE MEMBER_ID = @@server_uuid', notes)
-        if rows:
+        # A loaded or stopped plugin can expose its own OFFLINE row without
+        # being a member (MySQL ps_information.cc:45-76,96-104).
+        own_state = rows[0][1 if version >= (8, 0, 2) else 0] if rows else None
+        if rows and own_state != 'OFFLINE':
             if version >= (8, 0, 2):
                 role = str(rows[0][0]).lower()
                 member.update(role=role if role in ('primary', 'secondary') else None, state=rows[0][1])
@@ -239,8 +262,7 @@ def _member_facts(conn, member, variables):
                 primary_uuid = primary[0][1] if primary and len(primary[0]) > 1 else None
                 # mysql-5.7.44 rapid/plugin/group_replication/src/member_info.cc:
                 # 887-890 can return UNDEFINED. Offline/error nodes have no role.
-                if not isinstance(primary_uuid, str) or not _UUID.fullmatch(primary_uuid):
-                    primary_uuid = None
+                primary_uuid = _uuid(primary_uuid)
                 role = None
                 single = _on(variables.get('group_replication_single_primary_mode'))
                 if rows[0][0] in ('ONLINE', 'RECOVERING', 'UNREACHABLE'):
@@ -267,13 +289,15 @@ def _member_facts(conn, member, variables):
         member.update(role='node', state=status.get('wsrep_local_state_comment'),
                       lag={'kind': 'galera_recv_queue', 'value': _number(status.get('wsrep_local_recv_queue')),
                            'message': 'Write sets waiting in this node\'s receive queue.'})
-        return position, notes
+        member['behind_reason'] = 'Galera nodes apply write sets from every node; see the receive queue.'
+        # MariaDB rpl_gtid.cc:1151-1154 excludes other nodes' binlog GTIDs.
+        # wsrep_gtid_mode is OFF by default (sys_vars.cc:6780).
+        return None, notes
     channels = _optional(reader, status_statement(engine, version), notes, named=True)
     if channels:
         member['channels'] = [_channel_facts(row, engine) for row in channels]
         values = [ch['seconds_behind'] for ch in member['channels']]
-        running = [(_on(ch['io_running']), _on(ch['sql_running'])) for ch in member['channels']]
-        member.update(role='replica', state='running' if all(io and sql for io, sql in running) else 'stopped',
+        member.update(role='replica', state=_replica_state(member['channels']),
                       lag={'kind': 'replica_seconds', 'value': max(values) if all(v is not None for v in values) else None,
                            'message': 'Seconds_Behind_Source is an estimate (Seconds_Behind_Master on older MySQL and MariaDB); the largest channel estimate is shown.'})
     elif channels is not None:
@@ -300,7 +324,7 @@ def _primary(entries, profiles, multi_primary=False):
         uuid, server_id = entry['server_uuid'], entry['server_id']
         if uuid:
             by_uuid.setdefault(uuid.lower(), []).append(entry['profile_id'])
-        if isinstance(server_id, int) and server_id > 0:
+        if entry['engine'] == 'mariadb' and isinstance(server_id, int) and server_id > 0:
             by_server_id.setdefault(server_id, []).append(entry['profile_id'])
     sources, replicas = set(), set()
     for entry in read:
@@ -363,7 +387,8 @@ def compare_plugins(snapshots):
 
 
 def _uuid(value):
-    return value.lower() if isinstance(value, str) and _UUID.fullmatch(value) else None
+    return (value.lower() if isinstance(value, str) and _UUID.fullmatch(value)
+            and value != '00000000-0000-0000-0000-000000000000' else None)
 
 
 def _map_probe(conn, profile, member, variables):
@@ -390,19 +415,43 @@ def _map_probe(conn, profile, member, variables):
     wsrep = _on(variables.get('wsrep_on')) or (provider and str(provider).lower() != 'none')
     if wsrep:
         kind = 'pxc' if member['product'] == 'Percona XtraDB Cluster' else 'galera'
+        if probe.get('cluster_kind') not in ('galera', 'pxc'):
+            # A loaded provider can remain connected while wsrep_on is OFF.
+            # The shared probe only reads this table for wsrep_on ON.
+            rows = _optional(reader, topology_links._WSREP_MEMBERS_SQL, notes)
+            probe['cluster_members'] = []
+            for row in rows or []:
+                if len(row) >= 3:
+                    host, port = topology_links.split_host_port(row[2], 3306)
+                    probe['cluster_members'].append(dict(uuid=row[0], name=row[1], host=host, port=port))
         status = _optional(reader, "SHOW GLOBAL STATUS WHERE Variable_name IN "
-                           "('wsrep_cluster_state_uuid','wsrep_gcomm_uuid')", notes)
+                           "('wsrep_cluster_state_uuid','wsrep_gcomm_uuid','wsrep_cluster_status')", notes)
         values = {r[0]: r[1] for r in status or [] if len(r) > 1}
         probe.update(cluster_kind=kind, cluster_name=variables.get('wsrep_cluster_name'),
                      cluster_identity=_uuid(values.get('wsrep_cluster_state_uuid')),
-                     wsrep_node_uuid=_uuid(values.get('wsrep_gcomm_uuid')))
+                     wsrep_node_uuid=_uuid(values.get('wsrep_gcomm_uuid')),
+                     wsrep_cluster_status=values.get('wsrep_cluster_status'))
         if kind == 'pxc':
             rows = _optional(reader, cluster.PXC_VIEW_SQL, notes)
-            probe['cluster_members'] = []
+            members = probe.setdefault('cluster_members', [])
             for row in rows or []:
                 if len(row) >= 2:
-                    host, port = topology_links.split_host_port(row[0], 3306)
-                    probe['cluster_members'].append({'uuid': row[1], 'host': host, 'port': port})
+                    # HOST_NAME is a node name, not a SQL endpoint. Preserve
+                    # wsrep_cluster_members incoming addresses (cluster.py:1013).
+                    found = next((m for m in members if _uuid(m.get('uuid')) and
+                                  _uuid(m['uuid']) == _uuid(row[1])), None)
+                    if found is None:
+                        found = next((m for m in members if m.get('name') == row[0]), None)
+                    if found is not None:
+                        found['uuid'] = found.get('uuid') or row[1]
+                    else:
+                        host, port = row[0], None
+                        if row[0] == variables.get('wsrep_node_name'):
+                            incoming, incoming_port = topology_links.split_host_port(
+                                variables.get('wsrep_node_incoming_address'), 3306)
+                            if incoming and incoming.upper() != 'AUTO':
+                                host, port = incoming, incoming_port
+                        members.append({'uuid': row[1], 'name': row[0], 'host': host, 'port': port})
     elif group:
         probe['cluster_identity'] = group
         if server_version_tuple(member['version']) < (8, 0, 2):
@@ -479,13 +528,13 @@ def _build_map(entries, probes, profiles):
             host, port, matching, uuid=uuid, observer_host=stored[observer].get('host'))
         if evidence == 'server_uuid':
             return found['profile_id'], evidence, True
-        # MariaDB replication has no source UUID. A positive server ID is
-        # identity evidence only when exactly one read MariaDB member has it.
+        # Both engines default server_id to 1 (sql/sys_vars.cc: MySQL 3951,
+        # MariaDB 3656). An ID alone cannot identify a saved endpoint.
         sid = _number(server_id)
         if not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb':
             identities = [pid for pid, probe in probes.items() if probe.get('kind') == 'database'
                           and by_id[pid]['engine'] == 'mariadb' and by_id[pid]['server_id'] == sid]
-            if len(identities) == 1:
+            if len(identities) == 1 and found and found['profile_id'] == identities[0]:
                 return identities[0], 'server_id', True
         # A contrary UUID is stronger than a matching address. Do not draw
         # that known different server as this saved member.
@@ -525,8 +574,13 @@ def _build_map(entries, probes, profiles):
                 boxes[key].update(kind=kind, name=probe.get('cluster_name') or cluster_uuid)
             boxes[key]['seen_from'].append(pid)
         own_uuid = _uuid(probe.get('wsrep_node_uuid') if galera else by_id[pid]['server_uuid'])
+        # A view must be Primary for wsrep; an own GR row must be active.
+        # MariaDB wsrep_server_service.cc:356-378, MySQL ps_information.cc:96.
         if cluster_uuid and own_uuid and any(
-                _uuid(row.get('uuid')) == own_uuid for row in probe.get('cluster_members', [])):
+                _uuid(row.get('uuid')) == own_uuid and
+                (probe.get('wsrep_cluster_status') == 'Primary' if galera else
+                 row.get('state') in ('ONLINE', 'RECOVERING'))
+                for row in probe.get('cluster_members', [])):
             attestations[pid] = observations[pid]
             node_index[pid]['cluster_id'] = observations[pid]
         else:
@@ -545,8 +599,7 @@ def _build_map(entries, probes, profiles):
         for channel in probe.get('channels', []):
             source, evidence, verified = target(pid, channel.get('source_host'), channel.get('source_port'),
                                                 channel.get('source_uuid'), channel.get('source_server_id'))
-            running = (_on(channel.get('io_running')), _on(channel.get('sql_running')))
-            state = None if None in running else 'running' if all(running) else 'stopped'
+            state = _replica_state([channel])
             edge(source, pid, 'replication', evidence, verified, state, 'Replication')
         for replica in probe.get('replicas', []):
             destination, evidence, verified = target(pid, replica.get('host'), replica.get('port'),
@@ -644,14 +697,14 @@ def read_group(store, group_name, section, active_member_profile_id):
                 conn = param_compare.BoundedConnection(member_conn, seconds=min(remaining, REQUEST_SECONDS))
                 variables, exclusion = _identity(conn, entry)
                 if exclusion is None:
-                    if section in ('members', 'map'):
+                    if section in ('members', 'map', 'parameters'):
                         position, notes = _member_facts(conn, entry, variables)
                         multi_primary = (entry['role'] in ('primary', 'secondary')
                                          and _on(variables.get('group_replication_single_primary_mode')) is False)
                         if notes:
                             entry['message'] = 'Read with unavailable facts: ' + ' '.join(dict.fromkeys(notes))
-                    elif section == 'parameters':
-                        snapshot = param_compare.capture(conn, server=entry)
+                    if section == 'parameters':
+                        snapshot = param_compare.capture(conn, server=entry, full_provider_options=True)
                     elif section == 'accounts':
                         snapshot = account_compare.capture(conn, server=entry)
                     elif section == 'plugins':
@@ -682,7 +735,11 @@ def read_group(store, group_name, section, active_member_profile_id):
             reason = None
             source = positions.get(primary_id)
             current = positions.get(entry['profile_id'])
-            if primary_id is None:
+            if entry['role'] == 'node':
+                reason = 'Galera nodes apply write sets from every node; see the receive queue.'
+            elif primary_entry is not None and primary_entry['role'] == 'node':
+                reason = 'The primary or source is a Galera node; GTID positions cannot establish how far behind a member is.'
+            elif primary_id is None:
                 reason = primary_reason
             elif source is None or current is None:
                 reason = 'The primary or member GTID position was unavailable.'
@@ -727,7 +784,13 @@ def read_group(store, group_name, section, active_member_profile_id):
                         for note in snapshots[pid]['notes']] if section == 'plugins' else []
         if section == 'plugins':
             snapshots = {pid: value['items'] for pid, value in snapshots.items()}
-        report[section] = {'rows': compare(snapshots), 'compared': sorted(snapshots), 'not_compared': not_compared}
+        role_settings = any(entry['role'] == 'replica' or
+                            entry['role'] in ('primary', 'secondary') and
+                            entry['state'] in ('ONLINE', 'RECOVERING') and not multi
+                            for entry, snapshot, position, reason, multi in results)
+        rows = (compare(snapshots, role_settings=role_settings)
+                if section == 'parameters' else compare(snapshots))
+        report[section] = {'rows': rows, 'compared': sorted(snapshots), 'not_compared': not_compared}
         if section == 'plugins':
             report[section]['notes'] = plugin_notes
     return report

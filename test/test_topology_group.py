@@ -85,6 +85,13 @@ if lower == 'select @@version_comment':
     emit(['@@version_comment'], [[comment]])
 elif lower == 'select @@version':
     emit(['@@version'], [[variables['version']]])
+elif lower.startswith('select @@global.'):
+    name = lower[len('select @@global.'):]
+    if cfg.get('exact_denied'):
+        sys.stderr.write('ERROR 1227 (42000): Access denied for exact variable read\n')
+        sys.exit(1)
+    value = cfg.get('exact_variables', {}).get(name, variables.get(name))
+    emit(['@@GLOBAL.' + name], [[value]])
 elif "variable_name = 'admin-version'" in lower:
     rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
     emit(['variable_value'], rows)
@@ -354,6 +361,25 @@ class ParameterManyTests(unittest.TestCase):
 
 
 class AccountManyTests(unittest.TestCase):
+    def test_mariadb_default_role_difference_is_counted_once_as_roles(self):
+        a = account(grants=['GRANT SELECT ON *.* TO `app`@`%`',
+                            'SET DEFAULT ROLE `reader` FOR `app`@`%`'],
+                    default_roles=[{'name': 'reader', 'host': ''}])
+        b = account(grants=['GRANT SELECT ON *.* TO `app`@`%`',
+                            'SET DEFAULT ROLE NONE FOR `app`@`%`'])
+        row = account_compare.compare_many({'a': side([a], 'mariadb'), 'b': side([b], 'mariadb')})[0]
+        self.assertEqual(row['status'], 'different')
+        self.assertEqual([difference['kind'] for difference in row['differences']], ['roles'])
+
+    def test_mariadb_default_role_grant_rendering_does_not_invent_privilege_drift(self):
+        a = account(grants=['GRANT SELECT ON *.* TO `app`@`%`',
+                            'SET DEFAULT ROLE `reader` FOR `app`@`%`'],
+                    default_roles=[{'name': 'reader', 'host': ''}])
+        b = copy.deepcopy(a)
+        b['grants'][-1] = "set default role 'reader' for 'app'@'%'"
+        self.assertEqual(account_compare.compare_many({'a': side([a], 'mariadb'),
+                                         'b': side([b], 'mariadb')})[0]['status'], 'same')
+
     def test_same_missing_and_changed_privileges_roles_attributes(self):
         base = account('changed', grants=['GRANT SELECT ON *.* TO `changed`@`%`'])
         other = copy.deepcopy(base)
@@ -688,6 +714,92 @@ class TopologyReadTests(GroupCase):
         validate(report, schema)
         self.assertNotIn('test-password', json.dumps(report))
 
+    def test_gtid_reads_ignore_show_prefix_and_use_full_global_value(self):
+        # A syntactically valid 1024-character SHOW prefix must not be parsed
+        # as the whole GTID set, even when it ends at an interval boundary.
+        prefix = UUID_A + ':' + ':'.join(['1'] * 493) + ':1'
+        self.assertEqual(len(prefix), 1024)
+        self.save('replica', 'G')
+        source = member_fixture(UUID_A, role='PRIMARY', gtid=prefix,
+                                exact_variables={'gtid_executed': UUID_A + ':1-1000'})
+        replica = member_fixture(UUID_B, role='SECONDARY', gtid=prefix,
+                                 exact_variables={'gtid_executed': UUID_A + ':1-900'})
+        with self.clients({'active.example': source, 'replica.example': replica}) as observed:
+            report = self.read()
+        member = next(row for row in report['members'] if row['profile_id'] == 'replica')
+        self.assertEqual(member['behind']['value'], 100)
+        sql = self.statements(observed)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 2)
+        self.assertFalse(any("'gtid_executed'" in statement for statement in sql))
+
+    def test_mariadb_gtid_reads_full_global_position(self):
+        self.save('replica', 'G')
+        source = member_fixture(engine='mariadb', gtid='0-11-1',
+                                exact_variables={'gtid_current_pos': '0-11-100'})
+        source['variables']['server_id'] = '11'
+        replica = member_fixture(engine='mariadb', gtid='0-11-1',
+                                 exact_variables={'gtid_current_pos': '0-11-90'},
+                                 channels=[{'Master_Server_Id': '11'}])
+        replica['variables']['server_id'] = '12'
+        with self.clients({'active.example': source, 'replica.example': replica}) as observed:
+            report = self.read()
+        member = next(row for row in report['members'] if row['profile_id'] == 'replica')
+        self.assertEqual(member['behind']['value'], 10)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 2)
+
+    def test_failed_exact_gtid_read_never_falls_back_to_show(self):
+        fixture = member_fixture(role='PRIMARY', gtid=UUID_A + ':1-100', exact_denied=True)
+        with self.clients({'active.example': fixture}):
+            report = self.read()
+        member = report['members'][0]
+        self.assertIsNone(member['behind'])
+        self.assertTrue(member['behind_reason'] or member['outcome'] == 'failed')
+
+    def test_stopped_gr_member_falls_through_to_async_channel(self):
+        for version in ('5.7.44', '8.4.11', '9.7.0'):
+            with self.subTest(version=version):
+                fixture = member_fixture(role='PRIMARY', has_gr=True, state='OFFLINE', channels=[{
+                    'Master_Host': 'source.example', 'Master_Port': '3306',
+                    'Slave_IO_Running': 'Yes', 'Slave_SQL_Running': 'Yes'}])
+                fixture['variables'].update(version=version, group_replication_single_primary_mode='ON')
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read()
+                member = report['members'][0]
+                self.assertEqual((member['role'], member['state']), ('replica', 'running'))
+                self.assertTrue(any('SHOW SLAVE STATUS' in sql or 'SHOW REPLICA STATUS' in sql
+                                    for sql in self.statements(observed)))
+                self.assertFalse(any('replication_group_member_stats' in sql for sql in self.statements(observed)))
+
+    def test_galera_never_reports_gtid_behind_even_with_a_stored_primary(self):
+        self.save('second', 'G')
+        self.store.record_topology_identity('active', {'server_uuid': UUID_A})
+        self.store.record_topology_identity('second', {'server_uuid': UUID_B, 'source_uuids': [UUID_A]})
+        fixtures = {}
+        for host, gtid in (('active.example', '0-1-100'), ('second.example', '0-2-1')):
+            fixture = member_fixture(engine='mariadb', gtid=gtid,
+                status={'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '3'})
+            fixture['variables'].update(wsrep_on='ON', wsrep_gtid_mode='OFF')
+            fixtures[host] = fixture
+        with self.clients(fixtures):
+            report = self.read()
+        self.assertEqual(report['primary_profile_id'], 'active')
+        for member in report['members']:
+            self.assertIsNone(member['behind'])
+            self.assertEqual(member['behind_reason'],
+                             'Galera nodes apply write sets from every node; see the receive queue.')
+
+    def test_replica_connecting_and_preparing_states_reach_member_and_map(self):
+        for engine, io in (('mysql', 'Connecting'), ('mariadb', 'Preparing')):
+            with self.subTest(engine=engine, io=io):
+                fixture = member_fixture(engine=engine, channels=[{
+                    'Master_Host': 'external.example', 'Master_Port': '3306',
+                    'Slave_IO_Running': io, 'Slave_SQL_Running': 'Yes'}])
+                with self.clients({'active.example': fixture}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                self.assertEqual(report['members'][0]['state'], 'connecting')
+                self.assertEqual(report['map']['edges'][0]['state'], 'connecting')
+
     def test_no_more_than_four_concurrent_members_and_one_connection_each(self):
         fixtures = {'active.example': member_fixture(pause=0.04)}
         for number in range(8):
@@ -919,8 +1031,8 @@ class TopologyReadTests(GroupCase):
             report = self.read()
         member = report['members'][0]
         self.assertEqual(member['outcome'], 'read', report)
-        self.assertEqual(member['state'], 'OFFLINE')
-        self.assertIsNone(member['role'])
+        self.assertEqual(member['state'], 'reachable')
+        self.assertEqual(member['role'], 'standalone')
         self.assertIsNone(report['primary_profile_id'])
 
     def test_stored_source_fallback_and_disabled_gtids_are_not_caught_up(self):
@@ -951,6 +1063,46 @@ class TopologyReadTests(GroupCase):
             self.assertEqual(set(compare.call_args[0][0]), {'active', 'peer'})
             self.assertEqual(report[section]['compared'], ['active', 'peer'])
 
+    def test_group_parameters_reread_provider_options_and_use_observed_roles(self):
+        self.save('peer', 'G')
+        catalog = snapshot([item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
+        for mode, expected in (('single-primary', 'per_server'), ('async', 'per_server'),
+                               ('offline-gr', 'different'), ('standalone', 'different')):
+            with self.subTest(mode=mode):
+                fixtures = {'active.example': member_fixture(UUID_A), 'peer.example': member_fixture(UUID_B)}
+                if mode in ('single-primary', 'offline-gr'):
+                    for host, role in (('active.example', 'PRIMARY'), ('peer.example', 'SECONDARY')):
+                        fixtures[host]['role'] = role
+                        if mode == 'offline-gr':
+                            fixtures[host]['state'] = 'OFFLINE'
+                        fixtures[host]['variables'].update(group_replication_group_name=UUID_D,
+                                                           group_replication_single_primary_mode='ON')
+                elif mode == 'async':
+                    fixtures['peer.example']['channels'] = [{'Source_UUID': UUID_A,
+                        'Replica_IO_Running': 'Yes', 'Replica_SQL_Running': 'Yes'}]
+
+                def capture(conn, **kwargs):
+                    value = copy.deepcopy(catalog)
+                    if mode in ('single-primary', 'offline-gr'):
+                        value['items'].extend([item('group_replication_group_name', UUID_D, 'string'),
+                                               item('group_replication_single_primary_mode', 'ON', 'boolean')])
+                    if conn.host == 'peer.example':
+                        for row in value['items']:
+                            if row['name'] in ('read_only', 'super_read_only'):
+                                row['value'] = 'ON'
+                    return value
+
+                with self.clients(fixtures), mock.patch.object(param_compare, 'capture', side_effect=capture) as collect:
+                    report = self.read('parameters')
+                self.assertEqual(report['parameters']['compared'], ['active', 'peer'])
+                self.assertTrue(all(call[1].get('full_provider_options') for call in collect.call_args_list))
+                for row in report['parameters']['rows']:
+                    if row['name'] not in ('read_only', 'super_read_only'):
+                        continue
+                    self.assertEqual(row['status'], expected)
+                    if expected == 'per_server':
+                        self.assertEqual(row['reason'], "Set by the member's role")
+
     def test_mysql_channel_projection_handles_current_and_legacy_columns(self):
         for version, prefix, status_sql in (('8.4.11', 'Source', 'SHOW REPLICA STATUS'),
                                              ('5.7.44', 'Master', 'SHOW SLAVE STATUS')):
@@ -971,7 +1123,7 @@ class TopologyReadTests(GroupCase):
                     'source_port': 3307, 'source_uuid': UUID_B, 'source_server_id': 42,
                     'io_running': 'Connecting', 'sql_running': 'Yes', 'seconds_behind': 9}])
                 self.assertEqual(member['role'], 'replica')
-                self.assertEqual(member['state'], 'stopped')
+                self.assertEqual(member['state'], 'connecting')
                 self.assertTrue(any(status_sql in sql for sql in self.statements(observed)))
                 for value in ('channel-user-secret', 'channel-password-secret', 'extra-password-secret', 'extra-user-secret'):
                     self.assertNotIn(value, json.dumps(report))
@@ -1038,7 +1190,7 @@ class TopologyReadTests(GroupCase):
         self.assertIsNone(report['primary_profile_id'])
         self.assertTrue(all(m['behind_reason'] == 'No primary or source member was identified.' for m in report['members']))
 
-    def test_mariadb_source_id_matches_across_engines_only_when_unique(self):
+    def test_mariadb_source_id_matches_only_read_mariadb_members(self):
         self.save('replica', 'G')
         source = member_fixture(UUID_A)
         source['variables']['server_id'] = '11'
@@ -1047,17 +1199,18 @@ class TopologyReadTests(GroupCase):
         fixtures = {'active.example': source, 'replica.example': replica}
         with self.clients(fixtures):
             report = self.read()
-        self.assertEqual(report['primary_profile_id'], 'active')
+        self.assertIsNone(report['primary_profile_id'])
         member = next(m for m in report['members'] if m['profile_id'] == 'replica')
-        self.assertEqual(member['behind_reason'], 'GTID positions from different engines cannot be compared.')
+        self.assertEqual(member['behind_reason'], 'No primary or source member was identified.')
         self.save('duplicate', 'G')
         duplicate = member_fixture(engine='mariadb')
         duplicate['variables']['server_id'] = '11'
         fixtures['duplicate.example'] = duplicate
         with self.clients(fixtures):
             report = self.read()
-        self.assertIsNone(report['primary_profile_id'])
-        self.assertTrue(all(m['behind_reason'] == 'No primary or source member was identified.' for m in report['members']))
+        self.assertEqual(report['primary_profile_id'], 'duplicate')
+        member = next(m for m in report['members'] if m['profile_id'] == 'replica')
+        self.assertIsNotNone(member['behind'])
 
     def test_mysql_channel_server_id_and_host_do_not_substitute_for_uuid(self):
         self.save('replica', 'G')
@@ -1130,6 +1283,18 @@ class TopologyReadTests(GroupCase):
                 self.assertIn('WHERE MEMBER_ID = @@server_uuid', sql)
                 self.assertNotIn(UUID_A, sql)
                 self.assertNotIn(UUID_B, sql)
+
+    def test_mysql57_nil_primary_uuid_leaves_role_unknown(self):
+        fixture = member_fixture(UUID_A, has_gr=True, state='ONLINE',
+            status={'group_replication_primary_member': '00000000-0000-0000-0000-000000000000'})
+        fixture['variables'].update(version='5.7.44', group_replication_single_primary_mode='ON')
+        with self.clients({'active.example': fixture}):
+            report = self.read()
+        member = report['members'][0]
+        self.assertEqual(member['outcome'], 'read', report)
+        self.assertEqual(member['state'], 'ONLINE')
+        self.assertIsNone(member['role'])
+        self.assertIsNone(report['primary_profile_id'])
 
     def test_standalone_and_source_roles_use_lowercase_vocabulary(self):
         self.save('source', 'G')
@@ -1255,7 +1420,7 @@ class TopologyReadTests(GroupCase):
         source = member_fixture(engine='mariadb')
         source['variables']['server_id'] = '11'
         replica = member_fixture(engine='mariadb', channels=[{
-            'Master_Host': 'source-private.example', 'Master_Port': '3306', 'Master_Server_Id': '11',
+            'Master_Host': 'active.example', 'Master_Port': '3306', 'Master_Server_Id': '11',
             'Slave_IO_Running': 'Yes', 'Slave_SQL_Running': 'Yes'}])
         replica['variables']['server_id'] = '12'
         mysql = member_fixture(UUID_C)
@@ -1292,7 +1457,7 @@ class TopologyReadTests(GroupCase):
         for host, uuid in (('active.example', UUID_A), ('second.example', UUID_B)):
             fixture = member_fixture(engine='mariadb', wsrep_members=rows, status={
                 'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '0',
-                'wsrep_gcomm_uuid': uuid, 'wsrep_cluster_state_uuid': UUID_D})
+                'wsrep_gcomm_uuid': uuid, 'wsrep_cluster_state_uuid': UUID_D, 'wsrep_cluster_status': 'Primary'})
             fixture['variables'].update(wsrep_on='ON', wsrep_cluster_name='Galera production')
             fixtures[host] = fixture
         with self.clients(fixtures):
@@ -1310,10 +1475,10 @@ class TopologyReadTests(GroupCase):
 
     def test_map_pxc_uses_own_gcomm_uuid_and_pxc_membership_view(self):
         fixture = member_fixture(UUID_A, pxc_members=[
-            ['active.example:3306', UUID_B, 'SYNCED', '0', '0'],
-            ['peer.example:3306', UUID_C, 'SYNCED', '1', '0']],
+            ['node-a', UUID_B, 'SYNCED', '0', '0'],
+            ['node-peer', UUID_C, 'SYNCED', '1', '0']],
             status={'wsrep_gcomm_uuid': UUID_B, 'wsrep_cluster_state_uuid': UUID_D,
-                    'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '0'})
+                    'wsrep_cluster_status': 'Primary', 'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '0'})
         fixture['variables'].update(version_comment='Percona XtraDB Cluster (GPL)',
                                     wsrep_provider='/usr/lib/libgalera_smm.so', wsrep_cluster_name='PXC production')
         with self.clients({'active.example': fixture}) as observed:
@@ -1323,6 +1488,8 @@ class TopologyReadTests(GroupCase):
         cluster = report['map']['clusters'][0]
         self.assertEqual(cluster['kind'], 'pxc')
         self.assertEqual(set(cluster['members']), {'active', 'peer:' + UUID_C})
+        self.assertEqual(nodes['peer:' + UUID_C]['label'], 'node-peer')
+        self.assertIsNone(nodes['peer:' + UUID_C]['port'])
         self.assertIn('performance_schema.pxc_cluster_view', '\n'.join(self.statements(observed)))
 
     def test_map_mysql8001_cluster_membership_falls_back_without_member_role_column(self):
@@ -1346,7 +1513,7 @@ class TopologyReadTests(GroupCase):
                                             ('second.example', UUID_B, UUID_D)):
             fixture = member_fixture(engine='mariadb', wsrep_members=[[node_uuid, 'node', host + ':3306']],
                                      status={'wsrep_gcomm_uuid': node_uuid,
-                                             'wsrep_cluster_state_uuid': group_uuid})
+                                             'wsrep_cluster_state_uuid': group_uuid, 'wsrep_cluster_status': 'Primary'})
             fixture['variables'].update(wsrep_on='ON', wsrep_cluster_name='same display name')
             fixtures[host] = fixture
         with self.clients(fixtures):
@@ -1355,6 +1522,83 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(len(report['map']['clusters']), 2)
         self.assertNotEqual(nodes['active']['cluster_id'], nodes['second']['cluster_id'])
         self.assertEqual({c['name'] for c in report['map']['clusters']}, {'same display name'})
+
+    def test_map_gr_membership_requires_own_online_or_recovering_row(self):
+        for state, attested in (('ONLINE', True), ('RECOVERING', True), ('OFFLINE', False), ('ERROR', False)):
+            with self.subTest(state=state):
+                rows = [[UUID_A, 'active.example', 3306, state, 'SECONDARY']]
+                fixture = self.gr_map_fixture(UUID_A, 'SECONDARY', rows, state=state)
+                with self.clients({'active.example': fixture}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(nodes['active']['cluster_id'] is not None, attested)
+                self.assertEqual('active' in report['map']['clusters'][0]['members'], attested)
+
+    def test_map_galera_membership_requires_primary_component_and_non_nil_identity(self):
+        nil = '00000000-0000-0000-0000-000000000000'
+        cases = [('Primary', UUID_A, UUID_D, True), ('non-Primary', UUID_A, UUID_D, False),
+                 ('Disconnected', UUID_A, UUID_D, False), (None, UUID_A, UUID_D, False),
+                 ('Primary', nil, UUID_D, False), ('Primary', UUID_A, nil, False)]
+        for state, own_uuid, group_uuid, attested in cases:
+            with self.subTest(state=state, own_uuid=own_uuid, group_uuid=group_uuid):
+                fixture = member_fixture(engine='mariadb',
+                    wsrep_members=[[own_uuid, 'node', 'active.example:3306']],
+                    status={'wsrep_cluster_status': state, 'wsrep_gcomm_uuid': own_uuid,
+                            'wsrep_cluster_state_uuid': group_uuid})
+                fixture['variables'].update(wsrep_on='ON', wsrep_cluster_name='test-cluster')
+                with self.clients({'active.example': fixture}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(nodes['active']['cluster_id'] is not None, attested)
+                if group_uuid == nil:
+                    self.assertEqual(report['map']['clusters'], [])
+
+    def test_nil_mysql_uuid_cannot_attest_group_membership(self):
+        nil = '00000000-0000-0000-0000-000000000000'
+        fixture = self.gr_map_fixture(nil, 'PRIMARY', [[nil, 'active.example', 3306, 'ONLINE', 'PRIMARY']])
+        with self.clients({'active.example': fixture}):
+            report = self.read('map')
+        nodes = self.assert_map_schema(report)
+        self.assertIsNone(nodes['active']['cluster_id'])
+        self.assertIsNone(report['members'][0]['server_uuid'])
+
+    def test_map_mariadb_server_id_requires_the_same_address_match(self):
+        self.save('other', 'G')
+        self.save('replica', 'G')
+        source = member_fixture(engine='mariadb')
+        source['variables']['server_id'] = '11'
+        other = member_fixture(engine='mariadb')
+        other['variables']['server_id'] = '13'
+        for host, expected in (('outside.example', 'peer:outside.example:3306'), ('other.example', 'other')):
+            with self.subTest(host=host):
+                replica = member_fixture(engine='mariadb', channels=[{
+                    'Master_Host': host, 'Master_Port': '3306', 'Master_Server_Id': '11'}])
+                replica['variables']['server_id'] = '12'
+                with self.clients({'active.example': source, 'other.example': other, 'replica.example': replica}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                edge = report['map']['edges'][0]
+                self.assertEqual((edge['from'], edge['to']), (expected, 'replica'))
+                self.assertFalse(edge['verified'])
+                self.assertNotEqual(edge['evidence'], 'server_id')
+
+    def test_map_pxc_node_names_preserve_incoming_address_membership(self):
+        fixture = member_fixture(UUID_A, pxc_members=[
+            ['node-a', UUID_B, 'SYNCED', '0', '0'],
+            ['node-peer', UUID_C, 'SYNCED', '1', '0']],
+            wsrep_members=[[UUID_B, 'node-a', 'active.example:3306'],
+                           [UUID_C, 'node-peer', 'peer.example:4406']],
+            status={'wsrep_gcomm_uuid': UUID_B, 'wsrep_cluster_state_uuid': UUID_D,
+                    'wsrep_cluster_status': 'Primary', 'wsrep_local_state_comment': 'Synced'})
+        fixture['variables'].update(version_comment='Percona XtraDB Cluster (GPL)',
+                                    wsrep_provider='/usr/lib/libgalera_smm.so', wsrep_cluster_name='PXC production')
+        with self.clients({'active.example': fixture}):
+            report = self.read('map')
+        nodes = self.assert_map_schema(report)
+        peer = nodes['peer:' + UUID_C]
+        self.assertEqual((peer['host'], peer['port'], peer['label']),
+                         ('peer.example', 4406, 'peer.example:4406'))
+        self.assertEqual(set(report['map']['clusters'][0]['members']), {'active', 'peer:' + UUID_C})
 
     def test_map_cluster_listing_does_not_attest_another_saved_members_membership(self):
         self.save('second', 'G')

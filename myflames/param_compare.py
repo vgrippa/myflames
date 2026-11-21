@@ -190,9 +190,11 @@ def validate_snapshot(value):
     return dbops.redact_value(clean)
 
 
-def capture(conn, server=None, label=''):
+def capture(conn, server=None, label='', full_provider_options=False):
     from .config_review import config_report
-    report = config_report(BoundedConnection(conn), parameters=True)
+    from .perf_common import Reader
+    conn = BoundedConnection(conn)
+    report = config_report(conn, parameters=True)
     identity = {k: (server or {}).get(k) for k in ('host', 'port')}
     identity.update(host=identity['host'] or getattr(conn, 'host', 'localhost'),
                     port=identity['port'] or getattr(conn, 'port', 3306))
@@ -204,13 +206,24 @@ def capture(conn, server=None, label=''):
     # parameters-1.0 has check associations rather than a group field today.
     groups = {c['key']: c['group'] for c in report.get('checks', [])}
     items = [dict(i) for i in catalog['items']]
+    notes = list(catalog.get('notes', []))
     for item in items:
+        if full_provider_options and item['name'] == 'wsrep_provider_options':
+            # SHOW/P_S and SYSTEM_VARIABLES have narrower columns than this
+            # provider's option list. Read the variable itself before parsing.
+            rows = Reader(conn, '/*myflames:topology*/ ').optional(
+                'SELECT @@GLOBAL.wsrep_provider_options', 'full wsrep_provider_options', notes)
+            if rows and len(rows) == 1 and len(rows[0]) == 1 and rows[0][0] is not None:
+                item.update(value=rows[0][0], truncated=False)
+            else:
+                # Never compare a prefix when the exact read was unavailable.
+                item['truncated'] = True
         group = next((groups[k] for k in item.get('checks', []) if k in groups), None)
         if group is not None:
             item['group'] = group
     return validate_snapshot({'schema_version': SNAPSHOT_SCHEMA, 'server': identity,
                               'captured_at': now(), 'label': label, 'complete': catalog['complete'],
-                              'notes': catalog.get('notes', []), 'items': items})
+                              'notes': notes, 'items': items})
 
 
 def source_key(snapshot):
@@ -287,9 +300,11 @@ def _many_snapshots(snapshots):
 def _group_auto_increment(indexed):
     """Fold generated node offsets only when every compared member opts in."""
     # MySQL plugin/group_replication/src/plugin.cc:2578-2581 supplies the
-    # server ID as the offset to auto_increment.cc:61-84.
+    # server ID as the offset to auto_increment.cc:61-84, but uses each
+    # member's own group_replication_auto_increment_increment. An increment
+    # difference is real drift; only the generated offset is folded.
     # MariaDB sql/wsrep_server_service.cc:231-236
-    # derives it from the node index. Both keep the increment uniform.
+    # derives the offset from the node index.
     for items in indexed.values():
         def value(name):
             item = items.get(name) or {}
@@ -310,8 +325,9 @@ def _group_provider_options(value):
     """
     if not isinstance(value, str):
         raise ValueError('Provider options are unavailable.')
-    per_node = {'base_host', 'base_port', 'base_dir', 'gcache.dir',
-                'gmcast.listen_addr', 'ist.recv_addr'}
+    per_node = {'base_host', 'base_port', 'base_dir', 'gcache.dir', 'gcache.name',
+                'gmcast.listen_addr', 'ist.recv_addr', 'ist.recv_bind',
+                'socket.ssl_cert', 'socket.ssl_key', 'pc.weight', 'gmcast.segment'}
     options = {}
     parts = value.strip().split(';')
     if not parts[-1].strip():
@@ -324,7 +340,7 @@ def _group_provider_options(value):
     return tuple(sorted((key, val) for key, val in options.items() if key not in per_node))
 
 
-def compare_many(snapshots):
+def compare_many(snapshots, role_settings=None):
     """Compare complete member snapshots without performing a server read.
 
     ``snapshots`` maps saved profile IDs to capture() results. Values retain
@@ -354,7 +370,9 @@ def compare_many(snapshots):
                 item.get('redacted') or sensitive(name) or value != raw),
                 unavailable='value' not in item)
         indexed[pid] = items
-    per_server = set(IDENTITY_NAMES) | {'group_replication_local_address',
+    per_server = set(IDENTITY_NAMES) | {'group_replication_local_address', 'group_replication_group_seeds',
+        'gtid_binlog_state', 'gtid_owned', 'bind_address', 'admin_address',
+        'mysqlx_bind_address', 'mysqlx_port', 'mysqlx_socket',
         'group_replication_advertise_recovery_endpoints', 'group_replication_recovery_public_key_path',
         'group_replication_recovery_ssl_ca', 'group_replication_recovery_ssl_capath',
         'group_replication_recovery_ssl_cert', 'group_replication_recovery_ssl_key',
@@ -362,7 +380,24 @@ def compare_many(snapshots):
         'wsrep_node_incoming_address', 'wsrep_sst_receive_address', 'wsrep_sst_donor',
         'wsrep_start_position', 'wsrep_status_file', 'wsrep_provider_base_host',
         'wsrep_provider_base_port', 'wsrep_provider_base_dir', 'wsrep_provider_gcache_dir',
-        'wsrep_provider_gmcast_listen_addr', 'wsrep_provider_ist_recv_addr'}
+        'wsrep_provider_gmcast_listen_addr', 'wsrep_provider_ist_recv_addr',
+        'wsrep_provider_gcache_name', 'wsrep_provider_ist_recv_bind',
+        'wsrep_provider_socket_ssl_cert', 'wsrep_provider_socket_ssl_key'}
+    node_design = {'wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment'}
+    per_server.update(node_design)
+    # MySQL read_mode_handler.cc:32-60 changes read-only settings by role.
+    # Live observed roles take precedence over persisted GR configuration.
+    # Pure snapshot comparisons can only infer roles from their inventory.
+    if role_settings is None:
+        role_settings = any(
+            normalize((items.get('group_replication_single_primary_mode') or {}).get('value'), 'boolean') ==
+            ('boolean', True) and bool((items.get('group_replication_group_name') or {}).get('value'))
+            and not any((items.get(name) or {}).get(flag) for name in
+                        ('group_replication_single_primary_mode', 'group_replication_group_name')
+                        for flag in ('redacted', 'truncated', 'unavailable'))
+            for items in indexed.values())
+    role_names = {'read_only', 'super_read_only'} if role_settings else set()
+    per_server.update(role_names)
     if _group_auto_increment(indexed):
         per_server.add('auto_increment_offset')
     names = set().union(*(set(items) for items in indexed.values())) if indexed else set()
@@ -401,6 +436,10 @@ def compare_many(snapshots):
         if unavailable:
             row['reason'] = ('Provider options could not be parsed safely; they cannot be compared.' if parse_failed else
                              'A value was redacted, truncated or unavailable; it cannot be compared.')
+        elif name in role_names:
+            row['reason'] = "Set by the member's role"
+        elif name in node_design:
+            row['reason'] = 'Set per node by design'
         rows.append(row)
     order = {'different': 0, 'missing': 1, 'same': 2, 'per_server': 3}
     return sorted(rows, key=lambda row: (order[row['status']], row['name']))

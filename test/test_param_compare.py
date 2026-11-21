@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from myflames import param_compare as P, compare_cli
+from myflames import param_compare as P, compare_cli, parameters
+from _perf_replay import ReplayConn, batch
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
 from test_chart_data import validate
@@ -93,6 +94,96 @@ class NormalizeTest(unittest.TestCase):
     def test_truncated_values_not_equal_even_when_same_prefix(self):
         a = snapshot([item('long', 'prefix', 'string', truncated=True)])
         self.assertEqual(P.compare(a, a)['items'][0]['status'], 'not_compared')
+
+    def test_server_cut_prefix_is_never_identical_or_comparable_in_a_group(self):
+        catalog = parameters.compute_parameters('mysql', (8, 4, 11),
+            rows=[['long_value', 'x' * 1024]], info_rows=[], persisted_rows=[])
+        value = snapshot(catalog['items'])
+        pair = P.compare(value, copy.deepcopy(value))
+        self.assertFalse(pair['identical'])
+        self.assertEqual(pair['items'][0]['status'], 'not_compared')
+        group = P.compare_many({'a': value, 'b': copy.deepcopy(value)})
+        self.assertEqual(group[0]['status'], 'missing')
+        self.assertIn('truncated', group[0]['reason'])
+
+    def test_group_per_server_names_and_node_design_reasons(self):
+        names = ('group_replication_group_seeds', 'gtid_binlog_state', 'gtid_owned',
+                 'bind_address', 'admin_address', 'mysqlx_bind_address', 'mysqlx_port', 'mysqlx_socket',
+                 'wsrep_provider_gcache_name', 'wsrep_provider_ist_recv_bind',
+                 'wsrep_provider_socket_ssl_cert', 'wsrep_provider_socket_ssl_key',
+                 'wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment')
+        left = snapshot([item(name, 'node-a', 'string') for name in names])
+        right = snapshot([item(name, 'node-b', 'string') for name in names])
+        rows = {r['name']: r for r in P.compare_many({'a': left, 'b': right})}
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'per_server')
+        for name in ('wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment'):
+            self.assertEqual(rows[name]['reason'], 'Set per node by design')
+
+    def test_group_read_only_drift_folds_only_with_role_evidence(self):
+        left = snapshot([item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
+        right = snapshot([item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
+        for role_settings, status in ((False, 'different'), (True, 'per_server')):
+            with self.subTest(role_settings=role_settings):
+                rows = P.compare_many({'a': left, 'b': right}, role_settings=role_settings)
+                self.assertEqual([r['status'] for r in rows], [status, status])
+                if role_settings:
+                    self.assertEqual([r['reason'] for r in rows], ["Set by the member's role"] * 2)
+
+    def test_single_primary_inventory_folds_role_settings_without_hiding_multi_primary_drift(self):
+        group = 'aaaaaaaa-0000-4000-8000-000000000001'
+        for mode, expected in (('ON', 'per_server'), ('OFF', 'different')):
+            with self.subTest(mode=mode):
+                settings = [item('group_replication_group_name', group, 'string'),
+                            item('group_replication_single_primary_mode', mode, 'boolean')]
+                a = snapshot(settings + [item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
+                b = snapshot(settings + [item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
+                rows = {r['name']: r for r in P.compare_many({'a': a, 'b': b})}
+                for name in ('read_only', 'super_read_only'):
+                    self.assertEqual(rows[name]['status'], expected)
+                    if expected == 'per_server':
+                        self.assertEqual(rows[name]['reason'], "Set by the member's role")
+
+    def test_provider_options_fold_node_files_addresses_and_design_values(self):
+        node_keys = ('gcache.name', 'ist.recv_bind', 'socket.ssl_cert', 'socket.ssl_key',
+                     'pc.weight', 'gmcast.segment')
+        left = ';'.join(key + '=a' for key in node_keys) + ';gcache.size=128M'
+        right = ';'.join(key + '=b' for key in node_keys) + ';gcache.size=128M'
+        a = snapshot([item('wsrep_provider_options', left, 'string')], engine='mariadb')
+        b = snapshot([item('wsrep_provider_options', right, 'string')], engine='mariadb')
+        self.assertEqual(P.compare_many({'a': a, 'b': b})[0]['status'], 'same')
+        b['items'][0]['value'] = right.replace('128M', '256M')
+        self.assertEqual(P.compare_many({'a': a, 'b': b})[0]['status'], 'different')
+
+    def test_full_provider_capture_replaces_catalog_prefix_before_comparison(self):
+        from myflames.topology_group import TAG
+        full = 'gcache.name=' + 'x' * 2050 + ';gcache.size=128M;'
+        for engine, cap in (('mysql', 1024), ('mariadb', 2048)):
+            with self.subTest(engine=engine):
+                catalog = {'complete': True, 'items': [item('wsrep_provider_options', full[:cap],
+                                                            'string', truncated=True)]}
+                report = {'engine': engine, 'server_version': '8.4.11' if engine == 'mysql' else '11.4.13-MariaDB',
+                          'parameters': catalog, 'notes': []}
+                conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options', batch([[full]])]])
+                with mock.patch('myflames.config_review.config_report', return_value=report):
+                    result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+                captured = result['items'][0]
+                self.assertEqual(captured['value'], full)
+                self.assertFalse(captured.get('truncated', False))
+                self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'same')
+
+    def test_full_provider_capture_denial_keeps_prefix_uncomparable(self):
+        from myflames.topology_group import TAG
+        catalog = {'complete': True, 'items': [item('wsrep_provider_options', 'x' * 2048,
+                                                    'string', truncated=True)]}
+        report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB', 'parameters': catalog, 'notes': []}
+        conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options',
+                            None, 'ERROR 1227 (42000): Access denied']])
+        with mock.patch('myflames.config_review.config_report', return_value=report):
+            result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+        self.assertTrue(result['items'][0]['truncated'])
+        self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'missing')
 
     def test_file_validation_and_scrubbing(self):
         a = snapshot([item('wsrep_sst_auth', 'root:secret', 'string', 'other'),

@@ -59,7 +59,7 @@ class FakeProbeConn(object):
             "report_port": str(self.cfg.get("port", 3306)),
             "server_id": str(self.cfg.get("server_id", 1)),
             "server_uuid": self.cfg.get("uuid", "11111111-1111-1111-1111-111111111111"),
-            "read_only": "ON" if self.cfg.get("read_only") else "OFF",
+            "read_only": self.cfg.get("read_only_value", "ON" if self.cfg.get("read_only") else "OFF"),
             "super_read_only": "ON" if self.cfg.get("read_only") else "OFF",
             "wsrep_on": "ON" if self.cfg.get("wsrep") else "OFF",
             "wsrep_cluster_name": self.cfg.get("cluster_name", ""),
@@ -186,6 +186,24 @@ class TestProbeChannels(unittest.TestCase):
                                  version='11.4.9-MariaDB', version_comment='MariaDB Server')
         self.assertIsNone(row['source_uuid'])
         self.assertEqual(row['source_server_id'], 231)
+
+    def test_show_replicas_current_and_legacy_server_id_column_spellings(self):
+        for column, version in (('Server_Id', '8.4.11'), ('Server_id', '8.0.21')):
+            with self.subTest(column=column, version=version):
+                conn = FakeProbeConn('database', version=version,
+                    replicas=[{column: '42', 'Host': 'replica.example', 'Port': '3306'}])
+                report = topology_links._probe_connection(conn, {'id': 'source', 'host': 'source.example', 'port': 3306})
+                self.assertEqual(len(report['replicas']), 1)
+                self.assertEqual(report['replicas'][0]['server_id'], 42)
+
+    def test_mariadb_read_only_enum_protects_every_non_off_mode(self):
+        for value, expected in (('NO_LOCK', True), ('NO_LOCK_NO_ADMIN', True), ('ON', True),
+                                ('1', True), ('TRUE', True), ('OFF', False), ('0', False), ('FALSE', False)):
+            with self.subTest(value=value):
+                conn = FakeProbeConn('database', version='12.0.1-MariaDB',
+                    version_comment='MariaDB Server', read_only_value=value)
+                report = topology_links._probe_connection(conn, {'id': 'source', 'host': 'source.example', 'port': 3306})
+                self.assertIs(report['read_only'], expected)
 
     def test_malformed_or_absent_uuid_is_null_without_losing_server_id(self):
         for column in ('Source_UUID', 'Master_UUID'):
