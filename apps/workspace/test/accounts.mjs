@@ -348,7 +348,12 @@ try {
   };
   const backToAccounts = async () => {
     const back = await page.$(".accounts-view .detail-back");
-    if (back) await back.click();
+    if (!back) return;
+    await back.click();
+    // The row click below races the close: the rows stay inside the hidden
+    // .view-main until the close commits, and the close then returns focus to
+    // the selected row, scrolling the table. Wait for both before clicking.
+    await page.waitForFunction(() => !document.querySelector(".accounts-view .view-inspector.is-detail"));
   };
   const inspect = async () => {
     await backToAccounts();

@@ -357,6 +357,10 @@ try {
     }
     await page.click(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`);
     await page.waitForFunction((r) => document.querySelector(".view-inspector h3")?.textContent === `Statement ${r}`, {}, rank);
+    // The detail's open effect focuses Back once the content is on screen, a
+    // focus that can still scroll the page. A click on Back before it lands
+    // races that scroll; wait for the focus to arrive.
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".view-inspector.is-detail .detail-back"));
   }
 
   // Give the provider a real connection identity while keeping every
