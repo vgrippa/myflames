@@ -3308,6 +3308,8 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
     # PASSWORD('x'), OLD_PASSWORD('x').
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
+    # Bounded fallback for diagnostics that quote a whole SET PASSWORD statement.
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
@@ -3315,11 +3317,11 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     r"((?:\bRANDOM\s+PASSWORD|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
 # Quotes and comments consume their whole span, including an unfinished
-# tail, so their = and ; characters cannot end a SET PASSWORD account name.
+# tail, before recognizing commands. Start at the beginning of the text so
+# SET PASSWORD inside a literal cannot shift the quote boundaries.
 _SET_PASSWORD_PART = re.compile(
     _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
-    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
-_SET_PASSWORD_START = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|(?P<command>\bSET\s+PASSWORD\b)|[=;]", re.I)
 _SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
 _URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
 _URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
@@ -3362,24 +3364,18 @@ def _redact_literal(match):
 
 def _redact_set_password(text):
     """Visit tokens once, redacting after the first bare assignment operator."""
-    parts, kept, cursor = [], 0, 0
-    while cursor < len(text):
-        # Error messages may quote the whole statement. Find the command
-        # first, then treat quoted names and comments within it as opaque.
-        start = _SET_PASSWORD_START.search(text, cursor)
-        if start is None:
-            break
-        cursor = len(text)
-        for token in _SET_PASSWORD_PART.finditer(text, start.end()):
-            if token.group() not in ('=', ';'):
-                continue
-            cursor = token.end()
-            if token.group() == '=':
-                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
-                if literal is not None:
-                    parts.extend((text[kept:token.end()], _redact_literal(literal)))
-                    kept = cursor = literal.end()
-            break
+    parts, kept, pending = [], 0, False
+    for token in _SET_PASSWORD_PART.finditer(text):
+        if token.lastgroup == 'command':
+            pending = True
+        elif token.group() == ';':
+            pending = False
+        elif pending and token.group() == '=':
+            pending = False
+            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+            if literal is not None:
+                parts.extend((text[kept:token.end()], _redact_literal(literal)))
+                kept = literal.end()
     return ''.join(parts) + text[kept:] if parts else text
 
 

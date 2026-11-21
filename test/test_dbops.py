@@ -1230,6 +1230,79 @@ class TestRedaction(unittest.TestCase):
         prefix = 'SET PASSWORD FOR ' + account + ' = '
         self.assertEqual(dbops.redact(prefix + "'private-value'"), prefix + "'[redacted]'")
 
+    def test_set_password_after_a_quoted_command_stays_redacted(self):
+        raw = "SELECT 'SET PASSWORD'; SET PASSWORD FOR 'u'@'%' = 'SECRET';"
+        self.assertEqual(dbops._redact_set_password(raw), raw.replace("'SECRET'", "'[redacted]'"))
+        self.assertNotIn('SECRET', dbops.redact(raw))
+        # Delimiters inside the account prevent the bounded fallback from
+        # hiding a scanner regression. Every prefix must keep its quote context.
+        for before in ("SELECT 'SET PASSWORD'; ", 'SELECT "SET PASSWORD"; ',
+                       "SELECT 'SET PASSWORD \\'text'; ",
+                       'SELECT "SET PASSWORD \\"text"; ',
+                       "SELECT 'SET PASSWORD ''text'; ",
+                       'SELECT "SET PASSWORD ""text"; ',
+                       'SELECT `SET PASSWORD ``text`; ',
+                       '/* SET PASSWORD */ ', '-- SET PASSWORD\n', '# SET PASSWORD\n'):
+            with self.subTest(before=before):
+                raw = before + "SET PASSWORD FOR 'u=;name'@'%' = 'SECRET';"
+                self.assertEqual(dbops._redact_set_password(raw), raw.replace("'SECRET'", "'[redacted]'"))
+                self.assertNotIn('SECRET', dbops.redact(raw))
+
+    def test_set_password_redacts_multiple_commands(self):
+        raw = ("SET PASSWORD FOR 'a=b'@'%' = 'first-private'; "
+               'SET PASSWORD /* x=1; */ FOR `a;b`@`%` = "second-private";')
+        self.assertEqual(dbops.redact(raw),
+                         raw.replace('first-private', '[redacted]').replace('second-private', '[redacted]'))
+
+    def test_set_password_assignment_in_literal_cannot_hide_real_command(self):
+        before = 'SELECT "SET PASSWORD = \'x\'"; '
+        # The lexical pass leaves the example literal alone; the public
+        # redactor may also redact it as a conservative diagnostic fallback.
+        self.assertEqual(dbops._redact_set_password(before), before)
+        raw = before + "SET PASSWORD FOR 'u=;name'@'%' = 'SECRET';"
+        clean = dbops.redact(raw)
+        self.assertNotIn('SECRET', clean)
+        self.assertIn("SET PASSWORD FOR 'u=;name'@'%' = '[redacted]';", clean)
+
+    def test_set_password_in_quoted_diagnostic_stays_redacted(self):
+        for quote in ("'", '"'):
+            with self.subTest(quote=quote):
+                raw = ("ERROR 1064 (42000): syntax error near " + quote +
+                       "SET PASSWORD FOR `u`@`%` = 'private-value';" + quote + " at line 1")
+                self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_megabyte_quoted_set_password_runs_finish(self):
+        for shape in ('quoted_commands', 'unfinished_single', 'unfinished_double'):
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "n = 1024 * 1024\n"
+                    "shape = " + repr(shape) + "\n"
+                    "if shape == 'quoted_commands':\n"
+                    "    tail = \" SET PASSWORD FOR 'u=;name'@'%' = 'private-value';\"\n"
+                    "    repeated = \"'SET PASSWORD';\"\n"
+                    "    value = (repeated * ((n - len(tail)) // len(repeated))).ljust(n - len(tail)) + tail\n"
+                    "else:\n"
+                    "    quote = chr(39) if shape == 'unfinished_single' else chr(34)\n"
+                    "    value = quote + ('SET PASSWORD ' * (n // 13 + 1))[:n - 2] + chr(92)\n"
+                    "assert len(value) == n, len(value)\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "if shape == 'quoted_commands':\n"
+                    "    assert 'private-value' not in clean\n"
+                    "    assert '[redacted]' in clean\n"
+                    "else:\n"
+                    "    assert clean == value\n"
+                    "print(elapsed)\n")
+                result = subprocess.run([sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('REDACTION_TIMING %s redact %.6fs' % (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 4)
+
     def test_set_password_skips_quoted_names_and_comments_before_assignment(self):
         for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ",
                        'SET PASSWORD FOR `a;b`@`%` = ',
@@ -1523,12 +1596,13 @@ class TestAudit(TempHome):
 
     def test_set_password_names_and_comments_cannot_expose_audit_secrets(self):
         for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ", 'SET PASSWORD FOR `a;b`@`%` = ',
-                       'SET PASSWORD /* x=1 */ = '):
+                       'SET PASSWORD /* x=1 */ = ',
+                       "SELECT 'SET PASSWORD'; SET PASSWORD FOR 'u=;name'@'%' = "):
             with self.subTest(prefix=prefix):
                 statement = prefix + "'audit-private-value'"
                 self.trail(operation='accounts.password').outcome([statement], 'refused', message=statement)
         records = self.store.audit_records()
-        self.assertEqual(len(records), 3)
+        self.assertEqual(len(records), 4)
         self.assertNotIn('audit-private-value', json.dumps(records))
         self.assertTrue(all('[redacted]' in record['statements'][0] for record in records))
 
