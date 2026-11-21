@@ -62,6 +62,15 @@ jobs:
         run: |
           npm ci
           NODE_ENV=production npm run build
+      - name: Check workspace build left a clean tree
+        shell: bash
+        run: |
+          status=$(git status --porcelain)
+          if [ -n "$status" ]; then
+            echo "::error::the workspace build changed tracked or unignored files"
+            printf '%s\n' "$status"
+            exit 1
+          fi
       - name: Build the backend
         run: |
           python -m venv local/desktop-build-venv
