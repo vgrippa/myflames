@@ -1,8 +1,8 @@
 """Explicit, bounded reads of saved connection groups for the Topology place.
 
 Each member owns one standard connector for the request. Every query uses
-the connector's guarded client path; no peer address discovery, background
-polling or server writes are permitted here.
+the connector's guarded client path. Reported peers are drawn without logging
+in to them; background polling and server writes are not permitted here.
 """
 import re
 import time
@@ -15,7 +15,7 @@ from .perf_common import Reader, now
 from .server_info import is_readyset_comment, product_identity, server_version_tuple
 
 SCHEMA_VERSION = 'topology-group-1.0'
-SECTIONS = ('members', 'parameters', 'accounts', 'plugins')  # Map gets its own collector in the next slice.
+SECTIONS = ('map', 'members', 'parameters', 'accounts', 'plugins')
 MAX_CONCURRENCY = 4
 QUERY_SECONDS = 30
 REQUEST_SECONDS = 120
@@ -135,6 +135,11 @@ def _on(value):
     return str(value).upper() in ('ON', '1', 'YES', 'TRUE')
 
 
+def _read_only(value):
+    # MariaDB 12.0.1 also has NO_LOCK and NO_LOCK_NO_ADMIN. Both refuse writes.
+    return None if value is None else str(value).strip().upper() not in ('OFF', '0', 'FALSE')
+
+
 def _number(value):
     try:
         result = float(value)
@@ -177,14 +182,16 @@ def _identity(conn, member):
     values = reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
         "('version','version_comment','server_uuid','server_id','hostname','read_only','super_read_only',"
         "'gtid_executed','gtid_mode','gtid_current_pos','group_replication_group_name',"
-        "'group_replication_single_primary_mode','wsrep_on','wsrep_auto_increment_control')")
+        "'group_replication_single_primary_mode','wsrep_on','wsrep_auto_increment_control',"
+        "'wsrep_provider','wsrep_cluster_name')")
     version, comment = values.get('version'), values.get('version_comment') or comment
     if not version:
         raise ConnectorError('The member identity could not be read.')
     identity = product_identity(version, comment)
     member.update(engine=identity['engine'], product=identity['product'], version=version,
                   version_comment=comment, server_id=_number(values.get('server_id')),
-                  hostname=values.get('hostname'), read_only=_on(values.get('read_only')),
+                  hostname=values.get('hostname'), read_only_value=values.get('read_only'),
+                  read_only=_read_only(values.get('read_only')),
                   super_read_only=_on(values.get('super_read_only')) if identity['engine'] == 'mysql' else None)
     uuid = values.get('server_uuid')
     member['server_uuid'] = uuid if identity['engine'] == 'mysql' and isinstance(uuid, str) and _UUID.fullmatch(uuid) else None
@@ -220,11 +227,11 @@ def _member_facts(conn, member, variables):
         notes.append('GTID transaction comparison needs gtid_mode ON on both members.')
     if engine == 'mysql' and uuid:
         # Same own-member filter as ui._member_live_facts, with 5.7 fallback.
-        role_column = 'MEMBER_ROLE, MEMBER_STATE' if version >= (8, 0, 0) else 'MEMBER_STATE'
+        role_column = 'MEMBER_ROLE, MEMBER_STATE' if version >= (8, 0, 2) else 'MEMBER_STATE'
         rows = _optional(reader, 'SELECT ' + role_column +
             ' FROM performance_schema.replication_group_members WHERE MEMBER_ID = @@server_uuid', notes)
         if rows:
-            if version >= (8, 0, 0):
+            if version >= (8, 0, 2):
                 role = str(rows[0][0]).lower()
                 member.update(role=role if role in ('primary', 'secondary') else None, state=rows[0][1])
             else:
@@ -246,11 +253,12 @@ def _member_facts(conn, member, variables):
             # MySQL plugin/group_replication/src/ps_information.cc:284-290;
             # storage/perfschema/table_replication_group_member_stats.cc:161,168.
             rows = _optional(reader, 'SELECT COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE FROM '
-                'performance_schema.replication_group_member_stats WHERE MEMBER_ID = @@server_uuid', notes) if version >= (8, 0, 0) else None
+                'performance_schema.replication_group_member_stats WHERE MEMBER_ID = @@server_uuid', notes) if version >= (8, 0, 2) else None
             member['lag'] = {'kind': 'gr_applier_queue', 'value': _number(rows[0][0]) if rows else None,
                              'message': 'Transactions waiting in this member\'s applier queue.' if rows else 'The applier queue is unavailable on this member.'}
             return position, notes
-    if _on(variables.get('wsrep_on')):
+    if (_on(variables.get('wsrep_on')) or
+            variables.get('wsrep_provider') and str(variables['wsrep_provider']).lower() != 'none'):
         # MariaDB sql/wsrep_var.cc:1098-1126 exposes provider status;
         # mysql-test/suite/wsrep/r/variables.result:25 names wsrep_local_recv_queue.
         rows = _optional(reader, "SHOW GLOBAL STATUS WHERE Variable_name IN "
@@ -320,6 +328,7 @@ def _primary(entries, profiles, multi_primary=False):
 
 def _plugins(conn, member):
     reader = Reader(conn, TAG)
+    notes = []
     # Both engines: sql/sql_show.cc, MySQL:5654-5664, MariaDB:10595-10605.
     rows = reader.rows('SELECT PLUGIN_NAME, PLUGIN_STATUS, PLUGIN_TYPE, PLUGIN_VERSION, '
                        'PLUGIN_LIBRARY, LOAD_OPTION FROM information_schema.PLUGINS')
@@ -327,10 +336,15 @@ def _plugins(conn, member):
              for r in rows if len(r) == 6]
     if member['engine'] == 'mysql' and server_version_tuple(member['version']) >= (8, 0, 0):
         # mysql-8.0.11 scripts/mysql_system_tables.sql:214 defines component_urn.
-        for row in reader.rows('SELECT component_urn FROM mysql.component'):
+        notes.append('mysql.component lists components installed with INSTALL COMPONENT; '
+                     'components loaded from a manifest file are not listed.')
+        component_notes = []
+        rows = _optional(reader, 'SELECT component_urn FROM mysql.component', component_notes)
+        notes.extend('mysql.component: ' + note for note in component_notes)
+        for row in rows or []:
             if row:
                 items.append(dict(name=row[0], kind='component', status='registered', version=None))
-    return items
+    return {'items': items, 'notes': notes}
 
 
 def compare_plugins(snapshots):
@@ -348,6 +362,225 @@ def compare_plugins(snapshots):
     return sorted(rows, key=lambda r: ({'different': 0, 'missing': 1, 'same': 2}[r['status']], r['kind'], r['name']))
 
 
+def _uuid(value):
+    return value.lower() if isinstance(value, str) and _UUID.fullmatch(value) else None
+
+
+def _map_probe(conn, profile, member, variables):
+    """Collect topology on this member only; keep the raw probe private.
+
+    The shared probe supplies routes and peers. Cluster identity comes from
+    this connection too, never from another node's membership list or a
+    remembered saved-connection identity.
+    """
+    from . import cluster, topology_links
+    probe = topology_links._probe_connection(conn, profile)
+    notes, reader = [], Reader(conn, TAG)
+    expected = ('readyset' if member['product'] == 'Readyset' else
+                'proxysql' if member['product'] == 'ProxySQL Admin' else 'database')
+    if probe['kind'] != expected:
+        raise ConnectorError('The member identity changed during the topology read.')
+    if probe['kind'] != 'database':
+        return probe, notes
+    if (_uuid(probe.get('server_uuid')) and member['server_uuid'] and
+            _uuid(probe['server_uuid']) != _uuid(member['server_uuid'])):
+        raise ConnectorError('The member identity changed during the topology read.')
+    group = _uuid(variables.get('group_replication_group_name'))
+    provider = variables.get('wsrep_provider')
+    wsrep = _on(variables.get('wsrep_on')) or (provider and str(provider).lower() != 'none')
+    if wsrep:
+        kind = 'pxc' if member['product'] == 'Percona XtraDB Cluster' else 'galera'
+        status = _optional(reader, "SHOW GLOBAL STATUS WHERE Variable_name IN "
+                           "('wsrep_cluster_state_uuid','wsrep_gcomm_uuid')", notes)
+        values = {r[0]: r[1] for r in status or [] if len(r) > 1}
+        probe.update(cluster_kind=kind, cluster_name=variables.get('wsrep_cluster_name'),
+                     cluster_identity=_uuid(values.get('wsrep_cluster_state_uuid')),
+                     wsrep_node_uuid=_uuid(values.get('wsrep_gcomm_uuid')))
+        if kind == 'pxc':
+            rows = _optional(reader, cluster.PXC_VIEW_SQL, notes)
+            probe['cluster_members'] = []
+            for row in rows or []:
+                if len(row) >= 2:
+                    host, port = topology_links.split_host_port(row[0], 3306)
+                    probe['cluster_members'].append({'uuid': row[1], 'host': host, 'port': port})
+    elif group:
+        probe['cluster_identity'] = group
+        if server_version_tuple(member['version']) < (8, 0, 2):
+            rows = _optional(reader, 'SELECT MEMBER_ID, MEMBER_HOST, MEMBER_PORT, MEMBER_STATE '
+                             'FROM performance_schema.replication_group_members', notes)
+            probe['cluster_members'] = [dict(uuid=r[0], host=r[1], port=_number(r[2]), state=r[3])
+                                        for r in rows or [] if len(r) >= 4]
+        if probe.get('cluster_kind') == 'innodb_cluster':
+            rows = _optional(reader, cluster._MD_CLUSTERS_SQL, notes)
+            own = [r for r in rows or [] if len(r) > 3 and _uuid(r[3]) == group]
+            if len(own) == 1:
+                probe['cluster_name'] = own[0][1]
+    return probe, notes
+
+
+def _map_host(value):
+    """Accept endpoint text, never a URL, login string or arbitrary SQL."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if re.fullmatch(r'[A-Za-z0-9._:%\[\]-]{1,255}', value) else None
+
+
+def _map_port(value):
+    number = _number(value)
+    return number if isinstance(number, int) and 1 <= number <= 65535 else None
+
+
+def _build_map(entries, probes, profiles):
+    """Project only display facts and join them using explicit evidence.
+
+    Saved endpoints may establish an address match even for a failed member.
+    Only successful own-connection reads supply identities. Cluster boxes
+    additionally require each saved member to attest its own membership.
+    """
+    from . import topology_links
+    by_id = {entry['profile_id']: entry for entry in entries}
+    stored = {profile['id']: profile for profile in profiles}
+    nodes = [dict(id=entry['profile_id'], kind='member', profile_id=entry['profile_id'],
+                  label=entry['profile_name'], cluster_id=None,
+                  **{key: entry[key] for key in ('host', 'port', 'engine', 'product', 'version',
+                                                'role', 'state', 'outcome', 'server_uuid')}) for entry in entries]
+    node_index = {node['id']: node for node in nodes}
+    peers, edges, boxes, notes = {}, {}, {}, []
+    candidates, galera_candidates = [], []
+    for entry in entries:
+        pid = entry['profile_id']
+        own = probes.get(pid, {})
+        candidate = dict(own, kind='database', profile_id=pid, profile_host=entry['host'],
+                         profile_port=entry['port'], ssh_host=stored[pid].get('ssh_host'),
+                         server_uuid=_uuid(entry['server_uuid']) if own.get('kind') == 'database' else None)
+        candidates.append(candidate)
+        if own.get('wsrep_node_uuid'):
+            galera_candidates.append(dict(candidate, server_uuid=_uuid(own['wsrep_node_uuid'])))
+        if entry['outcome'] != 'read':
+            notes.append({'profile_id': pid, 'message': entry['message']})
+
+    def peer(host, port, uuid, observer):
+        if not uuid and not host:
+            return None
+        address = topology_links.format_endpoint(host, port)
+        key = 'peer:' + (uuid or address.lower())
+        if key not in peers:
+            peers[key] = dict(id=key, kind='peer', profile_id=None, label=address,
+                              host=host, port=port, server_uuid=uuid, seen_by=[], reason='Not in this group')
+        if observer not in peers[key]['seen_by']:
+            peers[key]['seen_by'].append(observer)
+        return key
+
+    def target(observer, host, port, uuid=None, server_id=None, identity_only=False, galera=False):
+        host, port, uuid = _map_host(host), _map_port(port), _uuid(uuid)
+        matching = galera_candidates if galera else candidates
+        found, evidence = topology_links.match_database_endpoint(
+            host, port, matching, uuid=uuid, observer_host=stored[observer].get('host'))
+        if evidence == 'server_uuid':
+            return found['profile_id'], evidence, True
+        # MariaDB replication has no source UUID. A positive server ID is
+        # identity evidence only when exactly one read MariaDB member has it.
+        sid = _number(server_id)
+        if not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb':
+            identities = [pid for pid, probe in probes.items() if probe.get('kind') == 'database'
+                          and by_id[pid]['engine'] == 'mariadb' and by_id[pid]['server_id'] == sid]
+            if len(identities) == 1:
+                return identities[0], 'server_id', True
+        # A contrary UUID is stronger than a matching address. Do not draw
+        # that known different server as this saved member.
+        contrary_uuid = found and uuid and found.get('server_uuid') and _uuid(found['server_uuid']) != uuid
+        if found and not identity_only and not contrary_uuid:
+            return found['profile_id'], evidence, False
+        return peer(host, port, uuid, observer), None, False
+
+    def edge(source, destination, kind, evidence, verified, state, label):
+        if not source or not destination or source == destination:
+            return
+        key = (source, destination, kind, label)
+        value = dict(**{'from': source, 'to': destination}, kind=kind, evidence=evidence,
+                     verified=verified, state=state, label=label)
+        old = edges.get(key)
+        if old is None or verified and not old['verified']:
+            if old is not None and state is None:
+                value['state'] = old['state']
+            edges[key] = value
+        elif old['state'] is None and state is not None:
+            old['state'] = state
+
+    attestations, observations = {}, {}
+    for pid, probe in probes.items():
+        kind = probe.get('cluster_kind')
+        cluster_uuid = _uuid(probe.get('cluster_identity'))
+        galera = kind in ('galera', 'pxc')
+        if kind not in ('group_replication', 'innodb_cluster', 'galera', 'pxc'):
+            continue
+        if cluster_uuid:
+            key = ('wsrep:' if galera else 'gr:') + cluster_uuid
+            observations[pid] = key
+            if key not in boxes:
+                boxes[key] = dict(id=key, kind=kind, name=probe.get('cluster_name') or cluster_uuid,
+                                  members=[], seen_from=[])
+            elif kind == 'innodb_cluster':
+                boxes[key].update(kind=kind, name=probe.get('cluster_name') or cluster_uuid)
+            boxes[key]['seen_from'].append(pid)
+        own_uuid = _uuid(probe.get('wsrep_node_uuid') if galera else by_id[pid]['server_uuid'])
+        if cluster_uuid and own_uuid and any(
+                _uuid(row.get('uuid')) == own_uuid for row in probe.get('cluster_members', [])):
+            attestations[pid] = observations[pid]
+            node_index[pid]['cluster_id'] = observations[pid]
+        else:
+            notes.append({'profile_id': pid, 'message': 'This member could not confirm its own cluster membership.'})
+
+    for pid, probe in probes.items():
+        cluster_id = observations.get(pid)
+        if probe.get('cluster_kind') in ('group_replication', 'innodb_cluster', 'galera', 'pxc'):
+            box = boxes.get(cluster_id)
+            for row in probe.get('cluster_members', []):
+                node_id, evidence, verified = target(pid, row.get('host'), row.get('port'), row.get('uuid'),
+                    identity_only=True, galera=probe.get('cluster_kind') in ('galera', 'pxc'))
+                if box and node_id and (node_id in peers or attestations.get(node_id) == cluster_id):
+                    if node_id not in box['members']:
+                        box['members'].append(node_id)
+        for channel in probe.get('channels', []):
+            source, evidence, verified = target(pid, channel.get('source_host'), channel.get('source_port'),
+                                                channel.get('source_uuid'), channel.get('source_server_id'))
+            running = (_on(channel.get('io_running')), _on(channel.get('sql_running')))
+            state = None if None in running else 'running' if all(running) else 'stopped'
+            edge(source, pid, 'replication', evidence, verified, state, 'Replication')
+        for replica in probe.get('replicas', []):
+            destination, evidence, verified = target(pid, replica.get('host'), replica.get('port'),
+                                                     replica.get('uuid'), replica.get('server_id'))
+            edge(pid, destination, 'replication', evidence, verified, None, 'Replication')
+        if probe.get('kind') == 'proxysql':
+            for backend in probe.get('servers', []):
+                destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
+                hostgroup = _number(backend.get('hostgroup_id'))
+                state = backend.get('status')
+                if state not in ('ONLINE', 'SHUNNED', 'OFFLINE_SOFT', 'OFFLINE_HARD'):
+                    state = None
+                edge(pid, destination, 'proxy_route', evidence, verified, state,
+                     'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?'))
+        if probe.get('kind') == 'readyset':
+            upstreams = list(probe.get('upstreams') or [])
+            if not upstreams:
+                host, port = topology_links.split_host_port(probe.get('cdc_server'), 3306)
+                if host:
+                    upstreams.append({'host': host, 'port': port})
+            for upstream in upstreams:
+                destination, evidence, verified = target(pid, upstream.get('host'), upstream.get('port'))
+                health = upstream.get('health')
+                state = health if health in ('up', 'down', 'healthy', 'unhealthy', 'unknown', 'Online', 'Offline') else None
+                edge(pid, destination, 'cache_upstream', evidence, verified, state, 'Upstream')
+    for node in peers.values():
+        node['seen_by'].sort()
+    for box in boxes.values():
+        box['members'].sort()
+        box['seen_from'].sort()
+    return dict(nodes=nodes + [peers[key] for key in sorted(peers)],
+                edges=[edges[key] for key in sorted(edges)], clusters=[boxes[key] for key in sorted(boxes)], notes=notes)
+
+
 def _entry(profile):
     entry = dict(profile_id=profile['id'], profile_name=profile.get('name') or profile['id'],
                  host=profile.get('host') or '', port=profile.get('port') or 3306,
@@ -355,7 +588,7 @@ def _entry(profile):
                          'read_only': bool(profile.get('read_only'))},
                  outcome='not_reached', message='Not read: the time budget did not allow this member to start.', elapsed_s=0)
     entry.update(dict.fromkeys(('engine', 'product', 'version', 'version_comment', 'server_uuid', 'server_id',
-                               'hostname', 'read_only', 'super_read_only', 'role', 'state', 'lag', 'behind', 'behind_reason')))
+                               'hostname', 'read_only', 'read_only_value', 'super_read_only', 'role', 'state', 'lag', 'behind', 'behind_reason')))
     entry['channels'] = []
     return entry
 
@@ -366,7 +599,7 @@ def read_group(store, group_name, section, active_member_profile_id):
     from .workspace_store import ENDPOINT_FIELDS
     from . import param_compare, account_compare
     if not isinstance(section, str) or section not in SECTIONS:
-        raise ValueError('Choose a topology section: members, parameters, accounts or plugins.')
+        raise ValueError('Choose a topology section: map, members, parameters, accounts or plugins.')
     group_name = connection_groups.validate_group(group_name)
     profiles = [p for p in store.list('profile') if isinstance(p, dict) and isinstance(p.get('id'), str)]
     members = [p for p in profiles if group_name and p.get('group') == group_name]
@@ -411,7 +644,7 @@ def read_group(store, group_name, section, active_member_profile_id):
                 conn = param_compare.BoundedConnection(member_conn, seconds=min(remaining, REQUEST_SECONDS))
                 variables, exclusion = _identity(conn, entry)
                 if exclusion is None:
-                    if section == 'members':
+                    if section in ('members', 'map'):
                         position, notes = _member_facts(conn, entry, variables)
                         multi_primary = (entry['role'] in ('primary', 'secondary')
                                          and _on(variables.get('group_replication_single_primary_mode')) is False)
@@ -423,6 +656,9 @@ def read_group(store, group_name, section, active_member_profile_id):
                         snapshot = account_compare.capture(conn, server=entry)
                     elif section == 'plugins':
                         snapshot = _plugins(conn, entry)
+                if section == 'map':
+                    probe, notes = _map_probe(conn, profile, entry, variables)
+                    snapshot, exclusion = {'probe': probe, 'notes': notes}, None
                 entry['outcome'] = 'read'
                 if entry['message'].startswith('Not read:'):
                     entry['message'] = exclusion or 'Read from this member.'
@@ -439,7 +675,7 @@ def read_group(store, group_name, section, active_member_profile_id):
         results = list(pool.map(read_one, members))
     entries = [result[0] for result in results]
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))
-    if section == 'members':
+    if section in ('members', 'map'):
         positions = {entry['profile_id']: position for entry, snapshot, position, reason, multi in results}
         primary_entry = next((entry for entry in entries if entry['profile_id'] == primary_id), None)
         for entry in entries:
@@ -473,12 +709,25 @@ def read_group(store, group_name, section, active_member_profile_id):
                   effective_safety={'type': connection_groups.group_effective_safety(profiles, group_name) or dbops.DEFAULT_CONNECTION_TYPE,
                                     'read_only': bool(active.get('read_only'))},
                   active_member_profile_id=active['id'], primary_profile_id=primary_id, members=entries, summary=summary)
-    if section != 'members':
+    if section == 'map':
+        probes = {entry['profile_id']: snapshot['probe'] for entry, snapshot, position, reason, multi in results
+                  if entry['outcome'] == 'read' and snapshot is not None}
+        report['map'] = _build_map(entries, probes, members)
+        report['map']['notes'].extend({'profile_id': entry['profile_id'], 'message': note}
+            for entry, snapshot, position, reason, multi in results if snapshot is not None
+            for note in snapshot['notes'])
+    elif section != 'members':
         snapshots = {entry['profile_id']: snapshot for entry, snapshot, position, reason, multi in results
                      if entry['outcome'] == 'read' and snapshot is not None and reason is None}
         not_compared = [{'profile_id': entry['profile_id'], 'reason': reason or entry['message']}
                         for entry, snapshot, position, reason, multi in results if entry['profile_id'] not in snapshots]
         compare = {'parameters': param_compare.compare_many, 'accounts': account_compare.compare_many,
                    'plugins': compare_plugins}[section]
+        plugin_notes = [{'profile_id': pid, 'message': note} for pid in sorted(snapshots)
+                        for note in snapshots[pid]['notes']] if section == 'plugins' else []
+        if section == 'plugins':
+            snapshots = {pid: value['items'] for pid, value in snapshots.items()}
         report[section] = {'rows': compare(snapshots), 'compared': sorted(snapshots), 'not_compared': not_compared}
+        if section == 'plugins':
+            report[section]['notes'] = plugin_notes
     return report

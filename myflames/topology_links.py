@@ -464,7 +464,10 @@ def _probe_connection(conn, profile, remaining=None):
                 "name": ch_name,
                 "source_host": src_host,
                 "source_port": _int(row.get("Source_Port") or row.get("Master_Port")) or 3306,
-                "source_uuid": _text(row.get("Source_UUID") or row.get("Master_Server_Id")),
+                "source_uuid": next((value.lower() for value in (
+                    _text(row.get("Source_UUID")), _text(row.get("Master_UUID")))
+                    if value and re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value)), None),
+                "source_server_id": _int(row.get("Source_Server_Id") or row.get("Master_Server_Id")),
                 "io_running": _text(row.get("Replica_IO_Running") or row.get("Slave_IO_Running")),
                 "sql_running": _text(row.get("Replica_SQL_Running") or row.get("Slave_SQL_Running")),
                 "lag_s": _int(row.get("Seconds_Behind_Source") or row.get("Seconds_Behind_Master")),

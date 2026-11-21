@@ -18,6 +18,7 @@
     },
     "section": {
       "enum": [
+        "map",
         "members",
         "parameters",
         "accounts",
@@ -175,7 +176,8 @@
       "required": [
         "rows",
         "compared",
-        "not_compared"
+        "not_compared",
+        "notes"
       ],
       "properties": {
         "rows": {
@@ -207,6 +209,55 @@
               }
             },
             "additionalProperties": false
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/note"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "map": {
+      "type": "object",
+      "required": [
+        "nodes",
+        "edges",
+        "clusters",
+        "notes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/map_member"
+              },
+              {
+                "$ref": "#/definitions/map_peer"
+              }
+            ]
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/map_edge"
+          }
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/map_cluster"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/note"
           }
         }
       },
@@ -322,7 +373,8 @@
         "lag",
         "behind",
         "behind_reason",
-        "channels"
+        "channels",
+        "read_only_value"
       ],
       "properties": {
         "profile_id": {
@@ -462,6 +514,12 @@
           "items": {
             "$ref": "#/definitions/channel"
           }
+        },
+        "read_only_value": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -694,9 +752,281 @@
         }
       },
       "additionalProperties": false
+    },
+    "note": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "message"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_member": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "profile_id",
+        "label",
+        "host",
+        "port",
+        "engine",
+        "product",
+        "version",
+        "role",
+        "state",
+        "outcome",
+        "server_uuid",
+        "cluster_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "member"
+        },
+        "profile_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb",
+            null
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "secondary",
+            "node",
+            "source",
+            "replica",
+            "standalone",
+            "proxy",
+            "cache",
+            null
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "read",
+            "failed",
+            "not_reached"
+          ]
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_peer": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "profile_id",
+        "label",
+        "host",
+        "port",
+        "server_uuid",
+        "seen_by",
+        "reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "peer"
+        },
+        "profile_id": {
+          "type": "null"
+        },
+        "label": {
+          "type": "string"
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seen_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "const": "Not in this group"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_edge": {
+      "type": "object",
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "evidence",
+        "verified",
+        "state",
+        "label"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "replication",
+            "proxy_route",
+            "cache_upstream"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            "server_uuid",
+            "server_id",
+            "endpoint",
+            "hostname_port",
+            null
+          ]
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_cluster": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "members",
+        "seen_from"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "group_replication",
+            "innodb_cluster",
+            "galera",
+            "pxc"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seen_from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "oneOf": [
+    {
+      "properties": {
+        "section": {
+          "const": "map"
+        }
+      },
+      "required": [
+        "section",
+        "map"
+      ]
+    },
     {
       "properties": {
         "section": {

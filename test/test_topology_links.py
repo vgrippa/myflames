@@ -143,7 +143,9 @@ class FakeProbeConn(object):
             return batch_rows(self.cfg.get("wsrep_members", []))
         if s == topology_links._WSREP_STATUS_SQL:
             return batch_rows([["wsrep_gcomm_uuid", self.cfg["gcomm_uuid"]]]) if self.cfg.get("gcomm_uuid") else ""
-        if "SHOW REPLICA STATUS" in upper or "SHOW ALL SLAVES STATUS" in upper:
+        if upper == 'SHOW REPLICA STATUS' and self.cfg.get('legacy_channels'):
+            raise ConnectorError('ERROR 1064 (42000): SHOW REPLICA STATUS is unavailable')
+        if upper in ('SHOW REPLICA STATUS', 'SHOW SLAVE STATUS', 'SHOW ALL SLAVES STATUS'):
             return xml_rows(self.cfg.get("channels", []))
         if "SHOW REPLICAS" in upper or "SHOW SLAVE HOSTS" in upper:
             return xml_rows(self.cfg.get("replicas", []))
@@ -152,6 +154,47 @@ class FakeProbeConn(object):
         if "_READYSET_HEARTBEAT" in upper:
             return batch_rows([[1]]) if self.cfg.get("heartbeat") else ""
         return ""
+
+
+class TestProbeChannels(unittest.TestCase):
+    """Probe identity fields preserve the engine's UUID/server-ID distinction."""
+
+    def probe_channel(self, row, **config):
+        conn = FakeProbeConn('database', channels=[row], **config)
+        result = topology_links._probe_connection(conn, {'id': 'replica', 'host': 'replica.example', 'port': 3306})
+        self.assertEqual(len(result['channels']), 1)
+        return result['channels'][0]
+
+    def test_modern_mysql_source_uuid_and_server_id_are_separate(self):
+        uuid = 'aaaaaaaa-0000-4000-8000-000000000001'
+        row = self.probe_channel({'Source_Host': 'source.example', 'Source_Port': '3306',
+                                  'Source_UUID': uuid, 'Source_Server_Id': '17'})
+        self.assertEqual(row['source_uuid'], uuid)
+        self.assertEqual(row['source_server_id'], 17)
+
+    def test_legacy_mysql_reads_master_uuid_after_show_replica_status_fallback(self):
+        uuid = 'bbbbbbbb-0000-4000-8000-000000000002'
+        row = self.probe_channel({'Master_Host': 'source.example', 'Master_Port': '3306',
+                                  'Master_UUID': uuid, 'Master_Server_Id': '42'},
+                                 version='8.0.21', legacy_channels=True)
+        self.assertEqual(row['source_uuid'], uuid)
+        self.assertEqual(row['source_server_id'], 42)
+
+    def test_mariadb_master_server_id_never_becomes_a_uuid(self):
+        row = self.probe_channel({'Master_Host': 'maria-source.example', 'Master_Port': '3306',
+                                  'Master_Server_Id': '231'},
+                                 version='11.4.9-MariaDB', version_comment='MariaDB Server')
+        self.assertIsNone(row['source_uuid'])
+        self.assertEqual(row['source_server_id'], 231)
+
+    def test_malformed_or_absent_uuid_is_null_without_losing_server_id(self):
+        for column in ('Source_UUID', 'Master_UUID'):
+            for invalid in ('42', 'not-a-uuid', 'aaaaaaaa-0000-4000-8000-000000000001 extra', '', None):
+                with self.subTest(column=column, invalid=invalid):
+                    row = self.probe_channel({'Master_Host': 'source.example', 'Master_Server_Id': '42',
+                                              column: invalid})
+                    self.assertIsNone(row['source_uuid'])
+                    self.assertEqual(row['source_server_id'], 42)
 
 
 class TestMultiTierTopology(unittest.TestCase):

@@ -2508,7 +2508,7 @@ def api_response(path, payload, workspace=None):
             raise ValueError("This saved connection is outside the current connection group.")
         section = payload.get("section")
         if not isinstance(section, str) or section not in topology_group.SECTIONS:
-            raise ValueError("Choose a topology section: members, parameters, accounts or plugins.")
+            raise ValueError("Choose a topology section: map, members, parameters, accounts or plugins.")
         # Reuse the Group connection membership check before any secret lookup.
         _connection_facts(payload, workspace.store)
         _profiles, current = connection_groups.request_profiles(workspace.store, connection)

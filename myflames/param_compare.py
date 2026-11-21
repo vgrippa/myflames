@@ -286,10 +286,10 @@ def _many_snapshots(snapshots):
 
 def _group_auto_increment(indexed):
     """Fold generated node offsets only when every compared member opts in."""
-    # MySQL plugin/group_replication/src/plugin.cc:4830 defines
-    # single_primary_mode; sql/sys_vars.cc:1110,1117 defines increment/offset.
-    # MariaDB sql/sys_vars.cc:6514 defines wsrep_auto_increment_control;
-    # :6486-6493 derives increment from cluster size and offset from node index.
+    # MySQL plugin/group_replication/src/plugin.cc:2578-2581 supplies the
+    # server ID as the offset to auto_increment.cc:61-84.
+    # MariaDB sql/wsrep_server_service.cc:231-236
+    # derives it from the node index. Both keep the increment uniform.
     for items in indexed.values():
         def value(name):
             item = items.get(name) or {}
@@ -300,6 +300,28 @@ def _group_auto_increment(indexed):
         if not (multi_primary or wsrep_control):
             return False
     return bool(indexed)
+
+
+def _group_provider_options(value):
+    """Compare provider options by key, excluding only known per-node values.
+
+    Refuse ambiguous or malformed input, including duplicate keys. A failed
+    parse must not turn two unreadable strings into an apparent agreement.
+    """
+    if not isinstance(value, str):
+        raise ValueError('Provider options are unavailable.')
+    per_node = {'base_host', 'base_port', 'base_dir', 'gcache.dir',
+                'gmcast.listen_addr', 'ist.recv_addr'}
+    options = {}
+    parts = value.strip().split(';')
+    if not parts[-1].strip():
+        parts.pop()
+    for part in parts:
+        match = re.fullmatch(r'\s*([A-Za-z0-9_.]+)\s*=\s*([^;]*)', part)
+        if not match or match.group(1) in options:
+            raise ValueError('Provider options could not be parsed safely.')
+        options[match.group(1)] = match.group(2).strip()
+    return tuple(sorted((key, val) for key, val in options.items() if key not in per_node))
 
 
 def compare_many(snapshots):
@@ -332,12 +354,17 @@ def compare_many(snapshots):
                 item.get('redacted') or sensitive(name) or value != raw),
                 unavailable='value' not in item)
         indexed[pid] = items
-    # Engine definitions: MySQL plugin/group_replication/src/plugin.cc:4437;
-    # MariaDB sql/sys_vars.cc:6434 and :6535. These are node listener addresses.
     per_server = set(IDENTITY_NAMES) | {'group_replication_local_address',
-        'wsrep_node_incoming_address', 'wsrep_sst_receive_address'}
+        'group_replication_advertise_recovery_endpoints', 'group_replication_recovery_public_key_path',
+        'group_replication_recovery_ssl_ca', 'group_replication_recovery_ssl_capath',
+        'group_replication_recovery_ssl_cert', 'group_replication_recovery_ssl_key',
+        'group_replication_recovery_ssl_crl', 'group_replication_recovery_ssl_crlpath',
+        'wsrep_node_incoming_address', 'wsrep_sst_receive_address', 'wsrep_sst_donor',
+        'wsrep_start_position', 'wsrep_status_file', 'wsrep_provider_base_host',
+        'wsrep_provider_base_port', 'wsrep_provider_base_dir', 'wsrep_provider_gcache_dir',
+        'wsrep_provider_gmcast_listen_addr', 'wsrep_provider_ist_recv_addr'}
     if _group_auto_increment(indexed):
-        per_server.update(('auto_increment_offset', 'auto_increment_increment'))
+        per_server.add('auto_increment_offset')
     names = set().union(*(set(items) for items in indexed.values())) if indexed else set()
     rows = []
     for name in sorted(names):
@@ -347,6 +374,13 @@ def compare_many(snapshots):
                                    item.get('unavailable')) for item in entries)
         kind = next((item.get('type') for item in present if item.get('type')), None)
         normalized = [normalize(item.get('value'), kind) for item in present]
+        parse_failed = False
+        if name == 'wsrep_provider_options' and not unavailable:
+            try:
+                normalized = [_group_provider_options(item.get('value')) for item in present]
+            except ValueError:
+                parse_failed = True
+                unavailable = True
         missing = len(present) != len(profile_ids)
         status = ('missing' if unavailable else 'per_server' if name in per_server else
                   'missing' if missing else 'different' if any(
@@ -365,7 +399,8 @@ def compare_many(snapshots):
                           for pid in profile_ids},
                'apply_type': shared('apply_type'), 'dynamic': shared('dynamic')}
         if unavailable:
-            row['reason'] = 'A value was redacted, truncated or unavailable; it cannot be compared.'
+            row['reason'] = ('Provider options could not be parsed safely; they cannot be compared.' if parse_failed else
+                             'A value was redacted, truncated or unavailable; it cannot be compared.')
         rows.append(row)
     order = {'different': 0, 'missing': 1, 'same': 2, 'per_server': 3}
     return sorted(rows, key=lambda row: (order[row['status']], row['name']))
