@@ -369,6 +369,48 @@ class TopologyChangeTests(GroupCase):
         self.assertIn('primary', plan['order_rule'].lower())
         self.assertEqual(self.apply(plan)['status'], 'applied')
 
+    def test_gr_proxy_members_are_refused_without_blocking_database_order(self):
+        self.make_gr()
+        proxy_profile = self.save('member-4', 'G', type='development')
+        self.profiles.append(proxy_profile)
+        self.clients[proxy_profile['host']] = MemberClient(3)
+        database_ids = ['member-1', 'member-2', 'member-3']
+        expected_order = ['member-2', 'member-3', 'member-1']
+        for product, comment in (('proxysql', 'ProxySQL Admin Module'), ('readyset', 'Readyset')):
+            with self.subTest(product=product):
+                proxy = self.client(3)
+                proxy.proxy = product
+                proxy.variables['version_comment'] = comment
+                for index in range(3):
+                    self.client(index).variables['max_connections'] = '151'
+                    self.client(index).writes.clear()
+                all_members = self.plan()
+                refused = next(m for m in all_members['members'] if m['profile_id'] == proxy_profile['id'])
+                self.assertEqual(refused['status'], 'refused')
+                self.assertIsNone(refused['statement'])
+                self.assertEqual(self.apply(all_members)['status'], 'refused')
+                self.assertEqual(self.written_ids(), [])
+
+                secondaries = self.plan(member_ids=database_ids[1:])
+                self.assertEqual([m['profile_id'] for m in secondaries['expect']['order_dependencies']],
+                                 ['member-1'])
+                self.assertTrue(all(m['status'] == 'planned' for m in secondaries['members']), secondaries)
+
+                plan = self.plan(member_ids=database_ids)
+                self.assertEqual([m['profile_id'] for m in plan['members']], expected_order)
+                self.assertTrue(all(m['status'] == 'planned' for m in plan['members']), plan)
+                self.assertEqual(plan['expect']['order_dependencies'], [])
+                order = []
+                for index in range(3):
+                    self.client(index).after_write = lambda sql, i=index: order.append(database_ids[i])
+                opened_before = len(self.opened)
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'applied', result)
+                self.assertEqual(order, expected_order)
+                self.assertTrue(all(m['status'] == 'applied' for m in result['members']), result)
+                self.assertEqual(proxy.writes, [])
+                self.assertNotIn(proxy_profile['host'], [entry['host'] for entry in self.opened[opened_before:]])
+
     def test_async_replica_of_replica_first_then_root_source(self):
         self.make_async()
         plan = self.plan()
@@ -1362,8 +1404,10 @@ class TopologyChangeTests(GroupCase):
                                  ['failed'])
 
     def test_write_login_failure_is_refused_without_unknown_wording(self):
-        for code in (2002, 2003, 1045):
+        for code in (2002, 2003, 1045, 1698):
             with self.subTest(code=code):
+                if code == 1698:
+                    self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
                 plan = self.plan(member_ids=['member-1'])
 
                 def fail_login(sql):
@@ -1377,6 +1421,7 @@ class TopologyChangeTests(GroupCase):
                 records = [record for record in self.records() if record['id'] not in before]
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]['status'], 'refused', records)
+                self.assertEqual(records[0]['outcome'], 'connect_failed', records)
                 self.assertNotIn('may have run', json.dumps([result, records]))
                 self.assertNotIn('server returned error', json.dumps([result, records]))
                 self.assertEqual(self.written_ids(), [])
@@ -1512,11 +1557,19 @@ class TopologyChangeTests(GroupCase):
 
     def test_async_unreadable_unselected_dependency_refuses_selected_plans(self):
         self.make_async_with_fourth_branch()
+        proxy = self.save('member-5', 'G', type='development')
+        self.profiles.append(proxy)
+        self.clients[proxy['host']] = MemberClient(4)
+        self.client(4).proxy = 'readyset'
+        self.client(4).variables['version_comment'] = 'Readyset'
         self.client(1).read_error = 'ERROR 2013: synthetic relay unavailable'
         plan = self.plan(member_ids=['member-3', 'member-4'])
         self.assertEqual({m['profile_id'] for m in plan['members']}, {'member-3', 'member-4'})
         self.assertTrue(all(m['status'] == 'refused' for m in plan['members']), plan)
         self.assertTrue(all(m['statement'] is None for m in plan['members']), plan)
+        self.assertEqual({m['profile_id'] for m in plan['expect']['order_dependencies']},
+                         {'member-1', 'member-2'})
+        self.assertEqual(self.apply(plan)['status'], 'refused')
         self.assertEqual(self.written_ids(), [])
 
     def test_async_later_selected_relay_reparenting_refuses_before_first_leaf(self):

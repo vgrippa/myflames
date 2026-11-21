@@ -1402,6 +1402,20 @@ class TestRedaction(unittest.TestCase):
         self.assertIsNone(dbops.error_code('Lost connection'))
 
 
+class TestTargetNotConnected(unittest.TestCase):
+    def test_login_refusals_require_no_statement_or_guard_evidence(self):
+        from myflames.connector import ConnectorError
+        for code in (1045, 1698):
+            with self.subTest(code=code):
+                text = "ERROR %d (28000): Access denied for user 'app'@'localhost'" % code
+                self.assertTrue(dbops.target_not_connected(ConnectorError(text)))
+                self.assertFalse(dbops.target_not_connected(ConnectorError(
+                    text.replace('(28000):', '(28000) at line 2:'))))
+                acknowledged = ConnectorError(text)
+                acknowledged.guard_markers = ('myflames_guard_acknowledged',)
+                self.assertFalse(dbops.target_not_connected(acknowledged))
+
+
 class TestConnectionErrorText(unittest.TestCase):
     """Common connection errors lead with plain words and what to check, then
     the client's own error line (libmysql/errmsg.cc and MariaDB

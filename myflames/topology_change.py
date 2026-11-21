@@ -485,7 +485,7 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
                 'members': [], 'expect': {'group_name': group, 'group_generation': generation,
                     'active_member_profile_id': active['id'], 'active_endpoint': _endpoint(active),
                     'effective_safety': safety, 'members': []}}
-    entries, private = [], {}
+    entries, private, proxy_ids = [], {}, set()
     deadline = time.monotonic() + topology_group.REQUEST_SECONDS
     def planning_guard():
         _guard(store, reviewed)
@@ -530,6 +530,8 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
                                      reason='The requested value is already set.' if unchanged else None)
         except reviewed_writes.Refusal as exc:
             entry['reason'] = str(exc)
+            if exc.outcome == 'proxy':
+                proxy_ids.add(profile['id'])
         except Exception as exc:
             # Never return server/client text, even if it quotes a statement
             # or a password belonging to another member.
@@ -540,8 +542,10 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
     if reviewed['order_rule'] != 'Saved name order.':
         # An unselected relay can change the relative depths of selected
         # replicas. Its own live identity and channels are review evidence,
-        # even though no variable statement will ever be sent to it.
-        dependencies = [entry for entry in ordered if entry['profile_id'] not in member_ids]
+        # even though no variable statement will ever be sent to it. Confirmed
+        # proxies and caches do not participate in database replication order.
+        dependencies = [entry for entry in ordered if entry['profile_id'] not in member_ids
+                        and entry['profile_id'] not in proxy_ids]
         reviewed['expect']['order_dependencies'] = [_binding(
             next(p for p in members if p['id'] == entry['profile_id']), entry) for entry in dependencies]
         if any(not entry.get('_facts') or not entry.get('identity') for entry in dependencies):

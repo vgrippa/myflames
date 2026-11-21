@@ -2614,7 +2614,7 @@ def shift_guard_error(exc, packet_lines=None):
 def target_not_connected(exc):
     """Only an initial connection/login failure proves no packet was sent."""
     return (not getattr(exc, "guard_markers", ()) and not re.search(r"\bat line \d+", str(exc))
-            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005, 2026))
+            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 1698, 2002, 2003, 2005, 2026))
 
 
 def redact_target_error(exc, password=None):
