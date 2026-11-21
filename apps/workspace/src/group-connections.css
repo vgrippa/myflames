@@ -97,8 +97,9 @@ button.group-connection-open {
 }
 
 /* Home's Connections place: the group section leads the pane, so it carries
-   no divider of its own, and the Saved connections heading (same style as the
-   section title) keeps the cards and the table apart at every width. */
+   no divider of its own. The Saved connections heading (same style as the
+   section title) leads the table toolbar line, so it keeps its size and never
+   wraps while the search field and the count share the line. */
 .connections .group-connections-section {
   margin: 0 0 14px;
   padding-top: 0;
@@ -106,7 +107,9 @@ button.group-connection-open {
 }
 
 .connections .saved-connections-title {
-  margin: 0 0 8px;
+  margin: 0;
+  flex: none;
+  white-space: nowrap;
 }
 
 .group-connection-actions {

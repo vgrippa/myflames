@@ -523,10 +523,15 @@
   .topology-line::before, .cluster-stem::after { animation: none !important; display: none !important; }
 }
 
+/* The tag yields to the connection name: it shrinks first (ellipsis inside a
+   small max-width) and, in a narrow Name cell, disappears; the full group
+   stays in its title and the row's aria-label. */
 .connection-group-tag {
   display: inline-flex;
   align-items: center;
-  max-width: 160px;
+  flex: 0 4 auto;
+  min-width: 0;
+  max-width: 96px;
   padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -538,7 +543,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex-shrink: 0;
 }
 
 .connection-group-bar {

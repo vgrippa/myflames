@@ -879,7 +879,7 @@ export function Connections({
         setSelected(ids => checked ? [...new Set([...ids, row.key])] : ids.filter(id => id !== row.key));
       }}><span className="visually-hidden">Select {row.fields.name || connectionTarget(row.fields)}</span></Checkbox>
     ) },
-    { key: "name", label: "Name", primary: true, flex: true, width: 108, minWidth: 96, sort: row => row.fields.name,
+    { key: "name", label: "Name", primary: true, flex: true, width: 128, minWidth: 120, sort: row => row.fields.name,
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
@@ -1394,8 +1394,8 @@ export function Connections({
             )}
           </section>
         )}
-        {!loading && !loadError && <h3 className="group-connections-title saved-connections-title">Saved connections</h3>}
         <div className="connections-table-toolbar">
+          {!loading && !loadError && <h3 className="group-connections-title saved-connections-title">Saved connections</h3>}
           {(rows.length >= 6 || !!search) && <SearchField label="Search connections" value={search} onChange={setSearch} />}
           {editingId === null && selectedSaved.length > 0 && <button className="button" disabled={deleting || saving} onClick={() => openNewGroup(selectedSaved.map(row => row.key))}>Group ({selectedSaved.length})…</button>}
           {editingId === null && !!selectedRows.length && <button className="button" disabled={deleting || saving} onClick={() => askDelete(selectedRows)}>Delete ({selectedRows.length})</button>}
@@ -1415,7 +1415,7 @@ export function Connections({
           <DataTable label="Connections" defaultSort={{ key: "name", dir: "asc" }} columns={columns} rows={visibleRows} rowKey={row => row.key}
             selection={{ key: cursor, select: key => setCursor(key) }} multiSelection={{ keys: selected, select: setSelected }} onActivate={activate}
             rowClass={row => `connection-row${(row.profile?.id === active.id || row.key === "active") ? " is-active" : ""}`}
-            rowAttrs={row => ({ "aria-label": `${row.fields.name || connectionTarget(row.fields)}${row.profile?.id === active.id || row.key === "active" ? ", in use" : ""}` })}
+            rowAttrs={row => ({ "aria-label": `${row.fields.name || connectionTarget(row.fields)}${row.profile?.group ? `, group ${row.profile.group}` : ""}${row.profile?.id === active.id || row.key === "active" ? ", in use" : ""}` })}
             rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={phone || editingId !== null ? ["type", "endpoint", "schema", "server", "password", "last-used"] : ["schema", "server", "password", "last-used"]}
             empty={loading ? undefined : <p className="empty-small">{search ? "No connections match your search." : "Add a connection to start working with a server."}</p>} />
         </div>

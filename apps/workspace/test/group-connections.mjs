@@ -873,7 +873,70 @@ try {
     await pause(250);
     await page.screenshot({ path: new URL(`home-groups-${width}-${theme}.png`, topoShots).pathname });
   }
+  // --- The Saved connections heading leads the toolbar line: an h3 at the
+  // left, the controls in the middle, the count right-aligned, on one line.
+  const toolbarLine = () => page.evaluate(() => {
+    const bar = document.querySelector(".connections-table-toolbar");
+    const heading = bar.querySelector("h3.saved-connections-title");
+    const count = bar.querySelector(".connections-count");
+    const rect = (el) => el.getBoundingClientRect();
+    const mid = (el) => { const r = rect(el); return r.top + r.height / 2; };
+    return { tag: heading.tagName, text: heading.textContent.trim(),
+      sameLine: Math.abs(mid(heading) - mid(count)) < 2,
+      oneLine: rect(bar).height < 48,
+      countRight: Math.abs(rect(count).right - rect(bar).right) < 2 };
+  });
+  const lineCheck = (line, where) => {
+    assert.equal(line.tag, "H3", `${where}: Saved connections stays an h3`);
+    assert.equal(line.text, "Saved connections", `${where}: the heading keeps its text`);
+    assert.ok(line.sameLine && line.oneLine, `${where}: the heading and the count share one toolbar line`);
+    assert.ok(line.countRight, `${where}: the count stays right-aligned`);
+  };
+  lineCheck(await toolbarLine(), "720 px");
+  // 720 px with two rows selected: Group (2)… and Delete (2) join the same line.
+  await tickRow("p-ic-1", true);
+  await tickRow("p-ic-2", true);
+  await page.waitForFunction(() => [...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => b.textContent.trim() === "Group (2)…"));
+  lineCheck(await toolbarLine(), "720 px with two rows selected");
+  await pause(250);
+  await page.screenshot({ path: new URL("home-groups-720-light-selected.png", topoShots).pathname });
+  await tickRow("p-ic-1", false);
+  await tickRow("p-ic-2", false);
+  await page.waitForFunction(() => ![...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => /^Group \(/.test(b.textContent.trim())));
   await page.setViewport({ width: 1440, height: 900 });
+  lineCheck(await toolbarLine(), "1440 px");
+
+  // --- The connection name wins the Name column: rows with a group tag show
+  // the name in full; the tag shrinks first (a small cap) or disappears, and
+  // the full group stays in the tag's title and the row's aria-label.
+  const nameCells = await page.evaluate(() => {
+    const out = {};
+    for (const row of document.querySelectorAll(".connection-row")) {
+      const name = row.querySelector(".cell-name > .cell-truncate");
+      const tag = row.querySelector(".connection-group-tag");
+      out[row.dataset.rowKey] = {
+        truncated: name.scrollWidth > name.clientWidth + 1,
+        aria: row.getAttribute("aria-label"),
+        tag: tag ? { shown: getComputedStyle(tag).display !== "none",
+          title: tag.title, width: tag.getBoundingClientRect().width } : null,
+      };
+    }
+    return out;
+  });
+  for (const key of ["p-ic-1", "p-ic-2", "p-ic-3", "p-solo"]) {
+    assert.equal(nameCells[key].truncated, false, `${key}: the connection name is not truncated`);
+  }
+  assert.equal(nameCells["p-ic-2"].tag, null, "cluster-ic-2 carries no group tag");
+  assert.equal(nameCells["p-ic-1"].tag.title, "Group mf-icx", "the full group stays in the tag's title");
+  assert.equal(nameCells["p-ic-3"].tag.title, "Group stage");
+  assert.equal(nameCells["p-solo"].tag.title, "Group mf-icx");
+  assert.match(nameCells["p-ic-1"].aria, /cluster-ic-1, group mf-icx/, "the row's aria-label names the group");
+  assert.match(nameCells["p-ic-3"].aria, /cluster-ic-3, group stage/);
+  if (nameCells["p-ic-1"].tag.shown) {
+    assert.ok(nameCells["p-ic-1"].tag.width <= 97, "the tag is capped and ellipsized before the name truncates");
+  }
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light";
     try { localStorage.setItem("myflames.theme", "light"); } catch {}
