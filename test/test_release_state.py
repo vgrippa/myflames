@@ -44,7 +44,7 @@ class ReleaseEntryPointTest(unittest.TestCase):
     DESKTOP_INSTALL = r"^python3 scripts/release_state\.py run --label '[^'\n]+' -- npm ci$"
     WORKSPACE_INSTALL = (r"^PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state\.py run "
                          r"--label '[^'\n]+' -- npm --prefix \"\$root/apps/workspace\" ci$")
-    WORKSPACE_BUILD = (r"^python3 scripts/release_state\.py run --label '[^'\n]+' "
+    WORKSPACE_BUILD = (r"^NODE_ENV=production python3 scripts/release_state\.py run --label '[^'\n]+' "
                        r"-- npm --prefix \"\$root/apps/workspace\" run build$")
 
     def assert_unconditional_install(self, script, pattern):
@@ -92,6 +92,16 @@ class ReleaseEntryPointTest(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 2)
                 self.assertIn('Cannot build the backend: ' + error, stderr.getvalue())
                 build.assert_not_called()
+
+    def test_workflow_workspace_builds_force_production_and_publish_compares_reference(self):
+        for name in ('publish.yml', 'macos-desktop.yml', 'windows-desktop.yml'):
+            workflow = (ROOT / '.github' / 'workflows' / name).read_text(encoding='utf-8')
+            build = workflow.split('- name: Build the workspace\n', 1)[1].split('\n      - ', 1)[0]
+            with self.subTest(workflow=name):
+                self.assertRegex(build, r'(?m)^\s+NODE_ENV=production npm run build$')
+        publish = (ROOT / '.github' / 'workflows' / 'publish.yml').read_text(encoding='utf-8')
+        self.assertIn('python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz --reference myflames/ui_assets',
+                      publish)
 
 
 class ReleaseStateTest(unittest.TestCase):
@@ -307,7 +317,7 @@ class ReleaseStateTest(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 release.validate_manifest(manifest, commit, ui, requirements)
 
-    def build_backend_manifest(self, freeze=('PyInstaller==6.22.3',)):
+    def build_backend_manifest(self, freeze=('PyInstaller==6.22.3',), asset_change=None):
         desktop = self.root / 'apps' / 'desktop'
         backend = desktop / 'build' / 'backend'
         (backend / 'myflames-backend').mkdir(parents=True)
@@ -315,7 +325,15 @@ class ReleaseStateTest(unittest.TestCase):
         (backend / 'Python-LICENSE.txt').write_bytes(b'license')
         requirements = desktop / 'requirements-build.txt'
         requirements.write_bytes(b'PyInstaller==6.22.3\n')
-        self.build_workspace()
+        assets = self.build_workspace()
+        bundled = backend / 'myflames-backend' / '_internal' / 'myflames' / 'ui_assets'
+        shutil.copytree(str(assets), str(bundled))
+        if asset_change == 'missing':
+            (bundled / 'assets' / 'lazy.js').unlink()
+        elif asset_change == 'altered':
+            (bundled / 'assets' / 'lazy.js').write_bytes(b'altered bundled chunk')
+        elif asset_change == 'extra':
+            (bundled / 'assets' / 'extra.js').write_bytes(b'extra bundled chunk')
         before = {'commit': 'a' * 40, 'ui_assets_sha256': release.ui_assets_digest(self.root),
                   'requirements_sha256': hashlib.sha256(requirements.read_bytes()).hexdigest()}
         with mock.patch.object(release, 'git_head', return_value='a' * 40):
@@ -330,13 +348,15 @@ class ReleaseStateTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'workspace source')
         logo = self.root / 'docs' / 'brand' / 'myflames-app-logo.png'
-        logo.parent.mkdir(parents=True)
+        logo.parent.mkdir(parents=True, exist_ok=True)
         logo.write_bytes(b'logo')
         assets = self.root / 'myflames' / 'ui_assets'
-        (assets / 'assets').mkdir(parents=True)
+        (assets / 'assets').mkdir(parents=True, exist_ok=True)
         (assets / 'assets' / 'app.js').write_bytes(b'freshly built workspace')
+        (assets / 'assets' / 'lazy.js').write_bytes(b'freshly built lazy chunk')
         (assets / 'index.html').write_text(
-            '<meta name="myflames-sources-sha256" content="%s">' % sources_sha(self.root), encoding='utf-8')
+            ('<meta name="myflames-sources-sha256" content="%s">'
+             '<script src="/assets/app.js"></script>') % sources_sha(self.root), encoding='utf-8')
         return assets
 
     def build_venv(self, python_version=None, freeze=('PyInstaller==6.22.3',)):
@@ -355,6 +375,41 @@ class ReleaseStateTest(unittest.TestCase):
             (backend / 'myflames-backend' / 'binary').write_bytes(b'stale binary')
             with self.assertRaisesRegex(ValueError, 'rebuild the backend with release-mac.sh'):
                 release.check_manifest(self.root)
+
+    def test_build_manifest_refuses_missing_extra_or_altered_bundled_chunks(self):
+        for change in ('missing', 'extra', 'altered'):
+            with self.subTest(change=change):
+                backend = self.root / 'apps' / 'desktop' / 'build' / 'backend'
+                if backend.exists():
+                    backend.rename(backend.with_name('previous-' + change))
+                with self.assertRaisesRegex(ValueError, 'bundled workspace assets.*' + change):
+                    self.build_backend_manifest(asset_change=change)
+                self.assertFalse((backend / 'build-manifest.json').exists())
+
+    def test_resume_rechecks_bundled_chunks_even_if_backend_digest_is_updated(self):
+        backend = self.build_backend_manifest()
+        binary = backend / 'myflames-backend'
+        chunk = binary / '_internal' / 'myflames' / 'ui_assets' / 'assets' / 'lazy.js'
+        original = chunk.read_bytes()
+        for change in ('missing', 'extra', 'altered'):
+            with self.subTest(change=change):
+                chunk.write_bytes(original)
+                extra = chunk.with_name('extra.js')
+                if extra.exists():
+                    extra.unlink()
+                if change == 'missing':
+                    chunk.unlink()
+                elif change == 'extra':
+                    extra.write_bytes(b'extra chunk')
+                else:
+                    chunk.write_bytes(b'altered bytes')
+                manifest = release.read_json(backend / 'build-manifest.json')
+                manifest['backend_sha256'] = release.hash_path(binary)
+                release.write_json(backend / 'build-manifest.json', manifest)
+                version, freeze = self.build_venv()
+                with mock.patch.object(release, 'git_head', return_value='a' * 40), version, freeze:
+                    with self.assertRaisesRegex(ValueError, 'bundled workspace assets.*' + change):
+                        release.check_manifest(self.root)
 
     def test_manifest_refuses_a_different_build_python_minor(self):
         self.build_backend_manifest()

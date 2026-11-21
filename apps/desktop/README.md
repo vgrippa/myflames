@@ -258,9 +258,9 @@ xcrun notarytool store-credentials myflames-notary --apple-id <Apple ID> --team-
 ```
 
 It asks for an app-specific password created at account.apple.com (Sign-In and
-Security), not the Apple Account password. Build the workspace as above (the
-release ships the committed UI assets and never rebuilds them), then from the
-repository root:
+Security), not the Apple Account password. `release:mac` builds the untracked
+workspace assets (`myflames/ui_assets`) from source before bundling the
+backend; from the repository root, run:
 
 ```sh
 MYFLAMES_MAC_IDENTITY=<certificate SHA-1 hash> APPLE_KEYCHAIN_PROFILE=myflames-notary \
@@ -272,11 +272,11 @@ entry point: it requires the named full commit SHA to equal a clean HEAD,
 preflights the build tools, DNS and free disk
 (`scripts/release_state.py preflight`) and the signing identity and notary
 sign-in (`scripts/package-mac-release.sh --preflight`), then runs `npm ci` in
-`apps/desktop` followed by `PUPPETEER_SKIP_DOWNLOAD=true npm ci` in
-`apps/workspace` on every invocation, including `--resume`. Both dependency
-sets are installed from their committed lockfiles before any backend build
-or resume decision. The workspace dependencies let the settings smokes attach
-to Electron without downloading a browser. It provisions the build venv
+`apps/desktop` followed by `PUPPETEER_SKIP_DOWNLOAD=true npm ci` and
+`npm run build` in `apps/workspace` on every invocation, including `--resume`.
+Both dependency sets are installed from their committed lockfiles and the
+workspace assets are built before any backend build or resume decision. The
+workspace dependencies let the settings smokes attach to Electron without downloading a browser. It provisions the build venv
 (`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`), builds
 the backend and its build manifest, re-checks the commit and the clean tree,
 and then runs the packager (`scripts/package-mac-release.sh`, also reached
@@ -346,9 +346,10 @@ both come from the environment.
 
 The `Windows desktop` workflow (`.github/workflows/windows-desktop.yml`) builds
 `myflames-<version>-windows-x64-setup.exe` on a GitHub-hosted Windows runner for
-each pull request and push to master that touches `apps/desktop` or `myflames`,
-and on demand (Actions > Windows desktop > Run workflow). It builds the backend
-with PyInstaller in a fresh venv, runs `npm test`, fetches the bundled MySQL
+each pull request and push to master that touches `apps/desktop`, `apps/workspace`
+or `myflames`, and on demand (Actions > Windows desktop > Run workflow). It
+builds the workspace, builds the backend with PyInstaller in a fresh venv, runs
+`npm test`, fetches the bundled MySQL
 client (the archive cached by its SHA-256, the Visual C++ runtime DLLs from the
 runner's Visual Studio), packages the NSIS installer with `package:win`, runs the packaged smoke against `dist/win-unpacked` with a
 PATH of only the Windows system folders, and uploads the installer and its
@@ -367,6 +368,8 @@ run from the repository root in Git Bash:
 ```sh
 python -m venv local/desktop-build-venv
 local/desktop-build-venv/Scripts/python.exe -m pip install -r apps/desktop/requirements-build.txt
+npm --prefix apps/workspace ci
+npm --prefix apps/workspace run build
 local/desktop-build-venv/Scripts/python.exe apps/desktop/scripts/build-backend.py
 python apps/desktop/scripts/fetch-mysql-client.py --platform win32-x64
 cd apps/desktop

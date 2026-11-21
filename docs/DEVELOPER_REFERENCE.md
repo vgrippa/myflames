@@ -1246,7 +1246,7 @@ messages, never in the notes.
   available for macOS on Apple Silicon and, as an unsigned preview, for
   Windows x64."). Then these `##` sections, in this order, each left out when
   empty: Release highlights, New features, Improvements, Bug fixes, Security
-  fixes, Other changes, Deprecations and removals, Known issues, Packaging notes, Additional
+  fixes, Deprecations and removals, Known issues, Packaging notes, Additional
   resources (always present: the download links, the Quickstart and GitHub
   Issues). No other headings. The page does not repeat the inspiration credit: it
   lives in the About myflames window, the README, NOTICE and HTML report footers.

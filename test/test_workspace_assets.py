@@ -5,6 +5,7 @@ import io
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -21,9 +22,29 @@ sources_sha = _module.sources_sha
 
 class WorkspaceAssetsTests(unittest.TestCase):
     def test_built_assets_match_sources(self):
-        if not (REPO / 'myflames' / 'ui_assets' / 'index.html').is_file():
+        output = REPO / 'myflames' / 'ui_assets'
+        if not any(path.exists() or path.is_symlink() for path in (output / 'index.html', output / 'assets')):
             self.skipTest('Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
         check_ui_assets(REPO / 'myflames')
+
+    def test_completely_absent_build_is_skipped(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(globals(), {'REPO': Path(directory)}):
+            with self.assertRaises(unittest.SkipTest):
+                self.test_built_assets_match_sources()
+
+    def test_partial_build_is_checked_instead_of_skipped(self):
+        for component in ('index.html', 'assets'):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / 'myflames' / 'ui_assets'
+                output.mkdir(parents=True)
+                if component == 'index.html':
+                    (output / component).write_bytes(b'<html></html>')
+                else:
+                    (output / component).mkdir()
+                    (output / component / 'app.js').write_bytes(b'js')
+                with mock.patch.dict(globals(), {'REPO': root}), self.assertRaisesRegex(ValueError, 'missing'):
+                    self.test_built_assets_match_sources()
 
     def test_sources_sha_uses_sorted_utf8_paths_and_nul_delimiters(self):
         # Explicit canonical order, including names that JavaScript's default
@@ -111,10 +132,12 @@ class PackageAssetsTests(unittest.TestCase):
         self.stamp = sources_sha(self.root)
         self.index = ('<meta name="myflames-sources-sha256" content="%s">' % self.stamp).encode('utf-8')
 
-    def target(self, kind, index=None, js=True):
+    def target(self, kind, index=None, js=True, extra_files=None):
         files = {} if index is None else {'myflames/ui_assets/index.html': index}
         if js:
             files['myflames/ui_assets/assets/app.js'] = b'console.log("fixture");'
+        files.update(('myflames/ui_assets/' + name, content)
+                     for name, content in (extra_files or {}).items())
         if kind == 'directory':
             for name, content in files.items():
                 path = self.root / name
@@ -166,6 +189,87 @@ class PackageAssetsTests(unittest.TestCase):
             with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'stale'):
                 check_ui_assets(target, self.root)
 
+    def test_every_index_asset_reference_must_exist_even_with_other_javascript(self):
+        references = (
+            '<script src="/assets/missing.js"></script>',
+            '<script src="./assets/missing.js?v=1#entry"></script>',
+            '<link rel="stylesheet" href="assets/missing.css">',
+            '<link rel="icon" href="/assets/missing.png?v=4">',
+            '<link rel="modulepreload" href="/assets/missing.js">',
+        )
+        for kind in ('directory', 'wheel', 'sdist'):
+            for reference in references:
+                with self.subTest(kind=kind, reference=reference):
+                    target = self.target(kind, self.index + reference.encode('utf-8'))
+                    with self.assertRaisesRegex(ValueError, 'missing referenced workspace asset assets/missing'):
+                        check_ui_assets(target, self.root)
+
+    def test_accepts_existing_script_stylesheet_and_icon_references(self):
+        index = self.index + (
+            '<script src="/assets/app.js?v=1#entry"></script>'
+            '<link rel="stylesheet" href="./assets/style.css">'
+            '<link rel="icon" href="assets/nested/icon%20name.png?v=4&amp;x=1"/>'
+            '<link rel="modulepreload" href="assets/lazy.js">'
+            '<script src="https://example.invalid/assets/external.js"></script>'
+        ).encode('utf-8')
+        extra = {'assets/style.css': b'body {}', 'assets/nested/icon name.png': b'icon',
+                 'assets/lazy.js': b'lazy'}
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind):
+                self.assertEqual(check_ui_assets(self.target(kind, index, extra_files=extra), self.root),
+                                 self.stamp)
+
+    def reference_build(self):
+        reference = self.root / 'reference'
+        files = {'index.html': self.index, 'assets/app.js': b'console.log("fixture");',
+                 'assets/lazy.js': b'lazy chunk', 'assets/style.css': b'body {}',
+                 'assets/nested/icon.png': b'\x89PNG\xff'}
+        for name, content in files.items():
+            path = reference / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        return reference, files
+
+    def test_reference_build_matches_every_file_including_unreferenced_chunks(self):
+        reference, files = self.reference_build()
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind):
+                target = self.target(kind, self.index, extra_files=files)
+                self.assertEqual(check_ui_assets(target, self.root, reference=reference), self.stamp)
+
+    def test_reference_build_rejects_missing_extra_and_altered_files(self):
+        reference, files = self.reference_build()
+        for kind in ('directory', 'wheel', 'sdist'):
+            for change in ('missing', 'extra', 'altered'):
+                changed = dict(files)
+                if change == 'missing':
+                    del changed['assets/lazy.js']
+                elif change == 'extra':
+                    changed['assets/extra.js'] = b'unexpected'
+                else:
+                    changed['assets/lazy.js'] = b'altered bytes'
+                with self.subTest(kind=kind, change=change):
+                    # A directory fixture needs a fresh tree for every case.
+                    package = self.root / 'myflames'
+                    if kind == 'directory' and package.exists():
+                        package.rename(self.root / ('previous-' + change))
+                    target = self.target(kind, self.index, extra_files=changed)
+                    with self.assertRaisesRegex(ValueError, 'reference build.*' + change):
+                        check_ui_assets(target, self.root, reference=reference)
+
+    def test_asset_references_allow_queries_fragments_escapes_and_external_urls(self):
+        index = self.index + (
+            '<script src="./assets/app.js?v=1&amp;x=2#entry"></script>'
+            '<link rel="stylesheet" href="/assets/nested/style%20sheet.css">'
+            '<link rel="icon" href="assets/icon.png?v=4" />'
+            '<script src="https://example.invalid/assets/external.js"></script>'
+            '<link rel="stylesheet" href="//example.invalid/assets/external.css">'
+        ).encode('utf-8')
+        files = {'assets/nested/style sheet.css': b'body {}', 'assets/icon.png': b'png'}
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind):
+                self.assertEqual(check_ui_assets(self.target(kind, index, extra_files=files), self.root), self.stamp)
+
     def test_wheel_requires_real_package_paths_and_flat_js_assets(self):
         target = self.root / 'fixture.whl'
         for prefix, js in (('other/', 'app.js'), ('', 'nested/app.js')):
@@ -187,6 +291,20 @@ class PackageAssetsTests(unittest.TestCase):
             archive.addfile(link)
         with self.assertRaisesRegex(ValueError, r'assets/\*\.js'):
             check_ui_assets(target, self.root)
+
+    def test_sdist_does_not_ignore_extra_links_when_matching_a_reference(self):
+        reference, files = self.reference_build()
+        target = self.root / 'linked.tar.gz'
+        with tarfile.open(str(target), 'w:gz') as archive:
+            for name, content in files.items():
+                entry = tarfile.TarInfo('myflames-1.0/myflames/ui_assets/' + name)
+                entry.size = len(content)
+                archive.addfile(entry, io.BytesIO(content))
+            link = tarfile.TarInfo('myflames-1.0/myflames/ui_assets/assets/extra.js')
+            link.type, link.linkname = tarfile.SYMTYPE, '/outside/app.js'
+            archive.addfile(link)
+        with self.assertRaisesRegex(ValueError, 'not a regular file'):
+            check_ui_assets(target, self.root, reference=reference)
 
 
 if __name__ == '__main__':

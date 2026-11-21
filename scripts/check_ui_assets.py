@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 import tarfile
+from urllib.parse import unquote, urlsplit
 import zipfile
 
 
@@ -44,19 +45,38 @@ class _SourcesStampParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.stamps = []
+        self.references = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == 'meta' and attrs.get('name') == 'myflames-sources-sha256':
             self.stamps.append(attrs.get('content'))
+        # Include preload links as well as stylesheets and icons, so all local
+        # assets that the index asks the browser to load must exist.
+        reference = None
+        if tag == 'script':
+            reference = attrs.get('src')
+        elif tag == 'link':
+            reference = attrs.get('href')
+        if reference:
+            url = urlsplit(reference)
+            if not url.scheme and not url.netloc:
+                path = unquote(url.path).lstrip('/')
+                while path.startswith('./'):
+                    path = path[2:]
+                if path.startswith('assets/'):
+                    self.references.append(path)
 
 
-def _check_stamp(index, root):
+def _check_stamp(index, root, names):
     parser = _SourcesStampParser()
     parser.feed(index.decode('utf-8'))
     expected = sources_sha(root)
     if parser.stamps != [expected]:
         raise ValueError('myflames/ui_assets is stale or has no valid source stamp: ' + BUILD_HINT)
+    for reference in parser.references:
+        if '..' in reference.split('/') or reference not in names:
+            raise ValueError('missing referenced workspace asset {}: {}'.format(reference, BUILD_HINT))
     return expected
 
 
@@ -72,38 +92,84 @@ def _archive_index(names, sdist=False):
     return indexes[0]
 
 
-def check_ui_assets(target, root=REPO):
-    """Return the source digest only for a complete, current workspace build."""
+def _directory_files(assets):
+    """Read file contents only; packaging may legitimately change file modes."""
+    return {path.relative_to(assets).as_posix(): path.read_bytes()
+            for path in assets.rglob('*') if path.is_file()}
+
+
+def _check_files(files, root):
+    if 'index.html' not in files:
+        raise ValueError('missing myflames/ui_assets/index.html: ' + BUILD_HINT)
+    if not any(re.fullmatch(r'assets/[^/]+\.js', name) for name in files):
+        raise ValueError('missing myflames/ui_assets/assets/*.js: ' + BUILD_HINT)
+    return _check_stamp(files['index.html'], root, files)
+
+
+def _check_reference(files, reference, root):
+    expected = _directory_files(Path(reference))
+    _check_files(expected, root)
+    actual_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
+    expected_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in expected.items()}
+    missing = sorted(set(expected_hashes) - set(actual_hashes))
+    extra = sorted(set(actual_hashes) - set(expected_hashes))
+    altered = sorted(name for name in set(actual_hashes) & set(expected_hashes)
+                     if actual_hashes[name] != expected_hashes[name])
+    differences = [('missing', missing), ('extra', extra), ('altered', altered)]
+    details = '; '.join('{}: {}'.format(label, ', '.join(names))
+                        for label, names in differences if names)
+    if details:
+        raise ValueError('workspace assets differ from reference build ({}): {}'.format(details, reference))
+
+
+def check_ui_assets(target, root=REPO, reference=None):
+    """Validate index references and optionally match an entire ui_assets tree.
+
+    reference names the freshly built ui_assets directory, not its package.
+    Compare relative file names and SHA-256, independent of archive metadata.
+    """
     target = Path(target)
     if target.is_dir():
-        assets = target / 'ui_assets'
-        index = assets / 'index.html'
-        if not index.is_file():
-            raise ValueError('missing myflames/ui_assets/index.html: ' + BUILD_HINT)
-        if not any(path.is_file() for path in (assets / 'assets').glob('*.js')):
-            raise ValueError('missing myflames/ui_assets/assets/*.js: ' + BUILD_HINT)
-        content = index.read_bytes()
+        files = _directory_files(target / 'ui_assets')
     elif target.suffix == '.whl':
         with zipfile.ZipFile(str(target)) as archive:
             names = [entry.filename for entry in archive.infolist() if not entry.is_dir()]
-            content = archive.read(_archive_index(names))
+            prefix = _archive_index(names)[:-len('index.html')]
+            members = [name for name in names if name.startswith(prefix)]
+            if len(members) != len(set(members)):
+                raise ValueError('duplicate workspace asset in archive')
+            files = {name[len(prefix):]: archive.read(name) for name in members}
     elif target.name.endswith('.tar.gz'):
         with tarfile.open(str(target), 'r:gz') as archive:
-            names = [entry.name for entry in archive.getmembers() if entry.isfile()]
-            with archive.extractfile(_archive_index(names, sdist=True)) as handle:
-                content = handle.read()
+            entries = archive.getmembers()
+            names = [entry.name for entry in entries if entry.isfile()]
+            prefix = _archive_index(names, sdist=True)[:-len('index.html')]
+            if any(entry.name.startswith(prefix) and not entry.isfile() and not entry.isdir()
+                   for entry in entries):
+                raise ValueError('workspace asset in archive is not a regular file')
+            members = [name for name in names if name.startswith(prefix)]
+            if len(members) != len(set(members)):
+                raise ValueError('duplicate workspace asset in archive')
+            files = {}
+            for name in members:
+                with archive.extractfile(name) as handle:
+                    files[name[len(prefix):]] = handle.read()
     else:
         raise ValueError('expected a package directory, .whl or .tar.gz: {}'.format(target))
-    return _check_stamp(content, root)
+    stamp = _check_files(files, root)
+    if reference is not None:
+        _check_reference(files, reference, root)
+    return stamp
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('targets', nargs='+', help='package directory (myflames), wheel or sdist')
+    parser.add_argument('--reference', help='ui_assets directory whose file names and SHA-256 hashes must match')
     args = parser.parse_args(argv)
     for target in args.targets:
         try:
-            check_ui_assets(target)
+            check_ui_assets(target, reference=args.reference)
         except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as exc:
             print('check_ui_assets: {}: {}'.format(target, exc), file=sys.stderr)
             return 1

@@ -103,6 +103,16 @@ def ui_assets_digest(root):
     return hash_path(Path(root) / 'myflames' / 'ui_assets')
 
 
+def check_bundled_ui_assets(root):
+    """PyInstaller 6's onedir data must match the validated build byte for byte."""
+    root = Path(root)
+    package = root / 'apps' / 'desktop' / 'build' / 'backend' / 'myflames-backend' / '_internal' / 'myflames'
+    try:
+        check_ui_assets(package, root, reference=root / 'myflames' / 'ui_assets')
+    except (OSError, ValueError) as exc:
+        raise ValueError('bundled workspace assets do not match the built input: {}'.format(exc))
+
+
 def git_head(root):
     try:
         return subprocess.check_output(['git', '-C', str(root), 'rev-parse', '--verify', 'HEAD'],
@@ -152,6 +162,7 @@ def check_manifest(root):
         manifest = read_json(backend / 'build-manifest.json')
         validate_manifest(manifest, git_head(root), ui_assets_digest(root),
                           sha256_file(root / 'apps' / 'desktop' / 'requirements-build.txt'))
+        check_bundled_ui_assets(root)
         if manifest.get('backend_sha256') != hash_path(backend / 'myflames-backend'):
             raise ValueError('backend files do not match the build manifest')
         if manifest.get('python_license_sha256') != sha256_file(backend / 'Python-LICENSE.txt'):
@@ -182,6 +193,7 @@ def build_manifest(root, before, freeze):
                'requirements_sha256': sha256_file(desktop / 'requirements-build.txt')}
     if before != current:
         raise ValueError('build inputs changed while building; rebuild the backend with release-mac.sh')
+    check_bundled_ui_assets(root)
     current.update({'schema_version': 'myflames-backend-build-1',
                     'python_version': sys.version.split()[0], 'built_at': utc_now(),
                     'backend_sha256': hash_path(desktop / 'build' / 'backend' / 'myflames-backend'),

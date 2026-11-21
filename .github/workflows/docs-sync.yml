@@ -4,7 +4,7 @@ name: Docs and release sync
 # code (AGENTS.md "Release sync", DEVELOPER_REFERENCE "Release sync").
 #
 # - pull_request: a change to user-facing code (apps/workspace/src, apps/desktop
-#   outside test/, myflames outside tests and ui_assets) needs a CHANGELOG.md
+#   outside test/, myflames outside tests) needs a CHANGELOG.md
 #   [Unreleased] entry (or a docs/release-notes page change), unless the PR has
 #   the "no-changelog" label. A PR that changes the version in
 #   apps/desktop/package.json must be a complete release:

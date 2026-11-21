@@ -94,13 +94,13 @@ class ReleaseNotesTest(unittest.TestCase):
         _, body = notes.page(PAGE, "3.4.0")
         self.assertIn("## [9.9.9] inside a code fence", body)
 
-    def test_other_changes_follow_security_fixes(self):
+    def test_packaging_notes_follow_security_fixes(self):
         extra = ('## Security fixes\n\n- Fixed a security issue.\n\n'
-                 '## Other changes\n\n- Source checkouts need a workspace build.\n\n')
+                 '## Packaging notes\n\n- Source checkouts need a workspace build.\n\n')
         page = PAGE.replace('## Additional resources', extra + '## Additional resources')
-        self.assertIn('## Other changes', notes.page(page, '3.4.0')[1])
-        wrong = page.replace('## Security fixes', '## Other changes', 1)
-        wrong = wrong.replace('## Other changes\n\n- Source', '## Security fixes\n\n- Source')
+        self.assertIn('## Packaging notes', notes.page(page, '3.4.0')[1])
+        wrong = page.replace('## Security fixes', '## Packaging notes', 1)
+        wrong = wrong.replace('## Packaging notes\n\n- Source', '## Security fixes\n\n- Source')
         with self.assertRaises(notes.ReleaseNotesError):
             notes.page(wrong, '3.4.0')
 

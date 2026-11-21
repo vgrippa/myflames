@@ -51,7 +51,7 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: "true"
         run: |
           npm ci
-          npm run build
+          NODE_ENV=production npm run build
       - name: Build the backend
         run: |
           python3 -m venv local/desktop-build-venv
