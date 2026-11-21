@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import sys
 import tarfile
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 import zipfile
 
 
@@ -58,14 +58,8 @@ class _SourcesStampParser(HTMLParser):
             reference = attrs.get('src')
         elif tag == 'link':
             reference = attrs.get('href')
-        if reference:
-            url = urlsplit(reference)
-            if not url.scheme and not url.netloc:
-                path = unquote(url.path).lstrip('/')
-                while path.startswith('./'):
-                    path = path[2:]
-                if path.startswith('assets/'):
-                    self.references.append(path)
+        if reference is not None:
+            self.references.append((tag, reference))
 
 
 def _check_stamp(index, root, names):
@@ -74,9 +68,24 @@ def _check_stamp(index, root, names):
     expected = sources_sha(root)
     if parser.stamps != [expected]:
         raise ValueError('myflames/ui_assets is stale or has no valid source stamp: ' + BUILD_HINT)
-    for reference in parser.references:
-        if '..' in reference.split('/') or reference not in names:
-            raise ValueError('missing referenced workspace asset {}: {}'.format(reference, BUILD_HINT))
+    for tag, reference in parser.references:
+        url = urlsplit(reference)
+        if url.scheme or url.netloc:
+            if tag == 'script':
+                raise ValueError('external workspace script is not allowed: {}'.format(reference))
+            continue
+        # ui.py ignores queries and fragments, but does not decode URL paths.
+        # Only the root index and flat assets with known suffixes are served.
+        if '%' in url.path or '\\' in url.path or '..' in url.path.split('/'):
+            raise ValueError('unservable referenced workspace asset {}: {}'.format(reference, BUILD_HINT))
+        path = url.path.lstrip('/')
+        while path.startswith('./'):
+            path = path[2:]
+        name = path or 'index.html'
+        if name not in names:
+            raise ValueError('missing referenced workspace asset {}: {}'.format(name, BUILD_HINT))
+        if path and not re.fullmatch(r'assets/[^/]+\.(js|css|json|jpeg|png|svg|woff2)', path):
+            raise ValueError('unservable referenced workspace asset {}: {}'.format(reference, BUILD_HINT))
     return expected
 
 

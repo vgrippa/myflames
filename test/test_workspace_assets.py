@@ -23,7 +23,8 @@ sources_sha = _module.sources_sha
 class WorkspaceAssetsTests(unittest.TestCase):
     def test_built_assets_match_sources(self):
         output = REPO / 'myflames' / 'ui_assets'
-        if not any(path.exists() or path.is_symlink() for path in (output / 'index.html', output / 'assets')):
+        if ((not output.exists() and not output.is_symlink()) or
+                (output.is_dir() and not any(output.iterdir()))):
             self.skipTest('Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
         check_ui_assets(REPO / 'myflames')
 
@@ -31,18 +32,34 @@ class WorkspaceAssetsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(globals(), {'REPO': Path(directory)}):
             with self.assertRaises(unittest.SkipTest):
                 self.test_built_assets_match_sources()
+            (Path(directory) / 'myflames' / 'ui_assets').mkdir(parents=True)
+            with self.assertRaises(unittest.SkipTest):
+                self.test_built_assets_match_sources()
 
     def test_partial_build_is_checked_instead_of_skipped(self):
-        for component in ('index.html', 'assets'):
+        for component in ('index.html', 'assets', 'empty-assets', 'other.txt', '.hidden',
+                          'output-file', 'broken-output-link', 'broken-index-link'):
             with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 output = root / 'myflames' / 'ui_assets'
-                output.mkdir(parents=True)
+                output.parent.mkdir(parents=True)
+                if component == 'output-file':
+                    output.write_bytes(b'not a directory')
+                elif component == 'broken-output-link':
+                    output.symlink_to(root / 'missing-build', target_is_directory=True)
+                else:
+                    output.mkdir()
                 if component == 'index.html':
                     (output / component).write_bytes(b'<html></html>')
-                else:
+                elif component == 'assets':
                     (output / component).mkdir()
                     (output / component / 'app.js').write_bytes(b'js')
+                elif component == 'empty-assets':
+                    (output / 'assets').mkdir()
+                elif component in ('other.txt', '.hidden'):
+                    (output / component).write_bytes(b'partial build')
+                elif component == 'broken-index-link':
+                    (output / 'index.html').symlink_to(root / 'missing-index')
                 with mock.patch.dict(globals(), {'REPO': root}), self.assertRaisesRegex(ValueError, 'missing'):
                     self.test_built_assets_match_sources()
 
@@ -192,8 +209,10 @@ class PackageAssetsTests(unittest.TestCase):
     def test_every_index_asset_reference_must_exist_even_with_other_javascript(self):
         references = (
             '<script src="/assets/missing.js"></script>',
+            '<script src="/missing.js"></script>',
             '<script src="./assets/missing.js?v=1#entry"></script>',
             '<link rel="stylesheet" href="assets/missing.css">',
+            '<link rel="stylesheet" href="/missing.css">',
             '<link rel="icon" href="/assets/missing.png?v=4">',
             '<link rel="modulepreload" href="/assets/missing.js">',
         )
@@ -201,18 +220,18 @@ class PackageAssetsTests(unittest.TestCase):
             for reference in references:
                 with self.subTest(kind=kind, reference=reference):
                     target = self.target(kind, self.index + reference.encode('utf-8'))
-                    with self.assertRaisesRegex(ValueError, 'missing referenced workspace asset assets/missing'):
+                    with self.assertRaisesRegex(ValueError, 'missing referenced workspace asset .*missing'):
                         check_ui_assets(target, self.root)
 
     def test_accepts_existing_script_stylesheet_and_icon_references(self):
         index = self.index + (
             '<script src="/assets/app.js?v=1#entry"></script>'
             '<link rel="stylesheet" href="./assets/style.css">'
-            '<link rel="icon" href="assets/nested/icon%20name.png?v=4&amp;x=1"/>'
+            '<link rel="icon" href="assets/icon.png?v=4&amp;x=1"/>'
             '<link rel="modulepreload" href="assets/lazy.js">'
-            '<script src="https://example.invalid/assets/external.js"></script>'
+            '<link rel="stylesheet" href="https://example.invalid/external.css">'
         ).encode('utf-8')
-        extra = {'assets/style.css': b'body {}', 'assets/nested/icon name.png': b'icon',
+        extra = {'assets/style.css': b'body {}', 'assets/icon.png': b'icon',
                  'assets/lazy.js': b'lazy'}
         for kind in ('directory', 'wheel', 'sdist'):
             with self.subTest(kind=kind):
@@ -257,18 +276,45 @@ class PackageAssetsTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'reference build.*' + change):
                         check_ui_assets(target, self.root, reference=reference)
 
-    def test_asset_references_allow_queries_fragments_escapes_and_external_urls(self):
+    def test_asset_references_allow_served_queries_fragments_and_root(self):
         index = self.index + (
             '<script src="./assets/app.js?v=1&amp;x=2#entry"></script>'
-            '<link rel="stylesheet" href="/assets/nested/style%20sheet.css">'
             '<link rel="icon" href="assets/icon.png?v=4" />'
-            '<script src="https://example.invalid/assets/external.js"></script>'
+            '<link rel="preload" href="/?v=1#entry">'
             '<link rel="stylesheet" href="//example.invalid/assets/external.css">'
         ).encode('utf-8')
-        files = {'assets/nested/style sheet.css': b'body {}', 'assets/icon.png': b'png'}
+        files = {'assets/icon.png': b'png'}
         for kind in ('directory', 'wheel', 'sdist'):
             with self.subTest(kind=kind):
                 self.assertEqual(check_ui_assets(self.target(kind, index, extra_files=files), self.root), self.stamp)
+
+    def test_existing_references_must_be_servable_by_the_page_handler(self):
+        # Existing files must still fail when their URL cannot reach them.
+        paths = ('/outside.js', '/index.html', '/assets/sub/x.js',
+                 '/assets/icon%20name.png', '/assets/%61pp.js',
+                 '/assets/../assets/app.js', '/assets/sub\\app.js',
+                 '/assets/app.txt')
+        files = {'outside.js': b'js', 'assets/sub/x.js': b'js',
+                 'assets/icon name.png': b'png', 'assets/icon%20name.png': b'png',
+                 'assets/%61pp.js': b'js', 'assets/sub\\app.js': b'js',
+                 'assets/app.txt': b'js'}
+        for kind in ('directory', 'wheel', 'sdist'):
+            for tag in ('<script src="{}"></script>', '<link href="{}">'):
+                for path in paths:
+                    with self.subTest(kind=kind, tag=tag, path=path):
+                        index = self.index + tag.format(path).encode('utf-8')
+                        target = self.target(kind, index, extra_files=files)
+                        with self.assertRaisesRegex(ValueError, 'unservable referenced workspace asset'):
+                            check_ui_assets(target, self.root)
+
+    def test_external_scripts_are_rejected(self):
+        for kind in ('directory', 'wheel', 'sdist'):
+            for src in ('https://example.invalid/app.js', '//example.invalid/app.js',
+                        'data:text/javascript,alert(1)'):
+                with self.subTest(kind=kind, src=src):
+                    index = self.index + ('<script src="{}"></script>'.format(src)).encode('utf-8')
+                    with self.assertRaisesRegex(ValueError, 'external workspace script'):
+                        check_ui_assets(self.target(kind, index), self.root)
 
     def test_wheel_requires_real_package_paths_and_flat_js_assets(self):
         target = self.root / 'fixture.whl'

@@ -1574,18 +1574,27 @@ The built index and `myflames/ui_assets/assets/` are not tracked. Run `npm ci`
 and `npm run build` in `apps/workspace` before running the workspace from source.
 `scripts/check_ui_assets.py` owns the Python hash and stamp check, shared by
 `test/test_workspace_assets.py` and the desktop backend/release guards. The test
-skips with build instructions when the index is absent and fails when a present
-build is stale. Page-handler tests use a small fixture; tests of real bundles
-skip only when the build is absent. A GET of the local workspace page without
+skips with build instructions only when the build directory is absent or empty.
+A partial build fails, including unexpected contents, a file in place of the
+directory or a broken symlink; a present build also fails when stale.
+Page-handler tests use a small fixture. A GET of the local workspace page without
 an index returns a plain-text 503 naming the build commands, after the existing
 Host and Origin checks and with the usual response headers.
 
 Publish and desktop release flows build the workspace before the Python
 distributions or backend bundle. Publish runs
-`python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz` after building:
-both archives must contain `myflames/ui_assets/index.html` and at least one flat
+`python scripts/check_ui_assets.py --reference myflames/ui_assets dist/*.whl dist/*.tar.gz`
+after building: the complete relative file list and every file's SHA-256 must
+match the fresh reference build, including lazy chunks not named in the index.
+Both archives must contain `myflames/ui_assets/index.html` and at least one flat
 `myflames/ui_assets/assets/*.js`, and their index stamps must match the checkout's
-sources. Archives are read without extraction. To check a local build, run
+sources. Every local script `src` and link `href` in the page must name an
+existing file that the page handler serves: `/` for the index, or a file directly
+under `/assets/` with a supported suffix. Leading `/` or `./` is normalized;
+traversal, percent-encoded paths and nested asset paths are rejected. Queries
+and fragments are allowed because the handler uses only the URL path. Scripts
+with a scheme or host are rejected because the desktop blocks external scripts.
+Archives are read without extraction. To check a local build, run
 `python3 scripts/check_ui_assets.py myflames` from the repository root. Packaging
 checks never skip missing output. The separate chart bundle
 `myflames/assets/myflames-charts.js` remains tracked.
