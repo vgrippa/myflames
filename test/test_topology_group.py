@@ -164,6 +164,12 @@ elif 'from performance_schema.replication_group_members' in lower:
         emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
 elif 'from performance_schema.replication_group_member_stats' in lower:
     emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
+elif 'from performance_schema.session_connect_attrs' in lower:
+    if cfg.get('attrs_error'):
+        fail(cfg['attrs_error'])
+    routed = cfg.get('routed')
+    count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
+    emit(['COUNT(*)'], [[count]])
 elif lower.startswith('show global status'):
     values = cfg.get('status', {})
     names = re.findall(r"'([^']+)'", text)
@@ -2028,6 +2034,107 @@ class TopologyReadTests(GroupCase):
                 self.assertIn({'profile_id': 'active', 'message': expected_note}, report['map']['notes'])
                 self.assertFalse(any(note['profile_id'] == 'z-node' and 'same server_uuid' in note['message']
                                      for note in report['map']['notes']))
+
+    def test_forwarded_router_alias_yields_to_direct_member_even_when_saved_earlier(self):
+        self.save('active', 'G', type='development', name='cluster-ic-router-rw', port=34306)
+        time.sleep(0.002)
+        self.save('z-node', 'G', name='cluster-ic-1', port=34301)
+        rows = [[UUID_A, 'cluster-ic-1', 3306, 'ONLINE', 'PRIMARY']]
+        router = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', routed=True)
+        direct = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', routed=False)
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        for section in ('members', 'map'):
+            with self.subTest(section=section), self.clients(
+                    {'active.example': copy.deepcopy(router), 'z-node.example': copy.deepcopy(direct)}) as observed:
+                report = self.read(section)
+            validate(report, schema)
+            self.assertEqual(report['summary']['read'], 2)
+            self.assertEqual(report['primary_profile_id'], 'z-node')
+            members = {member['profile_id']: member for member in report['members']}
+            self.assertIs(members['z-node']['routed'], False)
+            self.assertIs(members['active']['routed'], True)
+            self.assertIsNone(members['z-node']['duplicate_of'])
+            self.assertEqual(members['active']['duplicate_of'], 'z-node')
+            for host in ('active.example', 'z-node.example'):
+                queries = [sql for sql in self.statements(observed, host)
+                           if 'performance_schema.session_connect_attrs' in sql]
+                self.assertEqual(len(queries), 1)
+                self.assertIn('/*myflames:topology*/ ', queries[0])
+                self.assertIn("ATTR_NAME IN ('_client_ip','_client_socket')", queries[0])
+            if section == 'map':
+                nodes = self.assert_map_schema(report)
+                self.assertIsNone(nodes['z-node']['duplicate_of'])
+                self.assertEqual(nodes['active']['duplicate_of'], 'z-node')
+                self.assertEqual(report['map']['edges'], [{'from': 'active', 'to': 'z-node', 'kind': 'alias',
+                    'evidence': 'server_uuid', 'verified': False, 'state': None, 'label': 'same server (alias)'}])
+
+    def test_routed_preference_applies_in_direct_and_port_match_steps(self):
+        for case, port, host_var in (('direct', 3306, 'active.example'), ('matched', 3306, 'other-host')):
+            with self.subTest(case=case):
+                self.save('active', 'G', type='development', port=port)
+                time.sleep(0.002)
+                self.save('z-direct', 'G', port=port)
+                router = member_fixture(UUID_A, routed=True)
+                router['variables']['hostname'] = host_var
+                direct = member_fixture(UUID_A, routed=False)
+                direct['variables']['hostname'] = 'z-direct.example' if case == 'direct' else host_var
+                with self.clients({'active.example': router, 'z-direct.example': direct}):
+                    report = self.read('members')
+                members = {member['profile_id']: member for member in report['members']}
+                self.assertIsNone(members['z-direct']['duplicate_of'])
+                self.assertEqual(members['active']['duplicate_of'], 'z-direct')
+
+    def test_router_attribute_read_failure_stays_optional_and_uses_previous_fallback(self):
+        self.save('active', 'G', type='development', name='cluster-ic-router-rw', port=34306)
+        time.sleep(0.002)
+        self.save('z-node', 'G', name='cluster-ic-1', port=34301)
+        rows = [[UUID_A, 'cluster-ic-1', 3306, 'ONLINE', 'PRIMARY']]
+        err = "ERROR 1142 (42000): SELECT command denied to user 'dba'@'%' for table 'session_connect_attrs'"
+        router = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', attrs_error=err)
+        direct = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', attrs_error=err)
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        for section in ('members', 'map'):
+            with self.subTest(section=section), self.clients(
+                    {'active.example': copy.deepcopy(router), 'z-node.example': copy.deepcopy(direct)}):
+                report = self.read(section)
+            validate(report, schema)
+            self.assertEqual(report['summary']['read'], 2, report)
+            self.assertEqual(report['summary']['failed'], 0)
+            self.assertEqual(report['primary_profile_id'], 'active')
+            members = {member['profile_id']: member for member in report['members']}
+            self.assertIsNone(members['active']['routed'])
+            self.assertIsNone(members['z-node']['routed'])
+            self.assertIsNone(members['active']['duplicate_of'])
+            self.assertEqual(members['z-node']['duplicate_of'], 'active')
+
+    def test_proxysql_and_non_member_sections_never_run_session_connect_attrs_query(self):
+        self.save('proxy', 'G', port=6032)
+        self.save('readyset', 'G', port=3307)
+        self.save('maria', 'G')
+        proxy = member_fixture(proxy='proxysql')
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        readyset = member_fixture(proxy='readyset')
+        readyset['variables']['version_comment'] = 'Readyset'
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'maria.example': member_fixture(engine='mariadb'),
+                    'proxy.example': proxy,
+                    'readyset.example': readyset}
+        for section in ('members', 'map', 'parameters', 'plugins'):
+            with self.subTest(section=section), self.clients(fixtures) as observed, \
+                    mock.patch.object(param_compare, 'capture', return_value=snapshot([item('max_connections', '151')])):
+                report = self.read(section)
+            self.assertEqual(report['summary']['read'], 4, report)
+            for host in ('proxy.example', 'readyset.example', 'maria.example'):
+                self.assertFalse(any('session_connect_attrs' in sql for sql in self.statements(observed, host)),
+                                 (section, host))
+            if section in ('parameters', 'plugins'):
+                self.assertFalse(any('session_connect_attrs' in sql for sql in self.statements(observed)),
+                                 section)
+            else:
+                members = {member['profile_id']: member for member in report['members']}
+                self.assertIs(members['active']['routed'], False)
+                for pid in ('proxy', 'readyset', 'maria'):
+                    self.assertIsNone(members[pid]['routed'])
 
     def test_live_mariadb_dns_and_ipv6_rows_make_one_id_match_edge(self):
         self.save('replica', 'G')

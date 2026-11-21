@@ -295,12 +295,23 @@ def _replica_state(channels):
     return 'running' if running and all(all(pair) for pair in running) else None
 
 
-def _member_facts(conn, member, variables):
+def _member_facts(conn, member, variables, check_routed=False):
     from .replication import status_statement
     reader, notes = Reader(conn, TAG), []
     engine, version = member['engine'], server_version_tuple(member['version'])
     uuid = member['server_uuid']
+    is_mysql_db = (engine == 'mysql' and member.get('product') not in ('ProxySQL Admin', 'Readyset') and
+                   member.get('role') not in ('proxy', 'cache'))
     member.update(role=None, state=None, lag=None, behind=None, behind_reason=None)
+    if check_routed and is_mysql_db:
+        rows = _optional(
+            reader,
+            "SELECT COUNT(*) FROM performance_schema.session_connect_attrs "
+            "WHERE PROCESSLIST_ID = CONNECTION_ID() AND ATTR_NAME IN ('_client_ip','_client_socket')",
+            notes,
+        )
+        count = _number(rows[0][0]) if rows and rows[0] else None
+        member['routed'] = None if count is None else count > 0
     position = variables.get('gtid_current_pos') if engine == 'mariadb' else variables.get('gtid_executed')
     # An empty set with GTID_MODE OFF does not show that replication is caught
     # up. Only fully GTID-enabled MySQL members can supply transaction counts.
@@ -837,12 +848,16 @@ def _duplicate_notes(entries, profiles=None, facts=None):
                     direct.append(entry)
         # Prefer (1) matching reported port and host, (2) matching reported port
         # (or unknown server port, which provides no contrary evidence), then
-        # (3) every alias when port forwarding leaves no port match. Break ties
-        # by the oldest saved update timestamp, then profile id.
+        # (3) every alias when port forwarding leaves no port match. Within
+        # each step, prefer direct sessions (routed is False) over routed or
+        # unreadable ones, then break ties by the oldest saved update
+        # timestamp, then profile id.
         eligible = direct or matched or unknown
         fallback_note = not eligible
         first = min(eligible or aliases, key=lambda entry: (
-                    stored.get(entry['profile_id'], {}).get('updated_at') or '', entry['profile_id']))
+                    0 if entry.get('routed') is False else 1,
+                    stored.get(entry['profile_id'], {}).get('updated_at') or '',
+                    entry['profile_id']))
         fallback_port = _map_port(facts.get(first['profile_id'], {}).get('port')) or reported_port
         for entry in aliases:
             if entry is first:
@@ -867,7 +882,7 @@ def _entry(profile):
                  outcome='not_reached', message='Not read: the time budget did not allow this member to start.', elapsed_s=0,
                  duplicate_of=None)
     entry.update(dict.fromkeys(('engine', 'product', 'version', 'version_comment', 'server_uuid', 'server_id',
-                               'hostname', 'read_only', 'read_only_value', 'super_read_only', 'role', 'state', 'lag', 'behind', 'behind_reason')))
+                               'hostname', 'read_only', 'read_only_value', 'super_read_only', 'role', 'state', 'lag', 'behind', 'behind_reason', 'routed')))
     entry['channels'] = []
     return entry
 
@@ -996,7 +1011,8 @@ def read_group(store, group_name, section, active_member_profile_id,
                             str(variables.get(key)) != str(observed.get(key)) for key in keys):
                         raise ConnectorError('The member identity changed during the read.')
                     if section in ('members', 'map', 'parameters'):
-                        position, notes = _member_facts(conn, entry, variables)
+                        position, notes = _member_facts(conn, entry, variables,
+                                                        check_routed=section in ('members', 'map'))
                         multi_primary = (entry['role'] in ('primary', 'secondary')
                                          and _on(variables.get('group_replication_single_primary_mode')) is False)
                         if notes:

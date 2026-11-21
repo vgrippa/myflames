@@ -528,6 +528,13 @@
             "null"
           ]
         },
+        "routed": {
+          "description": "Whether the member session carried MySQL Router connection attributes (_client_ip or _client_socket); null when not checked or unreadable.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "duplicate_of": {
           "description": "Canonical successfully read MySQL profile with the same non-nil server_uuid. Prefer the saved endpoint matching the reported server port and hostname or report_host, otherwise the oldest updated_at without a contrary port. Null for the canonical member, unique servers, or when no eligible canonical endpoint exists. Each saved connection remains a separate member and map node.",
           "type": [
