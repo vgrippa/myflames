@@ -1093,9 +1093,17 @@ try {
   await page.waitForSelector(prodRow + " [data-col=password] span");
   assert.equal(await text(prodRow + " [data-col=password]"), "Not saved");
   assert.equal(await page.$eval(prodRow + " [data-col=password] span", el => el.title), "No saved password");
+  // Wait for ViewLayout's deferred focus return after closing the inspector so
+  // it cannot steal focus back from the sidebar below.
+  await page.waitForFunction(
+    () => !document.querySelector(".connections .view-inspector")
+      && !!document.activeElement?.closest("#connections-table, .connections"),
+    { timeout: 1000 },
+  ).catch(() => {});
 
   // 8. Keyboard: arrows move between places, Enter opens one.
   await page.focus(".main-nav button.active");
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".main-nav button.active"));
   await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Server");
   await page.keyboard.press("End");
