@@ -2316,7 +2316,7 @@ function App() {
     { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
-    { id: "place-topology", label: "Topology", group: "Places", icon: "globe", keywords: "connection group members parameters accounts plugins map servers fleet drift", run: () => go("topology") },
+    { id: "place-topology", label: "Topology", group: "Places", icon: "topology", keywords: "connection group members parameters accounts plugins map servers fleet drift", run: () => go("topology") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },

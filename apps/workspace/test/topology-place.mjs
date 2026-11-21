@@ -11,6 +11,7 @@
 // node test/topology-place.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { open, pause } from "./perf-harness.mjs";
 import { chooseConnection, layoutMatrix } from "./chrome-helpers.mjs";
 import { connectionAction } from "./connection-helpers.mjs";
@@ -213,6 +214,8 @@ const h = await open("/api/unused-topology-place", "topology-place", {
   },
 });
 const { page } = h;
+const mapShots = fileURLToPath(new URL("../../../local/topo-map/", import.meta.url));
+await fs.mkdir(mapShots, { recursive: true });
 await fs.mkdir(h.shots, { recursive: true });
 const waitFor = async (check, message) => {
   for (let i = 0; i < 300; i++) { if (check()) return; await pause(100); }
@@ -240,6 +243,10 @@ try {
   assert.deepEqual(order.slice(0, 5), ["home", "server", "workload", "topology", "replication"],
     "Topology sits after Workload, before Replication");
   assert.equal(await page.$eval('.main-nav button[data-place="topology"]', (e) => e.textContent.trim()), "Topology");
+  const placeGlyphs = await page.$$eval('.main-nav button[data-place]', (buttons) => Object.fromEntries(buttons
+    .filter((b) => ["topology", "cluster", "plans", "diagram"].includes(b.dataset.place))
+    .map((b) => [b.dataset.place, b.querySelector("svg").innerHTML])));
+  for (const place of ["cluster", "plans", "diagram"]) assert.notEqual(placeGlyphs.topology, placeGlyphs[place], `Topology has a glyph distinct from ${place}`);
 
   // --- An unsaved connection (the fresh workspace's default): save it first.
   await page.click('.main-nav button[data-place="topology"]');
@@ -293,6 +300,53 @@ try {
   assert.match(unverifiedEdge, /db-1 → 10\.0\.0\.77:3306/);
   assert.match(unverifiedEdge, /address match, not verified/, "an address-only link says it is not verified");
   assert.match(mapText, /group replication · 2 members/, "the cluster box is listed");
+  // The diagram keeps cluster membership, evidence and read outcomes visible.
+  const diagram = ".topology-map-diagram";
+  const nodeButton = (id) => `${diagram} button[data-node="${id}"]`;
+  assert.deepEqual(await page.$$eval(`${diagram} .topology-map-cluster button`, (nodes) => nodes.map((n) => n.dataset.node)),
+    ["p-topo-1", "p-topo-2"], "the cluster box contains its member buttons");
+  assert.match(await page.$eval(`${diagram} .topology-map-cluster`, (e) => e.getAttribute("aria-label")), /Group Replication: cccccccc/);
+  const peerId = "peer:10.0.0.77:3306";
+  assert.equal(await page.$eval(nodeButton(peerId), (e) => getComputedStyle(e).borderTopStyle), "dashed", "a peer is drawn dashed");
+  assert.match(await page.$eval(nodeButton(peerId), (e) => e.textContent), /10\.0\.0\.77:3306.*Not in this group/s);
+  assert.match(await page.$eval(nodeButton("p-topo-3"), (e) => e.textContent), /Failed/);
+  assert.match(await page.$eval(nodeButton("p-topo-4"), (e) => e.textContent), /Not reached/);
+  assert.match(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] title`, (e) => e.textContent), /address match, not verified/);
+  assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] > path`, (e) => e.getAttribute("stroke-dasharray")), "6 5");
+  assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-verified="true"] > path`, (e) => e.getAttribute("stroke-dasharray")), null);
+  assert.match(await page.$eval(`${diagram} .topology-map-edge[data-verified="true"] text`, (e) => e.textContent), /running/, "link state is text as well as color");
+  const positions = () => page.$$eval(`${diagram} button[data-node]`, (nodes) => nodes.map((n) => ({
+    id: n.dataset.node, x: n.offsetLeft + n.parentElement.offsetLeft, y: n.offsetTop + n.parentElement.offsetTop,
+  })));
+  const firstPositions = await positions();
+  const nodeY = (id) => firstPositions.find((n) => n.id === id).y;
+  assert.ok(nodeY("p-topo-1") < nodeY("p-topo-2"), "a replication source is above its replica inside a cluster");
+  assert.ok(nodeY("p-topo-1") < nodeY(peerId), "a replication peer appears downstream");
+  // Tab reaches every native button in visual group order. Enter uses the
+  // same member inspector as Members, without sending a read.
+  await page.focus(`${diagram} .topology-map-scroll`);
+  const focusIds = [];
+  for (let i = 0; i < firstPositions.length; i++) {
+    await page.keyboard.press("Tab");
+    focusIds.push(await page.evaluate(() => document.activeElement?.dataset.node));
+  }
+  assert.deepEqual(focusIds, await page.$$eval(`${diagram} button[data-node]`, (nodes) => nodes.map((n) => n.dataset.node)));
+  await page.focus(nodeButton("p-topo-2"));
+  await page.keyboard.press("Enter");
+  assert.match(await h.inspector(), /db-2.*Secondary.*super_read_only/s, "Enter opens the shared member inspector");
+  await page.click('.topology-place .inspector-close');
+  await page.click(nodeButton("p-topo-1"));
+  assert.match(await h.inspector(), /db-1.*Primary/s, "click opens the shared member inspector");
+  assert.match(await h.inspector(), /address match, not verified/, "incident links explain address-only evidence in the inspector");
+  await page.click('.topology-place .inspector-close');
+  await page.click(nodeButton(peerId));
+  const peerInspector = await h.inspector();
+  assert.match(peerInspector, /Reported bydb-2/, "the peer inspector names saved-member observers");
+  assert.match(peerInspector, /Not in this group: add a saved connection for 10\.0\.0\.77:3306 to this group to read it\./);
+  assert.equal(await page.$('.topology-place .view-inspector .topology-member-actions'), null, "a peer has no saved-member actions");
+  await page.click('.topology-place .inspector-close');
+  assert.deepEqual(await positions(), firstPositions, "selection never moves nodes");
+  assert.deepEqual(sections(), ["map"], "node selection never reads a member or peer");
   // No read on automatic refresh: nothing polls while the place stays open.
   await pause(1500);
   assert.deepEqual(sections(), ["map"], "no read on automatic refresh");
@@ -389,7 +443,100 @@ try {
 
   // Sticky toolbar, no horizontal page scroll, light and dark.
   assert.equal(await page.$eval(".topbar-stack", (e) => getComputedStyle(e).position), "sticky", "the toolbar stays sticky");
-  await layoutMatrix(page, h.shots, "topology-place");
+  await layoutMatrix(page, mapShots, "topology-map");
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.click(nodeButton("p-topo-2"));
+  await page.waitForSelector('.topology-place .view-inspector', { visible: true });
+  await layoutMatrix(page, mapShots, "topology-map-inspector");
+  await page.click('.topology-place .inspector-close');
+  await page.setViewport({ width: 1440, height: 900 });
+
+  // Multiple upstream tiers, deep replicas, circular replication and the
+  // 16-member limit exercise layout rather than just the small screenshot.
+  const originalMap = reports.map.map;
+  const originalMembers = reports.map.members;
+  const makeNode = (id, extra = {}) => ({ ...originalMap.nodes[0], id, profile_id: id,
+    label: id, host: `${id}.example.test`, role: "standalone", state: "reachable", cluster_id: null, ...extra });
+  const extraNodes = [
+    makeNode("proxy", { role: "proxy", product: "ProxySQL", version: "3.0.2" }),
+    makeNode("cache", { role: "cache", product: "Readyset", version: "2026.11" }),
+    makeNode("replica-1", { role: "replica" }), makeNode("replica-2", { role: "replica" }),
+    makeNode("cycle-1", { role: "source", state: "connecting" }), makeNode("cycle-2", { role: "replica", state: "stopped" }),
+    ...Array.from({ length: 6 }, (_, i) => makeNode(`extra-${i}`, i === 0 ? { label: '<img src=x onerror="window.topologyInjected=true">' + "Long name ".repeat(30) }
+      : i === 1 ? { host: "[2001:db8::1]" } : {})),
+  ];
+  const link = (from, to, extra = {}) => ({ from, to, kind: "replication", evidence: "server_uuid", verified: true,
+    state: "running", label: "Replication", ...extra });
+  reports.map.map = {
+    ...originalMap,
+    nodes: [...originalMap.nodes, ...extraNodes],
+    edges: [...originalMap.edges,
+      link("proxy", "cache", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED", label: "hostgroup 10" }),
+      link("proxy", "cache", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "ONLINE", label: "hostgroup 20" }),
+      link("cache", "p-topo-1", { kind: "cache_upstream", state: "up", label: "Upstream" }),
+      link("p-topo-2", "replica-1"), link("replica-1", "replica-2"),
+      link("cycle-1", "cycle-2", { state: "connecting" }), link("cycle-2", "cycle-1", { state: "stopped" }),
+    ],
+    clusters: [originalMap.clusters[0], { id: "unconfirmed", kind: "pxc", name: "No identity confirmed", members: [], seen_from: ["p-topo-3"] }],
+  };
+  reports.map.members = [...members, ...extraNodes.map((node) => member({
+    profile_id: node.profile_id, profile_name: node.label, host: node.host, role: node.role, state: node.state,
+  }))];
+  assert.equal(reports.map.members.length, 16);
+  await h.refresh();
+  await page.waitForSelector(nodeButton("replica-2"), { visible: true });
+  const complexPositions = await positions();
+  const complexY = (id) => complexPositions.find((node) => node.id === id).y;
+  assert.ok(complexY("proxy") < complexY("cache"), "ProxySQL is above Readyset");
+  assert.ok(complexY("cache") < complexY("p-topo-1"), "caches are above databases");
+  assert.ok(complexY("p-topo-2") < complexY("replica-1") && complexY("replica-1") < complexY("replica-2"), "deepest replicas are lowest");
+  assert.equal(complexY("cycle-1"), complexY("cycle-2"), "a circular replication component shares a level");
+  assert.match(await page.$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] text`, (e) => e.textContent), /SHUNNED/);
+  const routePaths = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] > path:first-of-type`, (paths) => paths.map((p) => p.getAttribute("d")));
+  assert.equal(new Set(routePaths).size, 2, "parallel hostgroup routes have separate paths");
+  const routeLabels = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] text`, (labels) => labels.map((label) => label.getAttribute("y")));
+  assert.equal(new Set(routeLabels).size, 2, "parallel route state labels do not overlap");
+  assert.match(await page.$eval(nodeButton("extra-1"), (e) => e.textContent), /\[2001:db8::1\]:3306/, "IPv6 addresses have one pair of brackets");
+  assert.match(await page.$eval(nodeButton("cycle-1"), (e) => e.textContent), /connecting/);
+  assert.match(await page.$eval(`${diagram} [data-cluster="unconfirmed"]`, (e) => e.textContent), /Percona XtraDB Cluster.*No confirmed members/s);
+  assert.equal(await page.$(`${diagram} img`), null, "reported labels stay text");
+  assert.equal(await page.evaluate(() => window.topologyInjected), undefined, "reported labels never execute HTML");
+  await h.idle(".topology-place");
+  const beforeRepeatMap = topologyCalls.length;
+  await h.refresh();
+  await waitFor(() => topologyCalls.length === beforeRepeatMap + 1, "Map Refresh sent one read");
+  await h.idle(".topology-place");
+  assert.deepEqual(await positions(), complexPositions, "the same report produces the same positions on Refresh");
+  await layoutMatrix(page, mapShots, "topology-map-complex");
+  const upstreamVisible = await page.$eval(`${diagram} .topology-map-scroll`, (region) => {
+    const bounds = region.getBoundingClientRect();
+    return ["proxy", "cache"].every((id) => {
+      const node = region.querySelector(`button[data-node="${id}"]`).getBoundingClientRect();
+      return node.left >= bounds.left && node.right <= bounds.right;
+    });
+  });
+  assert.ok(upstreamVisible, "small upstream tiers are visible on opening even when the database row is wide");
+  const diagramScroll = await page.$eval(`${diagram} .topology-map-scroll`, (e) => {
+    e.scrollLeft = e.scrollWidth;
+    return { left: e.scrollLeft, overflow: getComputedStyle(e).overflowX, pageLeft: window.scrollX };
+  });
+  assert.ok(diagramScroll.left > 0, "wide groups scroll inside the diagram at 720 px");
+  assert.equal(diagramScroll.overflow, "auto");
+  assert.equal(diagramScroll.pageLeft, 0, "scrolling the diagram never moves the page sideways");
+
+  // A peer listed in cluster evidence remains an unconsented peer.
+  reports.map.map = { ...originalMap, clusters: [{ ...originalMap.clusters[0], members: ["p-topo-1", "p-topo-2", peerId] }] };
+  reports.map.members = originalMembers;
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-cluster .is-peer').length === 1);
+  assert.equal(await page.$eval(`${diagram} .topology-map-cluster .is-peer`, (e) => getComputedStyle(e).borderTopStyle), "dashed");
+
+  // Empty reports do not produce invalid geometry or hide the text alternative.
+  reports.map.map = { nodes: [], edges: [], clusters: [], notes: [] };
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelector('.topology-place')?.textContent.includes("No servers were reported."));
+  assert.ok(await page.$('.topology-map-section[aria-label="Servers"]'));
+  reports.map.map = originalMap;
   await page.setViewport({ width: 1440, height: 900 });
 
   // --- No connection: deleting the saved connection in use leaves an empty

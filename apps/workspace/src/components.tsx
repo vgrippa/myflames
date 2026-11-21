@@ -45,6 +45,7 @@ export type IconName =
   | "instruments"
   | "replication"
   | "cluster"
+  | "topology"
   | "proxy"
   | "readyset"
   | "maintenance"

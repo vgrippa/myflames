@@ -12,6 +12,7 @@ import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
+import { TopologyMap, mapAddress, mapEdgeText } from "./TopologyMap";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, Pill, Segmented, SummaryLine, ToolbarButton,
   ViewLayout, ViewStatus, type Column, type InspectorContent, type InspectorShared, type Selection,
@@ -166,7 +167,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const report = reports[currentId] || null;
 
   const membersContent: InspectorContent | null = useMemo(() => {
-    if (tab !== "members" || !report || !selection.key) return null;
+    if ((tab !== "members" && tab !== "map") || !report || !selection.key) return null;
     const member = report.members.find((m) => m.profile_id === selection.key);
     if (!member) return null;
     const actions = (
@@ -220,9 +221,31 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             ))}
           </InspectorSection>
         )}
+        {tab === "map" && <MapNodeLinks report={report} nodeId={report.map?.nodes.find((node) => node.profile_id === member.profile_id)?.id || member.profile_id} />}
       </>,
     };
   }, [tab, report, selection.key, onUseInServer, onOpenCluster, onOpenReplication]);
+
+  const peerContent: InspectorContent | null = useMemo(() => {
+    if (tab !== "map" || !report?.map || !selection.key) return null;
+    const peer = report.map.nodes.find((node) => node.id === selection.key);
+    if (!peer || peer.kind !== "peer") return null;
+    return {
+      key: peer.id,
+      title: peer.label,
+      meta: <Pill tone="neutral">Not in this group</Pill>,
+      body: <>
+        <InspectorSection title="Reported peer">
+          <Fields rows={[
+            ["Address", mapAddress(peer)],
+            ["Reported by", peer.seen_by.map(memberName).join(", ") || "Not reported"],
+          ]} />
+          <p>Not in this group: add a saved connection for {mapAddress(peer)} to this group to read it.</p>
+        </InspectorSection>
+        <MapNodeLinks report={report} nodeId={peer.id} />
+      </>,
+    };
+  }, [tab, report, selection.key, memberName]);
 
   const accountsContent: InspectorContent | null = useMemo(() => {
     if (tab !== "accounts" || !report?.accounts || !selection.key) return null;
@@ -260,7 +283,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     };
   }, [tab, report, selection.key, comparedIds(report), memberName, onOpenAccounts]);
 
-  const content = membersContent || accountsContent;
+  const content = membersContent || peerContent || accountsContent;
 
   const groupTabs = (
     <Segmented<TopologySection>
@@ -310,7 +333,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             tab === "members" ? (
               <MembersTab report={report} summary={summary} selection={selection} />
             ) : tab === "map" ? (
-              <MapTab report={report} memberName={memberName} />
+              <MapTab report={report} memberName={memberName} selection={selection} />
             ) : drift ? (
               <DriftTab tab={tab} drift={drift} report={report} memberName={memberName} selection={selection} />
             ) : null
@@ -501,9 +524,8 @@ function DriftTab({ tab, drift, report, memberName, selection }: {
   );
 }
 
-/** The text version of the Map tab: the accessible alternative of the
- * diagram that lands in a later slice. */
-function MapTab({ report, memberName }: { report: TopologyGroupReport; memberName: (profileId: string) => string }) {
+/** The diagram and its accessible text alternative share the same report. */
+function MapTab({ report, memberName, selection }: { report: TopologyGroupReport; memberName: (profileId: string) => string; selection: Selection }) {
   const map = report.map;
   if (!map) return null;
   const labelOf = (id: string) => map.nodes.find((node) => node.id === id)?.label || id;
@@ -513,6 +535,7 @@ function MapTab({ report, memberName }: { report: TopologyGroupReport; memberNam
     `${edge.kind.replace(/_/g, " ")}${edge.state ? ` · ${edge.state}` : ""} · ${edge.verified ? "verified" : "address match, not verified"}`;
   return (
     <>
+      <TopologyMap map={map} selection={selection} />
       <section className="topology-map-section" aria-label="Servers">
         <h3>Servers</h3>
         <ul className="topology-map-list">
@@ -520,7 +543,7 @@ function MapTab({ report, memberName }: { report: TopologyGroupReport; memberNam
             <li key={node.id} data-node={node.id}>
               <span className="topology-map-label">{node.label}</span>
               <span className="topology-map-detail">
-                {node.host}:{node.port}
+                {mapAddress(node)}
                 {node.role ? ` · ${ROLE_LABEL[node.role] || node.role}` : ""}
                 {node.state ? ` · ${node.state}` : ""}
                 {node.outcome !== "read" ? ` · ${OUTCOME_LABEL[node.outcome]}` : ""}
@@ -587,4 +610,20 @@ function MapTab({ report, memberName }: { report: TopologyGroupReport; memberNam
       )}
     </>
   );
+}
+
+/** Incident links stay available to keyboard users through the node inspector. */
+function MapNodeLinks({ report, nodeId }: { report: TopologyGroupReport; nodeId: string }) {
+  const map = report.map;
+  if (!map) return null;
+  const edges = map.edges.filter((edge) => edge.from === nodeId || edge.to === nodeId);
+  if (!edges.length) return null;
+  const label = (id: string) => map.nodes.find((node) => node.id === id)?.label || id;
+  return <InspectorSection title="Links">
+    {edges.map((edge, index) => <Fields key={`${edge.from}-${edge.to}-${index}`} rows={[
+      ["Link", `${label(edge.from)} → ${label(edge.to)}`],
+      ["State and verification", mapEdgeText(edge)],
+      ["Evidence", edge.evidence || "Not reported"],
+    ]} />)}
+  </InspectorSection>;
 }

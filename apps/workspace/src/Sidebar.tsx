@@ -18,7 +18,7 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
   { key: "workload", label: "Workload", icon: "statements" },
-  { key: "topology", label: "Topology", icon: "globe" },
+  { key: "topology", label: "Topology", icon: "topology" },
   { key: "replication", label: "Replication", icon: "replication" },
   { key: "cluster", label: "Cluster", icon: "cluster" },
   { key: "proxysql", label: "ProxySQL", icon: "proxy" },

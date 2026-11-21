@@ -129,3 +129,116 @@
     max-width: none;
   }
 }
+
+/* Keep a readable card size and scroll the diagram, including while the
+   shared inspector occupies part of the view. Theme tokens carry contrast. */
+.topology-place, .topology-map-diagram { min-width: 0; max-width: 100%; }
+.topology-map-diagram { margin-bottom: 24px; }
+.topology-map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.topology-map-scroll {
+  width: 100%;
+  max-width: 100%;
+  max-height: 760px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overscroll-behavior: contain;
+}
+.topology-map-scroll:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.topology-map-canvas {
+  position: relative;
+  isolation: isolate;
+  background: radial-gradient(ellipse at top, var(--accent-soft), transparent 70%);
+}
+.topology-map-tier {
+  position: absolute;
+  left: 20px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.topology-map-cluster, .topology-map-block { position: absolute; box-sizing: border-box; }
+.topology-map-cluster {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-muted) 55%, transparent);
+}
+.topology-map-cluster-heading {
+  display: flex;
+  flex-direction: column;
+  padding: 9px 14px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.topology-map-cluster-heading span {
+  color: var(--muted);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.topology-map-cluster-empty { display: block; padding: 0 14px; color: var(--muted); font-size: 12px; }
+.topology-map-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 5px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--map-tone, var(--line-strong));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, var(--surface-raised), var(--surface));
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  line-height: 17px;
+  cursor: pointer;
+  z-index: 2;
+}
+.topology-map-node .topology-eyebrow { min-width: 0; gap: 7px; color: var(--muted); }
+.topology-map-node .topology-eyebrow > span,
+.topology-map-node-name, .topology-map-node-address, .topology-map-node-state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topology-map-node-name { font-size: 14px; }
+.topology-map-node-address { color: var(--muted); }
+.topology-map-node-state { color: var(--map-tone-text, var(--muted)); }
+.topology-map-node:hover { background: var(--surface-hover); border-color: var(--accent); }
+.topology-map-node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.topology-map-node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.topology-map-node.is-peer {
+  border-style: dashed;
+  color: var(--muted);
+  background: var(--surface-muted);
+  box-shadow: none;
+}
+.topology-map-diagram .tone-ok { --map-tone: var(--ok); --map-tone-text: var(--ok-text); }
+.topology-map-diagram .tone-watch { --map-tone: var(--warn); --map-tone-text: var(--warn-text); }
+.topology-map-diagram .tone-problem { --map-tone: var(--danger); --map-tone-text: var(--danger-text); }
+.topology-map-diagram .tone-unknown { --map-tone: var(--muted); --map-tone-text: var(--muted); }
+.topology-map-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.topology-map-edge { color: var(--map-tone); }
+.topology-map-edge-hit { pointer-events: stroke; }
+.topology-map-edge text {
+  fill: var(--map-tone-text);
+  stroke: var(--surface);
+  stroke-width: 4px;
+  paint-order: stroke;
+  font-size: 11px;
+  pointer-events: auto;
+}
+.topology-map-section { overflow-wrap: anywhere; }
