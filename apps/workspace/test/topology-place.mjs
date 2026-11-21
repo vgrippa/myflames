@@ -11,6 +11,7 @@
 // node test/topology-place.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { open, pause } from "./perf-harness.mjs";
 import { chooseConnection, layoutMatrix } from "./chrome-helpers.mjs";
@@ -102,6 +103,7 @@ const reports = {
         { name: "max_connections", status: "different", values: { "p-topo-1": 500, "p-topo-2": 200 }, apply_type: null, dynamic: true },
         { name: "innodb_buffer_pool_size", status: "same", values: { "p-topo-1": 134217728, "p-topo-2": 134217728 }, apply_type: null, dynamic: false },
         { name: "server_id", status: "per_server", values: { "p-topo-1": 11, "p-topo-2": 12 }, apply_type: null, dynamic: false, reason: "Server identity: each member keeps its own value." },
+        { name: "audit_log_encryption", status: "missing", values: { "p-topo-1": "[redacted]", "p-topo-2": "[redacted]" }, apply_type: null, dynamic: true, reason: "A value was redacted, truncated or unavailable; it cannot be compared." },
       ],
       compared: ["p-topo-1", "p-topo-2"],
       not_compared: notCompared,
@@ -151,6 +153,70 @@ const reports = {
     },
   }),
 };
+
+// The rolling change endpoints (docs/schemas/topology-change-plan-1.0.json and
+// topology-change-1.0.json), mocked: plan reads, apply writes, stop prevents
+// the next member, progress names the member being changed.
+const rollingCalls = { plan: [], apply: [], stop: [], progress: [] };
+let applyReply = null;
+let applyDelay = 0;
+function rollingMember(over) {
+  return {
+    profile_id: "", profile_name: "", host: "", port: 3306, identity: null,
+    status: "planned", statement: null, before: null, after: null, effect: null,
+    caveats: [], privileges: null, config_line: null, reason: null, ...over,
+  };
+}
+const ROLLING_ORDER = "Group Replication and InnoDB Cluster secondaries first, then the primary; ties use saved name order.";
+function rollingPlan(membersList) {
+  return {
+    schema_version: "topology-change-plan-1.0", plan_id: `plan-${rollingCalls.plan.length}`, change_set_id: "cs-1",
+    group_name: "mf-topo", name: "max_connections", value: "400", mode: "persist",
+    order_rule: ROLLING_ORDER,
+    effective_safety: { type: "production", read_only: false },
+    confirmation: { required: true, typed_name: "mf-topo" },
+    members: membersList,
+    expect: {
+      group_name: "mf-topo", group_generation: "g1", active_member_profile_id: "p-topo-1",
+      active_endpoint: { host: "10.0.0.11", port: 3306, user: "dba", ssl_mode: "PREFERRED", ssl_ca: "", ssh_host: "", ssh_user: "", ssh_port: 22 },
+      effective_safety: { type: "production", read_only: false }, members: [],
+    },
+  };
+}
+const plannedDb2 = () => rollingMember({
+  profile_id: "p-topo-2", profile_name: "db-2", host: "10.0.0.12",
+  status: "planned", statement: "SET PERSIST max_connections = 400;",
+  before: { global: "200", persisted: null }, after: { global: "400", persisted: "400" },
+  effect: { global: "200 to 400" },
+});
+const plannedDb1 = () => rollingMember({
+  profile_id: "p-topo-1", profile_name: "db-1", host: "10.0.0.11",
+  status: "planned", statement: "SET PERSIST max_connections = 400;",
+  before: { global: "500", persisted: null }, after: { global: "400", persisted: "400" },
+  effect: { global: "500 to 400" },
+});
+const refusedDb1 = () => rollingMember({
+  profile_id: "p-topo-1", profile_name: "db-1", host: "10.0.0.11",
+  status: "refused", reason: "The live member role is unavailable. Review after it can be read.",
+});
+// Plan replies in order: first review has a refused member, the rest are clean.
+const rollingPlanQueue = [];
+const partialResult = () => ({
+  schema_version: "topology-change-1.0", plan_id: "plan-2", change_set_id: "cs-1",
+  group_name: "mf-topo", name: "max_connections", value: "400", mode: "persist",
+  status: "partial", message: "The rolling change stopped. Check each member result before reviewing another change.",
+  members: [
+    { ...plannedDb2(), status: "applied", message: "The reviewed value was applied.", audit_id: "a-2" },
+    { ...plannedDb1(), status: "not_sent", message: "Not sent because this rolling change stopped.", audit_id: "a-1" },
+  ],
+  audit_ids: ["a-2", "a-1"],
+});
+const staleResult = () => ({
+  schema_version: "topology-change-1.0", plan_id: "plan-3", change_set_id: null,
+  group_name: null, name: null, value: null, mode: null,
+  status: "stale", message: "The review changed or expired. Review the change again.",
+  members: [], audit_ids: [],
+});
 
 const h = await open("/api/unused-topology-place", "topology-place", {
   "/api/profiles/list": () => ({ status: 200, body: {
@@ -206,6 +272,35 @@ const h = await open("/api/unused-topology-place", "topology-place", {
     const ids = new Set(body.profile_ids || []);
     for (const p of profiles) p.group = ids.has(p.id) ? name : p.group;
     return { status: 200, body: { group: name, name, profile_ids: [...ids], updated: [...ids], groups: [], profiles } };
+  },
+  "/api/live/topology/variable/plan": (body) => {
+    rollingCalls.plan.push(body);
+    assert.equal(body.connection.group_name, "mf-topo", "a rolling plan names the group");
+    assert.equal(body.connection.password, undefined, "a rolling plan never carries a password");
+    assert.equal(body.name, "max_connections");
+    const reply = rollingPlanQueue.length
+      ? rollingPlanQueue.shift()
+      : rollingPlan([plannedDb2(), plannedDb1()].filter((m) => body.member_ids.includes(m.profile_id)));
+    return { status: 200, body: reply };
+  },
+  "/api/live/topology/variable/apply": (body) => {
+    rollingCalls.apply.push(body);
+    assert.ok(body.plan_id && body.expect, "apply sends the reviewed plan_id and expect");
+    assert.equal(body.confirmed, true);
+    assert.equal(body.typed_name, "mf-topo", "a Production group applies with the typed name");
+    assert.ok(body.progress_id, "apply names its progress id");
+    const reply = applyReply || partialResult();
+    return { status: 200, body: reply, ...(applyDelay ? { delay: applyDelay } : {}) };
+  },
+  "/api/live/topology/variable/stop": (body) => {
+    rollingCalls.stop.push(body);
+    return { status: 200, body: { progress_id: body.progress_id, status: "stopping",
+      message: "Stop prevents the next member from starting. A statement already sent is not interrupted." } };
+  },
+  "/api/live/action/progress": (body) => {
+    rollingCalls.progress.push(body);
+    return { status: 200, body: { phase: "sending", states: ["sent", "waiting"], status: null,
+      profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." } };
   },
   "/api/profiles/delete": (body) => {
     const at = profiles.findIndex((p) => p.id === body.id);
@@ -538,6 +633,159 @@ try {
   assert.ok(await page.$('.topology-map-section[aria-label="Servers"]'));
   reports.map.map = originalMap;
   await page.setViewport({ width: 1440, height: 900 });
+
+  // --- Parameters: a row's inspector offers the rolling change, disabled with
+  // a visible reason where it cannot run.
+  await topoTab("Parameters");
+  await page.waitForSelector('.topology-place tr[data-row-key="max_connections"]', { visible: true });
+  await clickText(".topology-place .drift-controls", "All");
+  const changeAction = () => page.$eval(".view-inspector .topology-member-actions button", (e) => ({ disabled: e.disabled, title: e.title }));
+  await h.select('.topology-place tr[data-row-key="server_id"]');
+  let action = await changeAction();
+  assert.equal(action.disabled, true, "a per-server row cannot be changed as one");
+  assert.match(await h.inspector(), /Server identity: each member keeps its own value\./);
+  await h.select('.topology-place tr[data-row-key="audit_log_encryption"]');
+  action = await changeAction();
+  assert.equal(action.disabled, true, "a redacted row cannot be changed as one");
+  assert.match(await h.inspector(), /A value was redacted, truncated or unavailable/);
+  reports.parameters.effective_safety = { type: "production", read_only: true };
+  await h.refresh();
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  action = await changeAction();
+  assert.equal(action.disabled, true, "a Read-only group connection cannot change");
+  assert.match(await h.inspector(), /This Group connection is Read-only\./);
+  reports.parameters.effective_safety = { type: "production", read_only: false };
+  await h.refresh();
+
+  // --- The rolling change sheet: value, mode and members, one review, apply
+  // with progress, Stop, and the per-member result.
+  const sheetSel = "dialog.rolling-change-sheet[open]";
+  const sheetButton = async (text) => page.evaluate((t) => {
+    const button = [...document.querySelectorAll("dialog.rolling-change-sheet .sheet-buttons button")]
+      .find((b) => b.textContent.trim() === t);
+    if (!button) return null;
+    return { disabled: button.disabled };
+  }, text);
+  const sheetClick = async (text) => {
+    const found = await page.evaluate((t) => {
+      const button = [...document.querySelectorAll("dialog.rolling-change-sheet .sheet-buttons button, dialog.rolling-change-sheet .rolling-applying button")]
+        .find((b) => b.textContent.trim() === t && !b.disabled);
+      if (!button) return false;
+      button.click();
+      return true;
+    }, text);
+    assert.ok(found, `sheet button "${text}"`);
+  };
+  const sheetText = async () => page.$eval("dialog.rolling-change-sheet", (e) => e.textContent.replace(/\s+/g, " ").trim());
+  const tickOf = (name) => page.evaluate((n) => {
+    const label = [...document.querySelectorAll("dialog.rolling-change-sheet .rolling-members label")]
+      .find((l) => l.textContent.includes(n));
+    return label ? label.querySelector("input").checked : null;
+  }, name);
+  const setTheme = (theme) => page.evaluate((t) => {
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem("myflames.theme", t); } catch { /* best effort */ }
+  }, theme);
+  const rollingShots = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "local", "topo-rolling");
+  await fs.mkdir(rollingShots, { recursive: true });
+
+  await h.select('.topology-place tr[data-row-key="max_connections"]');
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  assert.equal(await page.$eval(`${sheetSel} .rolling-field input`, (e) => e.value), "500", "prefilled with the most common current value");
+  assert.equal(await tickOf("db-1"), false, "a member already at the target starts unticked");
+  assert.equal(await tickOf("db-2"), true, "a differing member starts ticked");
+  assert.match(await sheetText(), /This server now \(SET GLOBAL\)/);
+  assert.match(await sheetText(), /Now and after restart \(SET PERSIST\)/);
+  assert.match(await sheetText(), /After restart only \(SET PERSIST_ONLY\)/);
+  await page.click(`${sheetSel} .rolling-field input`, { clickCount: 3 });
+  await page.type(`${sheetSel} .rolling-field input`, "400");
+  assert.equal(await tickOf("db-1"), true, "editing the value reticks a member that differs from it");
+
+  // Review: a refused member is listed with its reason and keeps Apply off.
+  rollingPlanQueue.push(rollingPlan([plannedDb2(), refusedDb1()]));
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  assert.deepEqual(rollingCalls.plan[0].member_ids, ["p-topo-1", "p-topo-2"], "the review plans the ticked members");
+  assert.deepEqual(await page.$$eval(`${sheetSel} .rolling-review-list li`, (els) => els.map((e) => e.dataset.member)),
+    ["p-topo-2", "p-topo-1"], "the review lists the members in plan order");
+  let text = await sheetText();
+  assert.match(text, /SET PERSIST max_connections = 400;/, "the exact statement is shown");
+  assert.match(text, /200 → 400/, "before and after are shown");
+  assert.match(text, /Group Replication and InnoDB Cluster secondaries first, then the primary/, "the order rule is one sentence");
+  assert.match(text, /The live member role is unavailable\./, "the refused member keeps its reason");
+  assert.match(text, /Type mf-topo to confirm/, "a Production group asks for the typed name");
+  assert.match(text, /Untick the refused servers and review again\./);
+  assert.equal((await sheetButton("Apply")).disabled, true, "a refused member keeps Apply disabled");
+
+  // Back, review again: the clean plan still needs the typed name.
+  await sheetClick("Back");
+  await page.waitForSelector(`${sheetSel} .rolling-members`, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li[data-member="p-topo-2"]`, { visible: true });
+  assert.deepEqual(await page.$$eval(`${sheetSel} .rolling-review-list li`, (els) => els.map((e) => e.dataset.member)),
+    ["p-topo-2", "p-topo-1"], "the clean review keeps the plan order");
+  assert.equal((await sheetButton("Apply")).disabled, true, "Apply waits for the typed name");
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  assert.equal((await sheetButton("Apply")).disabled, false, "the typed group name unlocks Apply");
+  await setTheme("dark");
+  await page.screenshot({ path: path.join(rollingShots, "review-1440-dark.png") });
+
+  // Apply: progress names the member, Stop answers with its sentence, and the
+  // partial result lists every member.
+  applyDelay = 2500;
+  await sheetClick("Apply");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent.includes("db-2: sending."),
+    { timeout: 10000 });
+  assert.ok(rollingCalls.progress.length > 0, "the sheet polls the progress of the apply");
+  await sheetClick("Stop");
+  await waitFor(() => rollingCalls.stop.length === 1, "Stop reaches the stop endpoint");
+  assert.equal(rollingCalls.stop[0].progress_id, rollingCalls.apply[0].progress_id, "Stop names the apply's progress id");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("Stop requested. No later server will start; a statement already sent is not interrupted."));
+  await page.waitForSelector(`${sheetSel} .rolling-result`, { visible: true, timeout: 10000 });
+  text = await sheetText();
+  assert.match(text, /The rolling change stopped\. Check each member result before reviewing another change\./, "the overall status is one sentence");
+  assert.match(text, /Open the Audit log/, "the result links to the Audit log");
+  assert.ok(await page.$(`${sheetSel} .rolling-result-list li[data-member="p-topo-2"][data-status="applied"]`), "db-2 applied");
+  assert.ok(await page.$(`${sheetSel} .rolling-result-list li[data-member="p-topo-1"][data-status="not_sent"]`), "db-1 not sent");
+  assert.match(text, /Not sent because this rolling change stopped\./);
+  assert.match(text, /The reviewed value was applied\./);
+
+  // The result at 720 px: no horizontal page scroll, light and dark.
+  await page.setViewport({ width: 720, height: 520 });
+  await setTheme("light");
+  await pause(200);
+  await page.screenshot({ path: path.join(rollingShots, "result-720-light.png") });
+  for (const theme of ["light", "dark"]) {
+    await setTheme(theme);
+    await pause(150);
+    const metrics = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+    assert.ok(metrics.scroll <= metrics.client, `the rolling result sheet at 720px (${theme}) has no horizontal page scroll`);
+  }
+  await setTheme("dark");
+  await page.setViewport({ width: 1440, height: 900 });
+  await sheetClick("Close");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
+  assert.match(await placeText(), /Refresh reads the group again/, "the Parameters tab offers Refresh after a change");
+
+  // A stale review offers to review again.
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+    .find((b) => b.textContent.trim() === "Change on every member…").click());
+  await page.waitForSelector(sheetSel, { visible: true });
+  await sheetClick("Review");
+  await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
+  await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
+  applyReply = staleResult();
+  applyDelay = 0;
+  await sheetClick("Apply");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("The review changed or expired. Review the change again."));
+  await sheetClick("Review again");
+  await page.waitForSelector(`${sheetSel} .rolling-field input`, { visible: true });
+  await sheetClick("Cancel");
+  await page.waitForFunction(() => !document.querySelector("dialog.rolling-change-sheet"));
 
   // --- No connection: deleting the saved connection in use leaves an empty
   // connection, and the place shows the usual no-connection state.

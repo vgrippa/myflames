@@ -7,15 +7,16 @@
 // offers New group... and the topology suggestions of ConnectionGroupBar.
 // Reports are kept per group connection key and tab; switching the group
 // drops the reads on their way.
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
 import { TopologyMap, mapAddress, mapEdgeText } from "./TopologyMap";
+import { RollingChangeSheet } from "./RollingChangeSheet";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, Pill, Segmented, SummaryLine, ToolbarButton,
-  ViewLayout, ViewStatus, type Column, type InspectorContent, type InspectorShared, type Selection,
+  ViewLayout, ViewStatus, type BadgeTone, type Column, type InspectorContent, type InspectorShared, type Selection,
 } from "./kit";
 import { plural } from "./OpsShared";
 import { useViewOnScreen } from "./viewOnScreen";
@@ -40,6 +41,20 @@ const ROLE_LABEL: Record<string, string> = {
 const OUTCOME_LABEL: Record<string, string> = { read: "Read", failed: "Failed", not_reached: "Not reached" };
 const CLUSTER_ROLES = new Set(["primary", "secondary", "node"]);
 const REPLICATION_ROLES = new Set(["source", "replica"]);
+const PARAMETER_STATUS: Record<string, [BadgeTone | "info", string]> = {
+  same: ["ok", "Same"], different: ["warn", "Different"], missing: ["warn", "Missing"], per_server: ["info", "Per server"],
+};
+
+/** Why a Parameters row cannot be changed on every member, or "" when it can. */
+function rollingChangeBlock(row: ParameterRow, report: TopologyGroupReport, connection: Connection): string {
+  if (report.effective_safety.read_only || connection.read_only) return "This Group connection is Read-only.";
+  if (row.status === "per_server") return row.reason || "Each member keeps its own value for this parameter.";
+  const compared = report.parameters?.compared || [];
+  if (row.reason) return row.reason;
+  if (compared.some((id) => row.values[id] === undefined || row.values[id] === null || row.values[id] === "[redacted]"))
+    return "A value is redacted or unavailable on a member.";
+  return "";
+}
 
 function engineText(m: TopologyMember): string {
   return [m.product || (m.engine === "mariadb" ? "MariaDB" : m.engine === "mysql" ? "MySQL" : ""), m.version || ""]
@@ -74,6 +89,8 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(360);
+  const [changeRow, setChangeRow] = useState<ParameterRow | null>(null);
+  const [changeDone, setChangeDone] = useState(false);
   const selection: Selection = {
     key: selectedKey,
     select: (key: string, open?: boolean) => {
@@ -283,7 +300,42 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     };
   }, [tab, report, selection.key, comparedIds(report), memberName, onOpenAccounts]);
 
-  const content = membersContent || peerContent || accountsContent;
+  const parametersContent: InspectorContent | null = useMemo(() => {
+    if (tab !== "parameters" || !report?.parameters || !selection.key) return null;
+    const row = report.parameters.rows.find((r) => r.name === selection.key);
+    if (!row) return null;
+    const section = report.parameters;
+    const [tone, word] = PARAMETER_STATUS[row.status] || PARAMETER_STATUS.same;
+    const blocked = rollingChangeBlock(row, report, connection);
+    return {
+      key: row.name,
+      title: row.name,
+      meta: <Pill tone={tone}>{word}</Pill>,
+      actions: (
+        <div className="topology-member-actions">
+          <ToolbarButton className="small" primary disabled={!!blocked} title={blocked || undefined}
+            onClick={() => { if (!blocked) setChangeRow(row); }}>Change on every member…</ToolbarButton>
+          {blocked && <p className="hint topology-change-blocked">{blocked}</p>}
+        </div>
+      ),
+      body: (
+        <InspectorSection title="Parameter">
+          <Fields rows={[
+            ["Apply type", row.apply_type || (row.dynamic === null ? "Unknown" : row.dynamic ? "Dynamic" : "Restart required")],
+            ...section.compared.map((id): [string, ReactNode] => [
+              memberName(id),
+              row.values[id] === undefined || row.values[id] === null
+                ? <span className="drift-cell-missing">Not present</span>
+                : String(row.values[id]),
+            ]),
+            !!row.reason && ["Note", row.reason],
+          ]} />
+        </InspectorSection>
+      ),
+    };
+  }, [tab, report, selection.key, connection, memberName]);
+
+  const content = membersContent || peerContent || accountsContent || parametersContent;
 
   const groupTabs = (
     <Segmented<TopologySection>
@@ -304,7 +356,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
           id="topology"
           title="Topology"
           controls={isGroup ? groupTabs : undefined}
-          onRefresh={isGroup ? () => { void readTab(tab); } : undefined}
+          onRefresh={isGroup ? () => { setChangeDone(false); void readTab(tab); } : undefined}
           refreshDisabled={disabled}
           loading={!!busyText}
           inspector={content}
@@ -335,7 +387,12 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             ) : tab === "map" ? (
               <MapTab report={report} memberName={memberName} selection={selection} />
             ) : drift ? (
-              <DriftTab tab={tab} drift={drift} report={report} memberName={memberName} selection={selection} />
+              <>
+                {tab === "parameters" && changeDone && (
+                  <p className="hint topology-change-done">A rolling change finished. Refresh reads the group again; nothing was re-read on its own.</p>
+                )}
+                <DriftTab tab={tab} drift={drift} report={report} memberName={memberName} selection={selection} />
+              </>
             ) : null
           ) : busyHere ? null : (
             <EmptyState
@@ -347,6 +404,15 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             </EmptyState>
           )}
         </ViewLayout>
+        {changeRow && report?.parameters && (
+          <RollingChangeSheet
+            connection={connection}
+            report={report}
+            row={changeRow}
+            onClose={() => setChangeRow(null)}
+            onChanged={() => setChangeDone(true)}
+          />
+        )}
       </div>
     </InspectorContext.Provider>
   );

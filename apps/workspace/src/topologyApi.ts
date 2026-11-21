@@ -188,3 +188,115 @@ export type TopologyGroupReport = {
 /** One bounded read of the whole group, one section at a time. */
 export const readTopology = (connection: Connection, section: TopologySection, signal?: AbortSignal) =>
   api<TopologyGroupReport>("live/topology", { connection, section }, signal);
+
+// ---- Rolling variable change ------------------------------------------------
+// One reviewed, rolling variable change over saved group members
+// (myflames/topology_change.py). Plan reads each member and returns the exact
+// statements with an immutable plan id; apply consumes it, one member at a
+// time in the plan's order, stopping at the first failure; stop prevents the
+// next member only. Types follow docs/schemas/topology-change-plan-1.0.json
+// and docs/schemas/topology-change-1.0.json.
+
+export type RollingChangeMode = "global" | "persist" | "persist_only";
+export type RollingValue = string | number | boolean | null;
+
+export type RollingPlanMember = {
+  profile_id: string;
+  profile_name: string;
+  host: string;
+  port: number;
+  identity: Record<string, string | null> | null;
+  status: "planned" | "unchanged" | "refused";
+  statement: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  effect: unknown;
+  caveats: string[];
+  privileges: Record<string, unknown> | null;
+  config_line: string | null;
+  reason: string | null;
+};
+
+export type RollingChangePlan = {
+  schema_version: "topology-change-plan-1.0";
+  plan_id: string;
+  change_set_id: string;
+  group_name: string;
+  name: string;
+  value: RollingValue;
+  mode: RollingChangeMode;
+  order_rule: string;
+  effective_safety: TopologySafety;
+  confirmation: { required: boolean; typed_name: string | null };
+  members: RollingPlanMember[];
+  expect: Record<string, unknown>;
+};
+
+export type RollingMemberResult = Omit<RollingPlanMember, "status"> & {
+  status: "applied" | "unchanged" | "refused" | "not_sent" | "unknown";
+  message: string | null;
+  audit_id: string | null;
+};
+
+export type RollingChangeResult = {
+  schema_version: "topology-change-1.0";
+  plan_id: string | null;
+  change_set_id: string | null;
+  group_name: string | null;
+  name: string | null;
+  value: RollingValue;
+  mode: RollingChangeMode | null;
+  status: "applied" | "partial" | "refused" | "stopped" | "stale";
+  message: string;
+  members: RollingMemberResult[];
+  audit_ids: string[];
+};
+
+/** The apply's progress snapshot: reviewed_writes.Progress plus the member
+ * being changed (profile_id, profile_name; message names it). */
+export type RollingProgress = {
+  phase: string;
+  states: string[];
+  status: string | null;
+  profile_id: string | null;
+  profile_name: string | null;
+  message: string | null;
+};
+
+export type RollingStop = { progress_id: string; status: "finished" | "stopping"; message: string };
+
+/** The rolling endpoints accept only these connection fields (the backend
+ * refuses any other, and each member's own saved login is used instead). */
+function changeConnection(connection: Connection) {
+  const out: Record<string, unknown> = {};
+  const keys = ["host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port",
+    "profile_id", "group_name", "database", "type", "read_only", "name"] as const;
+  for (const key of keys) {
+    const value = connection[key as keyof Connection];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+/** Review the change on the chosen members: reads only, nothing is sent. */
+export const planTopologyChange = (
+  connection: Connection, name: string, value: RollingValue, mode: RollingChangeMode, memberIds: string[], signal?: AbortSignal,
+) => api<RollingChangePlan>("live/topology/variable/plan",
+  { connection: changeConnection(connection), name, value, mode, member_ids: memberIds }, signal);
+
+/** Send the reviewed plan, one member at a time. Never called without the
+ * plan's own plan_id and expect. */
+export const applyTopologyChange = (
+  connection: Connection, plan: RollingChangePlan, confirmed: boolean, typedName: string | undefined, progressId: string,
+) => api<RollingChangeResult>("live/topology/variable/apply", {
+  connection: changeConnection(connection), plan_id: plan.plan_id, expect: plan.expect, confirmed,
+  ...(typedName !== undefined ? { typed_name: typedName } : {}), progress_id: progressId,
+});
+
+/** Prevent the next member from starting; a statement already sent is never interrupted. */
+export const stopTopologyChange = (connection: Connection, progressId: string) =>
+  api<RollingStop>("live/topology/variable/stop", { connection: changeConnection(connection), progress_id: progressId });
+
+/** The send's progress, polled by the sheet while it is open. */
+export const rollingChangeProgress = (progressId: string) =>
+  api<RollingProgress>("live/action/progress", { progress_id: progressId });

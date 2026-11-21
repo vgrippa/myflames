@@ -242,3 +242,167 @@
   pointer-events: auto;
 }
 .topology-map-section { overflow-wrap: anywhere; }
+/* The rolling change sheet (RollingChangeSheet.tsx): value, mode and member
+   choice, then the numbered review and the per-member result. */
+
+.topology-change-blocked {
+  margin: 4px 0 0;
+}
+
+.topology-change-done {
+  margin: 0 0 8px;
+}
+
+.rolling-change-sheet .rolling-members {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rolling-change-sheet .rolling-members > legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.rolling-order-rule {
+  margin: 0 0 12px;
+}
+
+.rolling-review-list,
+.rolling-result-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rolling-review-list > li,
+.rolling-result-list > li {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.rolling-review-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rolling-review-order {
+  color: var(--muted);
+}
+
+.rolling-review-address {
+  color: var(--muted);
+}
+
+.rolling-result-list > li > .rolling-review-address {
+  margin-left: 6px;
+}
+
+.rolling-before-after {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 0;
+}
+
+.rolling-member-reason {
+  margin: 6px 0 0;
+}
+
+.rolling-applying {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.rolling-applying .rolling-phase {
+  margin: 0;
+}
+
+.rolling-result .rolling-result-list {
+  margin-top: 12px;
+}
+
+.rolling-change-sheet .rolling-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.rolling-change-sheet .rolling-field > label,
+.rolling-change-sheet .rolling-typed > span {
+  font-weight: 600;
+}
+
+.rolling-change-sheet .rolling-modes {
+  border: 0;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rolling-change-sheet .rolling-modes > legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.rolling-change-sheet .rolling-modes > label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.rolling-change-sheet .rolling-modes .hint {
+  display: block;
+}
+
+.rolling-change-sheet .rolling-problem {
+  color: var(--danger);
+  margin: 8px 0 0;
+}
+
+.rolling-change-sheet .rolling-warning {
+  margin: 6px 0 0;
+}
+
+.rolling-change-sheet .rolling-typed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.rolling-change-sheet .rolling-phase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.rolling-outcome {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rolling-outcome > p {
+  margin: 0;
+}
+
+.rolling-audit {
+  margin-top: 12px;
+}
