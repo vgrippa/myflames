@@ -25,3 +25,5 @@
 ^live Docker tests run in the integration workflow$
 # until the workspace CI job installs them
 ^Workspace npm dependencies are needed to bundle the actual TypeScript helper$
+# Source checkouts do not track the optional workspace build.
+^Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace$

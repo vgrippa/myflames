@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import socket
 import subprocess
@@ -43,6 +44,14 @@ class ReleaseEntryPointTest(unittest.TestCase):
     DESKTOP_INSTALL = r"^python3 scripts/release_state\.py run --label '[^'\n]+' -- npm ci$"
     WORKSPACE_INSTALL = (r"^PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state\.py run "
                          r"--label '[^'\n]+' -- npm --prefix \"\$root/apps/workspace\" ci$")
+    WORKSPACE_BUILD = (r"^NODE_ENV=production python3 scripts/release_state\.py run --label '[^'\n]+' "
+                       r"-- npm --prefix \"\$root/apps/workspace\" run build:ui$")
+
+    def test_workspace_ui_build_does_not_rebuild_tracked_charts(self):
+        scripts = json.loads((ROOT / 'apps/workspace/package.json').read_text(encoding='utf-8'))['scripts']
+        self.assertEqual(scripts['build:ui'], 'tsc --noEmit && vite build')
+        self.assertEqual(scripts['build'], 'tsc --noEmit && vite build && vite build -c vite.charts.config.ts')
+        self.assertEqual(scripts['build:charts'], 'tsc --noEmit && vite build -c vite.charts.config.ts')
 
     def assert_unconditional_install(self, script, pattern):
         install = re.search(pattern, script, re.MULTILINE)
@@ -61,11 +70,44 @@ class ReleaseEntryPointTest(unittest.TestCase):
         self.assertNotIn('node_modules/.bin/electron-builder', script,
                          'an existing builder does not prove dependencies match the lockfile')
 
-    def test_workspace_smoke_dependencies_always_install_after_desktop_before_backend(self):
+    def test_workspace_dependencies_always_install_after_desktop_before_backend(self):
         script = (SCRIPTS / 'release-mac.sh').read_text(encoding='utf-8')
         workspace = self.assert_unconditional_install(script, self.WORKSPACE_INSTALL)
         desktop = self.assert_unconditional_install(script, self.DESKTOP_INSTALL)
         self.assertLess(desktop.start(), workspace.start(), 'install desktop dependencies first')
+
+    def test_workspace_build_precedes_backend_build_or_resume_and_output_is_rechecked(self):
+        script = (SCRIPTS / 'release-mac.sh').read_text(encoding='utf-8')
+        install = self.assert_unconditional_install(script, self.WORKSPACE_INSTALL)
+        build = self.assert_unconditional_install(script, self.WORKSPACE_BUILD)
+        self.assertLess(install.start(), build.start())
+        self.assertLess(script.index('git tree changed during the build'),
+                        script.rindex('python3 scripts/release_state.py manifest-check --root "$root"'))
+        packager = (SCRIPTS / 'package-mac-release.sh').read_text(encoding='utf-8')
+        self.assertLess(packager.index('state manifest-check'), packager.index('if needs app; then'))
+        self.assertGreater(packager.rindex('state manifest-check'), packager.index('state complete checksums'))
+
+    def test_backend_refuses_invalid_assets_before_any_build_subprocess(self):
+        for reason in ('missing index.html', 'stale source stamp'):
+            error = reason + ': run `npm ci` and `npm run build` in apps/workspace'
+            with self.subTest(reason=reason), mock.patch.dict(sys.modules, {'release_state': release}), \
+                    mock.patch.object(release, 'check_ui_assets', side_effect=ValueError(error)), \
+                    mock.patch.object(subprocess, 'call') as build, contextlib.redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as caught:
+                    runpy.run_path(str(SCRIPTS / 'build-backend.py'), run_name='__main__')
+                self.assertEqual(caught.exception.code, 2)
+                self.assertIn('Cannot build the backend: ' + error, stderr.getvalue())
+                build.assert_not_called()
+
+    def test_workflow_workspace_builds_force_production_and_publish_compares_reference(self):
+        for name in ('publish.yml', 'macos-desktop.yml', 'windows-desktop.yml'):
+            workflow = (ROOT / '.github' / 'workflows' / name).read_text(encoding='utf-8')
+            build = workflow.split('- name: Build the workspace\n', 1)[1].split('\n      - ', 1)[0]
+            with self.subTest(workflow=name):
+                self.assertRegex(build, r'(?m)^\s+NODE_ENV=production npm run build:ui$')
+        publish = (ROOT / '.github' / 'workflows' / 'publish.yml').read_text(encoding='utf-8')
+        self.assertIn('python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz --reference myflames/ui_assets',
+                      publish)
 
 
 class ReleaseStateTest(unittest.TestCase):
@@ -281,7 +323,7 @@ class ReleaseStateTest(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 release.validate_manifest(manifest, commit, ui, requirements)
 
-    def build_backend_manifest(self, freeze=('PyInstaller==6.22.3',)):
+    def build_backend_manifest(self, freeze=('PyInstaller==6.22.3',), asset_change=None):
         desktop = self.root / 'apps' / 'desktop'
         backend = desktop / 'build' / 'backend'
         (backend / 'myflames-backend').mkdir(parents=True)
@@ -289,14 +331,39 @@ class ReleaseStateTest(unittest.TestCase):
         (backend / 'Python-LICENSE.txt').write_bytes(b'license')
         requirements = desktop / 'requirements-build.txt'
         requirements.write_bytes(b'PyInstaller==6.22.3\n')
-        assets = self.root / 'myflames' / 'ui_assets'
-        assets.mkdir(parents=True)
-        (assets / 'index.html').write_bytes(b'committed UI')
+        assets = self.build_workspace()
+        bundled = backend / 'myflames-backend' / '_internal' / 'myflames' / 'ui_assets'
+        shutil.copytree(str(assets), str(bundled))
+        if asset_change == 'missing':
+            (bundled / 'assets' / 'lazy.js').unlink()
+        elif asset_change == 'altered':
+            (bundled / 'assets' / 'lazy.js').write_bytes(b'altered bundled chunk')
+        elif asset_change == 'extra':
+            (bundled / 'assets' / 'extra.js').write_bytes(b'extra bundled chunk')
         before = {'commit': 'a' * 40, 'ui_assets_sha256': release.ui_assets_digest(self.root),
                   'requirements_sha256': hashlib.sha256(requirements.read_bytes()).hexdigest()}
         with mock.patch.object(release, 'git_head', return_value='a' * 40):
             release.build_manifest(self.root, before, list(freeze))
         return backend
+
+    def build_workspace(self):
+        """A small build with a real source stamp, independent of repo output."""
+        sources_sha = load_script('check_ui_assets_tests', ROOT / 'scripts' / 'check_ui_assets.py').sources_sha
+        for name in ('src/main.ts', 'index.html', 'vite.config.ts', 'tsconfig.json', 'package-lock.json'):
+            path = self.root / 'apps' / 'workspace' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'workspace source')
+        logo = self.root / 'docs' / 'brand' / 'myflames-app-logo.png'
+        logo.parent.mkdir(parents=True, exist_ok=True)
+        logo.write_bytes(b'logo')
+        assets = self.root / 'myflames' / 'ui_assets'
+        (assets / 'assets').mkdir(parents=True, exist_ok=True)
+        (assets / 'assets' / 'app.js').write_bytes(b'freshly built workspace')
+        (assets / 'assets' / 'lazy.js').write_bytes(b'freshly built lazy chunk')
+        (assets / 'index.html').write_text(
+            ('<meta name="myflames-sources-sha256" content="%s">'
+             '<script src="/assets/app.js"></script>') % sources_sha(self.root), encoding='utf-8')
+        return assets
 
     def build_venv(self, python_version=None, freeze=('PyInstaller==6.22.3',)):
         """Mock the build venv answers check_manifest asks its interpreter for."""
@@ -314,6 +381,41 @@ class ReleaseStateTest(unittest.TestCase):
             (backend / 'myflames-backend' / 'binary').write_bytes(b'stale binary')
             with self.assertRaisesRegex(ValueError, 'rebuild the backend with release-mac.sh'):
                 release.check_manifest(self.root)
+
+    def test_build_manifest_refuses_missing_extra_or_altered_bundled_chunks(self):
+        for change in ('missing', 'extra', 'altered'):
+            with self.subTest(change=change):
+                backend = self.root / 'apps' / 'desktop' / 'build' / 'backend'
+                if backend.exists():
+                    backend.rename(backend.with_name('previous-' + change))
+                with self.assertRaisesRegex(ValueError, 'bundled workspace assets.*' + change):
+                    self.build_backend_manifest(asset_change=change)
+                self.assertFalse((backend / 'build-manifest.json').exists())
+
+    def test_resume_rechecks_bundled_chunks_even_if_backend_digest_is_updated(self):
+        backend = self.build_backend_manifest()
+        binary = backend / 'myflames-backend'
+        chunk = binary / '_internal' / 'myflames' / 'ui_assets' / 'assets' / 'lazy.js'
+        original = chunk.read_bytes()
+        for change in ('missing', 'extra', 'altered'):
+            with self.subTest(change=change):
+                chunk.write_bytes(original)
+                extra = chunk.with_name('extra.js')
+                if extra.exists():
+                    extra.unlink()
+                if change == 'missing':
+                    chunk.unlink()
+                elif change == 'extra':
+                    extra.write_bytes(b'extra chunk')
+                else:
+                    chunk.write_bytes(b'altered bytes')
+                manifest = release.read_json(backend / 'build-manifest.json')
+                manifest['backend_sha256'] = release.hash_path(binary)
+                release.write_json(backend / 'build-manifest.json', manifest)
+                version, freeze = self.build_venv()
+                with mock.patch.object(release, 'git_head', return_value='a' * 40), version, freeze:
+                    with self.assertRaisesRegex(ValueError, 'bundled workspace assets.*' + change):
+                        release.check_manifest(self.root)
 
     def test_manifest_refuses_a_different_build_python_minor(self):
         self.build_backend_manifest()
@@ -364,14 +466,33 @@ class ReleaseStateTest(unittest.TestCase):
         desktop = self.root / 'apps' / 'desktop'
         desktop.mkdir(parents=True)
         (desktop / 'requirements-build.txt').write_bytes(b'requirements')
-        assets = self.root / 'myflames' / 'ui_assets'
-        assets.mkdir(parents=True)
-        (assets / 'index.html').write_bytes(b'current')
-        before = {'commit': 'a' * 40, 'ui_assets_sha256': 'old', 'requirements_sha256': 'old'}
+        assets = self.build_workspace()
+        before = {'commit': 'a' * 40, 'ui_assets_sha256': release.ui_assets_digest(self.root),
+                  'requirements_sha256': release.sha256_file(desktop / 'requirements-build.txt')}
+        (assets / 'assets' / 'app.js').write_bytes(b'changed during backend build')
         with mock.patch.object(release, 'git_head', return_value='a' * 40):
             with self.assertRaisesRegex(ValueError, 'inputs changed while building'):
                 release.build_manifest(self.root, before, [])
         self.assertFalse((desktop / 'build' / 'backend' / 'build-manifest.json').exists())
+
+    def test_changed_sources_during_build_refuse_manifest(self):
+        backend = self.build_backend_manifest()
+        before = release.read_json(backend / 'build-manifest.json')
+        before = {key: before[key] for key in ('commit', 'ui_assets_sha256', 'requirements_sha256')}
+        (backend / 'build-manifest.json').unlink()
+        (self.root / 'apps/workspace/src/main.ts').write_bytes(b'edited during build')
+        with mock.patch.object(release, 'git_head', return_value='a' * 40):
+            with self.assertRaisesRegex(ValueError, 'stale.*npm run build'):
+                release.build_manifest(self.root, before, [])
+        self.assertFalse((backend / 'build-manifest.json').exists())
+
+    def test_resume_rejects_changed_sources_even_when_output_is_unchanged(self):
+        self.build_backend_manifest()
+        (self.root / 'apps/workspace/src/main.ts').write_bytes(b'unbuilt source edit')
+        version, freeze = self.build_venv()
+        with mock.patch.object(release, 'git_head', return_value='a' * 40), version, freeze:
+            with self.assertRaisesRegex(ValueError, 'stale.*rebuild the backend'):
+                release.check_manifest(self.root)
 
     def test_venv_key_uses_major_minor_and_requirement_bytes(self):
         requirements = self.root / 'requirements'

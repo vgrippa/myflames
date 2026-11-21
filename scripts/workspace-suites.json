@@ -115,7 +115,7 @@
       "script": "test:bundle-split",
       "timeout": 180,
       "quarantine": "Entry chunk index-XH028LfL.js is 500608 bytes, a bundle size regression seen on master 44ff65de; fix tracked in the QA plan Phase 2 follow-ups.",
-      "reason": "Code-splitting contracts read from sources and the committed build in myflames/ui_assets; no browser."
+      "reason": "Code-splitting contracts read from sources and the build in myflames/ui_assets; no browser."
     },
     "charts.mjs": {
       "kind": "suite",

@@ -4,6 +4,7 @@ skill. These run ``myflames`` as a subprocess and assert the *contract*, not the
 content: exit codes (0/1/2), --output writes a file, --json is valid JSON, and
 machine output lands on stdout while diagnostics land on stderr.
 """
+import io
 import json
 import os
 import subprocess
@@ -360,14 +361,39 @@ class TestWorkspaceCommand(unittest.TestCase):
             self.assertNotIn('Traceback', result.stderr)
 
     def test_occupied_port_is_actionable_error(self):
+        # Runs cmd_ui in-process against the fixture assets (the pattern of
+        # test_session.py's TestUiCommand), so the contract no longer depends
+        # on the optional workspace build being present.
         import socket
+        from contextlib import redirect_stderr, redirect_stdout
+        from pathlib import Path
+        from unittest import mock
+        from myflames import ui
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             listener.listen(1)
-            result = run_cli('ui', '--port', str(listener.getsockname()[1]), '--no-browser')
-            self.assertEqual(result.returncode, 2)
-            self.assertIn('Try --port 0', result.stderr)
-            self.assertEqual(result.stdout, '')
+            stderr, stdout = io.StringIO(), io.StringIO()
+            with mock.patch.object(ui, 'ASSET_DIR', Path(TEST_DIR) / 'fixtures' / 'workspace'), \
+                    redirect_stderr(stderr), redirect_stdout(stdout), \
+                    self.assertRaises(SystemExit) as caught:
+                ui.cmd_ui(['--port', str(listener.getsockname()[1]), '--no-browser'])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn('Try --port 0', stderr.getvalue())
+            self.assertEqual(stdout.getvalue(), '')
+
+    def test_missing_ui_assets_is_actionable_error(self):
+        from contextlib import redirect_stderr
+        from pathlib import Path
+        from unittest import mock
+        from myflames import ui
+        with tempfile.TemporaryDirectory() as empty:
+            stderr = io.StringIO()
+            with mock.patch.object(ui, 'ASSET_DIR', Path(empty)), \
+                    redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+                ui.cmd_ui(['--no-browser'])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn('UI assets are missing. Run `npm ci` and `npm run build` in apps/workspace, '
+                          'or reinstall myflames.', stderr.getvalue())
 
 
 class HideLiteralContractTests(unittest.TestCase):

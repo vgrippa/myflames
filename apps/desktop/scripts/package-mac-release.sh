@@ -13,7 +13,7 @@
 #                           its key ID and issuer ID; read from disk, so a locked
 #                           screen does not stop the build
 #
-# Use release-mac.sh to prepare the backend and release prerequisites. Local builds stay
+# Use release-mac.sh to build the workspace, then the backend and prerequisites. Local builds stay
 # unsigned: electron-builder.json keeps identity null and notarize false, and
 # only this script overrides them.
 set -eu
@@ -57,6 +57,8 @@ run() { label=$1; shift; state run --label "$label" -- "$@"; }
 
 if [ "$mode" != --preflight ]; then
   [ -x build/backend/myflames-backend/myflames-backend ] || die "rebuild the backend with release-mac.sh"
+  # Includes the source stamp and digest of the freshly built workspace.
+  # Never rebuild it after bundling: that could validate different output.
   state manifest-check
 fi
 
@@ -242,5 +244,7 @@ if needs checksums; then
 (cd dist && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 "$zipname" > "$zipname.sha256")
 state complete checksums "$dmg.sha256" "$zip.sha256"
 fi
+# Refuse changes to sources or ignored output during signing and verification.
+state manifest-check
 echo "$dmg"
 echo "$zip"

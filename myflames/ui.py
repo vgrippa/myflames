@@ -3265,7 +3265,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == "/":
-            index = (ASSET_DIR / "index.html").read_text(encoding="utf-8")
+            try:
+                index = (ASSET_DIR / "index.html").read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._send(503, "Workspace assets are missing. Run `npm ci` and `npm run build` "
+                           "in apps/workspace, then reload this page.\n", "text/plain; charset=utf-8")
+                return
             # Only a validated registry id may enter HTML. This also rejects
             # malformed rows in a store written by an older or external tool.
             from .workspace_store import UI_THEME_IDS
@@ -3485,7 +3490,7 @@ def cmd_ui(argv):
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if not (ASSET_DIR / "index.html").is_file():
-        parser.exit(2, "UI assets are missing. Reinstall myflames or build apps/workspace.\n")
+        parser.exit(2, "UI assets are missing. Run `npm ci` and `npm run build` in apps/workspace, or reinstall myflames.\n")
     try:
         from .news import fetch_feed  # Home news: the only server that reads feeds
         from .upgrade_targets import fetch_page

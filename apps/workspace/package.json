@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build && vite build -c vite.charts.config.ts",
+    "build:ui": "tsc --noEmit && vite build",
     "build:charts": "tsc --noEmit && vite build -c vite.charts.config.ts",
     "dev": "vite build --watch",
     "docs:screenshots": "node test/readme-screenshots.mjs",

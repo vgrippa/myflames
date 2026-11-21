@@ -7,6 +7,7 @@ download cache. A hash is a resume guard, not a substitute for signature checks.
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,15 @@ import sys
 import tempfile
 import time
 from urllib.parse import urlparse
+
+# This script also runs directly from apps/desktop, outside the repo import
+# path. Load the checker by file path: a top-level `scripts` package elsewhere
+# on sys.path must not shadow it.
+_check_ui_assets_spec = importlib.util.spec_from_file_location(
+    'check_ui_assets', str(Path(__file__).resolve().parents[3] / 'scripts' / 'check_ui_assets.py'))
+_check_ui_assets = importlib.util.module_from_spec(_check_ui_assets_spec)
+_check_ui_assets_spec.loader.exec_module(_check_ui_assets)
+check_ui_assets = _check_ui_assets.check_ui_assets
 
 
 STAGES = ('app', 'verify-app', 'dmg-notarize', 'staple', 'verify', 'size', 'checksums')
@@ -88,7 +98,19 @@ def hash_path(path):
 
 
 def ui_assets_digest(root):
+    """Validate the source stamp, then hash the freshly built, untracked output."""
+    check_ui_assets(Path(root) / 'myflames', root)
     return hash_path(Path(root) / 'myflames' / 'ui_assets')
+
+
+def check_bundled_ui_assets(root):
+    """PyInstaller 6's onedir data must match the validated build byte for byte."""
+    root = Path(root)
+    package = root / 'apps' / 'desktop' / 'build' / 'backend' / 'myflames-backend' / '_internal' / 'myflames'
+    try:
+        check_ui_assets(package, root, reference=root / 'myflames' / 'ui_assets')
+    except (OSError, ValueError) as exc:
+        raise ValueError('bundled workspace assets do not match the built input: {}'.format(exc))
 
 
 def git_head(root):
@@ -127,7 +149,7 @@ def validate_manifest(manifest, commit, ui_digest, requirements_digest=None):
     if not commit or manifest.get('commit') != commit:
         raise ValueError('backend manifest commit does not match HEAD')
     if manifest.get('ui_assets_sha256') != ui_digest:
-        raise ValueError('backend manifest ui_assets digest does not match the tree')
+        raise ValueError('backend manifest ui_assets digest does not match the built output')
     if requirements_digest is not None and manifest.get('requirements_sha256') != requirements_digest:
         raise ValueError('backend manifest build requirements do not match the tree')
     return manifest
@@ -140,6 +162,7 @@ def check_manifest(root):
         manifest = read_json(backend / 'build-manifest.json')
         validate_manifest(manifest, git_head(root), ui_assets_digest(root),
                           sha256_file(root / 'apps' / 'desktop' / 'requirements-build.txt'))
+        check_bundled_ui_assets(root)
         if manifest.get('backend_sha256') != hash_path(backend / 'myflames-backend'):
             raise ValueError('backend files do not match the build manifest')
         if manifest.get('python_license_sha256') != sha256_file(backend / 'Python-LICENSE.txt'):
@@ -170,6 +193,7 @@ def build_manifest(root, before, freeze):
                'requirements_sha256': sha256_file(desktop / 'requirements-build.txt')}
     if before != current:
         raise ValueError('build inputs changed while building; rebuild the backend with release-mac.sh')
+    check_bundled_ui_assets(root)
     current.update({'schema_version': 'myflames-backend-build-1',
                     'python_version': sys.version.split()[0], 'built_at': utc_now(),
                     'backend_sha256': hash_path(desktop / 'build' / 'backend' / 'myflames-backend'),
