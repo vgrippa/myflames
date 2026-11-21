@@ -1,0 +1,264 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "change_set_id",
+    "group_name",
+    "name",
+    "value",
+    "mode",
+    "status",
+    "message",
+    "members",
+    "audit_ids"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "topology-change-1.0"
+    },
+    "plan_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "change_set_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "group_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "value": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "global",
+        "persist",
+        "persist_only",
+        null
+      ]
+    },
+    "status": {
+      "enum": [
+        "applied",
+        "partial",
+        "refused",
+        "stopped",
+        "stale"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "members": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/definitions/member"
+      }
+    },
+    "audit_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Sequential member results. A stop never interrupts an already sent statement. Unknown effects require inspection before another review.",
+  "definitions": {
+    "identity": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_node_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_on": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_gcomm_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_name",
+        "host",
+        "port",
+        "identity",
+        "status",
+        "statement",
+        "before",
+        "after",
+        "effect",
+        "caveats",
+        "privileges",
+        "config_line",
+        "reason",
+        "message",
+        "audit_id"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "identity": {
+          "$ref": "#/definitions/identity"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "unchanged",
+            "refused",
+            "not_sent",
+            "unknown"
+          ]
+        },
+        "statement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "before": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "after": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "effect": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "caveats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "privileges": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "config_line": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audit_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

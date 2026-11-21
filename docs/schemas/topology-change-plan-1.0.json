@@ -1,0 +1,484 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "change_set_id",
+    "group_name",
+    "name",
+    "value",
+    "mode",
+    "order_rule",
+    "effective_safety",
+    "confirmation",
+    "members",
+    "expect"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "topology-change-plan-1.0"
+    },
+    "plan_id": {
+      "type": "string"
+    },
+    "change_set_id": {
+      "type": "string"
+    },
+    "group_name": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "value": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "global",
+        "persist",
+        "persist_only"
+      ]
+    },
+    "order_rule": {
+      "type": "string"
+    },
+    "effective_safety": {
+      "$ref": "#/definitions/safety"
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "typed_name"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "typed_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/definitions/member"
+      }
+    },
+    "expect": {
+      "$ref": "#/definitions/expect"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "One review of a rolling variable change. Read-only anywhere refuses before login; members without statements are unchanged or refused.",
+  "definitions": {
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "read_only"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "production",
+            "development",
+            "staging",
+            "local"
+          ]
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      }
+    },
+    "identity": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_node_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_on": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsrep_gcomm_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "user",
+        "ssl_mode",
+        "ssl_ca",
+        "ssh_host",
+        "ssh_user",
+        "ssh_port"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "user": {
+          "type": "string"
+        },
+        "ssl_mode": {
+          "type": "string"
+        },
+        "ssl_ca": {
+          "type": "string"
+        },
+        "ssh_host": {
+          "type": "string"
+        },
+        "ssh_user": {
+          "type": "string"
+        },
+        "ssh_port": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      }
+    },
+    "facts": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gr_group_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gr_single_primary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "node_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "source_uuid",
+              "source_server_id",
+              "source_host",
+              "source_port"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "source_uuid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_server_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source_host": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_name",
+        "host",
+        "port",
+        "identity",
+        "status",
+        "statement",
+        "before",
+        "after",
+        "effect",
+        "caveats",
+        "privileges",
+        "config_line",
+        "reason"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "identity": {
+          "$ref": "#/definitions/identity"
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "unchanged",
+            "refused"
+          ]
+        },
+        "statement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "before": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "after": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "effect": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "caveats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "privileges": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "config_line": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "endpoint",
+        "endpoint_fingerprint",
+        "identity",
+        "statement",
+        "before",
+        "order_facts",
+        "variable_expect"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "endpoint": {
+          "$ref": "#/definitions/endpoint"
+        },
+        "endpoint_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "identity": {
+          "$ref": "#/definitions/identity"
+        },
+        "statement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "before": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "order_facts": {
+          "$ref": "#/definitions/facts"
+        },
+        "variable_expect": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_name",
+        "group_generation",
+        "active_member_profile_id",
+        "active_endpoint",
+        "effective_safety",
+        "members"
+      ],
+      "properties": {
+        "group_name": {
+          "type": "string"
+        },
+        "group_generation": {
+          "type": "string"
+        },
+        "active_member_profile_id": {
+          "type": "string"
+        },
+        "active_endpoint": {
+          "$ref": "#/definitions/endpoint"
+        },
+        "effective_safety": {
+          "$ref": "#/definitions/safety"
+        },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/binding"
+          }
+        },
+        "order_dependencies": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/binding"
+          }
+        }
+      }
+    }
+  }
+}

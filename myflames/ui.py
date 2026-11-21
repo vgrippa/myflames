@@ -1440,6 +1440,12 @@ _VARIABLE_WRITE_PATHS = ("/api/live/variable/apply",)
 _VARIABLE_PATHS = _VARIABLE_READ_PATHS + _VARIABLE_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _VARIABLE_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _VARIABLE_PATHS
+# Rolling group variables route each member through its own stored login.
+# Dispatch these before the generic saved-password path. Apply is a write;
+# plan reads on request and Stop only prevents the next member starting.
+_TOPOLOGY_CHANGE_PATHS = ('/api/live/topology/variable/plan', '/api/live/topology/variable/apply',
+                         '/api/live/topology/variable/stop')
+_WRITE_PATHS = _WRITE_PATHS + ('/api/live/topology/variable/apply',)
 #: Privileges and Users and roles (accounts_api.py, answered by
 #: _accounts_response). /api/live/privileges and /api/accounts/list, read and
 #: plan only read: they get the saved password like the views. Apply is a
@@ -2054,6 +2060,60 @@ def _variable_apply(payload, workspace):
         _reraise_redacted(exc, password)
 
 
+def _topology_variable_response(path, payload, workspace):
+    """Strict Group-only requests; no request endpoint supplies member credentials."""
+    from . import connection_groups, dbops, reviewed_writes, topology_change
+    from .editor_session import _connection_facts
+    from .workspace_store import ENDPOINT_FIELDS
+    operation = path.rsplit('/', 1)[-1]
+    required = {'plan': {'connection', 'name', 'value', 'mode', 'member_ids'},
+                'apply': {'connection', 'plan_id', 'expect', 'confirmed', 'progress_id'},
+                'stop': {'connection', 'progress_id'}}[operation]
+    allowed = required | ({'typed_name'} if operation == 'apply' else set())
+    if set(payload) - allowed or required - set(payload):
+        raise ValueError('Send only the required rolling change fields.')
+    connection = payload.get('connection')
+    fields = set(ENDPOINT_FIELDS) | {'profile_id', 'group_name', 'database', 'type', 'read_only', 'name'}
+    if (not isinstance(connection, dict) or set(connection) - fields or
+            not isinstance(connection.get('group_name'), str) or not connection['group_name'] or
+            not isinstance(connection.get('profile_id'), str) or not 0 < len(connection['profile_id']) <= 200):
+        raise ValueError('A rolling change requires a current Group connection with saved credentials.')
+    for key, value in connection.items():
+        if key in ('port', 'ssh_port'):
+            if value is not None and (type(value) is not int or not 0 <= value <= 65535):
+                raise ValueError('Connection ports must be integers.')
+        elif key == 'read_only':
+            if type(value) is not bool:
+                raise ValueError('Connection read_only must be a boolean.')
+        elif value is not None and (not isinstance(value, str) or len(value) > 4096):
+            raise ValueError('Connection fields must be bounded text.')
+    if operation != 'plan':
+        progress_id = payload['progress_id']
+        if not isinstance(progress_id, str) or not reviewed_writes._PROGRESS_ID.fullmatch(progress_id):
+            raise ValueError('Invalid progress_id.')
+    if operation == 'apply':
+        if (not isinstance(payload['plan_id'], str) or not 1 <= len(payload['plan_id']) <= 128 or
+                not isinstance(payload['expect'], dict) or type(payload['confirmed']) is not bool or
+                'typed_name' in payload and (not isinstance(payload['typed_name'], str) or len(payload['typed_name']) > 80)):
+            raise ValueError('Send the reviewed plan_id and expect, boolean confirmed and optional typed_name text.')
+    # The same consent and endpoint checks as /api/live/topology, before any
+    # saved-password lookup. The executor repeats them at each member login.
+    _connection_facts(payload, workspace.store)
+    _profiles, current = connection_groups.request_profiles(workspace.store, connection)
+    if current is None:
+        raise ValueError('This saved connection is outside the current connection group.')
+    if operation == 'plan':
+        if connection.get('read_only') is True:
+            raise ValueError('This Group connection is Read-only. No connections were opened.')
+        return topology_change.plan(workspace.store, connection['group_name'], current['id'],
+            payload['name'], payload['value'], payload['mode'], payload['member_ids'])
+    if operation == 'stop':
+        return topology_change.stop(workspace.store, payload['progress_id'], connection['group_name'], current['id'])
+    audit = dbops.AuditTrail(workspace.store, topology_change.OPERATION, 'ui')
+    return topology_change.apply(workspace.store, audit, payload['plan_id'], payload['expect'], payload['confirmed'],
+        payload.get('typed_name'), payload['progress_id'], connection=connection)
+
+
 _ACTION_OPERATION = {"cluster": "cluster_action", "proxysql": "proxysql_action", "readyset": "readyset_action"}
 
 
@@ -2515,6 +2575,10 @@ def api_response(path, payload, workspace=None):
         if current is None:
             raise ValueError("This saved connection is outside the current connection group.")
         return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"])
+    if path in _TOPOLOGY_CHANGE_PATHS:
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        return _topology_variable_response(path, payload, workspace)
     if path == "/api/analysis/prepare-query":
         from .analysis_query import prepare
         return prepare(payload.get("query"))
@@ -2708,7 +2772,11 @@ def api_response(path, payload, workspace=None):
         if path in _ACTION_PATHS:
             return _action_response(path, payload, workspace)
         if path == _ACTION_PROGRESS_PATH:
-            return _action_progress(workspace).get(payload.get("progress_id"))
+            result = _action_progress(workspace).get(payload.get("progress_id"))
+            if result['phase'] == 'unknown':
+                from . import topology_change
+                return topology_change.progress(workspace.store, payload.get('progress_id'))
+            return result
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload, workspace=workspace)
         raise ValueError("Unknown workspace operation.")
@@ -3406,7 +3474,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/list", "/api/editor/saved/save", "/api/editor/saved/rename",
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _TOPOLOGY_CHANGE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
                 + _CLIENT_PATHS + _MANAGED_SHELL_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
                 + _BASELINE_PATHS \
