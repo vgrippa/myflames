@@ -6,6 +6,10 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ## [Unreleased]
 
+### New features
+
+- Added a **Topology** place in the sidebar (after **Workload**). On a Group connection it reads the whole connection group, one bounded read per tab: **Map** (servers, links and clusters as text), **Members** (role, state, engine and version, read-only, lag and behind), **Parameters**, **Accounts** and **Plugins** (drift matrices with a Differences or All filter). A tab reads only when it first comes on screen and on Refresh. On a saved connection in a group it offers to open the group as a Group connection; opening a group card from **Home** now also goes to the Topology place.
+
 ### Bug fixes
 
 - Fixed an issue where the **Software update** dialog showed release notes as raw Markdown, with `##` and `**` marks, instead of headings, lists and bold text.

@@ -1,0 +1,131 @@
+/* The Topology place: one connection group read whole (Map, Members,
+   Parameters, Accounts, Plugins). Shared kit styles carry the tables and
+   inspector; this sheet holds the drift matrix controls, the map's text
+   lists and the member summary. */
+
+.topology-place {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.topology-place .topology-member-note {
+  margin: 0 0 12px;
+}
+
+.topology-place .topology-group-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+.topology-place .topology-summary {
+  margin-bottom: 12px;
+}
+
+.drift-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.drift-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.drift-controls .drift-search {
+  margin-left: auto;
+  min-width: 160px;
+  max-width: 280px;
+  flex: 1 1 160px;
+}
+
+.drift-notes p {
+  margin: 0 0 4px;
+}
+
+.drift-not-compared {
+  margin-top: 8px;
+}
+
+.drift-not-compared .drift-row-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.drift-not-compared ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.drift-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.drift-cell-missing {
+  color: var(--muted);
+}
+
+.topology-map-section {
+  margin-bottom: 16px;
+}
+
+.topology-map-section > h3 {
+  margin: 0 0 8px;
+}
+
+.topology-map-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.topology-map-list > li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.topology-map-list .topology-map-label {
+  font-weight: 600;
+}
+
+.topology-map-list .topology-map-detail {
+  color: var(--muted);
+}
+
+.topology-map-peers {
+  margin-top: 12px;
+}
+
+.topology-map-peers > h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.topology-map-notes p {
+  margin: 0 0 4px;
+}
+
+@media (max-width: 720px) {
+  .drift-controls .drift-search {
+    margin-left: 0;
+    flex-basis: 100%;
+    max-width: none;
+  }
+}

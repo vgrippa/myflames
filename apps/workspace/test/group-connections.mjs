@@ -749,7 +749,8 @@ try {
   assert.ok(await page.$(`${mfIcxRow} .group-connection-active-note`), "the group in use says In use");
   const openButton = (row) => page.$eval(`${row} button[data-action="open-group"]`, (e) => ({ text: e.textContent.trim(), label: e.getAttribute("aria-label") }));
   assert.deepEqual(await openButton(mfIcxRow), { text: "Refresh", label: "Refresh group connection mf-icx" });
-  // Refresh from Home is an explicit open of the group in use, with a probe.
+  // Refresh from Home is an explicit open of the group in use, with a probe,
+  // and lands on the Topology place.
   let beforeConnect = connectCalls.length;
   const privilegeReadsBefore = h.state.privilegeReads.length;
   await page.click(`${mfIcxRow} button[data-action="open-group"]`);
@@ -758,6 +759,10 @@ try {
   // The reply is applied once the re-opened connection's privileges are read:
   // the selection steps below run after that settle, not during it.
   await waitFor(() => h.state.privilegeReads.length > privilegeReadsBefore, "the re-opened Group connection did not settle");
+  // Refresh from Home lands on the Topology place too; return to Home for the cards.
+  await page.waitForFunction(() => document.querySelector('.main-nav button[data-place="topology"]')?.classList.contains("active"));
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('[data-testid="home-group-connections"]', { visible: true });
   // The pill lives on connection places, never on Home: the card's In use
   // note is the visible effect here.
   await pause(300);
@@ -848,6 +853,10 @@ try {
   await page.click(`${stageRow} button[data-action="open-group"]`);
   await waitFor(() => connectCalls.length > beforeStageOpen, "Open from Home did not open the group");
   assert.deepEqual(connectCalls.at(-1), { group_name: "stage", probe_members: true });
+  // Open from Home lands on the Topology place, the Group connection's home.
+  await page.waitForFunction(() => document.querySelector('.main-nav button[data-place="topology"]')?.classList.contains("active"));
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('[data-testid="home-group-connections"]', { visible: true });
   await page.waitForFunction(() => document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"] .group-connection-active-note'));
   assert.deepEqual(await openButton(stageRow), { text: "Refresh", label: "Refresh group connection stage" });
   // Home with two groups (layoutMatrix also refuses horizontal page scroll at
@@ -865,11 +874,18 @@ try {
     await page.screenshot({ path: new URL(`home-groups-${width}-${theme}.png`, topoShots).pathname });
   }
   await page.setViewport({ width: 1440, height: 900 });
-  // Back to mf-icx for the delete below.
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "light";
+    try { localStorage.setItem("myflames.theme", "light"); } catch {}
+  });
+  // Back to mf-icx for the delete below (its card Open lands on Topology, so
+  // return to Home for the cards again).
   const beforeReopen = connectCalls.length;
   await page.click(`${mfIcxRow} button[data-action="open-group"]`);
   await waitFor(() => connectCalls.length > beforeReopen, "re-opening mf-icx failed");
   assert.deepEqual(connectCalls.at(-1), { group_name: "mf-icx", probe_members: true });
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('[data-testid="home-group-connections"]', { visible: true });
   await page.waitForFunction(() =>
     !!document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="mf-icx"] .group-connection-active-note') &&
     !document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"] .group-connection-active-note'));
