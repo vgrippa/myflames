@@ -223,7 +223,15 @@ try {
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     const handler = handlers[pathname];
-    if (!handler) return request.continue();
+    if (!handler) {
+      // Other live/connection reads (such as /api/live/privileges on startup or
+      // reload for scratch.local, /api/live/readiness, /api/live/schemas) are
+      // unmocked here and must not spawn mysql against fake or local hosts.
+      if (pathname.startsWith("/api/live/") || pathname.startsWith("/api/connection/")) {
+        return request.respond({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Not mocked in this suite." }) });
+      }
+      return request.continue();
+    }
     const body = JSON.parse(request.postData() || "{}");
     (seen[pathname] = seen[pathname] || []).push(body);
     const answer = handler(body);
@@ -232,7 +240,27 @@ try {
     request.respond({ status, contentType: "application/json", body: JSON.stringify(answer) });
   });
   await page.setViewport({ width: 1440, height: 1000 });
-  await page.goto(url, { waitUntil: "networkidle0" });
+  const loadWorkspace = async (navigate) => {
+    const profilesBefore = (seen["/api/profiles/list"] || []).length;
+    await Promise.all([
+      page.waitForResponse(
+        (r) => new URL(r.url()).pathname === "/api/profiles/list" && r.ok() && (seen["/api/profiles/list"] || []).length > profilesBefore,
+      ),
+      navigate(),
+    ]);
+    await page.waitForFunction(() => {
+      const status = document.querySelector(".session-status");
+      return status && status.dataset.state !== "loading";
+    });
+  };
+  const waitForHomeReady = () =>
+    page.waitForFunction(() =>
+      !!document.querySelector(".home-launcher > .connections")
+      && !!document.querySelector('.home [aria-labelledby="recent-title"]')
+      && !!document.querySelector('.topbar button[aria-label="Import plan"]')
+      && ![...document.querySelectorAll('.connections [role="status"]')].some((e) => e.textContent.includes("Loading connections")),
+    );
+  await loadWorkspace(() => page.goto(url, { waitUntil: "domcontentloaded" }));
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
   const last = (pathname) => (seen[pathname] || []).at(-1);
@@ -263,6 +291,7 @@ try {
   const setName = (value) => setField("Connection name", value);
 
   await place("Home");
+  await waitForHomeReady();
   // Home embeds the existing connection manager beside recent work.
   assert.ok(await page.$('.home-launcher > .connections'));
   assert.ok(await page.$('.home [aria-labelledby="recent-title"]'));
@@ -599,6 +628,12 @@ try {
   assert.equal(await page.$eval(setButton, (e) => e.disabled), true, "applied once Set");
   await page.locator(".window-toolbar .picker-password").fill("");
   await page.click(setButton);
+  // The field is controlled (its value is the picker's state): wait for the
+  // cleared value to be what is rendered before reading it back.
+  await page.waitForFunction(
+    () => document.querySelector(".window-toolbar .picker-password")?.value === "",
+    { timeout: 10000 },
+  );
   assert.equal(await page.$eval(".window-toolbar .picker-password", (e) => e.value), "", "cleared again for the rest of the suite");
   await page.keyboard.press("Escape");
   await page.setViewport({ width: 1440, height: 1000 });
@@ -695,8 +730,9 @@ try {
   store.available = false;
   store.backend = "none";
   store.label = "not saved";
-  await page.reload({ waitUntil: "networkidle0" });
+  await loadWorkspace(() => page.reload({ waitUntil: "domcontentloaded" }));
   await place("Home");
+  await waitForHomeReady();
   if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await page.waitForFunction(() =>

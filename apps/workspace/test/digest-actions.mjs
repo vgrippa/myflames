@@ -352,11 +352,15 @@ try {
   async function row(rank) {
     const back = await page.$(".view-inspector.is-detail .detail-back");
     if (back) {
-      await back.click();
+      await page.locator(".view-inspector.is-detail .detail-back").click();
       await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
     }
     await page.click(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`);
     await page.waitForFunction((r) => document.querySelector(".view-inspector h3")?.textContent === `Statement ${r}`, {}, rank);
+    // The detail's open effect focuses Back once the content is on screen, a
+    // focus that can still scroll the page. A click on Back before it lands
+    // races that scroll; wait for the focus to arrive.
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".view-inspector.is-detail .detail-back"));
   }
 
   // Give the provider a real connection identity while keeping every
@@ -372,9 +376,23 @@ try {
   await chooseConnection(page, privilegeProfile);
   // Query editor settings that the row actions must reuse (Run analysis and
   // the captures Explore and Explain top N start).
-  await page.click('button[aria-label="Run analysis options"]');
+  // A locator click waits for a stable bounding box before it clicks: the
+  // toolbar still settles after the connection choice, and a trigger moving
+  // mid-click puts the click on Run analysis, opening its review sheet
+  // instead of the options popover.
+  await page.locator('button[aria-label="Run analysis options"]').click();
+  // The options panel stays mounted while closed (hidden attribute), so its
+  // fields answer selectors before the popover is open; the checkbox click
+  // below is only possible once the popover is open and placed. Wait for
+  // that state, not for the selector to exist.
+  await page.waitForSelector('[role=dialog][aria-label="Run analysis options"]:not([hidden])');
   await setField("Time limit per run", "45");
   await setField("Analysis runs", "3");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('[role=dialog][aria-label="Run analysis options"] label.check-field')]
+      .some((e) => e.textContent.includes("Capture optimizer trace") &&
+        getComputedStyle(e).visibility !== "hidden" && e.getClientRects().length > 0),
+  );
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
   await page.keyboard.press("Escape");
   await nav("Workload");
