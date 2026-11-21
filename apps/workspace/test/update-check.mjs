@@ -46,7 +46,7 @@ const record = (outcome, extra = {}) => ({ checked_at: iso(), outcome, current_v
   latest_version: outcome === "failed" ? null : outcome === "available" ? "3.2.0" : "3.1.0", reason: null, ...extra });
 const info = (last, extra = {}) => ({ schema_version: "app-update-1.0", current_version: "3.1.0",
   latest_version: last.latest_version || "3.1.0", update_available: last.outcome === "available",
-  release_title: "myflames 3.2.0", release_notes: "Notes", published_at: "", html_url: "https://github.com/vgrippa/myflames/releases",
+  release_title: "myflames 3.2.0", release_notes: "## Release highlights\n\n- **Group connections** open a group as one connection, with `sql_mode` inline code.\n- A second bullet with <img src=x onerror=alert(1)> inside.\n\nA closing paragraph.", published_at: "", html_url: "https://github.com/vgrippa/myflames/releases",
   asset_name: null, asset_url: null, asset_size: null, checked_at: last.checked_at, last_check: last, ...extra });
 async function waitStatus(pattern, scope = updates) {
   await page.waitForFunction((s, p) => new RegExp(p).test([...(document.querySelector(`${s} .update-check`)?.children || [])]
@@ -178,6 +178,18 @@ try {
   assert.match(dialogText, /Software update/);
   assert.match(dialogText, /myflames 3\.2\.0 is available\./);
   assert.match(dialogText, /Download update/);
+  // The release notes render as text (headings, list, bold, code): no raw
+  // Markdown marks, and HTML in the notes stays text, never an element.
+  const notes = await page.$eval("dialog.update-dialog .update-notes-content", (e) => ({
+    h3: e.querySelectorAll("h3").length, li: e.querySelectorAll("li").length,
+    strong: e.querySelectorAll("strong").length, code: e.querySelectorAll("code").length,
+    img: e.querySelectorAll("img").length, text: e.textContent,
+  }));
+  assert.ok(notes.h3 >= 1, "a rendered heading");
+  assert.ok(notes.li >= 2, "rendered list items");
+  assert.ok(notes.strong >= 1 && notes.code >= 1, "rendered bold and inline code");
+  assert.equal(notes.img, 0, "HTML in the notes is text, never an element");
+  assert.ok(!notes.text.includes("**") && !notes.text.includes("## "), "no raw Markdown marks");
   await page.screenshot({ path: path.join(shots, "update-dialog-light-1440.png") });
   await page.locator("dialog.update-dialog button ::-p-text(Later)").click();
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));

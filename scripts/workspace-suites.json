@@ -893,6 +893,12 @@
       "safety": "Readyset writes send the review token apart from the plan (lines 416-417).",
       "reason": "Readyset place on mocked endpoints answering backend-computed reports and plans (readyset-fixtures.py); no Readyset contacted."
     },
+    "release-notes-unit.mjs": {
+      "kind": "suite",
+      "script": "test:update-check",
+      "timeout": 180,
+      "reason": "Release-notes Markdown subset of the Software update dialog without a browser: escaping, linear-time budgets and every published release-notes page."
+    },
     "release-rf3-regressions.mjs": {
       "kind": "suite",
       "script": "test:release-rf3",

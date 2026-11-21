@@ -665,7 +665,11 @@ substituted. `objects.githubusercontent.com` and
 so they are accepted only as a redirect target or as the final response URL.
 Every redirect is checked before following it, and the final response URL is
 checked before reading the body. Other URLs raise `ValueError`; release-page
-fallbacks also require the project's official HTTPS release page. Downloads use
+fallbacks also require the project's official HTTPS release page. The Software
+update dialog's **View on GitHub** address is validated with the same URL
+validator as download addresses: only the project's releases page, `/latest`
+or `/tag/<name>` on HTTPS `github.com` is accepted; an invalid or empty
+address falls back to the project's releases page. Downloads use
 an exclusively created private temporary file in the destination directory and
 enforce the 200 MiB limit (`MAX_UPDATE_BYTES`) before publishing. http.client returns an empty read
 at an early EOF even when Content-Length promised more (TLS ragged EOFs are
@@ -765,6 +769,53 @@ installer, staged as a newer version, was installed silently after
 macOS update through the Host-checked feed, and an older signed build staged
 as 3.3.99 was refused by `ElectronSquirrelPreventDowngrades` ("The update is
 older than this copy of myflames, so it was not installed.").
+
+The dialog renders the release notes (GitHub's release body, carried unchanged
+in `release_notes`) as formatted text with `ReleaseNotes`
+(`apps/workspace/src/releaseNotes.tsx`). `parseReleaseNotes` scans line by line
+in linear time (CRLF normalized, U+2028 and U+2029 treated as line breaks,
+no regular expression with nested quantifiers)
+and understands a subset of Markdown: `#` to `######` headings (one or two `#`
+draw as h3, deeper as h4, under the dialog's h2 title; a whitespace-separated
+closing `#` run is removed), `-` / `*` / `+` and numbered `1.` lists (the first
+number sets the ordered list's start), and paragraphs (consecutive lines joined
+with a space). A non-marker line indented at least two spaces beyond the list's
+marker continues its current item, including after blank lines. A marker at
+that indentation starts a child list with its own ordered or unordered type;
+only one nesting level is kept and deeper items flatten into that child list.
+Blank lines between items do not split a list. Headings, fences and rules end
+a list even when indented. `---` and `***` alone on a line drop out. A fence
+opens with at least three backticks and closes only with at least the opening
+run's length and whitespace after it; shorter runs and text-bearing runs stay
+code, and an unclosed fence runs to the end. Its opening indentation is removed
+from code lines, preserving any additional indentation.
+Inline it reads `**bold**` and `__bold__` as strong and `*em*` and `_em_` as em
+only when the markers enclose non-space text; underscores within Unicode
+letters or digits stay literal. Code spans are tokenized before emphasis or
+links: an unescaped backtick run closes at the next unescaped run of exactly
+the same length. Their content stays literal, including backslashes; one
+leading and one trailing space are stripped when both exist and the content
+is not all spaces. Backslash escapes cover `*`, `_`, backticks, backslashes,
+brackets and parentheses. A marker is escaped only after an odd run of
+backslashes; closing searches allow overlapping candidates after an escape.
+`[text](url)` renders `text` only when the label has no unescaped bracket and
+the destination has balanced parentheses and no whitespace or newline (no
+anchor and no href: the dialog's **View on GitHub** link is the way to the
+page). Bare URLs and unclosed markers stay plain text. Anything outside this
+subset, including CommonMark's full emphasis delimiter rules, nested emphasis
+that shares a delimiter run (***), empty list items and nesting deeper than
+one level, renders as plain text or flattens; release-notes-unit.mjs keeps
+every published release-notes page inside the subset.
+Every string reaches the DOM as a React text child: no dangerouslySetInnerHTML,
+no innerHTML, and no href, src or style built from the notes, so HTML in the
+notes (for example `<img src=x onerror=alert(1)>` or `<script>`) shows as literal
+text. Input is capped at 100,000 UTF-16 code units without splitting a surrogate
+pair; past it the dialog renders up to the cap and ends with the paragraph
+"The rest of the notes is on GitHub." The component memoizes parsing by the
+notes string with `useMemo`; if parsing fails, it shows the original notes as
+plain text in a wrapping `pre`. Tests: `apps/workspace/test/release-notes-unit.mjs`
+(including timing and scan budgets and every published release page plus
+`CHANGELOG.md`) and `apps/workspace/test/update-check.mjs`.
 
 Every HTTPS read (the release check and download, `tool_updates._fetch`, and
 Home news) takes its context from `myflames/tls.py` `https_context()`: the

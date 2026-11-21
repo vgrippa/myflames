@@ -272,6 +272,12 @@ def check_for_updates(force=False):
         value = data.get(key)
         return value if isinstance(value, str) else ""
 
+    html_url = text("html_url") or GITHUB_RELEASES_URL
+    try:
+        _validate_update_url(html_url, asset=False)
+    except _InvalidUpdateURL:
+        html_url = GITHUB_RELEASES_URL
+
     result = {
         "schema_version": "app-update-1.0",
         "current_version": __version__,
@@ -280,7 +286,7 @@ def check_for_updates(force=False):
         "release_title": text("name") or text("tag_name") or ("v" + tag_name),
         "release_notes": text("body"),
         "published_at": text("published_at"),
-        "html_url": text("html_url") or GITHUB_RELEASES_URL,
+        "html_url": html_url,
         "asset_name": matched.get("name") if matched else None,
         "asset_url": matched.get("browser_download_url") if matched else None,
         "asset_size": matched.get("size") if matched else None,
