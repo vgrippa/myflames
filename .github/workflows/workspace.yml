@@ -72,6 +72,30 @@ jobs:
           npm run test:suites -- --jobs 1 --retries 1 --shard ${{ matrix.shard }}/6 \
             --receipt "${{ github.workspace }}/local/workspace-suites/shard-${{ matrix.shard }}.json" \
             --log-dir "${{ github.workspace }}/local/workspace-suites/logs-${{ matrix.shard }}"
+      # The suites just built myflames/ui_assets; one shard reuses it to run
+      # the backend tests that serve the real bundle. Any "assets are not
+      # built" skip there is a failure, and each named test must report ok.
+      - name: Run the real-bundle Python tests
+        if: matrix.shard == 1
+        run: |
+          set -o pipefail
+          export HOME="$(mktemp -d)"
+          export USERPROFILE="$HOME" MYFLAMES_SECRET_BACKEND=vault
+          mkdir -p local/bundle-tests
+          for module in test_workspace_assets test_ui test_workspace_api; do
+            python3 -m unittest discover -s test -p "$module.py" -v 2>&1 | tee "local/bundle-tests/$module.log"
+          done
+          if grep -h "skipped 'Workspace assets are not built" local/bundle-tests/*.log; then
+            echo "A real-bundle test skipped: the workspace build did not reach it."
+            exit 1
+          fi
+          for test_name in test_built_assets_match_sources test_packaged_index_and_bundles \
+                           test_bundled_project_logo_is_served_as_png test_page_favicon_versions_stable_logo_url; do
+            if ! grep -hq "^$test_name .* \.\.\. ok$" local/bundle-tests/*.log; then
+              echo "$test_name did not run and pass against the built bundle."
+              exit 1
+            fi
+          done
       - name: Detect flaky suites
         id: receipt
         if: always()

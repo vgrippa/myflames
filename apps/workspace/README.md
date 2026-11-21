@@ -22,8 +22,10 @@ server separately and refresh the browser after a rebuild. Vite's development
 server is not used: Python serves the page, assets, and authenticated local API
 from one origin.
 
-The generated `myflames/ui_assets/` directory is committed and included in the
-Python wheel. End users do not need Node.js or an npm install.
+The generated `myflames/ui_assets/` directory is built, not tracked in git. Build
+it from `apps/workspace` with `npm ci` and `npm run build` before running from
+a source checkout; PyPI packages and desktop builds generate and include it at
+release, so end users do not need Node.js or an npm install.
 
 See [Performance workspace](../../docs/LOCAL_UI.md) for behavior, limits, and API
 contracts. The core package stays standard-library-only.

@@ -1919,11 +1919,18 @@ npm ci
 npm run build
 ```
 
-The build writes `myflames/ui_assets/` and the chart runtime
-`myflames/assets/myflames-charts.js` (sources in `apps/workspace/src/charts/`),
-which HTML reports and explore pages inline. Commit these generated assets with
-source changes so Python users can launch the UI without Node.js; a Python test
-fails when the committed chart bundle is older than its sources. `npm run dev`
+The build writes `myflames/ui_assets/index.html` and `myflames/ui_assets/assets/`.
+These workspace files are not tracked, so a source checkout needs the commands
+above before opening the workspace. Publish and desktop release flows build
+them before packaging; installed PyPI packages and the desktop app include the
+build and need no Node.js. Packaging refuses missing output or a source stamp
+that does not match the current sources. A running local server whose index
+is missing returns a plain-text 503 naming the build commands.
+
+The same build also writes the chart runtime `myflames/assets/myflames-charts.js`
+(sources in `apps/workspace/src/charts/`), which HTML reports and explore pages
+inline. That chart bundle stays tracked and must be committed with chart source
+changes; a Python test fails when it is older than its sources. `npm run dev`
 watches and rebuilds the app assets; run `myflames ui --no-browser` in another
 terminal and reload the page after a rebuild.
 

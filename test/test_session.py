@@ -331,6 +331,7 @@ class TestUiCommand(unittest.TestCase):
         self.assertIn('--no-restore', text)
         self.assertIn('Restore workspace on startup', text)
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def test_no_restore_flag_reaches_the_server(self):
         created = {}
 

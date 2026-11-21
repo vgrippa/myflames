@@ -15,12 +15,18 @@ on:
     paths:
       - "apps/desktop/**"
       - "myflames/**"
+      - "apps/workspace/**"
+      - "docs/brand/myflames-app-logo.png"
+      - "scripts/check_ui_assets.py"
       - ".github/workflows/windows-desktop.yml"
   pull_request:
     branches: [master]
     paths:
       - "apps/desktop/**"
       - "myflames/**"
+      - "apps/workspace/**"
+      - "docs/brand/myflames-app-logo.png"
+      - "scripts/check_ui_assets.py"
       - ".github/workflows/windows-desktop.yml"
 
 permissions:
@@ -46,7 +52,25 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/workspace/package-lock.json
+      - name: Build the workspace
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm ci
+          NODE_ENV=production npm run build:ui
+      - name: Check workspace build left a clean tree
+        shell: bash
+        run: |
+          status=$(git status --porcelain)
+          if [ -n "$status" ]; then
+            echo "::error::the workspace build changed tracked or unignored files"
+            printf '%s\n' "$status"
+            exit 1
+          fi
       - name: Build the backend
         run: |
           python -m venv local/desktop-build-venv

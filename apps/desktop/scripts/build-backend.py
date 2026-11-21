@@ -14,6 +14,13 @@ import release_state
 
 root = Path(__file__).resolve().parents[3]
 desktop = root / 'apps' / 'desktop'
+# Check before invoking PyInstaller or handing off to a build interpreter.
+# An existing directory alone does not prove this is the current workspace.
+try:
+    release_state.check_ui_assets(root / 'myflames', root)
+except (OSError, ValueError) as exc:
+    sys.stderr.write('Cannot build the backend: {}.\n'.format(exc))
+    raise SystemExit(2)
 venv_override = os.environ.get('MYFLAMES_DESKTOP_BUILD_VENV')
 venv = Path(venv_override).expanduser().absolute() if venv_override else root / 'local' / 'desktop-build-venv'
 relative = 'Scripts/python.exe' if os.name == 'nt' else 'bin/python'

@@ -15,6 +15,10 @@ __pycache__/
 *.egg-info/
 build/
 
+# Workspace output is built from source when publishing or packaging.
+/myflames/ui_assets/index.html
+/myflames/ui_assets/assets/
+
 # OS and editors
 .DS_Store
 *.log

@@ -94,6 +94,16 @@ class ReleaseNotesTest(unittest.TestCase):
         _, body = notes.page(PAGE, "3.4.0")
         self.assertIn("## [9.9.9] inside a code fence", body)
 
+    def test_packaging_notes_follow_security_fixes(self):
+        extra = ('## Security fixes\n\n- Fixed a security issue.\n\n'
+                 '## Packaging notes\n\n- Source checkouts need a workspace build.\n\n')
+        page = PAGE.replace('## Additional resources', extra + '## Additional resources')
+        self.assertIn('## Packaging notes', notes.page(page, '3.4.0')[1])
+        wrong = page.replace('## Security fixes', '## Packaging notes', 1)
+        wrong = wrong.replace('## Packaging notes\n\n- Source', '## Security fixes\n\n- Source')
+        with self.assertRaises(notes.ReleaseNotesError):
+            notes.page(wrong, '3.4.0')
+
     def test_longer_fences_and_tildes_close_only_on_their_own_kind(self):
         text = PAGE.replace("- Adds one thing. It works.\n", textwrap.dedent("""\
             - Adds an example:
@@ -562,6 +572,115 @@ def workflow_step(path, name):
     return textwrap.dedent("\n".join(block)) + "\n"
 
 
+class WorkspaceBuildWorkflowTest(unittest.TestCase):
+    CLEAN_TREE_STEP = 'Check workspace build left a clean tree'
+
+    def test_package_flows_build_workspace_before_consuming_it(self):
+        for name, consumer in (('publish.yml', 'Build sdist and wheel'),
+                               ('macos-desktop.yml', 'Build the backend'),
+                               ('windows-desktop.yml', 'Build the backend')):
+            path = REPO / '.github' / 'workflows' / name
+            workflow = path.read_text(encoding='utf-8')
+            with self.subTest(workflow=name):
+                self.assertLess(workflow.index('uses: actions/setup-node@v7'),
+                                workflow.index('- name: Build the workspace'))
+                self.assertLess(workflow.index('- name: Build the workspace'),
+                                workflow.index('- name: ' + consumer))
+                build = workflow_step(path, 'Build the workspace')
+                self.assertLess(build.index('npm ci'), build.index('npm run build:ui'))
+                setup = workflow.split('- name: Build the workspace')[0]
+                self.assertIn('node-version: "22"', setup)
+                self.assertIn('apps/workspace/package-lock.json', setup)
+
+    def test_publish_checks_both_archives_before_upload(self):
+        workflow = (REPO / '.github/workflows/publish.yml').read_text(encoding='utf-8')
+        guard = 'python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz'
+        self.assertLess(workflow.index('python -m build'), workflow.index(guard))
+        self.assertLess(workflow.index(guard), workflow.index('uses: actions/upload-artifact'))
+
+    def test_workspace_clean_tree_guard_runs_before_packaging(self):
+        for name, consumer in (('publish.yml', 'Build sdist and wheel'),
+                               ('windows-desktop.yml', 'Build the backend')):
+            with self.subTest(workflow=name):
+                workflow = (REPO / '.github/workflows' / name).read_text(encoding='utf-8')
+                steps = workflow.split('\n      - ')
+                names = [step.splitlines()[0] for step in steps]
+                guard = names.index('name: ' + self.CLEAN_TREE_STEP)
+                self.assertEqual(names[guard - 1], 'name: Build the workspace')
+                self.assertEqual(names[guard + 1], 'name: ' + consumer)
+                self.assertNotIn('working-directory:', steps[guard])
+                self.assertNotIn('continue-on-error:', steps[guard])
+                self.assertNotIn('if:', steps[guard])
+                if name == 'windows-desktop.yml':
+                    self.assertIn('\n        shell: bash\n', steps[guard])
+
+    @unittest.skipUnless(shutil.which('bash') and shutil.which('git'), 'needs bash and git')
+    def test_workspace_clean_tree_guard_rejects_source_drift(self):
+        for name in ('publish.yml', 'windows-desktop.yml'):
+            with self.subTest(workflow=name), tempfile.TemporaryDirectory(dir=str(REPO)) as tmp:
+                script = workflow_step(REPO / '.github/workflows' / name, self.CLEAN_TREE_STEP)
+                # Isolate Git identity, configuration and shell startup from the host.
+                env = {
+                    'PATH': os.environ.get('PATH', os.defpath),
+                    'HOME': tmp, 'USERPROFILE': tmp,
+                    'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+                    'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@example.com',
+                    'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@example.com',
+                }
+
+                def git(*args):
+                    subprocess.run(['git', '-c', 'commit.gpgsign=false'] + list(args),
+                                   cwd=tmp, env=env, check=True, timeout=20,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                def check_tree(status, changed_path=None):
+                    done = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', script],
+                                          cwd=tmp, env=env, timeout=20, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, universal_newlines=True)
+                    self.assertEqual(done.returncode, status, done.stdout + done.stderr)
+                    if status:
+                        self.assertIn('::error::the workspace build changed tracked or unignored files\n',
+                                      done.stdout)
+                        self.assertIn(changed_path, done.stdout)
+                    else:
+                        self.assertEqual(done.stdout, '')
+
+                git('init', '-q')
+                tracked = Path(tmp) / 'tracked.js'
+                tracked.write_text('original\n', encoding='utf-8')
+                (Path(tmp) / '.gitignore').write_text('ui_assets/\n', encoding='utf-8')
+                git('add', '.')
+                git('commit', '-qm', 'base')
+                check_tree(0)
+                tracked.write_text('rebuilt\n', encoding='utf-8')
+                check_tree(1, 'tracked.js')
+                git('add', 'tracked.js')
+                check_tree(1, 'tracked.js')
+                git('commit', '-qm', 'rebuilt')
+                untracked = Path(tmp) / 'unexpected.js'
+                untracked.write_text('unexpected\n', encoding='utf-8')
+                check_tree(1, 'unexpected.js')
+                untracked.unlink()
+                ignored = Path(tmp) / 'ui_assets'
+                ignored.mkdir()
+                (ignored / 'index.html').write_text('built\n', encoding='utf-8')
+                check_tree(0)
+
+    def test_only_publish_job_can_request_an_oidc_token(self):
+        workflow = (REPO / '.github/workflows/publish.yml').read_text(encoding='utf-8')
+        header, jobs = workflow.split('\njobs:\n', 1)
+        self.assertNotIn('id-token:', header)
+        job = None
+        writers = []
+        for line in jobs.splitlines():
+            # Job keys have exactly two spaces; permissions are nested below them.
+            if line.startswith('  ') and not line.startswith('   ') and line.endswith(':'):
+                job = line.strip()[:-1]
+            if line.split('#', 1)[0].strip() == 'id-token: write':
+                writers.append(job)
+        self.assertEqual(writers, ['publish'])
+
+
 @unittest.skipUnless(shutil.which("bash"), "needs bash")
 class DocsSyncWorkflowTest(unittest.TestCase):
     """Abuse cases for .github/workflows/docs-sync.yml's shell steps."""
@@ -628,9 +747,9 @@ class DocsSyncWorkflowTest(unittest.TestCase):
     def test_changelog_gate(self):
         cases = [
             ("documentation only", [("docs/handbook/x.md", "add"), ("README.md", "add")], False, 0),
-            ("tests and built assets only", [("apps/workspace/test/a.mjs", "add"), ("apps/desktop/test/a.test.cjs", "add"),
-                                             ("myflames/ui_assets/index.html", "add"), ("myflames/x/tests/t.py", "add"),
-                                             ("myflames/test_x.py", "add")], False, 0),
+            ("tests only", [("apps/workspace/test/a.mjs", "add"), ("apps/desktop/test/a.test.cjs", "add"),
+                            ("myflames/x/tests/t.py", "add"), ("myflames/test_x.py", "add")], False, 0),
+            ("tracked assets have no exemption", [("myflames/ui_assets/index.html", "add")], False, 1),
             ("workspace code without an entry", [("apps/workspace/src/Health.tsx", "add")], False, 1),
             ("Python code with an entry", [("myflames/ui.py", "add"), ("CHANGELOG.md", "add")], False, 0),
             ("workspace code with a release notes page", [("apps/workspace/src/a.tsx", "add"),

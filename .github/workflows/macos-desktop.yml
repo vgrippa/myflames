@@ -16,8 +16,9 @@ on:
     paths:
       - "apps/desktop/**"
       - "myflames/**"
-      - "apps/workspace/package-lock.json"
-      - "apps/workspace/test/editor-helpers.mjs"
+      - "apps/workspace/**"
+      - "docs/brand/myflames-app-logo.png"
+      - "scripts/check_ui_assets.py"
       - ".github/workflows/macos-desktop.yml"
 
 permissions:
@@ -43,6 +44,14 @@ jobs:
           cache-dependency-path: |
             apps/desktop/package-lock.json
             apps/workspace/package-lock.json
+      # The settings smokes also use these dependencies to attach to Electron.
+      - name: Build the workspace
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm ci
+          NODE_ENV=production npm run build:ui
       - name: Build the backend
         run: |
           python3 -m venv local/desktop-build-venv
@@ -55,14 +64,6 @@ jobs:
       - name: Launcher tests
         working-directory: apps/desktop
         run: npm test
-      # editor-settings-smoke.cjs and preferences-smoke.cjs drive the packaged
-      # app through puppeteer-core and editor-helpers.mjs from apps/workspace;
-      # they attach to Electron, so no browser download is needed.
-      - name: Install workspace test dependencies
-        working-directory: apps/workspace
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: "true"
-        run: npm ci
       - name: MySQL client archive digest
         id: mysql-client
         run: echo "sha256=$(node -p "require('./apps/desktop/mysql-client.lock.json').archives['darwin-arm64'].sha256")" >> "$GITHUB_OUTPUT"

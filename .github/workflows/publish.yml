@@ -58,10 +58,32 @@ jobs:
             echo "::error::Tag $TAG does not match pyproject.toml version $version at that tag; refusing to publish."
             exit 1
           fi
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/workspace/package-lock.json
+      - name: Build the workspace
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm ci
+          NODE_ENV=production npm run build:ui
+      - name: Check workspace build left a clean tree
+        run: |
+          status=$(git status --porcelain)
+          if [ -n "$status" ]; then
+            echo "::error::the workspace build changed tracked or unignored files"
+            printf '%s\n' "$status"
+            exit 1
+          fi
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade build
           python -m build
+      - name: Check packaged workspace assets
+        run: python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz --reference myflames/ui_assets
       - name: Check metadata
         run: |
           python -m pip install --upgrade twine
