@@ -1,52 +1,29 @@
-"""Check workspace build inputs against the committed index.html stamp."""
+"""Check optional workspace output and the required packaging guards."""
 import hashlib
-import os
+import importlib.util
+import io
+import tarfile
 import tempfile
 import unittest
-from html.parser import HTMLParser
+import zipfile
 from pathlib import Path
 
-
 REPO = Path(__file__).resolve().parent.parent
-STALE_MESSAGE = 'myflames/ui_assets is stale: run `npm run build` in apps/workspace'
 
-
-def sources_sha(root=REPO):
-    """Same byte-based algorithm as apps/workspace/vite.config.ts:sourcesSha."""
-    root = Path(root)
-    paths = []
-    for directory, folders, files in os.walk(str(root / 'apps' / 'workspace' / 'src')):
-        folders[:] = [name for name in folders if not name.startswith('.')]
-        for name in files:
-            if not name.startswith('.'):
-                paths.append((Path(directory) / name).relative_to(root).as_posix())
-    paths.extend(('apps/workspace/index.html', 'apps/workspace/vite.config.ts',
-                  'apps/workspace/tsconfig.json', 'apps/workspace/package-lock.json',
-                  'docs/brand/myflames-app-logo.png'))
-    digest = hashlib.sha256()
-    for relative in sorted(paths, key=lambda path: path.encode('utf-8')):
-        content = (root / relative).read_bytes().replace(b'\r\n', b'\n')
-        digest.update(relative.encode('utf-8') + b'\0' + content + b'\0')
-    return digest.hexdigest()
-
-
-class _SourcesStampParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.stamps = []
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == 'meta' and attrs.get('name') == 'myflames-sources-sha256':
-            self.stamps.append(attrs.get('content'))
+# Load the checker by file path: a top-level `scripts` package elsewhere on
+# sys.path must not shadow it.
+_spec = importlib.util.spec_from_file_location('check_ui_assets', str(REPO / 'scripts' / 'check_ui_assets.py'))
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+check_ui_assets = _module.check_ui_assets
+sources_sha = _module.sources_sha
 
 
 class WorkspaceAssetsTests(unittest.TestCase):
-    def test_committed_assets_match_sources(self):
-        parser = _SourcesStampParser()
-        parser.feed((REPO / 'myflames' / 'ui_assets' / 'index.html').read_text(encoding='utf-8'))
-        self.assertEqual(len(parser.stamps), 1, STALE_MESSAGE)
-        self.assertEqual(parser.stamps[0], sources_sha(), STALE_MESSAGE)
+    def test_built_assets_match_sources(self):
+        if not (REPO / 'myflames' / 'ui_assets' / 'index.html').is_file():
+            self.skipTest('Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
+        check_ui_assets(REPO / 'myflames')
 
     def test_sources_sha_uses_sorted_utf8_paths_and_nul_delimiters(self):
         # Explicit canonical order, including names that JavaScript's default
@@ -115,6 +92,101 @@ class WorkspaceAssetsTests(unittest.TestCase):
             binary.write_bytes(binary.read_bytes()[:-1])
             text.rename(text.with_name('renamed.txt'))
             self.assertNotEqual(sources_sha(root), original)
+
+
+class PackageAssetsTests(unittest.TestCase):
+    """Synthetic archives exercise shipping guards without building a package."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for name in ('src/main.ts', 'index.html', 'vite.config.ts', 'tsconfig.json', 'package-lock.json'):
+            path = self.root / 'apps' / 'workspace' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'source\n')
+        logo = self.root / 'docs' / 'brand' / 'myflames-app-logo.png'
+        logo.parent.mkdir(parents=True)
+        logo.write_bytes(b'\x89PNG\xff')
+        self.stamp = sources_sha(self.root)
+        self.index = ('<meta name="myflames-sources-sha256" content="%s">' % self.stamp).encode('utf-8')
+
+    def target(self, kind, index=None, js=True):
+        files = {} if index is None else {'myflames/ui_assets/index.html': index}
+        if js:
+            files['myflames/ui_assets/assets/app.js'] = b'console.log("fixture");'
+        if kind == 'directory':
+            for name, content in files.items():
+                path = self.root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            (self.root / 'myflames').mkdir(exist_ok=True)
+            return self.root / 'myflames'
+        if kind == 'wheel':
+            target = self.root / 'fixture.whl'
+            with zipfile.ZipFile(str(target), 'w') as archive:
+                for name, content in files.items():
+                    archive.writestr(name, content)
+            return target
+        target = self.root / 'fixture.tar.gz'
+        with tarfile.open(str(target), 'w:gz') as archive:
+            for name, content in files.items():
+                entry = tarfile.TarInfo('myflames-1.0/' + name)
+                entry.size = len(content)
+                archive.addfile(entry, io.BytesIO(content))
+        return target
+
+    def test_accepts_current_directory_wheel_and_sdist(self):
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind):
+                self.assertEqual(check_ui_assets(self.target(kind, self.index), self.root), self.stamp)
+
+    def test_missing_index_is_a_build_error(self):
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'index.html.*npm run build'):
+                check_ui_assets(self.target(kind), self.root)
+
+    def test_missing_javascript_is_a_build_error(self):
+        for kind in ('directory', 'wheel', 'sdist'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, r'assets/\*\.js.*npm run build'):
+                check_ui_assets(self.target(kind, self.index, js=False), self.root)
+
+    def test_stale_missing_and_duplicate_stamps_fail_even_with_current_checkout_assets(self):
+        self.target('directory', self.index)
+        for kind in ('wheel', 'sdist', 'directory'):
+            for index in (b'<html></html>', self.index.replace(self.stamp.encode(), b'0' * 64),
+                          self.index + self.index):
+                with self.subTest(kind=kind, index=index), self.assertRaisesRegex(ValueError, 'stale.*npm run build'):
+                    check_ui_assets(self.target(kind, index), self.root)
+
+    def test_changed_source_invalidates_each_format(self):
+        targets = [self.target(kind, self.index) for kind in ('directory', 'wheel', 'sdist')]
+        (self.root / 'apps/workspace/src/main.ts').write_bytes(b'changed source')
+        for target in targets:
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'stale'):
+                check_ui_assets(target, self.root)
+
+    def test_wheel_requires_real_package_paths_and_flat_js_assets(self):
+        target = self.root / 'fixture.whl'
+        for prefix, js in (('other/', 'app.js'), ('', 'nested/app.js')):
+            with zipfile.ZipFile(str(target), 'w') as archive:
+                archive.writestr(prefix + 'myflames/ui_assets/index.html', self.index)
+                archive.writestr(prefix + 'myflames/ui_assets/assets/' + js, b'js')
+            with self.subTest(prefix=prefix, js=js), self.assertRaises(ValueError):
+                check_ui_assets(target, self.root)
+
+    def test_sdist_does_not_accept_a_link_as_javascript(self):
+        target = self.target('sdist', self.index, js=False)
+        # tarfile cannot append compressed files, so create the two members anew.
+        with tarfile.open(str(target), 'w:gz') as archive:
+            index = tarfile.TarInfo('myflames-1.0/myflames/ui_assets/index.html')
+            index.size = len(self.index)
+            archive.addfile(index, io.BytesIO(self.index))
+            link = tarfile.TarInfo('myflames-1.0/myflames/ui_assets/assets/app.js')
+            link.type, link.linkname = tarfile.SYMTYPE, '/outside/app.js'
+            archive.addfile(link)
+        with self.assertRaisesRegex(ValueError, r'assets/\*\.js'):
+            check_ui_assets(target, self.root)
 
 
 if __name__ == '__main__':

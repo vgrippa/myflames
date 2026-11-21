@@ -7,6 +7,7 @@ download cache. A hash is a resume guard, not a substitute for signature checks.
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,15 @@ import sys
 import tempfile
 import time
 from urllib.parse import urlparse
+
+# This script also runs directly from apps/desktop, outside the repo import
+# path. Load the checker by file path: a top-level `scripts` package elsewhere
+# on sys.path must not shadow it.
+_check_ui_assets_spec = importlib.util.spec_from_file_location(
+    'check_ui_assets', str(Path(__file__).resolve().parents[3] / 'scripts' / 'check_ui_assets.py'))
+_check_ui_assets = importlib.util.module_from_spec(_check_ui_assets_spec)
+_check_ui_assets_spec.loader.exec_module(_check_ui_assets)
+check_ui_assets = _check_ui_assets.check_ui_assets
 
 
 STAGES = ('app', 'verify-app', 'dmg-notarize', 'staple', 'verify', 'size', 'checksums')
@@ -88,6 +98,8 @@ def hash_path(path):
 
 
 def ui_assets_digest(root):
+    """Validate the source stamp, then hash the freshly built, untracked output."""
+    check_ui_assets(Path(root) / 'myflames', root)
     return hash_path(Path(root) / 'myflames' / 'ui_assets')
 
 
@@ -127,7 +139,7 @@ def validate_manifest(manifest, commit, ui_digest, requirements_digest=None):
     if not commit or manifest.get('commit') != commit:
         raise ValueError('backend manifest commit does not match HEAD')
     if manifest.get('ui_assets_sha256') != ui_digest:
-        raise ValueError('backend manifest ui_assets digest does not match the tree')
+        raise ValueError('backend manifest ui_assets digest does not match the built output')
     if requirements_digest is not None and manifest.get('requirements_sha256') != requirements_digest:
         raise ValueError('backend manifest build requirements do not match the tree')
     return manifest

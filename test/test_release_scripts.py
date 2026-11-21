@@ -94,6 +94,16 @@ class ReleaseNotesTest(unittest.TestCase):
         _, body = notes.page(PAGE, "3.4.0")
         self.assertIn("## [9.9.9] inside a code fence", body)
 
+    def test_other_changes_follow_security_fixes(self):
+        extra = ('## Security fixes\n\n- Fixed a security issue.\n\n'
+                 '## Other changes\n\n- Source checkouts need a workspace build.\n\n')
+        page = PAGE.replace('## Additional resources', extra + '## Additional resources')
+        self.assertIn('## Other changes', notes.page(page, '3.4.0')[1])
+        wrong = page.replace('## Security fixes', '## Other changes', 1)
+        wrong = wrong.replace('## Other changes\n\n- Source', '## Security fixes\n\n- Source')
+        with self.assertRaises(notes.ReleaseNotesError):
+            notes.page(wrong, '3.4.0')
+
     def test_longer_fences_and_tildes_close_only_on_their_own_kind(self):
         text = PAGE.replace("- Adds one thing. It works.\n", textwrap.dedent("""\
             - Adds an example:
@@ -562,6 +572,31 @@ def workflow_step(path, name):
     return textwrap.dedent("\n".join(block)) + "\n"
 
 
+class WorkspaceBuildWorkflowTest(unittest.TestCase):
+    def test_package_flows_build_workspace_before_consuming_it(self):
+        for name, consumer in (('publish.yml', 'Build sdist and wheel'),
+                               ('macos-desktop.yml', 'Build the backend'),
+                               ('windows-desktop.yml', 'Build the backend')):
+            path = REPO / '.github' / 'workflows' / name
+            workflow = path.read_text(encoding='utf-8')
+            with self.subTest(workflow=name):
+                self.assertLess(workflow.index('uses: actions/setup-node@v7'),
+                                workflow.index('- name: Build the workspace'))
+                self.assertLess(workflow.index('- name: Build the workspace'),
+                                workflow.index('- name: ' + consumer))
+                build = workflow_step(path, 'Build the workspace')
+                self.assertLess(build.index('npm ci'), build.index('npm run build'))
+                setup = workflow.split('- name: Build the workspace')[0]
+                self.assertIn('node-version: "22"', setup)
+                self.assertIn('apps/workspace/package-lock.json', setup)
+
+    def test_publish_checks_both_archives_before_upload(self):
+        workflow = (REPO / '.github/workflows/publish.yml').read_text(encoding='utf-8')
+        guard = 'python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz'
+        self.assertLess(workflow.index('python -m build'), workflow.index(guard))
+        self.assertLess(workflow.index(guard), workflow.index('uses: actions/upload-artifact'))
+
+
 @unittest.skipUnless(shutil.which("bash"), "needs bash")
 class DocsSyncWorkflowTest(unittest.TestCase):
     """Abuse cases for .github/workflows/docs-sync.yml's shell steps."""
@@ -628,9 +663,9 @@ class DocsSyncWorkflowTest(unittest.TestCase):
     def test_changelog_gate(self):
         cases = [
             ("documentation only", [("docs/handbook/x.md", "add"), ("README.md", "add")], False, 0),
-            ("tests and built assets only", [("apps/workspace/test/a.mjs", "add"), ("apps/desktop/test/a.test.cjs", "add"),
-                                             ("myflames/ui_assets/index.html", "add"), ("myflames/x/tests/t.py", "add"),
-                                             ("myflames/test_x.py", "add")], False, 0),
+            ("tests only", [("apps/workspace/test/a.mjs", "add"), ("apps/desktop/test/a.test.cjs", "add"),
+                            ("myflames/x/tests/t.py", "add"), ("myflames/test_x.py", "add")], False, 0),
+            ("tracked assets have no exemption", [("myflames/ui_assets/index.html", "add")], False, 1),
             ("workspace code without an entry", [("apps/workspace/src/Health.tsx", "add")], False, 1),
             ("Python code with an entry", [("myflames/ui.py", "add"), ("CHANGELOG.md", "add")], False, 0),
             ("workspace code with a release notes page", [("apps/workspace/src/a.tsx", "add"),

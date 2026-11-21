@@ -85,31 +85,36 @@ separate app data and retains the same API authentication and write contracts.
 The Apple Silicon package bundles its Python backend and opens through Finder.
 Build with `package:mac` (unsigned, for local use). Releases come from the
 entry point `npm run release:mac -- <full-HEAD-SHA> [--resume]`
-(`scripts/release-mac.sh`, Apple Silicon only): it ships the committed UI
-assets and never rebuilds the workspace, requires the named full commit SHA
-to equal a clean HEAD and re-checks both after provisioning and building (so
-neither the workspace source nor its committed output may change mid-build),
-and preflights Node.js 22.12+, the build Python, DNS for the notary service
+(`scripts/release-mac.sh`, Apple Silicon only): it builds the untracked workspace
+output from source, requires the named full commit SHA to equal a clean HEAD
+and re-checks both after provisioning and building. The workspace source stamp
+and output digest are also checked, so neither sources nor freshly built output
+may change mid-build. It preflights Node.js 22.12+, the build Python, DNS for the notary service
 and the client download host, and 5 GiB of free disk at the root, the venv
 and the client cache (`scripts/release_state.py preflight`), then the shared
 signing checks (`scripts/package-mac-release.sh --preflight`: the identity
 and the notary sign-in, without building anything). Every invocation then
 runs `npm ci` in `apps/desktop`, followed by
-`PUPPETEER_SKIP_DOWNLOAD=true npm ci` in `apps/workspace`, installing both
-dependency sets from their committed lockfiles before the backend build or
-resume decision. The workspace dependencies let the packaged settings smokes
-attach to Electron without downloading a browser. Unless `--resume` finds a
+`PUPPETEER_SKIP_DOWNLOAD=true npm ci` and `npm run build` in `apps/workspace`,
+installing both dependency sets from their committed lockfiles and building the
+workspace before the backend build or resume decision. The workspace dependencies
+let the packaged settings smokes attach to Electron without downloading a browser. Unless `--resume` finds a
 valid backend build manifest, it provisions the build venv
 (`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`, stamped
 with the Python version and the build-requirements digest and never a
 symlink; the interpreter is `MYFLAMES_DESKTOP_BUILD_PYTHON`, default
 `python3.14`) and builds the backend with `build-backend.py`, keeping a
 status line every 30 s while a step runs. A successful build publishes
-`build/backend/build-manifest.json` (the commit, the `ui_assets` and
+`build/backend/build-manifest.json` (the commit, the freshly built `ui_assets` and
 build-requirements digests, the backend hash, the Python license hash, the
 Python version and the resolved `pip freeze`), and the packager's
 `manifest-check` refuses a backend whose manifest does not match HEAD, the
-tree and the build venv. It then runs `scripts/package-mac-release.sh`:
+sources, built output and the build venv. The macOS and Windows desktop workflows
+also run `npm ci` and `npm run build` in `apps/workspace` before bundling the
+backend. `build-backend.py` refuses a missing index, missing JavaScript or a stale
+source stamp before invoking PyInstaller. The release entry then runs
+`scripts/package-mac-release.sh`, which checks the manifest before packaging
+and again after verification:
 Developer ID signing under the hardened runtime
 with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
 notarization and stapling of the app and the DMG, Gatekeeper checks, and the
@@ -975,8 +980,10 @@ the window-open handler always denies a new app window. Tests:
   tokens on `:root` in `style.css` (web-design skill). Browser test for the
   shell: `apps/workspace/test/navigation.mjs`; `apps/workspace/test/server-nav.mjs`
   covers the Server place. The workspace sidebar, Home, About and favicon use the 128 px `myflames-app-logo.png`, derived from `myflames-logo.svg`. Vite emits the stable
-  `/assets/myflames-logo.png` URL. `npm ci && npm run build` there regenerates committed
-  `myflames/ui_assets/` files shipped in the wheel. Python users need no Node.js.
+  `/assets/myflames-logo.png` URL. Run `npm ci` and `npm run build` in `apps/workspace`
+  to generate `myflames/ui_assets/` for a source checkout; its index and assets
+  are not tracked. Publish and desktop release flows build them before packaging.
+  Installed PyPI packages and the desktop app include them and need no Node.js.
   The UI API reuses the parser, sidecars, and renderers. Investigations are
   saved only on request. Investigations and saved connections (profiles) use
   `~/.myflames/workspace.sqlite3`; remembered connection passwords are stored separately.
@@ -1128,7 +1135,7 @@ are the contracts of the tools that check them.
 - **`.github/workflows/docs-sync.yml`** (`contents: read`; `contents: write`
   only in the release job). On a pull request to master (also when its labels
   change): a change under `apps/workspace/src/`, `apps/desktop/` (not
-  `test/`) or `myflames/` (not `ui_assets/`, `tests/` or `test_*.py`; both
+  `test/`) or `myflames/` (not `tests/` or `test_*.py`; both
   sides of a rename count, and names are compared whole, so a name holding a
   newline cannot pass for `CHANGELOG.md`) without a change to `CHANGELOG.md`
   or to a `docs/release-notes/*.md` page fails unless the PR has the
@@ -1239,7 +1246,7 @@ messages, never in the notes.
   available for macOS on Apple Silicon and, as an unsigned preview, for
   Windows x64."). Then these `##` sections, in this order, each left out when
   empty: Release highlights, New features, Improvements, Bug fixes, Security
-  fixes, Deprecations and removals, Known issues, Packaging notes, Additional
+  fixes, Other changes, Deprecations and removals, Known issues, Packaging notes, Additional
   resources (always present: the download links, the Quickstart and GitHub
   Issues). No other headings. The page does not repeat the inspiration credit: it
   lives in the About myflames window, the README, NOTICE and HTML report footers.
@@ -1512,9 +1519,25 @@ non-hidden file under `apps/workspace/src/` plus `index.html`, `vite.config.ts`,
 SHA-256 consumes records sorted by the UTF-8 bytes of POSIX paths relative to
 the repository root, each containing the UTF-8 path, NUL, raw file bytes with CRLF
 byte pairs replaced by LF, and NUL; binary inputs are never decoded.
-`test/test_workspace_assets.py` requires the stamp and checks it against the
-current inputs; on failure, run `npm run build` in `apps/workspace` and commit
-the rebuilt assets.
+The built index and `myflames/ui_assets/assets/` are not tracked. Run `npm ci`
+and `npm run build` in `apps/workspace` before running the workspace from source.
+`scripts/check_ui_assets.py` owns the Python hash and stamp check, shared by
+`test/test_workspace_assets.py` and the desktop backend/release guards. The test
+skips with build instructions when the index is absent and fails when a present
+build is stale. Page-handler tests use a small fixture; tests of real bundles
+skip only when the build is absent. A GET of the local workspace page without
+an index returns a plain-text 503 naming the build commands, after the existing
+Host and Origin checks and with the usual response headers.
+
+Publish and desktop release flows build the workspace before the Python
+distributions or backend bundle. Publish runs
+`python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz` after building:
+both archives must contain `myflames/ui_assets/index.html` and at least one flat
+`myflames/ui_assets/assets/*.js`, and their index stamps must match the checkout's
+sources. Archives are read without extraction. To check a local build, run
+`python3 scripts/check_ui_assets.py myflames` from the repository root. Packaging
+checks never skip missing output. The separate chart bundle
+`myflames/assets/myflames-charts.js` remains tracked.
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
@@ -1596,9 +1619,9 @@ Rules for code that splits:
   followed by `themes.css` last and `main.tsx` importing it first, that no lazily loaded module is
   also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
   `PlanScreen.tsx`,
-  that the committed build has exactly one stylesheet, and that the entry
+  that the build in `myflames/ui_assets` has exactly one stylesheet, and that the entry
   chunk stays under 500,000 bytes (479,634 bytes after extracting Plans and
-  Learn from master ef74ba2d's committed 508,046-byte entry). The source guard
+  Learn from master ef74ba2d's 508,046-byte entry). The source guard
   covers all dynamic imports, including PlanChart and ContextPanel preloads
   beside PlanScreen, and rejects static value and side-effect imports while
   allowing erased type imports. It also requires Plans and Learn chunks and

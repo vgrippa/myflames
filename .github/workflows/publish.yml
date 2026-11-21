@@ -58,10 +58,24 @@ jobs:
             echo "::error::Tag $TAG does not match pyproject.toml version $version at that tag; refusing to publish."
             exit 1
           fi
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/workspace/package-lock.json
+      - name: Build the workspace
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm ci
+          npm run build
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade build
           python -m build
+      - name: Check packaged workspace assets
+        run: python scripts/check_ui_assets.py dist/*.whl dist/*.tar.gz
       - name: Check metadata
         run: |
           python -m pip install --upgrade twine

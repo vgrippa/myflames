@@ -64,7 +64,7 @@ jobs:
               CHANGELOG.md|docs/release-notes/*.md) changelog=yes ;;
             esac
             case "$file" in
-              apps/desktop/test/*|myflames/ui_assets/*) continue ;;
+              apps/desktop/test/*) continue ;;
               apps/workspace/src/*|apps/desktop/*|myflames/*) ;;
               *) continue ;;
             esac

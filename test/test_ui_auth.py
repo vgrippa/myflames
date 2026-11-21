@@ -3,6 +3,7 @@ import concurrent.futures
 import http.client
 import json
 import os
+from pathlib import Path
 import tempfile
 import threading
 import unittest
@@ -46,6 +47,7 @@ class TestWorkspaceAuthentication(unittest.TestCase):
         self.assertEqual(status, 200)
         return secret, json.loads(body)['token'], headers['Set-Cookie']
 
+    @mock.patch('myflames.ui.ASSET_DIR', Path(__file__).parent / 'fixtures' / 'workspace')
     def test_public_shell_and_unauthenticated_requests_have_no_authority(self):
         status, body, _ = self.request('/', method='GET')
         self.assertEqual(status, 200)

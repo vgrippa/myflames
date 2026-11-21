@@ -47,6 +47,7 @@ SECTIONS = (
     "Improvements",
     "Bug fixes",
     "Security fixes",
+    "Other changes",
     "Deprecations and removals",
     "Known issues",
     "Packaging notes",

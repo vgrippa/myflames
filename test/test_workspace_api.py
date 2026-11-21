@@ -183,6 +183,8 @@ class TestWorkspaceAPI(unittest.TestCase):
                 self.assertIn('error', body)
         self.assertFalse(self.path.exists())
 
+    @unittest.skipUnless((ASSET_DIR / 'index.html').is_file(),
+                         'Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
     def test_bundled_project_logo_is_served_as_png(self):
         logos = list((ASSET_DIR / 'assets').glob('myflames-logo.png'))
         self.assertEqual(len(logos), 1)
@@ -202,6 +204,8 @@ class TestWorkspaceAPI(unittest.TestCase):
                 status, unused, unused_headers = self.request('/assets/' + name, method='GET')
                 self.assertEqual(status, 404)
 
+    @unittest.skipUnless((ASSET_DIR / 'index.html').is_file(),
+                         'Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
     def test_page_favicon_versions_stable_logo_url(self):
         status, body, _ = self.request('/', method='GET')
         self.assertEqual(status, 200)

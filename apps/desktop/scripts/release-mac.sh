@@ -1,6 +1,6 @@
 #!/bin/sh
-# One signed-release entry point. Ship the committed UI assets; do not rebuild
-# the workspace here. Usage: npm run release:mac -- <full-HEAD-SHA> [--resume]
+# One signed-release entry point. Build the untracked workspace output before
+# the backend. Usage: npm run release:mac -- <full-HEAD-SHA> [--resume]
 set -eu
 
 die() { echo "release-mac: $*" >&2; exit 2; }
@@ -37,7 +37,8 @@ fi
 # Install both lockfiles on every release, including resume. The settings
 # smokes attach to Electron, so workspace dependencies need no browser download.
 python3 scripts/release_state.py run --label 'installing desktop build dependencies' -- npm ci
-PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace smoke dependencies' -- npm --prefix "$root/apps/workspace" ci
+PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace dependencies' -- npm --prefix "$root/apps/workspace" ci
+python3 scripts/release_state.py run --label 'building the workspace' -- npm --prefix "$root/apps/workspace" run build
 
 # A valid backend is reusable only for an explicit resume. A normal invocation
 # always provisions and builds before the packager's clean start.
@@ -49,9 +50,12 @@ else
     "$MYFLAMES_DESKTOP_BUILD_VENV/bin/python" scripts/build-backend.py
 fi
 # Recheck the exact commit and cleanliness after provisioning/building, too.
-# Neither the workspace source nor its committed output may change mid-build.
+# Neither the workspace source nor its freshly built output may change mid-build.
 [ "$(git -C "$root" rev-parse HEAD)" = "$commit" ] || die "HEAD changed during the build"
 [ -z "$(git -C "$root" status --porcelain)" ] || die "git tree changed during the build"
+# Ignored output is invisible to git status; compare the backend's recorded
+# digest and the source stamp before handing it to the packager.
+python3 scripts/release_state.py manifest-check --root "$root"
 if [ "$resume" = --resume ]; then
   exec sh scripts/package-mac-release.sh --resume
 fi

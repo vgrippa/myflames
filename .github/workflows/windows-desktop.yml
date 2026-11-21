@@ -15,12 +15,18 @@ on:
     paths:
       - "apps/desktop/**"
       - "myflames/**"
+      - "apps/workspace/**"
+      - "docs/brand/myflames-app-logo.png"
+      - "scripts/check_ui_assets.py"
       - ".github/workflows/windows-desktop.yml"
   pull_request:
     branches: [master]
     paths:
       - "apps/desktop/**"
       - "myflames/**"
+      - "apps/workspace/**"
+      - "docs/brand/myflames-app-logo.png"
+      - "scripts/check_ui_assets.py"
       - ".github/workflows/windows-desktop.yml"
 
 permissions:
@@ -46,7 +52,16 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/workspace/package-lock.json
+      - name: Build the workspace
+        working-directory: apps/workspace
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm ci
+          npm run build
       - name: Build the backend
         run: |
           python -m venv local/desktop-build-venv

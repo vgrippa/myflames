@@ -809,6 +809,7 @@ class TestWorkspaceLaunchGuidance(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         return sent[0]
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def test_public_shell_has_static_themed_launch_guidance_without_authority(self):
         # This body is useful with JavaScript disabled; authentication still
         # requires the one-use launch URL and never appears in the public HTML.
@@ -1084,6 +1085,7 @@ class TestUiPreferencesRoutes(unittest.TestCase):
             self.assertEqual(sent[0][0], 400, payload)
         self.assertFalse(self.workspace.store.path.exists())
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def _read_index(self):
         from myflames.ui import WorkspaceHandler
         handler = WorkspaceHandler.__new__(WorkspaceHandler)
@@ -1358,6 +1360,7 @@ class TestWorkspaceHTTP(unittest.TestCase):
         finally:
             self.server.store.set_ui_preferences({'diagram_zoom_speed': 100})
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def test_index_injects_only_valid_stored_theme(self):
         from myflames.workspace_store import UI_THEME_IDS
         import contextlib
@@ -1380,6 +1383,7 @@ class TestWorkspaceHTTP(unittest.TestCase):
         finally:
             self.server.store.set_ui_preferences({'theme': 'system'})
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def test_index_survives_unreadable_or_malformed_preferences(self):
         import contextlib
         from pathlib import Path
@@ -1409,6 +1413,9 @@ class TestWorkspaceHTTP(unittest.TestCase):
                         assert_unthemed_index()
 
     def test_packaged_index_and_bundles(self):
+        from myflames.ui import ASSET_DIR
+        if not (ASSET_DIR / 'index.html').is_file():
+            self.skipTest('Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
         status, body, headers = self.request('GET', '/')
         self.assertEqual(status, 200)
         self.assertNotIn(self.server.token.encode(), body)
@@ -1421,6 +1428,7 @@ class TestWorkspaceHTTP(unittest.TestCase):
             self.assertEqual(status, 200, asset)
             self.assertGreater(len(content), 0)
 
+    @mock.patch('myflames.ui.ASSET_DIR', TEST_DIR / 'fixtures' / 'workspace')
     def test_index_carries_package_version_for_about(self):
         # About myflames reads the version from this meta tag, not a constant
         # in the bundle, so it always matches the installed package.
@@ -1433,6 +1441,23 @@ class TestWorkspaceHTTP(unittest.TestCase):
         self.assertIsNotNone(match, 'the page has a myflames-version meta tag')
         self.assertEqual(match.group(1), __version__)
         self.assertRegex(match.group(1), r'^\d+\.\d+')
+
+    def test_missing_index_returns_plain_503_with_build_command_and_security_headers(self):
+        with tempfile.TemporaryDirectory() as missing, mock.patch('myflames.ui.ASSET_DIR', Path(missing)):
+            status, body, headers = self.request('GET', '/')
+            self.assertEqual(status, 503)
+            self.assertEqual(headers['Content-Type'], 'text/plain; charset=utf-8')
+            self.assertIn(b'`npm ci` and `npm run build` in apps/workspace', body)
+            for name, value in (('Cache-Control', 'no-store'), ('X-Content-Type-Options', 'nosniff'),
+                                ('X-Frame-Options', 'DENY'), ('Referrer-Policy', 'no-referrer')):
+                self.assertEqual(headers[name], value)
+            self.assertEqual(int(headers['Content-Length']), len(body))
+            for secret in (self.server.token, self.server.session_secret, self.server.bootstrap_secret):
+                self.assertNotIn(secret.encode(), body)
+            for headers in ({'Host': 'evil.example'}, {'Origin': 'https://evil.example'}):
+                self.assertEqual(self.request('GET', '/', headers=headers)[0], 403)
+            self.assertEqual(self.request('POST', '/api/session/load', {},
+                                          headers={'X-Myflames-Token': 'wrong'})[0], 403)
 
     def test_analyze_and_bad_input_return_json(self):
         status, body, _ = self.request('POST', '/api/analyze', {'plan': PLAN})

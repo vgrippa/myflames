@@ -361,6 +361,8 @@ class TestWorkspaceCommand(unittest.TestCase):
 
     def test_occupied_port_is_actionable_error(self):
         import socket
+        if not os.path.isfile(os.path.join(REPO_ROOT, "myflames", "ui_assets", "index.html")):
+            self.skipTest('Workspace assets are not built; run `npm ci` and `npm run build` in apps/workspace')
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             listener.listen(1)
