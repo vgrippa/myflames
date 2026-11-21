@@ -224,9 +224,15 @@ async function editorChecks(page, expected, helpers) {
   assert.equal(await page.$eval(EDITOR, node => node.classList.contains('cm-lineWrapping')), expected.soft_wrap);
   pass(`${stage}: .cm-content ${expected.soft_wrap ? 'has' : 'does not have'} cm-lineWrapping`);
   await selectEditor(page, 2);
-  // Paste leaves the viewport at the document end. The automation facade sets
-  // selection without scrollIntoView, so explicitly expose the two short lines.
-  await page.$eval(EDITOR, editor => editor.closest('.cm-editor').querySelector('.cm-scroller').scrollTo(0, 0));
+  // Replace the paste's pending scroll target through CodeMirror's measure
+  // cycle. A raw scroll can be undone by that pending target after wrapping.
+  // Keep the first-line selection so Option-click can add a second cursor.
+  await page.$eval(EDITOR, editor => {
+    // DOM-to-view link used by findFromDOM in pinned @codemirror/view 6.43.15.
+    const view = editor.cmTile?.root?.view;
+    if (!view) throw new Error('Cannot find the CodeMirror view for the editor visibility check');
+    view.dispatch({ effects: view.constructor.scrollIntoView(view.state.doc.line(2).from, { y: 'center' }) });
+  });
   // Name the wait in a failure: CI logs show only "Waiting failed" otherwise.
   await page.waitForFunction(selector => {
     const editor = document.querySelector(selector);
