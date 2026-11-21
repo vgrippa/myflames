@@ -1,13 +1,67 @@
 # Replication, clusters and proxies
 
-Task guides for the Replication, Cluster, ProxySQL and Readyset places. Reads in these places never change a server; the changes below show the exact statements, ask first and are recorded in the Audit log.
+Task guides for the Topology, Replication, Cluster, ProxySQL and Readyset places. Reads in these places never change a server; the changes below show the exact statements, ask first and are recorded in the Audit log.
 
+- [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home)
+- [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology)
+- [Change a parameter on every server](howto-topology.md#change-a-parameter-on-every-server)
 - [Skip a failing replication transaction](howto-topology.md#skip-a-failing-replication-transaction)
 - [Switch the primary or mode of a cluster](howto-topology.md#switch-the-primary-or-mode-of-a-cluster)
 - [Run a cluster action on another member](howto-topology.md#run-a-cluster-action-on-another-member)
 - [Give an account a missing privilege for a cluster action](howto-topology.md#give-an-account-a-missing-privilege-for-a-cluster-action)
 - [Take a ProxySQL backend out of traffic](howto-topology.md#take-a-proxysql-backend-out-of-traffic)
 - [Create a Readyset cache for a query](howto-topology.md#create-a-readyset-cache-for-a-query)
+
+## Create a connection group from Home
+
+Use this when you already have saved connections for the servers in a cluster or replication topology and want to group them together on **Home**.
+
+1. Open **Home** in the sidebar.
+2. Click **New group…** in the **Connections** header (or in the **Group connections** empty state if no groups exist yet). Alternatively, tick the saved connections you want in the **Saved connections** table below and click **Group (N)…** in the table toolbar.
+3. In **New group**, enter a **Group name** (up to 80 characters, distinct from any existing group).
+4. Check or uncheck saved connections in the list (1 to 16 connections; a connection already in another group notes `Moves it from group <other>`).
+5. Click **Create group**.
+
+What you see: the new group appears under **Group connections** above **Saved connections** on **Home** (and in the **Connection in use** picker), showing its server count, member names and strictest write-safety tags.
+
+Good to know:
+
+- **New group…** pre-ticks the saved connection in use when there is one; **Group (N)…** pre-ticks the saved connections you selected in the table (unsaved connections cannot join a group).
+- If creating or saving a group moves a member out of the **Group connection** currently in use, that active Group connection refreshes automatically with its remaining members.
+- Click **Open** on the group card under **Group connections** to open it as a **Group connection** and go straight to the **Topology** place.
+
+Related: [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server), [Edit a connection group](howto-connections.md#edit-a-connection-group) and [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology).
+
+## Read a whole group in Topology
+
+Use this to inspect every member of a connection group together (map, member states, lag and configuration drift) without background polling.
+
+1. Open a **Group connection**: click **Open** on a group card on **Home**, pick a group under **Group connections** in **Connection in use**, or switch to **Topology** while a grouped saved connection is in use and click **Open group connection `<group>`**.
+2. On **Map** (the default tab), review **Servers** (saved members with role, state and read outcome, plus outside peers under **Not in this group** showing who reported them), **Links** (`from → to`, kind, state, and whether each link is `verified` by server identity or `address match, not verified`), **Clusters** and **Notes**.
+3. Switch to **Members** for the summary line (which highlights version drift when members run different versions and counts read, failed and not-reached servers) and the table showing **Server**, **Role**, **State**, **Engine and version**, **Read only**, **Lag**, **Behind** and **Read**. Select any row to inspect channels and jump with **Use in Server views**, **Open in Cluster** or **Open in Replication**.
+4. Switch to **Parameters**, **Accounts** or **Plugins** to compare global settings, user accounts and roles, or plugins and MySQL components across the read members. Use **Show** (**Differences** or **All**) and the search box to filter rows. Select a row in **Accounts** to inspect per-member differences and jump to **Users and roles** on any compared server.
+5. Click **Refresh** in the toolbar whenever you want a fresh read of the tab on screen.
+
+What you see: each tab sends one bounded read across the saved members only when it first comes on screen for that **Group connection** and when you click **Refresh** (at most 4 logins at once, 30 s per query and 120 s per tab request). Returning to a tab that already read keeps its report without logging in again.
+
+Good to know:
+
+- On **Parameters**, **Differences** hides settings that match across members and hides expected per-node settings (`server_id`, `server_uuid`, addresses, paths, `wsrep_provider_pc_weight`, `wsrep_provider_gmcast_segment`, role-driven `read_only` / `super_read_only`, and multi-primary or Galera `auto_increment_offset`). Choose **All** to show every row, with **Per server** pills marking those per-node settings.
+- **Not compared** beneath **Parameters**, **Accounts** and **Plugins** lists saved members left out of that comparison along with the reason: for example ProxySQL Admin or Readyset members (read for identity only), failed logins, members not reached before the 120 s request budget closed, or incomplete inventories (such as more than 1,000 accounts). Truncated or redacted parameter values remain uncomparable with a reason rather than reading as equal.
+
+Related: [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home), [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server) and [Connection groups and topology consent](safety.md#connection-groups-and-topology-consent).
+
+## Change a parameter on every server
+
+Use this when you want to roll a global server variable change across 1 to 16 members of a connection group in a safe order under one review. *(Note: the rolling change engine is implemented on the backend; the workspace UI control in **Topology** is scheduled for a later update. Until it lands, inspect drift in **Topology** > **Parameters** and update individual members in **Server** > **Parameters** with the **Server:** picker.)*
+
+1. **The review**: a rolling variable plan selects 1 to 16 members of the current **Group connection** and a mode (`global`, `persist` or `persist_only`; on MariaDB, `persist` and `persist_only` plan `SET GLOBAL` plus the `[mysqld]` option-file line to copy, never `SET PERSIST`). Any **Read-only** member in the group (even an unselected one) blocks planning before any login, and ProxySQL Admin or Readyset members are refused; members already at the requested value are marked unchanged and receive no statement.
+2. **The rolling order**: myflames orders members from live topology facts: Group Replication and InnoDB Cluster secondaries run before the primary; Galera and Percona XtraDB Cluster nodes run in `wsrep_node_name` order; asynchronous replication topologies run deepest replicas first and the root source last (and refuse the change if an unselected relay's links cannot be verified); standalone servers run in saved connection name order.
+3. **Production confirmation**: if any member in the group is **Production**, the whole **Group connection** is **Production**, so confirming requires typing the exact connection group name.
+4. **Execution, Stop and partial results**: servers run one at a time. Before sending to each server, myflames re-checks group membership, group generation, endpoints, server identity, live role or replication parent and the current variable value, stopping before later servers on the first mismatch, refusal or server error. **Stop** prevents the next server from starting without interrupting a statement already sent. A stop or mid-roll failure leaves earlier servers applied and later ones **not sent** (`partial` or `stopped` outcome), and an interrupted write marks that server `unknown` so you can check it before reviewing another change.
+5. **The Audit log**: each member in the roll writes its own record in **Settings** > **Audit log** under the shared change set ID, without passwords or raw server SQL errors.
+
+Related: [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology), [Change server parameters and compare two servers](howto-server.md#change-server-parameters-and-compare-two-servers) and [Reviewed changes](safety.md#reviewed-changes).
 
 ## Skip a failing replication transaction
 
