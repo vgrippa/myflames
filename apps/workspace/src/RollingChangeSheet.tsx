@@ -1,21 +1,24 @@
 // One reviewed, rolling variable change over the saved members of a
 // connection group (myflames/topology_change.py; contracts in
 // docs/schemas/topology-change-plan-1.0.json and topology-change-1.0.json).
-// The sheet asks for the value, the mode and the members; Review reads every
-// member and shows the exact statements in the plan's order; Apply sends the
-// reviewed plan_id and expect, one member at a time, and polls
-// /api/live/action/progress about once a second while the sheet is open.
-// Stop prevents the next member only: a statement already sent is never
-// interrupted. Apply never sends without the reviewed plan.
+// The sheet lists every group member (members that cannot be changed stay
+// unticked and disabled with their reason), Review reads the chosen members
+// and shows the exact statements in the plan's order, and Apply sends the
+// reviewed plan_id and expect, one member at a time. The run itself lives in
+// rollingRuns.ts: closing the sheet, switching the group or refreshing the
+// Parameters read never loses it, and the Topology place banner reopens the
+// sheet. Stop prevents the next member only: a statement already sent is
+// never interrupted. Apply never sends without the reviewed plan.
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { recordDeclined, type Connection } from "./api";
 import { openAuditLog } from "./ActionReview";
-import { Checkbox, ConfirmSheet, StatusPill, writeFailure, type Tone } from "./kit";
+import { Checkbox, ConfirmSheet, StatusPill, type Tone } from "./kit";
 import { Commands } from "./OpsShared";
+import { clearRollingRun, runTerminal, startRollingRun, stopRollingRun, useRollingRun } from "./rollingRuns";
 import {
-  applyTopologyChange, planTopologyChange, rollingChangeProgress, stopTopologyChange,
-  type ParameterRow, type RollingChangeMode, type RollingChangePlan, type RollingChangeResult,
-  type RollingProgress, type TopologyGroupReport, type TopologyMember,
+  planTopologyChange,
+  type ParameterRow, type RollingChangeMode, type RollingChangePlan, type RollingPlanMember,
+  type TopologyGroupReport, type TopologyMember,
 } from "./topologyApi";
 
 const MODES: { value: RollingChangeMode; label: string; hint: string }[] = [
@@ -43,14 +46,13 @@ const OVERALL_STATUS: Record<string, [Tone, string]> = {
   stopped: ["watch", "Stopped"],
   stale: ["watch", "Stale review"],
 };
+const STATEMENT_KIND: Record<RollingChangeMode, string> = {
+  global: "SET GLOBAL",
+  persist: "SET PERSIST",
+  persist_only: "SET PERSIST_ONLY",
+};
 const STOP_NOTE = "Stop requested. No later server will start; a statement already sent is not interrupted.";
-const POLL_MS = 1000;
-
-function newProgressId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
+const LOST_NOTE = "The result reply was lost; this is the last state the server reported.";
 
 /** The most common current value among the compared members; ties keep the
  * first member's value. */
@@ -78,21 +80,52 @@ function text(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
-/** The scopes a mode reads and writes, as the plan's before and after name them. */
-function modeScopes(mode: RollingChangeMode): [string, string][] {
-  if (mode === "global") return [["global", "Global"]];
-  if (mode === "persist") return [["global", "Global"], ["persisted", "Persisted"]];
-  return [["persisted", "Persisted"]];
+/** The scopes a mode reads and writes; older plan replies name before and
+ * after for every one of them. */
+function modeScopes(mode: RollingChangeMode): string[] {
+  if (mode === "global") return ["global"];
+  if (mode === "persist") return ["global", "persisted"];
+  return ["persisted"];
 }
 
-/** "effect" of a member plan as short lines (its shape is the backend's). */
+function scopeLabel(scope: string): string {
+  if (scope === "global") return "Global";
+  if (scope === "persisted") return "Persisted";
+  return scope;
+}
+
+/** The scopes this member effectively changes: the keys of its `after` when
+ * the plan names them (a MariaDB member in a persist plan holds only
+ * `global`), else every scope of the plan's mode. */
+function memberScopes(member: RollingPlanMember, mode: RollingChangeMode): string[] {
+  if (member.after && typeof member.after === "object") {
+    const keys = Object.keys(member.after);
+    if (keys.length) return keys;
+  }
+  return modeScopes(mode);
+}
+
+/** The statement kind the member runs: its own effective mode when the plan
+ * names it, else the plan's mode. */
+function statementKind(member: RollingPlanMember, mode: RollingChangeMode): string {
+  return STATEMENT_KIND[member.effective_mode || mode];
+}
+
+/** "effect" of a member plan as short lines. The current shape shows its
+ * `text` only (never the raw object keys); older shapes still render. */
 function effectLines(effect: unknown): string[] {
   if (!effect) return [];
   if (typeof effect === "string") return [effect];
   if (Array.isArray(effect)) return effect.map(text);
-  if (typeof effect === "object") return Object.entries(effect as Record<string, unknown>).map(([key, value]) => `${key}: ${text(value)}`);
+  if (typeof effect === "object") {
+    const record = effect as Record<string, unknown>;
+    if (typeof record.text === "string") return [record.text];
+    return Object.values(record).map(text);
+  }
   return [text(effect)];
 }
+
+type MemberRow = { member: TopologyMember; changeable: boolean; reason: string };
 
 export function RollingChangeSheet({ connection, report, row, onClose, onChanged }: {
   /** The Group connection in use (group_name and active member profile id). */
@@ -105,44 +138,73 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
   onChanged: () => void;
 }) {
   const group = connection.group_name || report.group_name;
-  const compared = useMemo(() => report.parameters?.compared || [], [report]);
-  // Members the change can target: compared servers only, proxies absent.
-  const members = useMemo(
-    () => compared
-      .map((id) => report.members.find((m) => m.profile_id === id))
-      .filter((m): m is TopologyMember => !!m && m.role !== "proxy" && m.role !== "cache"),
-    [compared, report.members],
-  );
+  const section = report.parameters;
+  // Every group member is listed; a member is changeable when the Parameters
+  // read compared it and it is a server (never a proxy or a cache).
+  const rows = useMemo<MemberRow[]>(() => {
+    const compared = new Set(section?.compared || []);
+    const reasons = new Map((section?.not_compared || []).map((n) => [n.profile_id, n.reason]));
+    return report.members.map((member) => {
+      if (member.role === "proxy" || member.role === "cache") {
+        return { member, changeable: false, reason: `A ${member.role} is not changed by a rolling variable change.` };
+      }
+      if (!compared.has(member.profile_id)) {
+        return { member, changeable: false, reason: reasons.get(member.profile_id) || "Not compared in this read." };
+      }
+      return { member, changeable: true, reason: "" };
+    });
+  }, [report.members, section]);
+  const members = useMemo(() => rows.filter((r) => r.changeable).map((r) => r.member), [rows]);
   const allMaria = members.length > 0 && members.every((m) => m.engine === "mariadb");
   const someMaria = members.some((m) => m.engine === "mariadb");
   const modes = allMaria ? MODES.filter((m) => m.value === "global") : MODES;
 
+  const run = useRollingRun();
+  // This sheet's run is the one started from its row; an unfinished run of
+  // another row blocks Apply here until it ends.
+  const ownRun = run && run.row.name === row.name ? run : null;
+  const otherRun = run && !ownRun && !runTerminal(run) ? run : null;
   const [value, setValue] = useState(() => commonValue(row, members.map((m) => m.profile_id)));
   const [mode, setMode] = useState<RollingChangeMode>(allMaria ? "global" : "persist");
   const [ticked, setTicked] = useState<Record<string, boolean> | null>(null);
-  const [plan, setPlan] = useState<RollingChangePlan | null>(null);
+  const [reviewed, setReviewed] = useState<RollingChangePlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState("");
   const [typed, setTyped] = useState("");
-  const [applying, setApplying] = useState(false);
-  const [progress, setProgress] = useState<RollingProgress | null>(null);
-  const [stopNote, setStopNote] = useState("");
+  const [ackExcluded, setAckExcluded] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [result, setResult] = useState<RollingChangeResult | null>(null);
-  const [applyError, setApplyError] = useState("");
   const live = useRef(true);
-  const progressId = useRef("");
   const typedId = useId();
   const valueId = useId();
   useEffect(() => () => {
     live.current = false;
   }, []);
 
-  // A member whose value already equals the target starts unticked; editing
-  // the value recomputes the defaults, a manual tick wins until then.
-  const isTicked = (m: TopologyMember) =>
-    ticked?.[m.profile_id] ?? String(row.values[m.profile_id] ?? "") !== value;
+  const plan = reviewed || ownRun?.plan || null;
+  const applying = !!ownRun && !runTerminal(ownRun);
+  const result = ownRun?.result || null;
+  const applyError = ownRun?.applyError || null;
+  const lostDone = !!ownRun?.lostDone && !result && !applyError;
+  const finished = !!(result || applyError || lostDone);
+  const progress = ownRun?.progress || null;
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  useEffect(() => {
+    if (result) onChangedRef.current();
+  }, [result]);
+
+  // Every comparable member starts ticked: the displayed value can be stale
+  // and the persisted value can differ, so the fresh plan, not the last read,
+  // marks members unchanged.
+  const isTicked = (m: TopologyMember) => ticked?.[m.profile_id] ?? true;
   const chosen = members.filter(isTicked);
+  // Group members the change will not touch: unticked or not changeable.
+  const excluded = useMemo(() => {
+    const inPlan = plan ? new Set(plan.members.map((m) => m.profile_id)) : null;
+    return rows.filter((r) => (inPlan ? !inPlan.has(r.member.profile_id) : !(r.changeable && isTicked(r.member))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, plan, ticked]);
+  const excludedNames = excluded.map((r) => r.member.profile_name).join(", ");
 
   async function review() {
     if (planning || applying || !chosen.length) return;
@@ -151,8 +213,9 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
     try {
       const answer = await planTopologyChange(connection, row.name, value, mode, chosen.map((m) => m.profile_id));
       if (!live.current) return;
-      setPlan(answer);
+      setReviewed(answer);
       setTyped("");
+      setAckExcluded(false);
     } catch (error) {
       if (live.current) setPlanError((error as Error).message);
     } finally {
@@ -160,88 +223,68 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
     }
   }
 
-  async function apply(plan: RollingChangePlan) {
-    if (applying) return;
-    const id = newProgressId();
-    progressId.current = id;
-    setApplying(true);
-    setApplyError("");
-    setStopNote("");
-    setProgress(null);
-    let done = false;
-    const poll = async () => {
-      while (!done && live.current) {
-        await new Promise((resolve) => window.setTimeout(resolve, POLL_MS));
-        if (done || !live.current) return;
-        try {
-          const snap = await rollingChangeProgress(id);
-          if (!done && live.current) setProgress(snap);
-        } catch {
-          // Progress only describes the send; the apply's own reply decides.
-        }
-      }
-    };
-    void poll();
-    try {
-      const answer = await applyTopologyChange(connection, plan, true,
-        plan.confirmation.typed_name !== null ? typed : undefined, id);
-      if (!live.current) return;
-      setResult(answer);
-      onChanged();
-    } catch (error) {
-      if (live.current) setApplyError(writeFailure(error, { audited: true }).message);
-    } finally {
-      done = true;
-      if (live.current) setApplying(false);
-    }
+  function applyNow(reviewedPlan: RollingChangePlan) {
+    if (applying || otherRun) return;
+    startRollingRun(connection, report, row, reviewedPlan,
+      reviewedPlan.confirmation.typed_name !== null ? typed : undefined);
   }
 
   async function stop() {
-    if (stopping || !applying || !progressId.current) return;
+    if (stopping || !ownRun || runTerminal(ownRun)) return;
     setStopping(true);
     try {
-      await stopTopologyChange(connection, progressId.current);
-      if (live.current) setStopNote(STOP_NOTE);
-    } catch (error) {
-      if (live.current) setStopNote((error as Error).message);
+      await stopRollingRun();
     } finally {
       if (live.current) setStopping(false);
     }
   }
 
+  function closeSheet() {
+    if (ownRun && runTerminal(ownRun)) clearRollingRun();
+    onClose();
+  }
+
   function cancel() {
-    if (planning || applying) return;
-    if (plan && !result) {
-      // Cancelling a review is a declined attempt in the Audit log.
+    if (planning) return;
+    // An unfinished run keeps going under the Topology place banner; Show
+    // reopens this sheet. A reviewed plan that was never applied is a
+    // declined attempt in the Audit log.
+    if (applying) {
+      onClose();
+      return;
+    }
+    if (plan && !finished && !ownRun) {
       const statements = plan.members.map((m) => m.statement).filter((s): s is string => !!s);
       void recordDeclined("topology.variable", statements, connection,
         { group_name: plan.group_name, name: plan.name, mode: plan.mode });
     }
-    onClose();
+    closeSheet();
   }
 
   function reviewAgain() {
-    setPlan(null);
-    setResult(null);
-    setApplyError("");
+    if (ownRun) clearRollingRun();
+    setReviewed(null);
     setTyped("");
-    setProgress(null);
-    setStopNote("");
+    setAckExcluded(false);
   }
 
   const refusedCount = plan ? plan.members.filter((m) => m.status === "refused").length : 0;
   const typedName = plan?.confirmation.typed_name ?? null;
-  const confirmDisabled = result || applyError ? false
+  const confirmDisabled = finished ? false
     : plan ? refusedCount > 0 || (typedName !== null && typed !== typedName)
+        || (excluded.length > 0 && !ackExcluded) || !!otherRun
       : chosen.length === 0;
   const busy = planning || applying;
-  const title = plan ? `Change ${row.name} on ${plan.members.length} ${plan.members.length === 1 ? "member" : "members"}`
+  const title = plan
+    ? excluded.length
+      ? `Change ${row.name} on ${plan.members.length} of ${report.members.length} members`
+      : `Change ${row.name} on ${plan.members.length} ${plan.members.length === 1 ? "member" : "members"}`
     : `Change ${row.name} on every member?`;
 
   return (
     <ConfirmSheet
       className="rolling-change-sheet"
-      eyebrow={plan ? { global: "SET GLOBAL", persist: "SET PERSIST", persist_only: "SET PERSIST_ONLY" }[plan.mode] : "ROLLING CHANGE"}
+      eyebrow={plan ? STATEMENT_KIND[plan.mode] : "ROLLING CHANGE"}
       title={title}
       description={plan ? undefined
         : `One value for the selected members of ${group}, one server at a time, with one review before anything is sent.`}
@@ -251,14 +294,14 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
       confirmLabel={plan ? "Apply" : "Review"}
       confirmTone={plan ? "danger" : "primary"}
       confirmDisabled={confirmDisabled}
-      onCancel={result || applyError ? onClose : cancel}
+      onCancel={finished ? closeSheet : cancel}
       onConfirm={() => {
-        if (plan && !result && !applyError) void apply(plan);
+        if (plan && !finished) applyNow(plan);
         else if (!plan) void review();
       }}
-      doneLabel={result || applyError ? "Close" : undefined}
+      doneLabel={finished ? "Close" : undefined}
       secondary={result?.status === "stale" ? { label: "Review again", onClick: reviewAgain }
-        : plan && !result && !applyError ? { label: "Back", onClick: () => { setPlan(null); setTyped(""); } }
+        : plan && !finished ? { label: "Back", onClick: () => { setReviewed(null); setTyped(""); } }
           : undefined}
     >
       {!plan && (
@@ -287,20 +330,25 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
           )}
           <fieldset className="rolling-members" disabled={busy}>
             <legend>Members</legend>
-            {members.map((m) => (
-              <Checkbox key={m.profile_id} checked={isTicked(m)} disabled={busy}
+            {rows.map(({ member: m, changeable, reason }) => (
+              <Checkbox key={m.profile_id} checked={changeable && isTicked(m)} disabled={busy || !changeable}
                 onChange={(next) => setTicked((current) => ({ ...current, [m.profile_id]: next }))}>
                 {m.profile_name} ({m.host}:{m.port})
-                <span className="hint"> now {text(row.values[m.profile_id])}</span>
+                {changeable
+                  ? <span className="hint"> now {text(row.values[m.profile_id])}</span>
+                  : <span className="hint rolling-member-excluded"> {reason}</span>}
               </Checkbox>
             ))}
           </fieldset>
-          {chosen.length === 0 && <p className="hint">Every member already has this value, or none is chosen.</p>}
+          {chosen.length === 0 && <p className="hint">None of the changeable members is chosen.</p>}
+          {otherRun && (
+            <p className="hint">A rolling change is already running: {otherRun.plan.name}. Its sheet opens from the Topology place banner.</p>
+          )}
           {planning && <p className="hint" role="status">Reading the members and planning the change…</p>}
           {planError && <p className="rolling-problem" role="alert">{planError}</p>}
         </>
       )}
-      {plan && !result && !applyError && (
+      {plan && !finished && (
         <>
           <p className="rolling-order-rule">{plan.order_rule}</p>
           <ol className="rolling-review-list" aria-label="Members in the order they are changed">
@@ -314,12 +362,17 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
                     <span className="rolling-review-address">{m.host}:{m.port}</span>
                     <StatusPill tone={tone} label={word} />
                   </div>
-                  {m.statement && <Commands label={`Statement for ${m.profile_name}`} text={m.statement} />}
+                  {m.statement && (
+                    <div className="rolling-statement">
+                      <span className="rolling-statement-kind">{statementKind(m, plan.mode)}</span>
+                      <Commands label={`Statement for ${m.profile_name}`} text={m.statement} />
+                    </div>
+                  )}
                   {m.status !== "refused" && (m.before || m.after) && (
                     <p className="rolling-before-after">
-                      {modeScopes(plan.mode).map(([scope, label]) => (
+                      {memberScopes(m, plan.mode).map((scope) => (
                         <span key={scope}>
-                          {label}: {text(m.before?.[scope])} → {text(m.after?.[scope])}
+                          {scopeLabel(scope)}: {text(m.before?.[scope])} → {text(m.after?.[scope])}
                         </span>
                       ))}
                     </p>
@@ -342,27 +395,50 @@ export function RollingChangeSheet({ connection, report, row, onClose, onChanged
                 onChange={(e) => setTyped(e.target.value)} />
             </label>
           )}
+          {excluded.length > 0 && (
+            <div className="rolling-excluded">
+              <p className="hint">Not changed: {excludedNames}.</p>
+              <Checkbox checked={ackExcluded} disabled={busy} onChange={setAckExcluded}>
+                I understand {excludedNames} will not be changed.
+              </Checkbox>
+            </div>
+          )}
+          {otherRun && (
+            <p className="rolling-problem" role="alert">A rolling change is already running: {otherRun.plan.name}. Apply waits until it ends.</p>
+          )}
           {applying && (
             <div className="rolling-applying">
               <p className="rolling-phase" role="status" aria-live="polite">
                 <span className="spinner" aria-hidden="true" />
                 {progress?.message || `Applying on ${plan.members[0]?.profile_name || "the first member"}…`}
               </p>
-              <button type="button" className="button" disabled={stopping || !!stopNote} onClick={() => void stop()}>
+              <button type="button" className="button" disabled={stopping || !!ownRun?.stopAcked} onClick={() => void stop()}>
                 {stopping ? "Stopping…" : "Stop"}
               </button>
             </div>
           )}
-          {stopNote && <p className="rolling-warning" role="status">{stopNote}</p>}
+          {ownRun?.stopAcked && <p className="rolling-warning" role="status">{STOP_NOTE}</p>}
+          {ownRun?.stopError && <p className="rolling-problem" role="alert">{ownRun.stopError}</p>}
           {!applying && (
             <p className="hint">Before each member, myflames reads it again and sends nothing if it changed. A failure stops the change before the next member.</p>
           )}
         </>
       )}
-      {(result || applyError) && (
+      {finished && (
         <div className="rolling-result">
           {applyError ? (
             <p className="rolling-problem" role="alert">{applyError}</p>
+          ) : lostDone ? (
+            <>
+              <p className="rolling-warning" role="status">{LOST_NOTE}</p>
+              {progress?.message && <p className="hint">{progress.message}</p>}
+              <p className="hint rolling-audit">
+                Each member's attempt is one audit record.{" "}
+                <button type="button" className="text-button" onClick={() => openAuditLog(null)}>
+                  Open the Audit log
+                </button>
+              </p>
+            </>
           ) : result && (
             <>
               <div className="rolling-outcome" role="status" data-status={result.status}>

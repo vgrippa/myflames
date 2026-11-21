@@ -406,3 +406,43 @@
 .rolling-audit {
   margin-top: 12px;
 }
+
+/* The run banner (rollingRuns.ts): visible in every Topology state while a
+   rolling change runs or its result waits, with Show reopening the sheet. */
+.rolling-run-banner {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.rolling-run-banner .text-button {
+  margin-left: 4px;
+}
+
+/* Each reviewed statement names its own kind (a MariaDB member in a persist
+   plan runs SET GLOBAL). */
+.rolling-statement {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+}
+
+.rolling-statement-kind {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The excluded-members acknowledgement gates Apply. */
+.rolling-excluded {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.rolling-excluded > p {
+  margin: 0;
+}

@@ -14,6 +14,7 @@ import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
 import { TopologyMap, mapAddress, mapEdgeText } from "./TopologyMap";
 import { RollingChangeSheet } from "./RollingChangeSheet";
+import { runMemberSpot, runTerminal, useRollingRun } from "./rollingRuns";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, Pill, Segmented, SummaryLine, ToolbarButton,
   ViewLayout, ViewStatus, type BadgeTone, type Column, type InspectorContent, type InspectorShared, type Selection,
@@ -91,6 +92,11 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [changeRow, setChangeRow] = useState<ParameterRow | null>(null);
   const [changeDone, setChangeDone] = useState(false);
+  // The rolling change run outlives its sheet (rollingRuns.ts): a connection
+  // change, a group switch or a Refresh here never loses it; the banner
+  // reopens the sheet on the run's own connection and report snapshot.
+  const rollingRun = useRollingRun();
+  const rollingSheetRun = changeRow && rollingRun && rollingRun.row.name === changeRow.name ? rollingRun : null;
   const selection: Selection = {
     key: selectedKey,
     select: (key: string, open?: boolean) => {
@@ -154,6 +160,12 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
       for (const controller of running.values()) controller.abort();
       running.clear();
     };
+  }, [key]);
+
+  // Switching the connection or group closes the change sheet; an unfinished
+  // run keeps going in rollingRuns and the banner below reopens it.
+  useEffect(() => {
+    setChangeRow(null);
   }, [key]);
 
   const onScreen = useViewOnScreen();
@@ -373,6 +385,15 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             onRetry={error ? () => { void readTab(tab); } : undefined}
           />}
         >
+          {rollingRun && !rollingSheetRun && (
+            <p className="rolling-run-banner" role="status">
+              {runTerminal(rollingRun)
+                ? `Rolling change finished: ${rollingRun.plan.name}.`
+                : `Rolling change running: ${rollingRun.plan.name}, server ${runMemberSpot(rollingRun).at} of ${runMemberSpot(rollingRun).of}.`}
+              {" "}
+              <button type="button" className="text-button" onClick={() => setChangeRow(rollingRun.row)}>Show</button>
+            </p>
+          )}
           {!isGroup ? (
             <NonGroupState
               connection={connection}
@@ -388,7 +409,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
               <MapTab report={report} memberName={memberName} selection={selection} />
             ) : drift ? (
               <>
-                {tab === "parameters" && changeDone && (
+                {tab === "parameters" && (changeDone || !!(rollingRun && runTerminal(rollingRun))) && (
                   <p className="hint topology-change-done">A rolling change finished. Refresh reads the group again; nothing was re-read on its own.</p>
                 )}
                 <DriftTab tab={tab} drift={drift} report={report} memberName={memberName} selection={selection} />
@@ -404,10 +425,10 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             </EmptyState>
           )}
         </ViewLayout>
-        {changeRow && report?.parameters && (
+        {changeRow && (rollingSheetRun || report?.parameters) && (
           <RollingChangeSheet
-            connection={connection}
-            report={report}
+            connection={rollingSheetRun ? rollingSheetRun.connection : connection}
+            report={rollingSheetRun ? rollingSheetRun.report : report!}
             row={changeRow}
             onClose={() => setChangeRow(null)}
             onChanged={() => setChangeDone(true)}

@@ -209,8 +209,19 @@ export type RollingPlanMember = {
   status: "planned" | "unchanged" | "refused";
   statement: string | null;
   before: Record<string, unknown> | null;
+  /** Only the scopes this member effectively changes (a MariaDB member in a
+   * persist plan holds only `global`). Replies that predate the field keep
+   * every scope of the plan's mode. */
   after: Record<string, unknown> | null;
+  /** The effect as the backend reports it: an object with `now`,
+   * `after_restart`, `needs_restart` and a ready `text` line. The UI shows
+   * `text` only; older shapes (a string, an array, a plain object) still
+   * render, never as raw object keys. */
   effect: unknown;
+  /** The statement kind this member runs (a MariaDB member planned from a
+   * persist mode is `global`); absent in replies that predate the field, then
+   * the plan's mode names every member. */
+  effective_mode?: RollingChangeMode;
   caveats: string[];
   privileges: Record<string, unknown> | null;
   config_line: string | null;
