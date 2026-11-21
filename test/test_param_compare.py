@@ -694,6 +694,28 @@ print(time.monotonic() - began)
                 self.assertEqual(clean['items'][0]['value'], value)
                 self.assertFalse(clean['items'][0].get('redacted', False))
 
+    def test_credential_urls_with_quotes_and_scheme_prefixes_stay_secret(self):
+        values = ("https://vault:it's-SECRET@vault.example:8200",
+                  'https://otel:"SECRET"@collector:4318/v1/traces',
+                  "https://o'brien:SECRET@collector", 'https://o"brien:SECRET@collector',
+                  'https://o`brien:SECRET@collector', 'https://otel:`SECRET`@collector',
+                  '10.0.0.1-https://u:SECRET@h', '-mysql://app:SECRET@db1',
+                  '+mysql://app:SECRET@db1', '1.mysql://app:SECRET@db1')
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(P._redact_parameter_value(value), '[redacted]')
+                raw = snapshot([item('custom_setting', value, 'string', value, values=[value])])
+                clean = P.validate_snapshot(raw)
+                self.assertNotIn('SECRET', json.dumps(clean))
+                self.assertTrue(clean['items'][0]['redacted'])
+                rows = P.compare_many({'a': raw, 'b': copy.deepcopy(raw)})
+                self.assertNotIn('SECRET', json.dumps(rows))
+                self.assertEqual(rows[0]['status'], 'missing')
+                self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path',
+                      'mysql://app:pa/SECRET@db1/shop'):
+            self.assertEqual(P._redact_parameter_value(value), value)
+
     def test_secret_defaults_and_allowed_values_cannot_leak(self):
         for setting in (item('wsrep_sst_auth', 'masked', 'string', 'numeric-password', values=['allowed-secret']),
                         item('custom_setting', 'ordinary', 'string', 'alice:default-secret'),

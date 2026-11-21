@@ -1828,7 +1828,7 @@ def _config_change(sub, argv):
     from a fresh read, described, confirmed and audited (variables.change_cli).
     The connection's write policy runs before any password prompt or
     connection (a read-only profile refuses here)."""
-    from . import dbops, variables
+    from . import dbops, param_compare, variables
     from .connector import ConnectorError, MySQLConnection
     from .workspace_store import WorkspaceStore, PROFILE_FIELDS
     reset = sub == 'reset-persist'
@@ -1897,6 +1897,8 @@ def _config_change(sub, argv):
                             safety['read_only'], safety['profile_name'])
     audit = dbops.AuditTrail(WorkspaceStore(), variables.OPERATIONS[mode], 'cli', connection=_endpoint(planned),
                              safety=safety, password=password, policy=dbops.policy_summary(decision))
+    if param_compare.sensitive(name):
+        audit = variables._SensitiveAudit(audit)
     typed = [variables.TAG + variables.typed_statement(name, mode, value)]
     target = {'name': name, 'mode': mode, 'requested': value}
 

@@ -1354,6 +1354,39 @@ class TopologyChangeTests(GroupCase):
                          ['not_sent'])
         self.assertEqual(self.written_ids(), [])
 
+    def test_first_pre_send_identity_failure_keeps_its_audit_outcome(self):
+        for outcome in ('identity_unavailable', 'identity_mismatch'):
+            with self.subTest(outcome=outcome):
+                client = self.client(0)
+                client.before_read = None
+                client.variables['server_uuid'] = UUIDS[0]
+                plan = self.plan(member_ids=['member-1'])
+                evidence_reads = []
+
+                def fail_first_evidence(sql):
+                    if not sql.startswith('DELIMITER ') or evidence_reads:
+                        return
+                    evidence_reads.append(sql)
+                    if outcome == 'identity_unavailable':
+                        raise connector.ConnectorError(
+                            'ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+                    client.variables['server_uuid'] = UUIDS[4]
+
+                client.before_read = fail_first_evidence
+                progress_id = 'first-pre-send-' + outcome
+                result = self.apply(plan, progress_id=progress_id)
+                self.assertEqual(len(evidence_reads), 1)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['members'][0]['status'], 'refused')
+                record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+                self.assertEqual((record['status'], record['outcome']), ('refused', outcome))
+                self.assertEqual(record['statements'], [])
+                self.assertEqual(record['message'], result['members'][0]['message'])
+                self.assertIn('identity', record['message'])
+                self.assertEqual(ui.api_response(PROGRESS_PATH,
+                    {'progress_id': progress_id}, self.workspace)['states'], ['not_sent'])
+                self.assertEqual(self.written_ids(), [])
+
     def test_identity_change_during_final_variable_read_is_unsent_identity_refusal(self):
         plan = self.plan(member_ids=['member-1'])
         changed = []

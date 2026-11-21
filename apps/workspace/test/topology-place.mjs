@@ -13,9 +13,66 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { webcrypto } from "node:crypto";
+import ts from "typescript";
 import { open, pause } from "./perf-harness.mjs";
 import { chooseConnection, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
 import { connectionAction } from "./connection-helpers.mjs";
+
+// Exercise the owner directly: the sheet's existing guard would otherwise
+// conceal a run replacement when callers have different group bindings.
+async function checkRollingOwnerSingleFlight() {
+  const source = await fs.readFile(new URL("../src/rollingRuns.ts", import.meta.url), "utf8");
+  const code = ts.transpileModule(source, { compilerOptions: {
+    target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS,
+  } }).outputText;
+  const sent = [], stopped = [];
+  const module = { exports: {} };
+  class ApiError extends Error {}
+  vm.runInNewContext(code, {
+    module, exports: module.exports, crypto: webcrypto,
+    // Park progress without scheduling timers or opening a connection.
+    setTimeout: () => 0,
+    require(name) {
+      if (name === "react") return {};
+      if (name === "./api") return { ApiError };
+      if (name === "./kit") return { writeFailure: (error) => ({ message: error.message }) };
+      assert.equal(name, "./topologyApi");
+      return {
+        applyTopologyChange: (...args) => new Promise((resolve) => { sent.push({ args, resolve }); }),
+        rollingChangeProgress: () => { throw new Error("Parked polls must not run"); },
+        stopTopologyChange: async (...args) => { stopped.push(args); },
+      };
+    },
+  });
+  const owner = module.exports;
+  const connection = { group_name: "one", profile_id: "a" };
+  const report = { group_name: "one", members: [{ profile_id: "a", host: "db1", port: 3306 }] };
+  const plan = { members: [], confirmation: { typed_name: null } };
+  owner.startRollingRun(connection, report, {}, plan);
+  const original = owner.getRollingRun();
+  owner.startRollingRun(connection, report, {}, plan);
+  owner.startRollingRun({ group_name: "two" }, { ...report, group_name: "two" }, {}, plan);
+  owner.startRollingRun(connection, { ...report, members: [{ profile_id: "b", host: "db2", port: 3306 }] }, {}, plan);
+  assert.equal(sent.length, 1, "any unfinished run blocks another apply, regardless of binding");
+  assert.equal(owner.getRollingRun(), original, "the original progress and connection remain owned");
+  await owner.stopRollingRun();
+  assert.equal(stopped[0][0], connection, "Stop stays bound to the original connection");
+  assert.equal(stopped[0][1], original.progressId);
+  sent[0].resolve({ status: "applied" });
+  // Drain the VM's cross-realm promise continuation before inspecting it.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(owner.runTerminal(owner.getRollingRun()), true);
+  owner.startRollingRun({ group_name: "two" }, { ...report, group_name: "two" }, {}, plan);
+  assert.equal(sent.length, 2, "a terminal run permits a new group to start");
+  sent[1].resolve({ status: "applied" });
+  await new Promise((resolve) => setImmediate(resolve));
+  owner.clearRollingRun();
+  console.log("rolling owner single-flight: passed");
+}
+
+await checkRollingOwnerSingleFlight();
 
 const base = {
   port: 3306,

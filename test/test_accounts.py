@@ -199,11 +199,35 @@ class AccountsTest(unittest.TestCase):
                 self.assertEqual(conn.stdin, [])
 
     def test_grant_line_cap_preserves_boundary_and_drops_whole_oversized_line(self):
+        self.assertEqual(a.MAX_ACCOUNT_TEXT_CHARS, 1048576)
         grant = 'GRANT SELECT ON *.* TO `app`@`%`'
         boundary = grant.ljust(a.MAX_ACCOUNT_TEXT_CHARS)
         self.assertEqual(a._strip_account_credentials(boundary), boundary)
         with mock.patch.object(dbops, 'strip_credentials', side_effect=AssertionError('oversized input')):
             self.assertEqual(a._strip_account_credentials(boundary + 'x'), a.OMITTED_ACCOUNT_TEXT)
+
+    def test_wide_column_grant_stays_readable_changeable_and_fingerprinted(self):
+        columns = ['business_metric_column_%04d' % n for n in range(700)]
+        grant = 'GRANT SELECT (%s) ON `shop`.`orders` TO `app`@`%%`' % ', '.join(
+            p.quote_identifier(name) for name in columns)
+        self.assertGreater(len(grant), 16384)
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                self.conn = FakeConn(engine)
+                self.conn.grants.append(grant)
+                before = a.read_account(self.conn, 'app', include_catalog=False)
+                self.assertIn(grant, before['grants'])
+                self.assertNotIn(a.OMITTED_ACCOUNT_TEXT, json.dumps(before))
+                self.assertFalse(before['model']['unparsed'])
+                self.assertEqual(before['model']['columns'][0]['columns'], columns)
+                plan = self.plan('password', password='new-test-password')
+                self.assertEqual(plan['status'], 'ready')
+                changed = grant.replace(') ON ', '), UPDATE (`price`) ON ')
+                self.conn.grants[-1] = changed
+                after = a.read_account(self.conn, 'app', include_catalog=False)
+                self.assertNotEqual(before['fingerprint'], after['fingerprint'])
+                self.assertIn(grant, a.grant_diff(before, after)['removed'])
+                self.assertIn(changed, a.grant_diff(before, after)['added'])
 
     def test_omitted_grants_cannot_bypass_account_write_guards(self):
         for engine in ('mysql', 'mariadb'):

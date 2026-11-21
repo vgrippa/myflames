@@ -1230,6 +1230,20 @@ class TestRedaction(unittest.TestCase):
         prefix = 'SET PASSWORD FOR ' + account + ' = '
         self.assertEqual(dbops.redact(prefix + "'private-value'"), prefix + "'[redacted]'")
 
+    def test_set_password_skips_quoted_names_and_comments_before_assignment(self):
+        for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ",
+                       'SET PASSWORD FOR `a;b`@`%` = ',
+                       'SET PASSWORD FOR "a=;b"@"%" = ',
+                       "SET PASSWORD FOR 'a''=b'@'%' = ",
+                       'SET PASSWORD /* x=1; */ = ',
+                       'SET PASSWORD -- x=1;\n = ',
+                       'SET PASSWORD # x=1;\n = ',
+                       "ERROR near 'SET PASSWORD FOR `u`@`%` = "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + "'private-value'"), prefix + "'[redacted]'")
+                self.assertEqual(dbops.redact(prefix + "'private-value' REPLACE 'old-value'"),
+                                 prefix + "'[redacted]' REPLACE '[redacted]'")
+
     def test_long_set_password_scanner_respects_assignment_boundaries(self):
         prefix = 'SET PASSWORD' + ' ' * 513 + 'FOR `u`@`%` = '
         self.assertEqual(dbops.redact(prefix + "'private-value' REPLACE 'old-value'"),
@@ -1318,6 +1332,29 @@ class TestRedaction(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(float(result.stdout.strip()), 5)
+
+    def test_url_secret_scan_bounds_megabyte_digit_dot_scheme_run(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "n = 1024 * 1024\nvalue = ('1.' * n)[:n - 3] + '://'\n"
+            "began = time.monotonic()\n"
+            "assert not list(dbops._URL_SECRET(value))\n"
+            "assert not list(dbops._URL_SECRET(value, quoted=False))\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('URL_DIGIT_RUN_TIMING %.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 5)
+
+    def test_url_redaction_starts_at_the_whole_scheme_character_run(self):
+        for prefix in ('-', '+', '1.', '10.0.0.1-'):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + 'mysql://app:SECRET@db1'),
+                                 prefix + 'mysql://app:[redacted]@db1')
+        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path', '1.2://app:public@host'):
+            self.assertEqual(dbops.redact(value), value)
 
     def test_bounded_url_fields_still_redact_supported_schemes_and_pool_prefixes(self):
         for scheme in ('mysql', 'mariadb', 'postgres', 'postgresql'):
@@ -1483,6 +1520,17 @@ class TestAudit(TempHome):
         safety = {'profile_id': 'p1', 'profile_name': 'prod', 'type': 'production', 'read_only': False}
         return dbops.AuditTrail(self.store, kw.pop('operation', 'kill'), kw.pop('surface', 'cli'),
                                 connection=self.CONNECTION, safety=safety, password='pw-not-stored', **kw)
+
+    def test_set_password_names_and_comments_cannot_expose_audit_secrets(self):
+        for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ", 'SET PASSWORD FOR `a;b`@`%` = ',
+                       'SET PASSWORD /* x=1 */ = '):
+            with self.subTest(prefix=prefix):
+                statement = prefix + "'audit-private-value'"
+                self.trail(operation='accounts.password').outcome([statement], 'refused', message=statement)
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 3)
+        self.assertNotIn('audit-private-value', json.dumps(records))
+        self.assertTrue(all('[redacted]' in record['statements'][0] for record in records))
 
     def test_lifecycle_pending_then_ok(self):
         trail = self.trail(policy={'action': 'confirm', 'kind': 'risky'})

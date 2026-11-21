@@ -919,7 +919,7 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                                 message=_message('not_matched' if status in ('changed', 'unchanged') and not matched else status,
                                                  answer.get('outcome'), error=sent.failure))
                 except Exception as exc:
-                    outcome = getattr(exc, 'outcome', None)
+                    outcome = getattr(exc, 'identity_outcome', None) or getattr(exc, 'outcome', None)
                     refused = isinstance(exc, (reviewed_writes.Refusal, connection_groups.ProfileReadError))
                     failure = sent.failure if sent is not None and sent.failure is not None else exc
                     unknown = not refused and bool(sent and sent.sent and

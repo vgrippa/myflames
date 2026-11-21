@@ -6502,6 +6502,9 @@ Backend `myflames/variables.py` (contract: the db-operations skill; facts and so
 - `plan_change(conn, name, value, mode)` and the pure `build_plan(v, value, mode, grants)` (`variable-plan-1.0`): the mode must be available (MariaDB has no PERSIST, PERSIST_ONLY or RESET PERSIST: refused with `alternative.config_line`, the `[mysqld]` line; a read-only MySQL variable offers only `persist_only`; wrong scope; NON_PERSIST; a session value that is read-only), and the value valid (`normalize_value`: integers within the range, K/M/G/T converted for byte sizes, doubles, ON/OFF, enum and set items matched without case, `DEFAULT`; string values preserve leading and trailing whitespace exactly, while numeric, boolean and enum input is trimmed; text as `'...'` when plain, else `CONVERT(X'..' USING utf8mb4)` so no escaping rule or sql_mode matters). Returns `statement` (untagged), `display`, `before {global, session, persisted}`, `undo`, `effect {now, after_restart, needs_restart, text}`, `caveats` (the server does not check a PERSIST_ONLY value, persisted_globals_load OFF, mysqld-auto.cnf applied after the option files, buffer pool rounding to chunk size x instances and the 1 GiB rule with several instances, MariaDB block size, memory per connection, durability, MariaDB's log_slow_query copied per connection, replication-sensitive session variables), `privileges` (`privileges(v, mode, grants)` over plain `SHOW GRANTS`: dbops' operations, MariaDB's per-variable SET GLOBAL privileges `MARIADB_GLOBAL_PRIVILEGE`, restricted SET SESSION per engine with MySQL's `_no_super` ones, both privileges to reset a PERSIST_AS_READONLY entry), `classification`, `config_line` and `expect {name, mode, statement, global_value, session_value, persisted_value}`. Status `refused` with `problems [{code, message}]` sends nothing.
 - `apply_change(conn, plan, expect, decision, confirmed, audit)` (`variable-change-1.0`): `dbops.gate` first (SET GLOBAL, PERSIST, PERSIST_ONLY and RESET PERSIST are risky, so Production and Development confirm; SET SESSION follows dbops' variable lists; read-only refuses), then a fresh read and plan; nothing is sent when the plan is refused, its statement differs from `expect.statement`, or the global, session (session mode) or persisted value changed. The audit record is written before sending; one statement tagged `/*myflames:variable*/` with `dbops.WRITE_CLIENT_FLAGS`; SET SESSION and its `SHOW SESSION VARIABLES` go in one client call (one session). Server errors: `denied` (1227, 1095, 3630, 1142, 1044, 1045), `refused_by_server` (1228, 1229, 1238, 1231, 1232, 1193, 1621, 3615, 3976, 1210, 1290), `interrupted` (1317, 1205, 1213), else `failed`; client errors (2000 and up) raise, and an interrupt, time limit or 2013 leaves the record `unknown`. Then the variable is read again (`after {global, session, persisted, resize_status}`): `changed` (`adjusted` when the server rounded or clamped it) or `unchanged` (the server kept the old value, a warning-only refusal). Audit operations `set_global`, `set_persist`, `set_persist_only`, `set_session`, `reset_persist`.
 - `python3 -m myflames config set NAME VALUE [--persist | --persist-only | --session] [--yes] [--json] [-o PATH] [-q]` and `config reset-persist NAME [--yes] [--json] [-o PATH] [-q]` (`change_cli`): the policy from `--profile` runs before any prompt or connection (read-only refuses, exit 2); the plan (statement, values, effect, privileges, caveats, undo) on stderr; `[y/N]` when the policy confirms (a harmless SET SESSION on Development runs without); non-TTY needs `--yes`. Exit 0 changed or already set to the requested value, 1 a sent change was denied, refused by the server or not applied, 2 an unsent refusal, decline, bad input or connection failure. `myflames config` alone stays the read-only review. `config set --session` prints a stderr note that it applies only to the one-off connection myflames opens, useful to test a value; `--yes -q` suppresses this note with the plan.
+- Secret-variable CLI attempts use `variables._SensitiveAudit` from audit creation,
+  including Read-only refusals, non-TTY refusals, refused plans and connection
+  failures; current and requested values are never persisted as text or SQL hex.
 - Endpoints: `POST /api/live/variable` (`name`) and `POST /api/live/variable/plan` (`name`, `value`, `mode`; adds `policy {action, tone, title, text, connection_type, read_only}`) read with the saved password like the views (`_VARIABLE_READ_PATHS`, not `_SERVER_VIEW_PATHS`); `POST /api/live/variable/apply` (`name`, `value`, `mode`, `expect`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `apply_change`). A refused or unconfirmed request is audited.
 - UI (**Parameters**, `Config.tsx` + `config.css`, modelled on an AWS RDS parameter group): reads on open (one attempt per connection; Refresh retries), while the sidebar badge still comes from the checks. One table lists every global parameter the server reports with columns Name, Value, Allowed values, Apply type (Dynamic, Static, Unknown), Source, Data type, and Description; search ("Filter parameters") matches name, value and description, and the Show filter offers All, Modified (source is not the compiled default), Dynamic, Static, Recommendations (parameters covered by a Watch or Problem check), and Pending while editing. The view toolbar stays pinned under the top bar. **Edit** turns the Value column into inline controls (switch, list or text box from the parameter's type) for changeable parameters: MySQL dynamic (applies now) and MySQL persistable static (applies after the next restart through `SET PERSIST_ONLY`), or MariaDB dynamic only; MariaDB static parameters are option-file only and parameters with an unknown apply type are not editable in the table. **Preview changes** lists Name, Current value, New value, Apply type and When it applies. **Review and apply** opens one batch review for up to 25 changes: the server plans each change (exact statement, problems, privileges, effect, undo); MySQL dynamic rows use "Keep after restart" (checked: `SET PERSIST`, unchecked: `SET GLOBAL`), MySQL static rows use `SET PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and show the option file line to copy. Confirm applies the changes one at a time (each re-read and checked first), stops at the first change that is not confirmed, and shows a result per row; Cancel or Escape records a declined attempt for every planned row in the audit trail. The inspector has one compact section per parameter: one sentence (`oneLine`: the server's description, else the opening sentence of a check whose first setting it is), the **Documentation** link (`documentationLink`), and **Current value** (Value, Default, Source with path and who set it when, Changes in words from apply type, scope and `modifiable`, Allowed values, Persisted on MySQL, and Checked when covering checks do not flag it); a **Recommendation** follows only for a Watch or Problem check, the most severe one (reason, `action.text`, the statement and option file line as CopySql, the caveat), naming any other flagging check once. Never repeat the manual there. The actions sit in the inspector's action bar: **Stage value for review** (`editParameter`: turns on inline editing, filters the table to that parameter and focuses its value control), **Reset to default** (stages `DEFAULT` for MySQL numeric and boolean dynamic parameters), **Change this parameter…** (the single-parameter `VariableSheet` with every mode, including This session only), and **Reset persisted value…** (MySQL, when persisted); exact review, policy checks, connection binding, cancel and apply are unchanged. While the shared inspector is a sheet (below 1,040 px) the table uses the existing compact preset (`compact={sharedInspector?.sheet}`, `detailColumns={["allowed", "type", "description"]}`): Name, Value, Apply type and Source stay, and Allowed values (still in the inspector), Data type and Description become detail columns that Columns can restore through the persisted-width override. Permission details appear in the review dialog body; entry and confirmation buttons omit the Unverified badge.
 - Session in Parameters (**Change this parameter…** > This session only) prepares SQL only. `ConfigView.onOpenSql(sql)` receives the exact server-planned `SET SESSION` statement plus its terminator; `VariableSheet` calls it for **Open in Query editor**, never `/api/live/variable/apply`. Cancel/Escape on a Session draft creates no declined audit. The editor owns execution and its existing policy checks. The planning session value is labelled as a snapshot; its undo is omitted because the editor may have a different value. Without the optional callback the button is disabled and the statement stays copyable. Shell integration: pass `onOpenSql` through `Server` to `ConfigView`; in `main.tsx` call `labRef.current?.openSql(sql)` and `setMode("query")`. Add `openSql` to `QueryLabHandle` and its imperative handle to update the current tab via `changeTab`, clear stale digest source/selection metadata, and focus it without calling `send` or capture. These shell files are owned separately from Config. `node test/config.mjs --unit` checks the handoff without a browser.
@@ -8587,8 +8590,8 @@ logs in.
     `handlersocket_plain_secret_wr`, `utility_user_password`,
     `file_key_management_filekey`, and all six
     `telemetry.otel_exporter_otlp_{logs,metrics,traces}_{headers,secret_headers}`)
-    and credential syntax (`_CREDENTIAL_URL = dbops._URL_SECRET`, linear scan
-    without credential length limits) stay redacted and `'missing'`. ProxySQL
+    and credential syntax (`_CREDENTIAL_URL` calls `dbops._URL_SECRET` with
+    `quoted=False`, a linear scan without credential length limits) stay redacted and `'missing'`. ProxySQL
     Admin and Readyset members appear in `not_compared`.
 - `accounts`: `account_compare.capture` + `account_compare.compare_many`.
   Uses `ACCOUNTS_REQUEST_SECONDS = 300`; when a member read takes `>=
@@ -8596,7 +8599,7 @@ logs in.
   %d accounts took %.1f s on this server."`. Captures up to `MAX_ACCOUNTS =
   1000` accounts (`complete=False` beyond 1,000; incomplete or error inventories
   go to `not_compared`). In `accounts._strip_account_credentials`, grant lines
-  longer than `accounts.MAX_ACCOUNT_TEXT_CHARS = 16384` characters are replaced
+  longer than `accounts.MAX_ACCOUNT_TEXT_CHARS = 1048576` characters are replaced
   by `OMITTED_ACCOUNT_TEXT` (`'[omitted: too long]'`) rather than truncated or
   scanned for credentials. `accounts.read_account` sets `error = 'Account
   grants omitted: too long.'` and includes `OMITTED_ACCOUNT_TEXT` in `grants`
@@ -8771,14 +8774,25 @@ logs in.
   active_member_profile_id)` verifies group and `run.generation` (`_snapshot`),
   sets `run.stopped = True`, and prevents only the next member from starting
   without interrupting an in-flight statement.
+- Identity evidence failures during the first pre-send member recheck retain
+  `identity_unavailable` or `identity_mismatch` in the audit outcome instead
+  of falling back to a generic refusal. No statement is sent to that member.
 - **Secret redaction in audit and comparisons**: `ui._variable_response` wraps
   `audit` in `variables._SensitiveAudit` whenever `param_compare.sensitive(name)`
   is true before `declined`, `blocked` (`read_only`/`needs_confirmation`),
   `changed`, or `apply_change` (which also wraps `audit`), redacting statements
   and values in every audit outcome including declined and refused attempts.
+  The deprecated CLI creates the same wrapper in `workspace_cli._config_change`
+  before policy refusal, connection setup or `variables.change_cli`, so early
+  refusals and connection failures cannot persist either value or its SQL hex
+  representation.
   `dbops._URL_SECRET` (shared by `param_compare._CREDENTIAL_URL`) and
-  `dbops._redact_long_set_password` scan long/incomplete URL credentials and
-  long `SET PASSWORD` clauses linearly.
+  `dbops._redact_set_password` scan long/incomplete URL credentials and
+  `SET PASSWORD` clauses linearly. URL matching starts at the beginning of a
+  scheme-character run containing a letter, including numeric or punctuation
+  prefixes; parameter values allow quotes in userinfo while SQL/audit text
+  keeps quote boundaries. SET PASSWORD scans quoted names and comments as
+  opaque tokens to the first bare assignment, including in SQL diagnostics.
 
 **Workspace place (`TopologyPlace.tsx`, `TopologyMap.tsx`,
 `RollingChangeSheet.tsx`, `rollingRuns.ts`, `GroupDriftTable.tsx`,
@@ -8861,7 +8875,8 @@ logs in.
   all-`refused` plans send `[]`, which `/api/audit/declined` rejects and
   `recordDeclined` ignores, recording no attempt. The single-flight
   `RollingRun` in `rollingRuns.ts` is keyed by `runBinding` (`groupName` +
-  sorted `profile_id@host:port`) and outlives closing the sheet, switching
+  sorted `profile_id@host:port`); its owner refuses a new run while any run
+  is unfinished, regardless of binding. It outlives closing the sheet, switching
   connections/groups, or refreshing the tab: the **Topology** banner shows
   `Rolling change running: <name>, server <at> of <of>.` / `Rolling change
   finished: <name>.` with **Show** on `ownPlaceRun` (`placeBinding === null` or

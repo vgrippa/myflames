@@ -68,8 +68,12 @@ _SECRET_VARIABLES = frozenset((
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
 # Use the same linear authority scan as SQL/audit redaction, including URLs
-# with arbitrarily long passwords or empty usernames.
-_CREDENTIAL_URL = dbops._URL_SECRET
+# with arbitrarily long passwords or empty usernames. A server value has
+# no SQL literal delimiters, so quotes in its userinfo do not end the scan.
+def _CREDENTIAL_URL(value):
+    return dbops._URL_SECRET(value, quoted=False)
+
+
 _CREDENTIAL_PAIR = re.compile(r'[^\s:/\\;=@]+:[^\s:/\\;]+')
 
 # Earlier snapshots inherited these config-review explanations. Remove the

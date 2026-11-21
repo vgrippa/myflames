@@ -1203,6 +1203,50 @@ class TestCli(unittest.TestCase):
         self.assertIsNone(factory.options, 'no connection was opened')
         self.assertEqual(self.audit()[0]['outcome'], 'read_only')
 
+    def test_sensitive_cli_early_refusals_never_persist_plain_or_hex_values(self):
+        from myflames.connector import ConnectorError
+        from myflames.workspace_store import WorkspaceStore
+        WorkspaceStore().save('profile', {'name': 'locked-secret', 'host': '127.0.0.1', 'port': 34811,
+            'user': 'root', 'type': 'development', 'read_only': True})
+        for suffix in ('', "'quoted"):
+            old, new = 'user:old-cli-secret' + suffix, 'user:new-cli-secret' + suffix
+            variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old,
+                                        session_value=None, min=None, max=None)
+            for case, outcome in (('read_only', 'read_only'), ('no_terminal', 'no_terminal'),
+                                  ('refused_plan', 'invalid'), ('failed_connection', 'error')):
+                with self.subTest(case=case, quoted=bool(suffix)):
+                    conn = ReplayConn([[TAG + 'SHOW GRANTS',
+                        "GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION\n"]])
+                    stdin = mock.Mock()
+                    stdin.isatty.return_value = False
+                    patches = [mock.patch('sys.stdin', stdin),
+                               mock.patch.object(V, 'read_variable', return_value=copy.deepcopy(variable))]
+                    argv = ['set', 'wsrep_sst_auth', new, '-pconnection-password']
+                    if case == 'read_only':
+                        argv += ['--profile', 'locked-secret', '--yes']
+                    elif case == 'refused_plan':
+                        argv += ['--persist', '--yes']
+                    elif case == 'failed_connection':
+                        argv += ['--yes']
+                        patches.append(mock.patch('myflames.connector.MySQLConnection', side_effect=
+                            ConnectorError('ERROR 2003: cannot connect: %s %s %s %s' %
+                                (old, new, old.encode().hex(), new.encode().hex()))))
+                    before = len(self.audit())
+                    code, _out, err, factory = run_cli('config', argv, conn, patches=patches)
+                    self.assertNotEqual(code, 0, err)
+                    records = self.audit()
+                    self.assertEqual(len(records), before + 1)
+                    record = records[0]
+                    self.assertEqual(record['outcome'], outcome)
+                    self.assertIn(dbops.REDACTED, json.dumps(record))
+                    for secret in (old, new, old.encode().hex(), new.encode().hex(),
+                                   old.encode().hex().upper(), new.encode().hex().upper()):
+                        self.assertNotIn(secret, json.dumps(records))
+                    self.assertFalse(any('SET GLOBAL' in sql or 'SET PERSIST' in sql
+                                         for sql, _flags in conn.calls))
+                    if case == 'read_only':
+                        self.assertIsNone(factory.options, 'policy refuses before connecting')
+
     def test_review_still_reads_only(self):
         """``myflames config`` without set or reset-persist is the read-only review."""
         from _perf_replay import replay as perf_replay

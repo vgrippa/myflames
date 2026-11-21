@@ -3308,32 +3308,44 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
     # PASSWORD('x'), OLD_PASSWORD('x').
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
-    # SET PASSWORD [FOR user] = 'x'.
-    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
     # ALTER USER ... IDENTIFIED BY 'new' or RANDOM PASSWORD REPLACE 'current'.
     r"((?:\bRANDOM\s+PASSWORD|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
-_SET_PASSWORD_PART = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
+# Quotes and comments consume their whole span, including an unfinished
+# tail, so their = and ; characters cannot end a SET PASSWORD account name.
+_SET_PASSWORD_PART = re.compile(
+    _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
+    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
+_SET_PASSWORD_START = re.compile(r"\bSET\s+PASSWORD\b", re.I)
 _SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
+_URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
+_URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
+_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`@]")
+_URL_VALUE_BOUNDARY = re.compile(r"[\s/@]")
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
-def _URL_SECRET(text):
+def _URL_SECRET(text, quoted=True):
     """Yield password spans in URL authorities, with no credential length limit.
 
     The scheme starts at a character outside the scheme alphabet, preventing
     retries at each dot in a long scheme-like value. Each authority scan ends
     at its first delimiter, so even nested or unfinished URLs take linear
-    work. A slash ends the authority: an @ in a path is not a credential.
+    work. Parameter values can contain quotes in userinfo; SQL/audit text
+    keeps quotes as literal boundaries. A slash ends the authority: an @ in
+    a path is not a credential. MySQL FEDERATED rejects a slash in passwords
+    (storage/federated/ha_federated.cc:815-816).
     Readyset's N* pool prefix and an empty username require no special case.
     """
-    boundary = re.compile(r"[\s/'\"`@]")
-    for scheme in re.finditer(r"(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]*://", text):
+    boundary = _URL_SQL_BOUNDARY if quoted else _URL_VALUE_BOUNDARY
+    for scheme in _URL_SCHEME.finditer(text):
+        if not _URL_SCHEME_LETTER.search(text, scheme.start(), scheme.end() - 3):
+            continue
         end = boundary.search(text, scheme.end())
         if end is None or end.group() != "@":
             continue
@@ -3348,26 +3360,26 @@ def _redact_literal(match):
     return match.group(1) + quote + REDACTED + quote
 
 
-def _redact_long_set_password(text):
-    """Keep long account spellings covered without retrying each SET prefix.
-
-    The bounded pattern handles short clauses. Escaped account identifiers
-    or legal whitespace can exceed its 512-character span. Visit separators
-    once for those clauses, retaining the original first = / ; boundaries.
-    """
-    parts, kept, start = [], 0, None
-    for token in _SET_PASSWORD_PART.finditer(text):
-        if token.start() < kept:
-            continue
-        if token.group() in ('=', ';'):
-            if token.group() == '=' and start is not None and token.start() - start > 512:
+def _redact_set_password(text):
+    """Visit tokens once, redacting after the first bare assignment operator."""
+    parts, kept, cursor = [], 0, 0
+    while cursor < len(text):
+        # Error messages may quote the whole statement. Find the command
+        # first, then treat quoted names and comments within it as opaque.
+        start = _SET_PASSWORD_START.search(text, cursor)
+        if start is None:
+            break
+        cursor = len(text)
+        for token in _SET_PASSWORD_PART.finditer(text, start.end()):
+            if token.group() not in ('=', ';'):
+                continue
+            cursor = token.end()
+            if token.group() == '=':
                 literal = _SET_PASSWORD_LITERAL.match(text, token.end())
                 if literal is not None:
                     parts.extend((text[kept:token.end()], _redact_literal(literal)))
-                    kept = literal.end()
-            start = None
-        elif start is None:
-            start = token.end()
+                    kept = cursor = literal.end()
+            break
     return ''.join(parts) + text[kept:] if parts else text
 
 
@@ -3386,7 +3398,7 @@ def redact(text, password=None):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
-    text = _redact_long_set_password(text)
+    text = _redact_set_password(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0

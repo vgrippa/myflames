@@ -115,7 +115,7 @@ function newProgressId(): string {
 
 /** Start the reviewed plan as the one run. Single flight, synchronous: a
  * second Apply before React commits the busy state finds the accepted run
- * and is refused; an unfinished run of this group is never replaced. A
+ * and is refused; an unfinished run of any group is never replaced. A
  * previous terminal run is dropped; the sheet never calls this while an
  * unfinished run exists. */
 export function startRollingRun(
@@ -123,7 +123,7 @@ export function startRollingRun(
   plan: RollingChangePlan, typedName: string | undefined,
 ): void {
   const binding = runBinding(connection.group_name || report.group_name, report.members);
-  if (run && !runTerminal(run) && run.binding === binding) return;
+  if (run && !runTerminal(run)) return;
   run = {
     progressId: newProgressId(),
     connection, report, row, plan, binding,
