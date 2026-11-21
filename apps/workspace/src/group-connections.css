@@ -82,6 +82,33 @@ button.group-connection-open {
   white-space: nowrap;
 }
 
+/* The card's member names: one truncating line, the full list in its title. */
+.group-connection-members {
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.group-connections-empty {
+  margin: 0;
+}
+
+/* Home's Connections place: the group section leads the pane, so it carries
+   no divider of its own, and the Saved connections heading (same style as the
+   section title) keeps the cards and the table apart at every width. */
+.connections .group-connections-section {
+  margin: 0 0 14px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.connections .saved-connections-title {
+  margin: 0 0 8px;
+}
+
 .group-connection-actions {
   display: inline-flex;
   align-items: center;

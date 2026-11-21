@@ -377,6 +377,8 @@ export function Connections({
   onActiveDeleted,
   onGroupSaved,
   onGroupDeleted,
+  onOpenGroup,
+  activeGroup = null,
   loading = false,
   loadError = "",
   addRequest = 0,
@@ -398,6 +400,10 @@ export function Connections({
   onGroupSaved?: (result: GroupSaveResult, previousName: string) => void | Promise<unknown>;
   /** A deleted group's saved connections stay; the shell drops its Group connection. */
   onGroupDeleted?: (name: string) => void | Promise<unknown>;
+  /** Open a connection group as one Group connection (an explicit open). */
+  onOpenGroup?: (name: string) => void;
+  /** The Group connection in use, or null for a plain connection. */
+  activeGroup?: { name: string; count: number } | null;
   /** Above zero: New connection… was chosen elsewhere (picker, palette); open
    * the Add connection form, then call onAddHandled so it opens only once. */
   addRequest?: number;
@@ -460,6 +466,9 @@ export function Connections({
   const [search, setSearch] = useState("");
   // The group being edited in the group editor sheet (null: closed).
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
+  // Create mode of the same sheet: the saved connections ticked when it opens
+  // (null: closed). The unsaved "active" row is never a member.
+  const [creatingGroup, setCreatingGroup] = useState<string[] | null>(null);
   const [sheet, setSheet] = useState(() => typeof window !== "undefined" && window.innerWidth < 1040);
   const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.innerWidth <= 650);
   const [inspectorWidth, setInspectorWidth] = useState(340);
@@ -843,6 +852,16 @@ export function Connections({
   const visibleRows = rows.filter(row => [row.fields.name, connectionTarget(row.fields), row.fields.database, row.profile?.group || ""]
     .some(value => value.toLowerCase().includes(search.toLowerCase())));
   const selectedRows = rows.filter(row => selected.includes(row.key));
+  // Only saved connections can join a group; the unsaved "active" row cannot.
+  const selectedSaved = selectedRows.filter(row => row.profile);
+  /** Open the group editor in create mode, with these saved connections ticked. */
+  function openNewGroup(members: string[]) {
+    if (deleting || saving) return;
+    setEditingGroup(null);
+    setCreatingGroup(members);
+  }
+  // New group… starts with the saved connection in use ticked, when there is one.
+  const activeSavedId = active.id && profiles.some(p => p.id === active.id) ? [active.id] : [];
   function activate(row: ConnectionRow) {
     if (deleting || saving) return;
     use(row.profile?.id || "", row.fields, (row.key === active.id || row.key === "active") && sameEndpoint(row.fields, active.fields) ? active.password : "");
@@ -1323,40 +1342,65 @@ export function Connections({
         info={<p>Double click or press Enter to use a connection. Select rows to delete them together. Last used covers this window only.</p>}
         controls={<span className="connections-header-actions"><button ref={addButtonRef} className="button primary pane-action" disabled={deleting || saving} onClick={() => openForm()}>
           <Icon name="plus" size={14} /> Add connection
+        </button><button className="button pane-action" disabled={deleting || saving} onClick={() => openNewGroup(activeSavedId)}>
+          <Icon name="plus" size={14} /> New group…
         </button><Popover menu label="Connections menu" buttonClassName="icon-button" trigger={<Icon name="more" />}>
           <div className="connection-menu"><button role="menuitem" onClick={() => { closePopovers(); setImportingConnections(true); }}>
             Import from MySQL Workbench or DBeaver…
           </button></div>
         </Popover></span>}
         inspector={editingId === null ? null : { key: editingId || "new", title: editingId ? `Edit “${profile?.name || draft.name}”` : "Add connection", body: form }}>
+        {loading && <p role="status">Loading connections…</p>}
+        {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => { setError((e as Error).message); setErrorMissing(""); })}>Retry connections</button></p>}
+        {!loading && !loadError && (
+          <section className="group-connections-section" aria-label="Group connections" data-testid="home-group-connections">
+            <h3 className="group-connections-title">Group connections</h3>
+            {connectionGroups.length === 0 ? (
+              <p className="hint group-connections-empty">
+                No groups yet. A group opens a cluster or replication topology as one connection.{" "}
+                <button type="button" className="text-button" disabled={deleting || saving} onClick={() => openNewGroup(activeSavedId)}>New group…</button>
+              </p>
+            ) : (
+              <ul className="group-connections-list">
+                {connectionGroups.map((g) => {
+                  const isActive = activeGroup?.name === g.name;
+                  const memberList = g.profile_ids
+                    .map((id) => {
+                      const p = profiles.find((item) => item.id === id);
+                      return p ? p.name || connectionTarget(p) : id;
+                    })
+                    .join(", ");
+                  return (
+                    <li key={g.name} className={`group-connection-row${isActive ? " is-active" : ""}`} data-group={g.name}>
+                      <span className="group-connection-open">
+                        <span className="group-connection-name">{g.name}</span>
+                        <span className="group-connection-count">· {g.count} {g.count === 1 ? "server" : "servers"}</span>
+                        <span className="group-connection-members" title={memberList}>{memberList}</span>
+                      </span>
+                      <SafetyTags type={g.type} readOnly={g.read_only} />
+                      <span className="group-connection-actions">
+                        {isActive && <span className="group-connection-active-note">In use</span>}
+                        <button type="button" className="button small" data-action="open-group"
+                          aria-label={isActive ? `Refresh group connection ${g.name}` : `Open group connection ${g.name}`}
+                          onClick={() => onOpenGroup?.(g.name)}>{isActive ? "Refresh" : "Open"}</button>
+                        <button type="button" className="button small" data-action="edit-group"
+                          aria-label={`Edit group ${g.name}`}
+                          onClick={() => setEditingGroup(g.name)}>Edit group…</button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        )}
+        {!loading && !loadError && <h3 className="group-connections-title saved-connections-title">Saved connections</h3>}
         <div className="connections-table-toolbar">
           {(rows.length >= 6 || !!search) && <SearchField label="Search connections" value={search} onChange={setSearch} />}
+          {editingId === null && selectedSaved.length > 0 && <button className="button" disabled={deleting || saving} onClick={() => openNewGroup(selectedSaved.map(row => row.key))}>Group ({selectedSaved.length})…</button>}
           {editingId === null && !!selectedRows.length && <button className="button" disabled={deleting || saving} onClick={() => askDelete(selectedRows)}>Delete ({selectedRows.length})</button>}
           <span className="connections-count">{rows.length} {rows.length === 1 ? "connection" : "connections"}</span>
         </div>
-        {loading && <p role="status">Loading connections…</p>}
-        {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => { setError((e as Error).message); setErrorMissing(""); })}>Retry connections</button></p>}
-        {connectionGroups.length > 0 && (
-          <section className="group-connections-section" aria-label="Group connections" data-testid="home-group-connections">
-            <h3 className="group-connections-title">Group connections</h3>
-            <ul className="group-connections-list">
-              {connectionGroups.map((g) => (
-                <li key={g.name} className="group-connection-row" data-group={g.name}>
-                  <span className="group-connection-open">
-                    <span className="group-connection-name">{g.name}</span>
-                    <span className="group-connection-count">· {g.count} {g.count === 1 ? "server" : "servers"}</span>
-                  </span>
-                  <SafetyTags type={g.type} readOnly={g.read_only} />
-                  <span className="group-connection-actions">
-                    <button type="button" className="button small" data-action="edit-group"
-                      aria-label={`Edit group ${g.name}`}
-                      onClick={() => setEditingGroup(g.name)}>Edit group…</button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
         <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={phone || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {
@@ -1395,6 +1439,18 @@ export function Connections({
             onSaved={async (result, previousName) => { await onGroupSaved?.(result, previousName); }}
             onDeleted={async (name) => { await onGroupDeleted?.(name); }}
             onClose={() => setEditingGroup(null)}
+          />
+        </Suspense>
+      )}
+      {creatingGroup && (
+        <Suspense fallback={<p role="status">Loading the group editor…</p>}>
+          <GroupEditorSheet
+            group={null}
+            initialMembers={creatingGroup}
+            profiles={profiles.filter(p => !deletedIds.includes(p.id))}
+            onSaved={async (result, previousName) => { await onGroupSaved?.(result, previousName); }}
+            onDeleted={async (name) => { await onGroupDeleted?.(name); }}
+            onClose={() => setCreatingGroup(null)}
           />
         </Suspense>
       )}

@@ -614,15 +614,26 @@ function App() {
     }
   }
   /** After a group edit: refresh the saved connections and move an active
-   * Group connection (rename, or the active member leaving the group). */
+   * Group connection (rename, or the active member leaving the group). The
+   * same re-open applies when the saved group is another one (a create has no
+   * previousName) that took a member of the active Group connection: that
+   * group lost the member and shows it again without probing. */
   async function groupSaved(result: GroupSaveResult, previousName: string) {
     const current = groupActiveRef.current;
-    const choice = current?.group_name === previousName ? ++connectionChoice.current : connectionChoice.current;
+    const movedOut = !!current && current.group_name !== result.name &&
+      result.profile_ids.some((id) => current.members.some((m) => m.profile_id === id));
+    const affected = !!current && (current.group_name === previousName || movedOut);
+    const choice = affected ? ++connectionChoice.current : connectionChoice.current;
     const fresh = await refreshProfiles().catch(() => null);
-    if (!current || current.group_name !== previousName || choice !== connectionChoice.current) return;
+    if (!current || !affected || choice !== connectionChoice.current) return;
+    // The group to open again: the edited one (its name after a rename), or
+    // the active one another group's save took a member from.
+    const name = current.group_name === previousName ? result.name : current.group_name;
     try {
-      const stillMember = result.profile_ids.includes(labStateRef.current.profile_id);
-      const reopened = await openConnectionGroup(result.name, {
+      const stillMember = name === result.name
+        ? result.profile_ids.includes(labStateRef.current.profile_id)
+        : (fresh || profilesRef.current).some((p) => p.id === labStateRef.current.profile_id && (p.group || "").trim() === name);
+      const reopened = await openConnectionGroup(name, {
         activeMember: stillMember ? labStateRef.current.profile_id : undefined,
         probe: false,
       });
@@ -650,7 +661,7 @@ function App() {
       // The group is gone or has no member left: the connection in use stays
       // as the plain member connection.
       setGroupConnection(null);
-      setConnectionNote(`Group ${result.name} could not be opened again: ${(e as Error).message}`);
+      setConnectionNote(`Group ${name} could not be opened again: ${(e as Error).message}`);
     }
   }
   /** After a group delete: its saved connections stay; an active Group
@@ -2607,6 +2618,8 @@ function App() {
                   onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
                   onGroupSaved={groupSaved}
                   onGroupDeleted={groupDeleted}
+                  onOpenGroup={(name) => void openGroup(name, { probe: true })}
+                  activeGroup={groupActive ? { name: groupActive.group_name, count: groupActive.members.length } : null}
                   addRequest={addConnection}
                   onAddHandled={() => setAddConnection(0)}
                 />

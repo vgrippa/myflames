@@ -730,6 +730,148 @@ try {
   assert.equal(testCalls.at(-1).connection.host, "10.0.0.12");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("#connection-form-title"));
+
+  // --- Home makes groups first-class: the Saved connections heading sits
+  // between the group cards and the table, and each card opens its group.
+  const stacked = await page.evaluate(() => {
+    const top = (el) => (el ? el.getBoundingClientRect().top : -1);
+    const section = document.querySelector('[data-testid="home-group-connections"]');
+    const heading = [...document.querySelectorAll(".connections h3")].find((e) => e.textContent.trim() === "Saved connections");
+    return { section: top(section), heading: top(heading), table: top(document.querySelector("#connections-table")) };
+  });
+  assert.ok(stacked.section >= 0 && stacked.heading > stacked.section && stacked.table > stacked.heading,
+    `the Saved connections heading sits between the group cards and the table: ${JSON.stringify(stacked)}`);
+  const mfIcxRow = '[data-testid="home-group-connections"] .group-connection-row[data-group="mf-icx"]';
+  assert.equal(await page.$eval(`${mfIcxRow} .group-connection-members`, (e) => e.textContent), "cluster-ic-1, cluster-ic-3, solo-db",
+    "the card lists its member names after the count");
+  assert.equal(await page.$eval(`${mfIcxRow} .group-connection-members`, (e) => e.title), "cluster-ic-1, cluster-ic-3, solo-db",
+    "the full member list is the tooltip");
+  assert.ok(await page.$(`${mfIcxRow} .group-connection-active-note`), "the group in use says In use");
+  const openButton = (row) => page.$eval(`${row} button[data-action="open-group"]`, (e) => ({ text: e.textContent.trim(), label: e.getAttribute("aria-label") }));
+  assert.deepEqual(await openButton(mfIcxRow), { text: "Refresh", label: "Refresh group connection mf-icx" });
+  // Refresh from Home is an explicit open of the group in use, with a probe.
+  let beforeConnect = connectCalls.length;
+  await page.click(`${mfIcxRow} button[data-action="open-group"]`);
+  await waitFor(() => connectCalls.length > beforeConnect, "Refresh from Home did not open the Group connection");
+  assert.deepEqual(connectCalls.at(-1), { group_name: "mf-icx", probe_members: true });
+  // The pill lives on connection places, never on Home: the card's In use
+  // note is the visible effect here.
+  await pause(300);
+  assert.ok(await page.$(`${mfIcxRow} .group-connection-active-note`), "the group in use still says In use after Refresh");
+
+  // --- Group (N)… from a selection pre-ticks the selected saved connections.
+  // The toolbar appearing above the table shifts the rows, so a single click
+  // can land mid-shift: tick through the checkbox's label until the state is
+  // the wanted one.
+  const tickRow = async (key, want) => {
+    const sel = `.connection-row[data-row-key="${key}"] .checkbox`;
+    for (let i = 0; i < 10; i++) {
+      if (await page.$eval(`${sel} input[type="checkbox"]`, (e) => e.checked) === want) return;
+      await page.click(sel);
+      await pause(200);
+    }
+    assert.equal(await page.$eval(`${sel} input[type="checkbox"]`, (e) => e.checked), want, `row ${key} checkbox`);
+  };
+  await tickRow("p-ic-1", true);
+  await page.waitForFunction(() => [...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => b.textContent.trim() === "Group (1)…"));
+  await tickRow("p-ic-2", true);
+  await page.waitForFunction(() => [...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => b.textContent.trim() === "Group (2)…"));
+  await page.evaluate(() => [...document.querySelectorAll(".connections-table-toolbar button")]
+    .find((b) => b.textContent.trim() === "Group (2)…").click());
+  await page.waitForSelector(sheet, { visible: true });
+  assert.equal(await page.$eval(`${sheet} h2`, (e) => e.textContent), "New group");
+  assert.deepEqual((await ticked()).filter((t) => t.checked).map((t) => t.id), ["p-ic-1", "p-ic-2"],
+    "Group (2)… pre-ticks the two selected saved connections");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  await tickRow("p-ic-1", false);
+  await page.waitForFunction(() => [...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => b.textContent.trim() === "Group (1)…"));
+  await tickRow("p-ic-2", false);
+  await page.waitForFunction(() => ![...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => /^Group \(/.test(b.textContent.trim())));
+
+  // --- New group… from the header: create mode ticks the saved connection in
+  // use, refuses a duplicate name before sending, and sends no previous_name.
+  await page.evaluate(() => [...document.querySelectorAll(".connections-header-actions button")]
+    .find((b) => b.textContent.includes("New group…")).click());
+  await page.waitForSelector(sheet, { visible: true });
+  assert.equal(await page.$eval(`${sheet} h2`, (e) => e.textContent), "New group");
+  assert.equal(await page.$eval(`${sheet} input[aria-label="Group name"]`, (e) => e.value), "", "the name starts empty");
+  assert.deepEqual((await ticked()).filter((t) => t.checked).map((t) => t.id), ["p-ic-1"],
+    "the saved connection in use starts ticked");
+  assert.equal(await page.$(`${sheet} .group-editor-delete`), null, "create mode has no Delete group… footer");
+  const createState = () => page.$eval(`${sheet} .sheet-buttons button.primary`, (e) => ({ text: e.textContent.trim(), disabled: e.disabled }));
+  assert.deepEqual(await createState(), { text: "Create group", disabled: true }, "create mode starts with an empty required name");
+  const savesBeforeCreate = saveCalls.length;
+  await setName("mf-icx");
+  assert.match(await page.$eval(`${sheet} [role="alert"]`, (e) => e.textContent),
+    /A group named mf-icx already exists\. Choose another name, or edit mf-icx\./);
+  assert.equal((await createState()).disabled, true, "a duplicate name keeps Create group disabled");
+  assert.equal(saveCalls.length, savesBeforeCreate, "a duplicate name sends nothing");
+
+  // --- A create that takes a member of the active Group connection refreshes
+  // it without probing; the Group connection keeps its active member.
+  await setName("stage");
+  await tick("p-ic-1");
+  await tick("p-ic-3");
+  assert.deepEqual(await createState(), { text: "Create group", disabled: false });
+  const connectsBeforeCreate = connectCalls.length;
+  await page.click(`${sheet} .sheet-buttons button.primary`);
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  assert.equal(saveCalls.length, savesBeforeCreate + 1);
+  assert.equal(saveCalls.at(-1).name, "stage");
+  assert.deepEqual(saveCalls.at(-1).profile_ids, ["p-ic-3"]);
+  assert.equal(Object.hasOwn(saveCalls.at(-1), "previous_name"), false, "a create sends no previous_name");
+  await waitFor(() => connectCalls.length > connectsBeforeCreate,
+    "the active Group connection was not refreshed after losing a member to the new group");
+  assert.deepEqual(connectCalls.at(-1), { group_name: "mf-icx", active_member_profile_id: "p-ic-1" },
+    "the refresh re-opens the active group without probing");
+  await page.waitForFunction(() => {
+    const row = document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="mf-icx"]');
+    return !!row?.querySelector(".group-connection-active-note") && row.textContent.replace(/\s+/g, " ").includes("· 2 servers");
+  });
+
+  // --- Open from Home: the new group's card opens it as the Group connection.
+  const stageRow = '[data-testid="home-group-connections"] .group-connection-row[data-group="stage"]';
+  await page.waitForSelector(stageRow, { visible: true });
+  assert.deepEqual(await openButton(stageRow), { text: "Open", label: "Open group connection stage" });
+  const beforeStageOpen = connectCalls.length;
+  await page.click(`${stageRow} button[data-action="open-group"]`);
+  await waitFor(() => connectCalls.length > beforeStageOpen, "Open from Home did not open the group");
+  assert.deepEqual(connectCalls.at(-1), { group_name: "stage", probe_members: true });
+  await page.waitForFunction(() => document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"] .group-connection-active-note'));
+  assert.deepEqual(await openButton(stageRow), { text: "Refresh", label: "Refresh group connection stage" });
+  // Home with two groups (layoutMatrix also refuses horizontal page scroll at
+  // 1440 and 720 px, light and dark); the dark shots ship under local/topo-p1.
+  await layoutMatrix(page, h.shots, "group-connections-home");
+  const topoShots = new URL("../../local/topo-p1/", import.meta.url);
+  await fs.mkdir(topoShots, { recursive: true });
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "dark";
+    try { localStorage.setItem("myflames.theme", "dark"); } catch {}
+  });
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height: 900 });
+    await pause(250);
+    await page.screenshot({ path: new URL(`home-groups-${width}-dark.png`, topoShots).pathname });
+  }
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "light";
+    try { localStorage.setItem("myflames.theme", "light"); } catch {}
+  });
+  // Back to mf-icx for the delete below.
+  const beforeReopen = connectCalls.length;
+  await page.click(`${mfIcxRow} button[data-action="open-group"]`);
+  await waitFor(() => connectCalls.length > beforeReopen, "re-opening mf-icx failed");
+  assert.deepEqual(connectCalls.at(-1), { group_name: "mf-icx", probe_members: true });
+  await page.waitForFunction(() =>
+    !!document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="mf-icx"] .group-connection-active-note') &&
+    !document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"] .group-connection-active-note'));
+
   // Back to the group editor for the delete below.
   await page.click('.group-connections-section[data-testid="home-group-connections"] button[aria-label="Edit group mf-icx"]');
   await page.waitForSelector(sheet, { visible: true });
@@ -744,8 +886,22 @@ try {
   await page.click("dialog.group-editor-sheet[open] .sheet-buttons button.danger-solid");
   await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
   assert.deepEqual(deleteCalls, [{ name: "mf-icx" }]);
-  // The group is gone; every saved connection is still listed.
-  await page.waitForFunction(() => !document.querySelector('.group-connections-section[data-testid="home-group-connections"]'));
+  // The section stays while a group is left; delete it too for the empty state.
+  await page.waitForSelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"]', { visible: true });
+  await page.click('[data-testid="home-group-connections"] button[aria-label="Edit group stage"]');
+  await page.waitForSelector(sheet, { visible: true });
+  await page.click(`${sheet} .group-editor-delete`);
+  await page.waitForSelector("dialog.group-editor-sheet[open] .sheet-buttons button.danger-solid", { visible: true });
+  await page.click("dialog.group-editor-sheet[open] .sheet-buttons button.danger-solid");
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  assert.deepEqual(deleteCalls, [{ name: "mf-icx" }, { name: "stage" }]);
+  // With no groups the section shows one sentence and the New group… action;
+  // every saved connection is still listed.
+  await page.waitForSelector('[data-testid="home-group-connections"] .group-connections-empty', { visible: true });
+  assert.match(await page.$eval('[data-testid="home-group-connections"]', (e) => e.textContent.replace(/\s+/g, " ")),
+    /No groups yet\. A group opens a cluster or replication topology as one connection\./);
+  assert.equal(await page.$eval('[data-testid="home-group-connections"] .group-connections-empty', (e) =>
+    [...e.querySelectorAll("button")].some((b) => b.textContent.trim() === "New group…")), true, "the empty state offers New group…");
   for (const id of ["p-ic-1", "p-ic-2", "p-ic-3", "p-solo"]) {
     await page.waitForSelector(`.connection-row[data-row-key="${id}"]`, { visible: true });
   }
