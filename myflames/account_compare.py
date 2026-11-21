@@ -195,6 +195,80 @@ def compare(source, target, source_meta=None, target_meta=None):
                         not any(r['status'] == 'not_compared' for r in rows)}
 
 
+def _many_privilege_grants(item):
+    """Keep role membership in the structured roles comparison only."""
+    out = []
+    for line in item['grants']:
+        parts = [part.upper() for part in privileges.tokens(line)]
+        boundary = 'FROM' if parts and parts[0] == 'REVOKE' else 'TO'
+        if parts and parts[0] in ('GRANT', 'REVOKE') and boundary in parts:
+            if 'ON' not in parts[:parts.index(boundary)]:
+                continue
+        out.append(line)
+    return out
+
+
+def compare_many(snapshots):
+    """Compare credential-free account inventories by saved profile ID.
+
+    Each difference names the member differing from the first present member
+    in sorted profile order. Details contain fixed descriptions and counts,
+    never a grant statement, authentication clause or server error.
+    """
+    from .param_compare import _many_snapshots
+    profile_ids = _many_snapshots(snapshots)
+    indexed = {}
+    for pid in profile_ids:
+        items = {}
+        for raw in snapshots[pid]['items']:
+            if (not isinstance(raw, dict) or not isinstance(raw.get('name'), str) or
+                    not isinstance(raw.get('host'), str)):
+                raise ValueError('Invalid account in member inventory.')
+            key = (raw['name'], raw['host'])
+            if key in items:
+                raise ValueError('Duplicate account in member inventory.')
+            item = _safe_account(raw)
+            if (item.get('error') or item.get('exists') is False or any(
+                    item.get(field) is False for field in
+                    ('attributes_checked', 'defaults_checked', 'tls_checked'))):
+                raise ValueError('Only completely read accounts can be compared.')
+            item['grants'] = _many_privilege_grants(item)
+            items[key] = item
+        indexed[pid] = items
+    keys = set().union(*(set(items) for items in indexed.values())) if indexed else set()
+    rows = []
+    for key in sorted(keys):
+        present = [pid for pid in profile_ids if key in indexed[pid]]
+        baseline_id = present[0]
+        baseline = indexed[baseline_id][key]
+        differences = []
+        for pid in profile_ids:
+            item = indexed[pid].get(key)
+            if item is None:
+                differences.append({'profile_id': pid, 'kind': 'attributes',
+                                    'detail': 'The account is absent on this member.'})
+                continue
+            changes = _changes(baseline, item)
+            if any(changes['grants'].values()):
+                differences.append({'profile_id': pid, 'kind': 'privileges',
+                    'detail': 'Privilege grants differ from profile %s (%d only there, %d only here).' % (
+                        baseline_id, len(changes['grants']['only_in_source']),
+                        len(changes['grants']['only_in_target']))})
+            if any(changes['roles'].values()) or any(changes['default_roles'].values()):
+                differences.append({'profile_id': pid, 'kind': 'roles',
+                    'detail': 'Assigned roles or default roles differ from profile %s.' % baseline_id})
+            if changes['attributes']:
+                differences.append({'profile_id': pid, 'kind': 'attributes',
+                    'detail': '%d account attributes differ from profile %s.' % (
+                        len(changes['attributes']), baseline_id)})
+        rows.append({'account': '%s@%s' % key,
+                     'status': 'missing' if len(present) != len(profile_ids) else
+                               'different' if differences else 'same',
+                     'present_on': present, 'differences': differences})
+    order = {'different': 0, 'missing': 1, 'same': 2}
+    return sorted(rows, key=lambda row: (order[row['status']], row['account']))
+
+
 def _grant_sql(line, item, engine):
     """Rebuild SHOW GRANTS names with the existing SQL quoting builders.
 

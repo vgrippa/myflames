@@ -1,0 +1,666 @@
+{
+  "type": "object",
+  "required": [
+    "schema_version",
+    "section",
+    "group_name",
+    "taken_at",
+    "elapsed_s",
+    "effective_safety",
+    "active_member_profile_id",
+    "primary_profile_id",
+    "members",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "topology-group-1.0"
+    },
+    "section": {
+      "enum": [
+        "members",
+        "parameters",
+        "accounts",
+        "plugins"
+      ]
+    },
+    "group_name": {
+      "type": "string"
+    },
+    "taken_at": {
+      "type": "string"
+    },
+    "elapsed_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "effective_safety": {
+      "$ref": "#/definitions/safety"
+    },
+    "active_member_profile_id": {
+      "type": "string"
+    },
+    "primary_profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/member"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "read",
+        "failed",
+        "not_reached",
+        "versions",
+        "text"
+      ],
+      "properties": {
+        "read": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_reached": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/parameter"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "accounts": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/account"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "plugins": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/plugin"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Topology connection group read, version 1.0",
+  "definitions": {
+    "safety": {
+      "type": "object",
+      "required": [
+        "type",
+        "read_only"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "production",
+            "staging",
+            "development",
+            "local"
+          ]
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "lag": {
+      "type": "object",
+      "required": [
+        "kind",
+        "value",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "replica_seconds",
+            "gr_applier_queue",
+            "galera_recv_queue"
+          ]
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "behind": {
+      "type": "object",
+      "required": [
+        "kind",
+        "value",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "mysql_gtid_transactions",
+            "mariadb_domain_sequence"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        },
+        "domains": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "member": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "profile_name",
+        "host",
+        "port",
+        "safety",
+        "outcome",
+        "message",
+        "elapsed_s",
+        "engine",
+        "product",
+        "version",
+        "version_comment",
+        "server_uuid",
+        "server_id",
+        "hostname",
+        "read_only",
+        "super_read_only",
+        "role",
+        "state",
+        "lag",
+        "behind",
+        "behind_reason"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "safety": {
+          "$ref": "#/definitions/safety"
+        },
+        "outcome": {
+          "enum": [
+            "read",
+            "failed",
+            "not_reached"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "elapsed_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb",
+            null
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_id": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "super_read_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lag": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/lag"
+            }
+          ]
+        },
+        "behind": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/behind"
+            }
+          ]
+        },
+        "behind_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameter": {
+      "type": "object",
+      "required": [
+        "name",
+        "status",
+        "values",
+        "apply_type",
+        "dynamic"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing",
+            "per_server"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "apply_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dynamic": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "account": {
+      "type": "object",
+      "required": [
+        "account",
+        "status",
+        "present_on",
+        "differences"
+      ],
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing"
+          ]
+        },
+        "present_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "differences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "kind",
+              "detail"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "privileges",
+                  "roles",
+                  "attributes"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "plugin": {
+      "type": "object",
+      "required": [
+        "name",
+        "kind",
+        "status",
+        "values"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "plugin",
+            "component"
+          ]
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status",
+                  "version"
+                ],
+                "properties": {
+                  "status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "version": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "section": {
+          "const": "members"
+        }
+      },
+      "required": [
+        "section"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "parameters"
+        }
+      },
+      "required": [
+        "section",
+        "parameters"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "accounts"
+        }
+      },
+      "required": [
+        "section",
+        "accounts"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "plugins"
+        }
+      },
+      "required": [
+        "section",
+        "plugins"
+      ]
+    }
+  ]
+}

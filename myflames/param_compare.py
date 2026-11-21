@@ -263,3 +263,109 @@ def compare(source, target, source_meta=None, target_meta=None):
             'counts': {s: sum(r['status'] == s for r in rows) for s in STATUS_TEXT},
             'identical': all(s.get('complete') and not s.get('error') for s in sides) and all(r['status'] == 'identical' for r in rows),
             'complete': all(s.get('complete') and not s.get('error') for s in sides)}
+
+
+def _many_snapshots(snapshots):
+    """Validate the complete inventories admitted to a group comparison.
+
+    The group reader reports failed or incomplete members in not_compared.
+    Treating an incomplete inventory as an empty server would invent missing
+    settings or accounts, so the pure comparison refuses such inputs too.
+    """
+    if not isinstance(snapshots, dict) or any(
+            not isinstance(pid, str) or not pid for pid in snapshots):
+        raise ValueError('Group snapshots must be keyed by saved connection ID.')
+    for side in snapshots.values():
+        if (not isinstance(side, dict) or side.get('complete') is not True or
+                side.get('error') or not isinstance(side.get('items'), list)):
+            raise ValueError('Only complete member inventories can be compared.')
+        if len(side['items']) > MAX_ITEMS:
+            raise ValueError('The member inventory is too large to compare.')
+    return sorted(snapshots)
+
+
+def _group_auto_increment(indexed):
+    """Fold generated node offsets only when every compared member opts in."""
+    # MySQL plugin/group_replication/src/plugin.cc:4830 defines
+    # single_primary_mode; sql/sys_vars.cc:1110,1117 defines increment/offset.
+    # MariaDB sql/sys_vars.cc:6514 defines wsrep_auto_increment_control;
+    # :6486-6493 derives increment from cluster size and offset from node index.
+    for items in indexed.values():
+        def value(name):
+            item = items.get(name) or {}
+            return None if item.get('redacted') or item.get('truncated') else item.get('value')
+        multi_primary = (normalize(value('group_replication_single_primary_mode'), 'boolean') ==
+                         ('boolean', False) and bool(value('group_replication_group_name')))
+        wsrep_control = normalize(value('wsrep_auto_increment_control'), 'boolean') == ('boolean', True)
+        if not (multi_primary or wsrep_control):
+            return False
+    return bool(indexed)
+
+
+def compare_many(snapshots):
+    """Compare complete member snapshots without performing a server read.
+
+    ``snapshots`` maps saved profile IDs to capture() results. Values retain
+    their raw spelling; typed normalization decides equality only. Missing
+    includes an unavailable, redacted or truncated value, with a reason so a
+    masked secret can never be mistaken for proof that passwords match.
+    """
+    profile_ids = _many_snapshots(snapshots)
+    indexed = {}
+    for pid in profile_ids:
+        items = {}
+        for item in snapshots[pid]['items']:
+            if (not isinstance(item, dict) or not isinstance(item.get('name'), str) or
+                    not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name'])):
+                raise ValueError('Invalid parameter name in member inventory.')
+            name = item['name'].lower()
+            if name in items:
+                raise ValueError('Duplicate parameter name in member inventory.')
+            raw = item.get('value')
+            if raw is not None and not isinstance(raw, (str, int, float, bool)):
+                raise ValueError('Parameter values must be scalar.')
+            # Reapply the capture projection at this pure-function boundary.
+            # Do not trust a caller to have removed a secret already.
+            value = '[redacted]' if sensitive(name) else _redact_parameter_value(raw)
+            json.dumps(value, allow_nan=False)
+            items[name] = dict(item, value=value, redacted=bool(
+                item.get('redacted') or sensitive(name) or value != raw),
+                unavailable='value' not in item)
+        indexed[pid] = items
+    # Engine definitions: MySQL plugin/group_replication/src/plugin.cc:4437;
+    # MariaDB sql/sys_vars.cc:6434 and :6535. These are node listener addresses.
+    per_server = set(IDENTITY_NAMES) | {'group_replication_local_address',
+        'wsrep_node_incoming_address', 'wsrep_sst_receive_address'}
+    if _group_auto_increment(indexed):
+        per_server.update(('auto_increment_offset', 'auto_increment_increment'))
+    names = set().union(*(set(items) for items in indexed.values())) if indexed else set()
+    rows = []
+    for name in sorted(names):
+        entries = [indexed[pid].get(name) for pid in profile_ids]
+        present = [item for item in entries if item is not None]
+        unavailable = any(item and (item.get('redacted') or item.get('truncated') or
+                                   item.get('unavailable')) for item in entries)
+        kind = next((item.get('type') for item in present if item.get('type')), None)
+        normalized = [normalize(item.get('value'), kind) for item in present]
+        missing = len(present) != len(profile_ids)
+        status = ('missing' if unavailable else 'per_server' if name in per_server else
+                  'missing' if missing else 'different' if any(
+                      value != normalized[0] for value in normalized[1:]) else 'same')
+
+        def shared(field):
+            values = [item.get(field) if item else None for item in entries]
+            if field == 'dynamic':
+                values = [item.get('dynamic', item.get('apply_type') == 'dynamic'
+                          if item.get('apply_type') in ('dynamic', 'static') else None)
+                          if item else None for item in entries]
+            return values[0] if not missing and all(value == values[0] for value in values) else None
+
+        row = {'name': name, 'status': status,
+               'values': {pid: indexed[pid][name].get('value') if name in indexed[pid] else None
+                          for pid in profile_ids},
+               'apply_type': shared('apply_type'), 'dynamic': shared('dynamic')}
+        if unavailable:
+            row['reason'] = 'A value was redacted, truncated or unavailable; it cannot be compared.'
+        rows.append(row)
+    order = {'different': 0, 'missing': 1, 'same': 2, 'per_server': 3}
+    return sorted(rows, key=lambda row: (order[row['status']], row['name']))

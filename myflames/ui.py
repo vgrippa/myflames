@@ -1626,8 +1626,7 @@ def _connect_response(payload, workspace):
     group while discovery runs gets no later client invocation.
     """
     from . import connection_groups, dbops
-    from .live import connection_options
-    from .connector import MySQLConnection
+    from .group_members import open_group_member
     store = workspace.store
     group_name = connection_groups.validate_group(payload.get("group_name"))
     if not group_name:
@@ -1651,40 +1650,15 @@ def _connect_response(payload, workspace):
         active = primary or members[0]
 
     from .accounts_api import _group_login_guard
-    from .workspace_store import ENDPOINT_FIELDS, _same_endpoint
+    from .workspace_store import ENDPOINT_FIELDS
     active_route = dict({k: active.get(k) for k in ENDPOINT_FIELDS}, profile_id=active["id"], group_name=group_name)
     active_guard = _group_login_guard(store, active_route)
 
     def open_member(profile, with_facts):
-        value = {k: profile.get(k) for k in ("host", "port", "user", "database", "ssl_mode", "ssl_ca",
-                                             "ssh_host", "ssh_user", "ssh_port")
-                 if profile.get(k) not in (None, "")}
-        value["profile_id"] = profile["id"]
-        value["group_name"] = group_name
-        filled = store.connection_with_saved_password(value)
-        options = connection_options(filled)
-        password = options.get("password")
-
-        def login_guard():
-            # Consent is the store at every login: a member removed from the
-            # group while discovery runs gets no later client invocation.
-            active_guard()
-            current = store.get("profile", profile["id"])
-            if (not isinstance(current, dict) or (current.get("group") or "") != group_name
-                    or not _same_endpoint(current, profile)
-                    or current.get("group_generation") != profile.get("group_generation")):
-                raise connection_groups.ProfileReadError(
-                    "This saved connection is outside the current connection group.")
-
-        try:
-            conn = MySQLConnection(**options)
-            conn._login_guard = login_guard
-            conn._group_login_started = False
-            with conn:
-                return _connection_test_report(conn, options, password), \
-                    _member_live_facts(conn) if with_facts else None
-        except (ValueError, ConnectorError) as exc:
-            _reraise_redacted(exc, password)
+        with open_group_member(store, group_name, profile, active_guard) as opened:
+            conn, options = opened
+            return _connection_test_report(conn, options, options.get("password")), \
+                _member_live_facts(conn) if with_facts else None
 
     discovery, active_facts = open_member(active, True)
     facts_by_id = {active["id"]: active_facts}
@@ -2524,6 +2498,23 @@ def api_response(path, payload, workspace=None):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
         return _connect_response(payload, workspace)
+    if path == "/api/live/topology":
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        from . import connection_groups, topology_group
+        from .editor_session import _connection_facts
+        connection = payload.get("connection")
+        if not isinstance(connection, dict) or not connection.get("group_name"):
+            raise ValueError("This saved connection is outside the current connection group.")
+        section = payload.get("section")
+        if not isinstance(section, str) or section not in topology_group.SECTIONS:
+            raise ValueError("Choose a topology section: members, parameters, accounts or plugins.")
+        # Reuse the Group connection membership check before any secret lookup.
+        _connection_facts(payload, workspace.store)
+        _profiles, current = connection_groups.request_profiles(workspace.store, connection)
+        if current is None:
+            raise ValueError("This saved connection is outside the current connection group.")
+        return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"])
     if path == "/api/analysis/prepare-query":
         from .analysis_query import prepare
         return prepare(payload.get("query"))
@@ -3390,7 +3381,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/connect",
-                             "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
+                             "/api/live/topology", "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
                              "/api/live/running", "/api/live/sessions", "/api/live/sessions/history", "/api/live/ddl-progress",
                              "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",
                              "/api/live/kill", "/api/live/kill/prepare",

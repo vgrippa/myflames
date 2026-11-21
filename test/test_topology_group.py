@@ -1,0 +1,704 @@
+"""Whole-group reads preserve stored consent and compare credential-free facts.
+
+The fixtures are synthetic. Saved profiles, generation checks and dbops stay
+real; only the MySQL client process boundary is replaced in consent tests.
+"""
+import copy
+import contextlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import threading
+import time
+import types
+import unittest
+from unittest import mock
+
+from myflames import account_compare, connector, group_members, param_compare, topology_group, ui
+from myflames.accounts_api import _group_login_guard
+from myflames.connection_groups import ProfileReadError
+from test_account_compare import account, side
+from test_chart_data import validate
+from test_connection_groups import GroupCase, _FakeMemberConn
+from test_param_compare import item, snapshot
+
+
+UUID_A = 'aaaaaaaa-0000-4000-8000-000000000001'
+UUID_B = 'bbbbbbbb-0000-4000-8000-000000000002'
+ROOT = Path(__file__).resolve().parent.parent
+
+
+# A temporary executable speaks only the read-session XML protocol. It never
+# connects to a server. Real pipes, defaults files and process cleanup remain
+# in the test, so counting connection objects cannot hide repeated logins.
+CLIENT = r'''
+import json
+import os
+import re
+import sys
+import time
+from xml.sax.saxutils import escape, quoteattr
+
+cfg = json.loads(os.environ['TOPOLOGY_FIXTURE'])
+log = os.environ['TOPOLOGY_SQL_LOG']
+first = True
+
+def emit(columns, rows, statement):
+    out = ['<resultset statement=' + quoteattr(statement) +
+           ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">']
+    for row in rows:
+        out.append('<row>')
+        for name, value in zip(columns, row):
+            if value is None:
+                out.append('<field name=' + quoteattr(name) + ' xsi:nil="true"/>')
+            else:
+                out.append('<field name=' + quoteattr(name) + '>' + escape(str(value)) + '</field>')
+        out.append('</row>')
+    out.append('</resultset>\n')
+    sys.stdout.write(''.join(out))
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    sql = line.strip()
+    if not sql:
+        continue
+    with open(log, 'a', encoding='utf-8') as handle:
+        handle.write(json.dumps(sql) + '\n')
+    marker = re.search(r"SELECT '([^']+)' AS myflames_topology_end", sql)
+    if marker:
+        emit(['myflames_topology_end'], [[marker.group(1)]], sql)
+        continue
+    if first:
+        first = False
+        time.sleep(cfg.get('pause', 0))
+    if cfg.get('error'):
+        sys.stderr.write(cfg['error'] + '\n')
+        sys.stderr.flush()
+        continue
+    text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', sql).rstrip(';')
+    lower = text.lower()
+    variables = cfg['variables']
+    if lower == 'select @@version_comment':
+        emit(['@@version_comment'], [[variables['version_comment']]], sql)
+    elif lower == 'select @@version':
+        emit(['@@version'], [[variables['version']]], sql)
+    elif "variable_name = 'admin-version'" in lower:
+        rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
+        emit(['variable_value'], rows, sql)
+    elif lower == 'show readyset version':
+        emit(['name', 'value'], [['release version', 'stable-test']], sql)
+    elif lower.startswith('show global variables'):
+        names = re.findall(r"'([^']+)'", text)
+        rows = [[name, variables[name]] for name in names if name in variables]
+        emit(['Variable_name', 'Value'], rows, sql)
+    elif 'from performance_schema.replication_group_members' in lower:
+        role = cfg.get('role')
+        state = cfg.get('state', 'ONLINE')
+        present = role or cfg.get('has_gr')
+        if lower.startswith('select member_state'):
+            emit(['MEMBER_STATE'], [[state]] if present else [], sql)
+        else:
+            emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [], sql)
+    elif 'from performance_schema.replication_group_member_stats' in lower:
+        emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]], sql)
+    elif lower.startswith('show global status'):
+        values = cfg.get('status', {})
+        names = re.findall(r"'([^']+)'", text)
+        emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values], sql)
+    elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
+        channels = cfg.get('channels', [])
+        columns = list(channels[0]) if channels else []
+        emit(columns, [[row.get(name) for name in columns] for row in channels], sql)
+    elif lower in ('show replicas', 'show slave hosts'):
+        emit(['Server_id', 'Host', 'Port'], cfg.get('replicas', []), sql)
+    elif 'from information_schema.plugins' in lower:
+        emit(['PLUGIN_NAME', 'PLUGIN_STATUS', 'PLUGIN_TYPE', 'PLUGIN_VERSION', 'PLUGIN_LIBRARY', 'LOAD_OPTION'],
+             cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]), sql)
+    elif 'from mysql.component' in lower:
+        emit(['component_urn'], [[value] for value in cfg.get('components', [])], sql)
+    elif lower == 'select 1':
+        emit(['1'], [['1']], sql)
+    else:
+        sys.stderr.write('ERROR 1064 (42000): unexpected synthetic read\n')
+        sys.stderr.flush()
+'''
+
+
+def member_fixture(uuid=UUID_A, engine='mysql', role=None, gtid=None, **fields):
+    variables = {'version': '11.4.9-MariaDB' if engine == 'mariadb' else '8.4.11',
+                 'version_comment': 'MariaDB Server' if engine == 'mariadb' else 'MySQL Community Server (GPL)',
+                 'server_id': '1', 'hostname': 'own-member', 'read_only': 'OFF',
+                 'gtid_current_pos' if engine == 'mariadb' else 'gtid_executed': gtid or ''}
+    if engine == 'mysql':
+        variables.update(server_uuid=uuid, super_read_only='OFF', gtid_mode='ON')
+    result = dict(variables=variables, role=role)
+    result.update(fields)
+    return result
+
+
+class GTIDTests(unittest.TestCase):
+    def test_empty_sets_and_interval_union(self):
+        self.assertEqual(topology_group.parse_mysql_gtids(''), {})
+        self.assertEqual(topology_group.count_mysql_gtids({}), 0)
+        parsed = topology_group.parse_mysql_gtids(UUID_A + ':1-3:3-5:9:8-10')
+        self.assertEqual(topology_group.count_mysql_gtids(parsed), 8)
+        self.assertEqual(parsed[(UUID_A, '')], [(1, 5), (8, 10)])
+
+    def test_subtract_splits_intervals_and_preserves_other_sources(self):
+        source = topology_group.parse_mysql_gtids(UUID_A + ':1-10,' + UUID_B + ':5-7')
+        member = topology_group.parse_mysql_gtids(UUID_A + ':2-4:6:9-15')
+        difference = topology_group.subtract_mysql_gtids(source, member)
+        self.assertEqual(difference[(UUID_A, '')], [(1, 1), (5, 5), (7, 8)])
+        self.assertEqual(difference[(UUID_B, '')], [(5, 7)])
+        self.assertEqual(topology_group.count_mysql_gtids(difference), 7)
+        self.assertEqual(topology_group.subtract_mysql_gtids(source, source), {})
+        self.assertEqual(topology_group.subtract_mysql_gtids({}, member), {})
+
+    def test_tagged_sets_share_uuid_but_not_transaction_stream(self):
+        # MySQL serializes several tag blocks under one UUID. Tag case is
+        # normalized by the server, and untagged transactions stay separate.
+        source = topology_group.parse_mysql_gtids(UUID_A.upper() + ':1-4:Tag_A:1-5:TagB:3-7')
+        member = topology_group.parse_mysql_gtids(UUID_A + ':1-4:tag_a:1-2:tagb:5-7')
+        self.assertEqual(set(source), {(UUID_A, ''), (UUID_A, 'tag_a'), (UUID_A, 'tagb')})
+        diff = topology_group.subtract_mysql_gtids(source, member)
+        self.assertEqual(diff[(UUID_A, 'tag_a')], [(3, 5)])
+        self.assertEqual(diff[(UUID_A, 'tagb')], [(3, 4)])
+        self.assertEqual(topology_group.count_mysql_gtids(diff), 5)
+
+    def test_repeated_tag_streams_merge_and_large_ranges_are_not_expanded(self):
+        parsed = topology_group.parse_mysql_gtids(UUID_A + ':blue:1-5,' + UUID_A + ':BLUE:4-10')
+        self.assertEqual(parsed[(UUID_A, 'blue')], [(1, 10)])
+        large = topology_group.parse_mysql_gtids(UUID_A + ':1-9000000000000')
+        self.assertEqual(topology_group.count_mysql_gtids(large), 9000000000000)
+        self.assertEqual(len(large[(UUID_A, '')]), 1)
+
+    def test_malformed_gtids_are_unavailable_not_silently_zero(self):
+        invalid = ('not-a-uuid:1', UUID_A + ':0', UUID_A + ':4-2', UUID_A + ':tag!',
+                   UUID_A + ':tag:1-no', UUID_A + ':' + 'x' * 33 + ':1')
+        for text in invalid:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                topology_group.parse_mysql_gtids(text)
+
+    def test_mariadb_positions_keep_domain_sequence_and_origin(self):
+        parsed = topology_group.parse_mariadb_gtids('0-12-100,7-45-30')
+        self.assertEqual(parsed[0], {'server_id': 12, 'sequence': 100})
+        self.assertEqual(parsed[7], {'server_id': 45, 'sequence': 30})
+        self.assertEqual(topology_group.parse_mariadb_gtids(''), {})
+        self.assertEqual(topology_group.mariadb_behind('0-12-100,7-45-30', '0-99-95,7-45-40'),
+                         {'0': 5, '7': 0})
+        self.assertEqual(topology_group.mariadb_behind('0-12-100,7-45-30', '0-12-100'),
+                         {'0': 0, '7': 30})
+        self.assertEqual(topology_group.mariadb_behind('', ''), {})
+
+    def test_invalid_mariadb_position_refuses(self):
+        for text in ('0-1', 'x-1-2', '0-1--2', '0-1-2,bad'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                topology_group.parse_mariadb_gtids(text)
+
+
+class ParameterManyTests(unittest.TestCase):
+    def test_differences_first_missing_values_and_identity_fold(self):
+        a = snapshot([item('z_diff', '1', apply_type='dynamic', dynamic=True),
+                      item('same', '001'), item('one_only', '4'), item('server_id', '1'),
+                      item('group_replication_local_address', 'one:33061', 'string')])
+        b = snapshot([item('z_diff', '2', apply_type='dynamic', dynamic=True),
+                      item('same', '1'), item('server_id', '2'),
+                      item('group_replication_local_address', 'two:33061', 'string')])
+        before = copy.deepcopy((a, b))
+        rows = param_compare.compare_many({'one': a, 'two': b})
+        by_name = {row['name']: row for row in rows}
+        self.assertEqual(by_name['z_diff']['status'], 'different')
+        self.assertEqual(by_name['same']['status'], 'same')
+        self.assertEqual(by_name['one_only']['status'], 'missing')
+        self.assertEqual(by_name['one_only']['values'], {'one': '4', 'two': None})
+        self.assertEqual(by_name['server_id']['status'], 'per_server')
+        self.assertEqual(by_name['group_replication_local_address']['status'], 'per_server')
+        self.assertEqual(by_name['z_diff']['apply_type'], 'dynamic')
+        self.assertIs(by_name['z_diff']['dynamic'], True)
+        first_same = min(i for i, r in enumerate(rows) if r['status'] in ('same', 'per_server'))
+        self.assertTrue(all(r['status'] in ('different', 'missing') for r in rows[:first_same]))
+        self.assertEqual((a, b), before, 'the pure comparison does not mutate captures')
+
+    def test_galera_member_addresses_fold(self):
+        names = ('wsrep_node_incoming_address', 'wsrep_sst_receive_address')
+        a = snapshot([item(name, 'a:4444', 'string') for name in names], engine='mariadb')
+        b = snapshot([item(name, 'b:4444', 'string') for name in names], engine='mariadb')
+        self.assertTrue(all(r['status'] == 'per_server' for r in param_compare.compare_many({'a': a, 'b': b})))
+
+    def test_auto_increment_folds_only_with_live_cluster_mode(self):
+        for engine, mode, enabled, disabled in (
+                ('mysql', 'group_replication_single_primary_mode', 'OFF', 'ON'),
+                ('mariadb', 'wsrep_auto_increment_control', 'ON', 'OFF')):
+            with self.subTest(engine=engine):
+                a = snapshot([item(mode, enabled, 'boolean'), item('auto_increment_offset', '1'),
+                              item('auto_increment_increment', '3')], engine=engine)
+                b = snapshot([item(mode, enabled, 'boolean'), item('auto_increment_offset', '2'),
+                              item('auto_increment_increment', '4')], engine=engine)
+                if engine == 'mysql':
+                    for value in (a, b):
+                        value['items'].append(item('group_replication_group_name', UUID_A, 'string'))
+                rows = {r['name']: r for r in param_compare.compare_many({'a': a, 'b': b})}
+                for name in ('auto_increment_offset', 'auto_increment_increment'):
+                    self.assertEqual(rows[name]['status'], 'per_server')
+                a['items'][0]['value'] = b['items'][0]['value'] = disabled
+                rows = {r['name']: r for r in param_compare.compare_many({'a': a, 'b': b})}
+                for name in ('auto_increment_offset', 'auto_increment_increment'):
+                    self.assertEqual(rows[name]['status'], 'different')
+
+    def test_secret_values_never_enter_many_comparison(self):
+        a = snapshot([item('wsrep_sst_auth', 'root:private-a', 'string')])
+        b = snapshot([item('wsrep_sst_auth', 'root:private-b', 'string')])
+        rows = param_compare.compare_many({'a': a, 'b': b})
+        encoded = json.dumps(rows)
+        self.assertNotIn('private-a', encoded)
+        self.assertNotIn('private-b', encoded)
+        self.assertNotEqual(rows[0]['status'], 'same', 'redacted credentials cannot establish equality')
+        self.assertEqual(param_compare.compare_many({}), [])
+
+
+class AccountManyTests(unittest.TestCase):
+    def test_same_missing_and_changed_privileges_roles_attributes(self):
+        base = account('changed', grants=['GRANT SELECT ON *.* TO `changed`@`%`'])
+        other = copy.deepcopy(base)
+        other['grants'] = ['GRANT INSERT ON *.* TO `changed`@`%`']
+        other['roles'] = [{'name': 'reader', 'host': '%', 'admin_option': False}]
+        other['attributes']['locked'] = True
+        a = side([base, account('same'), account('only')])
+        b = side([other, account('same')])
+        rows = {r['account']: r for r in account_compare.compare_many({'a': a, 'b': b})}
+        self.assertEqual(rows['same@%']['status'], 'same')
+        self.assertEqual(rows['only@%']['status'], 'missing')
+        self.assertEqual(rows['only@%']['present_on'], ['a'])
+        changed = rows['changed@%']
+        self.assertEqual(changed['status'], 'different')
+        self.assertEqual(set(changed['present_on']), {'a', 'b'})
+        self.assertEqual({d['kind'] for d in changed['differences']}, {'privileges', 'roles', 'attributes'})
+        self.assertTrue(all(d['profile_id'] in ('a', 'b') and d['detail'] for d in changed['differences']))
+
+    def test_normalization_and_credential_projection(self):
+        a = account(grants=['GRANT SELECT, INSERT ON `db`.* TO `app`@`%`'])
+        b = account(grants=["grant INSERT,SELECT on 'db'.* to 'app'@'%' ;"])
+        a['password'] = b['password'] = 'raw-password'
+        a['authentication_string'] = b['authentication_string'] = 'hash-secret'
+        a['attributes']['credential'] = b['attributes']['credential'] = 'attribute-secret'
+        rows = account_compare.compare_many({'a': side([a]), 'b': side([b])})
+        self.assertEqual(rows[0]['status'], 'same')
+        encoded = json.dumps(rows)
+        for secret in ('raw-password', 'hash-secret', 'attribute-secret', 'authentication_string'):
+            self.assertNotIn(secret, encoded)
+        self.assertEqual(account_compare.compare_many({}), [])
+
+
+class PluginManyTests(unittest.TestCase):
+    def test_plugin_status_version_missing_and_component_kind(self):
+        a = [{'name': 'auth', 'kind': 'plugin', 'status': 'ACTIVE', 'version': '1.0'},
+             {'name': 'same', 'kind': 'plugin', 'status': 'ACTIVE', 'version': '1.0'},
+             {'name': 'file://component_validate_password', 'kind': 'component', 'status': 'ACTIVE', 'version': None}]
+        b = [{'name': 'auth', 'kind': 'plugin', 'status': 'DISABLED', 'version': '1.1'},
+             {'name': 'same', 'kind': 'plugin', 'status': 'ACTIVE', 'version': '1.0'}]
+        rows = {r['name']: r for r in topology_group.compare_plugins({'a': a, 'b': b})}
+        self.assertEqual(rows['auth']['status'], 'different')
+        self.assertEqual(rows['same']['status'], 'same')
+        component = rows['file://component_validate_password']
+        self.assertEqual(component['kind'], 'component')
+        self.assertEqual(component['status'], 'missing')
+        self.assertIsNone(component['values']['b'])
+        self.assertEqual(rows['auth']['values']['b'], {'status': 'DISABLED', 'version': '1.1'})
+        self.assertEqual(topology_group.compare_plugins({}), [])
+
+
+class MemberLoginTests(GroupCase):
+    def setUp(self):
+        super(MemberLoginTests, self).setUp()
+        self.active = self.save('active', 'G', type='development')
+        self.member = self.save('member', 'G')
+        self.route = dict(self.request(self.active), group_name='G')
+        self.guard = _group_login_guard(self.store, self.route)
+
+    @contextlib.contextmanager
+    def client(self, error=None):
+        def invoke(argv, **options):
+            if error is not None:
+                raise connector.ConnectorError(error)
+            return types.SimpleNamespace(returncode=0, stdout=b'1\n', stderr=b'')
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded', side_effect=invoke) as spawn:
+            yield spawn
+
+    def test_helper_fills_the_members_saved_password(self):
+        self.member = self.store.save('profile', dict(self.member), 'member', password='member-only-password', remember=True)
+        with self.client() as spawn:
+            with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                conn, options = opened
+                self.assertEqual(options['password'], 'member-only-password')
+                self.assertEqual(conn.run('SELECT 1'), '1\n')
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_removed_member_after_password_lookup_never_logs_in(self):
+        with self.client() as spawn:
+            with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                self.store.assign_profile_group(['member'], '')
+                with self.assertRaises(ProfileReadError):
+                    opened[0].run('SELECT 1')
+        spawn.assert_not_called()
+
+    def test_removed_active_member_revokes_peer_login(self):
+        with self.client() as spawn:
+            with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                self.store.assign_profile_group(['active'], '')
+                with self.assertRaises(ProfileReadError):
+                    opened[0].run('SELECT 1')
+        spawn.assert_not_called()
+
+    def test_recreated_group_generation_refuses_old_consent(self):
+        with self.client() as spawn:
+            with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                self.store.delete_connection_group('G')
+                self.store.save_connection_group('G', ['active', 'member'])
+                with self.assertRaises(ProfileReadError):
+                    opened[0].run('SELECT 1')
+        spawn.assert_not_called()
+
+    def test_member_endpoint_change_refuses_old_consent(self):
+        with self.client() as spawn:
+            with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                self.store.save('profile', dict(self.member, host='changed.example'), 'member',
+                                password='test-password', remember=True)
+                with self.assertRaises(ProfileReadError):
+                    opened[0].run('SELECT 1')
+        spawn.assert_not_called()
+
+    def test_helper_redacts_saved_password_in_client_exception(self):
+        with self.client(error='client failed with test-password'):
+            with self.assertRaises(connector.ConnectorError) as error:
+                with group_members.open_group_member(self.store, 'G', self.member, self.guard) as opened:
+                    opened[0].run('SELECT 1')
+        self.assertNotIn('test-password', str(error.exception))
+
+    def test_connect_uses_shared_helper_without_changing_discovery(self):
+        _FakeMemberConn.reset(uuids={'active.example': UUID_A})
+        with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn), \
+                mock.patch.object(group_members, 'open_group_member', wraps=group_members.open_group_member) as helper:
+            result = ui.api_response('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'active'},
+                                     types.SimpleNamespace(store=self.store))
+        self.assertEqual(result['version'], '8.0.36')
+        self.assertEqual(result['schemas'], ['app'])
+        self.assertEqual(result['group_connection']['active_member_profile_id'], 'active')
+        self.assertEqual(helper.call_count, 1)
+        self.assertEqual(_FakeMemberConn.logins, ['active.example'])
+
+
+class TopologyEndpointTests(GroupCase):
+    def setUp(self):
+        super(TopologyEndpointTests, self).setUp()
+        self.profile = self.save('active', 'G', type='development')
+        self.connection = dict(self.request(self.profile), group_name='G')
+        self.workspace = types.SimpleNamespace(store=self.store, token='test-token')
+
+    def post(self, payload):
+        """Run authenticated POST dispatch without starting an HTTP service."""
+        from email.message import Message
+        handler = object.__new__(ui.WorkspaceHandler)
+        handler.path, handler.server = '/api/live/topology', self.workspace
+        handler.headers = Message()
+        body = json.dumps(payload).encode('utf-8')
+        handler.headers['Content-Type'] = 'application/json'
+        handler.headers['Content-Length'] = str(len(body))
+        handler.headers['X-Myflames-Token'] = self.workspace.token
+        handler._local_request = lambda: True
+        handler._authenticated = lambda: True
+        handler._read_body = lambda size: body
+        handler._send = mock.Mock()
+        handler.do_POST()
+        return handler._send.call_args[0][:2]
+
+    def test_missing_group_and_nonmember_are_http_400_before_login(self):
+        other = self.save('other', 'H')
+        cases = [self.request(self.profile), dict(self.connection, group_name=''),
+                 dict(self.request(other), group_name='G'),
+                 dict(self.connection, profile_id='missing')]
+        with mock.patch.object(connector, 'MySQLConnection') as connection:
+            for value in cases:
+                with self.subTest(connection=value):
+                    status, result = self.post({'connection': value, 'section': 'members'})
+                    self.assertEqual(status, 400, result)
+                    if value.get('profile_id') in ('other', 'missing'):
+                        self.assertIn('This saved connection is outside the current connection group.', result['error'])
+        connection.assert_not_called()
+
+    def test_section_is_a_strict_allowlist_and_map_is_reserved(self):
+        with mock.patch.object(connector, 'MySQLConnection') as connection:
+            for section in ('map', 'Members', 'members ', 'bad', '', None, True, [], {}):
+                with self.subTest(section=section):
+                    status, result = self.post({'connection': self.connection, 'section': section})
+                    self.assertEqual(status, 400, result)
+        connection.assert_not_called()
+
+    def test_request_endpoint_cannot_borrow_stored_member_consent(self):
+        with mock.patch.object(connector, 'MySQLConnection') as connection:
+            status, result = self.post({'connection': dict(self.connection, host='outside.example'),
+                                        'section': 'members'})
+        self.assertEqual(status, 400, result)
+        connection.assert_not_called()
+
+    def test_topology_is_in_read_paths_and_never_write_paths(self):
+        self.assertIn('/api/live/topology', ui._CONNECTION_PATHS)
+        self.assertNotIn('/api/live/topology', ui._WRITE_PATHS)
+
+
+class TopologyReadTests(GroupCase):
+    def setUp(self):
+        super(TopologyReadTests, self).setUp()
+        self.active = self.save('active', 'G', type='development')
+        self.connection = dict(self.request(self.active), group_name='G')
+        self.workspace = types.SimpleNamespace(store=self.store, token='test-token')
+
+    @contextlib.contextmanager
+    def clients(self, fixtures, after_spawn=None):
+        script = Path(self.temp.name) / 'topology-client.py'
+        script.write_text(CLIENT, encoding='utf-8')
+        processes, logins, logs, peak = [], [], {}, [0]
+        lock = threading.Lock()
+        popen = subprocess.Popen
+
+        def spawn(argv, **kwargs):
+            self.assertNotIn('-e', argv, 'each member uses a persistent login')
+            self.assertIn('--skip-reconnect', argv)
+            self.assertIn('--local-infile=0', argv)
+            defaults = next(value.split('=', 1)[1] for value in argv if value.startswith('--defaults-file='))
+            content = Path(defaults).read_text(encoding='utf-8')
+            host = re.search(r'^host=(.+)$', content, re.M).group(1).strip('"')
+            self.assertIn('password=', content, 'the real saved-password fill supplies credentials')
+            self.assertIn(host, fixtures, 'a request cannot add an unsaved group member')
+            logfile = Path(self.temp.name) / ('sql-%s.jsonl' % host)
+            env = dict(kwargs.get('env') or {})
+            env.update(TOPOLOGY_FIXTURE=json.dumps(fixtures[host]), TOPOLOGY_SQL_LOG=str(logfile))
+            proc = popen([sys.executable, str(script)] + argv[1:], **dict(kwargs, env=env))
+            with lock:
+                processes.append(proc)
+                logins.append(host)
+                logs[host] = logfile
+                peak[0] = max(peak[0], sum(p.poll() is None for p in processes))
+            if after_spawn is not None:
+                after_spawn(host)
+            return proc
+
+        observed = types.SimpleNamespace(logins=logins, processes=processes, logs=logs, peak=peak)
+        try:
+            with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value=str(script)), \
+                    mock.patch.object(connector.MySQLConnection, '_client_engine_facts', return_value=('mysql', 'mysql')), \
+                    mock.patch.object(topology_group.subprocess, 'Popen', side_effect=spawn):
+                yield observed
+            self.assertTrue(all(proc.returncode is not None for proc in processes),
+                            'all member clients must already be reaped when the request returns')
+        finally:
+            # Cleanup must also run after an assertion failure.
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+
+    def read(self, section='members', active='active'):
+        return topology_group.read_group(self.store, 'G', section, active)
+
+    def statements(self, observed, host=None):
+        paths = [observed.logs[host]] if host else observed.logs.values()
+        return [json.loads(line) for path in paths if path.exists()
+                for line in path.read_text(encoding='utf-8').splitlines()]
+
+    def test_members_endpoint_schema_identity_gtid_and_single_login(self):
+        self.save('replica', 'G', type='production')
+        self.save('outsider', 'elsewhere')
+        fixtures = {'active.example': member_fixture(UUID_A, role='PRIMARY', gtid=UUID_A + ':1-10'),
+                    'replica.example': member_fixture(UUID_B, role='SECONDARY', gtid=UUID_A + ':1-5', queue=2)}
+        fixtures['replica.example']['variables'].update(hostname='own-replica', server_id='2', read_only='ON', super_read_only='ON')
+        with self.clients(fixtures) as observed:
+            status, report = TopologyEndpointTests.post(self, {'connection': self.connection, 'section': 'members'})
+        self.assertEqual(status, 200, report)
+        self.assertEqual(sorted(observed.logins), ['active.example', 'replica.example'])
+        self.assertEqual(report['schema_version'], 'topology-group-1.0')
+        self.assertEqual(report['primary_profile_id'], 'active')
+        self.assertEqual(report['effective_safety'], {'type': 'production', 'read_only': False})
+        members = {m['profile_id']: m for m in report['members']}
+        replica = members['replica']
+        self.assertEqual(replica['hostname'], 'own-replica')
+        self.assertEqual(replica['server_uuid'], UUID_B)
+        self.assertEqual(replica['server_id'], 2)
+        self.assertTrue(replica['read_only'])
+        self.assertTrue(replica['super_read_only'])
+        self.assertEqual(replica['lag']['kind'], 'gr_applier_queue')
+        self.assertEqual(replica['lag']['value'], 2)
+        self.assertEqual(replica['behind']['value'], 5)
+        self.assertEqual(members['active']['behind']['value'], 0)
+        self.assertEqual(report['summary']['read'], 2)
+        self.assertEqual(report['summary']['versions'], ['8.4.11'])
+        self.assertTrue(all(sql.startswith(topology_group.TAG) for sql in self.statements(observed)))
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        validate(report, schema)
+        self.assertNotIn('test-password', json.dumps(report))
+
+    def test_no_more_than_four_member_processes_and_no_second_login(self):
+        fixtures = {'active.example': member_fixture(pause=0.04)}
+        for number in range(8):
+            pid = 'member-%02d' % number
+            self.save(pid, 'G')
+            fixtures[pid + '.example'] = member_fixture(pause=0.04)
+        with self.clients(fixtures) as observed:
+            report = self.read()
+        self.assertEqual(report['summary']['read'], 9, report)
+        self.assertEqual(len(observed.logins), 9)
+        self.assertEqual(set(observed.logins), set(fixtures))
+        self.assertLessEqual(observed.peak[0], 4)
+        self.assertGreater(observed.peak[0], 1, 'independent member reads overlap')
+
+    def test_budget_exhausted_before_start_never_logs_in(self):
+        self.save('peer', 'G')
+        with self.clients({}) as observed, mock.patch.object(topology_group, 'REQUEST_SECONDS', 0):
+            report = self.read()
+        self.assertEqual(observed.logins, [])
+        self.assertEqual(report['summary']['not_reached'], 2)
+        self.assertTrue(all(m['message'].startswith('Not read: the time budget ') for m in report['members']))
+
+    def test_queued_member_without_a_query_window_is_not_reached(self):
+        self.save('peer', 'G')
+        fixtures = {p['host']: member_fixture(pause=0.15) for p in self.store.list('profile')}
+        with self.clients(fixtures) as observed, \
+                mock.patch.object(topology_group, 'MAX_CONCURRENCY', 1), \
+                mock.patch.object(topology_group, 'REQUEST_SECONDS', 0.4), \
+                mock.patch.object(topology_group, 'QUERY_SECONDS', 0.3):
+            report = self.read()
+        self.assertEqual(len(observed.logins), 1, report)
+        self.assertEqual(report['summary']['not_reached'], 1)
+        skipped = next(m for m in report['members'] if m['outcome'] == 'not_reached')
+        self.assertNotIn(skipped['host'], observed.logins)
+
+    def test_revoked_queued_member_gets_no_login(self):
+        self.save('peer', 'G')
+        order = self.store.list('profile')
+        first, removed = order[0], order[-1]
+        fixtures = {p['host']: member_fixture() for p in order}
+
+        def revoke(host):
+            if host == first['host']:
+                self.store.assign_profile_group([removed['id']], '')
+
+        with self.clients(fixtures, after_spawn=revoke) as observed, \
+                mock.patch.object(topology_group, 'MAX_CONCURRENCY', 1):
+            report = self.read(active=first['id'])
+        self.assertEqual(observed.logins, [first['host']])
+        revoked = next(m for m in report['members'] if m['profile_id'] == removed['id'])
+        self.assertEqual(revoked['outcome'], 'failed')
+        self.assertIn('group membership changed', revoked['message'])
+
+    def test_client_failure_text_never_exposes_password_or_sql(self):
+        bad = member_fixture(error='ERROR 1045 (28000): Access denied password=test-password; SELECT secret_payload')
+        with self.clients({'active.example': bad}) as observed:
+            report = self.read()
+        self.assertEqual(len(observed.logins), 1)
+        self.assertEqual(report['members'][0]['outcome'], 'failed')
+        text = json.dumps(report)
+        for secret in ('test-password', 'secret_payload', 'ERROR 1045', 'SELECT'):
+            self.assertNotIn(secret, text)
+        self.assertIn('access was denied', report['members'][0]['message'])
+
+    def test_slow_query_is_bounded_and_client_is_reaped(self):
+        with self.clients({'active.example': member_fixture(pause=1)}) as observed, \
+                mock.patch.object(topology_group, 'REQUEST_SECONDS', 2), \
+                mock.patch.object(topology_group, 'QUERY_SECONDS', 0.08):
+            started = time.monotonic()
+            report = self.read()
+            elapsed = time.monotonic() - started
+        self.assertEqual(len(observed.logins), 1)
+        self.assertLess(elapsed, 1)
+        self.assertEqual(report['summary']['failed'], 1)
+        self.assertTrue(all(proc.returncode is not None for proc in observed.processes))
+
+    def test_proxy_members_are_identity_only_and_never_compared(self):
+        self.save('readyset', 'G')
+        proxy = member_fixture(proxy='proxysql')
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        readyset = member_fixture(proxy='readyset')
+        readyset['variables']['version_comment'] = 'Readyset'
+        fixtures = {'active.example': proxy, 'readyset.example': readyset}
+        for section in ('parameters', 'accounts', 'plugins'):
+            with self.subTest(section=section), self.clients(fixtures) as observed:
+                report = self.read(section)
+            self.assertEqual(report['summary']['read'], 2, report)
+            self.assertEqual(report[section]['rows'], [])
+            self.assertEqual(report[section]['compared'], [])
+            self.assertEqual({r['profile_id'] for r in report[section]['not_compared']}, {'active', 'readyset'})
+            self.assertTrue(all(r['reason'] for r in report[section]['not_compared']))
+            self.assertEqual({m['product'] for m in report['members']}, {'ProxySQL Admin', 'Readyset'})
+            self.assertTrue(all(m['server_uuid'] is None for m in report['members']))
+            sql = '\n'.join(self.statements(observed)).lower()
+            for forbidden in ('show global variables', 'information_schema.plugins', 'mysql.user', 'mysql.component'):
+                self.assertNotIn(forbidden, sql)
+
+    def test_plugins_are_read_on_each_own_connection_and_components_mysql_only(self):
+        self.save('maria', 'G')
+        mysql = member_fixture(components=['file://component_validate_password'])
+        maria = member_fixture(engine='mariadb')
+        with self.clients({'active.example': mysql, 'maria.example': maria}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['plugins']['compared'], ['active', 'maria'], report)
+        self.assertEqual(report['plugins']['not_compared'], [])
+        rows = {r['name']: r for r in report['plugins']['rows']}
+        self.assertEqual(rows['auth']['status'], 'same')
+        component = rows['file://component_validate_password']
+        self.assertEqual(component['status'], 'missing')
+        self.assertIsNone(component['values']['maria'])
+        self.assertEqual(sum('FROM information_schema.PLUGINS' in sql for sql in self.statements(observed)), 2)
+        self.assertFalse(any('mysql.component' in sql for sql in self.statements(observed, 'maria.example')))
+
+    def test_async_and_galera_lag_have_distinct_units_and_no_invented_primary(self):
+        self.save('galera', 'G')
+        replica = member_fixture(channels=[{'Seconds_Behind_Source': '7', 'Replica_IO_Running': 'Yes',
+                                            'Replica_SQL_Running': 'Yes'}])
+        galera = member_fixture(engine='mariadb', status={'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '3'})
+        galera['variables']['wsrep_on'] = 'ON'
+        with self.clients({'active.example': replica, 'galera.example': galera}):
+            report = self.read()
+        by_id = {m['profile_id']: m for m in report['members']}
+        self.assertEqual(by_id['active']['role'], 'replica')
+        self.assertEqual(by_id['active']['state'], 'running')
+        self.assertEqual(by_id['active']['lag']['kind'], 'replica_seconds')
+        self.assertEqual(by_id['active']['lag']['value'], 7)
+        self.assertIn('Seconds_Behind_Source is an estimate', by_id['active']['lag']['message'])
+        self.assertEqual(by_id['galera']['role'], 'galera_node')
+        self.assertEqual(by_id['galera']['state'], 'Synced')
+        self.assertEqual(by_id['galera']['lag']['kind'], 'galera_recv_queue')
+        self.assertEqual(by_id['galera']['lag']['value'], 3)
+        self.assertIsNone(by_id['galera']['super_read_only'])
+        self.assertIsNone(report['primary_profile_id'])
+        self.assertTrue(all(m['behind'] is None and m['behind_reason'] for m in report['members']))
+
+    def test_mysql57_offline_member_does_not_inherit_stale_primary_role(self):
+        fixture = member_fixture(has_gr=True, state='OFFLINE', status={'group_replication_primary_member': UUID_A})
+        fixture['variables'].update(version='5.7.44', group_replication_single_primary_mode='ON')
+        with self.clients({'active.example': fixture}):
+            report = self.read()
+        member = report['members'][0]
+        self.assertEqual(member['outcome'], 'read', report)
+        self.assertEqual(member['state'], 'OFFLINE')
+        self.assertIsNone(member['role'])
+        self.assertIsNone(report['primary_profile_id'])
+
+    def test_stored_source_fallback_and_disabled_gtids_are_not_caught_up(self):
+        source = self.save('source', 'G')
+        self.store.record_topology_identity('source', {'server_uuid': UUID_B})
+        self.store.record_topology_identity('active', {'server_uuid': UUID_A, 'source_uuids': [UUID_B]})
+        fixtures = {'active.example': member_fixture(UUID_A), 'source.example': member_fixture(UUID_B)}
+        fixtures['active.example']['variables']['gtid_mode'] = 'OFF'
+        with self.clients(fixtures):
+            report = self.read()
+        self.assertEqual(report['primary_profile_id'], source['id'])
+        member = next(m for m in report['members'] if m['profile_id'] == 'active')
+        self.assertIsNone(member['behind'])
+        self.assertTrue(member['behind_reason'])
+
+
+if __name__ == '__main__':
+    unittest.main()
