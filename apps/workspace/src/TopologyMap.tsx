@@ -11,6 +11,8 @@ const GAP = 36;
 const FLOW_GAP = 70;
 const PAD = 20;
 const CLUSTER_HEAD = 54;
+// The diagram draws at most this many links; the text list below it keeps all.
+const EDGE_CAP = 600;
 const ROLE: Record<string, string> = {
   primary: "Primary", secondary: "Secondary", node: "Node", source: "Source",
   replica: "Replica", standalone: "Standalone", proxy: "Proxy", cache: "Cache",
@@ -220,13 +222,35 @@ function edgePath(from: Point, to: Point, lane: number, slot: number, gutter: nu
 
 export function TopologyMap({ map, selection }: { map: MapReport; selection: Selection }) {
   const diagram = useMemo(() => layout(map), [map]);
+  // Index once per render: node labels, each node's owning block, and the
+  // links of each from/to pair. Rendering a link then looks up instead of
+  // scanning the whole edge array and every block again.
+  const edgeIndex = useMemo(() => {
+    const nodes = new Map(map.nodes.map((node) => [node.id, node] as const));
+    const blockOf = new Map<string, Block>();
+    for (const block of diagram.blocks) for (const item of block.nodes) blockOf.set(item.node.id, block);
+    const parallel = new Map<string, MapEdge[]>();
+    for (const edge of map.edges) {
+      const key = JSON.stringify([edge.from, edge.to]);
+      const list = parallel.get(key);
+      if (list) list.push(edge);
+      else parallel.set(key, [edge]);
+    }
+    return { nodes, blockOf, parallel };
+  }, [map, diagram]);
+  const edges = map.edges.length > EDGE_CAP ? map.edges.slice(0, EDGE_CAP) : map.edges;
   const arrow = `topology-arrow-${useId().replace(/:/g, "")}`;
   if (!map.nodes.length && !map.clusters.length) return <p className="hint">No servers were reported.</p>;
   return <section className="topology-map-diagram" aria-label="Group topology diagram">
     <div className="topology-map-legend">
-      <span>Source → replica</span><span>Solid: verified</span><span>Dashed: address match, not verified</span>
+      <span>Source → replica</span><span>Solid: verified</span><span>Dashed: not verified (address or server ID match)</span>
       <span>Dotted: same server (alias)</span>
     </div>
+    {edges.length < map.edges.length && (
+      <p className="hint topology-map-edge-cap" role="note">
+        Showing {edges.length} of {map.edges.length} links; the text list below has all of them.
+      </p>
+    )}
     <div className="topology-map-scroll" role="region" aria-label="Topology diagram, scroll to explore" tabIndex={0}>
       <div className="topology-map-canvas" style={{ width: diagram.width, height: diagram.height }}>
         {diagram.headings.map((heading) => <span key={heading.y} className="topology-map-tier" style={{ top: heading.y }}>{heading.label}</span>)}
@@ -263,16 +287,16 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
           <defs>{["ok", "watch", "problem", "unknown"].map((tone) => <marker key={tone} id={`${arrow}-${tone}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0 0 10 5 0 10Z" fill={`var(--${tone === "watch" ? "warn" : tone === "problem" ? "danger" : tone === "unknown" ? "muted" : "ok"})`} />
           </marker>)}</defs>
-          {map.edges.map((edge, i) => {
+          {edges.map((edge, i) => {
             const from = diagram.positions.get(edge.from);
             const to = diagram.positions.get(edge.to);
             if (!from || !to) return null;
-            const sourceBlock = diagram.blocks.find((block) => block.nodes.some(({ node }) => node.id === edge.from))!;
-            const targetBlock = diagram.blocks.find((block) => block.nodes.some(({ node }) => node.id === edge.to))!;
-            const parallel = map.edges.filter((other) => other.from === edge.from && other.to === edge.to);
+            const sourceBlock = edgeIndex.blockOf.get(edge.from)!;
+            const targetBlock = edgeIndex.blockOf.get(edge.to)!;
+            const parallel = edgeIndex.parallel.get(JSON.stringify([edge.from, edge.to]))!;
             const slot = parallel.indexOf(edge) - (parallel.length - 1) / 2;
             const line = edgePath(from, to, i % 4, slot, diagram.width - 76 + (i % 5) * 12, sourceBlock, targetBlock);
-            const title = `${map.nodes.find((node) => node.id === edge.from)?.label || edge.from} → ${map.nodes.find((node) => node.id === edge.to)?.label || edge.to}: ${mapEdgeText(edge)}`;
+            const title = `${edgeIndex.nodes.get(edge.from)?.label || edge.from} → ${edgeIndex.nodes.get(edge.to)?.label || edge.to}: ${mapEdgeText(edge)}`;
             return <g key={`${edge.from}-${edge.to}-${edge.kind}-${i}`} className={`topology-map-edge tone-${stateTone(edge.state)}${edge.kind === "alias" ? " is-alias" : ""}`}
               data-edge-kind={edge.kind} data-verified={String(edge.verified)}>
               <title>{title}</title>

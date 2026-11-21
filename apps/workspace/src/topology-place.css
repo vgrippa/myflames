@@ -177,6 +177,10 @@
   color: var(--muted);
   font-size: 12px;
 }
+/* The drawn-link cap note sits with the legend, above the diagram. */
+.topology-map-edge-cap {
+  margin: 0 0 8px;
+}
 .topology-map-scroll {
   width: 100%;
   max-width: 100%;

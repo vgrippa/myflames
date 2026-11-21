@@ -43,6 +43,9 @@ const connectCalls = [];
 const topologyCalls = [];
 let topologyDelay = 0;
 let connectDelay = 0;
+// A per-section delay overrides topologyDelay (a slow Map read beside a fast
+// Members one, for the cross-tab busy check).
+const topologySectionDelay = {};
 
 function member(over) {
   return {
@@ -275,7 +278,8 @@ const h = await open("/api/unused-topology-place", "topology-place", {
     assert.equal(body.connection.group, undefined, "the request never carries the saved group metadata");
     const reply = reports[body.section];
     assert.ok(reply, `unknown topology section ${body.section}`);
-    return { status: 200, body: reply, ...(topologyDelay ? { delay: topologyDelay } : {}) };
+    const delay = topologySectionDelay[body.section] ?? topologyDelay;
+    return { status: 200, body: reply, ...(delay ? { delay } : {}) };
   },
   "/api/profiles/groups/save": (body) => {
     const name = (body.name || "").trim();
@@ -432,6 +436,9 @@ try {
   assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] > path`, (e) => e.getAttribute("stroke-dasharray")), "6 5");
   assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-verified="true"] > path`, (e) => e.getAttribute("stroke-dasharray")), null);
   assert.match(await page.$eval(`${diagram} .topology-map-edge[data-verified="true"] text`, (e) => e.textContent), /running/, "link state is text as well as color");
+  const legend = await page.$eval(`${diagram} .topology-map-legend`, (e) => e.textContent);
+  assert.match(legend, /Dashed: not verified \(address or server ID match\)/, "the legend covers both unverified evidences");
+  assert.match(legend, /Dotted: same server \(alias\)/, "the legend keeps the alias style");
   const positions = () => page.$$eval(`${diagram} button[data-node]`, (nodes) => nodes.map((n) => ({
     id: n.dataset.node, x: n.offsetLeft + n.parentElement.offsetLeft, y: n.offsetTop + n.parentElement.offsetTop,
   })));
@@ -533,8 +540,14 @@ try {
   await page.keyboard.press("Backspace");
   await page.waitForSelector('.topology-place tr[data-row-key="server_id"]', { visible: true });
 
-  // --- Accounts: the row's inspector shows differences and the member link.
+  // --- Accounts: the busy text says accounts are read one at a time; then
+  // the row's inspector shows differences and the member link.
+  topologyDelay = 1200;
   await topoTab("Accounts");
+  await page.waitForFunction(() => document.querySelector(".topology-place")?.textContent
+    .includes("Reading accounts on 4 servers. Accounts are read one at a time, so this can take a few minutes."),
+    { timeout: 5000 });
+  topologyDelay = 0;
   await waitFor(() => sections().includes("accounts"), "the Accounts tab read when shown");
   await h.select(".topology-place .drift-table tbody tr");
   const accountInspector = await h.inspector();
@@ -691,7 +704,7 @@ try {
   assert.doesNotMatch(await placeText(), /more than one primary/i, "an alias never reads as a second primary");
   await page.click(nodeButton("p-topo-5"));
   assert.match(await h.inspector(),
-    /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. Rolling changes refuse it; reads show the server once\./,
+    /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. A rolling change refuses it when db-1 is also selected\. The map draws the server once; drift tables list both saved connections\./,
     "the alias inspector explains the duplicate connection");
   assert.match(await h.inspector(), /Same server \(alias\)/, "the alias link in the inspector keeps its label");
   await page.click('.topology-place .inspector-close');
@@ -705,6 +718,39 @@ try {
   assert.match(await rowText("p-topo-5"), /Alias of db-1/, "the Members row marks the alias");
   assert.match(await rowText("p-topo-1"), /Primary/, "the canonical member keeps its role");
   reports.members = originalMembersReport;
+  await topoTab("Map");
+  await page.waitForSelector(nodeButton("p-topo-5"), { visible: true });
+
+  // --- Read only: both flags decide (read_only ON with super_read_only OFF
+  // is still read-only), and a raw MariaDB value is shown as it was read.
+  const membersBeforeReadOnly = reports.members;
+  reports.members = { ...membersBeforeReadOnly, members: [
+    member({ profile_id: "p-topo-1", profile_name: "db-1", host: "10.0.0.11",
+      read_only: true, read_only_value: "ON", super_read_only: false }),
+    member({ profile_id: "p-topo-2", profile_name: "db-2", host: "10.0.0.12",
+      read_only: false, read_only_value: "OFF", super_read_only: true }),
+    member({ profile_id: "p-topo-3", profile_name: "db-3", host: "10.0.0.13",
+      read_only: true, read_only_value: "ON", super_read_only: true }),
+    member({ profile_id: "p-topo-4", profile_name: "db-4", host: "10.0.0.14",
+      engine: "mariadb", product: "MariaDB", version: "12.0.2",
+      read_only: true, read_only_value: "NO_LOCK", super_read_only: null }),
+  ] };
+  await topoTab("Members");
+  const membersReadsBefore = sections().filter((s) => s === "members").length;
+  await h.refresh();
+  await waitFor(() => sections().filter((s) => s === "members").length === membersReadsBefore + 1,
+    "the read-only Refresh read the new fixture");
+  await page.waitForFunction(() => document.querySelector('.topology-place tr[data-row-key="p-topo-1"]')?.textContent.includes("On (read_only)"),
+    { timeout: 10000 });
+  assert.match(await rowText("p-topo-1"), /On \(read_only\)/, "read_only ON with super_read_only OFF is read-only");
+  assert.doesNotMatch(await rowText("p-topo-1"), /\bOff\b/, "read_only ON never shows Off");
+  assert.match(await rowText("p-topo-2"), /On \(super_read_only\)/, "super_read_only alone names its flag");
+  assert.match(await rowText("p-topo-3"), /On \(both\)/, "both flags together");
+  assert.match(await rowText("p-topo-4"), /On \(read_only=NO_LOCK\)/, "the raw MariaDB value is shown");
+  reports.members = membersBeforeReadOnly;
+  await h.refresh();
+  await waitFor(() => sections().filter((s) => s === "members").length === membersReadsBefore + 2,
+    "the members fixture was restored");
   await topoTab("Map");
   await page.waitForSelector(nodeButton("p-topo-5"), { visible: true });
 
@@ -765,6 +811,35 @@ try {
     false, "the cap note is not repeated in Notes");
   assert.match(await page.$eval('.topology-map-section[aria-label="Notes"]', (e) => e.textContent),
     /could not confirm its own cluster membership/, "other notes stay in the Notes section");
+  reports.map.map = originalMap;
+  reports.map.members = originalMembers;
+  await h.refresh();
+  await page.waitForSelector(nodeButton("p-topo-2"), { visible: true });
+
+  // --- A 2,000-edge map: the diagram draws a capped 600 links with a note,
+  // the text list keeps every link, and the render stays within a bound.
+  const bigNodes = Array.from({ length: 24 }, (_, i) =>
+    makeNode(`big-${i}`, { role: i === 0 ? "source" : "replica" }));
+  const bigEdges = Array.from({ length: 2000 }, (_, i) =>
+    link(`big-${i % 24}`, `big-${(i + 1) % 24}`));
+  reports.map.map = { nodes: bigNodes, edges: bigEdges, clusters: [], notes: [] };
+  reports.map.members = bigNodes.map((node) => member({
+    profile_id: node.profile_id, profile_name: node.label, host: node.host, role: node.role,
+  }));
+  const bigStart = Date.now();
+  await h.refresh();
+  await page.waitForSelector('.topology-map-list [data-node="big-0"]', { visible: true, timeout: 30000 });
+  const bigElapsed = Date.now() - bigStart;
+  assert.ok(bigElapsed < 20000, `a 2,000-edge map rendered within a bound (took ${bigElapsed} ms)`);
+  const capText = await page.$eval(`${diagram} .topology-map-edge-cap`, (e) => e.textContent);
+  assert.equal(capText, "Showing 600 of 2000 links; the text list below has all of them.", "the diagram names the cap");
+  assert.equal(await page.evaluate(() =>
+    document.querySelector(".topology-place").textContent.split("Showing 600 of 2000 links").length - 1),
+    1, "the cap note shows once");
+  const drawnEdges = await page.$$eval(`${diagram} svg .topology-map-edge`, (els) => els.length);
+  assert.equal(drawnEdges, 600, "the diagram draws at most 600 links");
+  const listedEdges = await page.$$eval('.topology-map-section[aria-label="Links"] [data-edge-kind]', (els) => els.length);
+  assert.equal(listedEdges, 2000, "the text list has every link");
   reports.map.map = originalMap;
   reports.map.members = originalMembers;
   await h.refresh();
@@ -1161,6 +1236,23 @@ try {
   await h.refresh();
   await waitFor(() => sections().filter((s) => s === "plugins").length === 3, "Refresh reads the edited group");
 
+  // --- An endpoint edit of a non-active member changes the report key too:
+  // the reports are dropped, and the edit never starts a read on its own.
+  profiles.find((p) => p.id === "p-topo-3").host = "10.0.0.113";
+  await page.click(".window-statusbar .statusbar-group-edit");
+  await page.waitForSelector(editor, { visible: true });
+  await clickText(editor, "Save group");
+  await page.waitForFunction(() => !document.querySelector("dialog.group-editor-sheet"));
+  await page.waitForSelector(".topology-place .view-empty", { visible: true });
+  assert.match(await placeText(), /Read the group/, "an endpoint edit drops the old report");
+  const readsAfterEndpointEdit = topologyCalls.length;
+  await pause(800);
+  assert.equal(topologyCalls.length, readsAfterEndpointEdit, "an endpoint edit never reads on its own");
+  await h.refresh();
+  await waitFor(() => topologyCalls.length === readsAfterEndpointEdit + 1, "Refresh reads the group after an endpoint edit");
+  assert.equal(topologyCalls.at(-1).section, "plugins", "Refresh re-reads the tab on screen");
+  profiles.find((p) => p.id === "p-topo-3").host = "10.0.0.13";
+
   // --- Opening another group from Home never reads the previous group.
   await page.reload({ waitUntil: "networkidle0" });
   await page.click('.main-nav button[data-place="query"]');
@@ -1179,6 +1271,29 @@ try {
   await waitFor(() => topologyCalls.length > readsBeforeOpen, "Topology read the newly opened group");
   assert.ok(topologyCalls.slice(readsBeforeOpen).every((c) => c.connection.group_name === "mf-two"),
     "opening mf-two from Home never read the previous group");
+
+  // --- Busy is per tab: a slow Map read keeps its own busy slot while the
+  // Members read starts and finishes, so back on Map the place is still
+  // busy (never a Load button, never a duplicate read).
+  await page.reload({ waitUntil: "networkidle0" });
+  topologySectionDelay.map = 4000;
+  const mapReadsBeforeBusy = sections().filter((s) => s === "map").length;
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection mf-topo"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection mf-topo"));
+  await page.click('.main-nav button[data-place="topology"]');
+  await waitFor(() => sections().filter((s) => s === "map").length === mapReadsBeforeBusy + 1, "the slow Map read started");
+  await topoTab("Members");
+  await page.waitForSelector('.topology-place tr[data-row-key="p-topo-2"]', { visible: true, timeout: 15000 });
+  await topoTab("Map");
+  await page.waitForFunction(() => /Reading \d+ servers…/.test(document.querySelector(".topology-place")?.textContent || ""),
+    { timeout: 5000 });
+  assert.equal(await page.$(".topology-place .view-empty"), null, "a tab still reading never offers Load");
+  await page.waitForSelector('.topology-map-list [data-node="p-topo-2"]', { visible: true, timeout: 15000 });
+  await pause(500);
+  assert.equal(sections().filter((s) => s === "map").length, mapReadsBeforeBusy + 1,
+    "no duplicate Map read while it was reading");
+  topologySectionDelay.map = 0;
 
   // --- No connection: deleting the saved connection in use leaves an empty
   // connection, and the place shows the usual no-connection state.

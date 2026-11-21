@@ -64,18 +64,33 @@ function engineText(m: TopologyMember): string {
 }
 
 function readOnlyText(m: TopologyMember): string {
-  // super_read_only is the MySQL write gate; MariaDB refuses writes with
-  // read_only alone (super_read_only stays null there).
-  const value = m.super_read_only !== null ? m.super_read_only : m.read_only;
-  return value === null ? "—" : value ? "On" : "Off";
+  // Both flags decide: MySQL gates writes with super_read_only on top of
+  // read_only, so read_only ON with super_read_only OFF is still read-only;
+  // MariaDB has read_only alone (super_read_only stays null there), with raw
+  // values NO_LOCK and NO_LOCK_NO_ADMIN that also refuse writes.
+  if (m.read_only === null && m.super_read_only === null) return "—";
+  const raw = m.read_only_value && !["ON", "OFF"].includes(m.read_only_value.toUpperCase())
+    ? m.read_only_value : "";
+  if (m.read_only && m.super_read_only) return "On (both)";
+  if (m.super_read_only) return "On (super_read_only)";
+  if (m.read_only) return `On (read_only${raw ? `=${raw}` : ""})`;
+  return "Off";
+}
+
+/** The flags behind the read-only cell, for its tooltip. */
+function readOnlyTitle(m: TopologyMember): string {
+  const flag = (name: string, value: boolean | null) =>
+    value === null ? `${name}: not read` : `${name}: ${value ? "ON" : "OFF"}`;
+  return [flag("read_only", m.read_only), flag("super_read_only", m.super_read_only)].join(" · ");
 }
 
 /** A report's key: the connection's identity plus the group's membership
- * (sorted member profile ids). Editing the group's members under the same
- * name, or recreating a group under a name already read, changes the key,
- * so the old membership's reports never answer for the group as it is now. */
+ * (member profile ids with their host:port, order-insensitive). Editing the
+ * group's members or any member's endpoint under the same name, or
+ * recreating a group under a name already read, changes the key, so the old
+ * membership's reports never answer for the group as it is now. */
 function reportKey(connection: Connection, group: GroupConnection | null | undefined): string {
-  const membership = (group?.members.map((m) => m.profile_id) || []).sort().join(",");
+  const membership = (group?.members.map((m) => `${m.profile_id}@${m.host}:${m.port}`) || []).sort().join(",");
   return `${connectionKey(connection)}|${membership}`;
 }
 
@@ -123,7 +138,10 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const isGroup = !!connection.group_name;
   const [reports, setReports] = useState<Record<string, TopologyGroupReport>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<{ id: string } | null>(null);
+  // Busy is per request (connection key and tab): a slow Map read keeps its
+  // slot while a Members read starts and finishes, and the visible busy
+  // state is the current tab's own entry, never another tab's.
+  const [busy, setBusy] = useState<Record<string, true>>({});
   const [doneAt, setDoneAt] = useState<Record<string, number>>({});
   const [startedAt, setStartedAt] = useState<Record<string, number>>({});
   const controllers = useRef(new Map<string, AbortController>());
@@ -139,7 +157,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     controllers.current.get(id)?.abort();
     const controller = new AbortController();
     controllers.current.set(id, controller);
-    setBusy({ id });
+    setBusy((current) => ({ ...current, [id]: true }));
     setStartedAt((current) => ({ ...current, [id]: Date.now() }));
     setErrors((current) => {
       if (!(id in current)) return current;
@@ -168,7 +186,12 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
       const registered = controllers.current.get(id);
       if (registered === controller) controllers.current.delete(id);
       if (registered === controller || registered === undefined) {
-        setBusy((current) => (current && current.id === id ? null : current));
+        setBusy((current) => {
+          if (!(id in current)) return current;
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
         // An attempt that produced neither a report nor an error (a group
         // switch aborted it) frees the tab's first read: shown again, the
         // tab reads again.
@@ -213,6 +236,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     };
     setReports(dropOld);
     setErrors(dropOld);
+    setBusy(dropOld);
     setDoneAt(dropOld);
     setStartedAt(dropOld);
     for (const id of Array.from(tried.current)) if (!id.startsWith(prefix)) tried.current.delete(id);
@@ -246,8 +270,12 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   }, [reports, currentId, group]);
 
   const serverCount = group?.members.length || 0;
-  const busyHere = busy && busy.id === currentId;
-  const busyText = busyHere ? `Reading ${plural(serverCount, "server")}…` : "";
+  const busyHere = busy[currentId] === true;
+  const busyText = busyHere
+    ? tab === "accounts"
+      ? `Reading accounts on ${plural(serverCount, "server")}. Accounts are read one at a time, so this can take a few minutes.`
+      : `Reading ${plural(serverCount, "server")}…`
+    : "";
   const error = errors[currentId] || "";
   const report = reports[currentId] || null;
 
@@ -255,6 +283,9 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     if ((tab !== "members" && tab !== "map") || !report || !selection.key) return null;
     const member = report.members.find((m) => m.profile_id === selection.key);
     if (!member) return null;
+    const aliasName = member.duplicate_of
+      ? report.members.find((other) => other.profile_id === member.duplicate_of)?.profile_name || member.duplicate_of
+      : "";
     const actions = (
       <div className="topology-member-actions">
         <ToolbarButton className="small" onClick={() => onUseInServer(member.profile_id)}>Use in Server views</ToolbarButton>
@@ -278,7 +309,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             !!member.role && ["Role", ROLE_LABEL[member.role] || member.role],
             !!member.state && ["State", member.state],
             ["Engine and version", engineText(member) || "Not read"],
-            ["Read only", `${readOnlyText(member)}${member.read_only_value ? ` (read_only=${member.read_only_value})` : ""}`],
+            ["Read only", readOnlyText(member)],
             member.super_read_only !== null && ["super_read_only", member.super_read_only ? "On" : "Off"],
             !!member.hostname && ["Hostname", member.hostname],
             !!member.server_uuid && ["UUID", <code className="ops-wrap">{member.server_uuid}</code>],
@@ -294,9 +325,9 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
         {member.duplicate_of && (
           <InspectorSection title="Alias">
             <p>
-              This saved connection reaches the same server as{" "}
-              {report.members.find((other) => other.profile_id === member.duplicate_of)?.profile_name || member.duplicate_of}{" "}
-              (for example a router or proxy port). Rolling changes refuse it; reads show the server once.
+              This saved connection reaches the same server as {aliasName}{" "}
+              (for example a router or proxy port). A rolling change refuses it when {aliasName} is also selected.{" "}
+              The map draws the server once; drift tables list both saved connections.
             </p>
           </InspectorSection>
         )}
@@ -592,7 +623,7 @@ function MembersTab({ report, summary, selection }: { report: TopologyGroupRepor
     },
     {
       key: "readonly", label: "Read only", sort: (m) => readOnlyText(m),
-      render: (m) => <span title={m.super_read_only !== null ? "super_read_only" : "read_only"}>{readOnlyText(m)}</span>,
+      render: (m) => <span title={readOnlyTitle(m)}>{readOnlyText(m)}</span>,
     },
     {
       key: "lag", label: "Lag", num: true, sort: (m) => m.lag?.value ?? null,
