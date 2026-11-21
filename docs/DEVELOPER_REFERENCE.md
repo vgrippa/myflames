@@ -2201,8 +2201,11 @@ does not revoke an otherwise consenting read.
   save (`main.tsx` `groupSaved`), if the save edited the active Group
   connection (including a rename or removing its active member) or moved a
   member out of the active Group connection into another group (`movedOut`),
-  the active Group connection re-opens (`probe: false`); when the active member
-  left, it moves to the member the backend picks and says so.
+  the active Group connection re-opens (`probe: false`) when members remain
+  (when the active member left, it moves to the member the backend picks and
+  says so); if every member moved out of the active Group connection so
+  reopening fails, `setGroupConnection(null)` leaves the active server open as
+  a plain connection with a status note (`connectionNote`).
   Single-server places get a **Server:** picker (`GroupServerPicker.tsx`
   `GroupServerPicker` and `groupMemberLabel`: `"<profile_name> · <host>:<port>"`
   plus `" · <ROLE>"` when `role` is present; a `Segmented` control up to 4
@@ -8294,9 +8297,13 @@ allowlist; none is in `_SERVER_VIEW_PATHS`, and only
   `connection.get('read_only') is True` or any member in the group is
   `read_only` before opening any connection.
 - `POST /api/live/action/progress` (`_ACTION_PROGRESS_PATH`): calls
-  `topology_change.share_progress(workspace.store, _action_progress(workspace)).get(payload.get('progress_id'))`,
-  returning `_MemberProgress.snapshot()` with `profile_id`, `profile_name`, and
-  `message: "<profile_name>: <phase>."` (or `null` when no member is active).
+  `topology_change.share_progress(workspace.store, _action_progress(workspace)).get(payload.get('progress_id'))`.
+  Known rolling progress IDs return `_MemberProgress.snapshot()` with
+  `profile_id`, `profile_name`, and `message: "<profile_name>: <phase>."` (or
+  `null` when no member is active); unknown validly formatted IDs return
+  `ProgressRegistry.get`'s base `phase: "unknown"` response without member
+  fields (`profile_id`, `profile_name`, `message`), and invalid IDs raise
+  `ValueError`.
 
 **Bounds (`topology_group.read_group`)**: `MAX_CONCURRENCY = 4`
 (`ThreadPoolExecutor(max_workers=4)`), up to `GROUP_MAX_MEMBERS` (16) saved
@@ -8305,8 +8312,11 @@ members. Each member opens one standard `MySQLConnection` via
 = 30`), wrapped in `param_compare.BoundedConnection(..., seconds=min(remaining,
 request_seconds))` and `_ReadConnection` inside `REQUEST_SECONDS = 120` for
 `map`/`members`/`parameters`/`plugins` or **`ACCOUNTS_REQUEST_SECONDS = 300`**
-for `accounts`. Every query uses the connector's guarded client path tagged
-`/*myflames:topology*/ ` (`TAG`), never a custom subprocess path, never logs in
+for `accounts`. Topology's own probes use `/*myflames:topology*/ ` (`TAG`,
+`topology_links.TOPOLOGY_TAG`), while reused collectors keep their own tags
+(`/*myflames:config*/ ` in `config_review`, `/*myflames:accounts*/ ` in
+`accounts`, and `/*myflames:variable*/ ` in `variables`); every query uses the
+connector's guarded client path, never a custom subprocess path, never logs in
 to reported peers, never retries, and never polls. Before starting
 `open_group_member`, inside `login_guard()` when `not
 member_conn._group_login_started`, and before constructing `BoundedConnection`,
@@ -8418,15 +8428,24 @@ logs in.
     else `None`). With no channels, checks `SHOW REPLICAS` (MySQL 8.0.22+) or
     `SHOW SLAVE HOSTS` (`role='source'` if non-empty, else `'standalone'`,
     `state='reachable'`).
-  - Alias annotation (`_duplicate_notes`): successfully read MySQL members
-    sharing a valid non-nil `server_uuid` stay separate member entries and map
-    nodes while electing one canonical saved connection: eligible connections
-    do not have a known server `port` that differs from the saved port,
-    preferring connections matching both reported `port` and
-    `hostname`/`report_host`, else the oldest `updated_at` (then `profile_id`).
-    Other aliases set `duplicate_of` to the canonical `profile_id` and append a
-    note; if no connection uses its reported server port, no canonical member is
-    selected and every alias receives a note.
+  - Alias annotation (`_duplicate_notes`): on `members` and `map` sections
+    (`check_routed=True`), `_member_facts` runs an optional query on
+    `performance_schema.session_connect_attrs` (`PROCESSLIST_ID =
+    CONNECTION_ID() AND ATTR_NAME IN ('_client_ip','_client_socket')`) to set
+    `routed` (`True` when present, `False` when absent, `None` when unreadable
+    or on `parameters`/`accounts`/`plugins`). In `_duplicate_notes`,
+    successfully read MySQL members sharing a valid non-nil `server_uuid` stay
+    separate member entries and map nodes while electing one canonical saved
+    connection from the highest non-empty tier: (1) matching both the server's
+    reported `port` and `hostname`/`report_host` (`direct`), (2) matching the
+    reported `port` (`matched`), (3) unknown server `port` (`unknown`), or (4)
+    all aliases as a port-forwarding fallback (`fallback_note`). Within the
+    chosen tier, direct sessions (`routed is False`) beat routed or unreadable
+    ones, breaking ties by oldest `updated_at` then `profile_id`. Every other
+    alias sets `duplicate_of` to the canonical `profile_id` and appends a note
+    (adding the port-forwarding note naming the server's reported port and
+    chosen canonical member when fallback applied), and in `map` emits a dotted
+    `'alias'` edge.
   - Primary resolution (`_primary`): ignores `duplicate_of` entries and prefers
     a single `ONLINE` `role == 'primary'` (multi-primary or multiple `ONLINE`
     primaries -> `None` with `'This group has more than one primary or
@@ -8508,15 +8527,22 @@ logs in.
     `information_schema.SYSTEM_VARIABLES` (`catalog=True`) at 2,048 and MariaDB
     `SHOW GLOBAL VARIABLES` at 4,096 (`sql/sql_show.cc:10528,10537`).
     `parameters.value_truncated` checks `len(value) >= cap or
-    len(value.encode('utf-8')) >= cap`; in `param_compare.validate_snapshot`,
-    `capture`, and `compare_many`, any string field/value/allowed-value over
-    `MAX_VALUE_CHARS = 65536` characters is cleared to `None` with `truncated:
-    True`. `param_compare.compare` marks truncated rows `not_compared` and
-    `compare_many` marks them `missing` with a reason.
+    len(value.encode('utf-8')) >= cap`. `param_compare.validate_snapshot` (which
+    `capture` calls) bounds parameter names and retained string fields (`type`,
+    `apply_type`, `source`, `source_label`, `scope`, `modifiable`, `group`,
+    `value`, `default`) and allowed `values` entries at `MAX_VALUE_CHARS =
+    65536` (clearing oversized retained strings or `values` lists to `None` with
+    `truncated: True`), checks metadata types, state flags and the 8 MiB file
+    limit, redacts secrets/values/allowed-values, and runs `dbops.redact_value`.
+    `param_compare.compare_many` independently bounds and redacts each item's
+    current `value` (`None` + `truncated: True` over `MAX_VALUE_CHARS`,
+    `sensitive(name)` and `_redact_parameter_value`) while retaining supplied
+    metadata (`apply_type`, `dynamic`) and `redacted`/`truncated` flags without
+    calling `validate_snapshot`. `param_compare.compare` marks truncated rows
+    `not_compared` and `compare_many` marks them `missing` with a reason.
   - **Drift rules (`param_compare.compare_many`)**: sorts rows by status
     (`'different'`, `'missing'`, `'same'`, `'per_server'`) then `name`.
-    Reapplies capture projection (`sensitive`, `_redact_parameter_value`,
-    `MAX_VALUE_CHARS`) on inputs. `per_server` includes `IDENTITY_NAMES`,
+    Bounds and redacts each input item's current `value` as noted above. `per_server` includes `IDENTITY_NAMES`,
     `group_replication_local_address`, `group_replication_group_seeds`,
     `gtid_binlog_state`, `gtid_owned`, `bind_address`, `admin_address`,
     `mysqlx_bind_address`, `mysqlx_port`, `mysqlx_socket`,
@@ -8535,8 +8561,9 @@ logs in.
     `wsrep_provider_gmcast_segment`, reason `"Set per node by design"`),
     `read_only` and `super_read_only` only when `role_settings` maps every
     compared member to `'source'` (`primary`/`source`) or `'replica'`
-    (`secondary`/`replica`), both buckets exist, all sources are
-    `OFF`/`0`/`FALSE`, all replicas are
+    (`secondary`/`replica`) (other roles such as Galera `'node'` or
+    non-primary `'standalone'` map to `None` and never fold), both buckets
+    exist, all sources are `OFF`/`0`/`FALSE`, all replicas are
     `ON`/`1`/`TRUE`/`NO_LOCK`/`NO_LOCK_NO_ADMIN`, and every member within each
     role agrees (reason `"Set by the member's role"`, MySQL
     `read_mode_handler.cc:32-60`; in `read_group`, `duplicate_of` aliases
@@ -8568,13 +8595,23 @@ logs in.
   QUERY_SECONDS` (30 s), its message notes `"Accounts are read one at a time;
   %d accounts took %.1f s on this server."`. Captures up to `MAX_ACCOUNTS =
   1000` accounts (`complete=False` beyond 1,000; incomplete or error inventories
-  go to `not_compared`). In `_comparison_inputs`, accounts with
+  go to `not_compared`). In `accounts._strip_account_credentials`, grant lines
+  longer than `accounts.MAX_ACCOUNT_TEXT_CHARS = 16384` characters are replaced
+  by `OMITTED_ACCOUNT_TEXT` (`'[omitted: too long]'`) rather than truncated or
+  scanned for credentials. `accounts.read_account` sets `error = 'Account
+  grants omitted: too long.'` and includes `OMITTED_ACCOUNT_TEXT` in `grants`
+  and `model['unparsed']` (oversized inherited role grants set
+  `role_grants_complete = False` with a warning), so that account cannot be
+  compared (`account_compare.compare` marks it `not_compared`), exported
+  (`account_compare.export_sql` refuses), or changed (`accounts.plan_change`
+  / `apply` blocks via `_guards`). In `_comparison_inputs`, accounts with
   `account_compare.incomplete_account(item)` (`error`, `exists is False`, or
-  any `*_checked is False`) are dropped from EVERY member's snapshot so an
-  unreadable account on one server is never mistaken for absent drift, while
-  the affected member adds a `not_compared` entry naming those bounded,
-  credential-stripped, JSON-escaped accounts and keeps its readable accounts in
-  `compared`. Strips role and default-role `GRANT`/`REVOKE`/`SET DEFAULT ROLE`
+  any `*_checked is False`) are treated as unreadable and dropped from EVERY
+  member's snapshot so an unreadable account on one server is never mistaken
+  for absent drift, while the affected member adds a `not_compared` entry
+  naming those `MAX_ACCOUNT_TEXT_CHARS`-bounded, credential-stripped,
+  JSON-escaped accounts and keeps its readable accounts in `compared`. Strips
+  role and default-role `GRANT`/`REVOKE`/`SET DEFAULT ROLE`
   lines from privilege grants (MariaDB `SHOW GRANTS` emits defaults:
   `sql/sql_acl.cc:9829-9850`) so roles compare only once in
   `roles`/`default_roles`. Emits fixed difference counts and descriptions
@@ -8607,7 +8644,11 @@ logs in.
   allow_nan=False)) <= MAX_VALUE_LENGTH * 6`), `mode`, and 1 to 16 distinct
   group `member_ids`, verifies `active_endpoint` and `group_generation` against
   `_snapshot` (`'changed_target'`), and refuses before any secret lookup if any
-  member of the group is `read_only`. It reads every current group member
+  member of the group is `read_only`. During member planning,
+  `variables.plan_change` (via `variables.normalize_value`) separately limits
+  requested value text to `variables.MAX_VALUE_LENGTH = 4096` characters,
+  independently of the serialized-size precheck and current-value source
+  truncation limits. It reads every current group member
   sequentially within `REQUEST_SECONDS = 120` (`QUERY_SECONDS = 30` per
   connect/query) via `planning_guard` and `_facts` (`TargetEvidenceConnection`,
   `target_galera_identity`, `target_session_guard`), refusing proxy members
@@ -8649,25 +8690,33 @@ logs in.
      `profile_name`).
   4. Remaining ties use saved name order (`profile_name.lower(), profile_name,
      profile_id`).
-  Unselected members become `expect.order_dependencies` when `order_rule !=
-  'Saved name order.'`; if any unselected member lacked `_facts` or `identity`,
-  `plan` sets every selected member to `status='refused'` (`statement=None`,
-  `'The replication order could not be verified on every group member.'`).
+  Confirmed proxies and caches (`exc.outcome == 'proxy'`, recorded in
+  `proxy_ids`) are excluded from `expect.order_dependencies` so they do not
+  block ordered changes on database members; other unselected members (such
+  as relays or unreadable database members) become `expect.order_dependencies`
+  when `order_rule != 'Saved name order.'`, and if any such dependency lacked
+  `_facts` or `identity`, `plan` sets every selected member to
+  `status='refused'` (`statement=None`, `'The replication order could not be
+  verified on every group member.'`).
 - **Token binding, re-checks, execution, audit and progress**: `ReviewTokens`
   (`ttl=300`, `capacity=64` in `_Registry.tokens`) binds `OPERATION` and `expect`
   (`group_name`, `group_generation`, `active_member_profile_id`,
   `active_endpoint`, `effective_safety`, ordered member bindings with
   `profile_id`, `endpoint`, `endpoint_fingerprint`, `identity`, `statement`,
   `before`, `order_facts`, `variable_expect`, plus `order_dependencies`) to the
-  retained immutable deep copy. Before starting a run, `apply` checks for
-  `stale` plan/expect, caller Group connection ownership/read-only, any
-  selected member with `status == 'refused'` (`status='refused'`,
-  `'invalid_plan'`, `'Untick the refused servers and review again.'` before
-  `dbops.gate`), `dbops.gate` (`read_only` / `needs_confirmation`),
-  `tokens.check`, `_guard`, and `typed_name == group_name` when
-  `effective_safety.type == 'production'` (`needs_typed_name`), refusing all
-  members (`not_sent`) if any fails (confirmation/safety failures leave the plan
-  usable). Once ready under `registry.lock`, `apply` atomically re-checks
+  retained immutable deep copy. If `plan_id` is expired, evicted, or already
+  consumed (`entry is None`), `apply` bypasses `refuse_all` and returns
+  `status='stale'`, `members: []`, `null` change metadata (`change_set_id`,
+  `group_name`, `name`, `value`, `mode`), and one generic audit record. For a
+  retained plan, `apply` checks for `stale` expect/token, caller Group
+  connection ownership/read-only, any selected member with `status ==
+  'refused'` (`status='refused'`, `'invalid_plan'`, `'Untick the refused
+  servers and review again.'` before `dbops.gate`), `dbops.gate` (`read_only`
+  / `needs_confirmation`), `tokens.check`, `_guard`, and `typed_name ==
+  group_name` when `effective_safety.type == 'production'`
+  (`needs_typed_name`), calling `refuse_all` (`not_sent` rows and one audit
+  record per selected member) if any fails (confirmation/safety failures leave
+  the plan usable). Once ready under `registry.lock`, `apply` atomically re-checks
   `_guard` + `tokens.check`, starts `_MemberProgress`, consumes the single-use
   token (`consume=True`) and deletes the retained plan, and registers `_Run`,
   so any concurrent or later replay returns `status='stale'` even if the first
@@ -8695,8 +8744,13 @@ logs in.
   `recheck_failed`, `identity_mismatch`, `identity_unavailable`,
   `role_changed`, `dependency_changed`, `changed_target`, `changed_variable`,
   `policy_changed`, `read_only`) stay `refused` (each explicitly stating nothing
-  was sent to this member or to review again); server SQL errors retain `ERROR
-  <n>` (`"The server returned error %d. No later member was sent."`) without
+  was sent to this member or to review again); in `_SendingConnection.run_write`,
+  initial connection or login failures matching `dbops.target_not_connected`
+  (including MariaDB `ERROR 1698` at login) reset `self.sent = False` and
+  raise `Refusal(..., 'connect_failed')` so nothing was sent and the member
+  stays `refused` rather than `unknown` or `ERROR <n>`; server SQL errors
+  retain `ERROR <n>` (`"The server returned error %d. No later member was
+  sent."`) without
   echoing SQL or passwords. Overall statuses and messages: `'applied'`
   (`"Every selected member has the reviewed value."`), `'partial'` (`"The
   rolling change stopped. Check each member result before reviewing another
@@ -8749,10 +8803,14 @@ logs in.
   5. Group connection (`connection.group_name`): segmented tabs **Map**,
      **Members**, **Parameters**, **Accounts**, **Plugins** (default **Map**).
 - Read gating: `reportKey` combines `connectionKey(connection)` with sorted
-  `profile_id@host:port` membership so membership edits or non-active member
-  endpoint edits invalidate old reports and mark tabs as `tried` without
-  reading automatically. Switching groups or leaving a Group connection aborts
-  all in-flight `AbortController` requests and drops out-of-date replies. A tab
+  `profile_id@host:port` membership from `group` (`groupActive` in `main.tsx`).
+  Saving group membership changes or reopening the Group connection updates
+  that snapshot, invalidating old reports and marking the edited group's tabs
+  as `tried` without reading automatically; editing a non-active saved member's
+  host or port via Home only refreshes `profiles`, leaving cached topology
+  reports intact until an explicit **Refresh** or reopening the Group
+  connection. Switching groups or leaving a Group connection aborts all
+  in-flight `AbortController` requests and drops out-of-date replies. A tab
   sends `POST /api/live/topology` only when it first comes on screen
   (`useViewOnScreen()`) without a cached report/error/tried entry, and on
   explicit **Refresh** (or **Load** / **Retry**); never on automatic refresh,
@@ -8764,13 +8822,18 @@ logs in.
   cap note) above the accessible text view (Servers, `Not in this group` peers
   with `seen_by`, Links showing `from -> to` and `"verified"` / `"server ID
   match, not verified"` / `"address match, not verified"` / `"Same server
-  (alias)"`, Clusters, Notes). **Members** renders `SummaryLine` (naming
-  version drift when >1 version is seen plus read/failed/not_reached counts) and
-  `DataTable` (`id="topology.members"`, `Alias of` badge, `Read only` combining
-  `read_only` and `super_read_only` with raw `read_only_value` for MariaDB
-  modes) with an inspector showing member facts, optional **Alias** note,
-  channels, `MapNodeLinks` on Map, and actions (**Use in Server views**, **Open
-  in Cluster**, **Open in Replication**). **Parameters**, **Accounts** and
+  (alias)"`, Clusters, Notes; **Links** pages by 200 via **Show 200 more** and
+  retains all links past the 600-link diagram cap, while **Servers** and
+  **Not in this group** peers stay complete up to 500 entries and page by 200
+  when over 500, resetting on each new report). **Members** renders
+  `SummaryLine` (naming version drift when >1 version is seen plus
+  read/failed/not_reached counts) and `DataTable` (`id="topology.members"`,
+  `Alias of` badge, `Read only` combining `read_only` and `super_read_only`
+  with raw `read_only_value` for MariaDB modes) with an inspector showing
+  member facts, optional **Alias** note, channels, `MapNodeLinks` on Map, and
+  actions (**Use in Server views**, which selects that member in `memberByPlace`
+  for Server without navigating; **Open in Cluster** and **Open in
+  Replication**, which navigate to those places). **Parameters**, **Accounts** and
   **Plugins** share `GroupDriftTable` (`id="topology.parameters" |
   "topology.accounts" | "topology.plugins"`): **Show: Differences | All** starts
   on **Differences** (`row.status !== "same" && row.status !== "per_server"`),
@@ -8792,20 +8855,29 @@ logs in.
   refused member reasons (keeping **Apply** off), typed group name on
   Production, and a required acknowledgement checkbox (`"I understand <names>
   will not be changed."`) whenever any member is excluded. Cancelling an
-  unapplied reviewed plan calls `recordDeclined("topology.variable", ...)`. The
-  single-flight `RollingRun` in `rollingRuns.ts` is keyed by `runBinding`
-  (`groupName` + sorted `profile_id@host:port`) and outlives closing the sheet,
-  switching connections/groups, or refreshing the tab: the **Topology** banner
-  shows `Rolling change running: <name>, server <at> of <of>.` / `Rolling
-  change finished: <name>.` with **Show** on `ownPlaceRun` (`placeBinding ===
-  null` or matching `runBinding`), or `Rolling change running in group
-  <group>.` without **Show** on another group or edited membership; after a
-  run finishes, **Parameters** notes that **Refresh** re-reads the group
-  without auto-reading. On a lost `apply` reply (`!ApiError`), polling
-  `/api/live/action/progress` backs off from 1 s to 10 s; failed polls mark
-  `progressSilent` without ending the run, **Stop** retries on error until
-  acknowledged (`stopAcked`), and terminal progress (`finished`/`status` or
-  `unknown`) ends the run with an **Open the Audit log** link.
+  unapplied reviewed plan filters out `null` statements and calls
+  `recordDeclined("topology.variable", ...)`, recording a declined attempt when
+  at least one member has a planned SQL statement; all-`unchanged` or
+  all-`refused` plans send `[]`, which `/api/audit/declined` rejects and
+  `recordDeclined` ignores, recording no attempt. The single-flight
+  `RollingRun` in `rollingRuns.ts` is keyed by `runBinding` (`groupName` +
+  sorted `profile_id@host:port`) and outlives closing the sheet, switching
+  connections/groups, or refreshing the tab: the **Topology** banner shows
+  `Rolling change running: <name>, server <at> of <of>.` / `Rolling change
+  finished: <name>.` with **Show** on `ownPlaceRun` (`placeBinding === null` or
+  matching `runBinding`), or `Rolling change running in group <group>.` without
+  **Show** on another group or edited membership; after a run finishes,
+  **Parameters** notes that **Refresh** re-reads the group without
+  auto-reading. On a lost `apply` reply (`!(error instanceof ApiError)`),
+  polling `/api/live/action/progress` backs off from 1 s to 10 s (`POLL_MS` to
+  `MAX_POLL_MS`); failed polls mark `progressSilent` without ending the run,
+  **Stop** retries on error until acknowledged (`stopAcked`), `phase:
+  "unknown"` keeps polling and keeps **Stop** available (showing
+  `progressSilent` and the last snapshot) for up to `UNKNOWN_GRACE_MS` (30 s
+  from the lost reply, reset by any real snapshot) before ending (`lostDone`,
+  `lostUnknown`) with `"The server no longer reports this change; check the
+  Audit log for each member."` and **Open the Audit log**, and `finished` or
+  non-null `status` ends immediately (`lostDone`) with **Open the Audit log**.
 
 **Tests**: `test/test_topology_group.py` (GTID math, `compare_many`,
 `compare_plugins`, `open_group_member`, `/api/live/topology` auth/allowlist,
