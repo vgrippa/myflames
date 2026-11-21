@@ -918,6 +918,38 @@ class TestPrivileges(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(dbops.strip_credentials(text), expected)
 
+    def test_strip_credentials_visits_many_clauses_once(self):
+        # Repeated clauses used to re-tokenize the whole remaining text.
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "clause = \"IDENTIFIED BY 'secret' REQUIRE NONE \"\n"
+            "count = 65536 // len(clause)\n"
+            "value = clause * count\n"
+            "began = time.monotonic()\n"
+            "clean = dbops.strip_credentials(value)\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert clean == ' '.join(['REQUIRE NONE'] * count)\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
+    def test_strip_credentials_does_not_retry_unterminated_escaped_quotes(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "prefix = \"CREATE USER u IDENTIFIED BY '\"\n"
+            "value = prefix + ('a' + chr(92) + chr(39)) * (65536 // 3) + ' WITH GRANT OPTION'\n"
+            "began = time.monotonic()\n"
+            "clean = dbops.strip_credentials(value)\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert clean == 'CREATE USER u', clean\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
     def test_read_grants_returns_no_credentials(self):
         from _grants_fixtures import grants_batch
         class Conn(object):
@@ -1126,14 +1158,14 @@ class TestPrivileges(unittest.TestCase):
 # ---- redaction -----------------------------------------------------------------------------
 
 class TestRedaction(unittest.TestCase):
-    def test_url_secret_regex_bounds_unfinished_megabyte_credentials(self):
+    def test_url_secret_scan_bounds_unfinished_megabyte_credentials(self):
         # Bound the test process as well as the measured regex so a regression
         # cannot monopolize a worker for minutes.
         code = (
             "import time\nfrom myflames import dbops\n"
             "value = ('mysql://a:b,' * (1024 * 1024 // 12 + 1))[:1024 * 1024]\n"
             "began = time.monotonic()\n"
-            "assert dbops._URL_SECRET.search(value) is None\n"
+            "assert not list(dbops._URL_SECRET(value))\n"
             "print(time.monotonic() - began)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
@@ -1147,6 +1179,22 @@ class TestRedaction(unittest.TestCase):
                     raw = prefix + scheme + '://' + 'u' * 255 + ':' + 'p' * 1024 + '@db'
                     clean = dbops.redact(raw)
                     self.assertEqual(clean, prefix + scheme + '://' + 'u' * 255 + ':[redacted]@db')
+
+    def test_url_secret_scan_has_no_credential_length_limit(self):
+        for scheme in ('mysql', 'mariadb', 'postgres', 'postgresql', 'https'):
+            for username in ('', 'user', 'u' * 5000):
+                with self.subTest(scheme=scheme, username_length=len(username)):
+                    raw = '3*' + scheme + '://' + username + ':' + 'p' * 5000 + '@db/path'
+                    self.assertEqual(dbops.redact(raw), '3*' + scheme + '://' + username + ':[redacted]@db/path')
+
+    def test_url_secret_scan_does_not_cross_path_or_quote_delimiters(self):
+        for boundary in ('/', ' ', '\n', "'", '"', '`'):
+            with self.subTest(boundary=boundary):
+                raw = 'mysql://user:part' + boundary + 'path@host'
+                self.assertEqual(dbops.redact(raw), raw)
+        self.assertEqual(dbops.redact('mysql://user:part%2Fsecret@host'), 'mysql://user:[redacted]@host')
+        self.assertEqual(dbops.redact('mysql://unfinished:mysql://user:secret@host'),
+                         'mysql://unfinished:mysql://user:[redacted]@host')
 
     def test_hex_hashes(self):
         text = ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS "

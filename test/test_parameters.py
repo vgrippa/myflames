@@ -240,6 +240,21 @@ class TestComputeParameters(unittest.TestCase):
                     self.assertEqual(actual['truncated'], length >= cap)
                     self.assertEqual(actual['value'], value[:4096])
 
+    def test_source_caps_count_utf8_bytes_as_well_as_characters(self):
+        for engine, catalog, cap in (('mysql', False, 1024), ('mariadb', True, 2048),
+                                      ('mariadb', False, 4096)):
+            for char in ('x', '\u00e9', '\u4e2d', '\U0001f600'):
+                unit = len(char.encode('utf-8'))
+                under = char * ((cap - 1) // unit) + 'x' * ((cap - 1) % unit)
+                for value, expected in ((None, False), ('', False), (under, False),
+                                         (under + 'x', True), (under + char, True)):
+                    with self.subTest(engine=engine, catalog=catalog, char=char, expected=expected):
+                        self.assertEqual(P.value_truncated(value, engine, catalog), expected)
+        # The actual Parameters inventory and rolling review share this helper.
+        report = mysql([['multibyte_limit', '\u00e9' * 512], ['below_limit', '\u00e9' * 511]])
+        self.assertTrue(items(report)['multibyte_limit']['truncated'])
+        self.assertFalse(items(report)['below_limit']['truncated'])
+
     def test_unknown_truncated_and_conflicting_facts(self):
         report = mysql([["unknown_variable", "z" * 4097], ["unknown_null", None],
                         ["unknown_empty", ""], ["exact_limit", "z" * 4096],

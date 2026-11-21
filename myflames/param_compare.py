@@ -64,9 +64,9 @@ _SECRET_VARIABLES = frozenset((
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
-# Bound each URL field: long scheme-like text and unfinished credentials must
-# not cause quadratic backtracking while processing server-controlled values.
-_CREDENTIAL_URL = re.compile(r'\b[a-z][a-z0-9+.-]{0,31}://[^\s/@:]{0,255}:[^\s/@]{1,1024}@', re.I)
+# Use the same linear authority scan as SQL/audit redaction, including URLs
+# with arbitrarily long passwords or empty usernames.
+_CREDENTIAL_URL = dbops._URL_SECRET
 _CREDENTIAL_PAIR = re.compile(r'[^\s:/\\;=@]+:[^\s:/\\;]+')
 
 # Earlier snapshots inherited these config-review explanations. Remove the
@@ -85,7 +85,7 @@ def _redact_parameter_value(value):
     # Bare host:port and Windows paths are not evidence of credentials. Secret
     # variables still redact numeric passwords through the explicit inventory.
     pair = _CREDENTIAL_PAIR.fullmatch(value.strip())
-    if _CREDENTIAL_URL.search(value) or pair and not pair.group().split(':', 1)[1].isdigit():
+    if next(_CREDENTIAL_URL(value), None) is not None or pair and not pair.group().split(':', 1)[1].isdigit():
         return dbops.REDACTED
     return dbops.redact(dbops.strip_credentials(value))
 
@@ -383,10 +383,13 @@ def compare_many(snapshots, role_settings=None, active_clusters=None):
                 raise ValueError('Parameter values must be scalar.')
             # Reapply the capture projection at this pure-function boundary.
             # Do not trust a caller to have removed a secret already.
-            value = '[redacted]' if sensitive(name) else _redact_parameter_value(raw)
+            oversized = isinstance(raw, str) and len(raw) > MAX_VALUE_CHARS
+            value = (None if oversized else '[redacted]' if sensitive(name) else
+                     _redact_parameter_value(raw))
             json.dumps(value, allow_nan=False)
             items[name] = dict(item, value=value, redacted=bool(
-                item.get('redacted') or sensitive(name) or value != raw),
+                item.get('redacted') or sensitive(name) or not oversized and value != raw),
+                truncated=bool(item.get('truncated') or oversized),
                 unavailable='value' not in item)
         indexed[pid] = items
     per_server = set(IDENTITY_NAMES) | {'group_replication_local_address', 'group_replication_group_seeds',
@@ -415,7 +418,7 @@ def compare_many(snapshots, role_settings=None, active_clusters=None):
     # Live observed roles take precedence over persisted GR configuration.
     roles = role_settings if isinstance(role_settings, dict) else {}
     buckets = {pid: ('source' if roles.get(pid) in ('primary', 'source') else
-                     'replica' if roles.get(pid) in ('secondary', 'replica', 'node') else None)
+                     'replica' if roles.get(pid) in ('secondary', 'replica') else None)
                for pid in profile_ids}
     if _group_auto_increment(indexed, active_clusters or {}):
         per_server.add('auto_increment_offset')
@@ -439,10 +442,17 @@ def compare_many(snapshots, role_settings=None, active_clusters=None):
         role_explained = False
         if (name in ('read_only', 'super_read_only') and not missing and not unavailable and
                 None not in buckets.values() and len(set(buckets.values())) > 1):
+            # Direction matters: an unwritable source and writable replicas
+            # are drift, even when every member within each role agrees.
+            # MariaDB 12.0.1 sql/sys_vars.cc:2985-3001 adds NO_LOCK modes;
+            # both still refuse writes. Unknown values provide no evidence.
+            expected = {'source': ('OFF', '0', 'FALSE'),
+                        'replica': ('ON', '1', 'TRUE', 'NO_LOCK', 'NO_LOCK_NO_ADMIN')}
             by_role = {}
             for pid, value in zip(profile_ids, normalized):
                 by_role.setdefault(buckets[pid], []).append(value)
-            role_explained = (any(value != normalized[0] for value in normalized[1:]) and
+            role_explained = (all(str(indexed[pid][name].get('value')).strip().upper() in
+                                  expected[buckets[pid]] for pid in profile_ids) and
                               all(all(value == values[0] for value in values) for values in by_role.values()))
         status = ('missing' if unavailable else 'per_server' if name in per_server or role_explained else
                   'missing' if missing else 'different' if any(

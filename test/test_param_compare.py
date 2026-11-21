@@ -155,6 +155,29 @@ class NormalizeTest(unittest.TestCase):
                 for name in ('read_only', 'super_read_only'):
                     self.assertEqual(rows[name]['status'], 'different')
 
+    def test_inverted_read_only_and_galera_roles_are_not_folded(self):
+        for name in ('read_only', 'super_read_only'):
+            for roles, source, replica in (({'a': 'primary', 'b': 'secondary'}, 'ON', 'OFF'),
+                                           ({'a': 'source', 'b': 'replica'}, 'ON', 'OFF'),
+                                           ({'a': 'source', 'b': 'node'}, 'OFF', 'ON'),
+                                           ({'a': 'node', 'b': 'node'}, 'OFF', 'ON')):
+                with self.subTest(name=name, roles=roles):
+                    sides = {'a': snapshot([item(name, source, 'boolean')]),
+                             'b': snapshot([item(name, replica, 'boolean')])}
+                    self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'different')
+
+    def test_mariadb_read_only_modes_fold_only_when_replica_refuses_writes(self):
+        roles = {'a': 'source', 'b': 'replica'}
+        for mode in ('NO_LOCK', 'NO_LOCK_NO_ADMIN'):
+            with self.subTest(mode=mode):
+                sides = {'a': snapshot([item('read_only', 'OFF', 'enum')], engine='mariadb'),
+                         'b': snapshot([item('read_only', mode, 'enum')], engine='mariadb')}
+                self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'per_server')
+                self.assertEqual(P.compare_many(sides, role_settings={'a': 'replica', 'b': 'source'})[0]['status'],
+                                 'different')
+        sides['b']['items'][0]['value'] = 'UNKNOWN'
+        self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'different')
+
     def test_writable_replica_is_drift_even_with_a_source_in_the_comparison(self):
         roles = {'source': 'source', 'replica': 'replica', 'other': 'secondary'}
         for name in ('read_only', 'super_read_only'):
@@ -432,6 +455,57 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.parameter_snapshot_get(saved['id'])['snapshot'],value)
 
 class ValidationEdgeTest(unittest.TestCase):
+    def test_compare_many_discards_overflow_before_redaction(self):
+        full = 'mysql://user:' + 'p' * (P.MAX_VALUE_CHARS + 1) + '@host'
+        with mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            rows = P.compare_many({'a': snapshot([item('custom_setting', full, 'string')]),
+                                   'b': snapshot([item('custom_setting', full, 'string')])})
+        self.assertEqual(rows[0]['status'], 'missing')
+        self.assertEqual(rows[0]['values'], {'a': None, 'b': None})
+        self.assertIn('truncated', rows[0]['reason'])
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        boundary = 'x' * P.MAX_VALUE_CHARS
+        rows = P.compare_many({'a': snapshot([item('custom_setting', boundary, 'string')])})
+        self.assertEqual(rows[0]['status'], 'same')
+        self.assertEqual(rows[0]['values']['a'], boundary)
+
+    def test_long_and_empty_username_url_credentials_are_never_compared(self):
+        for username in ('', 'user', 'u' * 5000):
+            for password in ('p' * 5000, 'part%2Fsecret'):
+                with self.subTest(username_length=len(username), password_length=len(password)):
+                    raw = snapshot([item('custom_setting', 'mysql://' + username + ':' + password + '@host', 'string')])
+                    clean = P.validate_snapshot(raw)
+                    self.assertEqual(clean['items'][0]['value'], '[redacted]')
+                    self.assertTrue(clean['items'][0]['redacted'])
+                    row = P.compare_many({'a': raw, 'b': raw})[0]
+                    self.assertEqual(row['status'], 'missing')
+                    self.assertEqual(row['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        # A literal slash ends the URL authority; @ in a path is not a password.
+        raw = 'mysql://user:part/path@host'
+        self.assertEqual(P._redact_parameter_value(raw), raw)
+
+    def test_snapshot_redaction_budget_includes_repeated_identified_clauses(self):
+        # A normal full inventory plus a worst-case 64 KiB setting. This
+        # exercises validation and group comparison, not just a private scan.
+        code = (
+            "import time\nfrom myflames import param_compare as p\n"
+            "clause = \"IDENTIFIED BY 'secret' REQUIRE NONE \"\n"
+            "items = [dict(name='setting_' + str(i), value='x' * 80) for i in range(1500)]\n"
+            "items.append(dict(name='custom_setting', value=clause * (65536 // len(clause))))\n"
+            "raw = dict(schema_version=p.SNAPSHOT_SCHEMA, server=dict(host='db', port=3306, engine='mysql'),\n"
+            "           captured_at='2026-11-21T00:00:00+00:00', complete=True, notes=[], items=items)\n"
+            "began = time.monotonic()\n"
+            "clean = p.validate_snapshot(raw)\n"
+            "rows = p.compare_many({'a': raw, 'b': clean})\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert len(rows) == 1501\n"
+            "assert all('secret' not in str(row['values']) for row in rows)\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
     def test_oversized_values_are_discarded_before_redaction_in_all_snapshot_paths(self):
         from myflames import compare_api
         full = 'a.' * (1024 * 1024 // 2)
@@ -460,14 +534,14 @@ class ValidationEdgeTest(unittest.TestCase):
         self.assertIsNone(clean['items'][1]['value'])
         self.assertTrue(clean['items'][1]['truncated'])
 
-    def test_credential_url_regex_bounds_scheme_like_megabyte(self):
+    def test_credential_url_scan_bounds_scheme_like_megabyte(self):
         # A subprocess deadline also makes a regression fail promptly instead
         # of blocking the full test worker while the regex holds the GIL.
         code = (
             "import time\nfrom myflames import param_compare as p\n"
             "value = 'a.' * (1024 * 1024 // 2)\n"
             "began = time.monotonic()\n"
-            "assert p._CREDENTIAL_URL.search(value) is None\n"
+            "assert not list(p._CREDENTIAL_URL(value))\n"
             "print(time.monotonic() - began)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)

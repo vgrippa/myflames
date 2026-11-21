@@ -29,10 +29,11 @@ _CATALOG_KEYS = ("name", "global_value", "origin", "default", "scope", "type", "
 
 def value_truncated(value, engine, catalog=False):
     """A full source-width value may have been cut before reaching the client."""
-    # MySQL table_global_variables.cc:67 and pfs_variable.cc:721;
+    # MySQL 8.4.0 storage/perfschema/pfs_variable.cc:672-675 caps the byte
+    # length before memcpy; include/mysql/status_var.h:81 defines 1024.
     # MariaDB sql/sql_show.cc:10528,10537 (SHOW and SYSTEM_VARIABLES).
     cap = 1024 if engine == "mysql" else 2048 if catalog else 4096
-    return value is not None and len(value) >= cap
+    return value is not None and (len(value) >= cap or len(value.encode('utf-8')) >= cap)
 
 
 def _location(entry, versions, wanted):

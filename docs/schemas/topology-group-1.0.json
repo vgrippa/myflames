@@ -17,6 +17,7 @@
       "const": "topology-group-1.0"
     },
     "section": {
+      "description": "An explicit tab read, with a 300-second request budget for accounts and 120 seconds for other sections. Each query is bounded to 30 seconds.",
       "enum": [
         "map",
         "members",
@@ -528,7 +529,7 @@
           ]
         },
         "duplicate_of": {
-          "description": "Profile ID of the first successfully read MySQL member with the same non-nil server_uuid; null otherwise. Each saved connection remains a separate member and map node.",
+          "description": "Canonical successfully read MySQL profile with the same non-nil server_uuid. Prefer the saved endpoint matching the reported server port and hostname or report_host, otherwise the oldest updated_at without a contrary port. Null for the canonical member, unique servers, or when no eligible canonical endpoint exists. Each saved connection remains a separate member and map node.",
           "type": [
             "string",
             "null"
@@ -881,7 +882,7 @@
           ]
         },
         "duplicate_of": {
-          "description": "Profile ID of the first successfully read MySQL member with the same non-nil server_uuid; null otherwise. Each saved connection remains a separate member and map node.",
+          "description": "Canonical successfully read MySQL profile with the same non-nil server_uuid. Prefer the saved endpoint matching the reported server port and hostname or report_host, otherwise the oldest updated_at without a contrary port. Null for the canonical member, unique servers, or when no eligible canonical endpoint exists. Each saved connection remains a separate member and map node.",
           "type": [
             "string",
             "null"
@@ -975,7 +976,7 @@
           ]
         },
         "evidence": {
-          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. Alias edges use server_uuid with verified false because they are another connection to the same server.",
+          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. A read database member's server_id that contradicts the MariaDB channel prevents an address-only match. Alias edges use server_uuid with verified false because they are another connection to the same server.",
           "enum": [
             "server_uuid",
             "server_id",

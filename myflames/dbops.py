@@ -2989,18 +2989,36 @@ def strip_credentials(text):
     tokens outside quoted literals, so a credential that contains ``WITH
     GRANT OPTION`` cannot end the clause early."""
     text = str(text or "")
-    while True:
-        matches = list(GRANT_TOKEN.finditer(text))
-        upper = [m.group().upper() for m in matches]
-        start = next((i for i, word in enumerate(upper) if word == "IDENTIFIED"), None)
-        if start is None:
-            return text
-        end = len(text)
-        for j in range(start + 1, len(matches)):
-            if any(tuple(upper[j:j + len(words)]) == words for words in _CREDENTIAL_ENDS):
-                end = matches[j].start()
-                break
-        text = (text[:matches[start].start()].rstrip() + " " + text[end:].lstrip()).strip()
+    matches, cursor = [], 0
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        token = GRANT_TOKEN.match(text, cursor)
+        if token is None:
+            # An unterminated quoted literal consumes the remainder. Never
+            # retry its escaped quotes as new literals or clause boundaries.
+            break
+        matches.append(token)
+        cursor = token.end()
+    upper = [m.group().upper() for m in matches]
+    parts, kept, index = [], 0, 0
+    # Tokenize once and visit each token once. Re-tokenizing the remaining
+    # text for every IDENTIFIED clause makes a long grant quadratic.
+    while index < len(matches):
+        if upper[index] != "IDENTIFIED":
+            index += 1
+            continue
+        parts.append(text[kept:matches[index].start()].strip())
+        index += 1
+        while index < len(matches) and not any(
+                tuple(upper[index:index + len(words)]) == words for words in _CREDENTIAL_ENDS):
+            index += 1
+        kept = matches[index].start() if index < len(matches) else len(text)
+    if not parts:
+        return text
+    parts.append(text[kept:].strip())
+    return " ".join(part for part in parts if part)
 
 
 def parse_grants(grants, engine="mysql"):
@@ -3299,8 +3317,23 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
-#: Database URLs with user:secret@host (including Readyset N*mysql://... pool prefixes).
-_URL_SECRET = re.compile(r"(\b(?:\d{1,31}\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]{1,255}:)([^@\s'\"`]{1,1024})(@)", re.I)
+def _URL_SECRET(text):
+    """Yield password spans in URL authorities, with no credential length limit.
+
+    The scheme starts at a character outside the scheme alphabet, preventing
+    retries at each dot in a long scheme-like value. Each authority scan ends
+    at its first delimiter, so even nested or unfinished URLs take linear
+    work. A slash ends the authority: an @ in a path is not a credential.
+    Readyset's N* pool prefix and an empty username require no special case.
+    """
+    boundary = re.compile(r"[\s/'\"`@]")
+    for scheme in re.finditer(r"(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]*://", text):
+        end = boundary.search(text, scheme.end())
+        if end is None or end.group() != "@":
+            continue
+        colon = text.find(":", scheme.end(), end.start())
+        if colon >= 0:
+            yield colon + 1, end.start()
 
 
 def _redact_literal(match):
@@ -3326,7 +3359,12 @@ def redact(text, password=None):
                 text = text.replace(variant, REDACTED)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
-    text = _URL_SECRET.sub(lambda m: m.group(1) + REDACTED + m.group(3), text)
+    parts, kept = [], 0
+    for start, end in _URL_SECRET(text):
+        parts.extend((text[kept:start], REDACTED))
+        kept = end
+    if parts:
+        text = "".join(parts) + text[kept:]
     return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
 
 

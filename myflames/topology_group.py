@@ -21,6 +21,7 @@ SECTIONS = ('map', 'members', 'parameters', 'accounts', 'plugins')
 MAX_CONCURRENCY = 4
 QUERY_SECONDS = 30
 REQUEST_SECONDS = 120
+ACCOUNTS_REQUEST_SECONDS = 300
 MAP_PEERS_PER_MEMBER = 256
 MAP_EDGES_PER_MEMBER = 1024
 MAP_ROWS_PER_MEMBER = 2048
@@ -37,6 +38,7 @@ class _ReadConnection(object):
     """Latch login and transport failures so optional probes cannot retry them."""
     def __init__(self, conn):
         self.connection, self.failure = conn, None
+        self.authenticated = False
 
     def __getattr__(self, name):
         return getattr(self.connection, name)
@@ -49,14 +51,23 @@ class _ReadConnection(object):
         from .reviewed_writes import client_error
         self.check()
         try:
-            return self.connection.run(sql, **kwargs)
+            result = self.connection.run(sql, **kwargs)
+            self.authenticated = True
+            return result
         except ConnectorError as exc:
-            code = dbops.error_code(str(exc))
+            message = str(exc)
+            code = dbops.error_code(message)
+            # ProxySQL Admin uses 1045 for unsupported SQL, including the
+            # initial optional version-comment probe. This is a SQL reply.
+            admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
+            login_refused = (code in (1044, 1045, 1049, 1698, 1129, 1130, 1251, 3159) and
+                not admin_sql_error and (not self.authenticated or
+                (re.search(r'\bAccess denied for user\b', message, re.I) and
+                 not re.search(r'\bat line \d+|\bto database\b', message, re.I) and
+                 not getattr(exc, 'guard_markers', ()))))
             # SQL permission/unsupported-feature errors may be optional. A
             # refused login, client error or timeout must end this member read.
-            if (code is None or client_error(code) or dbops.target_not_connected(exc) or
-                    code in (1044, 1045, 1129, 1130, 1251, 3159) or
-                    'timeout' in str(exc).lower() or 'timed out' in str(exc).lower()):
+            if code is None or client_error(code) or login_refused:
                 self.failure = exc
             raise
 
@@ -222,7 +233,7 @@ def _identity(conn, member):
                       role='proxy', state='reachable')
         return {}, 'ProxySQL Admin is read for identity only.'
     values = reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
-        "('version','version_comment','server_uuid','server_id','hostname','read_only','super_read_only',"
+        "('version','version_comment','server_uuid','server_id','hostname','port','report_host','read_only','super_read_only',"
         "'gtid_mode','group_replication_group_name',"
         "'group_replication_single_primary_mode','wsrep_on','wsrep_auto_increment_control',"
         "'wsrep_provider','wsrep_cluster_name','wsrep_node_name','wsrep_node_incoming_address')")
@@ -666,7 +677,8 @@ def _build_map(entries, probes, profiles):
         # IDs can collide (including the default 1), so retain an ID-only
         # match as an explicit estimate, not verified identity evidence.
         sid = _number(server_id)
-        if not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb':
+        mariadb_sid = not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb'
+        if mariadb_sid:
             identities = [pid for pid, probe in probes.items() if probe.get('kind') == 'database'
                           and by_id[pid]['engine'] == 'mariadb' and by_id[pid]['server_id'] == sid]
             if len(identities) == 1:
@@ -674,7 +686,11 @@ def _build_map(entries, probes, profiles):
         # A contrary UUID is stronger than a matching address. Do not draw
         # that known different server as this saved member.
         contrary_uuid = found and uuid and found.get('server_uuid') and _uuid(found['server_uuid']) != uuid
-        if found and not identity_only and not contrary_uuid:
+        contrary_sid = (found and mariadb_sid and
+                        probes.get(found['profile_id'], {}).get('kind') == 'database' and
+                        by_id[found['profile_id']].get('server_id') is not None and
+                        by_id[found['profile_id']]['server_id'] != sid)
+        if found and not identity_only and not contrary_uuid and not contrary_sid:
             return found.get('duplicate_of') or found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
@@ -782,21 +798,50 @@ def _build_map(entries, probes, profiles):
                 edges=[edges[key] for key in sorted(edges)], clusters=[boxes[key] for key in sorted(boxes)], notes=notes)
 
 
-def _duplicate_notes(entries):
+def _duplicate_notes(entries, profiles=None, facts=None):
     """Annotate aliases of an observed MySQL server without merging members."""
     seen, notes = {}, []
+    stored = {profile['id']: profile for profile in profiles or []}
+    facts = facts or {}
     for entry in entries:
         server = _uuid(entry['server_uuid']) if entry['engine'] == 'mysql' and entry['outcome'] == 'read' else None
         if server is None:
             continue
-        first = seen.setdefault(server, entry)
-        if first is entry:
+        seen.setdefault(server, []).append(entry)
+    for aliases in seen.values():
+        if len(aliases) < 2:
             continue
-        message = ('%s and %s reach the same server (same server_uuid); one may be a router or proxy port.' %
-                   (first['profile_name'], entry['profile_name']))
-        entry['duplicate_of'] = first['profile_id']
-        entry['message'] += ' ' + message
-        notes.append({'profile_id': entry['profile_id'], 'message': message})
+        eligible, direct = [], []
+        for entry in aliases:
+            own = facts.get(entry['profile_id'], {})
+            port = _map_port(own.get('port'))
+            # A router port must never win merely because its profile was
+            # saved first. Unknown server ports provide no contrary evidence.
+            if port is not None and entry['port'] != port:
+                continue
+            eligible.append(entry)
+            hosts = {str(host).lower().rstrip('.') for host in
+                     (own.get('hostname') or entry.get('hostname'), own.get('report_host')) if host}
+            if port == entry['port'] and (not hosts or entry['host'].lower().rstrip('.') in hosts):
+                direct.append(entry)
+        # Profiles expose their last save time, not their creation time. Use
+        # the oldest available save as the fallback, independent of list order.
+        first = min(direct or eligible, key=lambda entry: (
+                    stored.get(entry['profile_id'], {}).get('updated_at') or '', entry['profile_id'])) if eligible else None
+        if first is None:
+            for entry in aliases:
+                notes.append({'profile_id': entry['profile_id'], 'message':
+                    'These connections reach the same server (same server_uuid); '
+                    'none uses its reported server port, so no canonical connection was selected.'})
+            continue
+        for entry in aliases:
+            if entry is first:
+                continue
+            message = ('%s and %s reach the same server (same server_uuid); one may be a router or proxy port.' %
+                       (first['profile_name'], entry['profile_name']))
+            entry['duplicate_of'] = first['profile_id']
+            entry['message'] += ' ' + message
+            notes.append({'profile_id': entry['profile_id'], 'message': message})
     return notes
 
 
@@ -888,7 +933,8 @@ def read_group(store, group_name, section, active_member_profile_id,
 
     active_guard()
     started, taken_at = time.monotonic(), now()
-    deadline = started + REQUEST_SECONDS
+    request_seconds = ACCOUNTS_REQUEST_SECONDS if section == 'accounts' else REQUEST_SECONDS
+    deadline = started + request_seconds
     facts = {}
 
     def read_one(profile):
@@ -920,7 +966,7 @@ def read_group(store, group_name, section, active_member_profile_id,
                 if remaining < QUERY_SECONDS:
                     raise _NotReached(entry['message'])
                 transport = _ReadConnection(param_compare.BoundedConnection(
-                    member_conn, seconds=min(remaining, REQUEST_SECONDS)))
+                    member_conn, seconds=min(remaining, request_seconds)))
                 conn = transport
                 variables, exclusion = _identity(conn, entry)
                 if exclusion is None:
@@ -944,7 +990,12 @@ def read_group(store, group_name, section, active_member_profile_id,
                     if section == 'parameters':
                         snapshot = param_compare.capture(conn, server=entry, full_provider_options=True)
                     elif section == 'accounts':
+                        accounts_began = time.monotonic()
                         snapshot = account_compare.capture(conn, server=entry)
+                        accounts_seconds = time.monotonic() - accounts_began
+                        if accounts_seconds >= QUERY_SECONDS:
+                            entry['message'] = ('Accounts are read one at a time; %d accounts took %.1f s '
+                                                'on this server.' % (len(snapshot['items']), accounts_seconds))
                     elif section == 'plugins':
                         snapshot = _plugins(conn, entry)
                 if section == 'map':
@@ -966,6 +1017,7 @@ def read_group(store, group_name, section, active_member_profile_id,
                     active_cluster = 'galera'
                 facts[profile['id']] = dict(role=entry['role'], state=entry['state'],
                     gr_group=_uuid(variables.get('group_replication_group_name')), active_cluster=active_cluster,
+                    hostname=variables.get('hostname'), report_host=variables.get('report_host'),
                     port=_map_port((conn.variables or {}).get('port'))
                     if isinstance(conn, dbops.TargetEvidenceConnection) else None)
                 if entry['message'].startswith('Not read:'):
@@ -985,7 +1037,7 @@ def read_group(store, group_name, section, active_member_profile_id,
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
         results = list(pool.map(read_one, members))
     entries = [result[0] for result in results]
-    duplicate_notes = _duplicate_notes(entries)
+    duplicate_notes = _duplicate_notes(entries, members, facts)
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))
     if section in ('members', 'map'):
         positions = {entry['profile_id']: position for entry, snapshot, position, reason, multi in results}
@@ -1049,8 +1101,12 @@ def read_group(store, group_name, section, active_member_profile_id,
                         for note in snapshots[pid]['notes']] if section == 'plugins' else []
         if section == 'plugins':
             snapshots = {pid: value['items'] for pid, value in snapshots.items()}
-        role_settings = {entry['profile_id']: ('source' if entry['profile_id'] == primary_id and
-                         entry['role'] == 'standalone' else entry['role']) for entry in entries}
+        canonical = {entry['profile_id']: entry for entry in entries}
+        role_settings = {}
+        for entry in entries:
+            pid = entry.get('duplicate_of') or entry['profile_id']
+            role = canonical[pid]['role']
+            role_settings[entry['profile_id']] = 'source' if pid == primary_id and role == 'standalone' else role
         active_clusters = {pid: fact['active_cluster'] for pid, fact in facts.items()}
         rows = (compare(snapshots, role_settings=role_settings, active_clusters=active_clusters)
                 if section == 'parameters' else compare(snapshots))

@@ -924,6 +924,71 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(report['summary']['not_reached'], 2)
         self.assertTrue(all(m['message'].startswith('Not read: the time budget ') for m in report['members']))
 
+    def test_accounts_have_300_seconds_but_each_query_keeps_30_seconds(self):
+        self.assertEqual(topology_group.REQUEST_SECONDS, 120)
+        self.assertEqual(topology_group.ACCOUNTS_REQUEST_SECONDS, 300)
+        self.assertEqual(topology_group.QUERY_SECONDS, 30)
+        clock = [0]
+
+        def capture(conn, **kwargs):
+            # Simulate serial account reads without waiting in the test. The
+            # final real connector query is beyond the other tabs' budget.
+            clock[0] = 150
+            self.assertEqual(conn.run('SELECT 1').strip(), '1')
+            return side([account('app-%02d' % index) for index in range(12)])
+
+        with self.clients({'active.example': member_fixture()}) as observed, \
+                mock.patch.object(topology_group.time, 'monotonic', side_effect=lambda: clock[0]), \
+                mock.patch.object(account_compare, 'capture', side_effect=capture):
+            report = self.read('accounts')
+        self.assertEqual(report['summary']['read'], 1, report)
+        self.assertEqual(report['accounts']['compared'], ['active'])
+        self.assertEqual(len(report['accounts']['rows']), 12)
+        self.assertTrue(all(timeout <= 30 for timeout in observed.timeouts))
+        self.assertRegex(report['members'][0]['message'],
+                         r'Accounts are read one at a time; 12 accounts took 150(?:\.0+)? s on this server\.')
+
+    def test_accounts_request_budget_still_stops_reads_at_300_seconds(self):
+        clock = [0]
+
+        def capture(conn, **kwargs):
+            clock[0] = 301
+            conn.run('SELECT 1')
+            self.fail('the expired request must reject the next account query')
+
+        with self.clients({'active.example': member_fixture()}) as observed, \
+                mock.patch.object(topology_group.time, 'monotonic', side_effect=lambda: clock[0]), \
+                mock.patch.object(account_compare, 'capture', side_effect=capture):
+            report = self.read('accounts')
+        self.assertEqual(report['summary']['failed'], 1)
+        self.assertEqual(report['accounts']['compared'], [])
+        self.assertFalse(any(sql == 'SELECT 1' for sql in self.statements(observed)))
+
+    def test_extra_accounts_budget_does_not_extend_other_sections(self):
+        fill = self.store.connection_with_saved_password
+        clock = [0]
+
+        def slow_fill(value):
+            result = fill(value)
+            clock[0] = 150
+            return result
+
+        for section in ('members', 'parameters', 'plugins', 'map', 'accounts'):
+            with self.subTest(section=section):
+                clock[0] = 0
+                with self.clients({'active.example': member_fixture()}) as observed, \
+                        mock.patch.object(topology_group.time, 'monotonic', side_effect=lambda: clock[0]), \
+                        mock.patch.object(self.store, 'connection_with_saved_password', side_effect=slow_fill), \
+                        mock.patch.object(account_compare, 'capture', return_value=side([account()])):
+                    report = self.read(section)
+                if section == 'accounts':
+                    self.assertEqual(report['summary']['read'], 1, report)
+                    self.assertTrue(observed.logins)
+                    self.assertNotIn('Accounts are read one at a time', report['members'][0]['message'])
+                else:
+                    self.assertEqual(report['summary']['not_reached'], 1, report)
+                    self.assertEqual(observed.logins, [])
+
     def test_queued_member_without_a_query_window_is_not_reached(self):
         self.save('peer', 'G')
         fixtures = {p['host']: member_fixture(pause=0.15) for p in self.store.list('profile')}
@@ -1025,7 +1090,7 @@ class TopologyReadTests(GroupCase):
 
     def test_login_and_transport_errors_cost_one_client_invocation_per_member(self):
         self.save('peer', 'G')
-        for code in (1045, 1044, 2002, 2003, 2005, 2013, 2026, 1129, 1130, 1251, 3159):
+        for code in (1045, 1044, 1049, 1698, 2002, 2003, 2005, 2013, 2026, 1129, 1130, 1251, 3159):
             with self.subTest(code=code):
                 fixtures = {host: member_fixture(error='ERROR %d (HY000): secret_payload' % code)
                             for host in ('active.example', 'peer.example')}
@@ -1039,12 +1104,83 @@ class TopologyReadTests(GroupCase):
         for code in (1045, 1129, 1251, 3159, 2013):
             with self.subTest(code=code):
                 fixture = member_fixture(proxy='proxysql', error_on='SELECT @@version',
-                    query_error='ERROR %d (HY000): secret_payload' % code)
+                    query_error="ERROR %d (HY000): Access denied for user 'secret_payload'@'localhost'" % code)
                 with self.clients({'active.example': fixture}) as observed:
                     report = self.read()
                 self.assertEqual(len(observed.logins), 3)
                 self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql for sql in self.statements(observed)))
                 self.assertEqual(report['summary']['failed'], 1)
+
+    def test_mariadb_socket_authentication_refusal_is_not_retried(self):
+        fixture = member_fixture(engine='mariadb',
+            error="ERROR 1698 (28000): Access denied for user 'root'@'localhost'")
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read()
+        self.assertEqual(observed.logins, ['active.example'])
+        self.assertEqual(report['summary']['failed'], 1)
+        self.assertNotIn("'root'", json.dumps(report))
+
+    def test_proxysql_admin_sql_error_is_not_a_login_refusal(self):
+        # Admin reports unsupported statements with 1045 even after login.
+        # This is also the first optional statement in the identity probe.
+        fixture = member_fixture(proxy='proxysql', error_on='SELECT @@version_comment',
+            query_error='ERROR 1045 (28000): ProxySQL Admin Error: near "SELECT": syntax error')
+        fixture['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read()
+        self.assertEqual(report['summary']['read'], 1, report)
+        self.assertEqual(report['members'][0]['product'], 'ProxySQL Admin')
+        self.assertEqual(report['members'][0]['role'], 'proxy')
+        self.assertGreater(len(observed.logins), 1)
+        self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql for sql in self.statements(observed)))
+
+    def test_authenticated_proxysql_error_does_not_poison_later_reads(self):
+        class Connection(object):
+            calls = 0
+
+            def run(self, sql, **kwargs):
+                self.calls += 1
+                if sql == 'SELECT unsupported':
+                    raise connector.ConnectorError(
+                        'ERROR 1045 (28000): ProxySQL Admin Error: near "unsupported": syntax error')
+                return '1\n'
+
+        connection = Connection()
+        reader = topology_group._ReadConnection(connection)
+        self.assertEqual(reader.run('SELECT 1'), '1\n')
+        with self.assertRaises(connector.ConnectorError):
+            reader.run('SELECT unsupported')
+        reader.check()
+        self.assertEqual(reader.run('SELECT 1'), '1\n')
+        self.assertEqual(connection.calls, 3)
+
+    def test_authenticated_component_database_denial_keeps_plugins(self):
+        fixture = member_fixture(error_on='SELECT component_urn FROM mysql.component',
+            query_error="ERROR 1044 (42000): Access denied for user 'secret_component_user'@'%' to database 'mysql'")
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['summary']['read'], 1, report)
+        self.assertEqual(report['plugins']['compared'], ['active'])
+        self.assertEqual(report['plugins']['rows'][0]['name'], 'auth')
+        self.assertTrue(any('mysql.component' in note['message'] and 'denied' in note['message'].lower()
+                            for note in report['plugins']['notes']))
+        self.assertNotIn('secret_component_user', json.dumps(report))
+        self.assertGreater(len(observed.logins), 1)
+
+    def test_authenticated_sql_timeout_word_is_not_a_transport_timeout(self):
+        for message in ('ERROR 1045 (28000): ProxySQL Admin Error: no such column: timeout',
+                        "ERROR 1193 (HY000): Unknown system variable 'lock_wait_timeout'",
+                        'ERROR 1205 (HY000): Lock wait timeout exceeded'):
+            with self.subTest(message=message):
+                connection = mock.Mock()
+                connection.run.side_effect = ['1\n', connector.ConnectorError(message), '1\n']
+                reader = topology_group._ReadConnection(connection)
+                self.assertEqual(reader.run('SELECT 1'), '1\n')
+                with self.assertRaises(connector.ConnectorError):
+                    reader.run('SELECT unsupported')
+                reader.check()
+                self.assertEqual(reader.run('SELECT 1'), '1\n')
+                self.assertEqual(connection.run.call_count, 3)
 
     def test_authenticated_optional_identity_sql_error_remains_unavailable_fact(self):
         fixture = member_fixture(error_on='SELECT @@version_comment',
@@ -1411,6 +1547,27 @@ class TopologyReadTests(GroupCase):
             report = self.read('parameters')
         self.assertTrue(all(row['status'] == 'different' for row in report['parameters']['rows']))
 
+    def test_group_parameters_alias_inherits_canonical_async_source_role(self):
+        self.save('router', 'G', port=6446)
+        self.save('replica', 'G')
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'router.example': member_fixture(UUID_A),
+                    'replica.example': member_fixture(UUID_B, channels=[{'Source_UUID': UUID_A}])}
+
+        def capture(conn, **kwargs):
+            return snapshot([item(name, 'ON' if conn.host == 'replica.example' else 'OFF', 'boolean')
+                             for name in ('read_only', 'super_read_only')])
+
+        with self.clients(fixtures), mock.patch.object(param_compare, 'capture', side_effect=capture):
+            report = self.read('parameters')
+        self.assertEqual(report['primary_profile_id'], 'active')
+        members = {member['profile_id']: member for member in report['members']}
+        self.assertEqual(members['router']['duplicate_of'], 'active')
+        self.assertEqual(report['parameters']['compared'], ['active', 'replica', 'router'])
+        for row in report['parameters']['rows']:
+            self.assertEqual(row['status'], 'per_server', row)
+            self.assertEqual(row['reason'], "Set by the member's role")
+
     def test_group_parameters_require_observed_active_cluster_for_offsets(self):
         self.save('peer', 'G')
         for mode, expected in (('galera', 'per_server'), ('non-primary', 'different'),
@@ -1661,13 +1818,15 @@ class TopologyReadTests(GroupCase):
             self.assertEqual(report['summary']['read'], 4)
             aliases = [member for member in report['members'] if member['server_uuid'] == UUID_A]
             self.assertEqual(len(aliases), 3)
-            first = aliases[0]
+            # Saved profiles are returned newest first. With no corroborating
+            # hostname, the oldest saved endpoint is canonical.
+            first = next(member for member in aliases if member['profile_id'] == 'active')
             self.assertIsNone(first['duplicate_of'])
             self.assertNotIn('same server_uuid', first['message'])
             distinct = next(member for member in report['members'] if member['profile_id'] == 'distinct')
             self.assertIsNone(distinct['duplicate_of'])
             self.assertNotIn('same server_uuid', distinct['message'])
-            for duplicate in aliases[1:]:
+            for duplicate in (member for member in aliases if member is not first):
                 note = ('%s and %s reach the same server (same server_uuid); '
                         'one may be a router or proxy port.' %
                         (first['profile_name'], duplicate['profile_name']))
@@ -1688,11 +1847,10 @@ class TopologyReadTests(GroupCase):
                 self.assertEqual(len(duplicate_notes), 2)
 
     def test_live_router_alias_keeps_one_primary_and_no_spurious_cluster_peer(self):
-        self.save('router', 'G', name='cluster-ic-router-rw')
+        self.save('router', 'G', name='cluster-ic-router-rw', port=6446)
         self.save('secondary', 'G')
-        # Keep the direct saved endpoint first, matching duplicate_of's
-        # first-successful-read contract even though reads run concurrently.
-        self.save('active', 'G', type='development')
+        # The newer router appears first in the store, but its forwarded port
+        # is contrary evidence for choosing the direct server's canonical ID.
         rows = [[UUID_A, 'mf-ic-1', 3306, 'ONLINE', 'PRIMARY'],
                 [UUID_B, 'mf-ic-2', 3306, 'ONLINE', 'SECONDARY']]
         fixtures = {'active.example': self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10'),
@@ -1713,7 +1871,7 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(members['router']['behind']['value'], 0)
 
     def test_replica_alias_is_not_a_separate_verified_replication_target(self):
-        self.save('router', 'G')
+        self.save('router', 'G', port=6446)
         self.save('replica', 'G')
         self.save('active', 'G', type='development')
         source = member_fixture(UUID_A, replicas=[{'Replica_UUID': UUID_B, 'Server_id': '2',
@@ -1727,6 +1885,40 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(len(edges), 2)
         self.assertEqual({(e['from'], e['to'], e['kind'], e['verified']) for e in edges},
                          {('active', 'replica', 'replication', True), ('router', 'replica', 'alias', False)})
+
+    def test_alias_canonical_prefers_reported_hostname_or_report_host(self):
+        self.save('direct', 'G')
+        for field in ('hostname', 'report_host'):
+            with self.subTest(field=field):
+                fixture = member_fixture(UUID_A)
+                fixture['variables'][field] = 'direct.example'
+                with self.clients({'active.example': fixture, 'direct.example': copy.deepcopy(fixture)}):
+                    report = self.read()
+                members = {row['profile_id']: row for row in report['members']}
+                self.assertIsNone(members['direct']['duplicate_of'])
+                self.assertEqual(members['active']['duplicate_of'], 'direct')
+
+    def test_alias_canonical_never_uses_a_known_contrary_port(self):
+        # The oldest endpoint and its hostname both look preferable, but the
+        # SQL server reports a different port, so the direct endpoint wins.
+        self.save('active', 'G', type='development', port=6446)
+        self.save('direct', 'G')
+        fixture = member_fixture(UUID_A)
+        fixture['variables']['hostname'] = 'active.example'
+        with self.clients({'active.example': fixture, 'direct.example': copy.deepcopy(fixture)}):
+            report = self.read()
+        members = {row['profile_id']: row for row in report['members']}
+        self.assertEqual(members['active']['duplicate_of'], 'direct')
+        self.assertIsNone(members['direct']['duplicate_of'])
+
+    def test_aliases_without_any_matching_server_port_have_no_canonical_endpoint(self):
+        self.save('active', 'G', type='development', port=6446)
+        self.save('router', 'G', port=6447)
+        with self.clients({'active.example': member_fixture(UUID_A),
+                           'router.example': member_fixture(UUID_A)}):
+            report = self.read()
+        self.assertEqual(report['summary']['read'], 2)
+        self.assertTrue(all(member['duplicate_of'] is None for member in report['members']))
 
     def test_live_mariadb_dns_and_ipv6_rows_make_one_id_match_edge(self):
         self.save('replica', 'G')
@@ -1987,6 +2179,27 @@ class TopologyReadTests(GroupCase):
             report = self.read('map')
         self.assert_map_schema(report)
         self.assertFalse(any(edge['verified'] for edge in report['map']['edges']))
+
+    def test_map_mariadb_contrary_server_id_blocks_an_address_only_match(self):
+        self.save('replica', 'G')
+        replica = member_fixture(engine='mariadb', channels=[{
+            'Master_Host': 'active.example', 'Master_Port': '3306', 'Master_Server_Id': '11',
+            'Slave_IO_Running': 'Yes', 'Slave_SQL_Running': 'Yes'}])
+        replica['variables']['server_id'] = '12'
+        for engine in ('mariadb', 'mysql'):
+            with self.subTest(candidate_engine=engine):
+                source = member_fixture(engine=engine)
+                source['variables']['server_id'] = '99'
+                with self.clients({'active.example': source, 'replica.example': replica}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(len(report['map']['edges']), 1)
+                edge = report['map']['edges'][0]
+                self.assertEqual((edge['from'], edge['to']), ('peer:active.example:3306', 'replica'))
+                self.assertEqual(nodes[edge['from']]['kind'], 'peer')
+                self.assertIsNone(edge['evidence'])
+                self.assertIs(edge['verified'], False)
+                self.assertFalse(any(e['from'] == 'active' for e in report['map']['edges']))
 
     def test_map_galera_three_nodes_groups_only_self_attested_members(self):
         self.save('second', 'G')
