@@ -599,6 +599,12 @@ try {
   assert.equal(await page.$eval(setButton, (e) => e.disabled), true, "applied once Set");
   await page.locator(".window-toolbar .picker-password").fill("");
   await page.click(setButton);
+  // The field is controlled (its value is the picker's state): wait for the
+  // cleared value to be what is rendered before reading it back.
+  await page.waitForFunction(
+    () => document.querySelector(".window-toolbar .picker-password")?.value === "",
+    { timeout: 10000 },
+  );
   assert.equal(await page.$eval(".window-toolbar .picker-password", (e) => e.value), "", "cleared again for the rest of the suite");
   await page.keyboard.press("Escape");
   await page.setViewport({ width: 1440, height: 1000 });

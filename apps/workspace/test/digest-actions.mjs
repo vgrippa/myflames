@@ -373,8 +373,18 @@ try {
   // Query editor settings that the row actions must reuse (Run analysis and
   // the captures Explore and Explain top N start).
   await page.click('button[aria-label="Run analysis options"]');
+  // The options panel stays mounted while closed (hidden attribute), so its
+  // fields answer selectors before the popover is open; the checkbox click
+  // below is only possible once the popover is open and placed. Wait for
+  // that state, not for the selector to exist.
+  await page.waitForSelector('[role=dialog][aria-label="Run analysis options"]:not([hidden])');
   await setField("Time limit per run", "45");
   await setField("Analysis runs", "3");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('[role=dialog][aria-label="Run analysis options"] label.check-field')]
+      .some((e) => e.textContent.includes("Capture optimizer trace") &&
+        getComputedStyle(e).visibility !== "hidden" && e.getClientRects().length > 0),
+  );
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
   await page.keyboard.press("Escape");
   await nav("Workload");

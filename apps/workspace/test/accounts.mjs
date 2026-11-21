@@ -352,7 +352,10 @@ try {
   };
   const inspect = async () => {
     await backToAccounts();
-    await page.click(".accounts-view tbody tr[data-row-key]");
+    // A locator re-queries on every attempt: a row replaced by a report
+    // arriving between query and click (the stale handle page.click keeps)
+    // is read again instead of failing as not clickable.
+    await page.locator(".accounts-view tbody tr[data-row-key]").click();
     await page.waitForSelector(".account-matrix");
   };
   const tick = async privilege => {
