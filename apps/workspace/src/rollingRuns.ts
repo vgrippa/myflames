@@ -34,7 +34,8 @@ export type RollingRun = {
    * the same id and the original connection stays the only truth. */
   lostReply: boolean;
   /** A terminal state after a lost reply: progress finished, or answered
-   * that it does not know this progress id. The last snapshot is kept. */
+   * that it does not know this progress id for the grace period. The last
+   * snapshot is kept. */
   lostDone: boolean;
   /** The terminal phase was "unknown": the server does not know this
    * progress id (the apply never started, the server restarted, or the
@@ -54,6 +55,8 @@ export type RollingRun = {
 const POLL_MS = 1000;
 /** The slowest progress poll after a lost reply: 1 s, doubling to 10 s. */
 const MAX_POLL_MS = 10000;
+/** Validation can outlive a lost reply before registering the progress id. */
+const UNKNOWN_GRACE_MS = 30000;
 
 /** The group incarnation a run answers for: the group name plus the sorted
  * member ids with their host:port. The same name with another membership (an
@@ -144,6 +147,9 @@ function patch(progressId: string, next: Partial<RollingRun>): void {
 }
 
 async function drive(progressId: string, plan: RollingChangePlan, typedName: string | undefined): Promise<void> {
+  // Start the first unknown window at the lost reply, not at the first poll.
+  // A real snapshot resets it, so a later unknown gets its own grace period.
+  let unknownSince: number | null = null;
   const poll = async () => {
     // Failed progress reads never end the run: after a lost apply reply the
     // change may still be running, so the polls back off (1 s, doubling to
@@ -159,14 +165,20 @@ async function drive(progressId: string, plan: RollingChangePlan, typedName: str
         const snap = await rollingChangeProgress(progressId);
         const latest = currentRun(progressId);
         if (!latest || runTerminal(latest)) return;
-        delay = POLL_MS;
         if (latest.lostReply && snap.phase === "unknown") {
-          // The server does not know this progress id: the apply never
-          // started, the server restarted, or the entry expired. The run
-          // ends without overwriting the last known snapshot.
-          patch(progressId, { lostDone: true, lostUnknown: true, progressSilent: false });
-          return;
+          if (unknownSince === null) unknownSince = Date.now();
+          if (Date.now() - unknownSince >= UNKNOWN_GRACE_MS) {
+            patch(progressId, { lostDone: true, lostUnknown: true, progressSilent: false });
+            return;
+          }
+          // Keep the last real snapshot, the warning and Stop while the
+          // server may still be validating the apply before registering it.
+          delay = Math.min(delay * 2, MAX_POLL_MS);
+          patch(progressId, { progressSilent: true });
+          continue;
         }
+        delay = POLL_MS;
+        unknownSince = null;
         patch(progressId, { progress: snap, progressSilent: false });
         // The reply was lost: the server's own terminal phase ends the run.
         if (latest.lostReply && (snap.phase === "finished" || snap.status)) {
@@ -198,6 +210,7 @@ async function drive(progressId: string, plan: RollingChangePlan, typedName: str
       // No reply arrived (network error, abort): the change may still be
       // running. Keep polling the same progress id on the original
       // connection; Stop stays available.
+      unknownSince = Date.now();
       patch(progressId, { lostReply: true });
     }
   }

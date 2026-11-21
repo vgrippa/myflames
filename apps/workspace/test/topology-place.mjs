@@ -707,7 +707,7 @@ try {
   assert.doesNotMatch(await placeText(), /more than one primary/i, "an alias never reads as a second primary");
   await page.click(nodeButton("p-topo-5"));
   assert.match(await h.inspector(),
-    /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. A rolling change refuses it when db-1 is also selected\. The map draws the server once; drift tables list both saved connections\./,
+    /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. A rolling change refuses it when db-1 is also selected\. The map shows both saved connections, linked as aliases; db-1 represents the server in its cluster\. Drift tables list both\./,
     "the alias inspector explains the duplicate connection");
   assert.match(await h.inspector(), /Same server \(alias\)/, "the alias link in the inspector keeps its label");
   await page.click('.topology-place .inspector-close');
@@ -819,12 +819,13 @@ try {
   await h.refresh();
   await page.waitForSelector(nodeButton("p-topo-2"), { visible: true });
 
-  // --- A 2,000-edge map: the diagram draws a capped 600 links with a note,
-  // the text list keeps every link, and the render stays within a bound.
-  const bigNodes = Array.from({ length: 24 }, (_, i) =>
-    makeNode(`big-${i}`, { role: i === 0 ? "source" : "replica" }));
-  const bigEdges = Array.from({ length: 2000 }, (_, i) =>
-    link(`big-${i % 24}`, `big-${(i + 1) % 24}`));
+  // --- A 4,000-node, 16,000-link map: the diagram caps links at 600;
+  // text lists grow on demand and look up endpoint labels through one index.
+  // Routing links keep this a wide map rather than a 4,000-level chain.
+  const bigNodes = Array.from({ length: 4000 }, (_, i) =>
+    makeNode(`big-${i}`, { label: `Server ${i}` }));
+  const bigEdges = Array.from({ length: 16000 }, (_, i) =>
+    link(`big-${i % 4000}`, `big-${(i + 1) % 4000}`, { kind: "proxy_route" }));
   reports.map.map = { nodes: bigNodes, edges: bigEdges, clusters: [], notes: [] };
   reports.map.members = bigNodes.map((node) => member({
     profile_id: node.profile_id, profile_name: node.label, host: node.host, role: node.role,
@@ -833,16 +834,48 @@ try {
   await h.refresh();
   await page.waitForSelector('.topology-map-list [data-node="big-0"]', { visible: true, timeout: 30000 });
   const bigElapsed = Date.now() - bigStart;
-  assert.ok(bigElapsed < 20000, `a 2,000-edge map rendered within a bound (took ${bigElapsed} ms)`);
+  assert.ok(bigElapsed < 10000, `a 4,000-node, 16,000-link map rendered within 10 s (took ${bigElapsed} ms)`);
+  console.log(`topology-place: large map first render ${bigElapsed} ms`);
   const capText = await page.$eval(`${diagram} .topology-map-edge-cap`, (e) => e.textContent);
-  assert.equal(capText, "Showing 600 of 2000 links; the text list below has all of them.", "the diagram names the cap");
+  assert.equal(capText, "Showing 600 of 16000 links; the text list below has all of them.", "the diagram names the cap");
   assert.equal(await page.evaluate(() =>
-    document.querySelector(".topology-place").textContent.split("Showing 600 of 2000 links").length - 1),
+    document.querySelector(".topology-place").textContent.split("Showing 600 of 16000 links").length - 1),
     1, "the cap note shows once");
   const drawnEdges = await page.$$eval(`${diagram} svg .topology-map-edge`, (els) => els.length);
   assert.equal(drawnEdges, 600, "the diagram draws at most 600 links");
   const listedEdges = await page.$$eval('.topology-map-section[aria-label="Links"] [data-edge-kind]', (els) => els.length);
-  assert.equal(listedEdges, 2000, "the text list has every link");
+  assert.equal(listedEdges, 200, "the Links list initially renders 200 links");
+  const linksSection = '.topology-map-section[aria-label="Links"]';
+  const serversSection = '.topology-map-section[aria-label="Servers"]';
+  assert.equal(await page.$$eval(`${serversSection} > ul > li`, (els) => els.length), 200,
+    "the Servers list initially renders 200 nodes above the 500-node threshold");
+  assert.match(await page.$eval(`${linksSection} li`, (e) => e.textContent), /Server 0 → Server 1/,
+    "links use endpoint labels from the index");
+  await clickText(linksSection, "Show 200 more");
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-section[aria-label="Links"] li').length === 400);
+  await clickText(serversSection, "Show 200 more");
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-section[aria-label="Servers"] > ul > li').length === 400);
+  // Reach the final server page and final link page. Yield between
+  // native clicks so each update commits before requesting the next page.
+  await page.evaluate(async () => {
+    for (const label of ["Servers", "Links"]) {
+      const section = document.querySelector(`.topology-map-section[aria-label="${label}"]`);
+      while (section.querySelector(":scope > button")) {
+        section.querySelector(":scope > button").click();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    }
+  });
+  assert.equal(await page.$$eval(`${serversSection} > ul > li`, (els) => els.length), 4000,
+    "all servers remain reachable");
+  assert.equal(await page.$$eval(`${linksSection} li`, (els) => els.length), 16000,
+    "all links remain reachable");
+  assert.equal(await page.$(`${serversSection} > button`), null, "no server button remains after the last page");
+  assert.equal(await page.$(`${linksSection} > button`), null, "no link button remains after the last page");
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-section[aria-label="Links"] li').length === 200);
+  assert.equal(await page.$$eval(`${serversSection} > ul > li`, (els) => els.length), 200,
+    "Refresh resets both text lists to their first page");
   reports.map.map = originalMap;
   reports.map.members = originalMembers;
   await h.refresh();
@@ -1126,14 +1159,35 @@ try {
   await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
   await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
   await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  // Freeze only Date.now: the polling timers still run normally. Advancing
+  // this clock proves the 30 s grace without adding a 30 s wall-clock wait.
+  await page.evaluate(() => {
+    window.topologyRealNow = Date.now;
+    window.topologyNow = Date.now();
+    Date.now = () => window.topologyNow;
+  });
   dropApply = true;
-  progressReply = { phase: "sending", states: ["sent", "waiting"], status: null,
-    profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." };
+  progressReply = { phase: "unknown", states: [], status: null,
+    profile_id: null, profile_name: null, message: null };
   const appliesBefore = rollingCalls.apply.length;
   await sheetClick("Apply");
   await waitFor(() => rollingCalls.apply.length === appliesBefore + 1, "the lost apply was sent");
+  await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
+    .includes("The server is not answering progress; the change may still be running."));
+  await page.evaluate(() => { window.topologyNow += 20000; });
+  const beforeUnknown20 = rollingCalls.progress.length;
+  await waitFor(() => rollingCalls.progress.length > beforeUnknown20, "unknown progress was polled at 20 s");
+  assert.equal(await page.$(`${sheetSel} .rolling-result`), null, "unknown for 20 s keeps the run active");
+  assert.equal(await page.$eval(`${sheetSel} .rolling-applying button`, (e) => e.disabled), false,
+    "Stop remains available while registration is unknown");
+  assert.match(await sheetText(), /the change may still be running/, "unknown progress keeps the warning");
+  assert.equal(rollingCalls.apply.length, appliesBefore + 1, "unknown progress never retries apply");
+  progressReply = { phase: "sending", states: ["sent", "waiting"], status: null,
+    profile_id: "p-topo-2", profile_name: "db-2", message: "db-2: sending." };
   await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent.includes("db-2: sending."),
     { timeout: 10000 });
+  assert.equal(await page.$(`${sheetSel} .rolling-result`), null, "a real snapshot after 20 s continues the same run");
+  await page.evaluate(() => { Date.now = window.topologyRealNow; });
   const pollsBefore = rollingCalls.progress.length;
   const stopLost = await page.$eval(`${sheetSel} .rolling-applying button`, (e) => e.disabled);
   assert.equal(stopLost, false, "Stop stays available after a lost reply");
@@ -1254,8 +1308,8 @@ try {
 
   // --- A lost reply with failing progress polls: the run never ends on
   // failed polls, Stop stays available, and the sheet says the server is not
-  // answering. Progress answering "unknown" ends the run with the Audit
-  // message, and the Audit link closes the sheet before navigating.
+  // answering. Unknown progress stays active until 30 s after the lost
+  // reply, then shows Audit. The Audit link closes before navigating.
   await h.select('.topology-place tr[data-row-key="max_connections"]');
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
     .find((b) => b.textContent.trim() === "Change on every member…").click());
@@ -1264,6 +1318,11 @@ try {
   await page.waitForSelector(`${sheetSel} .rolling-review-list li`, { visible: true });
   await page.type(`${sheetSel} .rolling-typed input`, "mf-topo");
   await page.click(`${sheetSel} .rolling-excluded input[type=checkbox]`);
+  await page.evaluate(() => {
+    window.topologyRealNow = Date.now;
+    window.topologyNow = Date.now();
+    Date.now = () => window.topologyNow;
+  });
   dropApply = true;
   progressFails = true;
   await sheetClick("Apply");
@@ -1277,8 +1336,17 @@ try {
   await waitFor(() => rollingCalls.progress.length > silentPolls, "the polls keep trying after a lost reply");
   progressFails = false;
   progressReply = { phase: "unknown", states: [], status: null, profile_id: null, profile_name: null, message: null };
+  await page.evaluate(() => { window.topologyNow += 29999; });
+  const beforeUnknown30 = rollingCalls.progress.length;
+  await waitFor(() => rollingCalls.progress.length > beforeUnknown30, "unknown progress was polled before 30 s");
+  assert.equal(await page.$(`${sheetSel} .rolling-result`), null, "unknown at 29,999 ms is not terminal");
+  assert.equal(await page.$eval(`${sheetSel} .rolling-applying button`, (e) => e.disabled), false,
+    "Stop stays available until the grace expires");
+  await page.evaluate(() => { window.topologyNow += 1; });
   await page.waitForFunction(() => document.querySelector("dialog.rolling-change-sheet")?.textContent
     .includes("The server no longer reports this change; check the Audit log for each member."), { timeout: 20000 });
+  await page.evaluate(() => { Date.now = window.topologyRealNow; });
+  assert.equal(await page.$(`${sheetSel} .rolling-applying`), null, "unknown at 30 s ends the run");
   assert.match(await sheetText(), /Open the Audit log/, "the unknown phase links to the Audit log");
   await page.evaluate(() => [...document.querySelectorAll("dialog.rolling-change-sheet .text-button")]
     .find((b) => b.textContent.trim() === "Open the Audit log").click());

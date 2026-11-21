@@ -13,6 +13,17 @@ const PAD = 20;
 const CLUSTER_HEAD = 54;
 // The diagram draws at most this many links; the text list below it keeps all.
 const EDGE_CAP = 600;
+const nodeLabels = new WeakMap<MapReport, Map<string, string>>();
+
+/** Share one label index between the diagram and its text alternative. */
+export function mapNodeLabels(map: MapReport): ReadonlyMap<string, string> {
+  let labels = nodeLabels.get(map);
+  if (!labels) {
+    labels = new Map(map.nodes.map((node) => [node.id, node.label]));
+    nodeLabels.set(map, labels);
+  }
+  return labels;
+}
 const ROLE: Record<string, string> = {
   primary: "Primary", secondary: "Secondary", node: "Node", source: "Source",
   replica: "Replica", standalone: "Standalone", proxy: "Proxy", cache: "Cache",
@@ -222,11 +233,11 @@ function edgePath(from: Point, to: Point, lane: number, slot: number, gutter: nu
 
 export function TopologyMap({ map, selection }: { map: MapReport; selection: Selection }) {
   const diagram = useMemo(() => layout(map), [map]);
+  const labels = mapNodeLabels(map);
   // Index once per render: node labels, each node's owning block, and the
   // links of each from/to pair. Rendering a link then looks up instead of
   // scanning the whole edge array and every block again.
   const edgeIndex = useMemo(() => {
-    const nodes = new Map(map.nodes.map((node) => [node.id, node] as const));
     const blockOf = new Map<string, Block>();
     for (const block of diagram.blocks) for (const item of block.nodes) blockOf.set(item.node.id, block);
     const parallel = new Map<string, MapEdge[]>();
@@ -236,7 +247,7 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
       if (list) list.push(edge);
       else parallel.set(key, [edge]);
     }
-    return { nodes, blockOf, parallel };
+    return { blockOf, parallel };
   }, [map, diagram]);
   const edges = map.edges.length > EDGE_CAP ? map.edges.slice(0, EDGE_CAP) : map.edges;
   const arrow = `topology-arrow-${useId().replace(/:/g, "")}`;
@@ -265,7 +276,7 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
             const peer = node.kind === "peer";
             const key = peer ? node.id : node.profile_id;
             const aliasOf = !peer && node.duplicate_of
-              ? (map.nodes.find((other) => other.id === node.duplicate_of)?.label || node.duplicate_of)
+              ? (labels.get(node.duplicate_of) || node.duplicate_of)
               : null;
             const tone = peer ? "unknown" : node.outcome === "failed" ? "problem" : node.outcome === "not_reached" ? "watch" : stateTone(node.state);
             const status = peer ? "Not in this group" : node.outcome !== "read" ? OUTCOME[node.outcome] : node.state || "State not reported";
@@ -296,7 +307,7 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
             const parallel = edgeIndex.parallel.get(JSON.stringify([edge.from, edge.to]))!;
             const slot = parallel.indexOf(edge) - (parallel.length - 1) / 2;
             const line = edgePath(from, to, i % 4, slot, diagram.width - 76 + (i % 5) * 12, sourceBlock, targetBlock);
-            const title = `${edgeIndex.nodes.get(edge.from)?.label || edge.from} → ${edgeIndex.nodes.get(edge.to)?.label || edge.to}: ${mapEdgeText(edge)}`;
+            const title = `${labels.get(edge.from) || edge.from} → ${labels.get(edge.to) || edge.to}: ${mapEdgeText(edge)}`;
             return <g key={`${edge.from}-${edge.to}-${edge.kind}-${i}`} className={`topology-map-edge tone-${stateTone(edge.state)}${edge.kind === "alias" ? " is-alias" : ""}`}
               data-edge-kind={edge.kind} data-verified={String(edge.verified)}>
               <title>{title}</title>

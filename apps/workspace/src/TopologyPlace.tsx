@@ -13,7 +13,7 @@ import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
-import { TopologyMap, mapAddress, mapEdgeLabel, mapEdgeText, mapEdgeVerification } from "./TopologyMap";
+import { TopologyMap, mapAddress, mapEdgeLabel, mapEdgeText, mapEdgeVerification, mapNodeLabels } from "./TopologyMap";
 import { RollingChangeSheet } from "./RollingChangeSheet";
 import { runBinding, runMemberSpot, runTerminal, useRollingRun } from "./rollingRuns";
 import {
@@ -334,7 +334,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             <p>
               This saved connection reaches the same server as {aliasName}{" "}
               (for example a router or proxy port). A rolling change refuses it when {aliasName} is also selected.{" "}
-              The map draws the server once; drift tables list both saved connections.
+              The map shows both saved connections, linked as aliases; {aliasName} represents the server in its cluster. Drift tables list both.
             </p>
           </InspectorSection>
         )}
@@ -726,10 +726,22 @@ function DriftTab({ tab, drift, report, memberName, selection }: {
 /** The diagram and its accessible text alternative share the same report. */
 function MapTab({ report, memberName, selection }: { report: TopologyGroupReport; memberName: (profileId: string) => string; selection: Selection }) {
   const map = report.map;
+  const indexed = useMemo(() => map ? {
+    labels: mapNodeLabels(map),
+    members: map.nodes.filter((node) => node.kind === "member"),
+    peers: map.nodes.filter((node) => node.kind === "peer"),
+  } : null, [map]);
+  // Small server lists stay complete; larger ones use the same 200-row
+  // pages as links. Each new report, including Refresh, resets the pages.
+  const firstPage = { map, members: (indexed?.members.length || 0) > 500 ? 200 : 500,
+    peers: (indexed?.peers.length || 0) > 500 ? 200 : 500, links: 200 };
+  const [pages, setPages] = useState(firstPage);
+  const visible = pages.map === map ? pages : firstPage;
   if (!map) return null;
-  const labelOf = (id: string) => map.nodes.find((node) => node.id === id)?.label || id;
-  const members = map.nodes.filter((node) => node.kind === "member");
-  const peers = map.nodes.filter((node) => node.kind === "peer");
+  const { labels, members, peers } = indexed!;
+  const labelOf = (id: string) => labels.get(id) || id;
+  const showMore = (list: "members" | "peers" | "links") =>
+    setPages({ ...visible, [list]: visible[list] + 200 });
   const edgeText = (edge: MapEdge) =>
     edge.kind === "alias"
       ? mapEdgeLabel(edge)
@@ -753,7 +765,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
       <section className="topology-map-section" aria-label="Servers">
         <h3>Servers</h3>
         <ul className="topology-map-list">
-          {members.map((node) => (
+          {members.slice(0, visible.members).map((node) => (
             <li key={node.id} data-node={node.id}>
               <span className="topology-map-label">{node.label}</span>
               <span className="topology-map-detail">
@@ -766,11 +778,12 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
             </li>
           ))}
         </ul>
+        {members.length > visible.members && <button type="button" className="button" onClick={() => showMore("members")}>Show 200 more</button>}
         {peers.length > 0 && (
           <div className="topology-map-peers">
             <h4>Not in this group</h4>
             <ul className="topology-map-list">
-              {peers.map((node) => (
+              {peers.slice(0, visible.peers).map((node) => (
                 <li key={node.id} data-node={node.id}>
                   <span className="topology-map-label">{node.label}</span>
                   <span className="topology-map-detail">
@@ -780,6 +793,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
                 </li>
               ))}
             </ul>
+            {peers.length > visible.peers && <button type="button" className="button" onClick={() => showMore("peers")}>Show 200 more</button>}
           </div>
         )}
       </section>
@@ -789,7 +803,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
           <p className="hint">No verified links between the members.</p>
         ) : (
           <ul className="topology-map-list">
-            {map.edges.map((edge, index) => (
+            {map.edges.slice(0, visible.links).map((edge, index) => (
               <li key={`${edge.from}-${edge.to}-${edge.kind}-${index}`} data-edge-kind={edge.kind} data-verified={edge.verified ? "true" : "false"}>
                 <span className="topology-map-label">{labelOf(edge.from)} → {labelOf(edge.to)}</span>
                 <span className="topology-map-detail">{edgeText(edge)}</span>
@@ -797,6 +811,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
             ))}
           </ul>
         )}
+        {map.edges.length > visible.links && <button type="button" className="button" onClick={() => showMore("links")}>Show 200 more</button>}
       </section>
       {map.clusters.length > 0 && (
         <section className="topology-map-section" aria-label="Clusters">
