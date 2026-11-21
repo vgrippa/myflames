@@ -11,7 +11,11 @@ def open_group_member(store, group_name, profile, active_guard, options_override
 
     The caller supplies a store snapshot, never request-supplied credentials
     or endpoints. The connector calls the guard again after transport setup.
+    Only query and connect timeouts may override the saved options.
     """
+    if options_override is not None and (not isinstance(options_override, dict)
+            or set(options_override) - {'query_timeout', 'connect_timeout'}):
+        raise ValueError('Only query_timeout and connect_timeout may be overridden.')
     from .connector import MySQLConnection
     from .live import connection_options
     from .workspace_store import _same_endpoint

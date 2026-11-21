@@ -321,7 +321,8 @@
         "state",
         "lag",
         "behind",
-        "behind_reason"
+        "behind_reason",
+        "channels"
       ],
       "properties": {
         "profile_id": {
@@ -412,9 +413,16 @@
           ]
         },
         "role": {
-          "type": [
-            "string",
-            "null"
+          "enum": [
+            "primary",
+            "secondary",
+            "node",
+            "source",
+            "replica",
+            "standalone",
+            "proxy",
+            "cache",
+            null
           ]
         },
         "state": {
@@ -448,6 +456,12 @@
             "string",
             "null"
           ]
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/channel"
+          }
         }
       },
       "additionalProperties": false
@@ -613,6 +627,70 @@
               }
             ]
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "channel": {
+      "type": "object",
+      "required": [
+        "name",
+        "source_host",
+        "source_port",
+        "source_uuid",
+        "source_server_id",
+        "io_running",
+        "sql_running",
+        "seconds_behind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_port": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_server_id": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "io_running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sql_running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seconds_behind": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
         }
       },
       "additionalProperties": false
