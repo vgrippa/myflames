@@ -352,7 +352,7 @@ try {
   async function row(rank) {
     const back = await page.$(".view-inspector.is-detail .detail-back");
     if (back) {
-      await back.click();
+      await page.locator(".view-inspector.is-detail .detail-back").click();
       await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
     }
     await page.click(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`);
