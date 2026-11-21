@@ -27,9 +27,28 @@ export function mapAddress(node: MapNode): string {
   return node.port === null ? host : `${host}:${node.port}`;
 }
 
+/** The link's name. An alias link and a MariaDB ID-only replication link
+ * override the backend label: the alias keeps its own sentence, and the
+ * backend labels the ID-only link with its verification sentence, which the
+ * verification segment already carries. */
+export function mapEdgeLabel(edge: MapEdge): string {
+  if (edge.kind === "alias") return "Same server (alias)";
+  if (edge.kind === "replication" && edge.evidence === "server_id" && !edge.verified) return "Replication";
+  return edge.label || edge.kind.replace(/_/g, " ");
+}
+
+/** How certain the link is, in words. A MariaDB link matched only by server
+ * ID says so; IDs can collide, so it is never called verified. */
+export function mapEdgeVerification(edge: MapEdge): string {
+  if (edge.verified) return "verified";
+  if (edge.evidence === "server_id") return "server ID match, not verified";
+  return "address match, not verified";
+}
+
 export function mapEdgeText(edge: MapEdge): string {
-  return [edge.label || edge.kind.replace(/_/g, " "), edge.state || "State not reported",
-    edge.verified ? "verified" : "address match, not verified"].join(" · ");
+  if (edge.kind === "alias") return mapEdgeLabel(edge);
+  return [mapEdgeLabel(edge), edge.state || "State not reported",
+    mapEdgeVerification(edge)].join(" · ");
 }
 
 function stateTone(state: string | null): string {
@@ -206,6 +225,7 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
   return <section className="topology-map-diagram" aria-label="Group topology diagram">
     <div className="topology-map-legend">
       <span>Source → replica</span><span>Solid: verified</span><span>Dashed: address match, not verified</span>
+      <span>Dotted: same server (alias)</span>
     </div>
     <div className="topology-map-scroll" role="region" aria-label="Topology diagram, scroll to explore" tabIndex={0}>
       <div className="topology-map-canvas" style={{ width: diagram.width, height: diagram.height }}>
@@ -220,17 +240,21 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
           {block.nodes.map(({ node, x, y }) => {
             const peer = node.kind === "peer";
             const key = peer ? node.id : node.profile_id;
+            const aliasOf = !peer && node.duplicate_of
+              ? (map.nodes.find((other) => other.id === node.duplicate_of)?.label || node.duplicate_of)
+              : null;
             const tone = peer ? "unknown" : node.outcome === "failed" ? "problem" : node.outcome === "not_reached" ? "watch" : stateTone(node.state);
             const status = peer ? "Not in this group" : node.outcome !== "read" ? OUTCOME[node.outcome] : node.state || "State not reported";
             const engine = peer ? "Reported peer" : [node.product || (node.engine === "mariadb" ? "MariaDB" : node.engine === "mysql" ? "MySQL" : "Server"), node.version].filter(Boolean).join(" ");
             return <button key={node.id} type="button" className={`topology-map-node tone-${tone}${peer ? " is-peer" : ""}${selection.key === key ? " is-selected" : ""}`}
               data-node={node.id} data-row-key={key} data-outcome={peer ? undefined : node.outcome}
-              aria-pressed={selection.key === key} aria-label={[node.label, mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", status].filter(Boolean).join(", ")}
-              title={`${node.label}\n${mapAddress(node)}\n${engine}\n${status}`}
+              aria-pressed={selection.key === key} aria-label={[node.label, mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", aliasOf ? `Alias of ${aliasOf}` : "", status].filter(Boolean).join(", ")}
+              title={`${node.label}\n${mapAddress(node)}\n${engine}${aliasOf ? `\nAlias of ${aliasOf}` : ""}\n${status}`}
               style={{ left: x, top: y, width: CARD_W, height: CARD_H }} onClick={() => selection.select(key, true)}>
               <span className="topology-eyebrow"><ServerGlyph /><span>{engine}</span></span>
               <strong className="topology-map-node-name">{node.label}</strong>
               <span className="topology-map-node-address">{mapAddress(node)}</span>
+              {aliasOf && <span className="topology-map-alias">Alias of {aliasOf}</span>}
               <span className="topology-map-node-state">{!peer && node.role ? `${ROLE[node.role] || node.role} · ` : ""}{status}</span>
             </button>;
           })}
@@ -249,12 +273,13 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
             const slot = parallel.indexOf(edge) - (parallel.length - 1) / 2;
             const line = edgePath(from, to, i % 4, slot, diagram.width - 76 + (i % 5) * 12, sourceBlock, targetBlock);
             const title = `${map.nodes.find((node) => node.id === edge.from)?.label || edge.from} → ${map.nodes.find((node) => node.id === edge.to)?.label || edge.to}: ${mapEdgeText(edge)}`;
-            return <g key={`${edge.from}-${edge.to}-${edge.kind}-${i}`} className={`topology-map-edge tone-${stateTone(edge.state)}`}
+            return <g key={`${edge.from}-${edge.to}-${edge.kind}-${i}`} className={`topology-map-edge tone-${stateTone(edge.state)}${edge.kind === "alias" ? " is-alias" : ""}`}
               data-edge-kind={edge.kind} data-verified={String(edge.verified)}>
               <title>{title}</title>
-              <path d={line.d} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={edge.verified ? undefined : "6 5"} markerEnd={`url(#${arrow}-${stateTone(edge.state)})`} />
+              <path d={line.d} fill="none" stroke="currentColor" strokeWidth="2"
+                strokeDasharray={edge.kind === "alias" ? "2 4" : edge.verified ? undefined : "6 5"} markerEnd={`url(#${arrow}-${stateTone(edge.state)})`} />
               <path className="topology-map-edge-hit" d={line.d} fill="none" stroke="transparent" strokeWidth="16" />
-              <text x={line.x} y={line.y - 9} textAnchor="middle">{edge.label || edge.kind.replace(/_/g, " ")}{edge.state ? ` · ${edge.state}` : " · State not reported"}</text>
+              <text x={line.x} y={line.y - 9} textAnchor="middle">{mapEdgeLabel(edge)}{edge.kind === "alias" ? "" : edge.state ? ` · ${edge.state}` : " · State not reported"}</text>
             </g>;
           })}
         </svg>

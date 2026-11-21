@@ -60,6 +60,9 @@ export type TopologyMember = {
   behind: TopologyBehind | null;
   behind_reason: string | null;
   channels: TopologyChannel[];
+  /** Profile ID of the first read MySQL member with the same server_uuid
+   * (for example a router or proxy port of that server); null otherwise. */
+  duplicate_of: string | null;
 };
 
 export type TopologySummary = {
@@ -127,6 +130,9 @@ export type MapMemberNode = {
   outcome: MemberOutcome;
   server_uuid: string | null;
   cluster_id: string | null;
+  /** Profile ID of the canonical member when this node is an alias (another
+   * saved connection to the same server); null otherwise. */
+  duplicate_of: string | null;
 };
 
 export type MapPeerNode = {
@@ -146,7 +152,7 @@ export type MapNode = MapMemberNode | MapPeerNode;
 export type MapEdge = {
   from: string;
   to: string;
-  kind: "replication" | "proxy_route" | "cache_upstream";
+  kind: "replication" | "proxy_route" | "cache_upstream" | "alias";
   evidence: "server_uuid" | "server_id" | "endpoint" | "hostname_port" | null;
   verified: boolean;
   state: string | null;

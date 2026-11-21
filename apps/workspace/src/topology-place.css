@@ -122,6 +122,41 @@
   margin: 0 0 4px;
 }
 
+/* Map cap notes explain what the diagram left out; they sit above it. */
+.topology-map-caps {
+  margin-bottom: 8px;
+}
+
+.topology-map-caps p {
+  margin: 0 0 4px;
+}
+
+/* An alias is another saved connection to a member's server (for example a
+   router port): a small badge on the node card and the Members row, a muted
+   dotted link on the diagram. */
+.topology-map-alias,
+.topology-alias-badge {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 14px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-map-edge.is-alias {
+  color: var(--muted);
+}
+
+.topology-map-edge.is-alias text {
+  fill: var(--muted);
+}
+
 @media (max-width: 720px) {
   .drift-controls .drift-search {
     margin-left: 0;

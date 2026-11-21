@@ -13,7 +13,7 @@ import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { GroupDriftTable } from "./GroupDriftTable";
-import { TopologyMap, mapAddress, mapEdgeText } from "./TopologyMap";
+import { TopologyMap, mapAddress, mapEdgeLabel, mapEdgeText, mapEdgeVerification } from "./TopologyMap";
 import { RollingChangeSheet } from "./RollingChangeSheet";
 import { runMemberSpot, runTerminal, useRollingRun } from "./rollingRuns";
 import {
@@ -291,6 +291,15 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             ["Message", member.message],
           ]} />
         </InspectorSection>
+        {member.duplicate_of && (
+          <InspectorSection title="Alias">
+            <p>
+              This saved connection reaches the same server as{" "}
+              {report.members.find((other) => other.profile_id === member.duplicate_of)?.profile_name || member.duplicate_of}{" "}
+              (for example a router or proxy port). Rolling changes refuse it; reads show the server once.
+            </p>
+          </InspectorSection>
+        )}
         {member.channels.length > 0 && (
           <InspectorSection title="Channels">
             {member.channels.map((channel, index) => (
@@ -567,6 +576,11 @@ function MembersTab({ report, summary, selection }: { report: TopologyGroupRepor
         <span className="cell-name">
           <strong className="cell-truncate" title={m.profile_name}>{m.profile_name}</strong>
           <span className="topology-map-detail">{m.host}:{m.port}</span>
+          {m.duplicate_of && (
+            <span className="topology-alias-badge">
+              Alias of {report.members.find((other) => other.profile_id === m.duplicate_of)?.profile_name || m.duplicate_of}
+            </span>
+          )}
         </span>
       ),
     },
@@ -675,9 +689,24 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
   const members = map.nodes.filter((node) => node.kind === "member");
   const peers = map.nodes.filter((node) => node.kind === "peer");
   const edgeText = (edge: MapEdge) =>
-    `${edge.kind.replace(/_/g, " ")}${edge.state ? ` · ${edge.state}` : ""} · ${edge.verified ? "verified" : "address match, not verified"}`;
+    edge.kind === "alias"
+      ? mapEdgeLabel(edge)
+      : `${mapEdgeLabel(edge)}${edge.state ? ` · ${edge.state}` : ""} · ${mapEdgeVerification(edge)}`;
+  // Cap notes explain what the diagram left out, so they sit above it; every
+  // note shows once.
+  const capNotes = map.notes.filter((note) => /^Map \w+ capped at /.test(note.message));
+  const otherNotes = map.notes.filter((note) => !capNotes.includes(note));
+  const noteText = (note: { profile_id: string; message: string }) =>
+    `${note.profile_id ? `${memberName(note.profile_id)}: ` : ""}${note.message}`;
   return (
     <>
+      {capNotes.length > 0 && (
+        <div className="topology-map-caps" role="note">
+          {capNotes.map((note, index) => (
+            <p key={`${note.profile_id}-${index}`} className="hint">{noteText(note)}</p>
+          ))}
+        </div>
+      )}
       <TopologyMap map={map} selection={selection} />
       <section className="topology-map-section" aria-label="Servers">
         <h3>Servers</h3>
@@ -690,6 +719,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
                 {node.role ? ` · ${ROLE_LABEL[node.role] || node.role}` : ""}
                 {node.state ? ` · ${node.state}` : ""}
                 {node.outcome !== "read" ? ` · ${OUTCOME_LABEL[node.outcome]}` : ""}
+                {node.duplicate_of ? ` · Alias of ${labelOf(node.duplicate_of)}` : ""}
               </span>
             </li>
           ))}
@@ -741,13 +771,11 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
           </ul>
         </section>
       )}
-      {map.notes.length > 0 && (
+      {otherNotes.length > 0 && (
         <section className="topology-map-section topology-map-notes" aria-label="Notes">
           <h3>Notes</h3>
-          {map.notes.map((note, index) => (
-            <p key={`${note.profile_id}-${index}`} className="hint">
-              {note.profile_id ? `${memberName(note.profile_id)}: ` : ""}{note.message}
-            </p>
+          {otherNotes.map((note, index) => (
+            <p key={`${note.profile_id}-${index}`} className="hint">{noteText(note)}</p>
           ))}
         </section>
       )}

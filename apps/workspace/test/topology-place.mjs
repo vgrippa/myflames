@@ -656,6 +656,120 @@ try {
   reports.map.map = originalMap;
   await page.setViewport({ width: 1440, height: 900 });
 
+  // --- A router alias: a second saved connection to db-1's server (the same
+  // server_uuid, duplicate_of set) is one dotted alias link with an "Alias
+  // of" badge, never a second primary.
+  const aliasMember = member({
+    profile_id: "p-topo-5", profile_name: "db-1-router", host: "10.0.0.15", port: 6446,
+    role: "primary", state: "ONLINE", duplicate_of: "p-topo-1",
+    server_uuid: "11111111-1111-1111-1111-111111111111",
+  });
+  const aliasNode = {
+    id: "p-topo-5", kind: "member", profile_id: "p-topo-5", label: "db-1-router",
+    host: "10.0.0.15", port: 6446, engine: "mysql", product: "MySQL", version: "8.4.6",
+    role: "primary", state: "ONLINE", outcome: "read",
+    server_uuid: "11111111-1111-1111-1111-111111111111", cluster_id: null, duplicate_of: "p-topo-1",
+  };
+  reports.map.map = {
+    ...originalMap,
+    nodes: [...originalMap.nodes, aliasNode],
+    edges: [...originalMap.edges,
+      { from: "p-topo-5", to: "p-topo-1", kind: "alias", evidence: "server_uuid", verified: false, state: null, label: "same server (alias)" }],
+  };
+  reports.map.members = [...originalMembers, aliasMember];
+  await h.refresh();
+  await page.waitForSelector(nodeButton("p-topo-5"), { visible: true });
+  assert.match(await page.$eval(nodeButton("p-topo-5"), (e) => e.textContent), /Alias of db-1/, "the alias node carries the badge");
+  const aliasLink = await page.$eval('.topology-map-list [data-edge-kind="alias"]', (e) => e.textContent);
+  assert.match(aliasLink, /db-1-router → db-1/);
+  assert.match(aliasLink, /Same server \(alias\)/, "the alias link is labeled in the text list");
+  assert.match(await page.$eval('.topology-place .topology-map-section[aria-label="Servers"] [data-node="p-topo-5"]', (e) => e.textContent),
+    /Alias of db-1/, "the Servers list marks the alias");
+  assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-edge-kind="alias"] > path`, (e) => e.getAttribute("stroke-dasharray")),
+    "2 4", "the alias link is dotted");
+  assert.match(await page.$eval(`${diagram} .topology-map-edge[data-edge-kind="alias"] title`, (e) => e.textContent), /Same server \(alias\)/);
+  assert.doesNotMatch(await placeText(), /more than one primary/i, "an alias never reads as a second primary");
+  await page.click(nodeButton("p-topo-5"));
+  assert.match(await h.inspector(),
+    /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. Rolling changes refuse it; reads show the server once\./,
+    "the alias inspector explains the duplicate connection");
+  assert.match(await h.inspector(), /Same server \(alias\)/, "the alias link in the inspector keeps its label");
+  await page.click('.topology-place .inspector-close');
+
+  // The Members row marks the alias the same way.
+  const originalMembersReport = reports.members;
+  reports.members = { ...originalMembersReport, members: [...members, aliasMember] };
+  await topoTab("Members");
+  await h.refresh();
+  await page.waitForSelector('.topology-place tr[data-row-key="p-topo-5"]', { visible: true });
+  assert.match(await rowText("p-topo-5"), /Alias of db-1/, "the Members row marks the alias");
+  assert.match(await rowText("p-topo-1"), /Primary/, "the canonical member keeps its role");
+  reports.members = originalMembersReport;
+  await topoTab("Map");
+  await page.waitForSelector(nodeButton("p-topo-5"), { visible: true });
+
+  // --- A MariaDB replication link matched only by server ID says it is not
+  // verified and keeps the dashed style; a capped map shows the note once,
+  // above the diagram.
+  const mariaNode = (id, host, extra = {}) => ({
+    id, kind: "member", profile_id: id, label: id, host, port: 3306,
+    engine: "mariadb", product: "MariaDB", version: "11.4.5", role: "standalone", state: "reachable", outcome: "read",
+    server_uuid: null, cluster_id: null, duplicate_of: null, ...extra,
+  });
+  const mariaMember = (id, host, extra = {}) => member({
+    profile_id: id, profile_name: id, host, engine: "mariadb", product: "MariaDB", version: "11.4.5",
+    version_comment: "mariadb.org binary distribution", server_uuid: null, super_read_only: null, ...extra,
+  });
+  reports.map.map = {
+    nodes: [mariaNode("maria-1", "10.0.0.31", { role: "source" }), mariaNode("maria-2", "10.0.0.32", { role: "replica", state: "connecting" })],
+    edges: [{ from: "maria-2", to: "maria-1", kind: "replication", evidence: "server_id", verified: false, state: "connecting", label: "server ID match, not verified" }],
+    clusters: [],
+    notes: [
+      { profile_id: "maria-1", message: "Map rows capped at 64 per member; some reported topology is omitted." },
+      { profile_id: "maria-2", message: "This member could not confirm its own cluster membership." },
+    ],
+  };
+  reports.map.members = [
+    mariaMember("maria-1", "10.0.0.31", { role: "source", server_id: 1 }),
+    mariaMember("maria-2", "10.0.0.32", {
+      role: "replica", state: "connecting", server_id: 2,
+      channels: [{ name: "", source_host: "10.0.0.31", source_port: 3306, source_uuid: null, source_server_id: 1, io_running: "Connecting", sql_running: "Yes", seconds_behind: null }],
+    }),
+  ];
+  await h.refresh();
+  await page.waitForSelector(nodeButton("maria-2"), { visible: true });
+  const mariaLink = await page.$eval('.topology-map-list [data-edge-kind="replication"]', (e) => e.textContent);
+  assert.match(mariaLink, /maria-2 → maria-1/);
+  assert.match(mariaLink, /server ID match, not verified/, "the text list names the unverified ID match");
+  assert.doesNotMatch(mariaLink, /address match/, "the generic address wording is not used for an ID match");
+  assert.equal(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] > path`, (e) => e.getAttribute("stroke-dasharray")),
+    "6 5", "the ID-only link keeps the dashed style");
+  assert.match(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] title`, (e) => e.textContent),
+    /server ID match, not verified/, "the tooltip names the unverified ID match");
+  await page.click(nodeButton("maria-2"));
+  assert.match(await h.inspector(), /server ID match, not verified/, "the inspector names the unverified ID match");
+  await page.click('.topology-place .inspector-close');
+  // The cap note shows once, above the diagram; other notes stay in Notes.
+  assert.equal(await page.evaluate(() => document.querySelector(".topology-place").textContent.split("Map rows capped at 64").length - 1),
+    1, "the cap note shows once");
+  assert.equal(await page.$$eval(".topology-map-caps p", (els) => els.filter((e) => e.textContent.includes("Map rows capped at 64")).length),
+    1, "the cap note is above the diagram");
+  const capsBeforeDiagram = await page.evaluate(() => {
+    const caps = document.querySelector(".topology-map-caps");
+    const el = document.querySelector(".topology-map-diagram");
+    return !!(caps && el && (caps.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+  });
+  assert.ok(capsBeforeDiagram, "the cap note sits above the diagram");
+  assert.equal(await page.evaluate(() =>
+    document.querySelector('.topology-map-section[aria-label="Notes"]').textContent.includes("Map rows capped at 64")),
+    false, "the cap note is not repeated in Notes");
+  assert.match(await page.$eval('.topology-map-section[aria-label="Notes"]', (e) => e.textContent),
+    /could not confirm its own cluster membership/, "other notes stay in the Notes section");
+  reports.map.map = originalMap;
+  reports.map.members = originalMembers;
+  await h.refresh();
+  await page.waitForSelector(nodeButton("p-topo-2"), { visible: true });
+
   // --- Parameters: a row's inspector offers the rolling change, disabled with
   // a visible reason where it cannot run.
   await topoTab("Parameters");
