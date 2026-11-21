@@ -8,6 +8,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 
 from . import connection_groups, dbops
 from .connector import ConnectorError
@@ -20,6 +21,10 @@ SECTIONS = ('map', 'members', 'parameters', 'accounts', 'plugins')
 MAX_CONCURRENCY = 4
 QUERY_SECONDS = 30
 REQUEST_SECONDS = 120
+MAP_PEERS_PER_MEMBER = 256
+MAP_EDGES_PER_MEMBER = 1024
+MAP_ROWS_PER_MEMBER = 2048
+MAP_MAX_NODES = 4096
 TAG = '/*myflames:topology*/ '
 _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
 
@@ -322,8 +327,9 @@ def _member_facts(conn, member, variables):
         # MariaDB sql/wsrep_var.cc:1098-1126 exposes provider status;
         # mysql-test/suite/wsrep/r/variables.result:25 names wsrep_local_recv_queue.
         rows = _optional(reader, "SHOW GLOBAL STATUS WHERE Variable_name IN "
-                         "('wsrep_local_state_comment','wsrep_local_recv_queue')", notes)
+                         "('wsrep_local_state_comment','wsrep_local_recv_queue','wsrep_cluster_status')", notes)
         status = {r[0]: r[1] for r in rows or [] if len(r) > 1}
+        variables['wsrep_cluster_status'] = status.get('wsrep_cluster_status')
         member.update(role='node', state=status.get('wsrep_local_state_comment'),
                       lag={'kind': 'galera_recv_queue', 'value': _number(status.get('wsrep_local_recv_queue')),
                            'message': 'Write sets waiting in this node\'s receive queue.'})
@@ -346,9 +352,51 @@ def _member_facts(conn, member, variables):
     return position, notes
 
 
+def _replication_links(entries, profiles, facts=None):
+    """Live identity links, with False for MariaDB's uncorroborated ID match.
+
+    A server ID is useful display evidence but is not a unique server identity.
+    Keep that distinction through source selection and every hop of Behind.
+    """
+    from . import replication, topology_links
+    read = [entry for entry in entries if entry['outcome'] == 'read' and not entry.get('duplicate_of')]
+    stored = {profile['id']: profile for profile in profiles}
+    candidates = [dict(kind='database', profile_id=entry['profile_id'],
+                       profile_host=entry['host'], profile_port=entry['port'],
+                       ssh_host=stored[entry['profile_id']].get('ssh_host'),
+                       hostname=entry.get('hostname'),
+                       port=(facts or {}).get(entry['profile_id'], {}).get('port') or entry['port'],
+                       server_uuid=entry.get('server_uuid')) for entry in read
+                  if entry['role'] not in ('proxy', 'cache')]
+    links, unresolved = {}, False
+    for entry in read:
+        pid = entry['profile_id']
+        for channel in entry['channels']:
+            if entry['engine'] == 'mysql':
+                uuid = _uuid(channel.get('source_uuid'))
+                matches = [other for other in read if uuid and _uuid(other.get('server_uuid')) == uuid]
+            else:
+                sid = channel.get('source_server_id')
+                matches = [other for other in read if isinstance(sid, int) and sid > 0 and
+                           other['engine'] == 'mariadb' and other['server_id'] == sid]
+            if len(matches) != 1 or matches[0]['profile_id'] == pid:
+                unresolved = True
+                continue
+            source = matches[0]['profile_id']
+            verified = entry['engine'] == 'mysql'
+            if not verified:
+                found, evidence = topology_links.match_database_endpoint(
+                    channel.get('source_host'), channel.get('source_port'), candidates,
+                    observer_host=replication.reached_host(stored[pid]))
+                verified = bool(found and found['profile_id'] == source)
+            sources = links.setdefault(pid, {})
+            sources[source] = sources.get(source, False) or verified
+    return links, unresolved
+
+
 def _primary(entries, profiles, multi_primary=False):
     """Prefer observed GR leadership, then the root of in-group channels."""
-    read = [entry for entry in entries if entry['outcome'] == 'read']
+    read = [entry for entry in entries if entry['outcome'] == 'read' and not entry.get('duplicate_of')]
     primaries = [entry['profile_id'] for entry in read
                  if entry['role'] == 'primary' and entry['state'] == 'ONLINE']
     ambiguous = 'This group has more than one primary or source.'
@@ -357,26 +405,9 @@ def _primary(entries, profiles, multi_primary=False):
     if primaries:
         return primaries[0], None
 
-    by_uuid, by_server_id = {}, {}
-    for entry in read:
-        uuid, server_id = entry['server_uuid'], entry['server_id']
-        if uuid:
-            by_uuid.setdefault(uuid.lower(), []).append(entry['profile_id'])
-        if entry['engine'] == 'mariadb' and isinstance(server_id, int) and server_id > 0:
-            by_server_id.setdefault(server_id, []).append(entry['profile_id'])
-    sources, replicas = set(), set()
-    for entry in read:
-        for channel in entry['channels']:
-            if entry['engine'] == 'mysql':
-                matches = by_uuid.get((channel['source_uuid'] or '').lower(), [])
-            else:
-                matches = by_server_id.get(channel['source_server_id'], [])
-            # Unknown or duplicated identities cannot establish an edge. A
-            # reported address alone never identifies another saved member.
-            if len(matches) != 1 or matches[0] == entry['profile_id']:
-                continue
-            sources.add(matches[0])
-            replicas.add(entry['profile_id'])
+    links, unresolved = _replication_links(entries, profiles)
+    sources = {source for upstreams in links.values() for source in upstreams}
+    replicas = set(links)
     roots = sources - replicas
     if len(roots) > 1:
         return None, ambiguous
@@ -384,8 +415,40 @@ def _primary(entries, profiles, multi_primary=False):
         return next(iter(roots)), None
     stored = connection_groups.group_primary(profiles)
     if stored:
+        if unresolved or links:
+            return None, 'The stored source no longer matches the live replication channels.'
         return stored['id'], None
     return None, 'No primary or source member was identified.'
+
+
+def _related_members(entries, profiles, primary_id, facts):
+    """Reachability to the source, preserving any server-ID-only hop."""
+    links, unused = _replication_links(entries, profiles, facts)
+    related = {primary_id: True} if primary_id else {}
+    # GR membership supplies a relationship only when both own rows are live
+    # and the group UUID agrees. Configured group names alone are insufficient.
+    groups = {}
+    for pid, fact in facts.items():
+        group = fact.get('gr_group')
+        if group and fact.get('state') in ('ONLINE', 'RECOVERING') and fact.get('role') in ('primary', 'secondary'):
+            groups.setdefault(group, []).append(pid)
+    changed = True
+    while changed:
+        before = dict(related)
+        for peers in groups.values():
+            if any(pid in related for pid in peers):
+                verified = any(related.get(pid, False) for pid in peers)
+                for pid in peers:
+                    related[pid] = related.get(pid, False) or verified
+        for replica, sources in links.items():
+            for source, verified in sources.items():
+                if source in related:
+                    related[replica] = related.get(replica, False) or (verified and related[source])
+        changed = before != related
+    for entry in entries:
+        if entry.get('duplicate_of') in related:
+            related[entry['profile_id']] = related[entry['duplicate_of']]
+    return related
 
 
 def _plugins(conn, member):
@@ -525,7 +588,7 @@ def _build_map(entries, probes, profiles):
     Only successful own-connection reads supply identities. Cluster boxes
     additionally require each saved member to attest its own membership.
     """
-    from . import topology_links
+    from . import replication, topology_links
     by_id = {entry['profile_id']: entry for entry in entries}
     stored = {profile['id']: profile for profile in profiles}
     nodes = [dict(id=entry['profile_id'], kind='member', profile_id=entry['profile_id'],
@@ -534,13 +597,36 @@ def _build_map(entries, probes, profiles):
                                                 'role', 'state', 'outcome', 'server_uuid')}) for entry in entries]
     node_index = {node['id']: node for node in nodes}
     peers, edges, boxes, notes = {}, {}, {}, []
+    peer_counts, edge_counts, capped = {}, {}, set()
+
+    def cap(observer, message):
+        key = (observer, message)
+        if key not in capped:
+            capped.add(key)
+            notes.append({'profile_id': observer, 'message': message})
+
+    # Bound traversal as well as the output: repeated/invalid rows must not
+    # consume unbounded CPU after the visible map has reached its limits.
+    bounded = {}
+    for pid, probe in probes.items():
+        remaining = MAP_ROWS_PER_MEMBER
+        bounded[pid] = dict(probe)
+        for key in ('cluster_members', 'channels', 'replicas', 'servers', 'upstreams'):
+            rows = list(islice(iter(probe.get(key) or []), remaining + 1))
+            if len(rows) > remaining:
+                cap(pid, 'Map rows capped at %d per member; some reported topology is omitted.' % MAP_ROWS_PER_MEMBER)
+                rows = rows[:remaining]
+            bounded[pid][key] = rows
+            remaining -= len(rows)
+    probes = bounded
     candidates, galera_candidates = [], []
     for entry in entries:
         pid = entry['profile_id']
         own = probes.get(pid, {})
         candidate = dict(own, kind='database', profile_id=pid, profile_host=entry['host'],
                          profile_port=entry['port'], ssh_host=stored[pid].get('ssh_host'),
-                         server_uuid=_uuid(entry['server_uuid']) if own.get('kind') == 'database' else None)
+                         server_uuid=_uuid(entry['server_uuid']) if own.get('kind') == 'database' else None,
+                         duplicate_of=entry.get('duplicate_of'))
         candidates.append(candidate)
         if own.get('wsrep_node_uuid'):
             galera_candidates.append(dict(candidate, server_uuid=_uuid(own['wsrep_node_uuid'])))
@@ -553,6 +639,13 @@ def _build_map(entries, probes, profiles):
         address = topology_links.format_endpoint(host, port)
         key = 'peer:' + (uuid or address.lower())
         if key not in peers:
+            if peer_counts.get(observer, 0) >= MAP_PEERS_PER_MEMBER:
+                cap(observer, 'Map peers capped at %d per member; some reported peers are omitted.' % MAP_PEERS_PER_MEMBER)
+                return None
+            if len(nodes) + len(peers) >= MAP_MAX_NODES:
+                cap(observer, 'Map nodes capped at %d; some reported peers are omitted.' % MAP_MAX_NODES)
+                return None
+            peer_counts[observer] = peer_counts.get(observer, 0) + 1
             peers[key] = dict(id=key, kind='peer', profile_id=None, label=address,
                               host=host, port=port, server_uuid=uuid, seen_by=[], reason='Not in this group')
         if observer not in peers[key]['seen_by']:
@@ -562,32 +655,43 @@ def _build_map(entries, probes, profiles):
     def target(observer, host, port, uuid=None, server_id=None, identity_only=False, galera=False):
         host, port, uuid = _map_host(host), _map_port(port), _uuid(uuid)
         matching = galera_candidates if galera else candidates
+        # Aliases attest the canonical server's identity, never a second
+        # server. Address-only routes can still name their saved endpoint.
+        if uuid:
+            matching = [candidate for candidate in matching if not candidate.get('duplicate_of')]
         found, evidence = topology_links.match_database_endpoint(
-            host, port, matching, uuid=uuid, observer_host=stored[observer].get('host'))
+            host, port, matching, uuid=uuid, observer_host=replication.reached_host(stored[observer]))
         if evidence == 'server_uuid':
             return found['profile_id'], evidence, True
-        # Both engines default server_id to 1 (sql/sys_vars.cc: MySQL 3951,
-        # MariaDB 3656). An ID alone cannot identify a saved endpoint.
+        # IDs can collide (including the default 1), so retain an ID-only
+        # match as an explicit estimate, not verified identity evidence.
         sid = _number(server_id)
         if not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb':
             identities = [pid for pid, probe in probes.items() if probe.get('kind') == 'database'
                           and by_id[pid]['engine'] == 'mariadb' and by_id[pid]['server_id'] == sid]
-            if len(identities) == 1 and found and found['profile_id'] == identities[0]:
-                return identities[0], 'server_id', True
+            if len(identities) == 1:
+                return identities[0], 'server_id', bool(found and found['profile_id'] == identities[0])
         # A contrary UUID is stronger than a matching address. Do not draw
         # that known different server as this saved member.
         contrary_uuid = found and uuid and found.get('server_uuid') and _uuid(found['server_uuid']) != uuid
         if found and not identity_only and not contrary_uuid:
-            return found['profile_id'], evidence, False
+            return found.get('duplicate_of') or found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
-    def edge(source, destination, kind, evidence, verified, state, label):
+    def edge(observer, source, destination, kind, evidence, verified, state, label):
         if not source or not destination or source == destination:
             return
-        key = (source, destination, kind, label)
+        key = (source, destination, kind, '' if kind == 'replication' else label)
+        if kind == 'replication' and evidence == 'server_id' and not verified:
+            label = 'server ID match, not verified'
         value = dict(**{'from': source, 'to': destination}, kind=kind, evidence=evidence,
                      verified=verified, state=state, label=label)
         old = edges.get(key)
+        if old is None:
+            if edge_counts.get(observer, 0) >= MAP_EDGES_PER_MEMBER:
+                cap(observer, 'Map edges capped at %d per member; some reported links are omitted.' % MAP_EDGES_PER_MEMBER)
+                return
+            edge_counts[observer] = edge_counts.get(observer, 0) + 1
         if old is None or verified and not old['verified']:
             if old is not None and state is None:
                 value['state'] = old['state']
@@ -597,6 +701,8 @@ def _build_map(entries, probes, profiles):
 
     attestations, observations = {}, {}
     for pid, probe in probes.items():
+        if by_id[pid].get('duplicate_of'):
+            continue
         kind = probe.get('cluster_kind')
         cluster_uuid = _uuid(probe.get('cluster_identity'))
         galera = kind in ('galera', 'pxc')
@@ -625,6 +731,10 @@ def _build_map(entries, probes, profiles):
             notes.append({'profile_id': pid, 'message': 'This member could not confirm its own cluster membership.'})
 
     for pid, probe in probes.items():
+        alias = by_id[pid].get('duplicate_of')
+        if alias:
+            edge(pid, pid, alias, 'alias', 'server_uuid', False, None, 'same server (alias)')
+            continue
         cluster_id = observations.get(pid)
         if probe.get('cluster_kind') in ('group_replication', 'innodb_cluster', 'galera', 'pxc'):
             box = boxes.get(cluster_id)
@@ -638,11 +748,11 @@ def _build_map(entries, probes, profiles):
             source, evidence, verified = target(pid, channel.get('source_host'), channel.get('source_port'),
                                                 channel.get('source_uuid'), channel.get('source_server_id'))
             state = _replica_state([channel])
-            edge(source, pid, 'replication', evidence, verified, state, 'Replication')
+            edge(pid, source, pid, 'replication', evidence, verified, state, 'Replication')
         for replica in probe.get('replicas', []):
             destination, evidence, verified = target(pid, replica.get('host'), replica.get('port'),
                                                      replica.get('uuid'), replica.get('server_id'))
-            edge(pid, destination, 'replication', evidence, verified, None, 'Replication')
+            edge(pid, pid, destination, 'replication', evidence, verified, None, 'Replication')
         if probe.get('kind') == 'proxysql':
             for backend in probe.get('servers', []):
                 destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
@@ -650,7 +760,7 @@ def _build_map(entries, probes, profiles):
                 state = backend.get('status')
                 if state not in ('ONLINE', 'SHUNNED', 'OFFLINE_SOFT', 'OFFLINE_HARD'):
                     state = None
-                edge(pid, destination, 'proxy_route', evidence, verified, state,
+                edge(pid, pid, destination, 'proxy_route', evidence, verified, state,
                      'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?'))
         if probe.get('kind') == 'readyset':
             upstreams = list(probe.get('upstreams') or [])
@@ -662,7 +772,7 @@ def _build_map(entries, probes, profiles):
                 destination, evidence, verified = target(pid, upstream.get('host'), upstream.get('port'))
                 health = upstream.get('health')
                 state = health if health in ('up', 'down', 'healthy', 'unhealthy', 'unknown', 'Online', 'Offline') else None
-                edge(pid, destination, 'cache_upstream', evidence, verified, state, 'Upstream')
+                edge(pid, pid, destination, 'cache_upstream', evidence, verified, state, 'Upstream')
     for node in peers.values():
         node['seen_by'].sort()
     for box in boxes.values():
@@ -779,6 +889,7 @@ def read_group(store, group_name, section, active_member_profile_id,
     active_guard()
     started, taken_at = time.monotonic(), now()
     deadline = started + REQUEST_SECONDS
+    facts = {}
 
     def read_one(profile):
         entry, snapshot, position, exclusion = _entry(profile), None, None, None
@@ -845,6 +956,18 @@ def read_group(store, group_name, section, active_member_profile_id,
                     conn.check()
                 transport.check()
                 entry['outcome'] = 'read'
+                provider = str(variables.get('wsrep_provider') or '').strip().lower()
+                active_cluster = None
+                if (entry['role'] in ('primary', 'secondary') and entry['state'] in ('ONLINE', 'RECOVERING')
+                        and _uuid(variables.get('group_replication_group_name'))):
+                    active_cluster = 'group_replication'
+                elif (_on(variables.get('wsrep_on')) and provider and provider != 'none'
+                      and variables.get('wsrep_cluster_status') == 'Primary'):
+                    active_cluster = 'galera'
+                facts[profile['id']] = dict(role=entry['role'], state=entry['state'],
+                    gr_group=_uuid(variables.get('group_replication_group_name')), active_cluster=active_cluster,
+                    port=_map_port((conn.variables or {}).get('port'))
+                    if isinstance(conn, dbops.TargetEvidenceConnection) else None)
                 if entry['message'].startswith('Not read:'):
                     entry['message'] = exclusion or 'Read from this member.'
         except _NotReached:
@@ -862,22 +985,26 @@ def read_group(store, group_name, section, active_member_profile_id,
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
         results = list(pool.map(read_one, members))
     entries = [result[0] for result in results]
+    duplicate_notes = _duplicate_notes(entries)
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))
-    duplicate_notes = []
     if section in ('members', 'map'):
-        duplicate_notes = _duplicate_notes(entries)
         positions = {entry['profile_id']: position for entry, snapshot, position, reason, multi in results}
         primary_entry = next((entry for entry in entries if entry['profile_id'] == primary_id), None)
+        related = _related_members(entries, members, primary_id, facts)
         for entry in entries:
             reason = None
             source = positions.get(primary_id)
             current = positions.get(entry['profile_id'])
-            if entry['role'] == 'node':
+            if entry['role'] in ('proxy', 'cache'):
+                reason = 'Not a database server.'
+            elif entry['role'] == 'node':
                 reason = 'Galera nodes apply write sets from every node; see the receive queue.'
             elif primary_entry is not None and primary_entry['role'] == 'node':
                 reason = 'The primary or source is a Galera node; GTID positions cannot establish how far behind a member is.'
             elif primary_id is None:
                 reason = primary_reason
+            elif entry['profile_id'] not in related:
+                reason = 'No replication relationship to the primary or source was found.'
             elif source is None or current is None:
                 reason = 'The primary or member GTID position was unavailable.'
             elif primary_entry['engine'] != entry['engine']:
@@ -892,6 +1019,9 @@ def read_group(store, group_name, section, active_member_profile_id,
                         domains = mariadb_behind(source, current)
                         entry['behind'] = {'kind': 'mariadb_domain_sequence', 'value': sum(domains.values()), 'domains': domains,
                                            'message': 'An estimate from per-domain sequence differences; this is not an exact transaction count.'}
+                        if not related[entry['profile_id']]:
+                            entry['behind']['message'] = ('Per-domain sequence difference estimate; source matched by server ID. '
+                                                          'This is not an exact transaction count.')
                 except ValueError:
                     reason = 'A GTID position could not be parsed safely.'
             entry['behind_reason'] = reason
@@ -919,11 +1049,10 @@ def read_group(store, group_name, section, active_member_profile_id,
                         for note in snapshots[pid]['notes']] if section == 'plugins' else []
         if section == 'plugins':
             snapshots = {pid: value['items'] for pid, value in snapshots.items()}
-        role_settings = any(entry['role'] == 'replica' or
-                            entry['role'] in ('primary', 'secondary') and
-                            entry['state'] in ('ONLINE', 'RECOVERING') and not multi
-                            for entry, snapshot, position, reason, multi in results)
-        rows = (compare(snapshots, role_settings=role_settings)
+        role_settings = {entry['profile_id']: ('source' if entry['profile_id'] == primary_id and
+                         entry['role'] == 'standalone' else entry['role']) for entry in entries}
+        active_clusters = {pid: fact['active_cluster'] for pid, fact in facts.items()}
+        rows = (compare(snapshots, role_settings=role_settings, active_clusters=active_clusters)
                 if section == 'parameters' else compare(snapshots))
         report[section] = {'rows': rows, 'compared': sorted(snapshots), 'not_compared': not_compared}
         if section == 'plugins':

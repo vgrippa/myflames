@@ -233,6 +233,7 @@
       "properties": {
         "nodes": {
           "type": "array",
+          "maxItems": 4096,
           "items": {
             "oneOf": [
               {
@@ -246,6 +247,7 @@
         },
         "edges": {
           "type": "array",
+          "maxItems": 16384,
           "items": {
             "$ref": "#/definitions/map_edge"
           }
@@ -968,11 +970,12 @@
           "enum": [
             "replication",
             "proxy_route",
-            "cache_upstream"
+            "cache_upstream",
+            "alias"
           ]
         },
         "evidence": {
-          "description": "server_id verifies a MariaDB member only together with an address match to that same member.",
+          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. Alias edges use server_uuid with verified false because they are another connection to the same server.",
           "enum": [
             "server_uuid",
             "server_id",

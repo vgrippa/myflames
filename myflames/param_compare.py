@@ -308,21 +308,25 @@ def _many_snapshots(snapshots):
     return sorted(snapshots)
 
 
-def _group_auto_increment(indexed):
-    """Fold generated node offsets only when every compared member opts in."""
+def _group_auto_increment(indexed, active_clusters):
+    """Fold generated offsets only with each member's observed active topology."""
     # MySQL plugin/group_replication/src/plugin.cc:2578-2581 supplies the
     # server ID as the offset to auto_increment.cc:61-84, but uses each
     # member's own group_replication_auto_increment_increment. An increment
     # difference is real drift; only the generated offset is folded.
     # MariaDB sql/wsrep_server_service.cc:231-236
     # derives the offset from the node index.
-    for items in indexed.values():
+    for pid, items in indexed.items():
         def value(name):
             item = items.get(name) or {}
             return None if item.get('redacted') or item.get('truncated') else item.get('value')
-        multi_primary = (normalize(value('group_replication_single_primary_mode'), 'boolean') ==
+        multi_primary = (active_clusters.get(pid) == 'group_replication' and
+                         normalize(value('group_replication_single_primary_mode'), 'boolean') ==
                          ('boolean', False) and bool(value('group_replication_group_name')))
-        wsrep_control = normalize(value('wsrep_auto_increment_control'), 'boolean') == ('boolean', True)
+        provider = str(value('wsrep_provider') or '').strip().lower()
+        wsrep_control = (active_clusters.get(pid) == 'galera' and provider and provider != 'none' and
+                         normalize(value('wsrep_on'), 'boolean') == ('boolean', True) and
+                         normalize(value('wsrep_auto_increment_control'), 'boolean') == ('boolean', True))
         if not (multi_primary or wsrep_control):
             return False
     return bool(indexed)
@@ -351,13 +355,16 @@ def _group_provider_options(value):
     return tuple(sorted((key, val) for key, val in options.items() if key not in per_node))
 
 
-def compare_many(snapshots, role_settings=None):
+def compare_many(snapshots, role_settings=None, active_clusters=None):
     """Compare complete member snapshots without performing a server read.
 
     ``snapshots`` maps saved profile IDs to capture() results. Values retain
     their raw spelling; typed normalization decides equality only. Missing
     includes an unavailable, redacted or truncated value, with a reason so a
     masked secret can never be mistaken for proof that passwords match.
+    ``role_settings`` maps IDs to observed roles; ``active_clusters`` maps
+    IDs to independently observed active Galera or Group Replication kinds.
+    Persisted mode settings alone cannot establish either fact.
     """
     profile_ids = _many_snapshots(snapshots)
     indexed = {}
@@ -396,20 +403,20 @@ def compare_many(snapshots, role_settings=None):
         'wsrep_provider_socket_ssl_cert', 'wsrep_provider_socket_ssl_key'}
     node_design = {'wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment'}
     per_server.update(node_design)
+    # MariaDB mariadb-11.8.3 sql/sys_vars.cc:3610 (server_uid), 5399
+    # (log_slow_query_file), 770 (character_sets_dir), 5628
+    # (relay_log_info_file), 5862 (slave_load_tmpdir); and
+    # storage/maria/ha_maria.cc:168 (aria_log_dir_path). These are identity
+    # or file locations, not policy names such as core_file or init_file.
+    per_server.update(('server_uid', 'log_slow_query_file', 'character_sets_dir',
+                       'relay_log_info_file', 'slave_load_tmpdir', 'aria_log_dir_path'))
     # MySQL read_mode_handler.cc:32-60 changes read-only settings by role.
     # Live observed roles take precedence over persisted GR configuration.
-    # Pure snapshot comparisons can only infer roles from their inventory.
-    if role_settings is None:
-        role_settings = any(
-            normalize((items.get('group_replication_single_primary_mode') or {}).get('value'), 'boolean') ==
-            ('boolean', True) and bool((items.get('group_replication_group_name') or {}).get('value'))
-            and not any((items.get(name) or {}).get(flag) for name in
-                        ('group_replication_single_primary_mode', 'group_replication_group_name')
-                        for flag in ('redacted', 'truncated', 'unavailable'))
-            for items in indexed.values())
-    role_names = {'read_only', 'super_read_only'} if role_settings else set()
-    per_server.update(role_names)
-    if _group_auto_increment(indexed):
+    roles = role_settings if isinstance(role_settings, dict) else {}
+    buckets = {pid: ('source' if roles.get(pid) in ('primary', 'source') else
+                     'replica' if roles.get(pid) in ('secondary', 'replica', 'node') else None)
+               for pid in profile_ids}
+    if _group_auto_increment(indexed, active_clusters or {}):
         per_server.add('auto_increment_offset')
     names = set().union(*(set(items) for items in indexed.values())) if indexed else set()
     rows = []
@@ -428,7 +435,15 @@ def compare_many(snapshots, role_settings=None):
                 parse_failed = True
                 unavailable = True
         missing = len(present) != len(profile_ids)
-        status = ('missing' if unavailable else 'per_server' if name in per_server else
+        role_explained = False
+        if (name in ('read_only', 'super_read_only') and not missing and not unavailable and
+                None not in buckets.values() and len(set(buckets.values())) > 1):
+            by_role = {}
+            for pid, value in zip(profile_ids, normalized):
+                by_role.setdefault(buckets[pid], []).append(value)
+            role_explained = (any(value != normalized[0] for value in normalized[1:]) and
+                              all(all(value == values[0] for value in values) for values in by_role.values()))
+        status = ('missing' if unavailable else 'per_server' if name in per_server or role_explained else
                   'missing' if missing else 'different' if any(
                       value != normalized[0] for value in normalized[1:]) else 'same')
 
@@ -447,7 +462,7 @@ def compare_many(snapshots, role_settings=None):
         if unavailable:
             row['reason'] = ('Provider options could not be parsed safely; they cannot be compared.' if parse_failed else
                              'A value was redacted, truncated or unavailable; it cannot be compared.')
-        elif name in role_names:
+        elif role_explained:
             row['reason'] = "Set by the member's role"
         elif name in node_design:
             row['reason'] = 'Set per node by design'

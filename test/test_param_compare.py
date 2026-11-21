@@ -127,16 +127,25 @@ class NormalizeTest(unittest.TestCase):
     def test_group_read_only_drift_folds_only_with_role_evidence(self):
         left = snapshot([item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
         right = snapshot([item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
-        for role_settings, status in ((False, 'different'), (True, 'per_server')):
+        cases = ((None, 'different'), (False, 'different'), (True, 'different'),
+                 ({}, 'different'), ({'a': 'source'}, 'different'),
+                 ({'a': 'source', 'b': None}, 'different'),
+                 ({'a': 'standalone', 'b': 'replica'}, 'different'),
+                 ({'a': 'primary', 'b': 'source'}, 'different'),
+                 ({'a': 'secondary', 'b': 'replica'}, 'different'),
+                 ({'a': 'replica', 'b': 'node'}, 'different'),
+                 ({'a': 'primary', 'b': 'secondary'}, 'per_server'),
+                 ({'a': 'source', 'b': 'replica'}, 'per_server'))
+        for role_settings, status in cases:
             with self.subTest(role_settings=role_settings):
                 rows = P.compare_many({'a': left, 'b': right}, role_settings=role_settings)
                 self.assertEqual([r['status'] for r in rows], [status, status])
-                if role_settings:
+                if status == 'per_server':
                     self.assertEqual([r['reason'] for r in rows], ["Set by the member's role"] * 2)
 
-    def test_single_primary_inventory_folds_role_settings_without_hiding_multi_primary_drift(self):
+    def test_gr_configuration_alone_does_not_explain_read_only_drift(self):
         group = 'aaaaaaaa-0000-4000-8000-000000000001'
-        for mode, expected in (('ON', 'per_server'), ('OFF', 'different')):
+        for mode in ('ON', 'OFF'):
             with self.subTest(mode=mode):
                 settings = [item('group_replication_group_name', group, 'string'),
                             item('group_replication_single_primary_mode', mode, 'boolean')]
@@ -144,9 +153,114 @@ class NormalizeTest(unittest.TestCase):
                 b = snapshot(settings + [item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
                 rows = {r['name']: r for r in P.compare_many({'a': a, 'b': b})}
                 for name in ('read_only', 'super_read_only'):
-                    self.assertEqual(rows[name]['status'], expected)
-                    if expected == 'per_server':
-                        self.assertEqual(rows[name]['reason'], "Set by the member's role")
+                    self.assertEqual(rows[name]['status'], 'different')
+
+    def test_writable_replica_is_drift_even_with_a_source_in_the_comparison(self):
+        roles = {'source': 'source', 'replica': 'replica', 'other': 'secondary'}
+        for name in ('read_only', 'super_read_only'):
+            with self.subTest(name=name):
+                sides = {
+                    'source': snapshot([item(name, 'OFF', 'boolean')]),
+                    'replica': snapshot([item(name, 'ON', 'boolean')]),
+                    'other': snapshot([item(name, 'OFF', 'boolean')]),
+                }
+                row = P.compare_many(sides, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'different')
+                self.assertEqual(row['values']['other'], 'OFF')
+                # Equivalent spellings within the replica bucket permit a
+                # difference between source and replica roles to be folded.
+                sides['other']['items'][0]['value'] = '1'
+                row = P.compare_many(sides, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'per_server')
+                self.assertEqual(row['values']['other'], '1')
+
+    def test_role_folding_keeps_same_values_same_and_unavailable_values_missing(self):
+        roles = {'a': 'primary', 'b': 'secondary'}
+        left = snapshot([item('read_only', 'ON', 'boolean')])
+        right = snapshot([item('read_only', '1', 'boolean')])
+        self.assertEqual(P.compare_many({'a': left, 'b': right}, role_settings=roles)[0]['status'], 'same')
+        for unavailable in (snapshot(), snapshot([item('read_only', 'ON', 'boolean', truncated=True)]),
+                            snapshot([item('read_only', 'ON', 'boolean', redacted=True)])):
+            with self.subTest(items=unavailable['items']):
+                row = P.compare_many({'a': left, 'b': unavailable}, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'missing')
+
+    def test_galera_offsets_need_active_members_and_enabled_generation(self):
+        settings = [item('wsrep_on', 'ON', 'boolean'),
+                    item('wsrep_provider', '/usr/lib/galera/libgalera_smm.so', 'string'),
+                    item('wsrep_auto_increment_control', 'ON', 'boolean')]
+        sides = {
+            'a': snapshot(settings + [item('auto_increment_offset', '1'),
+                                      item('auto_increment_increment', '3')], engine='mariadb'),
+            'b': snapshot(copy.deepcopy(settings) + [item('auto_increment_offset', '2'),
+                                                     item('auto_increment_increment', '4')], engine='mariadb'),
+        }
+        for active, expected in ((None, 'different'), ({}, 'different'),
+                                 ({'a': 'galera'}, 'different'),
+                                 ({'a': 'galera', 'b': 'group_replication'}, 'different'),
+                                 ({'a': 'galera', 'b': 'galera'}, 'per_server')):
+            with self.subTest(active=active):
+                rows = {r['name']: r for r in P.compare_many(sides, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], expected)
+                self.assertEqual(rows['auto_increment_increment']['status'], 'different')
+        active = {'a': 'galera', 'b': 'galera'}
+        for name, value in (('wsrep_on', 'OFF'), ('wsrep_provider', ''),
+                            ('wsrep_provider', 'none'), ('wsrep_auto_increment_control', 'OFF')):
+            with self.subTest(name=name, value=value):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_standalone_mariadb_default_control_does_not_hide_offset_drift(self):
+        control = item('wsrep_auto_increment_control', 'ON', 'boolean')
+        sides = {
+            'a': snapshot([control, item('auto_increment_offset', '1')], engine='mariadb'),
+            'b': snapshot([control, item('auto_increment_offset', '2')], engine='mariadb'),
+        }
+        rows = {r['name']: r for r in P.compare_many(sides)}
+        self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_gr_offsets_need_active_multi_primary_members(self):
+        settings = [item('group_replication_group_name', 'aaaaaaaa-0000-4000-8000-000000000001', 'string'),
+                    item('group_replication_single_primary_mode', 'OFF', 'boolean')]
+        sides = {
+            'a': snapshot(settings + [item('auto_increment_offset', '1')]),
+            'b': snapshot(copy.deepcopy(settings) + [item('auto_increment_offset', '2')]),
+        }
+        for active, expected in ((None, 'different'), ({'a': 'group_replication'}, 'different'),
+                                 ({'a': 'group_replication', 'b': 'group_replication'}, 'per_server')):
+            with self.subTest(active=active):
+                rows = {r['name']: r for r in P.compare_many(sides, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], expected)
+        active = {'a': 'group_replication', 'b': 'group_replication'}
+        for name, value in (('group_replication_single_primary_mode', 'ON'),
+                            ('group_replication_group_name', '')):
+            with self.subTest(name=name):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+        for flag in ('redacted', 'truncated'):
+            with self.subTest(flag=flag):
+                changed = copy.deepcopy(sides)
+                changed['b']['items'][0][flag] = True
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_mariadb_identity_paths_fold_without_hiding_file_policy_drift(self):
+        per_server = ('server_uid', 'log_slow_query_file', 'character_sets_dir',
+                      'relay_log_info_file', 'slave_load_tmpdir', 'aria_log_dir_path')
+        policies = ('core_file', 'init_file', 'ft_stopword_file')
+        left = snapshot([item(name, 'node-a', 'string') for name in per_server + policies], engine='mariadb')
+        right = snapshot([item(name, 'node-b', 'string') for name in per_server + policies], engine='mariadb')
+        rows = {r['name']: r for r in P.compare_many({'a': left, 'b': right})}
+        for name in per_server:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'per_server')
+        for name in policies:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'different')
 
     def test_provider_options_fold_node_files_addresses_and_design_values(self):
         node_keys = ('gcache.name', 'ist.recv_bind', 'socket.ssl_cert', 'socket.ssl_key',
