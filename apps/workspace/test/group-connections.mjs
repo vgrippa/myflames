@@ -751,27 +751,33 @@ try {
   assert.deepEqual(await openButton(mfIcxRow), { text: "Refresh", label: "Refresh group connection mf-icx" });
   // Refresh from Home is an explicit open of the group in use, with a probe.
   let beforeConnect = connectCalls.length;
+  const privilegeReadsBefore = h.state.privilegeReads.length;
   await page.click(`${mfIcxRow} button[data-action="open-group"]`);
   await waitFor(() => connectCalls.length > beforeConnect, "Refresh from Home did not open the Group connection");
   assert.deepEqual(connectCalls.at(-1), { group_name: "mf-icx", probe_members: true });
+  // The reply is applied once the re-opened connection's privileges are read:
+  // the selection steps below run after that settle, not during it.
+  await waitFor(() => h.state.privilegeReads.length > privilegeReadsBefore, "the re-opened Group connection did not settle");
   // The pill lives on connection places, never on Home: the card's In use
   // note is the visible effect here.
   await pause(300);
   assert.ok(await page.$(`${mfIcxRow} .group-connection-active-note`), "the group in use still says In use after Refresh");
 
   // --- Group (N)… from a selection pre-ticks the selected saved connections.
-  // The toolbar appearing above the table shifts the rows, so a single click
-  // can land mid-shift: tick through the checkbox's label until the state is
-  // the wanted one.
+  // The toolbar keeps its height when the selection buttons appear (checked at
+  // 1440 and 720 px), so one click on the checkbox's label is enough; the
+  // state is re-checked after the click.
   const tickRow = async (key, want) => {
     const sel = `.connection-row[data-row-key="${key}"] .checkbox`;
-    for (let i = 0; i < 10; i++) {
-      if (await page.$eval(`${sel} input[type="checkbox"]`, (e) => e.checked) === want) return;
-      await page.click(sel);
-      await pause(200);
-    }
-    assert.equal(await page.$eval(`${sel} input[type="checkbox"]`, (e) => e.checked), want, `row ${key} checkbox`);
+    const state = () => page.$eval(`${sel} input[type="checkbox"]`, (e) => e.checked);
+    if ((await state()) !== want) await page.click(sel);
+    assert.equal(await state(), want, `row ${key} checkbox`);
   };
+  // The Edit above selected its row (the form selects the row it opens); clear
+  // that leftover selection so the counts below start from zero.
+  await tickRow("p-ic-2", false);
+  await page.waitForFunction(() => ![...document.querySelectorAll(".connections-table-toolbar button")]
+    .some((b) => /^Group \(/.test(b.textContent.trim())));
   await tickRow("p-ic-1", true);
   await page.waitForFunction(() => [...document.querySelectorAll(".connections-table-toolbar button")]
     .some((b) => b.textContent.trim() === "Group (1)…"));
@@ -845,24 +851,20 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="home-group-connections"] .group-connection-row[data-group="stage"] .group-connection-active-note'));
   assert.deepEqual(await openButton(stageRow), { text: "Refresh", label: "Refresh group connection stage" });
   // Home with two groups (layoutMatrix also refuses horizontal page scroll at
-  // 1440 and 720 px, light and dark); the dark shots ship under local/topo-p1.
+  // 1440 and 720 px, light and dark); the review shots ship under local/topo-p1.
   await layoutMatrix(page, h.shots, "group-connections-home");
-  const topoShots = new URL("../../local/topo-p1/", import.meta.url);
+  const topoShots = new URL("../../../local/topo-p1/", import.meta.url);
   await fs.mkdir(topoShots, { recursive: true });
-  await page.evaluate(() => {
-    document.documentElement.dataset.theme = "dark";
-    try { localStorage.setItem("myflames.theme", "dark"); } catch {}
-  });
-  for (const width of [1440, 720]) {
+  for (const [width, theme] of [[1440, "dark"], [720, "light"]]) {
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem("myflames.theme", t); } catch {}
+    }, theme);
     await page.setViewport({ width, height: 900 });
     await pause(250);
-    await page.screenshot({ path: new URL(`home-groups-${width}-dark.png`, topoShots).pathname });
+    await page.screenshot({ path: new URL(`home-groups-${width}-${theme}.png`, topoShots).pathname });
   }
   await page.setViewport({ width: 1440, height: 900 });
-  await page.evaluate(() => {
-    document.documentElement.dataset.theme = "light";
-    try { localStorage.setItem("myflames.theme", "light"); } catch {}
-  });
   // Back to mf-icx for the delete below.
   const beforeReopen = connectCalls.length;
   await page.click(`${mfIcxRow} button[data-action="open-group"]`);
