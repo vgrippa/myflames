@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { appUpdateStatus, appVersion, downloadAppUpdate, type AppUpdateInfo } from "./api";
 import { Icon } from "./components";
 import { useFocusScope } from "./kit";
+import { ReleaseNotes } from "./releaseNotes";
 import { hasUnsavedWork } from "./unsavedWork";
 import {
   checkAgainInDialog, checkForUpdates, desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
@@ -186,7 +187,9 @@ export function UpdateDialog({
         {updateInfo?.release_notes && (
           <div className="update-notes-container">
             <div className="update-notes-heading">Release notes</div>
-            <pre className="update-notes-content">{updateInfo.release_notes}</pre>
+            <div className="update-notes-content" tabIndex={0} role="region" aria-label="Release notes">
+              <ReleaseNotes text={updateInfo.release_notes} />
+            </div>
           </div>
         )}
 
