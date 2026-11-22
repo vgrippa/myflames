@@ -13,6 +13,10 @@ const PAD = 20;
 const CLUSTER_HEAD = 54;
 // The diagram draws at most this many links; the text list below it keeps all.
 const EDGE_CAP = 600;
+// Edge labels sit on an 11 px font; candidate positions step in 16 px rows.
+const LABEL_FONT = 11;
+const LABEL_STEP = 16;
+const LABEL_CHAR = 7;
 const nodeLabels = new WeakMap<MapReport, Map<string, string>>();
 
 /** Share one label index between the diagram and its text alternative. */
@@ -128,13 +132,19 @@ function ranks(ids: string[], links: [string, string][]): Map<string, number> {
 
 function layout(map: MapReport) {
   const parallelCounts = new Map<string, number>();
+  const sourceCounts = new Map<string, number>();
   for (const edge of map.edges) {
     const key = JSON.stringify([edge.from, edge.to]);
     parallelCounts.set(key, (parallelCounts.get(key) || 0) + 1);
+    sourceCounts.set(edge.from, (sourceCounts.get(edge.from) || 0) + 1);
   }
-  // ProxySQL can report several hostgroups for the same backend. Reserve
-  // enough space for each link's state label instead of painting them over.
-  const flowGap = Math.max(FLOW_GAP, ...[...parallelCounts.values()].map((count) => count * 20 + 20));
+  // ProxySQL can report several hostgroups for the same backend, and one
+  // proxy can route to many members of one box. Reserve room for each
+  // link's state label, stacked per source, instead of painting them over
+  // one another or over the cards.
+  const flowGap = Math.max(FLOW_GAP,
+    ...[...parallelCounts.values()].map((count) => count * 20 + 20),
+    ...[...sourceCounts.values()].map((count) => count * LABEL_STEP + 24));
   const replication = map.edges.filter((edge) => edge.kind === "replication").map((edge): [string, string] => [edge.from, edge.to]);
   const claimed = new Set<string>();
   const blocks: Block[] = [];
@@ -209,11 +219,13 @@ function edgePath(from: Point, to: Point, lane: number, slot: number, gutter: nu
   const x1 = from.x + CARD_W / 2 + offset;
   const x2 = to.x + CARD_W / 2 + offset;
   const y1 = from.y + CARD_H;
+  let points: Point[];
+  let labelAt: Point;
   if (from.y === to.y) {
     const bottom = y1 + 24 + lane * 9 + Math.abs(slot) * 20;
-    return { d: `M${x1},${y1} V${bottom} H${x2} V${to.y + CARD_H}`, x: (x1 + x2) / 2, y: bottom };
-  }
-  if (to.y > y1) {
+    points = [{ x: x1, y: y1 }, { x: x1, y: bottom }, { x: x2, y: bottom }, { x: x2, y: to.y + CARD_H }];
+    labelAt = { x: (x1 + x2) / 2, y: bottom };
+  } else if (to.y > y1) {
     const base = sourceBlock !== targetBlock
       ? (sourceBlock.y + sourceBlock.height + targetBlock.y) / 2
       : y1 + (to.y - y1) / 2;
@@ -221,14 +233,132 @@ function edgePath(from: Point, to: Point, lane: number, slot: number, gutter: nu
     if (sourceBlock.cluster && sourceBlock !== targetBlock) {
       // Exit between internal member rows before descending outside the box.
       const side = sourceBlock.x + sourceBlock.width + GAP / 2;
-      return { d: `M${x1},${y1} V${y1 + 12} H${side} V${middle} H${x2} V${to.y}`, x: (side + x2) / 2, y: middle };
+      points = [{ x: x1, y: y1 }, { x: x1, y: y1 + 12 }, { x: side, y: y1 + 12 },
+        { x: side, y: middle }, { x: x2, y: middle }, { x: x2, y: to.y }];
+      labelAt = { x: (side + x2) / 2, y: middle };
+    } else {
+      points = [{ x: x1, y: y1 }, { x: x1, y: middle }, { x: x2, y: middle }, { x: x2, y: to.y }];
+      labelAt = { x: (x1 + x2) / 2, y: middle };
     }
-    return { d: `M${x1},${y1} V${middle} H${x2} V${to.y}`, x: (x1 + x2) / 2, y: middle };
+  } else {
+    const startY = from.y + CARD_H / 2;
+    const endY = to.y + CARD_H / 2;
+    points = [{ x: from.x + CARD_W, y: startY }, { x: gutter, y: startY },
+      { x: gutter, y: endY }, { x: to.x + CARD_W, y: endY }];
+    labelAt = { x: gutter, y: (startY + endY) / 2 };
   }
-  const startY = from.y + CARD_H / 2;
-  const endY = to.y + CARD_H / 2;
-  return { d: `M${from.x + CARD_W},${startY} H${gutter} V${endY} H${to.x + CARD_W}`,
-    x: gutter, y: (startY + endY) / 2 };
+  const d = points.map((point, i) => `${i === 0 ? "M" : "L"}${point.x},${point.y}`).join(" ");
+  return { d, points, labelAt };
+}
+
+type LabelBox = { left: number; top: number; right: number; bottom: number };
+/** Where a label is anchored: middle centers on x; start and end pin the box
+ * side to x so its real glyph edge keeps the promised gap from its line. */
+type LabelSpot = { x: number; baseline: number; anchor: "middle" | "start" | "end" };
+/** The label's estimated ink box: generous on width so the real glyph box
+ * (checked by the browser test) always fits inside it. */
+function labelBox(spot: LabelSpot, text: string): LabelBox {
+  const half = (text.length * LABEL_CHAR) / 2;
+  const left = spot.anchor === "middle" ? spot.x - half : spot.anchor === "start" ? spot.x : spot.x - half * 2;
+  return { left, right: left + half * 2, top: spot.baseline - LABEL_FONT - 1, bottom: spot.baseline + 4 };
+}
+const boxesOverlap = (a: LabelBox, b: LabelBox) =>
+  a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+/** Obstacle lookup over a 64 px cell grid: inserting every card and checking
+ * hundreds of labels stays linear at the 600-link cap. */
+const GRID_CELL = 64;
+function obstacleGrid() {
+  const cells = new Map<string, LabelBox[]>();
+  const keys = (box: LabelBox) => {
+    const out: string[] = [];
+    for (let cx = Math.floor(box.left / GRID_CELL); cx <= Math.floor(box.right / GRID_CELL); cx++)
+      for (let cy = Math.floor(box.top / GRID_CELL); cy <= Math.floor(box.bottom / GRID_CELL); cy++)
+        out.push(`${cx}:${cy}`);
+    return out;
+  };
+  return {
+    insert(box: LabelBox) {
+      for (const key of keys(box)) {
+        const list = cells.get(key);
+        if (list) list.push(box);
+        else cells.set(key, [box]);
+      }
+    },
+    hits(box: LabelBox) {
+      for (const key of keys(box)) for (const other of cells.get(key) || [])
+        if (boxesOverlap(other, box)) return true;
+      return false;
+    },
+  };
+}
+
+/** Center first, then step-sized offsets both ways, clamped to [lo, hi]. The
+ * 12-step bound keeps the search constant for any segment length. */
+function spotsAlong(center: number, lo: number, hi: number, step: number): number[] {
+  const out: number[] = [];
+  for (let k = 0; k <= 12; k++) {
+    for (const value of k === 0 ? [center] : [center + k * step, center - k * step]) {
+      const clamped = Math.max(lo, Math.min(hi, value));
+      if (!out.includes(clamped)) out.push(clamped);
+    }
+  }
+  return out;
+}
+
+/** The bounded, deterministic candidate set for one link's label, every one
+ * touching that link's own path: above then below each horizontal segment
+ * (the box sits 1 px off the line), on then beside each vertical segment.
+ * The segment holding the layout's midpoint anchor comes first. */
+function labelSpots(points: Point[], labelAt: Point): LabelSpot[] {
+  const segments: { a: Point; b: Point; horizontal: boolean }[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (a.x !== b.x || a.y !== b.y) segments.push({ a, b, horizontal: a.y === b.y });
+  }
+  const holds = (seg: { a: Point; b: Point; horizontal: boolean }) => seg.horizontal
+    ? seg.a.y === labelAt.y && labelAt.x >= Math.min(seg.a.x, seg.b.x) - 0.5 && labelAt.x <= Math.max(seg.a.x, seg.b.x) + 0.5
+    : seg.a.x === labelAt.x && labelAt.y >= Math.min(seg.a.y, seg.b.y) - 0.5 && labelAt.y <= Math.max(seg.a.y, seg.b.y) + 0.5;
+  const primary = segments.findIndex(holds);
+  const ordered = primary > 0
+    ? [segments[primary], ...segments.slice(0, primary), ...segments.slice(primary + 1)]
+    : segments;
+  const spots: LabelSpot[] = [];
+  for (const seg of ordered) {
+    if (seg.horizontal) {
+      const lo = Math.min(seg.a.x, seg.b.x);
+      const hi = Math.max(seg.a.x, seg.b.x);
+      const center = holds(seg) ? labelAt.x : (lo + hi) / 2;
+      const xs = spotsAlong(center, lo, hi, 32);
+      for (const x of xs) spots.push({ x, baseline: seg.a.y - 5, anchor: "middle" });
+      for (const x of xs) spots.push({ x, baseline: seg.a.y + LABEL_FONT + 2, anchor: "middle" });
+    } else {
+      const lo = Math.min(seg.a.y, seg.b.y);
+      const hi = Math.max(seg.a.y, seg.b.y);
+      const center = holds(seg) ? labelAt.y : (lo + hi) / 2;
+      const ys = spotsAlong(center, lo, hi, LABEL_STEP);
+      for (const y of ys) spots.push({ x: seg.a.x, baseline: y + 4, anchor: "middle" });
+      for (const y of ys) spots.push({ x: seg.a.x - 5, baseline: y + 4, anchor: "end" });
+      for (const y of ys) spots.push({ x: seg.a.x + 5, baseline: y + 4, anchor: "start" });
+    }
+  }
+  return spots;
+}
+
+/** A link's label at the first candidate that clears every label already
+ * placed and every card, or null when no candidate fits: the drawing then
+ * omits the label rather than show it where it could mislead. Deterministic
+ * for a given edge order, so a re-render never moves a label. */
+function placeLabel(points: Point[], labelAt: Point, text: string, grid: ReturnType<typeof obstacleGrid>): LabelSpot | null {
+  for (const spot of labelSpots(points, labelAt)) {
+    const box = labelBox(spot, text);
+    if (!grid.hits(box)) {
+      grid.insert(box);
+      return spot;
+    }
+  }
+  return null;
 }
 
 export function TopologyMap({ map, selection }: { map: MapReport; selection: Selection }) {
@@ -250,6 +380,31 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
     return { blockOf, parallel };
   }, [map, diagram]);
   const edges = map.edges.length > EDGE_CAP ? map.edges.slice(0, EDGE_CAP) : map.edges;
+  // Place labels in one pass over the links: the first candidate on the
+  // link's own path that clears every label already placed and every card
+  // (source and destination cards included; empty cluster-box space stays
+  // allowed). A link whose candidates are all blocked keeps its line and
+  // drops only the label; the text list below always carries every link.
+  const drawnEdges = useMemo(() => {
+    const grid = obstacleGrid();
+    for (const position of diagram.positions.values())
+      grid.insert({ left: position.x, top: position.y, right: position.x + CARD_W, bottom: position.y + CARD_H });
+    return edges.map((edge, i) => {
+      const from = diagram.positions.get(edge.from);
+      const to = diagram.positions.get(edge.to);
+      if (!from || !to) return null;
+      const sourceBlock = edgeIndex.blockOf.get(edge.from)!;
+      const targetBlock = edgeIndex.blockOf.get(edge.to)!;
+      const parallel = edgeIndex.parallel.get(JSON.stringify([edge.from, edge.to]))!;
+      const slot = parallel.indexOf(edge) - (parallel.length - 1) / 2;
+      const line = edgePath(from, to, i % 4, slot, diagram.width - 76 + (i % 5) * 12, sourceBlock, targetBlock);
+      const text = `${mapEdgeLabel(edge)}${edge.kind === "alias" ? "" : edge.state ? ` · ${edge.state}` : " · State not reported"}`;
+      const title = `${labels.get(edge.from) || edge.from} → ${labels.get(edge.to) || edge.to}: ${mapEdgeText(edge)}`;
+      const label = placeLabel(line.points, line.labelAt, text, grid);
+      return { edge, index: i, line, text, title, label };
+    });
+  }, [edges, diagram, edgeIndex, labels]);
+  const labelsOmitted = drawnEdges.some((item) => item && !item.label);
   const arrow = `topology-arrow-${useId().replace(/:/g, "")}`;
   if (!map.nodes.length && !map.clusters.length) return <p className="hint">No servers were reported.</p>;
   return <section className="topology-map-diagram" aria-label="Group topology diagram">
@@ -298,27 +453,33 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
           <defs>{["ok", "watch", "problem", "unknown"].map((tone) => <marker key={tone} id={`${arrow}-${tone}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0 0 10 5 0 10Z" fill={`var(--${tone === "watch" ? "warn" : tone === "problem" ? "danger" : tone === "unknown" ? "muted" : "ok"})`} />
           </marker>)}</defs>
-          {edges.map((edge, i) => {
-            const from = diagram.positions.get(edge.from);
-            const to = diagram.positions.get(edge.to);
-            if (!from || !to) return null;
-            const sourceBlock = edgeIndex.blockOf.get(edge.from)!;
-            const targetBlock = edgeIndex.blockOf.get(edge.to)!;
-            const parallel = edgeIndex.parallel.get(JSON.stringify([edge.from, edge.to]))!;
-            const slot = parallel.indexOf(edge) - (parallel.length - 1) / 2;
-            const line = edgePath(from, to, i % 4, slot, diagram.width - 76 + (i % 5) * 12, sourceBlock, targetBlock);
-            const title = `${labels.get(edge.from) || edge.from} → ${labels.get(edge.to) || edge.to}: ${mapEdgeText(edge)}`;
-            return <g key={`${edge.from}-${edge.to}-${edge.kind}-${i}`} className={`topology-map-edge tone-${stateTone(edge.state)}${edge.kind === "alias" ? " is-alias" : ""}`}
-              data-edge-kind={edge.kind} data-verified={String(edge.verified)}>
-              <title>{title}</title>
-              <path d={line.d} fill="none" stroke="currentColor" strokeWidth="2"
-                strokeDasharray={edge.kind === "alias" ? "2 4" : edge.verified ? undefined : "6 5"} markerEnd={`url(#${arrow}-${stateTone(edge.state)})`} />
-              <path className="topology-map-edge-hit" d={line.d} fill="none" stroke="transparent" strokeWidth="16" />
-              <text x={line.x} y={line.y - 9} textAnchor="middle">{mapEdgeLabel(edge)}{edge.kind === "alias" ? "" : edge.state ? ` · ${edge.state}` : " · State not reported"}</text>
-            </g>;
-          })}
+          {drawnEdges.map((item) => item && (
+            <g key={`${item.edge.from}-${item.edge.to}-${item.edge.kind}-${item.index}`}
+              className={`topology-map-edge tone-${stateTone(item.edge.state)}${item.edge.kind === "alias" ? " is-alias" : ""}`}
+              data-edge-kind={item.edge.kind} data-verified={String(item.edge.verified)}
+              data-label-omitted={item.label ? undefined : "true"}>
+              <title>{item.title}</title>
+              <path d={item.line.d} fill="none" stroke="currentColor" strokeWidth="2"
+                strokeDasharray={item.edge.kind === "alias" ? "2 4" : item.edge.verified ? undefined : "6 5"} markerEnd={`url(#${arrow}-${stateTone(item.edge.state)})`} />
+              <path className="topology-map-edge-hit" d={item.line.d} fill="none" stroke="transparent" strokeWidth="16" />
+              {item.label && <text className="topology-map-edge-label-anchor" x={item.label.x} y={item.label.baseline} textAnchor={item.label.anchor}>{item.text}</text>}
+            </g>
+          ))}
+          {/* Every label is painted once more above all lines, so a later
+              link's line can never cross an earlier link's label. The copy in
+              each link keeps its box, tooltip and text for tests and readers. */}
+          <g className="topology-map-label-layer" aria-hidden="true">
+            {drawnEdges.map((item) => item && item.label && (
+              <text key={`label-${item.edge.from}-${item.edge.to}-${item.edge.kind}-${item.index}`}
+                className={`topology-map-label tone-${stateTone(item.edge.state)}${item.edge.kind === "alias" ? " is-alias" : ""}`}
+                x={item.label.x} y={item.label.baseline} textAnchor={item.label.anchor}>{item.text}</text>
+            ))}
+          </g>
         </svg>
       </div>
     </div>
+    {labelsOmitted && (
+      <p className="hint topology-map-labels-omitted" role="note">Some link labels did not fit; every link is listed below.</p>
+    )}
   </section>;
 }

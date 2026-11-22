@@ -269,7 +269,26 @@ async function editorChecks(page, expected, helpers) {
     const tick = () => (--frames ? requestAnimationFrame(tick) : resolve());
     requestAnimationFrame(tick);
   }));
-  const count = await page.$$eval(CURSORS, nodes => nodes.length);
+  let count = await page.$$eval(CURSORS, nodes => nodes.length);
+  if (want === 2 && count === 1) {
+    // A busy macOS CI runner has dropped the first Option-click with the
+    // setting applied and the editor focused (not reproduced locally). Record
+    // the state, then Option-click once more a little further along line 2.
+    // Only the positive case retries, so "Multiple cursors off leaves one
+    // cursor" can never pass by accident, and two misses still fail.
+    const state = await page.evaluate(selector => ({
+      focused: !!document.querySelector('.query-lab .cm-editor.cm-focused'),
+      active: document.activeElement?.className || document.activeElement?.tagName || '',
+      multi: document.querySelector(selector)?.dataset.multiCursor || '',
+    }), EDITOR);
+    console.log(`RETRY (${stage}): Option-click left 1 cursor, want 2; ${JSON.stringify(state)}`);
+    await page.keyboard.down('Alt');
+    try { await page.mouse.click(point.x + 8, point.y); }
+    finally { await page.keyboard.up('Alt'); }
+    await page.waitForFunction((selector, n) => document.querySelectorAll(selector).length === n,
+      { timeout: 5000 }, CURSORS, want).catch(() => {});
+    count = await page.$$eval(CURSORS, nodes => nodes.length);
+  }
   assert.equal(count, expected.multi_cursor ? 2 : 1, 'Option-click obeys Multiple cursors');
   assert.ok(await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1), 'Option-click reached the second line');
   pass(`${stage}: Option-click on line 2 leaves ${count} cursor${count === 1 ? '' : 's'}`);

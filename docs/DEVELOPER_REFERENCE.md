@@ -8871,7 +8871,17 @@ logs in.
   caches**, **Database servers**, **Replicas · level N**, cluster boxes,
   `Alias of <member>` badges, legend for solid verified / dashed unverified
   address or server ID match / dotted alias, `EDGE_CAP = 600` SVG links with
-  cap note) above the accessible text view (Servers, `Not in this group` peers
+  cap note; each link label is drawn only at the first spot of a bounded,
+  deterministic candidate set along that link's own path segments (above or
+  below a horizontal segment, on or beside a vertical one) whose estimated
+  box stays within 6 px of that segment and clears, through a 64 px cell
+  grid, every label already placed and every card rectangle (source and
+  destination cards included; empty cluster-box space is allowed), the row
+  gap still reserving room per source node; a link with no fitting spot
+  keeps its line but omits its label (`data-label-omitted`), with one note
+  under the diagram ("Some link labels did not fit; every link is listed
+  below."), and a `paint-order: stroke` halo in `--surface` keeps label
+  text clear of the lines it crosses) above the accessible text view (Servers, `Not in this group` peers
   with `seen_by`, Links showing `from -> to` and `"verified"` / `"server ID
   match, not verified"` / `"address match, not verified"` / `"Same server
   (alias)"`, Clusters, Notes; **Links** pages by 200 via **Show 200 more** and
