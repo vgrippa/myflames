@@ -1337,7 +1337,7 @@ def _unescape_sql_literal(body, quote):
 
 
 def _redact_export_sql(sql, password=None):
-    """Redact exported Readyset DDL without altering identifiers or keywords.
+    """Redact exported DDL, preserving identifiers unless they contain *password*.
 
     Applies ``dbops.redact`` to the whole SQL with identifiers masked, and replaces any
     quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
@@ -1350,12 +1350,15 @@ def _redact_export_sql(sql, password=None):
     unclosed = set(scan["unclosed"])
     parts = []
     identifiers = {}
-    used = set(sql)
+    used = set(sql + (pw or ""))
     mask_codepoint = 0xe000
     changed = False
     for kind, start, end in scan["tokens"]:
         tok = sql[start:end]
         if kind == "identifier":
+            if pw and (pw in tok or pw in tok[1:-1].replace("``", "`")):
+                tok = "`" + dbops.REDACTED + "`"
+                changed = True
             # Each identifier gets its own same-length, quote-free mask.
             # Distinct characters allow restoration even if redaction changes
             # earlier lengths or consumes a mask in malformed surrounding SQL.
@@ -1364,9 +1367,9 @@ def _redact_export_sql(sql, password=None):
             mask = chr(mask_codepoint)
             mask_codepoint += 1
             identifiers[mask] = tok
-            parts.append(mask * len(tok))
+            parts.append(mask * (end - start))
             continue
-        # Keep connection-password matching scoped to literals and comments.
+        # Replace whole secret-bearing literals/comments before URL redaction.
         updated = tok
         if kind == "string" and pw:
             quote = tok[0]
@@ -1386,11 +1389,14 @@ def _redact_export_sql(sql, password=None):
             changed = True
         parts.append(updated)
     masked = "".join(parts)
+    # A bare password (including the marker itself) must disable the DDL even
+    # when replacement would leave identical text.
+    changed = changed or bool(pw and pw in masked)
     # Run the export URL pass first: the shared redactor can stop at the first
     # '@'. Whole-definition redaction then sees both credential keywords and
     # their literals, without treating identifier contents as SQL clauses.
     updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", masked)
-    updated = dbops.redact(updated)
+    updated = dbops.redact(updated, pw)
     changed = changed or updated != masked
     restored = []
     previous = None
@@ -1400,7 +1406,17 @@ def _redact_export_sql(sql, password=None):
         elif ch != previous:
             restored.append(identifiers[ch])
         previous = ch
-    return "".join(restored), changed
+    restored = "".join(restored)
+    # Malformed SQL can split a literal password across token boundaries.
+    # Do not let restoring an identifier put those raw bytes back together.
+    if pw and pw in restored:
+        restored = restored.replace(pw, dbops.REDACTED)
+        changed = True
+    return restored, changed
+
+
+def _export_has_controls(text):
+    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
 
 
 def _runnable_export_sql(sql):
@@ -1410,7 +1426,7 @@ def _runnable_export_sql(sql):
     executable comments and line/client framing outside strings, rather than
     letting server-supplied text control how the rest of the file is read.
     """
-    if "\x00" in sql:
+    if _export_has_controls(sql):
         return False
     for escapes in (True, False):
         for client in (False, True):
@@ -1424,7 +1440,10 @@ def _runnable_export_sql(sql):
                 if kind == "string":
                     code.append("?")
                     continue
-                if "\\" in tok or any(ch in _EXPORT_LINE_BREAKS for ch in tok):
+                # MySQL 8.1+ clients can enable dollar quoting independently
+                # of the server. Refuse dollars outside ordinary strings in
+                # every reading, so no dollar body can change the framing.
+                if "$" in tok or "\\" in tok or any(ch in _EXPORT_LINE_BREAKS for ch in tok):
                     return False
                 if kind == "identifier":
                     code.append("identifier")
@@ -1448,6 +1467,10 @@ def _split_export_use(sql):
     comments out the whole definition. Never copy server-supplied USE text
     into the runnable output; its parsed name is quoted by the exporter.
     """
+    # Check before trimming: tabs and other controls must not disappear into
+    # the prefix parser and become runnable in an exporter-generated USE.
+    if _export_has_controls(sql):
+        return None, sql
     tokens = dbops.lex_sql(sql)["tokens"]
     if (len(tokens) < 3 or tokens[0][0] != "code" or
             sql[tokens[0][1]:tokens[0][2]].strip(" \t").upper() != "USE" or
@@ -1455,7 +1478,7 @@ def _split_export_use(sql):
         return None, sql
     _, start, end = tokens[1]
     prefix = sql[:end]
-    if "\\" in prefix or any(ch in _EXPORT_LINE_BREAKS for ch in prefix):
+    if "$" in prefix or "\\" in prefix or any(ch in _EXPORT_LINE_BREAKS for ch in prefix):
         return None, sql
     tail = sql[end:].lstrip(" \t")
     if not tail.startswith(";"):
@@ -1490,7 +1513,7 @@ def export_caches(conn):
     # Redact before bounding, and keep server text on its comment line.
     version = _display(dbops.redact(version, pw))
     lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
-             "-- Credentials in query text are shown as [redacted]."]
+             "-- Recognized credentials in query text are shown as [redacted]."]
     last_db = None
     for r in rows:
         raw_q = r.get("query") or r.get("create statement") or ""
@@ -1502,11 +1525,27 @@ def export_caches(conn):
         # database column disagrees with the shallow cache's search path.
         raw_db = prefix_db if prefix_db is not None else r.get("database")
         db = str(raw_db) if raw_db not in (None, "") else None
+        # Extracted USE names and the database column bypass the definition's
+        # redactor. Apply the same secret and framing restrictions here.
+        db_redacted = bool(db and pw and pw in db)
+        if db_redacted:
+            db = dbops.REDACTED
+            redacted = True
+        db_safe = not db or not (_export_has_controls(db) or "$" in db or "\\" in db or
+                                 any(ch in _EXPORT_LINE_BREAKS for ch in db))
         if db and db != last_db:
-            lines.append("USE %s;" % _rs_ident_server(db, "Database"))
-            last_db = db
+            try:
+                use = "USE %s;" % _rs_ident_server(db, "Database")
+            except ValueError:
+                use = "-- Database name could not be exported as runnable SQL."
+                db_safe = False
+            if not db_safe or db_redacted:
+                use = "\n".join("-- " + line for line in use.splitlines())
+            else:
+                last_db = db
+            lines.append(use)
         stmt = q if q.endswith(";") else (q + ";")
-        runnable = _runnable_export_sql(stmt)
+        runnable = db_safe and _runnable_export_sql(stmt)
         if not runnable:
             lines.append(_EXPORT_UNSAFE_COMMENT)
         if redacted:

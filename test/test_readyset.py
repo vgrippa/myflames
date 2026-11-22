@@ -1309,6 +1309,94 @@ class FakeCacheExport(FakeReadyset):
 
 class TestExplainAndExportCaches(ReadysetBase):
 
+    def test_export_refuses_dollar_quote_client_reframing(self):
+        # probe13_dollar and probe15_selftest: without dollar quoting the
+        # command/second statement is hidden inside an ordinary string.
+        definitions = (
+            r"CREATE CACHE c FROM SELECT $$ ' $$ \! echo OWNED #';",
+            r"CREATE CACHE c FROM SELECT $tag$ ' $tag$ \! echo OWNED #';",
+            r"CREATE CACHE c FROM SELECT $$ ' $$ ; DROP ALL CACHES ; -- ';",
+            r"CREATE CACHE c FROM SELECT $$ ' $$ \. /etc/passwd #';",
+            "CREATE CACHE c FROM SELECT $$ ' $$;",
+            "CREATE CACHE `cash$cache` FROM SELECT 1;",
+        )
+        for definition in definitions:
+            for prefix in ("", "USE `shop`; "):
+                with self.subTest(definition=definition, prefix=prefix):
+                    conn = FakeCacheExport()
+                    conn.definition = prefix + definition
+                    self.assertFalse(readyset._runnable_export_sql(definition))
+                    self.assertEqual(readyset._split_export_use(conn.definition),
+                                     (None, conn.definition))
+                    result = readyset.export_caches(conn)
+                    self.assertEqual(result["caches"][0]["statement"], "-- " + conn.definition)
+                    self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_refuses_control_and_format_characters_everywhere(self):
+        # probe17_use: even a quoted database or cache name can hide controls.
+        for control in ("\u202e", "\u200b", "\x1b", "\t", "\x00", "\x7f", "\n", "\r"):
+            for template in (
+                    "CREATE CACHE `a%sb` FROM SELECT 1;",
+                    "CREATE CACHE c FROM SELECT 'a%sb';",
+                    'CREATE CACHE c FROM SELECT "a%sb";',
+                    "CREATE%sCACHE c FROM SELECT 1;",
+                    "USE `a%sb`; CREATE CACHE c FROM SELECT 1;",
+                    "USE%s`shop`; CREATE CACHE c FROM SELECT 1;",
+                    "USE `shop`%s; CREATE CACHE c FROM SELECT 1;",
+                    "USE `shop`;%sCREATE CACHE c FROM SELECT 1;"):
+                with self.subTest(control=repr(control), template=template):
+                    conn = FakeCacheExport()
+                    conn.definition = template % control
+                    self.assertFalse(readyset._runnable_export_sql(conn.definition))
+                    self.assertEqual(readyset._split_export_use(conn.definition),
+                                     (None, conn.definition))
+                    result = readyset.export_caches(conn)
+                    for text in (result["sql"], result["caches"][0]["statement"]):
+                        self.assertTrue(all(line.startswith("-- ") for line in text.splitlines()))
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_redacts_password_in_every_token_kind(self):
+        # probe16_mask: quoted identifiers must be checked before masking;
+        # the whole-definition pass must receive the connection password.
+        for password in ("MyPassw0rd", "a`b", "\ue000"):
+            for template, value in (
+                    ("SELECT %s FROM t", password),
+                    ("SELECT 1 AS %s", password),
+                    ("SELECT `%s` FROM t", password.replace("`", "``")),
+                    ("SELECT 1 /*!50000 %s */", password),
+                    ("SELECT 1 /* %s */", password),
+                    ("SELECT '%s'", password)):
+                with self.subTest(password=password, template=template):
+                    conn = FakeCacheExport()
+                    conn.password = password
+                    conn.definition = "CREATE CACHE c FROM " + template % value + ";"
+                    result = readyset.export_caches(conn)
+                    for text in (result["sql"], result["caches"][0]["statement"]):
+                        self.assertNotIn(password, text)
+                        self.assertIn(dbops.REDACTED, text)
+                        self.assertTrue(all(line.startswith("-- ") for line in text.splitlines()))
+                    self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_applies_safety_and_redaction_to_generated_use(self):
+        statement = "CREATE CACHE c FROM SELECT 1;"
+        for database in ("MyPassw0rd", "a\u202eb", "a\x1bb", "a\tb", "a\x00b", "a\nb",
+                         "cash$db", "a\\b"):
+            for prefix in (False, True):
+                with self.subTest(database=repr(database), prefix=prefix):
+                    conn = FakeCacheExport()
+                    conn.password = "MyPassw0rd"
+                    conn.export_rows = [{
+                        "query": "USE `%s`; %s" % (database, statement) if prefix else statement,
+                        "database": None if prefix else database,
+                    }]
+                    result = readyset.export_caches(conn)
+                    self.assertNotIn(conn.password, json.dumps(result))
+                    for text in (result["sql"], result["caches"][0]["statement"]):
+                        self.assertTrue(all(line.startswith("-- ") for line in text.splitlines()))
+                    self.assertEqual(conn.writes, [])
+
     def test_export_comments_client_commands_and_additional_statements(self):
         # probe10_passthrough: a mysql client must never read server text as
         # a client command or as a second statement when importing this file.
@@ -1347,6 +1435,7 @@ class TestExplainAndExportCaches(ReadysetBase):
             "CREATE CACHE a FROM SELECT 1 -- terminator swallowed",
             "CREATE CACHE a FROM SELECT 1\n",
             "CREATE CACHE `a\nb` FROM SELECT 1;",
+            "CREATE CACHE c FROM SELECT 'first\n\\! id\nlast';",
             "CREATE CACHE a FROM SELECT 'x\\'; ALTER READYSET SHUTDOWN; -- ';",
         )
         # A valid USE prefix must not make any earlier abuse case runnable.
@@ -1426,7 +1515,8 @@ class TestExplainAndExportCaches(ReadysetBase):
                 "CREATE CACHE c FROM SELECT 1;",
                 "CREATE SHALLOW CACHE `c` WITH (ttl = 30s) FROM SELECT 1;",
                 "CREATE DEEP CACHE c FROM SELECT 'literal; \\! DELIMITER //';",
-                "CREATE CACHE c FROM SELECT 'first\n\\! id\nlast';",
+                "CREATE CACHE c FROM SELECT '$5', '$$ plain literal $$';",
+                'CREATE CACHE c FROM SELECT "$5";',
                 "CREATE CACHE c FROM SELECT `password = 'identifier-only'` /* safe comment */;",
                 "CREATE CACHE c FROM q_1234;"):
             with self.subTest(definition=definition):
@@ -1528,7 +1618,7 @@ class TestExplainAndExportCaches(ReadysetBase):
                              for c in result["version"]))
         self.assertEqual(result["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset %s)" % result["version"],
-            "-- Credentials in query text are shown as [redacted].",
+            "-- Recognized credentials in query text are shown as [redacted].",
             "CREATE CACHE c FROM SELECT 1;",
         ])
         self.assertNotIn("connection-secret-", json.dumps(result))
@@ -1627,7 +1717,7 @@ class TestExplainAndExportCaches(ReadysetBase):
                     self.assertEqual(result["caches"], [{"database": "shop", "statement": expected}])
                     self.assertEqual(result["sql"].splitlines(), [
                         "-- Readyset cache definitions exported by myflames (Readyset stable-250605)",
-                        "-- Credentials in query text are shown as [redacted].",
+                        "-- Recognized credentials in query text are shown as [redacted].",
                         "USE `shop`;",
                         "-- Credentials in this definition are shown as [redacted]; it will not run as is.",
                         expected,
@@ -1649,10 +1739,10 @@ class TestExplainAndExportCaches(ReadysetBase):
                     return xml_rows(self._export_rows)
                 return super().run(sql, extra_flags, timeout)
 
-        # Password matching an identifier or keyword leaves DDL byte for byte
-        # intact and adds no per-definition warning comment.
+        # Identifiers without the connection password stay byte for byte
+        # intact and add no per-definition warning comment.
         ident_stmt = "CREATE SHALLOW CACHE sales_summary FROM SELECT * FROM sales;"
-        clean = readyset.export_caches(CustomExportConn("sales", [
+        clean = readyset.export_caches(CustomExportConn("unrelated-connection-secret", [
             {"database": "sales", "query": ident_stmt},
             {"database": "sales", "query": "CREATE DEEP CACHE `sales` FROM SELECT `sales` FROM `sales` WHERE status = 'open';"},
         ]))
@@ -1663,7 +1753,7 @@ class TestExplainAndExportCaches(ReadysetBase):
         )
         self.assertEqual(clean["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset stable-250605)",
-            "-- Credentials in query text are shown as [redacted].",
+            "-- Recognized credentials in query text are shown as [redacted].",
             "USE `sales`;",
             ident_stmt,
             "CREATE DEEP CACHE `sales` FROM SELECT `sales` FROM `sales` WHERE status = 'open';",
@@ -1672,28 +1762,29 @@ class TestExplainAndExportCaches(ReadysetBase):
         # Literal password in WHERE (single/double-quoted or escaped) and URL
         # credentials inside literals are redacted and flagged; untouched
         # definitions in the same export get no comment.
+        ident_stmt = "CREATE SHALLOW CACHE orders_summary FROM SELECT * FROM orders;"
         mixed = readyset.export_caches(CustomExportConn("sales", [
             {"database": "shop", "query": ident_stmt},
-            {"database": "shop", "query": "CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM sales WHERE region = 'sales';"},
-            {"database": "shop", "query": 'CREATE SHALLOW CACHE `dq` FROM SELECT * FROM sales WHERE region = "my-sales-pw";'},
+            {"database": "shop", "query": "CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = 'sales';"},
+            {"database": "shop", "query": 'CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = "my-sales-pw";'},
             {"database": "shop", "query": "CREATE SHALLOW CACHE `url` FROM SELECT 'mysql://u:p@h:3306/db' FROM orders;"},
         ]))
         self.assertEqual(mixed["caches"], [
             {"database": "shop", "statement": ident_stmt},
-            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM sales WHERE region = '[redacted]';"},
-            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM sales WHERE region = '[redacted]';"},
+            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = '[redacted]';"},
+            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = '[redacted]';"},
             {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `url` FROM SELECT 'mysql://u:[redacted]@h:3306/db' FROM orders;"},
         ])
         flag = "-- Credentials in this definition are shown as [redacted]; it will not run as is."
         self.assertEqual(mixed["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset stable-250605)",
-            "-- Credentials in query text are shown as [redacted].",
+            "-- Recognized credentials in query text are shown as [redacted].",
             "USE `shop`;",
             ident_stmt,
             flag,
-            "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM sales WHERE region = '[redacted]';",
+            "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = '[redacted]';",
             flag,
-            "-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM sales WHERE region = '[redacted]';",
+            "-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = '[redacted]';",
             flag,
             "-- CREATE SHALLOW CACHE `url` FROM SELECT 'mysql://u:[redacted]@h:3306/db' FROM orders;",
         ])
@@ -1706,15 +1797,16 @@ class TestExplainAndExportCaches(ReadysetBase):
         ]))
         self.assertEqual(escaped["caches"], [
             {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = '[redacted]' AND b = '[redacted]';"},
-            {"database": "shop", "statement": "CREATE SHALLOW CACHE `ok` FROM SELECT `o'reilly` FROM `mysql://u:p@h`;"},
+            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `ok` FROM SELECT `[redacted]` FROM `mysql://u:p@h`;"},
         ])
         self.assertEqual(escaped["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset stable-250605)",
-            "-- Credentials in query text are shown as [redacted].",
+            "-- Recognized credentials in query text are shown as [redacted].",
             "USE `shop`;",
             flag,
             "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = '[redacted]' AND b = '[redacted]';",
-            "CREATE SHALLOW CACHE `ok` FROM SELECT `o'reilly` FROM `mysql://u:p@h`;",
+            flag,
+            "-- CREATE SHALLOW CACHE `ok` FROM SELECT `[redacted]` FROM `mysql://u:p@h`;",
         ])
 
         # Display redaction (read_status) stays unchanged.
@@ -1739,7 +1831,7 @@ class TestExplainAndExportCaches(ReadysetBase):
 
     def test_export_redaction_preserves_url_in_identifier(self):
         sql = "CREATE SHALLOW CACHE `mysql://u:p@h` FROM SELECT `mysql://u:p@h`;"
-        self.assertEqual(readyset._redact_export_sql(sql, "p"), (sql, False))
+        self.assertEqual(readyset._redact_export_sql(sql, "unrelated-password"), (sql, False))
         mixed = "SELECT `mysql://u:p@h`, 'mysql://u:secret@h';"
         expected = "SELECT `mysql://u:p@h`, 'mysql://u:[redacted]@h';"
         self.assertEqual(readyset._redact_export_sql(mixed), (expected, True))
@@ -1756,7 +1848,8 @@ class TestExplainAndExportCaches(ReadysetBase):
             ("SELECT 'mysql://u:[redacted]@h';", "SELECT '[redacted]';", True),
             ("SELECT 'mysql://u:p@h/[redacted]';", "SELECT '[redacted]';", True),
             ("SELECT 1 /* [redacted] */;", "SELECT 1 /* [redacted] */;", True),
-            ("SELECT `[redacted]`;", "SELECT `[redacted]`;", False),
+            ("SELECT `[redacted]`;", "SELECT `[redacted]`;", True),
+            ("SELECT [redacted];", "SELECT [redacted];", True),
             ("SELECT 'unrelated';", "SELECT 'unrelated';", False),
         )
         for sql, expected, changed in cases:
