@@ -9,6 +9,7 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { ActionResult, useReviewedActions } from "./ActionReview";
+import { ActionGroup } from "./CatalogActions";
 import { ClusterMark } from "./ClusterTopology";
 import {
   ConfirmSheet,
@@ -39,6 +40,7 @@ import {
 import { CompactNumber, CopySql, ms } from "./PerfShared";
 import { plural } from "./OpsShared";
 import {
+  cachesReadFailed,
   explainReadysetCache,
   exportReadysetCaches,
   planReadysetAction,
@@ -49,20 +51,31 @@ import {
   type ReadysetExplainResponse,
   type ReadysetExportResponse,
   type ReadysetFailure,
+  type ReadysetAction,
+  type ReadysetFinding,
   type ReadysetProxiedQuery,
   type ReadysetQueryStats,
   type ReadysetReport,
   type ReadysetSupportVerdict,
   type ReadysetTable,
-  type ReadysetUpstream,
 } from "./readysetApi";
 import { ReadysetTopologyDiagram } from "./ReadysetTopology";
+import { matchEvidenceLabel } from "./TopologyTiers";
 import { useOpenRead } from "./viewOnScreen";
 import "./cluster.css";
 import "./readyset.css";
 
 export type ReadysetTab = "topology" | "caches" | "proxied" | "tables" | "parameters";
 const SHEET_WIDTH = 1100;
+
+/** The tab label a finding's "Show in <Tab>" button names and switches to. */
+const FINDING_TAB_LABELS: Record<ReadysetFinding["tab"], string> = {
+  topology: "Topology",
+  caches: "Caches",
+  proxied: "Proxied",
+  tables: "Tables",
+  parameters: "Parameters",
+};
 
 type CreateDraft = {
   query_or_id: string;
@@ -82,8 +95,7 @@ type InputPromptState =
   | { kind: "eviction_period"; ms: string }
   | { kind: "allowlist"; allow_kind: "function" | "variable" | "schema"; name: string }
   | { kind: "add_tables"; tables: string }
-  | { kind: "replication_position"; position: string }
-  | { kind: "drop_all_caches"; scope: "all" | "shallow" | "deep" };
+  | { kind: "replication_position"; position: string };
 
 const num = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const numCell = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) ? <CompactNumber value={v} /> : "—");
@@ -117,13 +129,14 @@ export function summaryText(report: ReadysetReport): string {
   if (!report.is_readyset) return "Not a Readyset instance";
   const parts = [
     `Readyset ${report.version || ""}`.trim(),
-    report.port_role === "admin" ? "admin SQL port" : "SQL port",
-    plural(report.caches.length, "cache"),
+    report.port_role === "admin" ? "admin SQL port" : report.port_role === null ? "port not read" : "SQL port",
+    // A failed SHOW CACHES read leaves an empty list: not read, never zero.
+    cachesReadFailed(report) ? "caches not read" : plural(report.caches.length, "cache"),
   ];
   if (report.telemetry.cached_share_pct !== null) {
     parts.push(`${report.telemetry.cached_share_pct}% cached`);
   }
-  if (report.replication?.status) {
+  if (report.replication?.status && report.replication.status !== "Unknown") {
     parts.push(`Repl ${report.replication.status}`);
   }
   return parts.join(" · ");
@@ -154,30 +167,45 @@ function CreateCacheSheet({
   connection,
   onClose,
   onReview,
+  submitBlock = "",
 }: {
   initial: CreateDraft;
   connection: Connection;
   onClose: () => void;
   onReview: (spec: Record<string, unknown>) => void;
+  /** Why the catalog entry for create_cache is not usable right now (the
+   * client block or its why_not/fix); re-checked live against the report. */
+  submitBlock?: string;
 }) {
   const [draft, setDraft] = useState<CreateDraft>(initial);
   const [checking, setChecking] = useState(false);
   const [explain, setExplain] = useState<ReadysetExplainResponse | null>(null);
   const [checkError, setCheckError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  // Each check is bound to the draft text and the connection it started with:
+  // a stale response (an older request, an edited draft, another connection)
+  // is discarded and never clears a newer request's state.
+  const checkSeqRef = useRef(0);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
 
   const runCheck = useCallback(
     async (queryText: string) => {
       const q = queryText.trim();
-      if (!q) return;
+      if (!q || submitBlock) return;
+      const seq = ++checkSeqRef.current;
       abortRef.current?.abort();
       const ctl = new AbortController();
       abortRef.current = ctl;
+      const conn = connection;
       setChecking(true);
       setCheckError("");
       try {
-        const res = await explainReadysetCache(connection, q, "both", ctl.signal);
-        if (ctl.signal.aborted) return;
+        const res = await explainReadysetCache(conn, q, "both", ctl.signal);
+        if (ctl.signal.aborted || seq !== checkSeqRef.current) return;
+        if (conn !== connectionRef.current || draftRef.current.query_or_id.trim() !== q) return;
         setExplain(res);
         if (res.shallow?.supported === "unsupported" && res.deep?.supported === "yes") {
           setDraft((d) => ({ ...d, cache_type: "deep" }));
@@ -185,20 +213,25 @@ function CreateCacheSheet({
           setDraft((d) => ({ ...d, cache_type: "shallow" }));
         }
       } catch (e) {
-        if (!ctl.signal.aborted) setCheckError(e instanceof Error ? e.message : String(e));
+        if (!ctl.signal.aborted && seq === checkSeqRef.current) setCheckError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!ctl.signal.aborted) setChecking(false);
+        // An aborted or superseded request never clears a newer request's
+        // state; an abort with no newer request still clears checking.
+        if (seq === checkSeqRef.current) setChecking(false);
       }
     },
-    [connection],
+    [connection, submitBlock],
   );
 
+  // Check the current draft when the sheet opens and when a block or the
+  // connection changes: the visible draft is checked, never the query the
+  // sheet opened with, and stale results are dropped first.
   useEffect(() => {
-    if (initial.query_or_id.trim()) {
-      void runCheck(initial.query_or_id);
-    }
+    setExplain(null);
+    const q = draftRef.current.query_or_id.trim();
+    if (q) void runCheck(q);
     return () => abortRef.current?.abort();
-  }, [initial.query_or_id, runCheck]);
+  }, [runCheck]);
 
   const ttlNum = draft.ttl_seconds.trim() ? Number(draft.ttl_seconds.trim()) : null;
   const refNum = draft.refresh_seconds.trim() ? Number(draft.refresh_seconds.trim()) : null;
@@ -225,11 +258,13 @@ function CreateCacheSheet({
   const unsupportedChosen = chosenExplain?.supported === "unsupported" || chosenExplain?.supported === "error";
 
   const submit = () => {
-    if (validationError || unsupportedChosen) return;
+    if (validationError || unsupportedChosen || submitBlock) return;
     const spec: Record<string, unknown> = {
       cache_type: draft.cache_type,
       query_or_id: draft.query_or_id.trim(),
-      name: draft.name.trim() || undefined,
+      // Ordinary spaces only: a boundary control or format character (a tab,
+      // U+FEFF) stays in the name so the backend's own refusal names it.
+      name: draft.name.replace(/^ +| +$/g, "") || undefined,
       always: draft.routing_override === "always",
       until_write: draft.routing_override === "until_write",
     };
@@ -252,11 +287,12 @@ function CreateCacheSheet({
       title="Configure Readyset cache"
       confirmTone="primary"
       confirmLabel="Review CREATE CACHE…"
-      confirmDisabled={!!validationError || unsupportedChosen}
+      confirmDisabled={!!validationError || unsupportedChosen || !!submitBlock}
       onCancel={onClose}
       onConfirm={submit}
     >
       <div className="readyset-form">
+        {submitBlock && <p className="ops-warning" role="alert">{submitBlock}</p>}
         <label className="ops-field action-typed">
           <span>SQL query or query ID (for example q_8f21ab04)</span>
           <textarea
@@ -278,7 +314,7 @@ function CreateCacheSheet({
           <button
             type="button"
             className="button"
-            disabled={!draft.query_or_id.trim() || checking}
+            disabled={!draft.query_or_id.trim() || checking || !!submitBlock}
             onClick={() => void runCheck(draft.query_or_id)}
           >
             {checking ? "Checking EXPLAIN…" : "Check support (EXPLAIN)"}
@@ -306,12 +342,13 @@ function CreateCacheSheet({
         {checkError && <p className="ops-warning" role="alert">{checkError}</p>}
         {chosenExplain?.reason && (
           <p className="readyset-form-note">
-            {draft.cache_type === "shallow" ? "Shallow" : "Deep"} cache note: {chosenExplain.reason}
+            {draft.cache_type === "shallow" ? "Shallow" : "Deep"} cache note: <bdi>{chosenExplain.reason}</bdi>
           </p>
         )}
         {explain && explain.collisions.length > 0 && (
           <p className="ops-warning">
-            Collides with existing cache {explain.collisions.map((c) => c.name).join(", ")}; Readyset replaces it when created.
+            Collides with existing cache <bdi>{explain.collisions.map((c) => c.name).join(", ")}</bdi>; Readyset replaces
+            it when created.
           </p>
         )}
 
@@ -579,25 +616,52 @@ function ReadysetView({
   const other = bound && bound.key !== reads.key ? bound.label : null;
   const current = failure && failure.key === reads.key && failure.over === bound ? failure : null;
   const failedOver = !other && !!report && !!current;
-  const stale = !!other || failedOver;
+  // The connection key does not carry the default database: a report read with
+  // another one is stale like a report from another connection. The compare is
+  // exact (empty or missing is null): " shop" is another database than "shop".
+  // A report that is not a Readyset read no session database, so it is never
+  // database-stale.
+  const normDb = (v: string | null | undefined) => v || null;
+  const otherDatabase = !other && !!report && report.is_readyset && normDb(report.session_database) !== normDb(connection.database);
+  const stale = !!other || failedOver || otherDatabase;
 
   const [proxiedQuerySearch, setProxiedQuerySearch] = useState("");
   const [uncachedOnly, setUncachedOnly] = useState(false);
-  const [expandedWhy, setExpandedWhy] = useState<string[]>([]);
+  const [openFindings, setOpenFindings] = useState<Record<string, boolean>>({});
   const [createDraft, setCreateDraft] = useState<CreateDraft | null>(null);
   const [prompt, setPrompt] = useState<InputPromptState | null>(null);
+  // An enabled allowlist Remove… points at the chips (they carry the item):
+  // the kind that shows the hint, and each kind's first chip to focus.
+  const [removeHint, setRemoveHint] = useState("");
+  const firstChipRef = useRef<Record<string, HTMLButtonElement | null>>({});
   const [exportedSql, setExportedSql] = useState<ReadysetExportResponse | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState("");
   const readsKeyRef = useRef(reads.key);
   readsKeyRef.current = reads.key;
   const findingIdBase = useId();
+  const allowIdBase = useId();
 
   useEffect(() => {
+    // A connection switch rebinds everything the old report drove: open
+    // sheets, prompts and finding toggles belong to the previous report.
     setExportedSql(null);
     setExportError("");
     setExportBusy(false);
+    setCreateDraft(null);
+    setPrompt(null);
+    setRemoveHint("");
+    setOpenFindings({});
   }, [reads.key]);
+
+  useEffect(() => {
+    // The report turned database-stale: an open sheet or prompt belongs to
+    // the previous default database and closes with it.
+    if (!otherDatabase) return;
+    setCreateDraft(null);
+    setPrompt(null);
+    setRemoveHint("");
+  }, [otherDatabase]);
 
   async function load(force = false) {
     if (disabled) return;
@@ -622,6 +686,9 @@ function ReadysetView({
     connection,
     operation: "readyset_action",
     send: sendReadysetAction,
+    // A report read with another default database is stale: an open review
+    // from before the change closes (recorded as declined) instead of acting.
+    resetKey: otherDatabase ? "other-database" : "",
     onSent: () => {
       void load(true);
     },
@@ -633,7 +700,9 @@ function ReadysetView({
     : stale
       ? other
         ? `This report was read on ${other}. Refresh to read the connection in use.`
-        : "The last read failed. Refresh first."
+        : failedOver
+          ? "The last read failed. Refresh first."
+          : "This report was read with another default database. Refresh to read the connection in use."
       : disabled
         ? "Reads are paused."
         : policy?.blocked
@@ -642,12 +711,84 @@ function ReadysetView({
             ? "This connection is read-only in myflames, so changes are refused."
             : "";
 
-  const canCreate = !!report?.capabilities.can_create_cache && !changeBlock && !actions.busy;
-  const createDisabledWhy = !report?.capabilities.can_create_cache
-    ? report?.in_readyset_schema
-      ? "Connect to the Readyset SQL port (default 3307) with an upstream database schema to run CREATE CACHE."
-      : "Cache DDL is disabled on this Readyset listener."
-    : changeBlock;
+  // The backend action catalog (readyset-1.0) gates every change: each area
+  // renders its slice of report.actions (or a row's actions) through the
+  // shared ActionGroup, always listed, disabled with its why_not and fix.
+  const serverActions = useMemo(() => report?.actions || [], [report]);
+  const catalogSlice = useCallback(
+    (ids: string[]) => serverActions.filter((a) => ids.includes(a.id)),
+    [serverActions],
+  );
+  const reason = (a: ReadysetAction) => [...new Set([a.why_not, a.fix].filter(Boolean))].join(" ");
+  const createEntry = serverActions.find((a) => a.id === "create_cache") || null;
+  const createBlock =
+    changeBlock ||
+    (isRs && !createEntry
+      ? "Readyset did not offer CREATE CACHE in this report. Refresh first."
+      : createEntry && !createEntry.enabled
+        ? reason(createEntry)
+        : "");
+
+  /** One server-scope catalog action: prompt/sheet for the ones that need
+   * input, a reviewed plan for the rest. The ActionGroup already refuses a
+   * blocked or disabled entry; this re-checks before anything is planned. */
+  function startServer(a: ReadysetAction) {
+    if (changeBlock || actions.busy || !a.enabled) return;
+    switch (a.id) {
+      case "create_cache":
+        openCreateCache();
+        return;
+      case "set_log_level":
+        setPrompt({ kind: "log_level", value: "info" });
+        return;
+      case "set_eviction_memory_limit":
+        setPrompt({ kind: "eviction_memory", mb: "1024" });
+        return;
+      case "set_eviction_period":
+        setPrompt({ kind: "eviction_period", ms: "1000" });
+        return;
+      case "add_tables":
+        setPrompt({ kind: "add_tables", tables: "" });
+        return;
+      case "set_replication_position":
+        setPrompt({ kind: "replication_position", position: report?.replication?.replicator_offset || "" });
+        return;
+      default:
+        // Scoped drops send their own ids with no value (the backend plans
+        // drop_all_shallow_caches / drop_all_deep_caches from the id alone).
+        void actions.review(a.id, (c) => planReadysetAction(c, a.id));
+    }
+  }
+
+  /** The catalog entry behind an open input prompt, looked up in the current
+   * report at every render: an entry that turned disabled (or vanished) since
+   * the prompt opened blocks the submit and shows its reason instead. */
+  function findPromptAction(p: InputPromptState): ReadysetAction | null {
+    if (p.kind === "allowlist") {
+      const key = p.allow_kind === "function" ? "functions" : p.allow_kind === "variable" ? "variables" : "schemas";
+      return (report?.allowlist_actions?.[key] || []).find((a) => a.id === "add_shallow_allowed") || null;
+    }
+    const id =
+      p.kind === "log_level"
+        ? "set_log_level"
+        : p.kind === "eviction_memory"
+          ? "set_eviction_memory_limit"
+          : p.kind === "eviction_period"
+            ? "set_eviction_period"
+            : p.kind === "add_tables"
+              ? "add_tables"
+              : "set_replication_position";
+    return serverActions.find((a) => a.id === id) || null;
+  }
+  const promptAction = prompt ? findPromptAction(prompt) : null;
+  const promptBlock = !prompt
+    ? ""
+    : changeBlock ||
+      (!promptAction
+        ? "Readyset did not offer this action in this report. Close and refresh."
+        : !promptAction.enabled
+          ? reason(promptAction)
+          : "");
 
   const openCreateCache = useCallback((seed?: Partial<CreateDraft>) => {
     setCreateDraft({
@@ -664,7 +805,7 @@ function ReadysetView({
   }, []);
 
   const runExport = async () => {
-    if (exportBusy || !!other || disabled) return;
+    if (exportBusy || stale || disabled) return;
     const exportKey = reads.key;
     setExportBusy(true);
     setExportError("");
@@ -682,6 +823,14 @@ function ReadysetView({
 
   const shallowCount = isRs ? report!.caches.filter((c) => c.cache_type === "shallow").length : 0;
   const deepCount = isRs ? report!.caches.filter((c) => c.cache_type === "deep").length : 0;
+  // A failed core read (S4) is never a zero and never an empty state.
+  const cachesFailed = isRs && cachesReadFailed(report!);
+  const tablesReadFailed = isRs && report!.findings.some((f) => f.id === "read_failed:tables");
+  // A replicator error stands whatever the Replication Status word is: the
+  // engine reports only Running, Stopped or Disabled there.
+  const replErrorFinding = isRs ? report!.findings.find((f) => f.id === "replication_error") : undefined;
+  const replErrored =
+    !!replErrorFinding || report?.replication?.status === "Error" || !!report?.replication?.last_error;
 
   const filteredProxied = useMemo(() => {
     if (!isRs) return [];
@@ -743,30 +892,6 @@ function ReadysetView({
     { key: "description", label: "Details", flex: true, sort: (r) => r.description || "", render: (r) => r.description || "—" },
   ];
 
-  const upstreamColumns: Column<ReadysetUpstream>[] = [
-    { key: "address", label: "Upstream server", primary: true, width: 200, minWidth: 150, sort: (r) => r.address, render: (r) => <code className="proxysql-code">{r.address}</code> },
-    {
-      key: "purpose",
-      label: "Purpose",
-      minWidth: 140,
-      sort: (r) => r.purpose,
-      render: (r) => `${r.purpose || "proxy"}${r.active_cdc ? " (active CDC)" : ""}`,
-    },
-    {
-      key: "health",
-      label: "Health",
-      minWidth: 110,
-      sort: (r) => r.health || "",
-      render: (r) => {
-        const h = (r.health || "").toLowerCase();
-        const t: Tone = h === "up" ? "ok" : h === "down" ? (r.active_cdc ? "problem" : "watch") : "unknown";
-        return <StatusPill tone={t} label={(r.health || "unknown").toUpperCase()} quiet />;
-      },
-    },
-    { key: "connections", label: "Pool conn", num: true, sort: (r) => num(r.connections), render: (r) => numCell(r.connections) },
-    { key: "database", label: "Database", flex: true, sort: (r) => r.database || "", render: (r) => r.database || "—" },
-  ];
-
   const connColumns: Column<ReadysetClientConnection>[] = [
     { key: "client_addr", label: "Client address", primary: true, width: 200, sort: (r) => r.client_addr || "", render: (r) => <code className="proxysql-code">{r.client_addr || "—"}</code> },
     { key: "username", label: "User", width: 160, sort: (r) => r.username || "", render: (r) => r.username || "—" },
@@ -795,39 +920,19 @@ function ReadysetView({
             </Pill>
           ),
           actions: (
-            <div className="review-actions" role="group" aria-label={`Changes for ${selectedCache.name}`}>
-              {selectedCache.cache_type === "shallow" && (
-                <button
-                  type="button"
-                  className="button"
-                  title={changeBlock || "Discard cached entries so the next read refreshes from upstream."}
-                  aria-disabled={!!changeBlock || actions.busy || undefined}
-                  onClick={() => {
-                    if (changeBlock || actions.busy) return;
-                    void actions.review(`flush_cache:${selectedCache.name}`, (c) =>
-                      planReadysetAction(c, "flush_cache", { kind: "cache", name: selectedCache.name, query_id: selectedCache.query_id }),
-                    );
-                  }}
-                >
-                  Flush entries…
-                </button>
-              )}
-              <button
-                type="button"
-                className="button danger"
-                title={changeBlock || "Drop this Readyset cache."}
-                aria-disabled={!!changeBlock || actions.busy || undefined}
-                onClick={() => {
-                  if (changeBlock || actions.busy) return;
-                  void actions.review(`drop_cache:${selectedCache.name}`, (c) =>
-                    planReadysetAction(c, "drop_cache", { kind: "cache", name: selectedCache.name, query_id: selectedCache.query_id }),
-                  );
-                }}
-              >
-                Drop cache…
-              </button>
-              {changeBlock && <p className="hint">{changeBlock}</p>}
-            </div>
+            <ActionGroup
+              list={selectedCache.actions || []}
+              label={`Changes for ${selectedCache.name}`}
+              blocked={changeBlock}
+              planning={actions.planning}
+              busy={actions.busy}
+              onStart={(a) => {
+                if (changeBlock || actions.busy || !a.enabled) return;
+                void actions.review(a.id, (c) =>
+                  planReadysetAction(c, a.id, { kind: "cache", name: selectedCache.name, query_id: selectedCache.query_id }),
+                );
+              }}
+            />
           ),
           body: (
             <>
@@ -879,14 +984,15 @@ function ReadysetView({
               />
             ),
             actions: (
-              <div className="review-actions" role="group" aria-label={`Actions for ${selectedProxied.query_id}`}>
-                <button
-                  type="button"
-                  className="button primary"
-                  title={createDisabledWhy || "Configure and review CREATE CACHE for this query."}
-                  aria-disabled={!canCreate || undefined}
-                  onClick={() => {
-                    if (!canCreate) return;
+              <ActionGroup
+                list={selectedProxied.actions || []}
+                label={`Actions for ${selectedProxied.query_id}`}
+                blocked={changeBlock}
+                planning={actions.planning}
+                busy={actions.busy}
+                onStart={(a) => {
+                  if (changeBlock || actions.busy || !a.enabled) return;
+                  if (a.id === "create_cache") {
                     const preferred: "shallow" | "deep" =
                       selectedProxied.shallow_support === "yes"
                         ? "shallow"
@@ -894,12 +1000,9 @@ function ReadysetView({
                           ? "deep"
                           : "shallow";
                     openCreateCache({ query_or_id: selectedProxied.query_id, cache_type: preferred });
-                  }}
-                >
-                  Create cache…
-                </button>
-                {createDisabledWhy && <p className="hint">{createDisabledWhy}</p>}
-              </div>
+                  }
+                }}
+              />
             ),
             body: (
               <>
@@ -912,11 +1015,17 @@ function ReadysetView({
                       ["Proxied executions", fmtCount(selectedProxied.count)],
                       [
                         "Shallow cache",
-                        `${supportWord(selectedProxied.shallow_support)}${selectedProxied.shallow_reason ? ` — ${selectedProxied.shallow_reason}` : ""}`,
+                        <>
+                          {supportWord(selectedProxied.shallow_support)}
+                          {selectedProxied.shallow_reason ? <> — <bdi>{selectedProxied.shallow_reason}</bdi></> : null}
+                        </>,
                       ],
                       [
                         "Deep cache",
-                        `${supportWord(selectedProxied.deep_support)}${selectedProxied.deep_reason ? ` — ${selectedProxied.deep_reason}` : ""}`,
+                        <>
+                          {supportWord(selectedProxied.deep_support)}
+                          {selectedProxied.deep_reason ? <> — <bdi>{selectedProxied.deep_reason}</bdi></> : null}
+                        </>,
                       ],
                     ]}
                   />
@@ -931,23 +1040,19 @@ function ReadysetView({
               title: selectedTable.table,
               meta: <ClusterMark tone={tableTone(selectedTable.bucket)} label={selectedTable.status} />,
               actions: (
-                <div className="review-actions" role="group" aria-label={`Actions for ${selectedTable.table}`}>
-                  <button
-                    type="button"
-                    className="button danger"
-                    title={changeBlock || "Re-snapshot this base table from the upstream primary."}
-                    aria-disabled={!!changeBlock || actions.busy || undefined}
-                    onClick={() => {
-                      if (changeBlock || actions.busy) return;
-                      void actions.review(`resnapshot:${selectedTable.table}`, (c) =>
-                        planReadysetAction(c, "resnapshot_table", { kind: "table", table: selectedTable.table }),
-                      );
-                    }}
-                  >
-                    Re-snapshot table…
-                  </button>
-                  {changeBlock && <p className="hint">{changeBlock}</p>}
-                </div>
+                <ActionGroup
+                  list={selectedTable.actions || []}
+                  label={`Actions for ${selectedTable.table}`}
+                  blocked={changeBlock}
+                  planning={actions.planning}
+                  busy={actions.busy}
+                  onStart={(a) => {
+                    if (changeBlock || actions.busy || !a.enabled) return;
+                    void actions.review(a.id, (c) =>
+                      planReadysetAction(c, a.id, { kind: "table", table: selectedTable.table }),
+                    );
+                  }}
+                />
               ),
               body: (
                 <InspectorSection title="Replication state">
@@ -967,15 +1072,26 @@ function ReadysetView({
                 const t = selectedUpstream.topo;
                 const r = selectedUpstream.raw;
                 const addr = t?.address || r?.address || selection.key;
+                // Null health means Readyset did not report it: "Not read",
+                // never an UNKNOWN placeholder.
+                const health = t?.health || r?.health || null;
                 return {
                   key: selection.key,
                   title: t?.profile_name || addr,
-                  meta: <span>Upstream database · {addr}</span>,
+                  meta: <span>Upstream database · <bdi>{addr}</bdi></span>,
                   actions:
                     t?.profile_id && onSwitchConnection ? (
                       <div className="review-actions">
-                        <button type="button" className="button" onClick={() => onSwitchConnection(t.profile_id!)}>
-                          Use {t.profile_name || addr}
+                        <button
+                          type="button"
+                          className="button"
+                          disabled={stale}
+                          onClick={() => {
+                            if (stale) return;
+                            onSwitchConnection(t.profile_id!);
+                          }}
+                        >
+                          Use <bdi>{t.profile_name || addr}</bdi>
                         </button>
                       </div>
                     ) : undefined,
@@ -985,12 +1101,17 @@ function ReadysetView({
                         rows={[
                           ["Endpoint", <code>{addr}</code>],
                           ["Purpose", t?.purpose || r?.purpose || "proxy"],
-                          ["Active CDC", (t?.active_cdc ?? r?.active_cdc) ? "Yes" : "No"],
-                          ["Health", (t?.health || r?.health || "unknown").toUpperCase()],
+                          // Null means Readyset did not report the CDC role:
+                          // unknown reads "Not read", never No.
+                          ["Active CDC", (t?.active_cdc ?? r?.active_cdc) === null || (t?.active_cdc ?? r?.active_cdc) === undefined ? "Not read" : (t?.active_cdc ?? r?.active_cdc) ? "Yes" : "No"],
+                          ["Health", health ? health.toUpperCase() : "Not read"],
                           ["Pool connections", fmtCount(t?.connections ?? r?.connections)],
                           ["Database", t?.database || r?.database || "—"],
-                          t?.product && ["Verified engine", `${t.product} ${t.version || ""}`.trim()],
-                          t?.evidence && ["Verification", t.evidence],
+                          t?.product && [
+                            matchEvidenceLabel(t.evidence) === "Verified" ? "Verified engine" : "Engine (matched by address)",
+                            `${t.product} ${t.version || ""}`.trim(),
+                          ],
+                          t?.evidence && ["Verification", matchEvidenceLabel(t.evidence)],
                         ]}
                       />
                     </InspectorSection>
@@ -1001,6 +1122,10 @@ function ReadysetView({
 
   const submitPrompt = () => {
     if (!prompt || changeBlock || actions.busy) return;
+    // Re-check the catalog entry in the current report: disabled or gone
+    // means the prompt keeps showing its reason and nothing is planned.
+    const entry = findPromptAction(prompt);
+    if (!entry || !entry.enabled) return;
     const p = prompt;
     setPrompt(null);
     if (p.kind === "log_level") {
@@ -1033,14 +1158,6 @@ function ReadysetView({
       void actions.review("set_replication_position", (c) =>
         planReadysetAction(c, "set_replication_position", null, { position: p.position.trim() }),
       );
-    } else if (p.kind === "drop_all_caches") {
-      const act =
-        p.scope === "shallow"
-          ? "drop_all_shallow_caches"
-          : p.scope === "deep"
-            ? "drop_all_deep_caches"
-            : "drop_all_caches";
-      void actions.review(act, (c) => planReadysetAction(c, act, null, p.scope));
     }
   };
 
@@ -1058,7 +1175,6 @@ function ReadysetView({
     if (prompt.kind === "allowlist") return /^[A-Za-z0-9_$@.-]{1,128}$/.test(prompt.name.trim());
     if (prompt.kind === "add_tables") return prompt.tables.trim().length > 0;
     if (prompt.kind === "replication_position") return prompt.position.trim().length > 0;
-    if (prompt.kind === "drop_all_caches") return true;
     return false;
   }, [prompt]);
 
@@ -1072,7 +1188,7 @@ function ReadysetView({
       id="readyset"
       title="Readyset"
       detailBackLabel=""
-      className={`cluster-view readyset-view${failedOver ? " is-stale" : ""}`}
+      className={`cluster-view readyset-view${failedOver || otherDatabase ? " is-stale" : ""}`}
       onRefresh={() => {
         void load(true);
       }}
@@ -1089,9 +1205,9 @@ function ReadysetView({
             onChange={onTab}
             options={[
               { value: "topology", label: "Topology", title: "Multi-tier routing and CDC topology across ProxySQL, Readyset and MySQL/MariaDB" },
-              { value: "caches", label: "Caches", title: "Active shallow and deep caches", count: report!.caches.length },
+              { value: "caches", label: "Caches", title: "Active shallow and deep caches", count: cachesFailed ? undefined : report!.caches.length },
               { value: "proxied", label: "Proxied", title: "Queries observed passing through Readyset", count: report!.proxied_queries.length },
-              { value: "tables", label: "Tables", title: "Replicated base tables and re-snapshot controls", count: report!.tables.length },
+              { value: "tables", label: "Tables", title: "Replicated base tables and re-snapshot controls", count: tablesReadFailed ? undefined : report!.tables.length },
               { value: "parameters", label: "Parameters", title: "Dynamic runtime parameters, allowlists and lifecycle" },
             ]}
           />
@@ -1146,6 +1262,11 @@ function ReadysetView({
               <p>The read since failed; this is the last report. Refresh to try again.</p>
             </div>
           )}
+          {!failedOver && otherDatabase && (
+            <div className="gate other-connection cluster-stale" role="note">
+              <p>This report was read with another default database. Refresh to read the connection in use.</p>
+            </div>
+          )}
 
           <SummaryLine
             tone={tone}
@@ -1176,32 +1297,33 @@ function ReadysetView({
             </EmptyState>
           ) : (
             <>
-              {report.status !== "ok" && report.status_why.length > 0 && (
+              {report.findings.length > 0 && (
                 <ul className="cluster-findings readyset-findings" aria-label="Findings">
-                  {report.status_why.map((line, i) => {
-                    const id = `${findingIdBase}-${i}`;
-                    const open = expandedWhy.includes(line);
-                    const ftone: Tone =
-                      report.status === "problem" && /unreachable|unavailable|error|down/i.test(line) ? "problem" : "watch";
+                  {report.findings.map((f, i) => {
+                    const id = `${findingIdBase}-finding-${i}`;
+                    const open = !!openFindings[f.id];
                     return (
-                      <li key={line} className={open ? "is-open" : undefined}>
+                      <li key={f.id} className={open ? "is-open" : undefined}>
                         <span className="cluster-finding-head">
-                          <ClusterMark tone={ftone} label={ftone === "problem" ? "Problem" : "Watch"} />
-                          <span className="cluster-finding-title">{line}</span>
+                          <ClusterMark tone={f.status} label={f.status === "problem" ? "Problem" : "Watch"} />
+                          <span className="cluster-finding-title">
+                            <bdi>{f.title}</bdi>
+                          </span>
                           <button
                             type="button"
                             className="text-button cluster-finding-toggle"
                             aria-expanded={open}
                             aria-controls={id}
-                            onClick={() =>
-                              setExpandedWhy((cur) => (cur.includes(line) ? cur.filter((x) => x !== line) : [...cur, line]))
-                            }
+                            onClick={() => setOpenFindings((cur) => ({ ...cur, [f.id]: !cur[f.id] }))}
                           >
                             {open ? "Hide details" : "Details"}
                           </button>
+                          <button type="button" className="text-button readyset-finding-tab" onClick={() => onTab(f.tab)}>
+                            Show in {FINDING_TAB_LABELS[f.tab]}
+                          </button>
                         </span>
                         <p id={id} className="cluster-finding-text" hidden={!open}>
-                          Reported by SHOW READYSET STATUS and Readyset virtual telemetry tables on this listener.
+                          <bdi>{f.text}</bdi>
                         </p>
                       </li>
                     );
@@ -1214,7 +1336,14 @@ function ReadysetView({
                   <MetricTile
                     rowKey="cached-share"
                     label="Cached share"
-                    value={report.telemetry.cached_share_pct !== null ? String(report.telemetry.cached_share_pct) : "—"}
+                    value={
+                      report.telemetry.cached_share_pct !== null
+                        ? String(report.telemetry.cached_share_pct)
+                        : // A read zero denominator is no traffic, not an unread source.
+                          report.telemetry.cached_executions !== null && report.telemetry.upstream_executions !== null
+                          ? "No traffic yet"
+                          : "Not read"
+                    }
                     unit={report.telemetry.cached_share_pct !== null ? "%" : undefined}
                     trend={
                       <span className="tile-hint">
@@ -1225,13 +1354,24 @@ function ReadysetView({
                   <MetricTile
                     rowKey="active-caches"
                     label="Active caches"
-                    value={report.caches.length.toLocaleString()}
-                    trend={<span className="tile-hint">{shallowCount} shallow · {deepCount} deep</span>}
+                    value={cachesFailed ? "Not read" : report.caches.length.toLocaleString()}
+                    trend={
+                      cachesFailed ? undefined : (
+                        <span className="tile-hint">{shallowCount} shallow · {deepCount} deep</span>
+                      )
+                    }
                   />
                   <MetricTile
                     rowKey="shallow-hit-rate"
                     label="Shallow hit rate"
-                    value={report.telemetry.shallow_hit_rate_pct !== null ? String(report.telemetry.shallow_hit_rate_pct) : "—"}
+                    value={
+                      report.telemetry.shallow_hit_rate_pct !== null
+                        ? String(report.telemetry.shallow_hit_rate_pct)
+                        : // A read zero denominator is no traffic, not an unread source.
+                          report.telemetry.shallow_hits !== null && report.telemetry.shallow_misses !== null
+                          ? "No traffic yet"
+                          : "Not read"
+                    }
                     unit={report.telemetry.shallow_hit_rate_pct !== null ? "%" : undefined}
                     trend={
                       <span className="tile-hint">
@@ -1242,9 +1382,9 @@ function ReadysetView({
                   <MetricTile
                     rowKey="replication"
                     label="Base replication"
-                    value={report.replication?.status || "Unknown"}
+                    value={report.replication?.status && report.replication.status !== "Unknown" ? report.replication.status : "Not read"}
                     tone={
-                      report.replication?.status === "Error"
+                      replErrored
                         ? "problem"
                         : report.replication?.status === "Stopped" ||
                             (report.replication?.status === "Disabled" && deepCount > 0)
@@ -1253,9 +1393,15 @@ function ReadysetView({
                     }
                     trend={
                       <span className="tile-hint">
-                        {report.replication?.consume_lag !== null && report.replication?.consume_lag !== undefined
-                          ? `lag ${report.replication.consume_lag.toLocaleString()} ${report.replication.lag_unit || "events"}`
-                          : `${report.table_counts.snapshotted}/${report.table_counts.total} tables ready`}
+                        {replErrored
+                          ? replErrorFinding?.title || "Replication reported an error."
+                          : report.replication?.status === "Stopped"
+                            ? "Not replicating"
+                            : report.replication?.consume_lag !== null && report.replication?.consume_lag !== undefined
+                              ? `lag ${report.replication.consume_lag.toLocaleString()} ${report.replication.lag_unit || "events"}`
+                              : tablesReadFailed
+                                ? "Tables not read"
+                                : `${report.table_counts.snapshotted}/${report.table_counts.total} tables ready`}
                       </span>
                     }
                   />
@@ -1279,22 +1425,8 @@ function ReadysetView({
                     onOpenProxySql={onOpenProxySql}
                     onOpenCluster={onOpenCluster}
                     onOpenReplication={onOpenReplication}
+                    connectionAddress={connection.host ? `${connection.host}:${connection.port}` : undefined}
                   />
-
-                  {report.upstreams.length > 0 && (
-                    <div className="readyset-section-block">
-                      <h3 className="readyset-section-heading">Upstream database servers</h3>
-                      <DataTable<ReadysetUpstream>
-                        key="readyset.upstreams"
-                        id="readyset.upstreams"
-                        label="Upstream database servers"
-                        columns={upstreamColumns}
-                        rows={report.upstreams}
-                        rowKey={(r) => `upstream:${r.host}:${r.port}`}
-                        selection={selection}
-                      />
-                    </div>
-                  )}
 
                   {report.connections.length > 0 && (
                     <div className="readyset-section-block">
@@ -1316,60 +1448,29 @@ function ReadysetView({
                 <div className="readyset-tab-body">
                   <div className="readyset-action-strip">
                     <div className="readyset-strip-buttons">
-                      <button
-                        type="button"
-                        className="button primary"
-                        aria-disabled={!canCreate || undefined}
-                        title={createDisabledWhy || undefined}
-                        onClick={() => {
-                          if (!canCreate) return;
-                          openCreateCache();
-                        }}
-                      >
-                        Create cache…
-                      </button>
+                      <ActionGroup
+                        list={catalogSlice([
+                          "create_cache",
+                          "flush_all_shallow_caches",
+                          "drop_all_caches",
+                          "drop_all_shallow_caches",
+                          "drop_all_deep_caches",
+                        ])}
+                        label="Cache changes"
+                        blocked={changeBlock}
+                        planning={actions.planning}
+                        busy={actions.busy}
+                        onStart={startServer}
+                      />
                       <button
                         type="button"
                         className="button"
-                        disabled={exportBusy || !!other || disabled}
+                        disabled={exportBusy || stale || disabled}
                         onClick={() => void runExport()}
                       >
                         {exportBusy ? "Exporting…" : "Export SQL"}
                       </button>
-                      {shallowCount > 0 && (
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            void actions.review("flush_all_shallow_caches", (c) =>
-                              planReadysetAction(c, "flush_all_shallow_caches"),
-                            );
-                          }}
-                        >
-                          Flush shallow caches…
-                        </button>
-                      )}
-                      {report.caches.length > 0 && (
-                        <button
-                          type="button"
-                          className="button danger"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            setPrompt({ kind: "drop_all_caches", scope: "all" });
-                          }}
-                        >
-                          Drop caches…
-                        </button>
-                      )}
                     </div>
-                    {createDisabledWhy && !report.capabilities.can_create_cache && (
-                      <span className="readyset-gate-note">{createDisabledWhy}</span>
-                    )}
                   </div>
 
                   <DataTable<ReadysetCache>
@@ -1381,9 +1482,15 @@ function ReadysetView({
                     rowKey={(r) => `cache:${r.name}`}
                     selection={selection}
                     empty={
-                      <EmptyState icon="readyset" title="No active caches">
-                        Create a shallow TTL cache or a deep streaming cache, or pick an observed query from Proxied.
-                      </EmptyState>
+                      cachesFailed ? (
+                        <EmptyState icon="readyset" title="Caches not read">
+                          SHOW CACHES failed on this read; the findings above have the details.
+                        </EmptyState>
+                      ) : (
+                        <EmptyState icon="readyset" title="No active caches">
+                          Create a shallow TTL cache or a deep streaming cache, or pick an observed query from Proxied.
+                        </EmptyState>
+                      )
                     }
                   />
                 </div>
@@ -1409,34 +1516,14 @@ function ReadysetView({
                       </label>
                     </div>
                     <div className="readyset-strip-buttons">
-                      <button
-                        type="button"
-                        className="button primary"
-                        aria-disabled={!canCreate || undefined}
-                        title={createDisabledWhy || undefined}
-                        onClick={() => {
-                          if (!canCreate) return;
-                          openCreateCache();
-                        }}
-                      >
-                        Create cache…
-                      </button>
-                      {report.proxied_queries.length > 0 && (
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            void actions.review("drop_all_proxied_queries", (c) =>
-                              planReadysetAction(c, "drop_all_proxied_queries"),
-                            );
-                          }}
-                        >
-                          Clear proxied queries…
-                        </button>
-                      )}
+                      <ActionGroup
+                        list={catalogSlice(["create_cache", "drop_all_proxied_queries"])}
+                        label="Proxied query changes"
+                        blocked={changeBlock}
+                        planning={actions.planning}
+                        busy={actions.busy}
+                        onStart={startServer}
+                      />
                     </div>
                   </div>
 
@@ -1464,7 +1551,10 @@ function ReadysetView({
                   <div className="readyset-repl-bar" aria-label="Readyset replication controls">
                     <div className="readyset-repl-meta">
                       <span>
-                        <strong>Replication:</strong> {report.replication?.status || "Unknown"}
+                        <strong>Replication:</strong>{" "}
+                        <bdi>
+                          {report.replication?.status && report.replication.status !== "Unknown" ? report.replication.status : "Not read"}
+                        </bdi>
                       </span>
                       {report.replication?.mode && (
                         <span>
@@ -1485,60 +1575,14 @@ function ReadysetView({
                         )}
                     </div>
                     <div className="readyset-strip-buttons">
-                      {report.replication?.status === "Stopped" ? (
-                        <button
-                          type="button"
-                          className="button primary"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            void actions.review("start_replication", (c) => planReadysetAction(c, "start_replication"));
-                          }}
-                        >
-                          Start replication…
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            void actions.review("stop_replication", (c) => planReadysetAction(c, "stop_replication"));
-                          }}
-                        >
-                          Stop replication…
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="button"
-                        aria-disabled={!!changeBlock || actions.busy || undefined}
-                        title={changeBlock || undefined}
-                        onClick={() => {
-                          if (changeBlock || actions.busy) return;
-                          setPrompt({
-                            kind: "replication_position",
-                            position: report.replication?.replicator_offset || "",
-                          });
-                        }}
-                      >
-                        Set position…
-                      </button>
-                      <button
-                        type="button"
-                        className="button"
-                        aria-disabled={!!changeBlock || actions.busy || undefined}
-                        title={changeBlock || undefined}
-                        onClick={() => {
-                          if (changeBlock || actions.busy) return;
-                          setPrompt({ kind: "add_tables", tables: "" });
-                        }}
-                      >
-                        Add tables…
-                      </button>
+                      <ActionGroup
+                        list={catalogSlice(["start_replication", "stop_replication", "set_replication_position", "add_tables"])}
+                        label="Replication changes"
+                        blocked={changeBlock}
+                        planning={actions.planning}
+                        busy={actions.busy}
+                        onStart={startServer}
+                      />
                     </div>
                   </div>
 
@@ -1551,9 +1595,15 @@ function ReadysetView({
                     rowKey={(r) => `tbl:${r.table}`}
                     selection={selection}
                     empty={
-                      <EmptyState icon="readyset" title="No replicated base tables">
-                        Add upstream tables or check SHOW READYSET ALL TABLES.
-                      </EmptyState>
+                      tablesReadFailed ? (
+                        <EmptyState icon="readyset" title="Tables not read">
+                          SHOW READYSET ALL TABLES failed on this read; the findings above have the details.
+                        </EmptyState>
+                      ) : (
+                        <EmptyState icon="readyset" title="No replicated base tables">
+                          Add upstream tables or check SHOW READYSET ALL TABLES.
+                        </EmptyState>
+                      )
                     }
                   />
                 </div>
@@ -1565,46 +1615,41 @@ function ReadysetView({
                     <GroupedRow
                       rowKey="maintenance"
                       wrap
-                      tone={report.status_fields.status === "Maintenance Mode" ? "watch" : "ok"}
-                      toneLabel={report.status_fields.status === "Maintenance Mode" ? "Active" : "Normal"}
+                      tone={
+                        report.status_fields.status === "Maintenance Mode"
+                          ? "watch"
+                          : report.status_fields.status === "Online"
+                            ? "ok"
+                            : "unknown"
+                      }
+                      toneLabel={
+                        report.status_fields.status === "Maintenance Mode"
+                          ? "Active"
+                          : report.status_fields.status === "Online"
+                            ? "Normal"
+                            : report.status_fields.status == null
+                              ? "Not read"
+                              : "Not known until Status is Online"
+                      }
                       label="Maintenance mode"
                       detail={
                         report.status_fields.status === "Maintenance Mode"
-                          ? "Bypasses caches and proxies queries directly to upstream"
-                          : "Serves eligible queries from shallow and deep caches"
+                          ? "Signals tools such as ProxySQL to stop sending queries; Readyset still serves what it receives"
+                          : report.status_fields.status == null
+                            ? "Not read"
+                            : report.status_fields.status === "Online"
+                              ? "Not in maintenance mode"
+                              : "Not known until Status is Online"
                       }
                       value={
-                        report.status_fields.status === "Maintenance Mode" ? (
-                          <button
-                            type="button"
-                            className="button primary"
-                            aria-disabled={!!changeBlock || actions.busy || undefined}
-                            title={changeBlock || undefined}
-                            onClick={() => {
-                              if (changeBlock || actions.busy) return;
-                              void actions.review("exit_maintenance_mode", (c) =>
-                                planReadysetAction(c, "exit_maintenance_mode"),
-                              );
-                            }}
-                          >
-                            Exit maintenance mode…
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="button"
-                            aria-disabled={!!changeBlock || actions.busy || undefined}
-                            title={changeBlock || undefined}
-                            onClick={() => {
-                              if (changeBlock || actions.busy) return;
-                              void actions.review("enter_maintenance_mode", (c) =>
-                                planReadysetAction(c, "enter_maintenance_mode"),
-                              );
-                            }}
-                          >
-                            Enter maintenance mode…
-                          </button>
-                        )
+                        <ActionGroup
+                          list={catalogSlice(["enter_maintenance_mode", "exit_maintenance_mode"])}
+                          label="Maintenance mode"
+                          blocked={changeBlock}
+                          planning={actions.planning}
+                          busy={actions.busy}
+                          onStart={startServer}
+                        />
                       }
                     />
                     <GroupedRow
@@ -1613,18 +1658,14 @@ function ReadysetView({
                       label="Cached upstream privileges"
                       detail="Reload upstream MySQL/MariaDB user credentials and table ACLs immediately"
                       value={
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            void actions.review("flush_privileges", (c) => planReadysetAction(c, "flush_privileges"));
-                          }}
-                        >
-                          Flush privileges…
-                        </button>
+                        <ActionGroup
+                          list={catalogSlice(["flush_privileges"])}
+                          label="Cached upstream privileges"
+                          blocked={changeBlock}
+                          planning={actions.planning}
+                          busy={actions.busy}
+                          onStart={startServer}
+                        />
                       }
                     />
                   </GroupedList>
@@ -1636,38 +1677,40 @@ function ReadysetView({
                       label="Tracing log level"
                       detail="Runtime filter directives (for example info or info,readyset_adapter=debug)"
                       value={
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            setPrompt({ kind: "log_level", value: "info" });
-                          }}
-                        >
-                          Set log level…
-                        </button>
+                        <ActionGroup
+                          list={catalogSlice(["set_log_level"])}
+                          label="Tracing log level"
+                          blocked={changeBlock}
+                          planning={actions.planning}
+                          busy={actions.busy}
+                          onStart={startServer}
+                        />
                       }
                     />
                     <GroupedRow
                       rowKey="eviction_memory"
                       wrap
                       label="Eviction memory limit"
-                      detail={`Cache eviction threshold${report.status_fields.host_memory ? ` · Host memory ${report.status_fields.host_memory}` : ""}`}
+                      detail={
+                        <>
+                          Cache eviction threshold
+                          {report.status_fields.host_memory ? (
+                            <>
+                              {" "}
+                              · Host memory <bdi>{report.status_fields.host_memory}</bdi>
+                            </>
+                          ) : null}
+                        </>
+                      }
                       value={
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            setPrompt({ kind: "eviction_memory", mb: "1024" });
-                          }}
-                        >
-                          Set memory limit…
-                        </button>
+                        <ActionGroup
+                          list={catalogSlice(["set_eviction_memory_limit"])}
+                          label="Eviction memory limit"
+                          blocked={changeBlock}
+                          planning={actions.planning}
+                          busy={actions.busy}
+                          onStart={startServer}
+                        />
                       }
                     />
                     <GroupedRow
@@ -1676,18 +1719,14 @@ function ReadysetView({
                       label="Eviction check period"
                       detail="Interval in milliseconds between Readyset cache eviction sweeps"
                       value={
-                        <button
-                          type="button"
-                          className="button"
-                          aria-disabled={!!changeBlock || actions.busy || undefined}
-                          title={changeBlock || undefined}
-                          onClick={() => {
-                            if (changeBlock || actions.busy) return;
-                            setPrompt({ kind: "eviction_period", ms: "1000" });
-                          }}
-                        >
-                          Set eviction period…
-                        </button>
+                        <ActionGroup
+                          list={catalogSlice(["set_eviction_period"])}
+                          label="Eviction check period"
+                          blocked={changeBlock}
+                          planning={actions.planning}
+                          busy={actions.busy}
+                          onStart={startServer}
+                        />
                       }
                     />
                   </GroupedList>
@@ -1696,102 +1735,130 @@ function ReadysetView({
                     <h3 className="readyset-section-heading">Shallow cache allowlists</h3>
                     {(
                       [
-                        ["function", "Allowed SQL functions", report.shallow_allowlists.functions],
-                        ["variable", "Allowed session/global variables", report.shallow_allowlists.variables],
-                        ["schema", "Allowed schemas", report.shallow_allowlists.schemas],
+                        ["function", "Allowed SQL functions", report.shallow_allowlists.functions, report.allowlist_actions?.functions],
+                        ["variable", "Allowed session/global variables", report.shallow_allowlists.variables, report.allowlist_actions?.variables],
+                        ["schema", "Allowed schemas", report.shallow_allowlists.schemas, report.allowlist_actions?.schemas],
                       ] as const
-                    ).map(([kindKey, label, items]) => (
-                      <div key={kindKey} className="readyset-allowlist-row">
-                        <div className="readyset-allowlist-head">
-                          <span className="readyset-allowlist-title">{label}</span>
-                          <button
-                            type="button"
-                            className="button"
-                            aria-disabled={!!changeBlock || actions.busy || undefined}
-                            title={changeBlock || undefined}
-                            onClick={() => {
-                              if (changeBlock || actions.busy) return;
-                              setPrompt({ kind: "allowlist", allow_kind: kindKey, name: "" });
-                            }}
-                          >
-                            Allow {kindKey}…
-                          </button>
-                        </div>
-                        {items.length === 0 ? (
-                          <span className="readyset-allowlist-empty">None configured</span>
-                        ) : (
-                          <div className="readyset-allowlist-chips">
-                            {items.map((item) => (
-                              <span key={item} className="readyset-allow-chip">
-                                <code className="proxysql-code">{item}</code>
-                                <button
-                                  type="button"
-                                  className="text-button"
-                                  aria-disabled={!!changeBlock || actions.busy || undefined}
-                                  title={changeBlock || `Remove ${item}`}
-                                  onClick={() => {
-                                    if (changeBlock || actions.busy) return;
-                                    void actions.review(`drop:${kindKey}:${item}`, (c) =>
-                                      planReadysetAction(
-                                        c,
-                                        "drop_shallow_allowed",
-                                        { kind: kindKey, allow_kind: kindKey, name: item },
-                                        { allow_kind: kindKey, name: item },
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  Remove
-                                </button>
-                              </span>
-                            ))}
+                    ).map(([kindKey, label, items, kindActions]) => {
+                      const kindEntries = kindActions || [];
+                      const dropEntry = kindEntries.find((a) => a.id === "drop_shallow_allowed") || null;
+                      const dropIndex = kindEntries.findIndex((a) => a.id === "drop_shallow_allowed");
+                      // Fail closed: a missing catalog entry is not offered,
+                      // so the Remove chip stays off with the reason.
+                      const dropOff = !!changeBlock || actions.busy || !dropEntry || !dropEntry.enabled;
+                      const kindBase = `${allowIdBase}-${kindKey}`;
+                      // A disabled chip's accessible description: the visible
+                      // block that holds the reason (the client block wins over
+                      // catalog state), never only a title.
+                      const dropWhy = changeBlock
+                        ? `${kindBase}-blocked`
+                        : !dropEntry
+                          ? `${kindBase}-not-offered`
+                          : dropEntry.why_not || dropEntry.fix
+                            ? `${kindBase}-why-${dropIndex}`
+                            : null;
+                      return (
+                        <div key={kindKey} className="readyset-allowlist-row">
+                          <div className="readyset-allowlist-head">
+                            <span className="readyset-allowlist-title">{label}</span>
+                            <ActionGroup
+                              list={kindEntries}
+                              label={`${label} changes`}
+                              blocked={changeBlock}
+                              planning={actions.planning}
+                              busy={actions.busy}
+                              idBase={kindBase}
+                              onStart={(a) => {
+                                if (changeBlock || actions.busy || !a.enabled) return;
+                                if (a.id === "add_shallow_allowed") {
+                                  setRemoveHint("");
+                                  setPrompt({ kind: "allowlist", allow_kind: kindKey, name: "" });
+                                  return;
+                                }
+                                // drop_shallow_allowed needs the item to
+                                // remove: the per-item Remove chips below carry
+                                // it. An enabled Remove… points at them (focus
+                                // plus a hint) instead of planning a value-less
+                                // drop; a disabled Remove stays visible with its
+                                // why_not and fix, also when the list is empty.
+                                if (a.id === "drop_shallow_allowed") {
+                                  setRemoveHint(kindKey);
+                                  firstChipRef.current[kindKey]?.focus();
+                                }
+                              }}
+                            />
                           </div>
-                        )}
-                      </div>
-                    ))}
+                          {!dropEntry && !changeBlock && (
+                            <p className="hint readyset-allowlist-why" id={`${kindBase}-not-offered`}>
+                              Readyset did not offer this change in this report. Refresh first.
+                            </p>
+                          )}
+                          {items.length === 0 ? (
+                            <span className="readyset-allowlist-empty">None configured</span>
+                          ) : (
+                            <div className="readyset-allowlist-chips">
+                              {items.map((item, itemIndex) => (
+                                <span key={item} className="readyset-allow-chip">
+                                  <code className="proxysql-code"><bdi>{item}</bdi></code>
+                                  <button
+                                    type="button"
+                                    className="text-button"
+                                    ref={
+                                      itemIndex === 0
+                                        ? (el) => {
+                                            firstChipRef.current[kindKey] = el;
+                                          }
+                                        : undefined
+                                    }
+                                    aria-disabled={dropOff || undefined}
+                                    aria-describedby={dropOff && dropWhy ? dropWhy : undefined}
+                                    title={
+                                      changeBlock ||
+                                      (!dropEntry
+                                        ? "Readyset did not offer this change in this report. Refresh first."
+                                        : !dropEntry.enabled
+                                          ? reason(dropEntry)
+                                          : `Remove ${item}`)
+                                    }
+                                    onClick={() => {
+                                      if (dropOff) return;
+                                      setRemoveHint("");
+                                      void actions.review(`drop:${kindKey}:${item}`, (c) =>
+                                        planReadysetAction(
+                                          c,
+                                          "drop_shallow_allowed",
+                                          { kind: kindKey, allow_kind: kindKey, name: item },
+                                          { allow_kind: kindKey, name: item },
+                                        ),
+                                      );
+                                    }}
+                                  >
+                                    Remove
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {removeHint === kindKey && (
+                            <p className="hint readyset-allowlist-hint" role="note">
+                              Choose the item to remove.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   <div className="readyset-admin-lifecycle" aria-label="Admin SQL port lifecycle">
                     <h3 className="readyset-section-heading">Admin port lifecycle (port 6036)</h3>
-                    <div className="readyset-strip-buttons">
-                      <button
-                        type="button"
-                        className="button danger"
-                        aria-disabled={!report.capabilities.can_shutdown || !!changeBlock || actions.busy || undefined}
-                        title={
-                          !report.capabilities.can_shutdown
-                            ? "Connect to the Readyset admin SQL port (default 6036) to run SHUTDOWN."
-                            : changeBlock || undefined
-                        }
-                        onClick={() => {
-                          if (!report.capabilities.can_shutdown || changeBlock || actions.busy) return;
-                          void actions.review("shutdown", (c) => planReadysetAction(c, "shutdown"));
-                        }}
-                      >
-                        Shut down Readyset…
-                      </button>
-                      <button
-                        type="button"
-                        className="button danger"
-                        aria-disabled={!report.capabilities.can_shutdown || !!changeBlock || actions.busy || undefined}
-                        title={
-                          !report.capabilities.can_shutdown
-                            ? "Connect to the Readyset admin SQL port (default 6036) to run SHUTDOWN RESET."
-                            : changeBlock || undefined
-                        }
-                        onClick={() => {
-                          if (!report.capabilities.can_shutdown || changeBlock || actions.busy) return;
-                          void actions.review("shutdown_reset", (c) => planReadysetAction(c, "shutdown_reset"));
-                        }}
-                      >
-                        Shut down &amp; reset snapshot…
-                      </button>
-                    </div>
-                    {!report.capabilities.can_shutdown && (
-                      <p className="readyset-gate-note">
-                        Connect to the Readyset admin SQL port (default 6036) to run SHUTDOWN or SHUTDOWN RESET.
-                      </p>
-                    )}
+                    <ActionGroup
+                      list={catalogSlice(["shutdown", "shutdown_reset"])}
+                      label="Admin SQL port lifecycle"
+                      blocked={changeBlock}
+                      planning={actions.planning}
+                      busy={actions.busy}
+                      onStart={startServer}
+                    />
                   </div>
                 </div>
               )}
@@ -1829,7 +1896,9 @@ function ReadysetView({
           initial={createDraft}
           connection={connection}
           onClose={() => setCreateDraft(null)}
+          submitBlock={createBlock}
           onReview={(spec) => {
+            if (createBlock || actions.busy) return;
             setCreateDraft(null);
             void actions.review("create_cache", (c) => planReadysetAction(c, "create_cache", null, spec));
           }}
@@ -1852,16 +1921,15 @@ function ReadysetView({
                     ? `Allow shallow cache ${prompt.allow_kind}`
                     : prompt.kind === "add_tables"
                       ? "Add tables to Readyset replication"
-                      : prompt.kind === "replication_position"
-                        ? "Set replication position"
-                        : "Drop Readyset caches"
+                      : "Set replication position"
           }
-          confirmTone={prompt.kind === "drop_all_caches" ? "danger" : "primary"}
+          confirmTone="primary"
           confirmLabel="Review SQL…"
-          confirmDisabled={!promptValid}
+          confirmDisabled={!promptValid || !!promptBlock}
           onCancel={() => setPrompt(null)}
           onConfirm={submitPrompt}
         >
+          {promptBlock && <p className="ops-warning" role="alert">{promptBlock}</p>}
           {prompt.kind === "log_level" && (
             <label className="ops-field action-typed">
               <span>Tracing filter directives</span>
@@ -1939,24 +2007,6 @@ function ReadysetView({
                 placeholder="3E11FA47-71CA-11E1-9E33-C80AA9429562:1-42"
                 spellCheck={false}
               />
-            </label>
-          )}
-          {prompt.kind === "drop_all_caches" && (
-            <label className="ops-field action-typed">
-              <span>Which caches to drop</span>
-              <select
-                value={prompt.scope}
-                onChange={(e) =>
-                  setPrompt({
-                    kind: "drop_all_caches",
-                    scope: e.target.value as "all" | "shallow" | "deep",
-                  })
-                }
-              >
-                <option value="all">All caches ({report?.caches.length || 0})</option>
-                {shallowCount > 0 && <option value="shallow">Shallow caches only ({shallowCount})</option>}
-                {deepCount > 0 && <option value="deep">Deep caches only ({deepCount})</option>}
-              </select>
             </label>
           )}
           <p className="hint">Nothing is sent yet: the next step shows the exact SQL statement for review.</p>

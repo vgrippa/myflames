@@ -22,14 +22,17 @@ Every mutation goes through :mod:`myflames.reviewed_writes` and
 :mod:`myflames.dbops` with fresh re-planning, collision checks and post-error
 state verification.
 """
+import copy
 import hashlib
 import json
 import re
+import unicodedata
 
 from . import dbops
 from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import named_rows, now
+from .reviewed_writes import ActionUnavailable
 from .server_info import is_readyset_comment
 from .topology_links import build_readyset_topology, format_endpoint, parse_readyset_version, split_host_port
 
@@ -114,13 +117,63 @@ def _text(value):
     return s if s else None
 
 
+def _display(value):
+    """A server value safe for a finding title or action reason: no control or
+    format characters (a bidi override could make the text read as another),
+    at most 80 characters."""
+    return "".join(c for c in str(value) if not _has_ctl_or_fmt(c))[:80]
+
+
+def _has_ctl_or_fmt(value):
+    """True for controls, format characters and Unicode line/paragraph
+    separators, which could reorder or split the reviewed target visually."""
+    return any(ch in "\u2028\u2029" or unicodedata.category(ch) in ("Cc", "Cf") for ch in value)
+
+
+def _review_text(value):
+    """Make control/format characters visible without concealing name bytes.
+
+    Review prose uses this helper; SQL, exact typed guards and state used for
+    comparison retain their original values.
+    """
+    return "".join(
+        ("\\u%04x" % ord(ch) if ord(ch) <= 0xffff else "\\U%08x" % ord(ch))
+        if _has_ctl_or_fmt(ch) else ch
+        for ch in value
+    )
+
+
+def _finish_plan(plan):
+    """Format only review display fields, never statements or expected state."""
+    def shown(value):
+        if isinstance(value, str):
+            return _review_text(value)
+        if isinstance(value, list):
+            return [shown(item) for item in value]
+        return value
+
+    guard = plan.get("typed_guard")
+    if isinstance(guard, str) and guard != guard.strip(" "):
+        plan["warnings"].append(
+            "The name starts or ends with a space: type it exactly, spaces included."
+        )
+    for key in ("eyebrow", "title", "confirm_label", "description", "target_text",
+                "facts", "warnings", "changes", "undo", "next", "verified", "checks"):
+        if key in plan:
+            plan[key] = shown(plan[key])
+    return plan
+
+
 def _us_to_ms(value):
     num = _float(value)
     return round(num / 1000.0, 3) if num is not None else None
 
 
-def _rs_ident(value, label="Identifier"):
-    """Quote one SQL identifier with backticks for Readyset SQL."""
+def _rs_ident_parse(value, label="Identifier"):
+    """The exact identifier a user typed: validates like :func:`_rs_ident` and
+    resolves one pair of quoting backticks (collapsing doubled backticks inside
+    it), so callers compare the identifier the generated SQL names, never the
+    raw typed text."""
     if not isinstance(value, str):
         raise ValueError("%s is required." % label)
     s = value.strip()
@@ -130,17 +183,54 @@ def _rs_ident(value, label="Identifier"):
         s = s[1:-1].replace("``", "`")
     if not s:
         raise ValueError("%s cannot be empty." % label)
-    return "`%s`" % s.replace("`", "``")
+    return s
+
+
+def _rs_ident(value, label="Identifier"):
+    """Quote one user-typed SQL identifier with backticks for Readyset SQL.
+
+    Typed text may already carry one pair of quoting backticks; strip that
+    pair (collapsing doubled backticks inside it), then quote exactly once."""
+    return "`%s`" % _rs_ident_parse(value, label).replace("`", "``")
+
+
+def _rs_ident_server(value, label="Identifier"):
+    """Quote an identifier exactly as the server reported it.
+
+    SHOW CACHES prints cache names unquoted (Readyset
+    readyset-adapter/src/backend/extensions.rs:1113), so every character,
+    backticks and whitespace included, is part of the name: wrap in backticks
+    and double inner backticks, never strip a pair or trim whitespace."""
+    if not isinstance(value, str):
+        raise ValueError("%s is required." % label)
+    if not value or len(value) > 128 or "\x00" in value or "\r" in value or "\n" in value:
+        raise ValueError("%s must be 1 to 128 characters without line breaks." % label)
+    return "`%s`" % value.replace("`", "``")
 
 
 def _rs_table_ident(value):
-    """Quote ``table`` or ``schema.table`` for ``RESNAPSHOT TABLE`` / ``ADD TABLES``."""
-    if not isinstance(value, str) or not value.strip():
+    """Quote ``table`` or ``schema.table`` for ``RESNAPSHOT TABLE`` / ``ADD TABLES``.
+
+    Parses the value once, accepting a plain ``schema.table`` or the quoted
+    form SHOW READYSET ALL TABLES prints (Readyset quotes every part and
+    doubles inner backticks: readyset-sql/src/ast/table.rs:122-131 with
+    dialect.rs:65-72), then quotes each parsed part exactly once. Parts are
+    raw names after parsing, so the server-safe quoter is used: a literal
+    backtick at either end of a part stays part of the name."""
+    if not isinstance(value, str):
         raise ValueError("Pass a table name (table or schema.table).")
+    # Bound work before stripping or parsing untrusted server names. This
+    # still fits two 128-character parts with every backtick doubled (517).
+    if len(value) > 600:
+        raise ValueError("Table name must be at most 600 characters.")
     raw = value.strip()
+    if not raw:
+        raise ValueError("Pass a table name (table or schema.table).")
     if "\x00" in raw or "\r" in raw or "\n" in raw:
         raise ValueError("Table name cannot contain line breaks or NUL characters.")
-    # Split unquoted schema.table or `schema`.`table`.
+    # Split unquoted schema.table or `schema`.`table`. Each character is
+    # tracked as quoted or not: whitespace inside a quoted component is part
+    # of the name and stays; only whitespace around unquoted input is dropped.
     parts = []
     cur = []
     in_bt = False
@@ -149,25 +239,35 @@ def _rs_table_ident(value):
         ch = raw[i]
         if ch == "`":
             if in_bt and i + 1 < len(raw) and raw[i + 1] == "`":
-                cur.append("`")
+                cur.append(("`", True))
                 i += 2
                 continue
             in_bt = not in_bt
             i += 1
             continue
         if ch == "." and not in_bt:
-            parts.append("".join(cur).strip())
+            parts.append(cur)
             cur = []
             i += 1
             continue
-        cur.append(ch)
+        cur.append((ch, in_bt))
         i += 1
     if in_bt:
         raise ValueError("Unclosed backtick in table name.")
-    parts.append("".join(cur).strip())
+    parts.append(cur)
+
+    def _part_text(chars):
+        start, end = 0, len(chars)
+        while start < end and not chars[start][1] and chars[start][0].isspace():
+            start += 1
+        while end > start and not chars[end - 1][1] and chars[end - 1][0].isspace():
+            end -= 1
+        return "".join(c for c, _ in chars[start:end])
+
+    parts = [_part_text(p) for p in parts]
     if not 1 <= len(parts) <= 2 or any(not p for p in parts):
         raise ValueError("Pass a valid table or schema.table name.")
-    return ".".join(_rs_ident(p, "Table name") for p in parts)
+    return ".".join(_rs_ident_server(p, "Table name") for p in parts)
 
 
 def _rs_string(value, label="Value", max_len=512):
@@ -260,8 +360,10 @@ def identify(conn):
     Uses single-column ``SELECT @@version_comment`` (intercepted locally by
     Readyset's query handler on Adapter 3307 and routed to DataFusion on Admin
     6036, returning ``'Readyset'`` on both), then confirms ``SHOW READYSET VERSION``.
-    Connection failures raise :class:`ConnectorError`.
+    Connection failures raise :class:`ConnectorError`. Server error text is
+    redacted with the connection password: it is shown to the user.
     """
+    pw = getattr(conn, "password", None)
     try:
         rows = select(conn, "SELECT @@version_comment")
     except ConnectorError as exc:
@@ -269,50 +371,70 @@ def identify(conn):
         code = error_number(str(exc))
         if code is None or client_error(code) or "Access denied" in str(exc):
             raise
-        return False, "SELECT @@version_comment failed (%s)" % _short(exc)
+        return False, "SELECT @@version_comment failed (%s)" % dbops.redact(_short(exc), pw)
     comment = _text(next(iter(rows[0].values()))) if rows and rows[0] else ""
     if not is_readyset_comment(comment):
         return False, "@@version_comment is %s, not Readyset" % (comment[:60] if comment else "empty")
     try:
         vrows = select(conn, "SHOW READYSET VERSION")
     except ConnectorError as exc:
-        return False, "SHOW READYSET VERSION failed (%s)" % _short(exc)
+        return False, "SHOW READYSET VERSION failed (%s)" % dbops.redact(_short(exc), pw)
     version = parse_readyset_version(vrows) or "unknown"
     return True, version
 
 
-def _detect_port_mode(conn, schema_name):
-    """Return ``(port_role, in_readyset_schema)`` without relying on DataFusion version strings.
+def _detect_port_mode(conn, schema_name, timeout=None):
+    """Return ``(port_role, in_readyset_schema)`` from listener evidence, never port numbers.
 
     On the Admin SQL listener (default 6036), Readyset initializes the session's
     search path to ``[readyset_schema]`` and sets ``readyset_schema_route_all = true``
     even when no default database was passed, and refuses any other ``USE``/``-D``.
     On the Adapter SQL listener (default 3307), ``readyset_schema_route_all`` is
     true only when the session's default database is ``readyset_schema``.
+
+    *port_role* is ``None`` ("not read") when the probe failed without proving
+    the role: with no default database, only MySQL error 1046 (No database
+    selected) or 1146 (table doesn't exist) proves the adapter answered, because
+    the admin listener resolves the unqualified virtual table; any other failure
+    (a timeout, a lost connection) says nothing. When the readyset schema is
+    selected, probe a copy with no default database: both listeners otherwise
+    route SHOW DATABASES to DataFusion (backend.rs:1494-1548). The caller's
+    connection, including its selected database, must remain unchanged.
     """
+    from .reviewed_writes import error_number
     db = (getattr(conn, "database", None) or "").strip()
-    port = _int(getattr(conn, "port", None))
-    if not db:
+    in_rs_schema = db.lower() == schema_name.lower()
+    probe_conn = conn
+    if in_rs_schema:
         try:
-            select(conn, "SELECT 1 FROM replication_status LIMIT 0")
+            probe_conn = copy.copy(conn)
+            if probe_conn is conn:
+                return None, True
+            # A shallow copy must not own the original connection's cleanup
+            # resources: MySQLConnection.__del__ closes leases and its legacy
+            # defaults file. The probe acquires its own transport if needed.
+            for name in ("_held_lease", "_legacy_lease", "_defaults_file_path"):
+                setattr(probe_conn, name, None)
+            probe_conn.database = None
+            if getattr(probe_conn, "database", None) is not None:
+                return None, True
+        except Exception:
+            # Some connection wrappers cannot be copied or have a read-only
+            # database property. No role can be established without this probe.
+            return None, True
+    if not db or in_rs_schema:
+        try:
+            select(probe_conn, "SELECT 1 FROM replication_status LIMIT 0", timeout=timeout)
             return "admin", True
-        except ConnectorError:
-            return "adapter", False
-    if db.lower() == schema_name.lower():
-        is_admin = port == 6036
-        if not is_admin:
-            try:
-                drows = select(conn, "SHOW DATABASES")
-                names = {
-                    (next(iter(r.values())) or "").strip().lower()
-                    for r in drows if r
-                } - {""}
-                # DataFusion's catalog exposes only information_schema / public / readyset.
-                if names and names <= {"information_schema", "public", schema_name.lower()}:
-                    is_admin = True
-            except ConnectorError:
-                pass
-        return ("admin" if is_admin else "adapter"), True
+        except ConnectorError as exc:
+            if error_number(str(exc)) in (1046, 1146):
+                return "adapter", in_rs_schema
+            return None, in_rs_schema
+        finally:
+            # Retain attempted group logins even when the probe fails, so
+            # consent accounting cannot refund an attempt that reached spawn.
+            if probe_conn is not conn and getattr(probe_conn, "_group_login_started", False):
+                conn._group_login_started = True
     return "adapter", False
 
 
@@ -359,9 +481,11 @@ def _not_readyset(message, version=None):
         "port_role": None,
         "in_readyset_schema": False,
         "readyset_schema": "readyset",
+        "session_database": None,
         "message": message,
         "status": "unknown",
         "status_why": [message] if message else [],
+        "findings": [],
         "status_fields": {},
         "capabilities": {
             "can_explain_cache": False,
@@ -378,6 +502,7 @@ def _not_readyset(message, version=None):
         "tables": [],
         "table_counts": {"total": 0, "snapshotted": 0, "snapshotting": 0, "ignored": 0, "error": 0, "other": 0},
         "shallow_allowlists": {"functions": [], "variables": [], "schemas": []},
+        "allowlist_actions": {"functions": [], "variables": [], "schemas": []},
         "connections": [],
         "upstreams": [],
         "topology": None,
@@ -425,18 +550,24 @@ def _classify_support(text_val):
     return "unknown", raw
 
 
-def _classify_table_status(status_text):
+def _classify_table_status(status_text, description=None):
+    """Bucket a ``SHOW READYSET ALL TABLES`` status.
+
+    Readyset reports exactly Initializing, Snapshotting, Compacting, Creating
+    index, Online, Not replicated or Dropped (readyset-client/src/table.rs
+    242-264); a table that stopped replicating because of an error stays
+    "Not replicated" and carries a description starting "An unexpected
+    replication error occurred:" (readyset-sql/src/ast/table.rs 411-413).
+    """
     low = (_text(status_text) or "").lower()
-    if not low:
-        return "other"
-    if "error" in low or "fail" in low:
-        return "error"
-    if "progress" in low or "snapshotting" in low or "creating" in low or "pending" in low:
-        return "snapshotting"
-    if "ignore" in low or "skip" in low or "unsupported" in low:
-        return "ignored"
-    if "complete" in low or "snapshot" in low or "online" in low or "ready" in low or low == "yes":
+    if low == "online":
         return "snapshotted"
+    if low in ("initializing", "snapshotting", "compacting", "creating index"):
+        return "snapshotting"
+    if low == "not replicated":
+        if (_text(description) or "").startswith("An unexpected replication error occurred:"):
+            return "error"
+        return "ignored"
     return "other"
 
 
@@ -476,12 +607,16 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     port_role, in_rs_schema = _detect_port_mode(conn, schema_name)
     reads = _Reads(conn)
     report = _not_readyset(None, detail)
+    # The connection's default database exactly as given (None when empty): the
+    # workspace compares it with the connection in use to catch a stale report.
+    session_db = getattr(conn, "database", None)
     report.update({
         "available": True,
         "is_readyset": True,
         "port_role": port_role,
         "in_readyset_schema": in_rs_schema,
         "readyset_schema": schema_name,
+        "session_database": session_db if isinstance(session_db, str) and session_db else None,
         "message": None,
         "status_why": [],
         "statements": ["SELECT @@version_comment", "SHOW READYSET VERSION"],
@@ -498,7 +633,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     report["status_fields"] = {
         "database_connection": _text(status_map.get("Database Connection")),
         "connection_count": _int(status_map.get("Connection Count")),
-        "status": _text(status_map.get("Status")) or "Online",
+        "status": _text(status_map.get("Status")),
         "replication_status": _text(status_map.get("Replication Status")),
         "cdc_server": _text(status_map.get("CDC Server")),
         "max_replication_offset": _text(status_map.get("Maximum Replication Offset")),
@@ -566,8 +701,8 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
 
     vt_ok = any(r is not None for r in (upstream_rows, repl_rows, deep_rows, shallow_rows, cached_stat_rows))
     report["capabilities"] = {
-        "can_explain_cache": not in_rs_schema and not cache_ddl_blocked,
-        "can_create_cache": not in_rs_schema and not cache_ddl_blocked,
+        "can_explain_cache": port_role == "adapter" and not in_rs_schema,
+        "can_create_cache": port_role == "adapter" and not in_rs_schema and not cache_ddl_blocked,
         "can_manage_caches": not cache_ddl_blocked,
         "can_alter_readyset": True,
         "can_shutdown": port_role == "admin",
@@ -584,7 +719,10 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         if arows is not None:
             items = []
             for r in arows:
-                val = _text(next(iter(r.values()))) if r else None
+                raw_val = next(iter(r.values())) if r else None
+                # Preserve boundary controls and spaces for the row gate;
+                # stripping could turn an unsafe reported name into another.
+                val = str(raw_val) if raw_val is not None else None
                 if val:
                     items.append(val)
             allowlists[key] = sorted(items)
@@ -606,18 +744,20 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     tables = []
     counts = {"total": 0, "snapshotted": 0, "snapshotting": 0, "ignored": 0, "error": 0, "other": 0}
     for r in table_rows:
-        tname = _text(r.get("table"))
+        raw_name = r.get("table")
+        tname = str(raw_name) if raw_name is not None else None
         if not tname:
             continue
         tstatus = _text(r.get("status")) or "Unknown"
-        bucket = _classify_table_status(tstatus)
+        tdesc = _text(r.get("description"))
+        bucket = _classify_table_status(tstatus, tdesc)
         counts["total"] += 1
         counts[bucket] += 1
         tables.append({
             "table": tname,
             "status": tstatus,
             "bucket": bucket,
-            "description": _text(r.get("description")),
+            "description": dbops.redact(tdesc, pw),
         })
     report["tables"] = tables
     report["table_counts"] = counts
@@ -634,7 +774,11 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     caches = []
     for r in cache_rows or ():
         qid = _text(r.get("query_id")) or ""
-        name = _text(r.get("name")) or qid
+        # Name and database stay byte-exact as reported: they feed SQL quoting
+        # and row matching, where trimming could select a different cache.
+        raw_name = r.get("name")
+        name = str(raw_name) if raw_name not in (None, "") else qid
+        raw_db = r.get("database")
         props = _text(r.get("properties")) or ""
         if qid in shallow_by_id or "shallow" in props.lower() or "ttl" in props.lower():
             ctype = "shallow"
@@ -658,9 +802,10 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             "query_id": qid,
             "name": name,
             "cache_type": ctype,
-            "query": r.get("query") or r.get("query string") or sh.get("query") or dp.get("query") or "",
+            "query": dbops.redact(
+                r.get("query") or r.get("query string") or sh.get("query") or dp.get("query") or "", pw),
             "properties": props,
-            "database": _text(r.get("database")),
+            "database": str(raw_db) if raw_db not in (None, "") else None,
             "count": count_val,
             "always": _bool(sh.get("always") if ctype == "shallow" else dp.get("always")),
             "until_write": _bool(sh.get("until_write") if ctype == "shallow" else dp.get("until_write")),
@@ -702,10 +847,10 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             sup, reason_txt = _classify_support(r.get("readyset_supported") or r.get("readyset supported"))
             proxied_map[qid] = {
                 "query_id": qid,
-                "query": r.get("query") or r.get("proxied query") or "",
+                "query": dbops.redact(r.get("query") or r.get("proxied query") or "", pw),
                 "count": _int(r.get("count")),
                 "deep_support": sup,
-                "deep_reason": reason_txt,
+                "deep_reason": dbops.redact(reason_txt, pw),
                 "shallow_support": "unknown",
                 "shallow_reason": None,
             }
@@ -717,10 +862,10 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             sup, reason_txt = _classify_support(r.get("readyset_supported") or r.get("readyset supported"))
             proxied_map[qid] = {
                 "query_id": qid,
-                "query": r.get("query") or r.get("proxied query") or "",
+                "query": dbops.redact(r.get("query") or r.get("proxied query") or "", pw),
                 "count": _int(r.get("count")),
                 "deep_support": sup,
-                "deep_reason": reason_txt,
+                "deep_reason": dbops.redact(reason_txt, pw),
                 "shallow_support": "unknown",
                 "shallow_reason": None,
             }
@@ -733,16 +878,16 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             if item is None:
                 proxied_map[qid] = {
                     "query_id": qid,
-                    "query": r.get("query") or r.get("proxied query") or "",
+                    "query": dbops.redact(r.get("query") or r.get("proxied query") or "", pw),
                     "count": _int(r.get("count")),
                     "deep_support": "unknown",
                     "deep_reason": None,
                     "shallow_support": sup,
-                    "shallow_reason": reason_txt,
+                    "shallow_reason": dbops.redact(reason_txt, pw),
                 }
             else:
                 item["shallow_support"] = sup
-                item["shallow_reason"] = reason_txt
+                item["shallow_reason"] = dbops.redact(reason_txt, pw)
                 if item["count"] is None:
                     item["count"] = _int(r.get("count"))
 
@@ -760,31 +905,41 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     proxied_list.sort(key=lambda x: -(x.get("count") or 0))
     report["proxied_queries"] = proxied_list
 
-    # Telemetry aggregation
-    cached_execs = sum((_int(r.get("total_count")) or 0) for r in (cached_stat_rows or ()))
-    upstream_execs = sum((_int(r.get("total_count")) or 0) for r in (upstream_stat_rows or ()))
-    total_obs = cached_execs + upstream_execs
-    sh_hits = sum((_int(r.get("hits")) or 0) for r in (shallow_rows or ()))
-    sh_misses = sum((_int(r.get("misses")) or 0) for r in (shallow_rows or ()))
-    sh_refreshes = sum((_int(r.get("refreshes")) or 0) for r in (shallow_rows or ()))
-    sh_coalesces = sum((_int(r.get("coalesces")) or 0) for r in (shallow_rows or ()))
-    wasted_ref = sum((_int(r.get("wasted_refreshes")) or 0) for r in (refresh_rows or ()))
-    dropped_ref = sum((_int(r.get("dropped_refreshes")) or 0) for r in (refresh_rows or ()))
-    saved_us = sum((_float(r.get("upstream_saved_total_us")) or 0.0) for r in (coalesce_rows or ()))
+    # Telemetry aggregation. A statistics source that was not read leaves its
+    # counts null, and every figure derived from it: an unread source is not a
+    # zero, and a share computed from one side alone would be false.
+    cached_execs = None if cached_stat_rows is None else sum(
+        (_int(r.get("total_count")) or 0) for r in cached_stat_rows)
+    upstream_execs = None if upstream_stat_rows is None else sum(
+        (_int(r.get("total_count")) or 0) for r in upstream_stat_rows)
+    total_obs = (
+        None if cached_execs is None or upstream_execs is None else cached_execs + upstream_execs
+    )
+    sh_hits = None if shallow_rows is None else sum((_int(r.get("hits")) or 0) for r in shallow_rows)
+    sh_misses = None if shallow_rows is None else sum((_int(r.get("misses")) or 0) for r in shallow_rows)
+    sh_refreshes = None if shallow_rows is None else sum((_int(r.get("refreshes")) or 0) for r in shallow_rows)
+    sh_coalesces = None if shallow_rows is None else sum((_int(r.get("coalesces")) or 0) for r in shallow_rows)
+    wasted_ref = None if refresh_rows is None else sum((_int(r.get("wasted_refreshes")) or 0) for r in refresh_rows)
+    dropped_ref = None if refresh_rows is None else sum((_int(r.get("dropped_refreshes")) or 0) for r in refresh_rows)
+    saved_us = None if coalesce_rows is None else sum(
+        (_float(r.get("upstream_saved_total_us")) or 0.0) for r in coalesce_rows)
 
     report["telemetry"] = {
         "cached_executions": cached_execs,
         "upstream_executions": upstream_execs,
         "total_observed_executions": total_obs,
-        "cached_share_pct": round(100.0 * cached_execs / total_obs, 1) if total_obs > 0 else None,
+        "cached_share_pct": round(100.0 * cached_execs / total_obs, 1) if total_obs else None,
         "shallow_hits": sh_hits,
         "shallow_misses": sh_misses,
-        "shallow_hit_rate_pct": round(100.0 * sh_hits / (sh_hits + sh_misses), 1) if (sh_hits + sh_misses) > 0 else None,
+        "shallow_hit_rate_pct": (
+            round(100.0 * sh_hits / (sh_hits + sh_misses), 1)
+            if sh_hits is not None and sh_misses is not None and (sh_hits + sh_misses) > 0 else None
+        ),
         "shallow_refreshes": sh_refreshes,
         "wasted_refreshes": wasted_ref,
         "dropped_refreshes": dropped_ref,
         "coalesces": sh_coalesces,
-        "upstream_saved_ms": round(saved_us / 1000.0, 2),
+        "upstream_saved_ms": round(saved_us / 1000.0, 2) if saved_us is not None else None,
     }
 
     # Replication summary (mode-aware lag units!)
@@ -839,7 +994,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             "user": _text(u.get("user")),
             "weight": _int(u.get("weight")),
             "purpose": _text(u.get("purpose")) or "",
-            "active_cdc": _bool(u.get("active_cdc")) is True,
+            "active_cdc": _bool(u.get("active_cdc")),
             "health": _text(u.get("health")),
             "down_since": _text(u.get("down_since")),
             "last_ok": _text(u.get("last_ok")),
@@ -873,51 +1028,163 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             "ALTER READYSET SHUTDOWN is accepted only on the Readyset admin SQL port (default 6036)."
         )
 
-    # Overall verdict
-    status = "ok"
-    why = []
+    # Findings: every problem or watch state the reads proved, worst first
+    # (stable inside one severity). A state the server did not report stays
+    # unreported: no default fills it in.
+    findings = []
 
-    def _worse(cur, candidate, reason_line):
-        if reason_line and reason_line not in why:
-            why.append(reason_line)
-        return candidate if _STATUS_RANK[candidate] > _STATUS_RANK[cur] else cur
+    def _finding(fstatus, fid, title, text, tab):
+        # The fixed words are never capped: only interpolated server values go
+        # through _display (80 chars each), so a long value cannot cut the
+        # fixed tail of a title off.
+        findings.append({"id": fid, "status": fstatus, "title": title, "text": text, "tab": tab})
+
+    def _shown(value):
+        return _display(dbops.redact(value, pw))
 
     if sf.get("database_connection") == "Unreachable":
-        status = _worse(status, "problem", "Upstream database connection is Unreachable.")
+        _finding("problem", "upstream_unreachable",
+                 "The upstream database is unreachable.",
+                 "Readyset's Database Connection is Unreachable: Readyset could not connect to the upstream "
+                 "database, a reconnect attempt failed, or no upstream URL is configured. Shallow cache misses, "
+                 "uncached queries and every write go to the upstream (deep-cache misses are filled from "
+                 "Readyset's local base tables), so the application feels this directly; check that the "
+                 "upstream server is running and reachable from Readyset.",
+                 "topology")
     if sf.get("controller_status") == "Unavailable":
-        status = _worse(status, "problem", "Readyset Controller is Unavailable.")
-    if repl.get("last_error"):
-        status = _worse(status, "problem", "Replicator error: %s" % repl["last_error"])
-    for u in upstreams:
+        _finding("problem", "controller_unavailable",
+                 "The Readyset Controller is unavailable.",
+                 "Readyset Controller Status is Unavailable: the controller RPC did not answer, so Readyset cannot "
+                 "report snapshot or replication progress. Check the Readyset server process and its controller.",
+                 "topology")
+    repl_error = repl.get("last_error")
+    repl_st = sf.get("replication_status")
+    if repl_error or repl_st == "Error":
+        # One finding for either signal: the pinned engine emits only Running,
+        # Stopped and Disabled (readyset-client/src/status.rs 107-123), but a
+        # status of Error means the same thing as a last replicator error.
+        text = ("Replication from the upstream database hit an error; deep caches are not receiving upstream "
+                "writes while it persists.")
+        if repl_error:
+            text += " Readyset's last replicator error: %s" % repl_error[:2000]
+        _finding("problem", "replication_error", "Replication reported an error.", text, "topology")
+    for i, u in enumerate(upstreams):
         if (u.get("health") or "").lower() == "down":
             lvl = "problem" if u.get("active_cdc") else "watch"
-            status = _worse(status, lvl, "Upstream %s (%s) health is down." % (u["address"], u["purpose"] or "proxy"))
+            _finding(lvl, "upstream_down:%d" % i,
+                     "Upstream %s (%s) health is down." % (_shown(u["address"]), _shown(u["purpose"] or "proxy")),
+                     "Readyset's adapter marked this upstream server's proxy-pool health down after a "
+                     "connection failure and skips it when picking connections; a stale mark is retried once "
+                     "the healthy servers are exhausted. When this is the active CDC server, the replicator's "
+                     "connection to it is likely failing too; Readyset fails over to another CDC server if one "
+                     "is listed. Check that the server is running and reachable from Readyset.",
+                     "topology")
     if counts["error"] > 0:
-        status = _worse(status, "problem", "%d replicated base %s reported an error." % (
-            counts["error"], "table" if counts["error"] == 1 else "tables"))
+        _finding("problem", "table_errors",
+                 "%d replicated base %s reported an error." % (
+                     counts["error"], "table" if counts["error"] == 1 else "tables"),
+                 "SHOW READYSET ALL TABLES reports an error status for these tables: Readyset stopped replicating "
+                 "them, so deep caches over them serve stale data or were dropped. The Tables tab shows each "
+                 "table's status and reason; fix the cause, then re-snapshot the table.",
+                 "tables")
     if sf.get("status") == "Maintenance Mode":
-        status = _worse(status, "watch", "Readyset is in Maintenance Mode (queries bypass caches to upstream).")
+        _finding("watch", "maintenance_mode",
+                 "Readyset is in maintenance mode.",
+                 "Status is Maintenance Mode, set with ALTER READYSET ENTER MAINTENANCE MODE: external tools such "
+                 "as ProxySQL are meant to stop sending queries to Readyset until it exits. Exit maintenance mode "
+                 "when the maintenance work is done.",
+                 "topology")
     elif sf.get("status") == "Snapshot In Progress":
-        status = _worse(status, "watch", "Base table snapshot is in progress.")
+        _finding("watch", "snapshot_in_progress",
+                 "Base table snapshot is in progress.",
+                 "Status is Snapshot In Progress: the controller's leader is not ready while base tables are "
+                 "snapshotted from the upstream. Deep cache creation may have to wait; the Tables tab shows "
+                 "per-table progress.",
+                 "topology")
     has_deep = any(c.get("cache_type") == "deep" for c in caches)
-    repl_st = sf.get("replication_status")
-    if repl_st == "Error":
-        status = _worse(status, "problem", "Replication status is Error.")
-    elif repl_st == "Stopped":
-        status = _worse(status, "watch", "Replication is Stopped; deep caches are not receiving upstream writes.")
+    if repl_st == "Stopped":
+        _finding("watch", "replication_stopped",
+                 "Replication is Stopped; deep caches are not receiving upstream writes.",
+                 "Replication Status is Stopped via ALTER READYSET STOP REPLICATION. Shallow caches keep serving "
+                 "on their TTLs, but deep caches go stale until replication is started again.",
+                 "topology")
     elif repl_st == "Disabled":
         if has_deep:
-            status = _worse(status, "watch", "Replication is Disabled while deep caches exist.")
-    elif repl_st and repl_st not in ("Running", "Online", "Unknown"):
-        status = _worse(status, "watch", "Replication status is %s." % repl_st)
+            _finding("watch", "replication_disabled",
+                     "Replication is Disabled while deep caches exist.",
+                     "The replicator was not started (for example in shallow caching mode), yet deep caches exist "
+                     "and need replication to stay current. Restart Readyset with replication configured, or drop "
+                     "the deep caches.",
+                     "topology")
+    elif repl_st and repl_st not in ("Running", "Online", "Unknown", "Error"):
+        _finding("watch", "replication_status",
+                 "Replication status is %s." % _shown(repl_st),
+                 "Readyset reports a replication status myflames does not classify; deep caches depend on "
+                 "replication Running. Check SHOW READYSET STATUS on the server for the full picture.",
+                 "topology")
     hb_stale = repl.get("heartbeat_staleness_s")
-    if hb_stale is not None and hb_stale > 60.0 and sf.get("replication_status") == "Running":
-        status = _worse(status, "watch", "Replication heartbeat is %.0f s old." % hb_stale)
-    if dropped_ref > 0 or any(c.get("over_cap") for c in caches):
-        status = _worse(status, "watch", "Shallow cache background refresh hit its cap or dropped refreshes.")
+    if hb_stale is not None and hb_stale > 60.0 and repl_st == "Running":
+        _finding("watch", "replication_heartbeat_stale",
+                 "Replication heartbeat is %d s old." % int(round(hb_stale)),
+                 "Readyset measures heartbeat staleness at %d s; this alone does not establish how far "
+                 "replicated data or deep caches lag. Check consume lag, the replicator, heartbeat writes "
+                 "to the upstream, and clock skew between the upstream and Readyset hosts."
+                 % int(round(hb_stale)),
+                 "topology")
+    if (dropped_ref or 0) > 0 or any(c.get("over_cap") for c in caches):
+        _finding("watch", "shallow_refresh_capped",
+                 "Shallow cache background refresh hit its cap or dropped refreshes.",
+                 "An adaptive shallow cache's actual refresh load reached its cap over the baseline load "
+                 "(over_cap), or refreshes never produced a result: the refresh pool was saturated or the "
+                 "upstream connection or query failed (dropped_refreshes). Entries can go stale between "
+                 "refreshes; check the refresh stats on the Caches tab.",
+                 "caches")
+    read_failed = set()
+    for label, _exc in reads.missing:
+        source = {"SHOW READYSET STATUS": "status", "SHOW CACHES": "caches",
+                  "SHOW READYSET ALL TABLES": "tables"}.get(label)
+        if source:
+            read_failed.add(source)
+    if "status" in read_failed:
+        _finding("problem", "read_failed:status",
+                 "Readyset did not answer SHOW READYSET STATUS.",
+                 "Without it, nothing about this instance's status, replication or controller is known; every "
+                 "state reads as not reported, never as healthy. Check the connection and run SHOW READYSET "
+                 "STATUS by hand.",
+                 "topology")
+    if "caches" in read_failed:
+        _finding("watch", "read_failed:caches",
+                 "Readyset did not answer SHOW CACHES.",
+                 "The cache list is unknown: an empty list here is not proof there are no caches. Check the "
+                 "connection and run SHOW CACHES by hand.",
+                 "caches")
+    if "tables" in read_failed:
+        _finding("watch", "read_failed:tables",
+                 "Readyset did not answer SHOW READYSET ALL TABLES.",
+                 "The replicated base table statuses are unknown: a table error would not surface here. Check "
+                 "the connection and run SHOW READYSET ALL TABLES by hand.",
+                 "tables")
+    # Readyset emits these as distinct fields (readyset-client/src/status.rs:
+    # 49-60). A failed status read already covers both; a replication error
+    # covers missing replication status, but unrelated findings do not.
+    if "status" not in read_failed:
+        if sf.get("status") is None:
+            _finding("watch", "status_unreported",
+                     "Readyset did not report its status.",
+                     "SHOW READYSET STATUS answered without a Status field, so this instance's state is not "
+                     "known. Check SHOW READYSET STATUS on the server.",
+                     "topology")
+        if repl_st is None and not repl_error:
+            _finding("watch", "replication_status_unreported",
+                     "Readyset did not report its replication status.",
+                     "SHOW READYSET STATUS answered without a Replication Status field, so whether replication "
+                     "is running is not known. Check SHOW READYSET STATUS on the server.",
+                     "topology")
 
-    report["status"] = status
-    report["status_why"] = why
+    findings.sort(key=lambda f: -_STATUS_RANK[f["status"]])
+    report["findings"] = findings
+    report["status"] = findings[0]["status"] if findings else "ok"
+    report["status_why"] = [f["title"] for f in findings]
     report["statements"] = reads.statements
     report["fingerprints"] = {
         "caches": _fingerprint([(c["query_id"], c["name"], c["cache_type"], c["properties"]) for c in caches]),
@@ -925,7 +1192,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         "allowlists": _fingerprint(allowlists),
         "replication": _fingerprint([sf.get("status"), sf.get("replication_status"), sf.get("cdc_server")]),
     }
-    report["actions"] = available_actions(report)
+    attach_actions(report)
     return report
 
 
@@ -942,6 +1209,7 @@ def at_or_worse(report, threshold):
 def _explain_one(conn, target, kind):
     keyword = "SHALLOW " if kind == "shallow" else ("DEEP " if kind == "deep" else "")
     sql = "EXPLAIN CREATE %sCACHE FROM %s" % (keyword, target)
+    pw = getattr(conn, "password", None)
     try:
         rows = select(conn, sql, timeout=ACTION_TIMEOUT)
     except ConnectorError as exc:
@@ -949,7 +1217,7 @@ def _explain_one(conn, target, kind):
             "cache_type": kind,
             "supported": "error",
             "raw_support": None,
-            "reason": dbops.redact(_short(exc), getattr(conn, "password", None)),
+            "reason": dbops.redact(_short(exc), pw),
             "query_id": None,
             "query": None,
             "statement": sql,
@@ -960,10 +1228,10 @@ def _explain_one(conn, target, kind):
     return {
         "cache_type": kind,
         "supported": verdict,
-        "raw_support": sup_raw,
-        "reason": detail,
+        "raw_support": dbops.redact(sup_raw, pw),
+        "reason": dbops.redact(detail, pw),
         "query_id": _text(row.get("query_id") if "query_id" in row else row.get("query id")),
-        "query": row.get("query") if "query" in row else row.get("proxied query"),
+        "query": dbops.redact(row.get("query") if "query" in row else row.get("proxied query"), pw),
         "statement": sql,
     }
 
@@ -975,6 +1243,8 @@ def explain_cache(conn, query_or_id, cache_type=None, schema="readyset"):
         raise ValueError("This connection is not a Readyset instance (%s)." % version)
     schema_name = schema if isinstance(schema, str) and _SAFE_SCHEMA_RE.match(schema) else "readyset"
     port_role, in_rs_schema = _detect_port_mode(conn, schema_name)
+    if port_role is None:
+        raise ActionUnavailable("%s %s" % _PORT_NOT_READ)
     if in_rs_schema:
         raise ValueError(
             "EXPLAIN CREATE CACHE requires the Readyset SQL port (default 3307) with an upstream database schema, "
@@ -997,9 +1267,10 @@ def explain_cache(conn, query_or_id, cache_type=None, schema="readyset"):
         for r in crows:
             qid = _text(r.get("query_id"))
             if qid and qid in candidate_ids:
+                raw_name = r.get("name")
                 collisions.append({
                     "query_id": qid,
-                    "name": _text(r.get("name")) or qid,
+                    "name": str(raw_name) if raw_name not in (None, "") else qid,
                     "properties": _text(r.get("properties")) or "",
                 })
     except ConnectorError:
@@ -1017,6 +1288,76 @@ def explain_cache(conn, query_or_id, cache_type=None, schema="readyset"):
     }
 
 
+_EXPORT_ESCAPES = {
+    "0": "\x00",
+    "b": "\b",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "Z": "\x1a",
+}
+_EXPORT_REDACTED_COMMENT = (
+    "-- Credentials in this definition are shown as [redacted]; it will not run as is."
+)
+
+
+def _unescape_sql_literal(body, quote):
+    """Decode doubled-quote and backslash escapes inside a SQL string literal body."""
+    out = []
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == quote and i + 1 < n and body[i + 1] == quote:
+            out.append(quote)
+            i += 2
+        elif ch == "\\" and i + 1 < n:
+            nxt = body[i + 1]
+            out.append(_EXPORT_ESCAPES.get(nxt, nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _redact_export_sql(sql, password=None):
+    """Redact exported Readyset DDL without altering identifiers or keywords.
+
+    Applies ``dbops._URL_SECRET`` outside quoted identifiers, and replaces any
+    quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
+    with ``'[redacted]'``. Returns ``(redacted_sql, changed)``.
+    """
+    pw = password if isinstance(password, str) and password else None
+    scan = dbops.lex_sql(sql)
+    unclosed = set(scan["unclosed"])
+    parts = []
+    changed = False
+    for kind, start, end in scan["tokens"]:
+        tok = sql[start:end]
+        if kind == "identifier":
+            parts.append(tok)
+            continue
+        updated = dbops._URL_SECRET.sub(
+            lambda m: m.group(1) + dbops.REDACTED + m.group(3), tok
+        )
+        if kind == "string" and pw:
+            quote = tok[0]
+            body = tok[1:] if (start, end) in unclosed else tok[1:-1]
+            # Check URL-redacted body unless password literally equals the redaction marker.
+            check_body = body if (updated != tok and pw == dbops.REDACTED) else (
+                updated[1:] if (start, end) in unclosed else updated[1:-1]
+            )
+            if (pw in check_body or
+                    pw in _unescape_sql_literal(check_body, quote) or
+                    pw in check_body.replace(quote * 2, quote)):
+                updated = "'" + dbops.REDACTED + "'"
+        if updated != tok:
+            changed = True
+        parts.append(updated)
+    return "".join(parts), changed
+
+
 def export_caches(conn):
     """Run ``EXPLAIN ALL CACHES`` (falling back to ``EXPLAIN CACHES`` on older Readyset releases)."""
     ok, version = identify(conn)
@@ -1032,17 +1373,26 @@ def export_caches(conn):
         rows = select(conn, "EXPLAIN CACHES", timeout=ACTION_TIMEOUT)
         notes.append("Exported with EXPLAIN CACHES (EXPLAIN ALL CACHES requires a newer Readyset release).")
     items = []
-    lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version]
+    pw = getattr(conn, "password", None)
+    lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
+             "-- Credentials in query text are shown as [redacted]."]
     last_db = None
     for r in rows:
-        q = (r.get("query") or r.get("create statement") or "").strip()
-        if not q:
+        raw_q = (r.get("query") or r.get("create statement") or "").strip()
+        if not raw_q:
             continue
-        db = _text(r.get("database"))
+        q, redacted = _redact_export_sql(raw_q, pw)
+        raw_db = r.get("database")
+        db = str(raw_db) if raw_db not in (None, "") else None
         if db and db != last_db and not q.upper().startswith("USE "):
-            lines.append("USE %s;" % _rs_ident(db, "Database"))
+            lines.append("USE %s;" % _rs_ident_server(db, "Database"))
             last_db = db
         stmt = q if q.endswith(";") else (q + ";")
+        if redacted:
+            lines.append(_EXPORT_REDACTED_COMMENT)
+            # A substituted literal can still be valid SQL. Disable every
+            # physical line in both export formats until deliberately restored.
+            stmt = "\n".join("-- " + line for line in stmt.splitlines())
         lines.append(stmt)
         items.append({"database": db, "statement": stmt})
     return {
@@ -1057,85 +1407,398 @@ def export_caches(conn):
 
 # ---- reviewed actions (dbops + reviewed_writes) ------------------------------------------
 
-def available_actions(report, target=None):
-    """Actions offered for *report* (server-level when *target* is None, or row-scoped)."""
-    if not report or not report.get("is_readyset"):
-        return []
+# The one danger table: exactly the tone "danger" set of the pre-catalog
+# available_actions. `tone` stays beside `danger` for one release.
+_DANGER_ACTIONS = frozenset((
+    "drop_cache",
+    "drop_all_caches",
+    "drop_all_shallow_caches",
+    "drop_all_deep_caches",
+    "drop_all_proxied_queries",
+    "drop_shallow_allowed",
+    "resnapshot_table",
+    "enter_maintenance_mode",
+    "stop_replication",
+    "set_replication_position",
+    "shutdown",
+    "shutdown_reset",
+))
+
+# Fixed disabled reasons (why_not, fix). Only integers and _display values may
+# be interpolated into a why_not; a fix never holds a server value.
+_DDL_BLOCKED = (
+    "This Readyset listener refuses cache DDL.",
+    "Run cache changes on the CACHE_DDL_ADDRESS listener or the admin SQL port (default 6036); "
+    "CREATE CACHE still needs an upstream database selected.",
+)
+_CACHE_SQL_PORT = (
+    "CREATE CACHE needs the Readyset SQL port (default 3307) with an upstream database schema.",
+    "Connect to the Readyset SQL port (default 3307) with an upstream database.",
+)
+_SHUTDOWN_ADMIN_PORT = (
+    "ALTER READYSET SHUTDOWN is accepted only on the Readyset admin SQL port (default 6036).",
+    "Connect to the Readyset admin SQL port (default 6036) to shut down Readyset.",
+)
+_PORT_NOT_READ = (
+    "Readyset did not show which listener this is.",
+    "Refresh; if it persists, check the connection's port.",
+)
+_STATUS_NOT_READ = (
+    "Readyset did not report its Status.",
+    "Check the connection and refresh: SHOW READYSET STATUS reports it.",
+)
+_REPL_NOT_READ = (
+    "Readyset did not report its Replication Status.",
+    "Check the connection and refresh: SHOW READYSET STATUS reports it.",
+)
+_CACHES_NOT_READ = (
+    "Readyset did not report its caches.",
+    "Check the connection and refresh: SHOW CACHES lists them.",
+)
+_BAD_ROW_NAME = (
+    "Readyset reported a name that cannot be used in a statement.",
+    "Run this change on Readyset by hand.",
+)
+_CONTROL_ROW_NAME = (
+    "Readyset reported a name with control or format characters.",
+    "Run this change on Readyset by hand.",
+)
+_FLUSH_SHALLOW_ONLY = (
+    "FLUSH CACHE applies only to shallow caches.",
+    "Only shallow cache entries can be flushed.",
+)
+# SHOW CACHES renders the qualified name `sales`.`report` and the one
+# identifier `sales.report` both as sales.report (extensions.rs:1113 with
+# readyset-sql/src/ast/table.rs:135), and DROP CACHE / FLUSH CACHE resolve a
+# Relation name only, never a query id, for a named cache
+# (readyset-sql-parsing/src/lib.rs:1687,1716; readyset-adapter
+# extensions.rs:1897-1931; readyset-shallow/src/manager.rs:191-206). A dotted
+# reported name is therefore not safe to address in a statement.
+_DOTTED_ROW_NAME = (
+    "Readyset reported a cache name with a dot, which a statement cannot address unambiguously.",
+    "Run this change on Readyset by hand: SHOW CACHES does not show whether the dot is a qualifier.",
+)
+
+
+def _action(aid, label, scope, description, why=None):
+    """One action catalog entry: always listed, never hidden; when disabled,
+    *why* is the (why_not, fix) pair of fixed strings."""
+    entry = {
+        "id": aid,
+        "label": label,
+        "scope": scope,
+        "tone": "danger" if aid in _DANGER_ACTIONS else "default",
+        "danger": aid in _DANGER_ACTIONS,
+        "description": description,
+        "enabled": why is None,
+        "why_not": None,
+        "fix": None,
+    }
+    if why is not None:
+        entry["why_not"], entry["fix"] = why
+    return entry
+
+
+def _read_failures(report):
+    """The core reads that failed, from the read_failed findings ('status', 'caches', 'tables')."""
+    out = set()
+    for f in report.get("findings") or ():
+        fid = f.get("id") or ""
+        if fid.startswith("read_failed:"):
+            out.add(fid.split(":", 1)[1])
+    return out
+
+
+def _create_cache_why(report):
+    """Port role first, then the one-way cache-DDL gate (S5); False proves
+    nothing. The cache list must have been read: collision detection needs it."""
+    if report.get("port_role") is None:
+        return _PORT_NOT_READ
+    if report.get("in_readyset_schema"):
+        return _CACHE_SQL_PORT
+    if not (report.get("capabilities") or {}).get("can_manage_caches", True):
+        return _DDL_BLOCKED
+    if "caches" in _read_failures(report):
+        return _CACHES_NOT_READ
+    return None
+
+
+def _server_actions(report):
     caps = report.get("capabilities") or {}
     sf = report.get("status_fields") or {}
     caches = report.get("caches") or []
+    failed = _read_failures(report)
+    ddl_blocked = not caps.get("can_manage_caches", True)
     shallow_count = sum(1 for c in caches if c.get("cache_type") == "shallow")
-    deep_count = sum(1 for c in caches if c.get("cache_type") == "deep")
+    deep_count = len(caches) - shallow_count
+    status = sf.get("status")
+    repl = sf.get("replication_status")
 
-    if isinstance(target, dict):
-        kind = target.get("kind")
-        if kind == "cache":
-            qid = target.get("query_id")
-            name = target.get("name")
-            found = next((c for c in caches if c.get("name") == name or (qid and c.get("query_id") == qid)), None)
-            if not found or not caps.get("can_manage_caches", True):
-                return []
-            out = [{"id": "drop_cache", "label": "Drop cache…", "tone": "danger"}]
-            if found.get("cache_type") == "shallow":
-                out.insert(0, {"id": "flush_cache", "label": "Flush entries…", "tone": "default"})
-            return out
-        if kind == "proxied_query":
-            if not caps.get("can_create_cache"):
-                return []
-            return [{"id": "create_cache", "label": "Create cache…", "tone": "default"}]
-        if kind == "table":
-            tname = target.get("table")
-            if not tname:
-                return []
-            try:
-                canon = _rs_table_ident(tname)
-            except ValueError:
-                return []
-            if not any(_rs_table_ident(t.get("table")) == canon for t in (report.get("tables") or ()) if t.get("table")):
-                return []
-            return [{"id": "resnapshot_table", "label": "Re-snapshot table…", "tone": "danger"}]
-        if kind in SHALLOW_ALLOWLIST_KINDS:
-            if target.get("name"):
-                return [{"id": "drop_shallow_allowed", "label": "Remove…", "tone": "danger"}]
-            return [{"id": "add_shallow_allowed", "label": "Allow…", "tone": "default"}]
-        return []
+    def counted_why(count, none_why, none_fix):
+        if ddl_blocked:
+            return _DDL_BLOCKED
+        if "caches" in failed:
+            return _CACHES_NOT_READ
+        if count == 0:
+            return (none_why, none_fix)
+        return None
 
-    out = []
-    if caps.get("can_create_cache"):
-        out.append({"id": "create_cache", "label": "Create cache…", "tone": "default"})
-    if caps.get("can_manage_caches", True):
-        if shallow_count > 0:
-            out.append({"id": "flush_all_shallow_caches", "label": "Flush shallow caches…", "tone": "default"})
-        if caches:
-            out.append({"id": "drop_all_caches", "label": "Drop all caches…", "tone": "danger"})
-        if deep_count > 0 and shallow_count > 0:
-            out.append({"id": "drop_all_shallow_caches", "label": "Drop shallow caches…", "tone": "danger"})
-            out.append({"id": "drop_all_deep_caches", "label": "Drop deep caches…", "tone": "danger"})
-        out.append({"id": "drop_all_proxied_queries", "label": "Clear proxied queries…", "tone": "danger"})
+    out = [
+        _action("create_cache", "Create cache…", "server",
+                "Creates a shallow or deep cache for a query or query id.", _create_cache_why(report)),
+        _action("flush_all_shallow_caches", "Flush shallow caches…", "server",
+                "Evicts every cached entry across all shallow caches; cache definitions remain active.",
+                counted_why(shallow_count,
+                            "There are no shallow caches to flush.", "Create a shallow cache first.")),
+        _action("drop_all_caches", "Drop all caches…", "server",
+                "Removes every cache definition; queries immediately fall back to the upstream database.",
+                counted_why(len(caches), "There are no caches to drop.", "Create a cache first.")),
+        _action("drop_all_shallow_caches", "Drop shallow caches…", "server",
+                "Removes every shallow cache definition.",
+                counted_why(shallow_count,
+                            "There are no shallow caches to drop.", "Create a shallow cache first.")),
+        _action("drop_all_deep_caches", "Drop deep caches…", "server",
+                "Removes every deep cache definition.",
+                counted_why(deep_count,
+                            "There are no deep caches to drop.", "Create a deep cache first.")),
+        _action("drop_all_proxied_queries", "Clear proxied queries…", "server",
+                "Clears Readyset's catalog of observed uncached proxied queries; active caches are untouched.",
+                _DDL_BLOCKED if ddl_blocked else None),
+    ]
 
-    if sf.get("status") == "Maintenance Mode":
-        out.append({"id": "exit_maintenance_mode", "label": "Exit maintenance mode…", "tone": "default"})
+    if status is None:
+        enter_why = exit_why = _STATUS_NOT_READ
+    elif status == "Maintenance Mode":
+        enter_why = ("Readyset is already in maintenance mode.", "Exit maintenance mode first.")
+        exit_why = None
+    elif status == "Online":
+        enter_why = None
+        exit_why = ("Readyset is not in maintenance mode.", "Only a server in maintenance mode can exit it.")
     else:
-        out.append({"id": "enter_maintenance_mode", "label": "Enter maintenance mode…", "tone": "danger"})
+        # Readyset reports Maintenance Mode only once its leader is ready, so
+        # during a snapshot the flag is not readable (controller/inner.rs 749-757).
+        enter_why = (
+            "Readyset reports Maintenance Mode only when its Status is Online (now: %s)." % _display(status),
+            "Wait until the snapshot finishes and Status is Online.",
+        )
+        exit_why = (
+            "Readyset does not show maintenance mode until its Status is Online (now: %s)." % _display(status),
+            "Wait until the snapshot finishes and Status is Online.",
+        )
+    out.append(_action("enter_maintenance_mode", "Enter maintenance mode…", "server",
+                       "Sets Readyset's status to Maintenance Mode, a signal for tools such as ProxySQL to stop "
+                       "sending queries.", enter_why))
+    out.append(_action("exit_maintenance_mode", "Exit maintenance mode…", "server",
+                       "Clears the Maintenance Mode status signal.", exit_why))
 
-    if sf.get("replication_status") == "Stopped":
-        out.append({"id": "start_replication", "label": "Start replication…", "tone": "default"})
-    elif sf.get("replication_status") == "Running":
-        out.append({"id": "stop_replication", "label": "Stop replication…", "tone": "danger"})
+    if repl is None:
+        start_why = stop_why = _REPL_NOT_READ
+    elif repl == "Stopped":
+        start_why = None
+        stop_why = ("Replication is already Stopped.", "Only running replication can be stopped.")
+    elif repl == "Running":
+        start_why = ("Replication is already Running.", "Only stopped replication can be started.")
+        stop_why = None
+    else:
+        start_why = ("Replication status is %s." % _display(repl),
+                     "Readyset starts replication only from Stopped.")
+        stop_why = ("Replication status is %s." % _display(repl),
+                    "Readyset stops replication only from Running.")
+    out.append(_action("start_replication", "Start replication…", "server",
+                       "Resumes ingesting binlog changes from the upstream CDC server.", start_why))
+    out.append(_action("stop_replication", "Stop replication…", "server",
+                       "Pauses ingesting binlog changes from the upstream CDC server; deep caches stop receiving "
+                       "updates.", stop_why))
 
     out.extend([
-        {"id": "set_replication_position", "label": "Set replication position…", "tone": "danger"},
-        {"id": "add_tables", "label": "Add tables to replicate…", "tone": "default"},
-        {"id": "set_log_level", "label": "Set log level…", "tone": "default"},
-        {"id": "set_eviction_memory_limit", "label": "Set eviction memory limit…", "tone": "default"},
-        {"id": "set_eviction_period", "label": "Set eviction period…", "tone": "default"},
-        {"id": "add_shallow_allowed", "label": "Add shallow allowlist item…", "tone": "default"},
-        {"id": "flush_privileges", "label": "Flush Readyset privileges…", "tone": "default"},
+        _action("set_replication_position", "Set replication position…", "server",
+                "Sets the upstream binlog or GTID position from which Readyset's replicator resumes."),
+        _action("add_tables", "Add tables to replicate…", "server",
+                "Starts snapshotting and replicating the specified upstream base tables into Readyset."),
+        _action("set_log_level", "Set log level…", "server",
+                "Updates Readyset's runtime tracing filter immediately."),
+        _action("set_eviction_memory_limit", "Set eviction memory limit…", "server",
+                "Updates the runtime memory threshold at which Readyset evicts cached entries."),
+        _action("set_eviction_period", "Set eviction period…", "server",
+                "Sets how often Readyset runs its cache memory eviction sweep."),
+        _action("add_shallow_allowed", "Add shallow allowlist item…", "server",
+                "Lets automatic shallow cache creation accept queries that reference one function, variable "
+                "or schema; explicit CREATE SHALLOW CACHE and query hints bypass the allowlists.",
+                _DDL_BLOCKED if ddl_blocked else None),
+        _action("flush_privileges", "Flush Readyset privileges…", "server",
+                "Refreshes Readyset's cached upstream user credentials and table ACLs immediately."),
     ])
-    if caps.get("can_shutdown"):
-        out.append({"id": "shutdown", "label": "Shut down Readyset…", "tone": "danger"})
-        out.append({"id": "shutdown_reset", "label": "Shut down & reset snapshot…", "tone": "danger"})
+    port_role = report.get("port_role")
+    shutdown_why = _PORT_NOT_READ if port_role is None else (None if port_role == "admin" else _SHUTDOWN_ADMIN_PORT)
+    out.append(_action("shutdown", "Shut down Readyset…", "server",
+                       "Stops the Readyset process cleanly.", shutdown_why))
+    out.append(_action("shutdown_reset", "Shut down & reset snapshot…", "server",
+                       "Stops the Readyset process and discards persistent snapshot state so the next start "
+                       "performs a full re-snapshot.", shutdown_why))
     return out
+
+
+def _server_name_why(name, quoter, label):
+    """None when the server-reported *name* can be quoted byte for byte and
+    shown in a review without visual reordering; the disabled reason otherwise."""
+    if not isinstance(name, str) or not name:
+        return _BAD_ROW_NAME
+    try:
+        quoter(name, label)
+    except (ValueError, TypeError):
+        return _BAD_ROW_NAME
+    if _has_ctl_or_fmt(name):
+        return _CONTROL_ROW_NAME
+    return None
+
+
+def _cache_row_actions(report, row):
+    ddl_blocked = not (report.get("capabilities") or {}).get("can_manage_caches", True)
+    row_name = row.get("name") or row.get("query_id")
+    name_why = _server_name_why(row_name, _rs_ident_server, "Cache name")
+    if name_why is None and "." in row_name:
+        name_why = _DOTTED_ROW_NAME
+    if name_why is not None:
+        flush_why = drop_why = name_why
+    else:
+        if ddl_blocked:
+            flush_why = _DDL_BLOCKED
+        elif row.get("cache_type") != "shallow":
+            flush_why = _FLUSH_SHALLOW_ONLY
+        else:
+            flush_why = None
+        drop_why = _DDL_BLOCKED if ddl_blocked else None
+    return [
+        _action("flush_cache", "Flush entries…", "row",
+                "Discards all currently stored entries of this shallow cache; the definition stays active.",
+                flush_why),
+        _action("drop_cache", "Drop cache…", "row",
+                "Removes this cache so matching queries run directly on the upstream database.",
+                drop_why),
+    ]
+
+
+def _table_row_actions(row):
+    why = _server_name_why(row.get("table"), lambda n, _l: _rs_table_ident(n), "Table name")
+    return [
+        _action("resnapshot_table", "Re-snapshot table…", "row",
+                "Drops Readyset's local copy of this base table and reads a fresh snapshot from the upstream "
+                "CDC server.", why),
+    ]
+
+
+def _proxied_row_actions(report):
+    return [
+        _action("create_cache", "Create cache…", "row",
+                "Creates a shallow or deep cache for this proxied query.", _create_cache_why(report)),
+    ]
+
+
+def _allowlist_actions(report, list_key, name=None):
+    ddl_blocked = not (report.get("capabilities") or {}).get("can_manage_caches", True)
+    items = (report.get("shallow_allowlists") or {}).get(list_key) or ()
+    kind = list_key[:-1]
+    if isinstance(name, str) and _has_ctl_or_fmt(name):
+        drop_why = _CONTROL_ROW_NAME
+    elif name is not None and _server_name_why(name, _rs_ident_server, "Allowlist name"):
+        drop_why = _BAD_ROW_NAME
+    elif ddl_blocked:
+        drop_why = _DDL_BLOCKED
+    elif items:
+        drop_why = None
+    else:
+        drop_why = ("There are no allowed %ss to remove." % kind, "Add an allowed %s first." % kind)
+    return [
+        _action("add_shallow_allowed", "Allow…", "row",
+                "Lets automatic shallow cache creation accept queries that reference this %s." % kind,
+                _DDL_BLOCKED if ddl_blocked else None),
+        _action("drop_shallow_allowed", "Remove…", "row",
+                "Stops automatic shallow cache creation from accepting queries that reference this %s; "
+                "existing caches and explicit CREATE SHALLOW CACHE are not affected." % kind, drop_why),
+    ]
+
+
+def attach_actions(report):
+    """Attach the action catalog to *report*: server scope on ``actions``, row
+    scope on every cache, table and proxied query, and per-kind ``allowlist_actions``.
+    Never raises on a server-supplied name and is linear in rows: a row whose
+    name cannot be canonicalized gets its actions disabled with a fixed reason
+    while other rows stay enabled."""
+    report["actions"] = _server_actions(report)
+    for c in report.get("caches") or ():
+        c["actions"] = _cache_row_actions(report, c)
+    for t in report.get("tables") or ():
+        t["actions"] = _table_row_actions(t)
+    for p in report.get("proxied_queries") or ():
+        p["actions"] = _proxied_row_actions(report)
+    report["allowlist_actions"] = dict(
+        (key, _allowlist_actions(report, key)) for key in ("functions", "variables", "schemas"))
+    return report
+
+
+def _find_cache_row(caches, name, qid):
+    """The one cache row a target means, by exact reported name or query id.
+    When the target carries both halves, both must name the same current row:
+    a cache whose name or query id changed since it was read matches nothing.
+    Used by both the catalog and the planner so they can never disagree."""
+    qid = _text(qid)
+    if not name and not qid:
+        return None
+    if name and qid:
+        return next(
+            (c for c in caches or ()
+             if c.get("name") == name and c.get("query_id") == qid),
+            None,
+        )
+    return next(
+        (c for c in caches or ()
+         if (name and c.get("name") == name) or (qid and c.get("query_id") == qid)),
+        None,
+    )
+
+
+def available_actions(report, target=None):
+    """The full action catalog for *report*: server scope when *target* is None,
+    row scope for a target of kind "cache", "table", "proxied_query" or a shallow
+    allowlist kind. Every action is listed, enabled or with why_not and fix."""
+    if not report or not report.get("is_readyset"):
+        return []
+    if target is None:
+        return _server_actions(report)
+    if not isinstance(target, dict):
+        return []
+    kind = target.get("kind")
+    if kind == "cache":
+        found = _find_cache_row(report.get("caches"), target.get("name"), target.get("query_id"))
+        return _cache_row_actions(report, found) if found else []
+    if kind == "proxied_query":
+        return _proxied_row_actions(report)
+    if kind == "table":
+        tname = target.get("table")
+        if not tname:
+            return []
+        try:
+            canon = _rs_table_ident(tname)
+        except (ValueError, TypeError):
+            canon = None
+        if canon is not None:
+            for t in report.get("tables") or ():
+                try:
+                    if t.get("table") and _rs_table_ident(t["table"]) == canon:
+                        return _table_row_actions(t)
+                except (ValueError, TypeError):
+                    continue
+            return []
+        # Unparseable target: offered (disabled) only when Readyset reported
+        # this exact name; a name Readyset never reported is not offered.
+        for t in report.get("tables") or ():
+            if t.get("table") == tname:
+                return _table_row_actions(t)
+        return []
+    if kind in SHALLOW_ALLOWLIST_KINDS:
+        return _allowlist_actions(report, SHALLOW_ALLOWLIST_KINDS[kind][2],
+                                 target.get("name") or target.get("identifier"))
+    return []
 
 
 def _build_create_cache_sql(spec):
@@ -1145,8 +1808,19 @@ def _build_create_cache_sql(spec):
     if ctype not in ("shallow", "deep"):
         raise ValueError("Choose cache_type 'shallow' or 'deep'.")
     input_kind, target = _normalize_query_or_id(spec.get("query_or_id") or "")
-    raw_name = (spec.get("name") or "").strip()
-    quoted_name = _rs_ident(raw_name, "Cache name") if raw_name else None
+    raw_name = spec.get("name") or ""
+    if isinstance(raw_name, str):
+        # Check before trimming: even leading/trailing controls must not reach
+        # a review or create a cache our row actions cannot safely address.
+        if "." in raw_name or _has_ctl_or_fmt(raw_name):
+            raise ValueError("Choose a cache name without dots or control characters.")
+        raw_name = raw_name.strip()
+    # The identifier the statement names, after user-input parsing: collision
+    # warnings and the typed guard compare this exact identifier against the
+    # cache names Readyset reported, so a prequoted `` `name` `` cannot slip
+    # past the checks (Readyset replaces a colliding cache: extensions.rs:96,243).
+    canon_name = _rs_ident_parse(raw_name, "Cache name") if raw_name else None
+    quoted_name = "`%s`" % canon_name.replace("`", "``") if canon_name else None
 
     always = spec.get("always") is True
     until_write = spec.get("until_write") is True
@@ -1203,18 +1877,95 @@ def _build_create_cache_sql(spec):
         "cache_type": ctype,
         "input_kind": input_kind,
         "target": target,
-        "name": raw_name or None,
+        "name": canon_name,
         "options": opts,
         "statement": " ".join(parts) + ";",
     }
 
 
+def _allowlist_kind(target, value):
+    """The one allowlist kind an add/drop allowlist request means. Every kind
+    the request names (``kind`` and ``allow_kind`` on target and value) must
+    agree; a request naming two kinds is refused so the catalog gate and the
+    planner can never evaluate different lists."""
+    claims = []
+    for src in (target, value):
+        if not isinstance(src, dict):
+            continue
+        for key in ("allow_kind", "kind"):
+            raw = src.get(key)
+            if raw is None:
+                continue
+            k = str(raw).strip().lower()
+            if not k:
+                continue
+            if k not in SHALLOW_ALLOWLIST_KINDS:
+                raise ValueError("Choose allowlist kind 'function', 'variable' or 'schema'.")
+            claims.append(k)
+    if len(set(claims)) > 1:
+        raise ValueError(
+            "The target and the value name different allowlist kinds. Pass one kind and try again."
+        )
+    return claims[0] if claims else "function"
+
+
+def _catalog_target(action, target, value):
+    """The catalog lookup target for *action*: the caller's row target when it
+    names its kind, else the row the action implies, else None (server scope)."""
+    t = target if isinstance(target, dict) else {}
+    kind = t.get("kind")
+    if action in ("add_shallow_allowed", "drop_shallow_allowed"):
+        row = {"kind": _allowlist_kind(target, value)}
+        if action == "drop_shallow_allowed":
+            row["name"] = t.get("name") or t.get("identifier")
+        return row
+    if kind == "table" and not t.get("table"):
+        tbl = value.get("table") if isinstance(value, dict) else value
+        return {"kind": "table", "table": tbl}
+    if kind in ("cache", "table", "proxied_query") or kind in SHALLOW_ALLOWLIST_KINDS:
+        return t
+    if action in ("drop_cache", "flush_cache"):
+        return {"kind": "cache", "name": t.get("name"), "query_id": t.get("query_id")}
+    if action == "resnapshot_table":
+        tbl = t.get("table") or (value.get("table") if isinstance(value, dict) else value)
+        return {"kind": "table", "table": tbl}
+    return None
+
+
 def plan_action(report, action, target=None, value=None, conn=None):
-    """Build a ``readyset-action-1.0`` reviewed plan from a fresh *report*."""
+    """Build a ``readyset-action-1.0`` reviewed plan from a fresh *report*.
+
+    Selects the action from :func:`available_actions` on that report first,
+    before any SQL is built and before ``EXPLAIN CREATE CACHE`` is sent: an id
+    the catalog does not offer is refused without echoing it, and a disabled
+    entry raises :class:`ActionUnavailable` with exactly the catalog's
+    ``why_not`` and ``fix``. The per-action branches keep their own refusals
+    as defense in depth."""
     if not report or not report.get("is_readyset"):
         raise ValueError("This connection is not a Readyset instance.")
     if not isinstance(action, str) or not action:
         raise ValueError("Choose a Readyset action.")
+
+    if action in ("drop_cache", "flush_cache") and isinstance(target, dict):
+        t_name = target.get("name")
+        t_qid = _text(target.get("query_id"))
+        if t_name and t_qid:
+            rows = report.get("caches") or []
+            if not any(c.get("name") == t_name and c.get("query_id") == t_qid for c in rows):
+                if any(c.get("name") == t_name or c.get("query_id") == t_qid for c in rows):
+                    raise ValueError(
+                        "That cache changed since it was read. Refresh and try again."
+                    )
+
+    selected = next(
+        (a for a in available_actions(report, _catalog_target(action, target, value))
+         if a.get("id") == action),
+        None,
+    )
+    if selected is None:
+        raise ValueError("That change is not offered on this Readyset now. Refresh and try again.")
+    if not selected["enabled"]:
+        raise ActionUnavailable("%s %s" % (selected["why_not"], selected["fix"]))
 
     caps = report.get("capabilities") or {}
     sf = report.get("status_fields") or {}
@@ -1232,7 +1983,10 @@ def plan_action(report, action, target=None, value=None, conn=None):
         "description": "",
         "target_text": "Readyset (%s)" % (report.get("version") or "unknown"),
         "statements": [],
-        "facts": [["Readyset", "%s (%s port)" % (report.get("version") or "unknown", report.get("port_role") or "sql")]],
+        "facts": [["Readyset", "%s (%s)" % (
+            report.get("version") or "unknown",
+            ("%s port" % report["port_role"]) if report.get("port_role") else "port not read",
+        )]],
         "warnings": [],
         "changes": None,
         "typed_guard": None,
@@ -1252,6 +2006,11 @@ def plan_action(report, action, target=None, value=None, conn=None):
                 "CREATE CACHE requires the Readyset SQL port (default 3307) with an upstream database schema "
                 "and cache DDL enabled."
             )
+        if "caches" in _read_failures(report):
+            # Without SHOW CACHES the collision check below cannot run, and
+            # Readyset drops a colliding cache before creating the replacement
+            # (extensions.rs:96,243); the catalog gate refuses this first.
+            raise ActionUnavailable("%s %s" % _CACHES_NOT_READ)
         spec_in = {}
         if isinstance(target, dict):
             spec_in.update(target)
@@ -1298,6 +2057,11 @@ def plan_action(report, action, target=None, value=None, conn=None):
                 "creation until Status returns to Online."
             )
         if collisions:
+            if any(_has_ctl_or_fmt(c["name"] or "") for c in collisions):
+                raise ActionUnavailable(
+                    "A cache with control or format characters in its name collides; "
+                    "drop it on Readyset by hand first."
+                )
             replaced_names = ", ".join("%s (%s)" % (c["name"], c["cache_type"]) for c in collisions)
             plan["warnings"].append(
                 "Readyset drops colliding caches before creating the new cache: %s will be replaced." % replaced_names
@@ -1318,9 +2082,10 @@ def plan_action(report, action, target=None, value=None, conn=None):
                 else "Materializes an incrementally maintained streaming dataflow cache on Readyset."
             ),
             statements=[built["statement"]],
-            undo=("DROP CACHE %s;" % _rs_ident(built["name"], "Cache name")) if built["name"] else "DROP CACHE `<query_id>`;",
+            undo=("DROP CACHE %s;" % _rs_ident_server(built["name"], "Cache name")) if built["name"] else "DROP CACHE `<query_id>`;",
             expect={
                 "readyset_version": report.get("version"),
+                "session_database": report.get("session_database"),
                 "cache_type": ctype,
                 "name": built["name"],
                 "target": built["target"],
@@ -1328,26 +2093,26 @@ def plan_action(report, action, target=None, value=None, conn=None):
             },
         )
         plan["facts"].extend([
+            ["Default database", report.get("session_database") or "none"],
             ["Cache type", ctype.capitalize()],
             ["Options", ", ".join(built["options"]) if built["options"] else "Default"],
             ["From", built["target"][:140]],
         ])
-        return plan
+        return _finish_plan(plan)
 
     if action in ("drop_cache", "flush_cache"):
         if not caps.get("can_manage_caches", True):
             raise ValueError("Cache management is disabled on this Readyset listener.")
         t = target if isinstance(target, dict) else {}
-        tname = _text(t.get("name"))
-        tqid = _text(t.get("query_id"))
-        found = next(
-            (c for c in caches if (tname and c.get("name") == tname) or (tqid and c.get("query_id") == tqid)),
-            None,
-        )
+        found = _find_cache_row(caches, t.get("name"), _text(t.get("query_id")))
         if found is None:
             raise ValueError("That cache no longer exists on Readyset.")
         ident_name = found["name"] or found["query_id"]
-        quoted = _rs_ident(ident_name, "Cache name")
+        if "." in ident_name:
+            # The catalog gate refuses this first; defense in depth. A dotted
+            # reported name cannot be addressed unambiguously (_DOTTED_ROW_NAME).
+            raise ActionUnavailable("%s %s" % _DOTTED_ROW_NAME)
+        quoted = _rs_ident_server(ident_name, "Cache name")
         if action == "flush_cache":
             if found.get("cache_type") != "shallow":
                 raise ValueError("FLUSH CACHE applies only to shallow caches.")
@@ -1395,7 +2160,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             ["Query", (found.get("query") or "")[:140]],
         ])
         plan["verified"].append("cache %s unchanged since review" % ident_name)
-        return plan
+        return _finish_plan(plan)
 
     if action == "flush_all_shallow_caches":
         shallow = [c for c in caches if c.get("cache_type") == "shallow"]
@@ -1413,13 +2178,15 @@ def plan_action(report, action, target=None, value=None, conn=None):
             expect={"readyset_version": report.get("version"), "shallow_count": len(shallow)},
         )
         plan["warnings"].append("Upstream query load may spike while evicted shallow cache entries repopulate.")
-        return plan
+        return _finish_plan(plan)
 
     if action in ("drop_all_caches", "drop_all_shallow_caches", "drop_all_deep_caches"):
+        if action == "drop_all_caches" and value not in (None, "", {}):
+            # One id builds one statement shape: the retired value scope of
+            # drop_all_caches is refused, never silently broadened to all caches.
+            raise ValueError("Use Drop shallow caches or Drop deep caches for a scoped drop.")
         scope = "shallow" if action == "drop_all_shallow_caches" else (
-            "deep" if action == "drop_all_deep_caches" else (
-                value if value in ("shallow", "deep") else "all"
-            )
+            "deep" if action == "drop_all_deep_caches" else "all"
         )
         matching = [c for c in caches if scope == "all" or c.get("cache_type") == scope]
         if not matching:
@@ -1443,9 +2210,11 @@ def plan_action(report, action, target=None, value=None, conn=None):
             expect={"readyset_version": report.get("version"), "scope": scope, "caches_fp": prints.get("caches")},
         )
         plan["warnings"].append("Every traffic surge absorbed by these caches will hit the upstream database immediately.")
-        return plan
+        return _finish_plan(plan)
 
     if action == "drop_all_proxied_queries":
+        if not caps.get("can_manage_caches", True):
+            raise ValueError("Cache management is disabled on this Readyset listener.")
         count = len(report.get("proxied_queries") or ())
         plan.update(
             eyebrow="PROXIED QUERIES",
@@ -1458,32 +2227,37 @@ def plan_action(report, action, target=None, value=None, conn=None):
             undo="Cannot be undone; Readyset records proxied queries again as new traffic arrives.",
             expect={"readyset_version": report.get("version")},
         )
-        return plan
+        return _finish_plan(plan)
 
     if action in ("enter_maintenance_mode", "exit_maintenance_mode"):
         entering = action == "enter_maintenance_mode"
-        cur_status = sf.get("status") or "Online"
+        cur_status = sf.get("status")
+        shown_status = cur_status if cur_status is not None else "not reported"
         if entering and cur_status == "Maintenance Mode":
             raise ValueError("Readyset is already in Maintenance Mode.")
         if not entering and cur_status != "Maintenance Mode":
-            raise ValueError("Readyset is not in Maintenance Mode (current status: %s)." % cur_status)
+            raise ValueError("Readyset is not in Maintenance Mode (current status: %s)." % shown_status)
         stmt = "ALTER READYSET %s MAINTENANCE MODE;" % ("ENTER" if entering else "EXIT")
         plan.update(
             eyebrow="MAINTENANCE MODE",
             title="Enter Readyset maintenance mode?" if entering else "Exit Readyset maintenance mode?",
             confirm_label="Enter maintenance mode" if entering else "Exit maintenance mode",
             description=(
-                "Stops serving queries from Readyset caches and proxies traffic directly to upstream."
+                "Sets Readyset's status to Maintenance Mode: a status signal that tools such as ProxySQL are "
+                "meant to act on by stopping traffic to Readyset, which keeps serving the queries it receives. "
+                "The setting is kept in memory; restarting Readyset clears it."
                 if entering
-                else "Resumes serving eligible queries from Readyset caches."
+                else "Clears the Maintenance Mode status signal so tools such as ProxySQL send queries to "
+                     "Readyset again; Readyset kept serving the queries it received. The setting is kept in "
+                     "memory; restarting Readyset clears it."
             ),
             statements=[stmt],
             typed_guard="MAINTENANCE MODE" if entering else None,
             undo="ALTER READYSET %s MAINTENANCE MODE;" % ("EXIT" if entering else "ENTER"),
             expect={"readyset_version": report.get("version"), "status": cur_status},
         )
-        plan["facts"].append(["Status", "%s → %s" % (cur_status, "Maintenance Mode" if entering else "Online")])
-        return plan
+        plan["facts"].append(["Status", "%s → %s" % (shown_status, "Maintenance Mode" if entering else "Online")])
+        return _finish_plan(plan)
 
     params = {}
     if isinstance(target, dict):
@@ -1507,7 +2281,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
         )
         plan["facts"].append(["Log directives", str(raw_lvl).strip()])
         plan["warnings"].append("Runtime change only: resets to the startup --log-level value if Readyset restarts.")
-        return plan
+        return _finish_plan(plan)
 
     if action == "set_eviction_memory_limit":
         raw_bytes = params.get("bytes") if "bytes" in params else value
@@ -1528,7 +2302,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             plan["warnings"].append("A limit of 0 bytes aggressively evicts cached values.")
         plan["warnings"].append("Runtime change only: update startup flags to persist across restarts.")
         plan["facts"].append(["Memory limit", "%s bytes (%.2f MiB)" % ("{:,}".format(nbytes), mb)])
-        return plan
+        return _finish_plan(plan)
 
     if action == "set_eviction_period":
         raw_ms = params.get("period_ms") if "period_ms" in params else (
@@ -1547,25 +2321,33 @@ def plan_action(report, action, target=None, value=None, conn=None):
         )
         plan["warnings"].append("Runtime change only: update startup flags to persist across restarts.")
         plan["facts"].append(["Eviction period", "%s ms" % "{:,}".format(ms)])
-        return plan
+        return _finish_plan(plan)
 
     if action in ("add_shallow_allowed", "drop_shallow_allowed"):
         adding = action == "add_shallow_allowed"
         src = target if isinstance(target, dict) else {}
-        val_dict = value if isinstance(value, dict) else {}
-        kind_key = (params.get("allow_kind") or params.get("kind") or "function").strip().lower()
-        if kind_key not in SHALLOW_ALLOWLIST_KINDS:
-            raise ValueError("Choose allowlist kind 'function', 'variable' or 'schema'.")
+        kind_key = _allowlist_kind(target, value)
         singular, _, list_key = SHALLOW_ALLOWLIST_KINDS[kind_key]
         raw_item = (
             src.get("name") or src.get("identifier")
             if not adding and (src.get("name") or src.get("identifier"))
             else (params.get("name") or params.get("identifier") if params else value)
         )
-        if not isinstance(raw_item, str) or not raw_item.strip():
+        if not isinstance(raw_item, str):
             raise ValueError("Pass the %s name." % kind_key)
-        clean_item = raw_item.strip()
-        quoted_item = _rs_ident(clean_item, "%s name" % kind_key.capitalize())
+        from_row = not adding and bool(src.get("name") or src.get("identifier"))
+        if _has_ctl_or_fmt(raw_item):
+            if from_row or not adding:
+                raise ActionUnavailable("%s %s" % _CONTROL_ROW_NAME)
+            raise ValueError("Choose an allowlist name without control or format characters.")
+        clean_item = raw_item if from_row else raw_item.strip()
+        if not clean_item:
+            raise ValueError("Pass the %s name." % kind_key)
+        if from_row:
+            quoted_item = _rs_ident_server(clean_item, "%s name" % kind_key.capitalize())
+        else:
+            clean_item = _rs_ident_parse(clean_item, "%s name" % kind_key.capitalize())
+            quoted_item = _rs_ident_server(clean_item, "%s name" % kind_key.capitalize())
         current_items = list((report.get("shallow_allowlists") or {}).get(list_key) or ())
         exists = any(x.lower() == clean_item.lower() for x in current_items)
         if adding and exists:
@@ -1595,7 +2377,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             },
         )
         plan["facts"].append([kind_key.capitalize(), clean_item])
-        return plan
+        return _finish_plan(plan)
 
     if action == "flush_privileges":
         plan.update(
@@ -1608,7 +2390,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             undo="No undo needed: refreshes Readyset's ACL cache from upstream.",
             expect={"readyset_version": report.get("version")},
         )
-        return plan
+        return _finish_plan(plan)
 
     if action == "resnapshot_table":
         raw_tbl = (target.get("table") if isinstance(target, dict) else None) or (
@@ -1616,14 +2398,24 @@ def plan_action(report, action, target=None, value=None, conn=None):
         )
         if not isinstance(raw_tbl, str) or not raw_tbl.strip():
             raise ValueError("Choose a replicated table to re-snapshot.")
-        tname = raw_tbl.strip()
-        quoted_tbl = _rs_table_ident(tname)
-        found_tbl = next(
-            (t for t in (report.get("tables") or ()) if t.get("table") and _rs_table_ident(t["table"]) == quoted_tbl),
-            None,
-        )
+        quoted_tbl = _rs_table_ident(raw_tbl)
+        found_tbl = None
+        for t in report.get("tables") or ():
+            raw = t.get("table")
+            if not raw:
+                continue
+            if raw == raw_tbl:
+                found_tbl = t
+                break
+            try:
+                if _rs_table_ident(raw) == quoted_tbl:
+                    found_tbl = t
+                    break
+            except (ValueError, TypeError):
+                continue
         if found_tbl is None:
-            raise ValueError("Table %s is not in Readyset's table list." % tname)
+            raise ValueError("Table %s is not in Readyset's table list." % _display(raw_tbl))
+        tname = found_tbl["table"]
         stmt = "ALTER READYSET RESNAPSHOT TABLE %s;" % quoted_tbl
         plan.update(
             eyebrow="RESNAPSHOT",
@@ -1648,7 +2440,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             ["Table", tname],
             ["Current status", found_tbl.get("status") or "Unknown"],
         ])
-        return plan
+        return _finish_plan(plan)
 
     if action == "add_tables":
         raw_val = params.get("tables") if "tables" in params else value
@@ -1671,11 +2463,14 @@ def plan_action(report, action, target=None, value=None, conn=None):
             target_text=", ".join(raw_items[:4]) + ("…" if len(raw_items) > 4 else ""),
             description="Starts snapshotting and replicating the specified upstream base tables into Readyset.",
             statements=[stmt],
-            expect={"readyset_version": report.get("version"), "tables": raw_items, "tables_fp": prints.get("tables")},
+            expect={"readyset_version": report.get("version"),
+                    "session_database": report.get("session_database"),
+                    "tables": raw_items, "tables_fp": prints.get("tables")},
         )
         plan["warnings"].append("Each added table runs an initial snapshot query against the upstream CDC server.")
         plan["facts"].append(["Tables", ", ".join(raw_items)])
-        return plan
+        plan["facts"].append(["Default database", report.get("session_database") or "none"])
+        return _finish_plan(plan)
 
     if action in ("stop_replication", "start_replication"):
         stopping = action == "stop_replication"
@@ -1700,7 +2495,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             expect={"readyset_version": report.get("version"), "replication_status": cur_repl},
         )
         plan["facts"].append(["Replication Status", "%s → %s" % (cur_repl, "Stopped" if stopping else "Running")])
-        return plan
+        return _finish_plan(plan)
 
     if action == "set_replication_position":
         raw_pos = params.get("position") if "position" in params else value
@@ -1730,7 +2525,7 @@ def plan_action(report, action, target=None, value=None, conn=None):
             ["Current max offset", sf.get("max_replication_offset") or "Unknown"],
             ["New position", str(raw_pos).strip()[:160]],
         ])
-        return plan
+        return _finish_plan(plan)
 
     if action in ("shutdown", "shutdown_reset"):
         if not caps.get("can_shutdown"):
@@ -1761,9 +2556,11 @@ def plan_action(report, action, target=None, value=None, conn=None):
                 "SHUTDOWN RESET deletes persisted snapshot state: restarting Readyset will scan all replicated "
                 "tables on the upstream database."
             )
-        return plan
+        return _finish_plan(plan)
 
-    raise ValueError("Unknown Readyset action %r." % (action,))
+    # Unreachable while every catalog id maps to a branch above; the catalog
+    # gate at the top already refuses any id the catalog does not offer.
+    raise ValueError("That change is not offered on this Readyset now. Refresh and try again.")
 
 
 def _snapshot_state(report):
@@ -1887,15 +2684,22 @@ def format_text(report):
     caches = report.get("caches") or []
     upstreams = report.get("upstreams") or []
 
+    def _cnt(value):
+        return str(value) if value is not None else "not read"
+
+    role = report.get("port_role")
+    port_text = terminal_text("%s port" % role) if role else "port not read"
     lines = [
-        "Readyset %s (%s port) — status: %s (%s)" % (
+        "Readyset %s (%s) — status: %s (%s)" % (
             terminal_text(report.get("version") or "unknown"),
-            terminal_text(report.get("port_role") or "sql"),
+            port_text,
             terminal_text((report.get("status") or "unknown").upper()),
-            terminal_text(sf.get("status") or "Online"),
+            terminal_text(sf.get("status") or "Not read"),
         )
     ]
-    for why in report.get("status_why") or ():
+    findings = report.get("findings") or ()
+    why_lines = [f["title"] for f in findings] if findings else list(report.get("status_why") or ())
+    for why in why_lines:
         lines.append("  ! %s" % terminal_text(why))
 
     lag_str = ""
@@ -1908,14 +2712,19 @@ def format_text(report):
             lag_str,
         )
     )
-    share = ("%.1f%% cached share" % tel["cached_share_pct"]) if tel.get("cached_share_pct") is not None else "no traffic yet"
+    if tel.get("cached_share_pct") is not None:
+        share = "%.1f%% cached share" % tel["cached_share_pct"]
+    elif tel.get("total_observed_executions") is None:
+        share = "cached share not read"
+    else:
+        share = "no traffic yet"
     lines.append(
-        "Telemetry: %d cached / %d upstream observed executions (%s); shallow hits %d, misses %d%s" % (
-            tel.get("cached_executions", 0),
-            tel.get("upstream_executions", 0),
+        "Telemetry: %s cached / %s upstream observed executions (%s); shallow hits %s, misses %s%s" % (
+            _cnt(tel.get("cached_executions")),
+            _cnt(tel.get("upstream_executions")),
             share,
-            tel.get("shallow_hits", 0),
-            tel.get("shallow_misses", 0),
+            _cnt(tel.get("shallow_hits")),
+            _cnt(tel.get("shallow_misses")),
             (", hit rate %.1f%%" % tel["shallow_hit_rate_pct"]) if tel.get("shallow_hit_rate_pct") is not None else "",
         )
     )

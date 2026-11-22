@@ -166,6 +166,10 @@ class Refusal(ValueError):
         self.outcome = outcome
 
 
+class ActionUnavailable(ValueError):
+    """A catalog refusal, already worded for the user (including its fix)."""
+
+
 def worst_kind(statements, floor="risky"):
     """The verdict dbops.decide judges *statements* by: the worst kind of what
     dbops.classify says about each one and *floor*. ProxySQL Admin commands

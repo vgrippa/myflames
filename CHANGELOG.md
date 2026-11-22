@@ -13,6 +13,11 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Adds **New group…** and **Group (N)…** to **Home** to create a connection group from saved connections, and **Open** on each group card, which opens the Group connection in **Topology**.
 - Adds **Change on every member…** to **Topology** > **Parameters**. One review covers a parameter change on every server in the group. myflames then applies it one server at a time (replicas and secondaries before the primary), checks each server's identity first, stops at the first failure and writes one audit record per server.
 
+### Improvements
+
+- Improves **Readyset**, **ProxySQL**, and the upstream tiers above **Cluster** and **Replication** to share one compact topology layout with Cluster-style cards, tier jump buttons, and detached cards for down active CDC upstreams and problem peers. Upstream server details move into each upstream card's inspector while **Active client connections** stays on **Topology**.
+- Improves **Readyset** findings and action controls so findings appear worst first with **Details** toggles and **Show in `<tab>`** links. Every server, row, and allowlist action stays visible with its disabled reason and fix beneath it, and **Drop shallow caches…** and **Drop deep caches…** sit alongside **Drop all caches…**.
+
 ### Bug fixes
 
 - Fixed an issue where **Settings**, **Maintenance** and query connections could choose different client tools with repeated PATH entries, a chosen tools folder or a MySQL Shell symlink. Equal-version Shell copies on PATH also keep precedence over chosen-folder copies in **Settings**, **Maintenance** and **Cluster**. Authentication plugin errors also avoid scanning MySQL Shell.
@@ -28,6 +33,13 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where the **Connections** table on **Home** gave its **Name** column none of the spare width at 1440 px when the interface font is Inter (the Linux fallback, and an option in **Settings** > **Appearance**).
 - Fixed an issue where **Workload** > **Top statements** scrolled sideways at 1440 px when the interface font is Inter (the Linux fallback, and an option in **Settings** > **Appearance**).
 - Fixed an issue where choosing another source in **Import connections** right after opening it could leave the sheet loading, with the **Import from** picker disabled.
+- Fixed an issue where **Readyset** showed **OK**, **Online**, empty lists, zero telemetry counts, or inferred upstream health and inactive CDC roles when status, cache, table, or telemetry reads failed or omitted fields. Unreported states now read **Not read**, failed reads raise findings and disable dependent actions, and zero-traffic tiles show **No traffic yet**.
+- Fixed an issue where the **Readyset** **Base replication** tile, CDC link, and upstream **Readyset** tiers could show **Running** or healthy despite a reported replicator error, **Disabled** replication was labelled as CDC replication, and a connecting async replica peer showed **Replication stopped**. Reported errors now govern those states, and **Disabled** and **Connecting** show their own labels.
+- Fixed an issue where **Readyset** guessed the SQL adapter or admin listener role from the port number or an unprobed `readyset` database. Listener detection now uses query behavior across status reads and topology probes, showing **Port not read** and disabling **Create cache…**, `EXPLAIN CREATE CACHE`, **Shut down Readyset…**, and **Shut down & reset snapshot…** when unconfirmed.
+- Fixed an issue where **ProxySQL** and **Readyset** topologies treated configuration-only rows as runtime health, showed offline-hostgroup nodes and unread **ProxySQL** tiers as healthy, labelled address matches as verified, and hid tier link labels from screen readers. Unread rows now read **Not read**, stopped nodes stay stopped, and address matches read **Matched by address**.
+- Fixed an issue where **Readyset** maintenance mode was described as bypassing caches and **Enter maintenance mode…** stayed available while snapshots were running or unread. The finding, **Parameters** row, and review now explain it is an in-memory signal for tools such as **ProxySQL**, and **Enter maintenance mode…** enables only when **Status** is **Online**.
+- Fixed an issue where **Readyset** trimmed reported names, allowed dotted cache names in `DROP CACHE` or `FLUSH CACHE`, let backticked names bypass **Create cache** collision or allowlist checks, or skipped default-database and exact-cache review checks. Reported names now stay intact, unusable or control-character names disable only that row, and mismatched targets are refused.
+- Fixed an issue where a support check in **Create cache** could apply results to an edited query, and an aborted check could leave the dialog stuck checking. Each check now stays bound to the current draft and connection, discarding stale results and clearing the checking state on abort.
 
 ### Security fixes
 
@@ -35,6 +47,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where a very long URL-like value read from a server could freeze the app for seconds while myflames hid the passwords in it.
 - Fixed an issue where the **Software update** dialog's **View on GitHub** link used the address from the update check without checking it. It now opens only a myflames release page on GitHub.
 - Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.
+- Fixed an issue where database URL passwords and the connection password could appear unredacted in **Readyset** cached or proxied queries, table errors, cacheability notes, `EXPLAIN CREATE CACHE` results, exported cache definitions, and connection error messages. Those fields are now redacted before display or export, and redacted exported definitions are commented out with a warning.
 
 ### Packaging notes
 

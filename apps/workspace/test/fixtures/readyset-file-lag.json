@@ -7,9 +7,11 @@
  "port_role": "adapter",
  "in_readyset_schema": false,
  "readyset_schema": "readyset",
+ "session_database": "shop",
  "message": null,
  "status": "ok",
  "status_why": [],
+ "findings": [],
  "status_fields": {
   "database_connection": "Connected",
   "connection_count": 5,
@@ -121,7 +123,31 @@
     "p999_ms": 1.4,
     "last_executed_s": 3
    },
-   "upstream_stats": null
+   "upstream_stats": null,
+   "actions": [
+    {
+     "id": "flush_cache",
+     "label": "Flush entries…",
+     "scope": "row",
+     "tone": "default",
+     "danger": false,
+     "description": "Discards all currently stored entries of this shallow cache; the definition stays active.",
+     "enabled": false,
+     "why_not": "FLUSH CACHE applies only to shallow caches.",
+     "fix": "Only shallow cache entries can be flushed."
+    },
+    {
+     "id": "drop_cache",
+     "label": "Drop cache…",
+     "scope": "row",
+     "tone": "danger",
+     "danger": true,
+     "description": "Removes this cache so matching queries run directly on the upstream database.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   },
   {
    "query_id": "q_2222bbbb",
@@ -159,7 +185,31 @@
     "p999_ms": 2.0,
     "last_executed_s": 1
    },
-   "upstream_stats": null
+   "upstream_stats": null,
+   "actions": [
+    {
+     "id": "flush_cache",
+     "label": "Flush entries…",
+     "scope": "row",
+     "tone": "default",
+     "danger": false,
+     "description": "Discards all currently stored entries of this shallow cache; the definition stays active.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    {
+     "id": "drop_cache",
+     "label": "Drop cache…",
+     "scope": "row",
+     "tone": "danger",
+     "danger": true,
+     "description": "Removes this cache so matching queries run directly on the upstream database.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   }
  ],
  "proxied_queries": [
@@ -184,7 +234,20 @@
     "p999_ms": 44.0,
     "last_executed_s": 2
    },
-   "cached_stats": null
+   "cached_stats": null,
+   "actions": [
+    {
+     "id": "create_cache",
+     "label": "Create cache…",
+     "scope": "row",
+     "tone": "default",
+     "danger": false,
+     "description": "Creates a shallow or deep cache for this proxied query.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   },
   {
    "query_id": "q_4444dddd",
@@ -196,21 +259,60 @@
    "shallow_reason": "non-deterministic function RAND",
    "already_cached": false,
    "upstream_stats": null,
-   "cached_stats": null
+   "cached_stats": null,
+   "actions": [
+    {
+     "id": "create_cache",
+     "label": "Create cache…",
+     "scope": "row",
+     "tone": "default",
+     "danger": false,
+     "description": "Creates a shallow or deep cache for this proxied query.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   }
  ],
  "tables": [
   {
    "table": "`shop`.`orders`",
-   "status": "Snapshotted",
+   "status": "Online",
    "bucket": "snapshotted",
-   "description": null
+   "description": null,
+   "actions": [
+    {
+     "id": "resnapshot_table",
+     "label": "Re-snapshot table…",
+     "scope": "row",
+     "tone": "danger",
+     "danger": true,
+     "description": "Drops Readyset's local copy of this base table and reads a fresh snapshot from the upstream CDC server.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   },
   {
    "table": "`shop`.`audit_blob`",
-   "status": "Ignored",
+   "status": "Not replicated",
    "bucket": "ignored",
-   "description": "Unsupported column type"
+   "description": "Column type POINT is not supported.",
+   "actions": [
+    {
+     "id": "resnapshot_table",
+     "label": "Re-snapshot table…",
+     "scope": "row",
+     "tone": "danger",
+     "danger": true,
+     "description": "Drops Readyset's local copy of this base table and reads a fresh snapshot from the upstream CDC server.",
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    }
+   ]
   }
  ],
  "table_counts": {
@@ -231,6 +333,80 @@
   ],
   "schemas": [
    "shop"
+  ]
+ },
+ "allowlist_actions": {
+  "functions": [
+   {
+    "id": "add_shallow_allowed",
+    "label": "Allow…",
+    "scope": "row",
+    "tone": "default",
+    "danger": false,
+    "description": "Lets automatic shallow cache creation accept queries that reference this function.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   },
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this function; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
+  ],
+  "variables": [
+   {
+    "id": "add_shallow_allowed",
+    "label": "Allow…",
+    "scope": "row",
+    "tone": "default",
+    "danger": false,
+    "description": "Lets automatic shallow cache creation accept queries that reference this variable.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   },
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this variable; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
+  ],
+  "schemas": [
+   {
+    "id": "add_shallow_allowed",
+    "label": "Allow…",
+    "scope": "row",
+    "tone": "default",
+    "danger": false,
+    "description": "Lets automatic shallow cache creation accept queries that reference this schema.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   },
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this schema; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
   ]
  },
  "connections": [
@@ -342,7 +518,7 @@
  },
  "fingerprints": {
   "caches": "b9da95a6b09e0974",
-  "tables": "3557064d4166c1c1",
+  "tables": "1249dffbe9460c7e",
   "allowlists": "7520570c0cae3bc2",
   "replication": "17973225ab55c47b"
  },
@@ -350,77 +526,211 @@
   {
    "id": "create_cache",
    "label": "Create cache…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Creates a shallow or deep cache for a query or query id.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "flush_all_shallow_caches",
    "label": "Flush shallow caches…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Evicts every cached entry across all shallow caches; cache definitions remain active.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "drop_all_caches",
    "label": "Drop all caches…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Removes every cache definition; queries immediately fall back to the upstream database.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "drop_all_shallow_caches",
    "label": "Drop shallow caches…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Removes every shallow cache definition.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "drop_all_deep_caches",
    "label": "Drop deep caches…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Removes every deep cache definition.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "drop_all_proxied_queries",
    "label": "Clear proxied queries…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Clears Readyset's catalog of observed uncached proxied queries; active caches are untouched.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "enter_maintenance_mode",
    "label": "Enter maintenance mode…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Sets Readyset's status to Maintenance Mode, a signal for tools such as ProxySQL to stop sending queries.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
+  },
+  {
+   "id": "exit_maintenance_mode",
+   "label": "Exit maintenance mode…",
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Clears the Maintenance Mode status signal.",
+   "enabled": false,
+   "why_not": "Readyset is not in maintenance mode.",
+   "fix": "Only a server in maintenance mode can exit it."
+  },
+  {
+   "id": "start_replication",
+   "label": "Start replication…",
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Resumes ingesting binlog changes from the upstream CDC server.",
+   "enabled": false,
+   "why_not": "Replication is already Running.",
+   "fix": "Only stopped replication can be started."
   },
   {
    "id": "stop_replication",
    "label": "Stop replication…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Pauses ingesting binlog changes from the upstream CDC server; deep caches stop receiving updates.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "set_replication_position",
    "label": "Set replication position…",
-   "tone": "danger"
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Sets the upstream binlog or GTID position from which Readyset's replicator resumes.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "add_tables",
    "label": "Add tables to replicate…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Starts snapshotting and replicating the specified upstream base tables into Readyset.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "set_log_level",
    "label": "Set log level…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Updates Readyset's runtime tracing filter immediately.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "set_eviction_memory_limit",
    "label": "Set eviction memory limit…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Updates the runtime memory threshold at which Readyset evicts cached entries.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "set_eviction_period",
    "label": "Set eviction period…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Sets how often Readyset runs its cache memory eviction sweep.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "add_shallow_allowed",
    "label": "Add shallow allowlist item…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Lets automatic shallow cache creation accept queries that reference one function, variable or schema; explicit CREATE SHALLOW CACHE and query hints bypass the allowlists.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
   },
   {
    "id": "flush_privileges",
    "label": "Flush Readyset privileges…",
-   "tone": "default"
+   "scope": "server",
+   "tone": "default",
+   "danger": false,
+   "description": "Refreshes Readyset's cached upstream user credentials and table ACLs immediately.",
+   "enabled": true,
+   "why_not": null,
+   "fix": null
+  },
+  {
+   "id": "shutdown",
+   "label": "Shut down Readyset…",
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Stops the Readyset process cleanly.",
+   "enabled": false,
+   "why_not": "ALTER READYSET SHUTDOWN is accepted only on the Readyset admin SQL port (default 6036).",
+   "fix": "Connect to the Readyset admin SQL port (default 6036) to shut down Readyset."
+  },
+  {
+   "id": "shutdown_reset",
+   "label": "Shut down & reset snapshot…",
+   "scope": "server",
+   "tone": "danger",
+   "danger": true,
+   "description": "Stops the Readyset process and discards persistent snapshot state so the next start performs a full re-snapshot.",
+   "enabled": false,
+   "why_not": "ALTER READYSET SHUTDOWN is accepted only on the Readyset admin SQL port (default 6036).",
+   "fix": "Connect to the Readyset admin SQL port (default 6036) to shut down Readyset."
   }
  ],
  "notes": [
@@ -446,5 +756,12 @@
   "SHOW READYSET ALL TABLES",
   "SHOW PROXIED DEEP QUERIES",
   "SHOW PROXIED SHALLOW QUERIES"
- ]
+ ],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
+ }
 }

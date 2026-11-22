@@ -22,12 +22,47 @@
 // next to the hostgroup a digest ran on with a mismatch flagged, and jumps
 // between a rule and its digests.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
+import vm from "node:vm";
+import { transformWithEsbuild } from "vite";
 import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
 import { reviewedActionsUnit } from "./reviewed-actions-unit.mjs";
 
 await reviewedActionsUnit();
+
+// Q2.1d: servingState delegates the status word to the shared
+// proxySqlBackendState (the rule the Readyset topology's ProxySQL tier also
+// uses); only the offline-hostgroup override and the config-source rule are
+// the tier's own.
+{
+  const source = await fs.readFile(new URL("../src/ProxySqlTopology.tsx", import.meta.url), "utf8");
+  const slice = source.slice(source.indexOf("type StatusNode"), source.indexOf("/** True when the same address is ONLINE"));
+  const { code } = await transformWithEsbuild(slice, "ProxySqlTopology.tsx", {
+    loader: "tsx", format: "cjs", target: "es2020",
+  });
+  const context = { module: { exports: {} }, exports: {} };
+  vm.runInNewContext(code, context);
+  const { proxySqlBackendState, servingState } = context.module.exports;
+  const node = (status, status_source = "runtime", hostgroup_roles = []) => ({ status, status_source, hostgroup_roles });
+  for (const [word, state] of [
+    ["ONLINE", "running"],
+    ["OFFLINE_HARD", "error"],
+    ["SHUNNED", "stopped"],
+    ["SHUNNED_REPLICATION_LAG", "stopped"],
+    ["OFFLINE_SOFT", "stopped"],
+    ["UNKNOWN", "unread"],
+    ["PAUSED", "unread"],
+    [null, "unread"],
+  ]) {
+    assert.equal(proxySqlBackendState(word).state, state, `shared rule: ${word}`);
+    assert.equal(servingState(node(word)), proxySqlBackendState(word).state, `servingState follows the shared rule for ${word}`);
+  }
+  assert.equal(servingState(node("ONLINE", "runtime", ["offline"])), "stopped", "an offline-hostgroup ONLINE row is out of traffic");
+  assert.equal(servingState(node("ONLINE", "config")), "unread", "a config-only ONLINE row is not read");
+  assert.equal(servingState(node(null)), "unread", "an unreported status is not read");
+}
 // Useful where loopback listeners and browser suites are unavailable.
 if (process.argv.includes("--unit")) process.exit(0);
 
@@ -711,6 +746,7 @@ try {
         port: 3307,
         address: "readyset-cache:3307",
         hostgroup_id: 40,
+        hostgroup_roles: [],
         status: "ONLINE",
         weight: 1000,
         routing_mode: "cached_and_mirrored",
@@ -808,7 +844,123 @@ try {
   assert.match(proxyTopoText, /InnoDB Cluster \(mfcluster\)/);
   assert.equal(await page.$(`${view} .proxysql-topology .topology-presentation-controls`), null, "no presentation controls");
   assert.equal(await page.$eval(`${view} .proxysql-topology`, (e) => e.dataset.motion), "on");
+  // S12: every node above carries a profile_name but profile_id null, so none
+  // renders a Use chip; chips come only from a backend profile_id.
+  assert.equal(
+    await page.$(`${view} .proxysql-topology .cluster-use-node`),
+    null,
+    "no Use chip without a backend profile_id",
+  );
   await shot("proxysql-topology-multitier-1440.png");
+
+  // Lane rs1-B: with the reported statuses stripped, no link runs, no stem is
+  // active and the nodes read Not read.
+  const unreadTiers = structuredClone(multiTierProxy);
+  unreadTiers.topology.readyset_nodes = unreadTiers.topology.readyset_nodes.map((n) => ({ ...n, status: null }));
+  unreadTiers.topology.database_nodes = unreadTiers.topology.database_nodes.map((n) => ({ ...n, status: null }));
+  await refreshTo(unreadTiers);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .proxysql-topology`, { visible: true });
+  const ptopo = `${view} .proxysql-topology`;
+  assert.equal(await page.$(`${ptopo} .tier-link.is-running`), null, "no link runs on unreported statuses");
+  assert.equal(await page.$(`${ptopo} .cluster-stem.is-active`), null, "no active stem on unreported statuses");
+  // The Admin card keeps its own reported status; the stripped tiers show no OK mark.
+  const okOutsideAdmin = await page.evaluate((sel) => {
+    const rows = [...document.querySelectorAll(`${sel} .tier-row`)];
+    return rows
+      .filter((r) => (r.getAttribute("aria-label") || "") !== "ProxySQL routing layer")
+      .some((r) => r.querySelector(".cluster-mark.is-ok"));
+  }, ptopo);
+  assert.equal(okOutsideAdmin, false, "no OK mark on unreported statuses");
+  assert.match(await h.text(ptopo), /Not read/);
+  await refreshTo(multiTierProxy);
+
+  // Routing states follow the backend (proxysql.py _server_tones): an ONLINE
+  // row in a monitor's offline hostgroup is out of traffic, and every SHUNNED
+  // variant (SHUNNED_REPLICATION_LAG included) is stopped, never unknown.
+  const [dbA, dbB] = multiTierProxy.topology.database_nodes;
+  const stateTiers = structuredClone(multiTierProxy);
+  stateTiers.monitors = [
+    {
+      kind: "group_replication",
+      source: "runtime",
+      active: true,
+      writer_hostgroup: 30,
+      backup_writer_hostgroup: 31,
+      reader_hostgroup: 32,
+      offline_hostgroup: 39,
+      max_writers: 1,
+      writer_is_also_reader: 0,
+      max_transactions_behind: 16,
+      comment: "",
+    },
+  ];
+  stateTiers.topology.database_nodes = [
+    { ...dbA, hostgroup_id: 39, hostgroup_roles: ["offline"], status: "ONLINE", status_source: "runtime" },
+    { ...dbB, hostgroup_id: 32, hostgroup_roles: ["reader"], status: "SHUNNED_REPLICATION_LAG", status_source: "runtime" },
+  ];
+  await refreshTo(stateTiers);
+  await tab("Topology");
+  const stateLinks = await page.$$eval(`${ptopo} .tier-link`, (els) => els.map((e) => e.className));
+  assert.ok(stateLinks.some((c) => c.includes("is-stopped")), "an offline-hostgroup ONLINE row and a SHUNNED variant stop the backend link");
+  assert.ok(stateLinks.some((c) => c.includes("is-running")), "the reported ONLINE Readyset tier link still runs");
+  const stateTones = await page.$$eval(`${ptopo} .tier-row[aria-label="Database backend hostgroups"] .tier-card`, (els) =>
+    els.map((e) => [...e.classList].find((c) => c.startsWith("tone-"))),
+  );
+  assert.deepEqual(stateTones, ["tone-watch", "tone-watch"], "an offline-hostgroup ONLINE row and a SHUNNED variant read watch, never ok or unknown");
+  assert.match(await h.text(ptopo), /SHUNNED_REPLICATION_LAG/, "a SHUNNED variant shows its reported word");
+
+  // CX-M18: a Readyset node ONLINE in a monitor's offline hostgroup is out of
+  // traffic: its card reads watch and the Readyset tier link stops.
+  const rsOfflineTiers = structuredClone(multiTierProxy);
+  rsOfflineTiers.topology.readyset_nodes = rsOfflineTiers.topology.readyset_nodes.map((n) => ({
+    ...n,
+    hostgroup_roles: ["offline"],
+    status: "ONLINE",
+    status_source: "runtime",
+  }));
+  await refreshTo(rsOfflineTiers);
+  await tab("Topology");
+  const rsOfflineTone = await page.$eval(`${ptopo} .tier-row[aria-label="Readyset cache tier"] .tier-card`, (e) =>
+    [...e.classList].find((c) => c.startsWith("tone-")),
+  );
+  assert.equal(rsOfflineTone, "tone-watch", "an offline-hostgroup ONLINE Readyset node is out of traffic");
+  const rsOfflineLink = await page.$eval(`${ptopo} .tier-link`, (e) => e.className);
+  assert.ok(rsOfflineLink.includes("is-stopped"), "the Readyset tier link stops for an offline-hostgroup node");
+
+  // A SHUNNED writer row never serves traffic, standby or not: the ONLINE
+  // backup-hostgroup row is its own node with its own running state, and the
+  // SHUNNED card only describes the standby's health.
+  const standbyTiers = structuredClone(stateTiers);
+  standbyTiers.topology.database_nodes = [
+    { ...dbA, hostgroup_id: 30, hostgroup_roles: ["writer"], status: "SHUNNED", status_source: "runtime" },
+    { ...dbB, hostgroup_id: 31, hostgroup_roles: ["backup writer"], host: "mf-ic-1", port: 3306, address: "mf-ic-1:3306", status: "ONLINE", status_source: "runtime" },
+  ];
+  await refreshTo(standbyTiers);
+  await tab("Topology");
+  const standbyTones = await page.$$eval(`${ptopo} .tier-row[aria-label="Database backend hostgroups"] .tier-card`, (els) =>
+    els.map((e) => [...e.classList].find((c) => c.startsWith("tone-"))),
+  );
+  assert.deepEqual(standbyTones, ["tone-watch", "tone-ok"], "a SHUNNED writer is stopped; only the ONLINE backup row runs");
+  assert.match(await h.text(ptopo), /standby ONLINE/, "the SHUNNED card describes standby health without claiming traffic");
+  assert.ok(await page.$(`${ptopo} .tier-row[aria-label="Database backend hostgroups"] .cluster-stem.is-active`), "the ONLINE backup row keeps an active stem");
+
+  // The UNKNOWN placeholder and config-only rows are not runtime health: they
+  // read Not read and never run a link or a stem.
+  const cfgTiers = structuredClone(multiTierProxy);
+  cfgTiers.topology.readyset_nodes = cfgTiers.topology.readyset_nodes.map((n) => ({ ...n, status: "UNKNOWN", status_source: null }));
+  cfgTiers.topology.database_nodes = [
+    { ...dbA, status: "ONLINE", status_source: "config" },
+    { ...dbB, status: null, status_source: "config" },
+  ];
+  await refreshTo(cfgTiers);
+  await tab("Topology");
+  const cfgText = await h.text(ptopo);
+  assert.doesNotMatch(cfgText, /UNKNOWN/, "the UNKNOWN placeholder reads Not read");
+  assert.match(cfgText, /Not read/, "config-only rows read Not read");
+  assert.equal(await page.$(`${ptopo} .tier-link.is-running`), null, "a config-only ONLINE row runs no link");
+  assert.equal(await page.$(`${ptopo} .cluster-stem.is-active`), null, "a config-only ONLINE row gets no active stem");
+  await refreshTo(multiTierProxy);
 
   assert.deepEqual(h.errors, []);
   console.log("proxysql: ok");

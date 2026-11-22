@@ -274,28 +274,11 @@ def _probe_connection(conn, profile, remaining=None):
             version = parse_readyset_version(vrows)
         except ConnectorError:
             version = None
-        db_name = (getattr(conn, "database", None) or _text(profile.get("database")) or "").strip()
-        port_role = "adapter"
-        if not db_name:
-            try:
-                _named_rows(conn, "SELECT 1 FROM replication_status LIMIT 0")
-                port_role = "admin"
-            except ConnectorError:
-                port_role = "adapter"
-        elif db_name.lower() == "readyset":
-            if _profile_port(profile) == 6036:
-                port_role = "admin"
-            else:
-                try:
-                    drows = _named_rows(conn, "SHOW DATABASES")
-                    names = {
-                        (next(iter(r.values())) or "").strip().lower()
-                        for r in drows if r
-                    } - {""}
-                    if names and names <= {"information_schema", "public", "readyset"}:
-                        port_role = "admin"
-                except ConnectorError:
-                    pass
+        # Share the Readyset report's evidence-only listener probe, including
+        # its connection copy when the virtual schema is selected. Import here
+        # because readyset also uses this module to assemble its topology.
+        from .readyset import _detect_port_mode
+        port_role, _ = _detect_port_mode(conn, "readyset", timeout=QUERY_TIMEOUT_S)
         status_map = {}
         try:
             srows = _named_rows(conn, "SHOW READYSET STATUS")
@@ -328,10 +311,11 @@ def _probe_connection(conn, profile, remaining=None):
             "product": "Readyset",
             "port_role": port_role,
             "version": version,
-            "status_text": _text(status_map.get("Status")) or "Online",
+            "status_text": _text(status_map.get("Status")),
             "replication_status": _text(status_map.get("Replication Status")),
             "cdc_server": _text(status_map.get("CDC Server")),
             "database_connection": _text(status_map.get("Database Connection")),
+            "replication_error": bool(_text(status_map.get("Last replicator error"))),
             "controller_status": _text(status_map.get("Readyset Controller Status")),
             "upstreams": upstreams,
             "cache_count": cache_count,
@@ -359,15 +343,21 @@ def _probe_connection(conn, profile, remaining=None):
                 echoed_ver = None
         if echoed_ver == admin_ver:
             servers = []
+            servers_source = None
             for tbl in ("runtime_mysql_servers", "mysql_servers"):
                 try:
                     servers = _named_rows(
                         conn,
                         "SELECT hostgroup_id, hostname, port, status, weight, comment FROM %s" % tbl,
                     )
+                    servers_source = "runtime" if tbl == "runtime_mysql_servers" else "config"
                     break
                 except ConnectorError:
                     continue
+            # A row read from main.mysql_servers is configuration, not runtime
+            # health; its status must never be presented as a runtime state.
+            for srv in servers:
+                srv["status_source"] = servers_source
             rules = []
             for tbl in ("runtime_mysql_query_rules", "mysql_query_rules"):
                 try:
@@ -784,7 +774,7 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
         if len(direct) == 1:
             return direct[0], "endpoint"
         if len(direct) > 1:
-            adapters = [p for p in direct if p.get("port_role") != "admin"]
+            adapters = [p for p in direct if p.get("port_role") == "adapter"]
             if len(adapters) == 1:
                 return adapters[0], "endpoint"
         thost = _host_key(host)
@@ -802,7 +792,7 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
             if len(verified) == 1:
                 return verified[0], "upstream_match"
             if len(verified) > 1:
-                adapters = [p for p in verified if p.get("port_role") != "admin"]
+                adapters = [p for p in verified if p.get("port_role") == "adapter"]
                 if len(adapters) == 1:
                     return adapters[0], "upstream_match"
         return None, None
@@ -820,7 +810,17 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
         cfg = srv.get("config") or {}
         pool = srv.get("pool") or {}
         comment = srv.get("comment") or settings.get("comment") or cfg.get("comment") or ""
-        status = srv.get("runtime_status") or cfg.get("status") or srv.get("configured_status") or "UNKNOWN"
+        runtime_status = srv.get("runtime_status")
+        configured_status = _text(cfg.get("status") or srv.get("configured_status"))
+        if runtime_status:
+            # What ProxySQL runs: runtime_mysql_servers or the connection pool.
+            status, status_source = runtime_status, "runtime"
+        elif configured_status:
+            # Configuration only (main.mysql_servers): no runtime health exists,
+            # so the runtime status stays null instead of borrowing the config word.
+            status, status_source = None, "config"
+        else:
+            status, status_source = None, None
         raw_weight = srv.get("weight")
         if raw_weight is None:
             raw_weight = settings.get("weight") if settings.get("weight") is not None else cfg.get("weight")
@@ -863,7 +863,10 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
                 "port": port,
                 "address": format_endpoint(host, port),
                 "hostgroup_id": hg,
+                "hostgroup_roles": roles,
                 "status": status,
+                "status_source": status_source,
+                "configured_status": configured_status,
                 "weight": weight,
                 "routing_mode": mode,
                 "queries": queries,
@@ -889,7 +892,8 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
                         "port": up,
                         "address": format_endpoint(uh, up),
                         "purpose": u.get("purpose") or "",
-                        "active_cdc": str(u.get("active_cdc") or "").lower() in ("true", "1", "t"),
+                        "active_cdc": None if u.get("active_cdc") is None
+                        else str(u.get("active_cdc")).strip().lower() in ("true", "1", "t"),
                         "health": u.get("health"),
                         "profile_id": dbm.get("profile_id") if dbm else None,
                         "profile_name": dbm.get("profile_name") if dbm else None,
@@ -913,6 +917,8 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
             "hostgroup_id": hg,
             "hostgroup_roles": roles,
             "status": status,
+            "status_source": status_source,
+            "configured_status": configured_status,
             "weight": weight,
             "comment": comment or None,
             "queries": queries,
@@ -1132,7 +1138,7 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
     adapter_sigs = {
         _rs_deployment_sig(rsp)
         for rsp, _ in matched_rs_entries
-        if rsp.get("port_role") != "admin"
+        if rsp.get("port_role") == "adapter"
     }
     for rsp, purposes in matched_rs_entries:
         if rsp.get("port_role") == "admin" and _rs_deployment_sig(rsp) in adapter_sigs:
@@ -1144,8 +1150,13 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
             "port": rsp.get("profile_port"),
             "address": format_endpoint(rsp.get("profile_host"), rsp.get("profile_port")),
             "version": rsp.get("version"),
-            "status": rsp.get("status_text") or "Online",
+            "status": rsp.get("status_text"),
             "replication_status": rsp.get("replication_status"),
+            # Problem signals Status/Replication Status never carry: Readyset
+            # reports an unreachable upstream only as Database Connection
+            # Unreachable and a replicator failure only in Last replicator error.
+            "database_connection": rsp.get("database_connection"),
+            "replication_error": bool(rsp.get("replication_error")),
             "cache_count": rsp.get("cache_count"),
             "purpose": ", ".join(purposes) if purposes else "upstream",
             "profile_id": rsp.get("profile_id"),
@@ -1228,10 +1239,13 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
     if not raw_upstreams and status_map.get("CDC Server"):
         ch, cp = split_host_port(status_map.get("CDC Server"), 3306)
         if ch:
+            # Database Connection is an aggregate over any selectable proxy
+            # upstream (readyset-adapter status_reporter.rs upstream_reachable);
+            # it says nothing about this host, so health stays unreported.
             raw_upstreams.append({
                 "host": ch, "port": cp, "database": None, "user": None,
                 "weight": 1, "purpose": "cdc", "active_cdc": "true",
-                "health": "up" if status_map.get("Database Connection") == "Connected" else "unknown",
+                "health": None,
                 "connections": None,
             })
 
@@ -1241,7 +1255,13 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
         if not uh:
             continue
         purpose = _text(row.get("purpose")) or "proxy"
-        active_cdc = str(row.get("active_cdc") or "").lower() in ("true", "1", "t")
+        # Readyset reports active_cdc as null when its controller cannot answer
+        # (readyset-adapter upstream_servers_vrel.rs); keep null, never false.
+        raw_active = row.get("active_cdc")
+        if raw_active is None or str(raw_active).strip() == "":
+            active_cdc = None
+        else:
+            active_cdc = str(raw_active).strip().lower() in ("true", "1", "t")
         health = _text(row.get("health"))
         db_match, ev = match_database_endpoint(uh, up, probed, observer_host=observer_host)
         if db_match is not None and db_match not in matched_db_profiles:
@@ -1261,7 +1281,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             "user": _text(row.get("user")),
             "weight": _int(row.get("weight")),
             "purpose": purpose,
-            "is_cdc": "cdc" in purpose.lower() or active_cdc,
+            "is_cdc": bool("cdc" in purpose.lower() or active_cdc),
             "is_proxy": "proxy" in purpose.lower(),
             "active_cdc": active_cdc,
             "health": health,
@@ -1450,7 +1470,11 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
                 "address": format_endpoint(px_host, pxp.get("profile_port")),
                 "version": pxp.get("version"),
                 "routing_mode": rmode,
-                "backend_status": matched_srv.get("status"),
+                # Only a runtime_mysql_servers row is runtime health; a
+                # config-only row (mysql_servers) leaves the status unread.
+                "backend_status": (matched_srv.get("status")
+                                   if matched_srv.get("status_source") != "config" else None),
+                "status_source": matched_srv.get("status_source"),
                 "hostgroup_id": _int(matched_srv.get("hostgroup_id")),
                 "querypilot_rule_count": qp_rules,
                 "profile_id": pxp.get("profile_id"),
@@ -1465,7 +1489,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             "port_role": port_role,
             "version": version,
             "address": format_endpoint(cur_host, cur_port) if cur_host else None,
-            "status": _text(status_map.get("Status")) or "Online",
+            "status": _text(status_map.get("Status")),
             "replication_status": _text(status_map.get("Replication Status")),
             "connection_count": len(connections_rows or ()),
         },

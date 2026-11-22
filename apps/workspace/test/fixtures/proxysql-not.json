@@ -40,5 +40,12 @@
  "notes": [],
  "statements": [],
  "routing": null,
- "topology": null
+ "topology": null,
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
+ }
 }

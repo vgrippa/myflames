@@ -912,6 +912,8 @@ try {
           querypilot_rule_count: 2,
           profile_id: null,
           profile_name: "ProxySQL Admin",
+          verified: true,
+          evidence: "mysql_servers",
         },
       ],
       readyset: [
@@ -921,11 +923,15 @@ try {
           address: "127.0.0.1:3307",
           version: "stable-250605",
           status: "Online",
-          replication_status: "Online",
+          replication_status: "Running",
+          database_connection: "Connected",
+          replication_error: false,
           purpose: "cdc, query",
           cache_count: 7,
           profile_id: null,
           profile_name: "Readyset Cache",
+          verified: true,
+          evidence: "upstream_servers",
         },
       ],
       live_readyset_connections: 3,
@@ -941,7 +947,83 @@ try {
   assert.match(clusterTierText, /2 QueryPilot rules/);
   assert.match(clusterTierText, /Readyset cache tier/);
   assert.match(clusterTierText, /7 caches/);
+  // Lane rs1-B: ProxySQL reports no own health here, so its card reads Not
+  // read and its link (the first) stays unread. The reported Replication
+  // "Running" runs the Readyset -> database link with an active stem.
+  assert.match(clusterTierText, /Not read/);
+  const clusterTierLinks = await page.$$eval(`${view} .upstream-tiers .tier-link`, (els) => els.map((e) => e.className));
+  assert.match(clusterTierLinks[0] || "", /is-unread/, "the ProxySQL link stays unread without a reported running state");
+  assert.match(
+    clusterTierLinks[clusterTierLinks.length - 1] || "",
+    /is-running/,
+    "a reported Running replication runs the Readyset tier link",
+  );
+  assert.ok(await page.$(`${view} .upstream-tiers .cluster-stem.is-active`), "a reported Running replication activates the Readyset stem");
+  assert.match(clusterTierText, /CDC binlog stream & query fallback/, "a running link carries the CDC label");
+  // S8: server-reported versions inside the compound role labels sit in <bdi>.
+  const roleBdis = await page.$$eval(`${view} .upstream-tiers .cluster-role bdi`, (els) => els.map((e) => e.textContent));
+  assert.deepEqual(roleBdis, ["3.0.11", "stable-250605"], "server versions in role labels are bidi-isolated");
+  assert.equal(await page.$(`${view} .upstream-tiers .cluster-use-node`), null, "no Use chip without a backend profile_id");
   await shot("cluster-multitier-1440.png");
+
+  // With the Readyset tier's state stripped the way the backend reports it
+  // (Status null, Replication Status null), no card has an OK mark and the
+  // card reads Not read (never Online, never OK, never Unknown).
+  const strippedTiers = {
+    ...multiTierCluster,
+    topology_tiers: {
+      ...multiTierCluster.topology_tiers,
+      readyset: multiTierCluster.topology_tiers.readyset.map((n) => ({ ...n, status: null, replication_status: null })),
+    },
+  };
+  await refreshTo(strippedTiers);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .upstream-tiers`, { visible: true });
+  assert.equal(await page.$(`${view} .upstream-tiers .cluster-mark.is-ok`), null, "no upstream tier card has an OK mark without a reported state");
+  assert.equal(await page.$(`${view} .upstream-tiers .tier-link.is-running`), null, "no upstream tier link runs without a reported state");
+  const strippedText = await h.text(`${view} .upstream-tiers`);
+  assert.match(strippedText, /Not read/);
+  assert.match(strippedText, /Replication not read · query fallback/, "an unread replication link says so");
+  assert.doesNotMatch(strippedText, /Online · Repl/, "an unreported Readyset state never renders as Online");
+  assert.doesNotMatch(strippedText, /Unknown/, "the backend's unread placeholder never renders");
+  await refreshTo(multiTierCluster);
+
+  // A reported replicator error (the new tier field) draws the Readyset card
+  // detached with the problem tone and breaks the link.
+  const errorTiers = {
+    ...multiTierCluster,
+    topology_tiers: {
+      ...multiTierCluster.topology_tiers,
+      readyset: multiTierCluster.topology_tiers.readyset.map((n) => ({ ...n, replication_error: true })),
+    },
+  };
+  await refreshTo(errorTiers);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .upstream-tiers`, { visible: true });
+  assert.ok(await page.$(`${view} .upstream-tiers .tier-link.is-error`), "a reported replicator error draws the error link");
+  assert.ok(
+    await page.$(`${view} .upstream-tiers .tier-node.is-detached .cluster-card.is-detached`),
+    "a reported replicator error detaches the Readyset card",
+  );
+  assert.match(await h.text(`${view} .upstream-tiers`), /Replication error or upstream unreachable/, "an errored link says so");
+  await refreshTo(multiTierCluster);
+
+  // S12: a ProxySQL tier linked only by address evidence (mysql_servers) is
+  // labelled Matched by address, never Verified.
+  const addrOnly = {
+    ...multiTierCluster,
+    topology_tiers: {
+      ...multiTierCluster.topology_tiers,
+      proxysql: multiTierCluster.topology_tiers.proxysql.map((n) => ({ ...n, querypilot_rule_count: 0 })),
+    },
+  };
+  await refreshTo(addrOnly);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .upstream-tiers`, { visible: true });
+  const addrText = await h.text(`${view} .upstream-tiers`);
+  assert.match(addrText, /Matched by address/, "an address-only ProxySQL link is labelled as such");
+  assert.doesNotMatch(addrText, /Verified/, "an address-only match never reads Verified");
+  await refreshTo(multiTierCluster);
 
   assert.deepEqual(h.errors, []);
   console.log("cluster: ok");

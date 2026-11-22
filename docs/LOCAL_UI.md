@@ -1005,23 +1005,87 @@ change. Once a read says the connection is not a ProxySQL Admin interface, the
 sidebar item looks disabled for that connection only.
 
 **Readyset** (a place of its own, right after ProxySQL) reads the Readyset SQL
-adapter (port 3307 by default) or Admin SQL listener (port 6036) the connection
-in use reaches. It reads when opened on screen, once per connection; **Refresh**
-reads again. Tabs cover **Topology** (linking ProxySQL frontends, Readyset and
-upstream MySQL or MariaDB standalone servers, replicas and clusters when saved
-connections match), **Caches** (shallow and deep caches with **Create cache…**,
-**Export cache DDL**, **Flush cache…** and **Drop cache…**), **Proxied queries**
-(observed queries with one-click **Create cache…** prefill and **Drop all
-proxied queries…**), **Tables** (base-table snapshot status, **Re-snapshot
-table…**, **Add tables…** and replication controls), **Dynamic parameters**
-(log level, eviction memory limit, eviction period, shallow cache allowlists,
-maintenance mode, **Flush privileges…** and Admin-port **Shutdown…**), and
-**Performance** (cached versus upstream share, latency percentiles and shallow
-hit rate). **Create cache…** runs a read-only `EXPLAIN CREATE CACHE` precheck
-and warns when a query ID or cache name already exists. Every change follows the
-same reviewed write sheet, connection-type policy and [Audit log](#audit-log)
-rules as Cluster and ProxySQL; once a read says the connection is not a
-Readyset instance, the sidebar item looks disabled for that connection only.
+adapter (port 3307 by default) or Admin SQL listener (port 6036 by default) the
+connection in use reaches, identifying the listener from query behavior (without
+a default database, an unqualified probe succeeds only on the admin listener,
+MySQL errors `1046` or `1146` mean the SQL adapter listener, and any other
+failure leaves the role unread; when the `readyset` schema is selected, the probe
+runs on a copy with no default database; port numbers are never used as proof).
+It reads when opened on screen, once per connection; **Refresh** reads again.
+The summary line names the listener role (**port not read** when unread) and
+cache count (**caches not read** when `SHOW CACHES` failed). Expandable
+**Findings** appear worst first with **Details** / **Hide details** and **Show
+in `<tab>`** (including missing `Status` or `Replication Status` fields, so a
+report with missing data is never **OK**), followed by four summary tiles
+(**Cached share** and **Shallow hit rate**, which show **No traffic yet** when
+read as zero and **Not read** when statistics were not read, **Active caches**,
+which shows **Not read** when `SHOW CACHES` failed, and **Base replication**,
+which shows any replication error from the replicator's last error or a literal
+`Error` status regardless of the status word, **Not replicating** when stopped,
+**Tables not read** when `SHOW READYSET ALL TABLES` failed with no lag, or
+**Not read** when status was not reported; current Readyset reports
+`Replication Status` only as `Running`, `Stopped` or `Disabled`). Tabs cover
+**Topology** (linking ProxySQL frontends, Readyset, and upstream MySQL or
+MariaDB servers, cluster peers and async replicas with **Open ProxySQL**,
+**Open Cluster** and **Open Replication** jumps, **Use `<connection>`** only for
+saved connections matched by the backend in the group, links that run only on
+reported `Running` or runtime `ONLINE` states, `Replication error` whenever a
+replicator error is reported, `Replication disabled · query fallback` when
+disabled, **Not read** for configuration-only ProxySQL rows, unknown active CDC
+roles, fallback CDC host health without host data, or unreported states, **Port
+not read** and **Caches not read** on the Readyset card when unread, **Verified
+connection** only for server-UUID matches and **Matched by address** for
+address or channel-source matches, detached cards for down active CDC upstreams
+and problem peers, upstream server details in the upstream card's inspector, and
+**Active client connections** below), **Caches** (shallow and deep caches,
+omitting the count and showing **Caches not read** when `SHOW CACHES` failed,
+with **Create cache…**, **Flush shallow caches…**, **Drop all caches…**, **Drop
+shallow caches…**, **Drop deep caches…**, **Export SQL**, and **Flush entries…**
+/ **Drop cache…** in the inspector), **Proxied** (observed queries with **Create
+cache…** prefill and **Clear proxied queries…**), **Tables** (omitting the count
+and showing **Tables not read** when `SHOW READYSET ALL TABLES` failed;
+base-table status: `Initializing`, `Snapshotting`, `Compacting`, `Creating
+index`, `Online`, `Not replicated` including rows stopped on an unexpected
+replication error, or `Dropped`, **Re-snapshot table…**, **Add tables to
+replicate…** and replication controls showing **Not read** when status was not
+reported), and **Parameters** (maintenance mode, which records an in-memory
+status signal for tools such as ProxySQL to stop sending queries while Readyset
+still serves what it receives, with **Enter maintenance mode…** offered only
+when `Status` is `Online` because Readyset shows `Maintenance Mode` only once
+its snapshot finishes and a restart clears it, **Flush Readyset privileges…**,
+**Set log level…**, **Set eviction memory limit…**, **Set eviction period…**,
+shallow cache allowlists, which filter only automatic shallow cache creation
+while explicit `CREATE SHALLOW CACHE` and query hints are not affected, and
+**Shut down Readyset…** / **Shut down & reset snapshot…**). **Create cache…**
+runs a read-only `EXPLAIN CREATE CACHE` precheck, warns when a query ID or
+cache name already exists, and stays disabled while `SHOW CACHES` is unread
+because collision checks need the cache list. Reported names pass to statements
+with exact spaces and backticks (table names are parsed once); row actions are
+disabled with a fixed reason when a name contains control or format characters,
+cannot be quoted, or is a cache name with a dot (`DROP CACHE` and `FLUSH CACHE`
+take a name only), review text shows control characters as visible escapes, and
+typed confirmations warn when a name starts or ends with a space. Every Readyset
+action stays visible and focusable (disabled actions show the reason and fix
+beneath the button from listener role, state, or an unread status, listener, or
+cache read, with no `GRANT` text; when the listener role is unread, **Create
+cache…**, `EXPLAIN CREATE CACHE`, **Shut down Readyset…**, and **Shut down &
+reset snapshot…** disable or refuse with `"Readyset did not show which listener
+this is."`; Readyset does not report `CACHE_DDL_ADDRESS` restrictions in advance
+because `SHOW CACHES` and the other reads succeed there, admin listener sessions
+always allow cache DDL, and `EXPLAIN CREATE CACHE` is not affected, so myflames
+usually cannot disable cache-DDL actions ahead of time and Readyset refuses the
+statement when sent, with the review result showing the refusal, while a read
+that itself reports a cache-DDL restriction disables them ahead of time with
+`"Run cache changes on the CACHE_DDL_ADDRESS listener or the admin SQL port
+(default 6036); CREATE CACHE still needs an upstream database selected."`; input
+prompts re-check their action before sending; stale cache targets where name
+and query ID no longer match the same row, scoped `drop_all_caches` values, and
+inconsistent allowlist kinds are refused; another connection's report, a failed
+read, paused reads, write policy or a read-only connection disables all actions
+with one line), and every change follows the same reviewed write sheet,
+fresh-read recheck, connection-type policy and [Audit log](#audit-log) rules as
+Cluster and ProxySQL; once a read says the connection is not a Readyset
+instance, the sidebar item looks disabled for that connection only.
 
 **Maintenance** (Setup) has five tasks in a segmented control. **Tools**
 lists the MySQL and MariaDB tools on this computer (mysqlsh, mysqldump,

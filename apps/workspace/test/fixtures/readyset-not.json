@@ -7,11 +7,13 @@
  "port_role": null,
  "in_readyset_schema": false,
  "readyset_schema": "readyset",
+ "session_database": null,
  "message": "This connection is not a Readyset SQL or admin port: @@version_comment is MySQL Community Server - GPL, not Readyset. Readyset listens on port 3307 (SQL) and port 6036 (admin) by default.",
  "status": "unknown",
  "status_why": [
   "This connection is not a Readyset SQL or admin port: @@version_comment is MySQL Community Server - GPL, not Readyset. Readyset listens on port 3307 (SQL) and port 6036 (admin) by default."
  ],
+ "findings": [],
  "status_fields": {},
  "capabilities": {
   "can_explain_cache": false,
@@ -52,11 +54,23 @@
   "variables": [],
   "schemas": []
  },
+ "allowlist_actions": {
+  "functions": [],
+  "variables": [],
+  "schemas": []
+ },
  "connections": [],
  "upstreams": [],
  "topology": null,
  "fingerprints": {},
  "actions": [],
  "notes": [],
- "statements": []
+ "statements": [],
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
+ }
 }

@@ -391,6 +391,9 @@ allow_shutdown = os.environ.get("ALLOW_SHUTDOWN") == "1"
 
 store = WorkspaceStore()
 
+# Put all five lab profiles in one connection group ("rs-lab") and include
+# group_name="rs-lab" on connection dicts so ProxySQL, Readyset, and
+# Replication topology probes have group consent to read sibling profiles.
 def save_conn(name, port, user, password, database=None, ssl_mode="PREFERRED"):
     saved = store.save(
         "profile",
@@ -403,11 +406,12 @@ def save_conn(name, port, user, password, database=None, ssl_mode="PREFERRED"):
             "ssl_mode": ssl_mode,
             "type": "development",
             "read_only": False,
+            "group": "rs-lab",
         },
         password=password,
         remember=True,
     )
-    return store.connection_with_saved_password({"profile_id": saved["id"], **saved})
+    return store.connection_with_saved_password({"profile_id": saved["id"], "group_name": "rs-lab", **saved})
 
 c_primary = save_conn("rs-primary", port_primary, "mf_admin", admin_pw, "shop", "PREFERRED")
 c_replica = save_conn("rs-replica", port_replica, "mf_admin", admin_pw, "shop", "PREFERRED")

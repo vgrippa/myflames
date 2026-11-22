@@ -25,7 +25,7 @@
   ],
   [
    "Current status",
-   "Snapshotted"
+   "Online"
   ]
  ],
  "warnings": [
@@ -47,7 +47,7 @@
  "expect": {
   "readyset_version": "stable-250605",
   "table": "`shop`.`orders`",
-  "table_status": "Snapshotted"
+  "table_status": "Online"
  },
  "policy": {
   "action": "confirm",

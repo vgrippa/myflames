@@ -148,7 +148,15 @@ export type ProxySqlReadysetNode = {
   port: number;
   address: string;
   hostgroup_id: number | null;
-  status: string;
+  /** Monitor roles of the hostgroup this row sits in (writer, reader,
+   * offline, backup); an ONLINE row in an offline hostgroup is out of
+   * traffic, never serving. */
+  hostgroup_roles: string[];
+  /** Runtime status (runtime_mysql_servers / the pool); null when only
+   * configured or not read. */
+  status: string | null;
+  /** Where status came from: a config-only row is never a runtime state. */
+  status_source?: "runtime" | "config" | null;
   weight: number | null;
   routing_mode: "cached_and_mirrored" | "shadow_mirror" | "cached_reads" | "hostgroup_member" | string;
   queries: number | null;
@@ -168,7 +176,8 @@ export type ProxySqlReadysetNode = {
     port: number;
     address: string;
     purpose: string;
-    active_cdc: boolean;
+    /** Null when Readyset did not report the CDC role: unknown, never false. */
+    active_cdc: boolean | null;
     health: string | null;
     profile_id: string | null;
     profile_name: string | null;
@@ -183,7 +192,11 @@ export type ProxySqlTopologyBackendNode = {
   address: string;
   hostgroup_id: number | null;
   hostgroup_roles: string[];
-  status: string;
+  /** Runtime status (runtime_mysql_servers / the pool); null when only
+   * configured or not read. */
+  status: string | null;
+  /** Where status came from: a config-only row is never a runtime state. */
+  status_source?: "runtime" | "config" | null;
   weight: number | null;
   comment: string | null;
   queries: number | null;
