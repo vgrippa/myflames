@@ -1167,6 +1167,86 @@ class TestMultiTierTopology(unittest.TestCase):
                 self.assertEqual(len(pxc_topo["database_peers"]), 1)
                 self.assertEqual(pxc_topo["database_peers"][0]["profile_id"], expected_id)
 
+    def test_port_matching_normalizes_text_and_numeric_ports(self):
+        for db_port in ("3306", 3306):
+            with self.subTest(db_port=db_port):
+                db_info = {
+                    "kind": "database",
+                    "profile_host": "127.0.0.1",
+                    "profile_port": "13306" if isinstance(db_port, str) else 13306,
+                    "hostname": "mf-rs-primary",
+                    "port": db_port,
+                    "report_port": None,
+                    "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001",
+                }
+                self.assertTrue(topology_links._database_matches_target(
+                    db_info, "mf-rs-primary", 3306, observer_host="127.0.0.1"))
+                self.assertTrue(topology_links._database_matches_target(
+                    db_info, "mf-rs-primary", "3306", observer_host="127.0.0.1"))
+                self.assertFalse(topology_links._database_matches_target(
+                    db_info, "mf-rs-primary", 3307, observer_host="127.0.0.1"))
+                self.assertEqual(
+                    topology_links.match_database_endpoint("mf-rs-primary", 3306, [db_info]),
+                    (db_info, "hostname_port"),
+                )
+
+        # Report port and loopback branches also normalize text ports.
+        report_only = {
+            "kind": "database",
+            "profile_host": "127.0.0.1",
+            "profile_port": 13306,
+            "hostname": "mf-rs-primary",
+            "port": 33060,
+            "report_port": "3306",
+        }
+        self.assertTrue(topology_links._database_matches_target(report_only, "mf-rs-primary", 3306))
+        self.assertEqual(
+            topology_links.match_database_endpoint("mf-rs-primary", 3306, [report_only]),
+            (report_only, "hostname_port"),
+        )
+        with mock.patch("myflames.topology_links.socket.gethostname", return_value="dbhost.internal"):
+            self.assertTrue(topology_links._database_matches_target(
+                {"hostname": "dbhost", "port": "3306", "profile_host": "10.0.0.5", "profile_port": "13306"},
+                "127.0.0.1", 3306, observer_host="127.0.0.1",
+            ))
+            self.assertTrue(topology_links._database_matches_target(
+                {"hostname": "dbhost", "port": 3307, "profile_host": "10.0.0.5", "profile_port": "3306"},
+                "127.0.0.1", 3306, observer_host="127.0.0.1",
+            ))
+
+    def test_discover_database_tiers_matches_local_identity_with_text_port(self):
+        profiles = [
+            {"id": "p-pri", "name": "MySQL Primary", "host": "127.0.0.1", "port": 13306,
+             "remember_password": True, "group": "lab"},
+            {"id": "p-rs", "name": "Readyset", "host": "127.0.0.1", "port": 13307,
+             "remember_password": True, "group": "lab"},
+        ]
+        rs_conn = FakeProbeConn(
+            "readyset",
+            upstreams=[{
+                "host": "mf-rs-primary", "port": "3306", "database": "shop", "user": "rs",
+                "weight": "100", "purpose": "cdc, query", "active_cdc": "true",
+                "health": "up", "connections": "2",
+            }],
+        )
+        tiers = topology_links.discover_database_tiers(
+            FakeProbeConn("database", hostname="mf-rs-primary", port="3306",
+                          uuid="aaaaaaaa-0000-4000-8000-000000000001"),
+            {
+                "profile_host": "127.0.0.1",
+                "profile_port": 13306,
+                "hostname": "mf-rs-primary",
+                "port": "3306",
+                "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001",
+            },
+            profiles=profiles,
+            open_profile=lambda p: rs_conn,
+            observer_host="127.0.0.1",
+            current_profile_id="p-pri",
+        )
+        self.assertEqual(len(tiers["readyset"]), 1)
+        self.assertEqual(tiers["readyset"][0]["profile_id"], "p-rs")
+
 
 if __name__ == "__main__":
     unittest.main()

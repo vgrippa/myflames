@@ -692,7 +692,7 @@ def match_database_endpoint(host, port, probed, uuid=None, observer_host=None, u
         internal = []
         for p in dbs:
             names = {_host_key(p.get("hostname")), _host_key(p.get("report_host"))} - {""}
-            ports = {p.get("port"), p.get("report_port")} - {None}
+            ports = {_int(p.get("port")), _int(p.get("report_port"))} - {None}
             if thost in names and tport in ports:
                 internal.append(p)
         if len(internal) == 1 and not _contrary_uuid(u, internal[0].get(uuid_field)):
@@ -714,14 +714,15 @@ def _database_matches_target(db_info, target_host, target_port, observer_host=No
             _host_key(db_info.get("report_host")),
             _host_key(db_info.get("host")),
         } - {""}
-        ports = {db_info.get("port"), db_info.get("report_port")} - {None}
+        ports = {_int(db_info.get("port")), _int(db_info.get("report_port"))} - {None}
         if thost in names and tport in ports:
             return True
     # Loopback target when both Readyset/ProxySQL and the DB run on this local host.
     if is_loopback(thost) and observer_host and is_loopback(observer_host) and not db_info.get("ssh_host"):
         local_hostname = _host_key(socket.gethostname()).split(".")[0]
         db_short = _host_key(db_info.get("hostname")).split(".")[0]
-        if local_hostname and db_short == local_hostname and tport in ({db_info.get("port"), db_info.get("profile_port")} - {None}):
+        ports = {_int(db_info.get("port")), _int(db_info.get("profile_port"))} - {None}
+        if local_hostname and db_short == local_hostname and tport in ports:
             return True
     return False
 

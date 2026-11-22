@@ -41,6 +41,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where **Readyset** maintenance mode was described as bypassing caches and **Enter maintenance mode…** stayed available while snapshots were running or unread. The finding, **Parameters** row, and review now explain it is an in-memory signal for tools such as **ProxySQL**, and **Enter maintenance mode…** enables only when **Status** is **Online**.
 - Fixed an issue where **Readyset** trimmed reported names, allowed dotted cache names in `DROP CACHE` or `FLUSH CACHE`, let backticked names bypass **Create cache** collision or allowlist checks, or skipped default-database and exact-cache review checks. Reported names now stay intact, unusable or control-character names disable only that row, and mismatched targets are refused.
 - Fixed an issue where a support check in **Create cache** could apply results to an edited query, and an aborted check could leave the dialog stuck checking. Each check now stays bound to the current draft and connection, discarding stale results and clearing the checking state on abort.
+- Fixed an issue where the **Readyset** and **ProxySQL** tiers above **Replication** could be missing for the server in use, because its own port was compared as text.
 
 ### Security fixes
 
