@@ -1396,6 +1396,45 @@ class TestExplainAndExportCaches(ReadysetBase):
         report = readyset.read_status(status_conn)
         self.assertIn("[redacted]", report["caches"][0]["query"])
 
+    def test_export_redaction_handles_long_url_password(self):
+        url_password = "url-secret-" * 32
+        for token in ("'mysql://u:%s@h/db'", "/* mysql://u:%s@h/db */",
+                      "mysql://u:%s@h/db"):
+            with self.subTest(token=token):
+                sql = "CREATE SHALLOW CACHE c FROM SELECT " + token % url_password
+                expected = "CREATE SHALLOW CACHE c FROM SELECT " + token % dbops.REDACTED
+                self.assertEqual(readyset._redact_export_sql(sql), (expected, True))
+
+    def test_export_redaction_handles_double_quoted_url(self):
+        sql = 'CREATE SHALLOW CACHE c FROM SELECT "mysql://u:p@h/db";'
+        expected = 'CREATE SHALLOW CACHE c FROM SELECT "mysql://u:[redacted]@h/db";'
+        self.assertEqual(readyset._redact_export_sql(sql), (expected, True))
+
+    def test_export_redaction_preserves_url_in_identifier(self):
+        sql = "CREATE SHALLOW CACHE `mysql://u:p@h` FROM SELECT `mysql://u:p@h`;"
+        self.assertEqual(readyset._redact_export_sql(sql, "p"), (sql, False))
+        mixed = "SELECT `mysql://u:p@h`, 'mysql://u:secret@h';"
+        expected = "SELECT `mysql://u:p@h`, 'mysql://u:[redacted]@h';"
+        self.assertEqual(readyset._redact_export_sql(mixed), (expected, True))
+
+    def test_export_redaction_password_matches_redaction_marker(self):
+        # A marker introduced by URL redaction is not an original password;
+        # an existing marker inside a literal still is. Identical output
+        # must not flag a definition as changed.
+        cases = (
+            ("SELECT '[redacted]';", "SELECT '[redacted]';", False),
+            ('SELECT "[redacted]";', "SELECT '[redacted]';", True),
+            ("SELECT 'prefix[redacted]suffix';", "SELECT '[redacted]';", True),
+            ("SELECT 'mysql://u:p@h';", "SELECT 'mysql://u:[redacted]@h';", True),
+            ("SELECT 'mysql://u:[redacted]@h';", "SELECT '[redacted]';", True),
+            ("SELECT 'mysql://u:p@h/[redacted]';", "SELECT '[redacted]';", True),
+            ("SELECT 'unrelated';", "SELECT 'unrelated';", False),
+        )
+        for sql, expected, changed in cases:
+            with self.subTest(sql=sql):
+                self.assertEqual(readyset._redact_export_sql(sql, dbops.REDACTED),
+                                 (expected, changed))
+
     def test_redacted_export_comments_every_line_in_sql_and_structured_items(self):
         class MultilineExportConn(FakeReadyset):
             def run(self, sql, extra_flags=None, timeout=None):

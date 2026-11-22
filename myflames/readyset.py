@@ -1324,9 +1324,10 @@ def _unescape_sql_literal(body, quote):
 def _redact_export_sql(sql, password=None):
     """Redact exported Readyset DDL without altering identifiers or keywords.
 
-    Applies ``dbops._URL_SECRET`` outside quoted identifiers, and replaces any
+    Applies ``dbops.redact`` outside quoted identifiers, and replaces any
     quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
-    with ``'[redacted]'``. Returns ``(redacted_sql, changed)``.
+    with ``'[redacted]'``. Returns ``(redacted_sql, changed)``, with *changed*
+    true exactly when the output differs from the input.
     """
     pw = password if isinstance(password, str) and password else None
     scan = dbops.lex_sql(sql)
@@ -1338,9 +1339,8 @@ def _redact_export_sql(sql, password=None):
         if kind == "identifier":
             parts.append(tok)
             continue
-        updated = dbops._URL_SECRET.sub(
-            lambda m: m.group(1) + dbops.REDACTED + m.group(3), tok
-        )
+        # Keep connection-password matching scoped to SQL literals below.
+        updated = dbops.redact(tok)
         if kind == "string" and pw:
             quote = tok[0]
             body = tok[1:] if (start, end) in unclosed else tok[1:-1]
