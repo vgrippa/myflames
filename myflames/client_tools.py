@@ -18,6 +18,8 @@ from . import connector, managed_shell, server_info
 
 PROGRAMS = ('mysql', 'mariadb', 'mysqldump', 'mariadb-dump', 'mariadb-backup',
             'mariadb-upgrade', 'mysqlpump', 'mysqlsh')
+# Skip only the costly MySQL Shell tree walk so query-client groups and order match Settings.
+QUERY_DISCOVERY_NAMES = tuple(name for name in PROGRAMS if name != 'mysqlsh')
 _PROBE_CACHE = collections.OrderedDict()
 _PROBE_LOCK = threading.Lock()
 _PROBE_FLIGHTS = {}
@@ -120,20 +122,27 @@ def probe(name, binary, refresh=False, job=None):
             flight['done'].set()
 
 
-def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False):
+def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False, names=None):
     """Return stat-only candidates [{name,path,realpath,identity,found_in,
-    bundled,order,source}]. Trusted aliases share one entry, preferring MariaDB
-    names. Refused spellings remain separate with trust_error for reporting.
+    bundled,order,source}]. Trusted aliases within Shell or non-Shell tools
+    share one entry, preferring MariaDB names for query tools. Refused spellings
+    remain separate with trust_error for reporting.
     Trust checks are stat-only; execution still requires a fresh check.
+    Optional names limits discovery before any per-program filesystem checks.
     """
     from . import lifecycle
+    names = frozenset(PROGRAMS if names is None else names)
+    programs = tuple(name for name in PROGRAMS if name in names)
+    if not programs:
+        return []
     bundle = connector.bundled_client_dir() if bundled is None else bundled
     folders = []
     # Only the validated published pointer can introduce a managed Shell.
     # Staging and retired trees also live under tools and must never be scanned.
-    # The pointer and metadata are re-read on every call; only the tree trust
+    # Shell discovery re-reads the pointer and metadata; only the tree trust
     # walk follows the inventory cache. Refresh and launches walk afresh.
-    managed = managed_shell.installed_bin_dir(cache=cache_shell_trust)
+    managed = (managed_shell.installed_bin_dir(cache=cache_shell_trust)
+               if 'mysqlsh' in programs else None)
     if managed:
         folders.append((managed, 'managed'))
     for folder in (os.environ.get('PATH', '') if path is None else path).split(os.pathsep):
@@ -146,9 +155,9 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
     if bundle:
         folders.append((bundle, 'bundled'))
     copies, refused = {}, []
-    order = 0
+    order, shell_order = 0, 0
     for folder, source in folders:
-        for name in (('mysqlsh',) if source == 'managed' else PROGRAMS):
+        for name in (('mysqlsh',) if source == 'managed' else programs):
             binary = os.path.abspath(os.path.join(folder, name + ('.exe' if os.name == 'nt' else '')))
             if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
                 continue
@@ -158,8 +167,13 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
             real = identity[1]
             candidate = dict(name=name, path=binary, realpath=real, identity=identity,
                              found_in=folder, bundled=bool(bundle and connector._same_dir(
-                                 os.path.dirname(real), bundle)), order=order, source=source)
-            order += 1
+                                 os.path.dirname(real), bundle)),
+                             order=shell_order if name == 'mysqlsh' else order, source=source)
+            # Shell discovery must not shift query-tool installation ranks.
+            if name == 'mysqlsh':
+                shell_order += 1
+            else:
+                order += 1
             try:
                 if name == 'mysqlsh':
                     connector.checked_shell_program(binary, real, cache=cache_shell_trust)
@@ -169,14 +183,16 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False)
                 candidate['trust_error'] = str(exc)
                 refused.append(candidate)
                 continue
-            existing = copies.get(real)
+            # A Shell spelling must never suppress a query-tool candidate.
+            key = (name == 'mysqlsh', real)
+            existing = copies.get(key)
             if existing is not None:
                 # Only trusted spellings participate in alias preference.
                 if name.startswith('mariadb') and not existing['name'].startswith('mariadb'):
                     existing.update(name=name, path=binary, identity=identity, found_in=folder,
                                     source=source)
                 continue
-            copies[real] = candidate
+            copies[key] = candidate
     return sorted(list(copies.values()) + refused, key=lambda c: (c['order'], c['realpath'], c['name']))
 
 
@@ -231,18 +247,20 @@ def _shell_order(shell):
             shell['order'], shell['realpath'], shell['path'])
 
 
-def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False):
+def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False,
+             names=None):
     """Return {installations: [...], shells: [...], skipped: [...]}.
 
-    At most 32 version-probe requests per call, including cached requests.
+    At most 32 non-Shell and 4 Shell version-probe requests per call, including
+    cached requests. Shell never consumes the query-tool discovery budget.
     mysqlpump is stat-only. Skipped records contain candidate metadata plus
     available=False and error (also reason); presence records are deprecated.
     """
     groups, shells, skipped = {}, [], []
     copies = []
-    probes = 0
+    probes = {'tools': 0, 'shell': 0}
     cache_shell_trust = cache_shell_trust and not refresh
-    for candidate in snapshot(path, common_dirs, bundled, cache_shell_trust=cache_shell_trust):
+    for candidate in snapshot(path, common_dirs, bundled, cache_shell_trust=cache_shell_trust, names=names):
         if job:
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']
@@ -269,11 +287,12 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
         if name == 'mysqlpump':
             fields = dict(available=True, version=None, version_tuple=None, engine='mysql')
         else:
-            if probes >= 32:
+            category = 'shell' if name == 'mysqlsh' else 'tools'
+            if probes[category] >= (4 if category == 'shell' else 32):
                 entry['error'] = 'probe limit'
                 skipped.append(dict(candidate, available=False, error='probe limit', reason='probe limit'))
                 continue
-            probes += 1
+            probes[category] += 1
             fields = probe(name, candidate['realpath'], refresh=refresh, job=job)
             if fields['available']:
                 fields['version_tuple'] = list(_banner_version(fields['version'], name))
@@ -584,15 +603,17 @@ def validate_choice(engine, path):
     return path
 
 
-def discover_choices(choices, refresh=False, automatic=True):
+def discover_choices(choices, refresh=False, automatic=True, names=None):
     """Include trusted Settings folders even when they are outside PATH.
 
     A stale or newly untrusted selection is retained by choice_keys as an error,
     and is never executed merely to describe Settings.
     """
-    discovered = (discover(refresh=refresh) if automatic else
+    # Reuse a caller's iterable across automatic and chosen-folder discovery.
+    names = frozenset(names) if names is not None else None
+    discovered = (discover(refresh=refresh, names=names) if automatic else
                   discover(path='', common_dirs=(), bundled=(connector.bundled_client_dir()
-                           if 'bundled' in (choices or {}).values() else False), refresh=refresh))
+                           if 'bundled' in (choices or {}).values() else False), refresh=refresh, names=names))
     for engine in ('mysql', 'mariadb'):
         value = (choices or {}).get(engine)
         if not value or value == 'bundled':
@@ -607,18 +628,24 @@ def discover_choices(choices, refresh=False, automatic=True):
         # Windows needs a literal folder (its name can contain PATH's ';').
         # checked_program exempts only the actual app bundle, so this extra
         # search folder still receives per-program trust checks.
-        extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh)
-                 if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh))
+        extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh, names=names)
+                 if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh,
+                                                names=names))
+        # Candidate ranks can have gaps from aliases, refused files and tools
+        # grouped in one installation. Append after the highest rank, not count.
+        offset = max((g['order'] for g in discovered['installations']), default=-1) + 1
         for group in extra['installations']:
             if not any(g['key'] == group['key'] for g in discovered['installations']):
-                group['order'] += len(discovered['installations'])
+                group['order'] += offset
                 group['bundled'] = False
                 group['origin'], group['origin_label'] = _origin(group['folder'], False)
                 if group['origin'] == 'path':
                     group.update(origin='folder', origin_label='Chosen folder')
                 discovered['installations'].append(group)
+        shell_offset = max((s['order'] for s in discovered['shells']), default=-1) + 1
         for shell in extra['shells']:
             if not any(s['realpath'] == shell['realpath'] for s in discovered['shells']):
+                shell['order'] += shell_offset
                 discovered['shells'].append(shell)
         for skipped in extra['skipped']:
             if not any(s['path'] == skipped['path'] for s in discovered['skipped']):
@@ -654,12 +681,13 @@ def discover_lifecycle(path=None, common_dirs=None, choices=None, refresh=False,
             continue
         extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh, job=job)
                  if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh, job=job))
+        offset = max((g['order'] for g in discovered['installations']), default=-1) + 1
         for group in extra['installations']:
             old = next((g for g in discovered['installations'] if g['key'] == group['key']), None)
             if old:
                 old['programs'].update({n: p for n, p in group['programs'].items() if n not in old['programs']})
             else:
-                group['order'] += len(discovered['copies'])
+                group['order'] += offset
                 group['bundled'] = False
                 group['origin'], group['origin_label'] = _origin(group['folder'], False)
                 if group['origin'] == 'path':
@@ -682,8 +710,10 @@ def discover_lifecycle(path=None, common_dirs=None, choices=None, refresh=False,
                     discovered['skipped'] = [s for s in discovered['skipped']
                                              if s['realpath'] != entry['realpath']]
                 known.add(entry['realpath'])
+        shell_offset = max((s['order'] for s in discovered['shells']), default=-1) + 1
         for shell in extra['shells']:
             if not any(s['realpath'] == shell['realpath'] for s in discovered['shells']):
+                shell['order'] += shell_offset
                 origin, label = _origin(os.path.dirname(shell['realpath']), False)
                 shell.update(origin='folder' if origin == 'path' else origin,
                              origin_label='Chosen folder' if origin == 'path' else label)

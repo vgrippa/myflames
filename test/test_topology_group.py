@@ -2603,6 +2603,43 @@ class TopologyReadTests(GroupCase):
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
         self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED'))
 
+    def test_map_proxysql_address_routes_with_router_alias_and_ambiguous_members(self):
+        self.save('router', 'G', port=6446)
+        self.save('proxy', 'G', port=6032)
+        cases = (
+            ('reported_hostname_with_alias', 'db-1', 3306, UUID_A, 'active', 'hostname_port'),
+            ('router_saved_endpoint', 'router.example', 6446, UUID_A, 'router', 'endpoint'),
+            ('distinct_members_same_hostname', 'db-1', 3306, UUID_B, 'peer:db-1:3306', None),
+        )
+        for name, host, port, router_uuid, destination, evidence in cases:
+            with self.subTest(case=name):
+                direct = member_fixture(UUID_A)
+                direct['variables']['hostname'] = 'db-1'
+                router = member_fixture(router_uuid)
+                router['variables']['hostname'] = 'db-1'
+                proxy = member_fixture(proxy='proxysql', servers=[{
+                    'hostgroup_id': '10', 'hostname': host, 'port': str(port), 'status': 'ONLINE'}])
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': direct, 'router.example': router,
+                                   'proxy.example': proxy}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(report['summary']['read'], 3, report)
+                self.assertEqual(nodes['router']['duplicate_of'], 'active' if router_uuid == UUID_A else None)
+                routes = [edge for edge in report['map']['edges'] if edge['kind'] == 'proxy_route']
+                self.assertEqual(len(routes), 1)
+                route = routes[0]
+                self.assertEqual((route['from'], route['to']), ('proxy', destination))
+                self.assertEqual(route['evidence'], evidence)
+                self.assertIs(route['verified'], False)
+                peers = [node for node in nodes.values() if node['kind'] == 'peer']
+                if evidence is None:
+                    self.assertEqual([node['id'] for node in peers], [destination])
+                    self.assertIsNone(nodes[destination]['profile_id'])
+                    self.assertEqual(nodes[destination]['reason'], 'Not in this group')
+                else:
+                    self.assertEqual(peers, [])
+
     def test_map_readyset_upstream_projects_endpoints_without_user_or_sql(self):
         self.save('source', 'G')
         readyset = member_fixture(proxy='readyset', upstreams=[{
@@ -2742,7 +2779,7 @@ class TopologyReadTests(GroupCase):
 class MapBoundsTests(unittest.TestCase):
     """Server-controlled map rows stay bounded without opening any endpoint."""
 
-    def build(self, profiles, probes):
+    def build(self, profiles, probes, duplicates=None):
         entries = []
         for profile in profiles:
             entry = topology_group._entry(profile)
@@ -2750,7 +2787,8 @@ class MapBoundsTests(unittest.TestCase):
             entry.update(outcome='read', engine='mysql', product='ProxySQL Admin' if probe.get('kind') == 'proxysql' else 'MySQL',
                          version='3.0.11' if probe.get('kind') == 'proxysql' else '8.4.11',
                          role='proxy' if probe.get('kind') == 'proxysql' else 'standalone',
-                         state='reachable', server_uuid=probe.get('server_uuid'))
+                         state='reachable', server_uuid=probe.get('server_uuid'),
+                         duplicate_of=(duplicates or {}).get(profile['id']))
             entries.append(entry)
         result = topology_group._build_map(entries, probes, profiles)
         schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
@@ -2771,6 +2809,53 @@ class MapBoundsTests(unittest.TestCase):
         self.assertEqual(len(result['edges']), 1)
         self.assertEqual(result['edges'][0]['to'], 'peer:127.0.0.1:3306')
         self.assertFalse(result['edges'][0]['verified'])
+
+    def test_alias_and_distinct_server_at_same_endpoint_over_ssh_stay_unmatched(self):
+        profiles = [{'id': 'proxy', 'host': 'proxy.example', 'port': 6032},
+                    {'id': 'canonical', 'host': 'db-a.example', 'port': 3306},
+                    {'id': 'alias', 'host': 'shared.example', 'port': 3306, 'ssh_host': 'jump-a.example'},
+                    {'id': 'other', 'host': 'shared.example', 'port': 3306, 'ssh_host': 'jump-b.example'}]
+        probes = {'proxy': {'kind': 'proxysql', 'servers': [self.route('shared.example')]},
+                  'canonical': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                  'alias': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                  'other': {'kind': 'database', 'server_uuid': UUID_B, 'hostname': 'db-b', 'port': 3306}}
+        result = self.build(profiles, probes, duplicates={'alias': 'canonical'})
+        routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]['to'], 'peer:shared.example:3306')
+        self.assertIsNone(routes[0]['evidence'])
+        self.assertFalse(routes[0]['verified'])
+        self.assertEqual([edge['to'] for edge in result['edges'] if edge['kind'] == 'alias'], ['canonical'])
+
+    def test_saved_endpoint_aliases_cannot_be_displaced_by_another_servers_hostname(self):
+        profiles = [{'id': 'proxy', 'host': 'proxy.example', 'port': 6032},
+                    {'id': 'canonical', 'host': 'shared.example', 'port': 3306},
+                    {'id': 'alias', 'host': 'shared.example', 'port': 3306, 'ssh_host': 'jump.example'},
+                    {'id': 'other', 'host': 'other.example', 'port': 3306}]
+        probes = {'proxy': {'kind': 'proxysql', 'servers': [self.route('shared.example')]},
+                  'canonical': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                  'alias': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                  'other': {'kind': 'database', 'server_uuid': UUID_B, 'hostname': 'shared.example', 'port': 3306}}
+        result = self.build(profiles, probes, duplicates={'alias': 'canonical'})
+        routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+        self.assertEqual([(route['to'], route['evidence'], route['verified']) for route in routes],
+                         [('canonical', 'endpoint', False)])
+
+    def test_conflicting_saved_endpoints_ignore_unique_hostname_fallback_with_or_without_alias(self):
+        for alias in (False, True):
+            with self.subTest(alias=alias):
+                profiles = [{'id': 'proxy', 'host': 'proxy.example', 'port': 6032},
+                            {'id': 'canonical', 'host': 'db-a.example', 'port': 3306},
+                            {'id': 'first', 'host': 'shared.example', 'port': 3306, 'ssh_host': 'jump-a.example'},
+                            {'id': 'other', 'host': 'shared.example', 'port': 3306, 'ssh_host': 'jump-b.example'}]
+                probes = {'proxy': {'kind': 'proxysql', 'servers': [self.route('shared.example')]},
+                          'canonical': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                          'first': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                          'other': {'kind': 'database', 'server_uuid': UUID_B, 'hostname': 'shared.example', 'port': 3306}}
+                result = self.build(profiles, probes, duplicates={'first': 'canonical'} if alias else {})
+                routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+                self.assertEqual([(route['to'], route['evidence']) for route in routes],
+                                 [('peer:shared.example:3306', None)])
 
     def test_peer_cap_and_exact_boundary(self):
         profile = {'id': 'proxy', 'host': 'proxy.example', 'port': 6032}

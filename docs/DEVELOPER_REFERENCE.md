@@ -309,8 +309,17 @@ by query connections and Maintenance. `snapshot` only stats executable regular
 files: every copy of `mysql`, `mariadb`, `mysqldump`, `mariadb-dump`,
 `mariadb-backup`, `mariadb-upgrade`, `mysqlpump` and `mysqlsh` in nonempty PATH
 entries, then `lifecycle.COMMON_BIN_DIRS` on POSIX, then the bundled folder.
-Aliases are deduplicated by realpath, with MariaDB names preferred for
-compatibility links; there is no implicit current-directory or PATHEXT lookup.
+Aliases are deduplicated by realpath separately for Shell and non-Shell tools,
+with MariaDB names preferred for compatibility links within non-Shell tools.
+A `mysqlsh` symlink cannot suppress a query client at the same realpath;
+there is no implicit current-directory or PATHEXT lookup.
+Query-client resolution scans every client program except `mysqlsh`, so installation groups and order match Settings, and the Shell tree trust walk runs only for Shell discovery and before every Shell launch.
+Installation order counts only non-Shell programs. Chosen-folder installations
+follow the highest existing installation rank, including gaps, in Settings and
+Maintenance, so discovering Shell cannot change the relative order of query
+tools. Shell has its own order; chosen-folder Shell ranks follow the highest
+existing Shell rank in both discovery paths, preserving managed-copy priority
+and PATH order within its probe budget.
 Installations are keyed by `<engine>:<realpath folder>`; `folder` is resolved,
 `found_in` retains the discovery folder. Each program keeps its path, realpath
 and distribution version. Origin codes and labels are `bundled` (Bundled with
@@ -323,7 +332,9 @@ recognized plugin file exists in `../lib/plugin`, `../lib/mysql/plugin` or
 `../lib64/mysql/plugin`: LDAP SASL, Kerberos, OCI, WebAuthn, ed25519, GSSAPI or
 parsec. It is a selection hint, not proof that an account can authenticate.
 
-`discover` requests at most 32 version probes per call, including cache hits;
+`discover` requests at most 32 non-Shell version probes and 4 Shell version
+probes per call, including cache hits (36 total); Shell probes never consume
+the non-Shell probe limit, so full and query-only discovery find the same query tools.
 `discover_choices` and lifecycle discovery can make extra discovery calls for
 chosen folders. `probe` runs `--version` with an isolated HOME and allowlisted
 environment, no stdin and an 8 s timeout; banners retain at most 4,096 characters.
@@ -8509,7 +8520,16 @@ logs in.
     (`kind: 'alias'`, `evidence: 'server_uuid'`, `verified: false`, `label:
     'same server (alias)'`), skip cluster attestation, and are excluded from
     UUID candidate lists so aliases never duplicate cluster or replication
-    targets. Cluster boxes (`gr:<uuid>`, `wsrep:<uuid>`) require each saved
+    targets. Address-only routes always check each candidate separately,
+    including aliases to preserve matches to their saved endpoints. If any
+    saved endpoint matches, only saved-endpoint matches participate; reported
+    hostnames cannot override them. A route resolves only if every remaining
+    match represents the same canonical member.
+    That canonical member is preferred when it matches; otherwise only a single
+    alias matching its own saved endpoint can resolve the route. Matches to
+    different canonical members stay unmatched, including identical saved
+    addresses reached through different SSH hosts.
+    Cluster boxes (`gr:<uuid>`, `wsrep:<uuid>`) require each saved
     member to attest its own membership (`wsrep_cluster_status == 'Primary'` with
     own `wsrep_gcomm_uuid` in `cluster_members` for wsrep; `ONLINE` or
     `RECOVERING` own `server_uuid` row for GR/InnoDB Cluster; MariaDB
@@ -9829,7 +9849,7 @@ images: `mysql:8.4.11` and `mariadb:11.4.13`.
 
 **Live lab suites** (`test/live/`, run by `scripts/live-tests.sh`). The
 cluster lab checks are repeatable unittest suites in the spirit of mtr:
-`scripts/live-tests.sh [ic|galera|proxysql|shell|writes|ga|all] [--record]` brings up
+`scripts/live-tests.sh [ic|galera|proxysql|shell|writes|topology|ga|all] [--record]` brings up
 only the labs the chosen suites need (idempotent `cluster-matrix.sh up`, then
 `check`), leaves them running for the next run, runs different clusters in
 parallel lanes with the scenarios on one cluster in order, prints one line per
@@ -9847,9 +9867,21 @@ instead of sleeps, and password redaction. Suites: `live_ic_group_routing`
 (InnoDB Cluster group saved, per-member identities recorded, Stop and Start
 Group Replication on mf-ic-2 routed through its own saved connection, two
 saved connections claiming one member failing closed; Start after Stop also on
-failure), `live_galera` (Desync and Resync of galera-2 through the group,
+failure), `live_topology_ic` (Topology place on InnoDB Cluster 8.4 with
+cluster-ic-1..3, cluster-ic-router-rw, and optional proxysql-admin: `map` with
+GR cluster membership, router alias keeping one primary, and ProxySQL routes;
+`members` roles, ONLINE state, single version, secondary read_only and
+super_read_only, and transactions behind; `parameters`, `accounts` and
+`plugins` with identity settings folded as per_server and alias/ProxySQL
+excluded; rolling `SET PERSIST` of `max_connect_errors` secondaries before
+primary, token replay refusal, and restore also on failure), `live_galera` (Desync and Resync of galera-2 through the group,
 verified on the peer's own `wsrep_desync` and `wsrep_local_state_comment`
 because a peer's action flags are not state-gated; Resync after Desync also on
+failure), `live_topology_galera` (Topology place on MariaDB 11.8 Galera with
+cluster-galera-1..3: `map` with one Galera cluster linked by wsrep node
+identity; `members` all Synced; `parameters`, `accounts` and `plugins` with no
+failed member; rolling `SET GLOBAL` of `max_connect_errors` in node-name order
+with `[mysqld]` option-file lines, token replay refusal, and restore also on
 failure), `live_shell` (MySQL Shell Rejoin of
 mf-ic-3 through the group, and a line-1 identity mismatch on a real mysqlsh
 stopping before line 2, classified `identity_mismatch`; both run in the

@@ -406,7 +406,7 @@ def _client_auth_error(stderr, binary, used=None):
         used = None
     if used is None:
         from . import client_tools
-        found = client_tools.discover_choices(client_choices())
+        found = client_tools.discover_choices(client_choices(), names=client_tools.QUERY_DISCOVERY_NAMES)
         used = next((client_tools._use(g, 'client', name, 'unknown_server')
                      for g in found['installations'] for name, program in g['programs'].items()
                      if name in ('mysql', 'mariadb') and
@@ -925,7 +925,7 @@ class MySQLConnection:
                     # Chosen-only discovery deliberately skips PATH probes.
                     # On a plugin failure, an automatic other engine needs its
                     # own lazy discovery with the normal pre-probe trust checks.
-                    retry_discovered = (client_tools.discover()
+                    retry_discovered = (client_tools.discover(names=client_tools.QUERY_DISCOVERY_NAMES)
                                         if any(choices.values()) and not choices.get(other)
                                         else discovered)
                     # The other engine's pure ranking selects its best copy.
@@ -974,7 +974,7 @@ class MySQLConnection:
             with _CLIENT_CHOICES_LOCK:
                 generation = _CLIENT_CHOICES_GENERATION
                 choices = dict(_CLIENT_CHOICES)
-            candidates = [c for c in client_tools.snapshot()
+            candidates = [c for c in client_tools.snapshot(names=client_tools.QUERY_DISCOVERY_NAMES)
                           if c['name'] in ('mysql', 'mariadb') and not c.get('trust_error')]
             if not any(choices.values()) and len(candidates) <= 1:
                 # Snapshot covers PATH without current-directory/PATHEXT fallback.
@@ -984,8 +984,9 @@ class MySQLConnection:
                 path = checked_program(candidate['path'], candidate['realpath'], candidate['bundled'])
                 used = None
             else:
-                discovered = (client_tools.discover_choices(choices, automatic=False)
-                              if any(choices.values()) else client_tools.discover_choices(choices))
+                discovered = (client_tools.discover_choices(choices, automatic=False, names=client_tools.QUERY_DISCOVERY_NAMES)
+                              if any(choices.values()) else
+                              client_tools.discover_choices(choices, names=client_tools.QUERY_DISCOVERY_NAMES))
                 keys, errors = client_tools.choice_keys(discovered, choices)
                 with _CLIENT_CHOICES_LOCK:
                     if generation != _CLIENT_CHOICES_GENERATION:
@@ -997,7 +998,7 @@ class MySQLConnection:
                     # No valid choice can identify this endpoint. A trusted
                     # automatic client may read its identity, but cannot repair
                     # the stored choice for the engine it discovers.
-                    discovered = client_tools.discover()
+                    discovered = client_tools.discover(names=client_tools.QUERY_DISCOVERY_NAMES)
                 client_count = len({p['realpath'] for g in discovered['installations']
                                     for name, p in g['programs'].items() if name in ('mysql', 'mariadb')} |
                                    {c['realpath'] for c in candidates})
@@ -1006,7 +1007,7 @@ class MySQLConnection:
                 if facts and errors[facts['engine']]:
                     raise ClientMissingError(errors[facts['engine']])
                 if facts and any(choices.values()) and not choices.get(facts['engine']):
-                    discovered = client_tools.discover_choices(choices)
+                    discovered = client_tools.discover_choices(choices, names=client_tools.QUERY_DISCOVERY_NAMES)
                     keys, errors = client_tools.choice_keys(discovered, choices)
                 relevant = (facts['engine'],) if facts else ('mysql', 'mariadb')
                 for engine in relevant:
