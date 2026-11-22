@@ -663,6 +663,11 @@ try {
     edges: [...originalMap.edges,
       link("proxy", "cache", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED", label: "hostgroup 10" }),
       link("proxy", "cache", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "ONLINE", label: "hostgroup 20" }),
+      // Three routes out of one proxy into one cluster box: their labels used
+      // to pile up beside the proxy card.
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_AWS_BGD", label: "hostgroup 15" }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10" }),
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: null, label: "hostgroup 20" }),
       link("cache", "p-topo-1", { kind: "cache_upstream", state: "up", label: "Upstream" }),
       link("p-topo-2", "replica-1"), link("replica-1", "replica-2"),
       link("cycle-1", "cycle-2", { state: "connecting" }), link("cycle-2", "cycle-1", { state: "stopped" }),
@@ -683,9 +688,118 @@ try {
   assert.equal(complexY("cycle-1"), complexY("cycle-2"), "a circular replication component shares a level");
   assert.match(await page.$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] text`, (e) => e.textContent), /SHUNNED/);
   const routePaths = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] > path:first-of-type`, (paths) => paths.map((p) => p.getAttribute("d")));
-  assert.equal(new Set(routePaths).size, 2, "parallel hostgroup routes have separate paths");
-  const routeLabels = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] text`, (labels) => labels.map((label) => label.getAttribute("y")));
-  assert.equal(new Set(routeLabels).size, 2, "parallel route state labels do not overlap");
+  assert.equal(new Set(routePaths).size, routePaths.length, "every hostgroup route has its own path");
+  // Drawn labels never mislead, at either window width: no two drawn labels
+  // overlap, no card covers a label, and every drawn label lies within 6 px
+  // of a segment of its own line. A label that cannot fit is omitted
+  // (data-label-omitted) and one note under the diagram says so.
+  const LABEL_NEAR = 6;
+  const assertLabelsClear = async (width) => {
+    const { boxes, cards } = await page.$$eval(`${diagram} .topology-map-edge`, (groups) => {
+      const svgRect = document.querySelector(".topology-map-edges").getBoundingClientRect();
+      const orient = (p, q, r) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+      const onSeg = (p, q, r) => q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x)
+        && q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y);
+      const segsMeet = (p1, q1, p2, q2) => {
+        const o1 = orient(p1, q1, p2), o2 = orient(p1, q1, q2), o3 = orient(p2, q2, p1), o4 = orient(p2, q2, q1);
+        if (o1 !== o2 && o3 !== o4) return true;
+        return (o1 === 0 && onSeg(p1, p2, q1)) || (o2 === 0 && onSeg(p1, q2, q1))
+          || (o3 === 0 && onSeg(p2, p1, q2)) || (o4 === 0 && onSeg(p2, q1, q2));
+      };
+      const pointSeg = (p, a, b) => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+        return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+      };
+      const pointRect = (p, rect) => Math.hypot(
+        Math.max(rect.left - p.x, 0, p.x - rect.right), Math.max(rect.top - p.y, 0, p.y - rect.bottom));
+      const rectSeg = (rect, a, b) => {
+        if (pointRect(a, rect) === 0 || pointRect(b, rect) === 0) return 0;
+        const corners = [
+          { x: rect.left, y: rect.top }, { x: rect.right, y: rect.top },
+          { x: rect.left, y: rect.bottom }, { x: rect.right, y: rect.bottom },
+        ];
+        let best = Math.min(pointRect(a, rect), pointRect(b, rect));
+        for (let c = 0; c < 4; c++) {
+          const d = (c + 1) % 4;
+          if (segsMeet(a, b, corners[c], corners[d])) return 0;
+          best = Math.min(best, pointSeg(corners[c], a, b));
+        }
+        return best;
+      };
+      const boxes = [];
+      for (const g of groups) {
+        const text = g.querySelector("text");
+        if (!text) continue;
+        // A label the browser has not drawn (outside the visible part of a
+        // large diagram) reports a 0x0 box at the origin; measure it from its
+        // anchor and text length instead, so the check never depends on layout.
+        const bb = text.getBBox();
+        let box;
+        if (bb.width > 0 && bb.height > 0) {
+          box = { left: bb.x, top: bb.y, right: bb.x + bb.width, bottom: bb.y + bb.height, text: text.textContent };
+        } else {
+          const x = Number(text.getAttribute("x")), y = Number(text.getAttribute("y"));
+          const w = text.textContent.length * 6.4;
+          const anchor = text.getAttribute("text-anchor");
+          const left = anchor === "middle" ? x - w / 2 : anchor === "end" ? x - w : x;
+          box = { left, top: y - 9, right: left + w, bottom: y + 3, text: text.textContent };
+        }
+        const d = g.querySelector("path").getAttribute("d");
+        const pts = [];
+        let cur = { x: 0, y: 0 };
+        for (const m of d.matchAll(/([MLVH])(-?[\d.]+)(?:,(-?[\d.]+))?/g)) {
+          if (m[1] === "M" || m[1] === "L") cur = { x: +m[2], y: +m[3] };
+          else if (m[1] === "V") cur = { x: cur.x, y: +m[2] };
+          else cur = { x: +m[2], y: cur.y };
+          pts.push({ ...cur });
+        }
+        let near = Infinity;
+        for (let i = 0; i + 1 < pts.length; i++) near = Math.min(near, rectSeg(box, pts[i], pts[i + 1]));
+        boxes.push({ ...box, near });
+      }
+      const cards = [...document.querySelectorAll(".topology-map-diagram button[data-node]")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left - svgRect.left, top: r.top - svgRect.top, right: r.right - svgRect.left,
+          bottom: r.bottom - svgRect.top, id: el.dataset.node };
+      });
+      return { boxes, cards };
+    });
+    for (let a = 0; a < boxes.length; a++) {
+      assert.ok(boxes[a].near <= LABEL_NEAR,
+        `label "${boxes[a].text}" touches its own line at ${width} px (nearest segment ${boxes[a].near.toFixed(1)} px)`);
+      for (let b = a + 1; b < boxes.length; b++) {
+        const overlap = boxes[a].left < boxes[b].right && boxes[b].left < boxes[a].right
+          && boxes[a].top < boxes[b].bottom && boxes[b].top < boxes[a].bottom;
+        assert.ok(!overlap, `edge labels do not overlap at ${width} px: "${boxes[a].text}" and "${boxes[b].text}"`);
+      }
+      for (const card of cards) {
+        const covered = boxes[a].left < card.right && card.left < boxes[a].right
+          && boxes[a].top < card.bottom && card.top < boxes[a].bottom;
+        assert.ok(!covered, `label "${boxes[a].text}" is not covered by card ${card.id} at ${width} px`);
+      }
+    }
+  };
+  const checkOmissionNote = async () => {
+    const omitted = await page.$$eval(`${diagram} .topology-map-edge[data-label-omitted="true"]`, (els) => els.length);
+    const note = await page.$(".topology-map-labels-omitted");
+    if (omitted > 0) {
+      assert.ok(note, "the omitted-labels note shows when labels were omitted");
+      assert.equal(await page.$eval(".topology-map-labels-omitted", (e) => e.textContent),
+        "Some link labels did not fit; every link is listed below.");
+      assert.equal(await page.$$eval(".topology-map-labels-omitted", (els) => els.length), 1, "the note shows once");
+    } else {
+      assert.equal(note, null, "no omitted-labels note when every label fit");
+    }
+    return omitted;
+  };
+  await page.setViewport({ width: 1440, height: 900 });
+  await assertLabelsClear(1440);
+  await page.setViewport({ width: 720, height: 520 });
+  await assertLabelsClear(720);
+  await page.setViewport({ width: 1440, height: 900 });
+  await checkOmissionNote();
   assert.match(await page.$eval(nodeButton("extra-1"), (e) => e.textContent), /\[2001:db8::1\]:3306/, "IPv6 addresses have one pair of brackets");
   assert.match(await page.$eval(nodeButton("cycle-1"), (e) => e.textContent), /connecting/);
   assert.match(await page.$eval(`${diagram} [data-cluster="unconfirmed"]`, (e) => e.textContent), /Percona XtraDB Cluster.*No confirmed members/s);
@@ -713,6 +827,72 @@ try {
   assert.ok(diagramScroll.left > 0, "wide groups scroll inside the diagram at 720 px");
   assert.equal(diagramScroll.overflow, "auto");
   assert.equal(diagramScroll.pageLeft, 0, "scrolling the diagram never moves the page sideways");
+
+  // --- Dense ProxySQL routing (the review fixtures): two hostgroups for
+  // each of two clustered backends, ten per backend, then 300 per backend
+  // at the 600-link cap. Drawn labels never overlap, never sit under a card
+  // and stay within 6 px of their own line.
+  const denseMap = (hostgroups) => {
+    const backends = (prefix, clusterId) => [1, 2].map((n) => makeNode(`${prefix}${n}`, {
+      role: n === 1 ? "primary" : "secondary", state: "ONLINE", cluster_id: clusterId }));
+    const edges = [];
+    for (const target of ["be-a1", "be-b1"])
+      for (let hg = 0; hg < hostgroups; hg++)
+        edges.push(link("proxy-dense", target, { kind: "proxy_route", evidence: "endpoint", verified: false,
+          state: hg % 3 === 0 ? "SHUNNED" : "ONLINE", label: `hostgroup ${hg}` }));
+    return {
+      nodes: [makeNode("proxy-dense", { role: "proxy", product: "ProxySQL", version: "3.0.2" }),
+        ...backends("be-a", "gr:aaaa"), ...backends("be-b", "gr:bbbb")],
+      edges,
+      clusters: [
+        { id: "gr:aaaa", kind: "group_replication", name: "backend-a", members: ["be-a1", "be-a2"], seen_from: ["be-a1", "be-a2"] },
+        { id: "gr:bbbb", kind: "group_replication", name: "backend-b", members: ["be-b1", "be-b2"], seen_from: ["be-b1", "be-b2"] },
+      ],
+      notes: [],
+    };
+  };
+  const denseMembers = (mapData) => mapData.nodes.map((node) => member({
+    profile_id: node.profile_id, profile_name: node.label, host: node.host, role: node.role, state: node.state }));
+  for (const hostgroups of [2, 10, 300]) {
+    reports.map.map = denseMap(hostgroups);
+    reports.map.members = denseMembers(reports.map.map);
+    await h.refresh();
+    await page.waitForSelector(nodeButton("be-b2"), { visible: true, timeout: 15000 });
+    await page.setViewport({ width: 1440, height: 900 });
+    await assertLabelsClear(1440);
+    await page.setViewport({ width: 720, height: 520 });
+    await assertLabelsClear(720);
+    await page.setViewport({ width: 1440, height: 900 });
+    await checkOmissionNote();
+    if (hostgroups === 300)
+      assert.equal(await page.$$eval(`${diagram} svg .topology-map-edge`, (els) => els.length), 600,
+        "the 300-per-backend fixture draws exactly at the link cap");
+  }
+
+  // --- Crowded circular links with long names: some candidates exhaust, so
+  // those labels are omitted and the note says every link is listed below.
+  reports.map.map = {
+    nodes: [makeNode("cycle-1", { role: "source", state: "connecting" }), makeNode("cycle-2", { role: "replica", state: "stopped" })],
+    edges: Array.from({ length: 60 }, (_, i) =>
+      link(i % 2 ? "cycle-2" : "cycle-1", i % 2 ? "cycle-1" : "cycle-2", {
+        state: i % 2 ? "stopped" : "connecting",
+        label: `replication channel ${i} with a deliberately long descriptive name ${"padding ".repeat(20)}`.trim(),
+      })),
+    clusters: [], notes: [],
+  };
+  reports.map.members = denseMembers(reports.map.map);
+  await h.refresh();
+  await page.waitForSelector(nodeButton("cycle-2"), { visible: true });
+  await page.setViewport({ width: 1440, height: 900 });
+  await assertLabelsClear(1440);
+  await page.setViewport({ width: 720, height: 520 });
+  await assertLabelsClear(720);
+  await page.setViewport({ width: 1440, height: 900 });
+  assert.ok((await checkOmissionNote()) > 0, "crowded circular links omit the labels that cannot fit");
+  reports.map.map = originalMap;
+  reports.map.members = originalMembers;
+  await h.refresh();
+  await page.waitForSelector(nodeButton("p-topo-2"), { visible: true });
 
   // A peer listed in cluster evidence remains an unconsented peer.
   reports.map.map = { ...originalMap, clusters: [{ ...originalMap.clusters[0], members: ["p-topo-1", "p-topo-2", peerId] }] };

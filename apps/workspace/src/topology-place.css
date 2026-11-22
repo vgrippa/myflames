@@ -181,6 +181,10 @@
 .topology-map-edge-cap {
   margin: 0 0 8px;
 }
+/* The omitted-labels note sits under the diagram. */
+.topology-map-labels-omitted {
+  margin: 8px 0 0;
+}
 .topology-map-scroll {
   width: 100%;
   max-width: 100%;
@@ -276,10 +280,23 @@
   fill: var(--map-tone-text);
   stroke: var(--surface);
   stroke-width: 4px;
+  stroke-linejoin: round;
   paint-order: stroke;
   font-size: 11px;
   pointer-events: auto;
 }
+/* The visible labels live in .topology-map-label-layer, above every line; the
+   copy inside each link stays for its box, tooltip and accessible text. */
+.topology-map-edge text.topology-map-edge-label-anchor { opacity: 0; }
+.topology-map-label {
+  fill: var(--map-tone-text);
+  stroke: var(--surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  paint-order: stroke;
+  font-size: 11px;
+}
+.topology-map-label.is-alias { fill: var(--muted); }
 .topology-map-section { overflow-wrap: anywhere; }
 /* The rolling change sheet (RollingChangeSheet.tsx): value, mode and member
    choice, then the numbered review and the per-member result. */

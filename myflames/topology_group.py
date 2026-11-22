@@ -295,15 +295,12 @@ def _replica_state(channels):
     return 'running' if running and all(all(pair) for pair in running) else None
 
 
-def _member_facts(conn, member, variables, check_routed=False):
-    from .replication import status_statement
+def _read_routed(conn, member):
+    """Read router attributes on every section so alias election is consistent."""
     reader, notes = Reader(conn, TAG), []
-    engine, version = member['engine'], server_version_tuple(member['version'])
-    uuid = member['server_uuid']
-    is_mysql_db = (engine == 'mysql' and member.get('product') not in ('ProxySQL Admin', 'Readyset') and
+    is_mysql_db = (member['engine'] == 'mysql' and member.get('product') not in ('ProxySQL Admin', 'Readyset') and
                    member.get('role') not in ('proxy', 'cache'))
-    member.update(role=None, state=None, lag=None, behind=None, behind_reason=None)
-    if check_routed and is_mysql_db:
+    if is_mysql_db:
         rows = _optional(
             reader,
             "SELECT COUNT(*) FROM performance_schema.session_connect_attrs "
@@ -312,6 +309,15 @@ def _member_facts(conn, member, variables, check_routed=False):
         )
         count = _number(rows[0][0]) if rows and rows[0] else None
         member['routed'] = None if count is None else count > 0
+    return notes
+
+
+def _member_facts(conn, member, variables):
+    from .replication import status_statement
+    reader, notes = Reader(conn, TAG), []
+    engine, version = member['engine'], server_version_tuple(member['version'])
+    uuid = member['server_uuid']
+    member.update(role=None, state=None, lag=None, behind=None, behind_reason=None)
     position = variables.get('gtid_current_pos') if engine == 'mariadb' else variables.get('gtid_executed')
     # An empty set with GTID_MODE OFF does not show that replication is caught
     # up. Only fully GTID-enabled MySQL members can supply transaction counts.
@@ -1035,13 +1041,14 @@ def read_group(store, group_name, section, active_member_profile_id,
                             str(preflight.get(key)) != str(observed.get(key)) or
                             str(variables.get(key)) != str(observed.get(key)) for key in keys):
                         raise ConnectorError('The member identity changed during the read.')
+                    notes = _read_routed(conn, entry)
                     if section in ('members', 'map', 'parameters'):
-                        position, notes = _member_facts(conn, entry, variables,
-                                                        check_routed=section in ('members', 'map'))
+                        position, member_notes = _member_facts(conn, entry, variables)
+                        notes.extend(member_notes)
                         multi_primary = (entry['role'] in ('primary', 'secondary')
                                          and _on(variables.get('group_replication_single_primary_mode')) is False)
-                        if notes:
-                            entry['message'] = 'Read with unavailable facts: ' + ' '.join(dict.fromkeys(notes))
+                    if notes:
+                        entry['message'] = 'Read with unavailable facts: ' + ' '.join(dict.fromkeys(notes))
                     if section == 'parameters':
                         snapshot = param_compare.capture(conn, server=entry, full_provider_options=True)
                     elif section == 'accounts':
