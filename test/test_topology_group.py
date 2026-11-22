@@ -2603,6 +2603,43 @@ class TopologyReadTests(GroupCase):
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
         self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED'))
 
+    def test_map_proxysql_address_routes_with_router_alias_and_ambiguous_members(self):
+        self.save('router', 'G', port=6446)
+        self.save('proxy', 'G', port=6032)
+        cases = (
+            ('reported_hostname_with_alias', 'db-1', 3306, UUID_A, 'active', 'hostname_port'),
+            ('router_saved_endpoint', 'router.example', 6446, UUID_A, 'router', 'endpoint'),
+            ('distinct_members_same_hostname', 'db-1', 3306, UUID_B, 'peer:db-1:3306', None),
+        )
+        for name, host, port, router_uuid, destination, evidence in cases:
+            with self.subTest(case=name):
+                direct = member_fixture(UUID_A)
+                direct['variables']['hostname'] = 'db-1'
+                router = member_fixture(router_uuid)
+                router['variables']['hostname'] = 'db-1'
+                proxy = member_fixture(proxy='proxysql', servers=[{
+                    'hostgroup_id': '10', 'hostname': host, 'port': str(port), 'status': 'ONLINE'}])
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': direct, 'router.example': router,
+                                   'proxy.example': proxy}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(report['summary']['read'], 3, report)
+                self.assertEqual(nodes['router']['duplicate_of'], 'active' if router_uuid == UUID_A else None)
+                routes = [edge for edge in report['map']['edges'] if edge['kind'] == 'proxy_route']
+                self.assertEqual(len(routes), 1)
+                route = routes[0]
+                self.assertEqual((route['from'], route['to']), ('proxy', destination))
+                self.assertEqual(route['evidence'], evidence)
+                self.assertIs(route['verified'], False)
+                peers = [node for node in nodes.values() if node['kind'] == 'peer']
+                if evidence is None:
+                    self.assertEqual([node['id'] for node in peers], [destination])
+                    self.assertIsNone(nodes[destination]['profile_id'])
+                    self.assertEqual(nodes[destination]['reason'], 'Not in this group')
+                else:
+                    self.assertEqual(peers, [])
+
     def test_map_readyset_upstream_projects_endpoints_without_user_or_sql(self):
         self.save('source', 'G')
         readyset = member_fixture(proxy='readyset', upstreams=[{

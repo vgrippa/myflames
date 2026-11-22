@@ -36,6 +36,53 @@ class DiscoveryTests(unittest.TestCase):
     def discover(self, *folders, **kwargs):
         return ct.discover(path=os.pathsep.join(str(p) for p in folders), common_dirs=(), bundled=False, **kwargs)
 
+    def settings_and_connector(self, folders, server):
+        """Compare Settings' pure selection with the query client's resolution."""
+        with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, folders)),
+                                          'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                mock.patch.dict(ct._FACTS, clear=True):
+            choices = ct.connector.client_choices()
+            discovered = ct.discover_choices(choices)
+            keys, errors = ct.choice_keys(discovered, choices)
+            self.assertEqual(errors, {'mysql': None, 'mariadb': None})
+            shown = ct.select(discovered, server, keys)['client']
+            conn = ct.connector.MySQLConnection(host='mixed-layout')
+            ct.remember_server(conn._endpoint_key(), server['engine'], server['version'])
+            with mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                   side_effect=AssertionError('must not read the managed Shell pointer')), \
+                    mock.patch.object(ct.connector, 'checked_shell_program',
+                                      side_effect=AssertionError('must not check Shell trust')):
+                try:
+                    executed = conn._resolve_binary()
+                except ct.connector.ClientMissingError:
+                    executed = None
+        return (shown or {}).get('realpath'), executed
+
+    def test_F1_query_client_is_the_client_settings_reports_when_a_dump_tool_comes_first(self):
+        a = private_client_dir(self.root / 'a/bin')
+        b, c = self.root / 'b/bin', self.root / 'c/bin'
+        self.make(b)
+        expected = self.make(c)
+        (a / 'mysqldump').symlink_to(self.make(c, 'mysqldump'))
+        for folder in (b, c):
+            self.make(folder, 'mysqlsh', version='9.6.0')
+        shown, executed = self.settings_and_connector((a, b, c), dict(engine='mysql', version='8.4.13'))
+        self.assertEqual(shown, str(expected))
+        self.assertEqual(executed, shown)
+
+    def test_F1_own_engine_tools_without_a_client_never_borrow_the_other_engine(self):
+        # Only a server with no tools of its own engine may borrow a query client.
+        a, b, c = self.root / 'a/bin', self.root / 'b/bin', self.root / 'c/bin'
+        self.make(a)
+        self.make(c, version='8.0.45')
+        self.make(b, 'mariadb-dump', banner='mariadb-dump Ver 10.19 Distrib 11.4.2-MariaDB')
+        shown, executed = self.settings_and_connector((a, b, c), dict(engine='mariadb', version='11.4.2-MariaDB'))
+        self.assertIsNone(shown)
+        self.assertEqual(executed, shown)
+
     def test_choice_keys_engines_alias_bundle_and_missing(self):
         mysql = self.make(self.root / 'mysql')
         maria = self.make(self.root / 'maria', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
@@ -375,6 +422,244 @@ class DiscoveryTests(unittest.TestCase):
             report = self.discover(self.root)
         self.assertTrue(report['installations'][0]['programs']['mysqlpump']['deprecated'])
         self.assertIsNone(ct.select(report, {'engine': 'mysql', 'version': '8.4.3'})['dump'])
+
+    def test_query_client_snapshot_skips_other_programs_and_managed_pointer(self):
+        mysql = self.make(self.root / 'bin')
+        self.make(mysql.parent, 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        self.make(mysql.parent, 'mysqlsh')
+        self.make(mysql.parent, 'mysqldump')
+        with mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                               side_effect=AssertionError('must not read the managed Shell pointer')) as installed, \
+                mock.patch.object(ct.connector, 'checked_shell_program',
+                                  side_effect=AssertionError('must not check Shell trust')) as shell_check, \
+                mock.patch.object(ct.os.path, 'isfile', wraps=ct.os.path.isfile) as isfile, \
+                mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('must not probe')):
+            candidates = ct.snapshot(str(mysql.parent), (), False, names=('mysql', 'mariadb'))
+        self.assertEqual([c['name'] for c in candidates], ['mysql', 'mariadb'])
+        self.assertEqual({os.path.basename(call[0][0]) for call in isfile.call_args_list},
+                         {'mysql', 'mariadb'})
+        installed.assert_not_called()
+        shell_check.assert_not_called()
+
+    def test_snapshot_names_accepts_iterators_and_keeps_mariadb_alias_preference(self):
+        maria = self.make(self.root / 'bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        (maria.parent / 'mysql').symlink_to(maria)
+        candidates = ct.snapshot(str(maria.parent), (), False,
+                                 names=iter(('mariadb', 'mysql')))
+        self.assertEqual([(c['name'], c['path']) for c in candidates], [('mariadb', str(maria))])
+        with mock.patch.object(ct.connector, 'bundled_client_dir',
+                               side_effect=AssertionError('empty selection needs no filesystem checks')), \
+                mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                  side_effect=AssertionError('empty selection needs no managed Shell')):
+            self.assertEqual(ct.snapshot(names=()), [])
+
+    def test_F2_names_outside_the_program_list_are_never_searched(self):
+        mysql = self.make(self.root / 'bin')
+        for other in ('sh', 'evil'):
+            self.make(mysql.parent, other)
+        with mock.patch.object(ct.os.path, 'isfile', wraps=ct.os.path.isfile) as isfile:
+            candidates = ct.snapshot(str(mysql.parent), (), False, names=('sh', 'evil', '../bin/sh', 'mysql'))
+        self.assertEqual([c['name'] for c in candidates], ['mysql'])
+        self.assertEqual({os.path.basename(call[0][0]) for call in isfile.call_args_list}, {'mysql'})
+        with mock.patch.object(ct.os.path, 'isfile', side_effect=AssertionError('must not search unknown names')):
+            self.assertEqual(ct.snapshot(str(mysql.parent), (), False, names=('sh',)), [])
+            # A bare string is not a sequence of program names.
+            self.assertEqual(ct.snapshot(str(mysql.parent), (), False, names='mysql'), [])
+
+    def test_default_snapshot_still_discovers_shell_and_walks_its_tree_fresh(self):
+        mysql = self.make(self.root / 'bin')
+        shell = self.make(mysql.parent, 'mysqlsh')
+        startup = private_client_dir(self.root / 'share/mysqlsh') / 'mysqlshrc.py'
+        startup.write_text('# Shell startup code\n')
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.managed_shell, 'installed_bin_dir', return_value=None) as installed, \
+                mock.patch.object(ct.connector, '_check_shell_tree_trust',
+                                  wraps=ct.connector._check_shell_tree_trust) as tree_check, \
+                mock.patch.object(ct.connector.os, 'lstat', wraps=ct.connector.os.lstat) as lstat, \
+                mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('must not probe')):
+            candidates = ct.snapshot(str(mysql.parent), (), False)
+            self.assertEqual([c['name'] for c in candidates], ['mysql', 'mysqlsh'])
+            self.assertFalse(any(c.get('trust_error') for c in candidates))
+            self.assertIn(mock.call(str(startup)), lstat.call_args_list)
+            installed.assert_called_once_with(cache=False)
+            tree_check.assert_called_once_with(str(shell))
+            startup.chmod(0o777)
+            candidates = ct.snapshot(str(mysql.parent), (), False)
+        self.assertEqual(tree_check.call_count, 2)
+        refused = next(c for c in candidates if c['name'] == 'mysqlsh')
+        self.assertIn('changed by other users', refused['trust_error'])
+
+    def test_resolve_query_client_never_checks_shell_tree(self):
+        mysql = self.make(self.root / 'bin')
+        self.make(mysql.parent, 'mysqlsh')
+        startup = private_client_dir(self.root / 'share/mysqlsh') / 'mysqlshrc.py'
+        startup.write_text('# Shell startup code\n')
+        with mock.patch.dict(os.environ, {'PATH': str(mysql.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                  side_effect=AssertionError('must not read the managed Shell pointer')), \
+                mock.patch.object(ct.connector, 'checked_shell_program',
+                                  side_effect=AssertionError('must not check Shell trust')) as shell_check, \
+                mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot, \
+                mock.patch.object(ct, 'probe', side_effect=AssertionError('must not probe')):
+            self.assertEqual(ct.connector.MySQLConnection(host='query-only')._resolve_binary(), str(mysql))
+        snapshot.assert_called_once_with(names=ct.QUERY_DISCOVERY_NAMES)
+        shell_check.assert_not_called()
+
+    def test_F3_single_client_is_rechecked_after_snapshot(self):
+        mysql = self.make(self.root / 'bin')
+        real_snapshot = ct.snapshot
+        for mode in (0o720, 0o702):
+            mysql.chmod(0o700)
+
+            def snapshot_then_loosen(*args, **kwargs):
+                found = real_snapshot(*args, **kwargs)
+                self.assertEqual([c['path'] for c in found if not c.get('trust_error')], [str(mysql)])
+                mysql.chmod(mode)
+                return found
+
+            with self.subTest(mode=oct(mode)), \
+                    mock.patch.dict(os.environ, {'PATH': str(mysql.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                    mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                    mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                    mock.patch.object(ct, 'snapshot', side_effect=snapshot_then_loosen), \
+                    mock.patch.object(ct, 'probe', side_effect=AssertionError('shortcut must not probe')):
+                conn = ct.connector.MySQLConnection(host='snapshot-race')
+                with self.assertRaisesRegex(ct.connector.ClientMissingError, 'changed by other users'):
+                    conn._resolve_binary()
+
+    def test_F3_selected_client_is_rechecked_after_selection(self):
+        mysql = self.make(self.root / 'a/bin')
+        older = self.make(self.root / 'b/bin', version='8.0.45')
+        real_select = ct.select
+
+        def select_then_loosen(*args, **kwargs):
+            selected = real_select(*args, **kwargs)
+            self.assertEqual(selected['client']['path'], str(mysql))
+            mysql.chmod(0o702)
+            return selected
+
+        with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, (mysql.parent, older.parent))),
+                                          'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                mock.patch.dict(ct._FACTS, clear=True), \
+                mock.patch.object(ct, 'select', side_effect=select_then_loosen):
+            conn = ct.connector.MySQLConnection(host='selection-race')
+            ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.13')
+            with self.assertRaisesRegex(ct.connector.ClientMissingError, 'changed by other users'):
+                conn._resolve_binary()
+
+    def test_F3_single_client_refuses_a_link_target_swapped_after_snapshot(self):
+        first = self.make(self.root / 'v1/bin')
+        second = self.make(self.root / 'v2/bin', version='9.7.0')
+        link = private_client_dir(self.root / 'bin') / 'mysql'
+        link.symlink_to(first)
+        real_snapshot = ct.snapshot
+
+        def snapshot_then_swap(*args, **kwargs):
+            found = real_snapshot(*args, **kwargs)
+            self.assertEqual([c['realpath'] for c in found if not c.get('trust_error')], [str(first)])
+            link.unlink()
+            link.symlink_to(second)
+            return found
+
+        with mock.patch.dict(os.environ, {'PATH': str(link.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                mock.patch.object(ct, 'snapshot', side_effect=snapshot_then_swap), \
+                mock.patch.object(ct, 'probe', side_effect=AssertionError('shortcut must not probe')):
+            with self.assertRaises(ct.connector.ClientMissingError):
+                ct.connector.MySQLConnection(host='link-race')._resolve_binary()
+
+    def test_F3_discovery_rechecks_client_before_version_probe(self):
+        mysql = self.make(self.root / 'bin')
+        real_snapshot = ct.snapshot
+
+        def snapshot_then_loosen(*args, **kwargs):
+            found = real_snapshot(*args, **kwargs)
+            self.assertEqual([c['path'] for c in found if not c.get('trust_error')], [str(mysql)])
+            mysql.chmod(0o720)
+            return found
+
+        with mock.patch.object(ct, 'snapshot', side_effect=snapshot_then_loosen), \
+                mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
+            report = self.discover(mysql.parent, names=('mysql',))
+        # Inventory reports the trust refusal without launching even --version.
+        self.assertEqual(report['installations'], [])
+        self.assertEqual(len(report['skipped']), 1)
+        self.assertIn('Other users can change', report['skipped'][0]['reason'])
+        run.assert_not_called()
+
+    def test_resolve_multiple_clients_and_settings_choices_skip_shell_discovery(self):
+        mysql = self.make(self.root / 'mysql/bin')
+        maria = self.make(self.root / 'maria/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        for folder in (mysql.parent, maria.parent):
+            self.make(folder, 'mysqlsh')
+        for engine, binary in (('mysql', mysql), ('mariadb', maria)):
+            for chosen in (False, True):
+                with self.subTest(engine=engine, chosen=chosen), \
+                        mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, (mysql.parent, maria.parent))),
+                                                    'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                        mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                        mock.patch.dict(ct.connector._CLIENT_CHOICES,
+                                        {'mysql': None, 'mariadb': None, **({engine: str(binary)} if chosen else {})},
+                                        clear=True), \
+                        mock.patch.dict(ct._FACTS, clear=True), \
+                        mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                          side_effect=AssertionError('must not read the managed Shell pointer')), \
+                        mock.patch.object(ct.connector, 'checked_shell_program',
+                                          side_effect=AssertionError('must not check Shell trust')):
+                    conn = ct.connector.MySQLConnection(host='multiple-query-clients')
+                    ct.remember_server(conn._endpoint_key(), engine,
+                                       '8.4.13' if engine == 'mysql' else '11.4.2-MariaDB')
+                    self.assertEqual(conn._resolve_binary(), str(binary))
+
+    def test_discover_choices_reuses_names_iterator_for_off_path_folders(self):
+        mysql = self.make(self.root / 'mysql/bin')
+        maria = self.make(self.root / 'maria/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        for folder in (mysql.parent, maria.parent):
+            self.make(folder, 'mysqlsh')
+        with mock.patch.dict(os.environ, {'PATH': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                  side_effect=AssertionError('must not read the managed Shell pointer')), \
+                mock.patch.object(ct.connector, 'checked_shell_program',
+                                  side_effect=AssertionError('must not check Shell trust')):
+            report = ct.discover_choices({'mysql': str(mysql), 'mariadb': str(maria)},
+                                         automatic=False, names=iter(('mysql', 'mariadb')))
+        self.assertEqual({g['engine'] for g in report['installations']}, {'mysql', 'mariadb'})
+        self.assertEqual(report['shells'], [])
+
+    def test_first_contact_and_auth_retry_skip_shell_discovery(self):
+        mysql = self.make(self.root / 'mysql/bin')
+        maria = self.make(self.root / 'maria/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        for folder in (mysql.parent, maria.parent):
+            self.make(folder, 'mysqlsh')
+        mysql_facts = '8.4.13\tMySQL Community Server\n'
+        maria_facts = '11.4.2-MariaDB\tMariaDB Server\n'
+        cases = (
+            ('chosen', {'mysql': str(mysql)}, [mysql_facts], mysql),
+            ('auth-retry', {'mysql': str(mysql)},
+             [ct.connector.ClientAuthPluginError('client plugin unavailable'), maria_facts], maria),
+            ('broken-choice', {'mariadb': str(self.root / 'missing/mariadb')}, [mysql_facts], mysql))
+        for label, choices, replies, expected in cases:
+            with self.subTest(case=label), \
+                    mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, (mysql.parent, maria.parent))),
+                                                'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                    mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                    mock.patch.dict(ct.connector._CLIENT_CHOICES,
+                                    dict({'mysql': None, 'mariadb': None}, **choices), clear=True), \
+                    mock.patch.dict(ct._FACTS, clear=True), \
+                    mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                                      side_effect=AssertionError('must not read the managed Shell pointer')), \
+                    mock.patch.object(ct.connector, 'checked_shell_program',
+                                      side_effect=AssertionError('must not check Shell trust')):
+                conn = ct.connector.MySQLConnection(host='first-contact-' + label)
+                with mock.patch.object(conn, '_run_with_binary', side_effect=replies) as run:
+                    self.assertEqual(conn._resolve_binary(), str(expected))
+                self.assertEqual(run.call_count, len(replies))
 
     def test_shells_separate_and_newest_first(self):
         for i, version in enumerate(('8.4.13', '9.6.0')):

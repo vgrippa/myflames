@@ -691,6 +691,12 @@ def _build_map(entries, probes, profiles):
             matching = [candidate for candidate in matching if not candidate.get('duplicate_of')]
         found, evidence = topology_links.match_database_endpoint(
             host, port, matching, uuid=uuid, observer_host=replication.reached_host(stored[observer]))
+        if found is None and not uuid and any(candidate.get('duplicate_of') for candidate in matching):
+            # Aliases can make a server's reported hostname and port ambiguous.
+            # Retry without them only after checking their saved endpoints.
+            found, evidence = topology_links.match_database_endpoint(
+                host, port, [candidate for candidate in matching if not candidate.get('duplicate_of')],
+                uuid=uuid, observer_host=replication.reached_host(stored[observer]))
         if evidence == 'server_uuid':
             return found['profile_id'], evidence, True
         # IDs can collide (including the default 1), so retain an ID-only
@@ -710,7 +716,7 @@ def _build_map(entries, probes, profiles):
                         by_id[found['profile_id']].get('server_id') is not None and
                         by_id[found['profile_id']]['server_id'] != sid)
         if found and not identity_only and not contrary_uuid and not contrary_sid:
-            return found.get('duplicate_of') or found['profile_id'], evidence, False
+            return found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
     def edge(observer, source, destination, kind, evidence, verified, state, label):
