@@ -381,7 +381,7 @@ def identify(conn):
     except ConnectorError as exc:
         return False, "SHOW READYSET VERSION failed (%s)" % _short(dbops.redact(str(exc), pw))
     version = parse_readyset_version(vrows) or "unknown"
-    return True, version
+    return True, _display(dbops.redact(version, pw))
 
 
 def _detect_port_mode(conn, schema_name, timeout=None):
@@ -1301,12 +1301,18 @@ _EXPORT_ESCAPES = {
 _EXPORT_REDACTED_COMMENT = (
     "-- Credentials in this definition are shown as [redacted]; it will not run as is."
 )
-# Export also covers malformed URL credentials with a slash in the password.
+_EXPORT_UNSAFE_COMMENT = (
+    "-- This definition was not exported as runnable SQL: it is not a single CREATE CACHE statement."
+)
+_EXPORT_CREATE_CACHE = re.compile(r"\ACREATE\s+(?:(?:SHALLOW|DEEP)\s+)?CACHE\s+\S", re.I)
+_EXPORT_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+# Export also covers malformed URL credentials with '/' or '@' in the password.
 # The scheme boundary prevents retries within a long scheme-like word; the
-# username stops at ':' or '/', and the password scan is bounded at 1,024.
+# username stops at ':' or '/', and the greedy, bounded password scan ends
+# at the last '@' before whitespace or a quote, never at an interior '@'.
 _EXPORT_URL_CREDENTIALS = re.compile(
     r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://[^:/@\s'\"`]*:)"
-    r"[^@\s'\"`]{0,1024}@"
+    r"[^\s'\"`]{0,1024}@(?![^@\s'\"`]*@)"
 )
 
 
@@ -1333,7 +1339,7 @@ def _unescape_sql_literal(body, quote):
 def _redact_export_sql(sql, password=None):
     """Redact exported Readyset DDL without altering identifiers or keywords.
 
-    Applies ``dbops.redact`` outside quoted identifiers, and replaces any
+    Applies ``dbops.redact`` to the whole SQL with identifiers masked, and replaces any
     quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
     with ``'[redacted]'``, or a comment's content with ``[redacted]``.
     Returns ``(redacted_sql, changed)``; a detected connection password marks
@@ -1343,25 +1349,33 @@ def _redact_export_sql(sql, password=None):
     scan = dbops.lex_sql(sql)
     unclosed = set(scan["unclosed"])
     parts = []
+    identifiers = {}
+    used = set(sql)
+    mask_codepoint = 0xe000
     changed = False
     for kind, start, end in scan["tokens"]:
         tok = sql[start:end]
         if kind == "identifier":
-            parts.append(tok)
+            # Each identifier gets its own same-length, quote-free mask.
+            # Distinct characters allow restoration even if redaction changes
+            # earlier lengths or consumes a mask in malformed surrounding SQL.
+            while chr(mask_codepoint) in used:
+                mask_codepoint += 1
+            mask = chr(mask_codepoint)
+            mask_codepoint += 1
+            identifiers[mask] = tok
+            parts.append(mask * len(tok))
             continue
         # Keep connection-password matching scoped to literals and comments.
-        updated = dbops.redact(tok)
-        updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", updated)
+        updated = tok
         if kind == "string" and pw:
             quote = tok[0]
             body = tok[1:] if (start, end) in unclosed else tok[1:-1]
-            # Check URL-redacted body unless password literally equals the redaction marker.
-            check_body = body if (updated != tok and pw == dbops.REDACTED) else (
-                updated[1:] if (start, end) in unclosed else updated[1:-1]
-            )
-            if (pw in check_body or
-                    pw in _unescape_sql_literal(check_body, quote) or
-                    pw in check_body.replace(quote * 2, quote)):
+            # Inspect original bytes before a URL pass can remove a prefix of
+            # a password containing '@', leaving only its tail behind.
+            if (pw in body or
+                    pw in _unescape_sql_literal(body, quote) or
+                    pw in body.replace(quote * 2, quote)):
                 updated = "'" + dbops.REDACTED + "'"
                 changed = True
         elif kind == "comment" and pw and pw in tok:
@@ -1370,10 +1384,61 @@ def _redact_export_sql(sql, password=None):
             else:
                 updated = ("-- " if tok.startswith("--") else "# ") + dbops.REDACTED
             changed = True
-        if updated != tok:
-            changed = True
         parts.append(updated)
-    return "".join(parts), changed
+    masked = "".join(parts)
+    # Run the export URL pass first: the shared redactor can stop at the first
+    # '@'. Whole-definition redaction then sees both credential keywords and
+    # their literals, without treating identifier contents as SQL clauses.
+    updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", masked)
+    updated = dbops.redact(updated)
+    changed = changed or updated != masked
+    restored = []
+    previous = None
+    for ch in updated:
+        if ch not in identifiers:
+            restored.append(ch)
+        elif ch != previous:
+            restored.append(identifiers[ch])
+        previous = ch
+    return "".join(restored), changed
+
+
+def _runnable_export_sql(sql):
+    """Accept one CREATE CACHE under both server and mysql-client readings.
+
+    The importing client's quote mode is unknown. Refuse lexical uncertainty,
+    executable comments and line/client framing outside strings, rather than
+    letting server-supplied text control how the rest of the file is read.
+    """
+    if "\x00" in sql:
+        return False
+    for escapes in (True, False):
+        for client in (False, True):
+            scan = dbops.lex_sql(sql, backslash_escapes=escapes, client=client,
+                                client_delimiter=";" if client else None)
+            if scan["issues"] or scan["unclosed"] or scan["comments"]:
+                return False
+            code = []
+            for kind, start, end in scan["tokens"]:
+                tok = sql[start:end]
+                if kind == "string":
+                    code.append("?")
+                    continue
+                if "\\" in tok or any(ch in _EXPORT_LINE_BREAKS for ch in tok):
+                    return False
+                if kind == "identifier":
+                    code.append("identifier")
+                elif kind == "comment":
+                    if not tok.startswith("/*"):
+                        return False  # A line comment can swallow the terminator.
+                    code.append(" ")
+                else:
+                    code.append(tok)
+            code = "".join(code).strip()
+            if (not _EXPORT_CREATE_CACHE.match(code) or not code.endswith(";") or
+                    ";" in code[:-1] or re.search(r"\bDELIMITER\b", code, re.I)):
+                return False
+    return True
 
 
 def export_caches(conn):
@@ -1398,18 +1463,22 @@ def export_caches(conn):
              "-- Credentials in query text are shown as [redacted]."]
     last_db = None
     for r in rows:
-        raw_q = (r.get("query") or r.get("create statement") or "").strip()
-        if not raw_q:
+        raw_q = r.get("query") or r.get("create statement") or ""
+        if not raw_q.strip():
             continue
         q, redacted = _redact_export_sql(raw_q, pw)
         raw_db = r.get("database")
         db = str(raw_db) if raw_db not in (None, "") else None
-        if db and db != last_db and not q.upper().startswith("USE "):
+        if db and db != last_db:
             lines.append("USE %s;" % _rs_ident_server(db, "Database"))
             last_db = db
         stmt = q if q.endswith(";") else (q + ";")
+        runnable = _runnable_export_sql(stmt)
+        if not runnable:
+            lines.append(_EXPORT_UNSAFE_COMMENT)
         if redacted:
             lines.append(_EXPORT_REDACTED_COMMENT)
+        if redacted or not runnable:
             # A substituted literal can still be valid SQL. Disable every
             # physical line in both export formats until deliberately restored.
             stmt = "\n".join("-- " + line for line in stmt.splitlines())

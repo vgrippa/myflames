@@ -101,7 +101,7 @@ def _text(value):
 
 def _uuid_key(value):
     text = _text(value)
-    if not text:
+    if not text or not _UUID_RE.fullmatch(text):
         return None
     low = text.lower()
     return None if low == _NIL_UUID else low

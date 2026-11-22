@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import unittest
 from pathlib import Path
@@ -1296,7 +1297,7 @@ class TestFindings(ReadysetBase):
 
 
 class FakeCacheExport(FakeReadyset):
-    definition = "SELECT 1;"
+    definition = "CREATE CACHE c FROM SELECT 1;"
 
     def run(self, sql, extra_flags=None, timeout=None):
         if sql in ("EXPLAIN ALL CACHES", "EXPLAIN CACHES"):
@@ -1305,6 +1306,137 @@ class FakeCacheExport(FakeReadyset):
 
 
 class TestExplainAndExportCaches(ReadysetBase):
+
+    def test_export_comments_client_commands_and_additional_statements(self):
+        # probe10_passthrough: a mysql client must never read server text as
+        # a client command or as a second statement when importing this file.
+        definitions = (
+            "CREATE CACHE a FROM SELECT 1;\n\\! id",
+            "CREATE CACHE a FROM SELECT 1;\nDELIMITER //\nDROP ALL CACHES//",
+            "CREATE CACHE a FROM SELECT 1 \\T f",
+            "CREATE CACHE a FROM SELECT 1 \\. f",
+            "CREATE CACHE a FROM SELECT 1; ALTER READYSET SHUTDOWN",
+            "CREATE CACHE a FROM SELECT 1 \\G",
+            "CREATE CACHE a FROM SELECT 1 \\g",
+            "CREATE CACHE a FROM SELECT 1 \\N",
+            "CREATE CACHE a FROM SELECT 1 \\q",
+            "DELIMITER //",
+            "SELECT 1;",
+            "USE `shop`; CREATE CACHE a FROM SELECT 1;",
+            "CREATE CACHE a FROM SELECT 1 /*! ; ALTER READYSET SHUTDOWN */;",
+            "CREATE CACHE a FROM SELECT 1 /*rs+ create shallow */;",
+            "CREATE CACHE a FROM SELECT 'unfinished",
+            "CREATE CACHE a FROM SELECT 1 /* unfinished",
+            "CREATE CACHE a FROM SELECT 1 -- terminator swallowed",
+            "CREATE CACHE a FROM SELECT 1\n",
+            "CREATE CACHE `a\nb` FROM SELECT 1;",
+            "CREATE CACHE a FROM SELECT 'x\\'; ALTER READYSET SHUTDOWN; -- ';",
+        )
+        for definition in definitions:
+            with self.subTest(definition=definition):
+                conn = FakeCacheExport()
+                conn.definition = definition
+                result = readyset.export_caches(conn)
+                terminated = definition if definition.endswith(";") else definition + ";"
+                expected = "\n".join("-- " + line for line in terminated.splitlines())
+                self.assertEqual(result["caches"][0]["statement"], expected)
+                self.assertIn(readyset._EXPORT_UNSAFE_COMMENT + "\n" + expected + "\n", result["sql"])
+                self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
+                self.assertEqual(conn.writes, [])
+
+    def test_export_keeps_only_single_create_cache_definitions_runnable(self):
+        for definition in (
+                "CREATE CACHE c FROM SELECT 1;",
+                "CREATE SHALLOW CACHE `c` WITH (ttl = 30s) FROM SELECT 1;",
+                "CREATE DEEP CACHE c FROM SELECT 'literal; \\! DELIMITER //';",
+                "CREATE CACHE c FROM SELECT 'first\n\\! id\nlast';",
+                "CREATE CACHE c FROM SELECT `password = 'identifier-only'` /* safe comment */;",
+                "CREATE CACHE c FROM q_1234;"):
+            with self.subTest(definition=definition):
+                conn = FakeCacheExport()
+                conn.definition = definition
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"][0]["statement"], definition)
+                self.assertTrue(result["sql"].endswith("\n" + definition + "\n"))
+                self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, result["sql"])
+                self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                self.assertEqual(conn.writes, [])
+
+    def test_export_redacts_whole_credential_clauses_but_preserves_identifiers(self):
+        # probe9_f1: the display path already redacts these clauses. The
+        # export must see the keyword and literal together, across tokens.
+        for clause, query, secret in (
+                ("IDENTIFIED BY 'id-secret-4'", "SELECT 1; CREATE USER app IDENTIFIED BY 'id-secret-4'", "id-secret-4"),
+                ("PASSWORD('fn-secret-1')", "SELECT id FROM users WHERE pass = PASSWORD('fn-secret-1')", "fn-secret-1"),
+                ("password = 'pred-secret-2'", "SELECT id FROM users WHERE password = 'pred-secret-2'", "pred-secret-2"),
+                ("api_password = 'pred-secret-3'", "SELECT id FROM accounts WHERE api_password = 'pred-secret-3' AND tenant = 7", "pred-secret-3")):
+            with self.subTest(clause=clause):
+                conn = FakeCacheExport()
+                conn.definition = "CREATE SHALLOW CACHE c FROM %s;" % query
+                conn.caches[0]["query"] = query
+                payload = {"connection": {"host": "127.0.0.1", "port": 3307, "user": "root",
+                                          "password": conn.password, "database": "shop"}}
+                with mock.patch("myflames.connector.MySQLConnection", return_value=conn):
+                    report = ui.api_response("/api/live/readyset", payload, self.workspace)
+                    result = ui.api_response("/api/live/readyset/export-caches", payload, self.workspace)
+                self.assertNotIn(secret, json.dumps(report))
+                self.assertNotIn(secret, json.dumps(result))
+                self.assertIn(dbops.REDACTED, result["caches"][0]["statement"])
+                self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
+                self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+
+                # Quotes and credential-looking words inside identifiers are
+                # data. Preserve multiple identifiers even after a redaction
+                # changes the offsets of the identifiers that follow it.
+                conn.definition = "CREATE CACHE `%s` FROM SELECT `%s`, `a``b`, `\ue000`;" % (clause, clause)
+                clean = readyset.export_caches(conn)
+                self.assertEqual(clean["caches"][0]["statement"], conn.definition)
+                self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, clean["sql"])
+                conn.definition = "CREATE CACHE `%s` FROM %s, `%s`, `a``b`;" % (clause, query, clause)
+                mixed = readyset.export_caches(conn)["caches"][0]["statement"]
+                self.assertEqual(mixed.count("`%s`" % clause), 2)
+                self.assertTrue(mixed.endswith(", `%s`, `a``b`;" % clause))
+                self.assertIn(dbops.REDACTED, mixed)
+                self.assertEqual(conn.writes, [])
+
+    def test_export_password_with_at_has_no_tail_in_any_token_context(self):
+        # probe4_order: match the original literal before any URL substitution.
+        for password in ("Pr0d@Tail99", "another-connection-password"):
+            for token in ("'mysql://readyset:Pr0d@Tail99@mysql-primary:3306/shop'",
+                          '"mysql://readyset:Pr0d@Tail99@mysql-primary:3306/shop"',
+                          "/* mysql://readyset:Pr0d@Tail99@mysql-primary:3306/shop */",
+                          "mysql://readyset:Pr0d@Tail99@mysql-primary:3306/shop",
+                          "/*!50000 , 'mysql://readyset:Pr0d@Tail99@mysql-primary:3306/shop' */"):
+                with self.subTest(password=password, token=token):
+                    conn = FakeCacheExport()
+                    conn.password = password
+                    conn.definition = "CREATE CACHE c FROM SELECT %s;" % token
+                    result = readyset.export_caches(conn)
+                    self.assertNotIn("Pr0d", json.dumps(result))
+                    self.assertNotIn("Tail99", json.dumps(result))
+                    statement = result["caches"][0]["statement"]
+                    self.assertTrue(all(line.startswith("-- ") for line in statement.splitlines()))
+                    self.assertIn(statement + "\n", result["sql"])
+                    self.assertEqual(conn.writes, [])
+        self.assertEqual(readyset._redact_export_sql("SELECT 'Pr0d@Tail99';", "Pr0d@Tail99"),
+                         ("SELECT '[redacted]';", True))
+
+    def test_export_url_pattern_handles_400kb_in_under_two_seconds(self):
+        # A failed bounded match must not retry a long scheme at each byte,
+        # or rescan the same authority suffix for every candidate '@'.
+        for body in ("a" * 400000 + "://u:secret@h",
+                     "mysql://" + "u" * 400000 + ":secret@h",
+                     "mysql://u:" + "x" * 400000,
+                     "mysql://u:" + "x@" * 200000,
+                     "mysql://u:" * 40000):
+            with self.subTest(prefix=body[:30]):
+                started = time.monotonic()
+                redacted = readyset._EXPORT_URL_CREDENTIALS.sub(
+                    lambda match: match.group(1) + dbops.REDACTED + "@", body)
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 2.0, "400 KB URL pattern took %.3f s" % elapsed)
+                if body.endswith(":secret@h"):
+                    self.assertNotIn(":secret@h", redacted)
 
     def test_export_version_header_is_redacted_single_line_and_bounded(self):
         conn = FakeCacheExport()
@@ -1320,7 +1452,7 @@ class TestExplainAndExportCaches(ReadysetBase):
         self.assertEqual(result["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset %s)" % result["version"],
             "-- Credentials in query text are shown as [redacted].",
-            "SELECT 1;",
+            "CREATE CACHE c FROM SELECT 1;",
         ])
         self.assertNotIn("connection-secret-", json.dumps(result))
         self.assertNotIn("url-secret", json.dumps(result))
@@ -1556,9 +1688,9 @@ class TestExplainAndExportCaches(ReadysetBase):
                                  (expected, changed))
                 conn = FakeCacheExport()
                 conn.password = dbops.REDACTED
-                conn.definition = sql
+                conn.definition = "CREATE CACHE c FROM " + sql
                 result = readyset.export_caches(conn)
-                statement = "-- " + expected if changed else expected
+                statement = ("-- " if changed else "") + "CREATE CACHE c FROM " + expected
                 self.assertEqual(result["caches"][0]["statement"], statement)
                 self.assertEqual(readyset._EXPORT_REDACTED_COMMENT in result["sql"], changed)
                 self.assertEqual(conn.writes, [])
@@ -1642,6 +1774,8 @@ class TestExplainAndExportCaches(ReadysetBase):
         self.assertEqual(exp["count"], 2)
         self.assertIn("CREATE DEEP CACHE", exp["sql"])
         self.assertIn("CREATE SHALLOW CACHE", exp["sql"])
+        fixture = ROOT / "apps" / "workspace" / "test" / "fixtures" / "readyset-export-caches.json"
+        self.assertEqual(exp, json.loads(fixture.read_text(encoding="utf-8")))
 
         legacy = FakeReadyset()
         legacy.legacy_explain_caches = True
@@ -1706,6 +1840,41 @@ class TestActionsAndAbuseCases(ReadysetBase):
         }
         with mock.patch("myflames.connector.MySQLConnection", return_value=conn):
             return ui.api_response("/api/live/readyset/action", payload, self.workspace)
+
+    def test_version_is_redacted_in_all_six_sinks(self):
+        # probe6_sinks2 and probe7_audit: sanitizing only the export header
+        # leaves the report, review expectations and persisted audit exposed.
+        for password in ("ConnPlain_77", "Pr0d@Tail99"):
+            with self.subTest(password=password):
+                conn = FakeReadyset()
+                conn.password = password
+                conn.version = "stable %s\u202e mysql://u:version-secret@h" % password
+                connection = dict(self.connection(), password=password)
+                expected = "stable [redacted] mysql://u:[redacted]@h"
+                with mock.patch("myflames.connector.MySQLConnection", return_value=conn):
+                    report = ui.api_response("/api/live/readyset", {"connection": connection}, self.workspace)
+                    explain = ui.api_response("/api/live/readyset/explain-cache", {
+                        "connection": connection, "query_or_id": "SELECT 1"}, self.workspace)
+                plan = self.api_plan(conn, "flush_all_shallow_caches", connection=connection)
+                result = self.api_send(conn, plan, connection=connection)
+                self.assertEqual(result["status"], "done", result)
+                self.assertEqual(conn.writes, ["FLUSH ALL SHALLOW CACHES;"])
+                audit = self.workspace.store.audit_records()[0]
+                self.assertEqual(report["version"], expected)
+                self.assertEqual(report["topology"]["this_server"]["version"], expected)
+                self.assertEqual(explain["version"], expected)
+                self.assertEqual(plan["expect"]["readyset_version"], expected)
+                self.assertIn(expected, json.dumps(plan["facts"]))
+                self.assertEqual(audit["connection"]["server_version"], expected)
+                text = readyset.format_text(report)
+                self.assertIn(expected, text)
+                sinks = {"report": report, "topology": report["topology"], "explain": explain,
+                         "plan": plan, "audit": audit, "format_text": text}
+                for name, sink in sinks.items():
+                    with self.subTest(sink=name):
+                        dumped = json.dumps(sink, ensure_ascii=False)
+                        for secret in (password, "Tail99", "version-secret", "\u202e", "\\u202e"):
+                            self.assertNotIn(secret, dumped)
 
     def test_every_operational_action_sends_exact_reviewed_sql(self):
         cases = [

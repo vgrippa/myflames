@@ -279,14 +279,14 @@ class TestMultiTierTopology(unittest.TestCase):
                 caches=5,
             ),
             "p-pri": FakeProbeConn(
-                "database", hostname="mysql-primary", uuid="aaaa-1111", server_id=1, read_only=False,
-                replicas=[{"Host": "mysql-replica", "Port": "3306", "Replica_UUID": "bbbb-2222", "Server_id": "2"}],
+                "database", hostname="mysql-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001", server_id=1, read_only=False,
+                replicas=[{"Host": "mysql-replica", "Port": "3306", "Replica_UUID": "bbbbbbbb-0000-4000-8000-000000000002", "Server_id": "2"}],
             ),
             "p-rep": FakeProbeConn(
-                "database", hostname="mysql-replica", uuid="bbbb-2222", server_id=2, read_only=True,
+                "database", hostname="mysql-replica", uuid="bbbbbbbb-0000-4000-8000-000000000002", server_id=2, read_only=True,
                 channels=[{
                     "Channel_Name": "", "Source_Host": "mysql-primary", "Source_Port": "3306",
-                    "Source_UUID": "aaaa-1111", "Replica_IO_Running": "Yes", "Replica_SQL_Running": "Yes",
+                    "Source_UUID": "aaaaaaaa-0000-4000-8000-000000000001", "Replica_IO_Running": "Yes", "Replica_SQL_Running": "Yes",
                     "Seconds_Behind_Source": "0",
                 }],
             ),
@@ -359,8 +359,8 @@ class TestMultiTierTopology(unittest.TestCase):
 
         tiers = topology_links.discover_database_tiers(
             conns["p-rep"],
-            {"profile_host": "127.0.0.1", "profile_port": 13308, "hostname": "mysql-replica", "port": 3306, "server_uuid": "bbbb-2222"},
-            peer_endpoints=[{"host": "mysql-primary", "port": 3306, "server_uuid": "aaaa-1111"}],
+            {"profile_host": "127.0.0.1", "profile_port": 13308, "hostname": "mysql-replica", "port": 3306, "server_uuid": "bbbbbbbb-0000-4000-8000-000000000002"},
+            peer_endpoints=[{"host": "mysql-primary", "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"}],
             profiles=profiles,
             open_profile=tracking_opener,
             observer_host="127.0.0.1",
@@ -539,10 +539,10 @@ class TestMultiTierTopology(unittest.TestCase):
             "p-rs": FakeProbeConn("readyset", version="stable-261022", upstreams=rs_upstreams, caches=3, admin=False),
             "p-rs-admin": FakeProbeConn("readyset", version="stable-261022", upstreams=rs_upstreams, caches=3, admin=True),
             "p-pri": FakeProbeConn(
-                "database", hostname="mf-rs-primary", uuid="aaaa-1111", server_id=1, read_only=False,
+                "database", hostname="mf-rs-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001", server_id=1, read_only=False,
                 replicas=[
-                    {"Host": "mf-rs-replica-unsaved", "Port": "3306", "Replica_UUID": "bbbb-2222", "Server_id": "2"},
-                    {"Host": "mf-rs-readyset", "Port": "3307", "Replica_UUID": "cccc-3333", "Server_id": "999"},
+                    {"Host": "mf-rs-replica-unsaved", "Port": "3306", "Replica_UUID": "bbbbbbbb-0000-4000-8000-000000000002", "Server_id": "2"},
+                    {"Host": "mf-rs-readyset", "Port": "3307", "Replica_UUID": "cccccccc-0000-4000-8000-000000000003", "Server_id": "999"},
                 ],
             ),
             "p-rep-db": FakeProbeConn(
@@ -583,7 +583,7 @@ class TestMultiTierTopology(unittest.TestCase):
             return conns[p["id"]]
         tiers = topology_links.discover_database_tiers(
             conns["p-pri"],
-            {"profile_host": "127.0.0.1", "profile_port": 34505, "hostname": "mf-rs-primary", "port": 3306, "server_uuid": "aaaa-1111"},
+            {"profile_host": "127.0.0.1", "profile_port": 34505, "hostname": "mf-rs-primary", "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"},
             profiles=profiles,
             open_profile=tracking_opener,
             observer_host="127.0.0.1",
@@ -597,8 +597,8 @@ class TestMultiTierTopology(unittest.TestCase):
         profiles[-1]["group"] = "lab"
         rep_tiers = topology_links.discover_database_tiers(
             conns["p-rep-db"],
-            {"profile_host": "127.0.0.1", "profile_port": 34506, "hostname": "mf-rs-replica-unsaved", "port": 3306, "server_uuid": "bbbb-2222"},
-            peer_endpoints=[{"host": "mf-rs-primary", "port": 3306, "server_uuid": "aaaa-1111"}],
+            {"profile_host": "127.0.0.1", "profile_port": 34506, "hostname": "mf-rs-replica-unsaved", "port": 3306, "server_uuid": "bbbbbbbb-0000-4000-8000-000000000002"},
+            peer_endpoints=[{"host": "mf-rs-primary", "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"}],
             profiles=profiles,
             open_profile=opener,
             observer_host="127.0.0.1",
@@ -638,7 +638,7 @@ class TestMultiTierTopology(unittest.TestCase):
         )
         scoped_tiers = topology_links.discover_database_tiers(
             other_conns["p-pri"],
-            {"profile_host": "127.0.0.1", "profile_port": 34505, "hostname": "mf-rs-primary", "port": 3306, "server_uuid": "aaaa-1111"},
+            {"profile_host": "127.0.0.1", "profile_port": 34505, "hostname": "mf-rs-primary", "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"},
             profiles=profiles + [unrelated_px],
             open_profile=lambda p: other_conns[p["id"]],
             observer_host="127.0.0.1",
@@ -754,9 +754,9 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertIsNone(probed[0]["status_text"])
         topology_links._reset_cache_for_tests()
         tiers = topology_links.discover_database_tiers(
-            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaa-1111"),
+            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001"),
             {"profile_host": "127.0.0.1", "profile_port": 13306, "hostname": "mysql-primary",
-             "port": 3306, "server_uuid": "aaaa-1111"},
+             "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"},
             profiles=[dict(profile, remember_password=True, group="lab"),
                       {"id": "current", "group": "lab"}],
             open_profile=lambda p: FakeProbeConn(
@@ -893,7 +893,7 @@ class TestMultiTierTopology(unittest.TestCase):
                 rules=[{"rule_id": "100", "active": "1", "destination_hostgroup": "30",
                         "mirror_hostgroup": None, "comment": 'readyset-meta: {"mode":"cached"}'}],
             ),
-            "p-pri": FakeProbeConn("database", hostname="mysql-primary", uuid="aaaa-1111"),
+            "p-pri": FakeProbeConn("database", hostname="mysql-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001"),
         }
         topo = topology_links.build_readyset_topology(
             {"Status": "Online", "Replication Status": "Running", "CDC Server": "mysql-primary:3306"},
@@ -956,9 +956,9 @@ class TestMultiTierTopology(unittest.TestCase):
 
         topology_links._reset_cache_for_tests()
         tiers = topology_links.discover_database_tiers(
-            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaa-1111"),
+            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001"),
             {"profile_host": "127.0.0.1", "profile_port": 13306, "hostname": "mysql-primary",
-             "port": 3306, "server_uuid": "aaaa-1111"},
+             "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"},
             profiles=[dict(profile, remember_password=True, group="lab"),
                       {"id": "current", "group": "lab"}],
             open_profile=lambda p: FakeProbeConn(
@@ -977,9 +977,9 @@ class TestMultiTierTopology(unittest.TestCase):
         # A healthy Readyset reports Connected and no replication error.
         topology_links._reset_cache_for_tests()
         ok_tiers = topology_links.discover_database_tiers(
-            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaa-1111"),
+            FakeProbeConn("database", hostname="mysql-primary", uuid="aaaaaaaa-0000-4000-8000-000000000001"),
             {"profile_host": "127.0.0.1", "profile_port": 13306, "hostname": "mysql-primary",
-             "port": 3306, "server_uuid": "aaaa-1111"},
+             "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001"},
             profiles=[dict(profile, remember_password=True, group="lab"),
                       {"id": "current", "group": "lab"}],
             open_profile=lambda p: FakeProbeConn(
@@ -1043,6 +1043,27 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual(len(no_uuid["database_peers"]), 1)
         self.assertEqual(no_uuid["database_peers"][0]["profile_id"], "p-rep")
         self.assertEqual(no_uuid["database_peers"][0]["evidence"], "channel_source")
+
+    def test_malformed_uuids_are_neither_identity_nor_contradiction(self):
+        valid = "aaaaaaaa-0000-4000-8000-000000000001"
+        for invalid in ("not-a-uuid", "aaaa-1111", "42", "planted-password\u202e",
+                        valid + " extra", valid[:-1], "00000000-0000-0000-0000-000000000000"):
+            for reported, candidate in ((invalid, valid), (valid, invalid), (invalid, invalid)):
+                with self.subTest(reported=reported, candidate=candidate):
+                    db = {"kind": "database", "profile_host": "db.example", "profile_port": 3306,
+                          "hostname": "db.internal", "port": 3306, "server_uuid": candidate}
+                    self.assertIsNone(topology_links._uuid_key(invalid))
+                    # Equal malformed values cannot verify an unrelated endpoint.
+                    self.assertEqual(topology_links.match_database_endpoint(
+                        "elsewhere.example", 3306, [db], uuid=reported), (None, None))
+                    # Nor can malformed values veto independent address evidence.
+                    self.assertEqual(topology_links.match_database_endpoint(
+                        "db.example", 3306, [db], uuid=reported), (db, "endpoint"))
+                    self.assertEqual(topology_links.match_database_endpoint(
+                        "db.internal", 3306, [db], uuid=reported), (db, "hostname_port"))
+                    self.assertTrue(topology_links._database_matches_target(
+                        db, "db.internal", 3306, target_uuid=reported))
+        self.assertEqual(topology_links._uuid_key(valid.upper()), valid)
 
     def test_match_database_endpoint_and_peers_reject_contrary_uuid(self):
         uuid_a = "aaaaaaaa-0000-4000-8000-000000000001"
