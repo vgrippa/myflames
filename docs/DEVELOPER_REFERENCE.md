@@ -948,8 +948,10 @@ the window-open handler always denies a new app window. Tests:
   view switch); Security: Users and roles (`Accounts.tsx`)). The Workload place
   (`place="workload"`) lists Top statements (`SlowQueries.tsx`), Processlist
   (`sessions`; a saved `running` restores as `sessions`), Waits and I/O;
+  Topology (`TopologyPlace.tsx`, right after Workload),
   Replication (`ReplicationPlace.tsx`), Cluster (`ClusterPlace.tsx`, right
-  after Replication) and Tuning (`place="tuning"`, with the
+  after Replication), ProxySQL (`ProxySqlPlace.tsx`), Readyset
+  (`ReadysetPlace.tsx`) and Tuning (`place="tuning"`, with the
   Full analysis, `report`, as its second tab) are places of their own. A view
   reads when it is opened on screen (once per connection; Refresh retries;
   `useViewOnScreen()` from `viewOnScreen.ts`, `useOpenRead`), Top statements,
@@ -1020,8 +1022,9 @@ the window-open handler always denies a new app window. Tests:
   policy is unknown: the footer says "Production assumed" and Kill is off
   (`WritePolicy.blocked`). `SafetyStatus` (`Connections.tsx`) is the first
   item of the window footer (`WindowStatusBar lead`, `kit.tsx`) on the
-  places that send to the connection in use (Query editor, Server, Workload,
-  Replication, Cluster, Tuning): `data-status="safety"`, `data-safety` production,
+  places that send to the connection in use (Query editor, Query digest,
+  Database diagram, Schema versions, Server, Workload, Topology, Replication,
+  Cluster, ProxySQL, Readyset, Tuning): `data-status="safety"`, `data-safety` production,
   read-only, development or unknown, a dot plus words, `role="note"` with the
   full sentence as `aria-label` and tooltip, and Retry after a failed read.
   Nothing sits under the top bar (`--topbar-height` is the top bar row), and
@@ -1807,8 +1810,13 @@ Workspace database files and SQLite sidecars, vault directories, keys, and
 locks reject symbolic links and foreign owners before opening or changing
 permissions. Creation uses exclusive creation; existing file descriptors are
 checked without following links where supported. POSIX directories are 0700
-and files 0600; Windows retains its platform helper. SQLite connections close
-if setup fails. Session persistence redacts recognized SQL credential literals
+and files 0600; Windows retains its platform helper. A SQLite sidecar that
+another request's transaction removes or replaces during that check is not
+tampering: a removed sidecar needs nothing, a replacement is checked again
+(at most 8 times), and a link, a foreign owner or a wrong file type still
+fails before `sqlite3.connect`. On Windows the vault's ACL update likewise
+skips a sidecar that is gone after a failed call. SQLite connections close if
+setup fails. Session persistence redacts recognized SQL credential literals
 in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
 request supplies no password.
@@ -2300,7 +2308,11 @@ does not revoke an otherwise consenting read.
   connections in the same non-empty `group` as the connection in use
   (`connection_groups.members(profiles, current)`), never to the connection in
   use itself (`id != current["id"]`), and never when the connection in use is
-  unsaved or has `group == ""`. There is no in-memory revocation registry:
+  unsaved or has `group == ""`. By contrast, the Topology place
+  (`topology_group.read_group`) reads every saved member of the active Group
+  connection, the active one included, each through its own saved connection
+  with the same consent re-checks before every login (see
+  [Topology: Group connection reads and rolling changes](#topology-group-connection-reads-and-rolling-changes)). There is no in-memory revocation registry:
   consent is derived from the store at every login. `request_profiles(store, connection)` fails
   closed: if `store` is `None`, `store.list("profile")` raises or does not
   return a `list` or `tuple` of dicts, it returns `([], None)` so no saved
@@ -2389,7 +2401,7 @@ does not revoke an otherwise consenting read.
   (`aria-hidden`, no text, `pointer-events: none`) fixed to the window's top
   edge inside `.topbar-stack` on the places that show `SafetyStatus` (Query
   editor, Query digest, Database diagram, Schema versions, Server, Workload,
-  Replication, Cluster, ProxySQL, Tuning), colored by `--conn-prod-strip`,
+  Topology, Replication, Cluster, ProxySQL, Readyset, Tuning), colored by `--conn-prod-strip`,
   `--conn-dev-strip` or `--conn-readonly-strip` in both appearances; the type
   word stays in the window footer. `ConnectionTypeBand` (`ConfirmSheet.band`)
   heads every write review and confirmation sheet (`ActionReview.tsx`,
@@ -8327,7 +8339,7 @@ if `remaining < QUERY_SECONDS` (30 s) the read raises `_NotReached` so a queued
 member never logs in without a full 30 s query window (`outcome: "not_reached"`,
 `message: "Not read: the time budget did not allow this member to start."`).
 Once login has started, `remaining <= 0` raises `ConnectorError` (`outcome:
-"failed"`). `_ReadConnection` latches transport failures (`code is None`),
+"failed"`). On `map`, the per-member topology probe (`topology_links._probe_connection`) keeps its own 2 s per query (`topology_links.QUERY_TIMEOUT_S`, applied through `param_compare.BoundedConnection.run`), as in the topology bars, while identity, status, parameters, accounts and plugins queries get the 30 s window. `_ReadConnection` latches transport failures (`code is None`),
 client errors (`reviewed_writes.client_error(code)`), and login refusals
 (`not sql_reply` with initial coded failures or explicit login codes `1040,
 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151`, `1226` with

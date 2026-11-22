@@ -14,6 +14,7 @@ fingerprint in its key matches the profile's endpoint (see
 """
 import datetime
 from contextlib import closing
+import errno
 import hashlib
 import hmac
 import itertools
@@ -514,7 +515,7 @@ class WorkspaceStore:
 
     def _protect_sidecars(self):
         for suffix in ('-wal', '-shm', '-journal'):
-            _owner_only(Path(str(self.path) + suffix), 0o600)
+            _protect_sidecar(Path(str(self.path) + suffix), 0o600)
 
     def _migrate(self, conn):
         """Bring an older database up to STORE_VERSION, once, under the write lock."""
@@ -2353,6 +2354,36 @@ def _owner_only(path, mode):
         return
     from .secret_store import _protect_private_path
     _protect_private_path(path, mode, directory=mode == 0o700)
+
+
+def _protect_sidecar(path, mode=0o600):
+    """Owner-only permissions on a SQLite sidecar (-wal, -shm, -journal).
+
+    SQLite creates and removes these files during other requests'
+    transactions, so one can vanish or be replaced between the open and the
+    identity check in _protect_private_path ("Private storage changed while it
+    was being opened"). That is SQLite's normal lifecycle, not tampering: a
+    sidecar that is gone needs nothing, and a replacement is checked again
+    from the start. Every other refusal still raises: a symbolic link, another
+    user's file or a wrong file type is refused before sqlite3.connect.
+    """
+    from .secret_store import SecretStoreError, _protect_private_path, _storage_stat
+    for _attempt in range(8):
+        try:
+            _protect_private_path(path, mode)
+            return
+        except SecretStoreError:
+            # Raises again for a link, a foreign owner or a wrong file type.
+            if _storage_stat(path) is None:
+                return
+        except OSError as exc:
+            # O_NOFOLLOW refuses a link swapped in between lstat and open.
+            link_codes = tuple(code for code in (errno.ELOOP, getattr(errno, 'EMLINK', None),
+                                                 getattr(errno, 'EFTYPE', None)) if code is not None)
+            if exc.errno in link_codes:
+                raise SecretStoreError('Refusing a symbolic link for private storage: %s' % path)
+            raise
+    _protect_private_path(path, mode)
 
 
 def endpoint_value(value, field):

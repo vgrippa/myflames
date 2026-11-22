@@ -541,7 +541,14 @@ class Vault(object):
             path = self.directory / name
             if _storage_stat(path) is not None and sys.platform == 'win32':
                 # Explicit grants on existing files need their own ACL update.
-                _windows_owner_only(path)
+                try:
+                    _windows_owner_only(path)
+                except SecretStoreError:
+                    # SQLite removes its sidecars during other connections'
+                    # transactions: one that is gone needs no ACL. Every other
+                    # failure (and any file that is still there) stays fatal.
+                    if not name.startswith('workspace.sqlite3-') or _storage_stat(path) is not None:
+                        raise
 
     def _read(self):
         self._ensure_dir()

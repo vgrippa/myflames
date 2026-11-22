@@ -74,6 +74,7 @@ The sidebar separates where you go from what you have open:
 | **Schema versions** | After Database diagram: versions of a database's schema saved on this computer, and comparisons of any two schemas (saved versions, or databases read now through any connection): what differs between a source and a target, and the sync script that would change the target to match the source. See [Schema versions](#schema-versions) |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O, Memory) |
+| **Topology** | The whole **Group connection** in use without background polling: **Map** (verified links and outside peers), **Members**, and **Parameters**, **Accounts** and **Plugins** drift comparisons with **Change on every member…** for rolling parameter changes (or offers **Open group connection** / **New group…** for a single saved connection) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation. A server with no asynchronous channel reads **Not a replica** (never Unknown), and the item is greyed in the sidebar once a read says so |
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
@@ -124,7 +125,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Nothing is read just for a badge. A view reads when it is opened on screen,
   once per connection (Refresh retries), Top statements and Error log
   included; Tables and Indexes keep their schema-size consent, and nothing
-  reads off screen (Server, Replication, Cluster, ProxySQL, Readyset and Query digest
+  reads off screen (Server, Topology, Replication, Cluster, ProxySQL, Readyset and Query digest
   mount on their first visit, and a hidden view never reads on its own). The arrow keys move between items.
 - **The list of views floats** by default in a wide window, so the view gets
   the full width: the view's title is a pop-up button ("Health ▾") that opens
@@ -617,6 +618,16 @@ server is newer than the catalog, and when the From release was skipped or is
 missing (naming the fallback used). The same answers run as `myflames config
 versions list`, `config versions compare FROM TO` and `config versions
 history NAME`.
+
+**Topology** (a place of its own in the sidebar, right after Workload) reads a whole **Group connection** without
+background polling: **Map** (topology diagram and server, peer, link and cluster lists), **Members** (roles, states,
+read-only status, lag and GTID distance behind the primary or source), and **Parameters**, **Accounts** and
+**Plugins** drift tables. Each tab sends one bounded read when it first comes on screen and on **Refresh** (at most
+4 logins at once, 30 s per query or 2 s for each topology query on **Map**, 120 s per tab and 300 s on **Accounts**).
+On **Parameters**, **Change on every member…** plans a sequential rolling parameter change under one review; on a
+single saved connection, the place offers to open its **Group connection** or start **New group…**. See
+[Read a whole group in Topology](handbook/howto-topology.md#read-a-whole-group-in-topology) and
+[Topology: Group connection reads and rolling changes](DEVELOPER_REFERENCE.md#topology-group-connection-reads-and-rolling-changes).
 
 **Replication** (a place of its own in the sidebar) lists each replication channel
 (MySQL) or connection (MariaDB) of the connection in use: status, source,
@@ -1555,7 +1566,7 @@ Thread pool row (threads and idle threads) in place of the Thread cache under
 Parameters tags the variables Percona adds with **Percona**.
 
 The window footer of the Query editor, Query digest, Database diagram, Schema
-versions, Server, Workload, Replication, Cluster, ProxySQL, Readyset and Tuning starts with the write safety
+versions, Server, Workload, Topology, Replication, Cluster, ProxySQL, Readyset and Tuning starts with the write safety
 of the connection in use: a purple dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and

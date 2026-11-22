@@ -91,6 +91,33 @@ class TestVault(IsolatedHome):
                     operation()
         self.assertEqual(self.vault.path.read_bytes(), before)
 
+    def test_windows_sidecar_removed_during_acl_update_is_not_an_error(self):
+        self.vault.save('p1', SECRET)
+        journal = self.vault.directory / 'workspace.sqlite3-journal'
+        journal.write_bytes(b'journal')
+
+        def protect(path, directory=False):
+            if Path(path) == journal:
+                # SQLite removed the journal between the check and the ACL call.
+                journal.unlink()
+                raise SecretStoreError('Cannot enforce owner-only Windows permissions')
+
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only', side_effect=protect, create=True):
+            self.assertEqual(self.vault.get('p1'), SECRET)
+
+        # A sidecar that is still there, or any other file, keeps the failure fatal.
+        journal.write_bytes(b'journal')
+        for failing in (journal, self.vault.key_path):
+            def refuse(path, directory=False, failing=failing):
+                if Path(path) == failing:
+                    raise SecretStoreError('Cannot enforce owner-only Windows permissions')
+
+            with mock.patch.object(sys, 'platform', 'win32'), \
+                    mock.patch.object(secret_store, '_windows_owner_only', side_effect=refuse, create=True):
+                with self.assertRaisesRegex(SecretStoreError, 'Cannot enforce owner-only'):
+                    self.vault.get('p1')
+
     def test_windows_acl_failure_removes_empty_new_key_and_temp_file(self):
         self.vault._ensure_dir()
 

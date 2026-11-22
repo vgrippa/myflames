@@ -203,7 +203,8 @@ export function batchBScenarios({ goPlace, goView, visible, named, click, confir
       afterClick: async ({ page }) => requireFocus(page, ".diagram-load"),
       ok: async ({ page }) => {
         await visible(page, ".diagram-table");
-        await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-canvas"), { timeout: 3000 });
+        // Focus moves after the diagram is drawn; a slow CI runner needed more than 3 s.
+        await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-canvas"), { timeout: 10000 });
         assert.equal(await page.$eval(`${diagram} [data-action=refresh]`, e => e.textContent.trim()), "Refresh");
       },
       error: async ({ page }) => {

@@ -80,7 +80,7 @@ The optional `myflames-mcp` entry point (deprecated with the CLI: one stderr not
 ## Where feature contracts live (DEVELOPER_REFERENCE.md headings; subsections not listed)
 
 - Workspace shell: Local UI, Shared view presentation, Chart runtime, Bundle and lazy loading, Local authentication and request limits, Client and local-storage boundaries, Workspace navigation and configuration controls, Action feedback, Workspace interaction correctness.
-- Connections: Profiles, Saved connections and Database diagram Load.
+- Connections: Profiles, Saved connections and Database diagram Load, Topology: Group connection reads and rolling changes.
 - Server writes: Write safety and audit, Shared CLI confirmation, Reviewed actions and session ownership, Reviewed SELECT projections and server actions.
 - SQL workspace: SQL CLI, Query editor sessions, Completion and table-data contracts, Import CSV, Database diagram, Schema versions, Export as SQL and Table structure.
 - Plans: Run, Plan Stats and shared-plan literal hiding, Digest, Plan diff, CI gate, Advise, Rule controls, Advisor evidence rules, Visual Explain (merged Diagram / Workbench), Investigation engine.
