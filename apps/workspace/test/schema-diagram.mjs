@@ -379,6 +379,41 @@ try{
  await page.waitForFunction(()=>document.activeElement?.classList.contains("diagram-canvas"));
  assert.equal(await refreshLabel(),"Refresh");
  assert.ok(await page.$('[aria-label="Diagram view"]'),"Diagram | Mermaid once a diagram is shown");
+ // Focus moves to the canvas after React commits even if an animation frame
+ // fires before the loaded diagram mounts (throttled CPU / overdue frame).
+ await page.evaluate(()=>window.setDiagramDocument(null));
+ await page.waitForSelector(".diagram-load");
+ await page.emulateCPUThrottling(6);
+ try{
+   await page.evaluate(()=>{
+     window.__origDiagramRaf=window.requestAnimationFrame.bind(window);
+     window.requestAnimationFrame=cb=>{
+       if(document.querySelector(".diagram-load")){queueMicrotask(()=>cb(performance.now()));return 0;}
+       return window.__origDiagramRaf(cb);
+     };
+   });
+   readDelay=120;
+   await page.click(".diagram-load");
+   await page.waitForSelector(".diagram-table");
+   readDelay=0;
+   await page.waitForFunction(()=>document.activeElement?.classList.contains("diagram-canvas"),{timeout:2000});
+ }finally{
+   readDelay=0;
+   await page.evaluate(()=>{if(window.__origDiagramRaf){window.requestAnimationFrame=window.__origDiagramRaf;delete window.__origDiagramRaf;}});
+   await page.emulateCPUThrottling(1);
+ }
+ // Moving focus elsewhere while the empty-state Load waits keeps focus there.
+ await page.evaluate(()=>window.setDiagramDocument(null));
+ await page.waitForSelector(".diagram-load");
+ readDelay=250;
+ try{
+   await page.click(".diagram-load");
+   await page.waitForFunction(()=>document.querySelector(".diagram-load")?.getAttribute("aria-busy")==="true");
+   await page.focus('[aria-label="Database"]');
+   await page.waitForSelector(".diagram-table");
+   await page.evaluate(async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);});
+   assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('[aria-label="Database"]')),true,"completing Load does not steal focus moved elsewhere");
+ }finally{readDelay=0;}
  // Choosing another database offers it; Load asks before replacing.
  await input('[aria-label="Database"]',"inventory");
  assert.match(await page.$eval(".diagram-choice",e=>e.textContent),/inventory is chosen\. The diagram shows shop\./);

@@ -126,6 +126,9 @@ function configurations(props: SqlEditorProps, env: Environment, length: number)
   return {
     multi_cursor: [EditorState.allowMultipleSelections.of(settings.multi_cursor),
       EditorView.clickAddsSelectionRange.of(event => settings.multi_cursor && event.altKey),
+      // Reconfigured in the same transaction as the behavior above, so the
+      // packaged-app smoke can wait for the setting to reach this editor.
+      EditorView.contentAttributes.of({ "data-multi-cursor": settings.multi_cursor ? "on" : "off" }),
       ...(settings.multi_cursor ? [rectangularSelection({ eventFilter: event => event.button === 0 && event.altKey && event.shiftKey }), crosshairCursor()] : [])],
     soft_wrap: settings.soft_wrap ? EditorView.lineWrapping : [],
     close_brackets: settings.close_brackets ? [closeBrackets(), Prec.high(keymap.of(closeBracketsKeymap))] : [],

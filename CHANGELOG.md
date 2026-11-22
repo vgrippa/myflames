@@ -15,6 +15,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where loading a database in **Database diagram** could leave keyboard focus on the page instead of the diagram when the computer was busy.
 - Fixed an issue where an action could fail with "Private storage changed while it was being opened" when the workspace was saving its data at the same moment, for example right after the app started.
 - Fixed an issue where **Parameters** and **Compare servers** could compare, or allow inline editing of, a parameter value that the server had cut off at its output length limit. Such values are now marked truncated.
 - Fixed an issue where secret system variables (for example `wsrep_sst_auth`) could appear in **Settings** > **Audit log** when a change was declined or refused before sending. Secret variables are now redacted in every audit record, including declined and refused attempts.

@@ -200,12 +200,20 @@ export function batchBScenarios({ goPlace, goView, visible, named, click, confir
       name: "diagram-load", label: "Load the chosen database", paths: ["/api/schema-diagram/read"], mocks: diagramMocks,
       setup: async ({ page }) => { await goPlace(page, "diagram"); await page.select(`${diagram} [aria-label=Database]`, "mftab"); await visible(page, ".diagram-load"); },
       target: ".diagram-load",
-      afterClick: async ({ page }) => requireFocus(page, ".diagram-load"),
+      afterClick: async ({ page, mode }) => {
+        await requireFocus(page, ".diagram-load");
+        // Throttle the commit path in ok mode so slow-runner frame timing stays covered.
+        if (mode === "ok") await page.emulateCPUThrottling(6);
+      },
       ok: async ({ page }) => {
-        await visible(page, ".diagram-table");
-        // Focus moves after the diagram is drawn; a slow CI runner needed more than 3 s.
-        await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-canvas"), { timeout: 10000 });
-        assert.equal(await page.$eval(`${diagram} [data-action=refresh]`, e => e.textContent.trim()), "Refresh");
+        try {
+          await visible(page, ".diagram-table");
+          // Focus moves to the canvas once the diagram commits, even under CPU throttling.
+          await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-canvas"), { timeout: 10000 });
+          assert.equal(await page.$eval(`${diagram} [data-action=refresh]`, e => e.textContent.trim()), "Refresh");
+        } finally {
+          await page.emulateCPUThrottling(1);
+        }
       },
       error: async ({ page }) => {
         await waitText(page, `${diagram} .diagram-load-status`, /Simulated failure/);
