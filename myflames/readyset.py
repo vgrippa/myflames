@@ -1306,6 +1306,9 @@ _EXPORT_UNSAFE_COMMENT = (
 )
 _EXPORT_CREATE_CACHE = re.compile(r"\ACREATE\s+(?:(?:SHALLOW|DEEP)\s+)?CACHE\s+\S", re.I)
 _EXPORT_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+# A legacy multibyte client charset can consume either ASCII byte as the
+# tail of the preceding non-ASCII character, changing quote tracking.
+_EXPORT_CHARSET_AMBIGUITY = re.compile(r"[^\x00-\x7f][\\`]")
 # Export also covers malformed URL credentials with '/' or '@' in the password.
 # The scheme boundary prevents retries within a long scheme-like word; the
 # username stops at ':' or '/', and the greedy, bounded password scan ends
@@ -1416,7 +1419,20 @@ def _redact_export_sql(sql, password=None):
 
 
 def _export_has_controls(text):
-    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
+    return _has_ctl_or_fmt(text)
+
+
+def _export_has_unsafe_dollars(text):
+    """Allow Readyset's $N placeholders, never a possible dollar-quote tag."""
+    for match in re.finditer(r"\$[0-9]*", text):
+        end = match.end()
+        if end == match.start() + 1:
+            return True  # No ASCII digits after the dollar.
+        if end < len(text):
+            nxt = text[end]
+            if nxt.isalnum() or nxt in "_$" or ord(nxt) >= 128:
+                return True
+    return False
 
 
 def _runnable_export_sql(sql):
@@ -1426,24 +1442,31 @@ def _runnable_export_sql(sql):
     executable comments and line/client framing outside strings, rather than
     letting server-supplied text control how the rest of the file is read.
     """
-    if _export_has_controls(sql):
+    if _export_has_controls(sql) or _EXPORT_CHARSET_AMBIGUITY.search(sql):
         return False
+    token_spans = {}
     for escapes in (True, False):
         for client in (False, True):
             scan = dbops.lex_sql(sql, backslash_escapes=escapes, client=client,
                                 client_delimiter=";" if client else None)
             if scan["issues"] or scan["unclosed"] or scan["comments"]:
                 return False
+            # Compare escape modes within each lexer: only the client
+            # reading represents the final semicolon as a delimiter token.
+            if client in token_spans and scan["tokens"] != token_spans[client]:
+                return False
+            token_spans[client] = scan["tokens"]
             code = []
             for kind, start, end in scan["tokens"]:
                 tok = sql[start:end]
                 if kind == "string":
                     code.append("?")
                     continue
-                # MySQL 8.1+ clients can enable dollar quoting independently
-                # of the server. Refuse dollars outside ordinary strings in
-                # every reading, so no dollar body can change the framing.
-                if "$" in tok or "\\" in tok or any(ch in _EXPORT_LINE_BREAKS for ch in tok):
+                # Clients can enable dollar quoting independently of the
+                # server. Only a complete $N placeholder is safe outside
+                # ordinary strings; $1$ and other tags can change framing.
+                if (_export_has_unsafe_dollars(tok) or "\\" in tok or
+                        any(ch in _EXPORT_LINE_BREAKS for ch in tok)):
                     return False
                 if kind == "identifier":
                     code.append("identifier")
@@ -1469,7 +1492,7 @@ def _split_export_use(sql):
     """
     # Check before trimming: tabs and other controls must not disappear into
     # the prefix parser and become runnable in an exporter-generated USE.
-    if _export_has_controls(sql):
+    if _export_has_controls(sql) or _EXPORT_CHARSET_AMBIGUITY.search(sql):
         return None, sql
     tokens = dbops.lex_sql(sql)["tokens"]
     if (len(tokens) < 3 or tokens[0][0] != "code" or
@@ -1478,7 +1501,8 @@ def _split_export_use(sql):
         return None, sql
     _, start, end = tokens[1]
     prefix = sql[:end]
-    if "$" in prefix or "\\" in prefix or any(ch in _EXPORT_LINE_BREAKS for ch in prefix):
+    if (_export_has_unsafe_dollars(prefix) or "\\" in prefix or
+            any(ch in _EXPORT_LINE_BREAKS for ch in prefix)):
         return None, sql
     tail = sql[end:].lstrip(" \t")
     if not tail.startswith(";"):
@@ -1531,16 +1555,19 @@ def export_caches(conn):
         if db_redacted:
             db = dbops.REDACTED
             redacted = True
-        db_safe = not db or not (_export_has_controls(db) or "$" in db or "\\" in db or
-                                 any(ch in _EXPORT_LINE_BREAKS for ch in db))
+        db_safe = not db or not (_export_has_controls(db) or _export_has_unsafe_dollars(db) or
+                                 "\\" in db or any(ch in _EXPORT_LINE_BREAKS for ch in db))
         if db and db != last_db:
             try:
                 use = "USE %s;" % _rs_ident_server(db, "Database")
+                # Include the generated closing backtick in the charset
+                # check, especially for names ending in non-ASCII text.
+                db_safe = db_safe and not _EXPORT_CHARSET_AMBIGUITY.search(use)
             except ValueError:
-                use = "-- Database name could not be exported as runnable SQL."
+                use = "Database name could not be exported as runnable SQL."
                 db_safe = False
             if not db_safe or db_redacted:
-                use = "\n".join("-- " + line for line in use.splitlines())
+                use = "-- " + _review_text(use)
             else:
                 last_db = db
             lines.append(use)
@@ -1551,9 +1578,9 @@ def export_caches(conn):
         if redacted:
             lines.append(_EXPORT_REDACTED_COMMENT)
         if redacted or not runnable:
-            # A substituted literal can still be valid SQL. Disable every
-            # physical line in both export formats until deliberately restored.
-            stmt = "\n".join("-- " + line for line in stmt.splitlines())
+            # A substituted literal can still be valid SQL. Keep disabled
+            # definitions on one comment line with every control visible.
+            stmt = "-- " + _review_text(stmt)
         lines.append(stmt)
         items.append({"database": db, "statement": stmt})
     return {
