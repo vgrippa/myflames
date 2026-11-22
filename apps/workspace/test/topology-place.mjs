@@ -920,13 +920,23 @@ try {
   })];
   await h.refresh();
   await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 3);
+  // The edge <title> always carries the label and state; the drawn label may be
+  // omitted when it does not fit beside its line, so it is not the source here.
   const proxyEdgeStates = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"]`, (els) =>
-    els.map((el) => ({ cls: el.getAttribute("class"), text: el.querySelector("text")?.textContent || "" })));
-  assert.deepEqual(proxyEdgeStates, [
-    { cls: "topology-map-edge tone-problem", text: "hostgroup 10 · SHUNNED_REPLICATION_LAG" },
-    { cls: "topology-map-edge tone-problem", text: "hostgroup 15 · SHUNNED_AWS_BGD" },
-    { cls: "topology-map-edge tone-unknown", text: "hostgroup 20 · State not reported" },
-  ], "SHUNNED_REPLICATION_LAG and SHUNNED_AWS_BGD read as problem and null state reads as unknown");
+    els.map((el) => ({
+      tone: ["tone-problem", "tone-unknown", "tone-ok", "tone-watch"].find((c) => el.classList.contains(c)) || "",
+      title: el.querySelector("title")?.textContent || "",
+    })));
+  const expectedRoutes = [
+    ["tone-problem", "hostgroup 10 · SHUNNED_REPLICATION_LAG"],
+    ["tone-problem", "hostgroup 15 · SHUNNED_AWS_BGD"],
+    ["tone-unknown", "hostgroup 20 · State not reported"],
+  ];
+  assert.equal(proxyEdgeStates.length, expectedRoutes.length);
+  expectedRoutes.forEach(([tone, text], i) => {
+    assert.equal(proxyEdgeStates[i].tone, tone, `route ${i} tone`);
+    assert.ok(proxyEdgeStates[i].title.includes(text), `route ${i} title has "${text}": ${proxyEdgeStates[i].title}`);
+  });
   reports.map.members = originalMembers;
 
   // Empty reports do not produce invalid geometry or hide the text alternative.
