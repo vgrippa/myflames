@@ -2715,6 +2715,34 @@ class TopologyReadTests(GroupCase):
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
         self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_REPLICATION_LAG'))
 
+    def test_map_proxysql_runtime_keeps_shunned_aws_bgd_and_config_drops_it(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_AWS_BGD'}])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}):
+            report = self.read('map')
+        self.assert_map_schema(report)
+        edges = {edge['to']: edge for edge in report['map']['edges']}
+        self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
+        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_AWS_BGD'))
+
+        proxy_cfg = member_fixture(
+            proxy='proxysql',
+            error_on='SELECT hostgroup_id, hostname, port, status, weight, comment FROM runtime_mysql_servers',
+            query_error='ERROR 1045 (28000): ProxySQL Admin Error: no such table: runtime_mysql_servers',
+            servers=[{'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_AWS_BGD'}])
+        proxy_cfg['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy_cfg, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}):
+            cfg_report = self.read('map')
+        self.assert_map_schema(cfg_report)
+        cfg_edges = {edge['to']: edge for edge in cfg_report['map']['edges']}
+        self.assertEqual((cfg_edges['b']['label'], cfg_edges['b']['state']), ('hostgroup 20', None))
+
     def test_map_readyset_upstream_projects_endpoints_without_user_or_sql(self):
         self.save('source', 'G')
         readyset = member_fixture(proxy='readyset', upstreams=[{

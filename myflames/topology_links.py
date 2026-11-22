@@ -36,6 +36,8 @@ PROFILE_BUDGET_S = 5.0
 QUERY_TIMEOUT_S = 2
 
 _LOCAL_NAMES = frozenset(("127.0.0.1", "localhost", "::1"))
+_NIL_UUID = "00000000-0000-0000-0000-000000000000"
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _READYSET_META_RE = re.compile(r"readyset-meta:\s*(\{.*\})", re.I | re.S)
 
 _DB_VARS_SQL = (
@@ -95,6 +97,20 @@ def _text(value):
         return None
     s = str(value).strip()
     return s if s else None
+
+
+def _uuid_key(value):
+    text = _text(value)
+    if not text:
+        return None
+    low = text.lower()
+    return None if low == _NIL_UUID else low
+
+
+def _contrary_uuid(reported_uuid, candidate_uuid):
+    reported = _uuid_key(reported_uuid)
+    candidate = _uuid_key(candidate_uuid)
+    return bool(reported and candidate and reported != candidate)
 
 
 def _host_key(host):
@@ -456,7 +472,7 @@ def _probe_connection(conn, profile, remaining=None):
                 "source_port": _int(row.get("Source_Port") or row.get("Master_Port")) or 3306,
                 "source_uuid": next((value.lower() for value in (
                     _text(row.get("Source_UUID")), _text(row.get("Master_UUID")))
-                    if value and re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value)), None),
+                    if value and _UUID_RE.fullmatch(value) and value.lower() != _NIL_UUID), None),
                 "source_server_id": _int(row.get("Source_Server_Id") or row.get("Master_Server_Id")),
                 "io_running": _text(row.get("Replica_IO_Running") or row.get("Slave_IO_Running")),
                 "sql_running": _text(row.get("Replica_SQL_Running") or row.get("Slave_SQL_Running")),
@@ -654,19 +670,21 @@ def _endpoint_matches_profile(host, port, profile_data, observer_host=None):
     return thost == phost
 
 
-def match_database_endpoint(host, port, probed, uuid=None, observer_host=None):
+def match_database_endpoint(host, port, probed, uuid=None, observer_host=None, uuid_field="server_uuid"):
     """Match a database endpoint to one probed database profile with explicit evidence.
 
     Never guesses: returns ``(profile_data, evidence)`` or ``(None, None)``.
     """
     dbs = [p for p in probed if p.get("kind") == "database"]
-    if uuid:
-        u = uuid.strip().lower()
-        by_uuid = [p for p in dbs if (p.get("server_uuid") or "").lower() == u]
+    u = _uuid_key(uuid)
+    if u:
+        by_uuid = [p for p in dbs if _uuid_key(p.get(uuid_field)) == u]
         if len(by_uuid) == 1:
             return by_uuid[0], "server_uuid"
     direct = [p for p in dbs if _endpoint_matches_profile(host, port, p, observer_host=observer_host)]
     if len(direct) == 1:
+        if _contrary_uuid(u, direct[0].get(uuid_field)):
+            return None, None
         return direct[0], "endpoint"
     thost = _host_key(host)
     tport = _int(port) or 3306
@@ -677,13 +695,15 @@ def match_database_endpoint(host, port, probed, uuid=None, observer_host=None):
             ports = {p.get("port"), p.get("report_port")} - {None}
             if thost in names and tport in ports:
                 internal.append(p)
-        if len(internal) == 1:
+        if len(internal) == 1 and not _contrary_uuid(u, internal[0].get(uuid_field)):
             return internal[0], "hostname_port"
     return None, None
 
 
-def _database_matches_target(db_info, target_host, target_port, observer_host=None):
+def _database_matches_target(db_info, target_host, target_port, observer_host=None, target_uuid=None):
     """True when ``target_host:target_port`` (seen by Readyset or ProxySQL) points at *db_info*."""
+    if _contrary_uuid(target_uuid, db_info.get("server_uuid")):
+        return False
     if _endpoint_matches_profile(target_host, target_port, db_info, observer_host=observer_host):
         return True
     thost = _host_key(target_host)
@@ -1075,16 +1095,17 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
             known_dbs.append(peer)
 
     # Also include any probed database profile that matches one of the peer endpoints or UUIDs.
-    known_uuids = {(d.get("server_uuid") or "").lower() for d in known_dbs if d.get("server_uuid")}
+    known_uuids = {_uuid_key(d.get("server_uuid")) for d in known_dbs} - {None}
     for p in probed:
         if p.get("kind") != "database":
             continue
-        puuid = (p.get("server_uuid") or "").lower()
+        puuid = _uuid_key(p.get("server_uuid"))
         if puuid and puuid in known_uuids:
             known_dbs.append(p)
             continue
         for ch in p.get("channels") or ():
-            if (ch.get("source_uuid") or "").lower() in known_uuids:
+            suuid = _uuid_key(ch.get("source_uuid"))
+            if suuid and suuid in known_uuids:
                 known_dbs.append(p)
                 break
 
@@ -1270,8 +1291,11 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             notes.append("Upstream %s did not match a saved database connection." % format_endpoint(uh, up))
         node_key = "upstream:%s:%s" % (uh, up)
         seen_db_keys.add((_host_key(uh), up))
-        if db_match and db_match.get("server_uuid"):
-            seen_db_keys.add(("uuid", db_match["server_uuid"].lower()))
+        if db_match:
+            for uuid_key in ("server_uuid", "wsrep_node_uuid"):
+                duuid = _uuid_key(db_match.get(uuid_key))
+                if duuid:
+                    seen_db_keys.add(("uuid", duuid))
         upstreams.append({
             "key": node_key,
             "host": uh,
@@ -1309,13 +1333,17 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
                     "name": dbm.get("cluster_name"),
                     "member_count": len(dbm.get("cluster_members") or ()) or 1,
                 }
+            uuid_field = "wsrep_node_uuid" if dbm.get("cluster_kind") in ("galera", "pxc") else "server_uuid"
             for cm in dbm.get("cluster_members") or ():
-                cuuid = (cm.get("uuid") or "").lower()
+                cuuid = _uuid_key(cm.get("uuid"))
                 chost, cport = cm.get("host"), _int(cm.get("port")) or 3306
                 if (cuuid and ("uuid", cuuid) in seen_db_keys) or (_host_key(chost), cport) in seen_db_keys:
                     continue
-                peer_prof, pev = match_database_endpoint(chost, cport, probed, uuid=cuuid or None,
-                                                         observer_host=dbm.get("profile_host"))
+                peer_prof, pev = match_database_endpoint(
+                    chost, cport, probed, uuid=cuuid,
+                    observer_host=dbm.get("profile_host"),
+                    uuid_field=uuid_field,
+                )
                 if cuuid:
                     seen_db_keys.add(("uuid", cuuid))
                 if chost:
@@ -1339,11 +1367,11 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
                 })
         # Async replicas reported by SHOW REPLICAS on primary.
         for rep in dbm.get("replicas") or ():
-            ruuid = (rep.get("uuid") or "").lower()
+            ruuid = _uuid_key(rep.get("uuid"))
             rhost, rport = rep.get("host"), _int(rep.get("port")) or 3306
             if (ruuid and ("uuid", ruuid) in seen_db_keys) or (rhost and (_host_key(rhost), rport) in seen_db_keys):
                 continue
-            rep_prof, rev = match_database_endpoint(rhost, rport, probed, uuid=ruuid or None,
+            rep_prof, rev = match_database_endpoint(rhost, rport, probed, uuid=ruuid,
                                                     observer_host=dbm.get("profile_host"))
             # Readyset registers on MySQL as a binlog follower (often reporting port 3307 or a readyset hostname);
             # never list Readyset itself as an unverified downstream MySQL replica peer of itself.
@@ -1370,18 +1398,21 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             })
 
     # Also check any other probed DB profile whose replication channel replicates from one of our matched DBs!
-    matched_uuids = {(d.get("server_uuid") or "").lower() for d in matched_db_profiles if d.get("server_uuid")}
+    matched_uuids = {_uuid_key(d.get("server_uuid")) for d in matched_db_profiles} - {None}
     for p in db_probed:
         if p in matched_db_profiles:
             continue
-        puuid = (p.get("server_uuid") or "").lower()
+        puuid = _uuid_key(p.get("server_uuid"))
         if puuid and ("uuid", puuid) in seen_db_keys:
             continue
         for ch in p.get("channels") or ():
-            suuid = (ch.get("source_uuid") or "").lower()
+            suuid = _uuid_key(ch.get("source_uuid"))
             by_uuid = bool(suuid and suuid in matched_uuids)
-            by_host = any(
-                _database_matches_target(d, ch.get("source_host"), ch.get("source_port"), observer_host=p.get("profile_host"))
+            by_host = False if by_uuid else any(
+                _database_matches_target(
+                    d, ch.get("source_host"), ch.get("source_port"),
+                    observer_host=p.get("profile_host"), target_uuid=suuid,
+                )
                 for d in matched_db_profiles
             )
             if by_uuid or by_host:

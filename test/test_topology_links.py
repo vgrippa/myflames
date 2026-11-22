@@ -993,6 +993,159 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual(ok_tiers["readyset"][0]["database_connection"], "Connected")
         self.assertFalse(ok_tiers["readyset"][0]["replication_error"])
 
+    def test_channel_source_contrary_uuid_blocks_address_attachment(self):
+        uuid_primary = "aaaaaaaa-0000-4000-8000-000000000001"
+        uuid_replica = "bbbbbbbb-0000-4000-8000-000000000002"
+        uuid_other = "cccccccc-0000-4000-8000-000000000003"
+        profiles = [
+            {"id": "p-pri", "name": "MySQL Primary", "host": "127.0.0.1", "port": 13306,
+             "remember_password": True, "group": "lab"},
+            {"id": "p-rep", "name": "MySQL Replica", "host": "127.0.0.1", "port": 13308,
+             "remember_password": True, "group": "lab"},
+            {"id": "current", "group": "lab"},
+        ]
+
+        def run_case(source_uuid):
+            topology_links._reset_cache_for_tests()
+            channel = {
+                "Channel_Name": "", "Source_Host": "mysql-primary", "Source_Port": "3306",
+                "Replica_IO_Running": "Yes", "Replica_SQL_Running": "Yes", "Seconds_Behind_Source": "0",
+            }
+            if source_uuid is not None:
+                channel["Source_UUID"] = source_uuid
+            conns = {
+                "p-pri": FakeProbeConn("database", hostname="mysql-primary", uuid=uuid_primary, server_id=1),
+                "p-rep": FakeProbeConn("database", hostname="mysql-replica", uuid=uuid_replica, server_id=2,
+                                       read_only=True, channels=[channel]),
+            }
+            return topology_links.build_readyset_topology(
+                {"Status": "Online", "Replication Status": "Running", "CDC Server": "mysql-primary:3306"},
+                [{"host": "mysql-primary", "port": 3306, "purpose": "cdc, query",
+                  "active_cdc": True, "health": "up", "connections": 2}],
+                [], "adapter", "stable-261022",
+                profiles=profiles, open_profile=lambda p: conns[p["id"]],
+                observer_host="127.0.0.1", current_profile_id="current",
+                current_endpoint=("127.0.0.1", 3307),
+            )
+
+        # Contrary source UUID at the same address must never attach the replica.
+        contrary = run_case(uuid_other)
+        self.assertEqual(contrary["database_peers"], [])
+
+        # Matching source UUID attaches the replica with identity evidence.
+        matched = run_case(uuid_primary)
+        self.assertEqual(len(matched["database_peers"]), 1)
+        self.assertEqual(matched["database_peers"][0]["profile_id"], "p-rep")
+        self.assertEqual(matched["database_peers"][0]["evidence"], "server_uuid")
+
+        # Absent source UUID still falls back to address matching.
+        no_uuid = run_case(None)
+        self.assertEqual(len(no_uuid["database_peers"]), 1)
+        self.assertEqual(no_uuid["database_peers"][0]["profile_id"], "p-rep")
+        self.assertEqual(no_uuid["database_peers"][0]["evidence"], "channel_source")
+
+    def test_match_database_endpoint_and_peers_reject_contrary_uuid(self):
+        uuid_a = "aaaaaaaa-0000-4000-8000-000000000001"
+        uuid_b = "bbbbbbbb-0000-4000-8000-000000000002"
+        uuid_c = "cccccccc-0000-4000-8000-000000000003"
+        gcomm_a = "11111111-0000-4000-8000-000000000001"
+        gcomm_b = "22222222-0000-4000-8000-000000000002"
+        gcomm_c = "33333333-0000-4000-8000-000000000003"
+        probed = [{
+            "kind": "database", "profile_id": "p-db", "profile_name": "DB",
+            "profile_host": "10.0.0.10", "profile_port": 3306, "ssh_host": None,
+            "hostname": "db-internal", "port": 3306, "report_host": "db-internal", "report_port": 3306,
+            "server_uuid": uuid_a,
+        }]
+        # Both direct endpoint and hostname_port fallbacks reject a contrary UUID.
+        self.assertEqual(topology_links.match_database_endpoint("10.0.0.10", 3306, probed, uuid=uuid_b), (None, None))
+        self.assertEqual(topology_links.match_database_endpoint("db-internal", 3306, probed, uuid=uuid_b), (None, None))
+        self.assertEqual(topology_links.match_database_endpoint("10.0.0.10", 3306, probed, uuid=uuid_a)[1], "server_uuid")
+        self.assertEqual(topology_links.match_database_endpoint("10.0.0.10", 3306, probed, uuid=None)[1], "endpoint")
+        self.assertEqual(topology_links.match_database_endpoint("db-internal", 3306, probed, uuid=None)[1], "hostname_port")
+
+        # SHOW REPLICAS and GR cluster_members reject a saved server at the same address when UUIDs differ.
+        profiles = [
+            {"id": "p-pri", "name": "Primary", "host": "10.0.0.11", "port": 3306, "remember_password": True, "group": "lab"},
+            {"id": "p-peer", "name": "Other Server", "host": "10.0.0.12", "port": 3306, "remember_password": True, "group": "lab"},
+            {"id": "current", "group": "lab"},
+        ]
+        for rep_uuid, member_uuid, expected_ids in (
+            (uuid_c, uuid_c, (None, None)),
+            (uuid_b, uuid_b, ("p-peer", "p-peer")),
+        ):
+            with self.subTest(rep_uuid=rep_uuid):
+                topology_links._reset_cache_for_tests()
+                conns = {
+                    "p-pri": FakeProbeConn(
+                        "database", hostname="10.0.0.11", uuid=uuid_a, gr_group="dddddddd-0000-4000-8000-000000000004",
+                        gr_members=[
+                            [uuid_a, "10.0.0.11", "3306", "ONLINE", "PRIMARY"],
+                            [member_uuid, "10.0.0.12", "3306", "ONLINE", "SECONDARY"],
+                        ],
+                        replicas=[{"Host": "10.0.0.12", "Port": "3306", "Replica_UUID": rep_uuid, "Server_id": "2"}],
+                    ),
+                    "p-peer": FakeProbeConn("database", hostname="10.0.0.12", uuid=uuid_b),
+                }
+                topo = topology_links.build_readyset_topology(
+                    {"Status": "Online", "Replication Status": "Running", "CDC Server": "10.0.0.11:3306"},
+                    [{"host": "10.0.0.11", "port": 3306, "purpose": "cdc", "active_cdc": True, "health": "up"}],
+                    [], "adapter", "stable-261022",
+                    profiles=profiles, open_profile=lambda p: conns[p["id"]],
+                    observer_host="127.0.0.1", current_profile_id="current",
+                )
+                cluster_peers = [p for p in topo["database_peers"] if p["relation"] == "cluster_member"]
+                self.assertEqual(len(cluster_peers), 1)
+                self.assertEqual(cluster_peers[0]["profile_id"], expected_ids[0])
+                if expected_ids[0]:
+                    self.assertEqual(cluster_peers[0]["evidence"], "server_uuid")
+
+                # Separately exercise SHOW REPLICAS without a cluster member hiding the same host.
+                topology_links._reset_cache_for_tests()
+                conns["p-pri"] = FakeProbeConn(
+                    "database", hostname="10.0.0.11", uuid=uuid_a,
+                    replicas=[{"Host": "10.0.0.12", "Port": "3306", "Replica_UUID": rep_uuid, "Server_id": "2"}],
+                )
+                rep_topo = topology_links.build_readyset_topology(
+                    {"Status": "Online", "Replication Status": "Running", "CDC Server": "10.0.0.11:3306"},
+                    [{"host": "10.0.0.11", "port": 3306, "purpose": "cdc", "active_cdc": True, "health": "up"}],
+                    [], "adapter", "stable-261022",
+                    profiles=profiles, open_profile=lambda p: conns[p["id"]],
+                    observer_host="127.0.0.1", current_profile_id="current",
+                )
+                self.assertEqual(len(rep_topo["database_peers"]), 1)
+                self.assertEqual(rep_topo["database_peers"][0]["profile_id"], expected_ids[1])
+
+        # PXC wsrep cluster_members compare wsrep_node_uuid (not MySQL server_uuid).
+        for peer_gcomm, expected_id in ((gcomm_c, None), (gcomm_b, "p-peer")):
+            with self.subTest(pxc_gcomm=peer_gcomm):
+                topology_links._reset_cache_for_tests()
+                conns = {
+                    "p-pri": FakeProbeConn(
+                        "database", hostname="10.0.0.11", uuid=uuid_a, wsrep=True,
+                        version_comment="Percona XtraDB Cluster (GPL)", cluster_name="pxc",
+                        gcomm_uuid=gcomm_a,
+                        wsrep_members=[
+                            [gcomm_a, "pxc1", "10.0.0.11:3306"],
+                            [peer_gcomm, "pxc2", "10.0.0.12:3306"],
+                        ],
+                    ),
+                    "p-peer": FakeProbeConn(
+                        "database", hostname="10.0.0.12", uuid=uuid_b, wsrep=True,
+                        version_comment="Percona XtraDB Cluster (GPL)", cluster_name="pxc",
+                        gcomm_uuid=gcomm_b,
+                    ),
+                }
+                pxc_topo = topology_links.build_readyset_topology(
+                    {"Status": "Online", "Replication Status": "Running", "CDC Server": "10.0.0.11:3306"},
+                    [{"host": "10.0.0.11", "port": 3306, "purpose": "cdc", "active_cdc": True, "health": "up"}],
+                    [], "adapter", "stable-261022",
+                    profiles=profiles, open_profile=lambda p: conns[p["id"]],
+                    observer_host="127.0.0.1", current_profile_id="current",
+                )
+                self.assertEqual(len(pxc_topo["database_peers"]), 1)
+                self.assertEqual(pxc_topo["database_peers"][0]["profile_id"], expected_id)
+
 
 if __name__ == "__main__":
     unittest.main()
