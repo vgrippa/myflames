@@ -131,10 +131,10 @@
 
 /* The upstream tiers above Cluster and Replication, and the tier stack inside
    the Readyset/ProxySQL frame, never centre an overflowing row off-screen.
-   The stack sizes like .cluster-map in cluster.css: as wide as its widest
-   row, at least the frame; the frame scrolls. A row that fits stays centred;
-   one that overflows starts at the frame's left edge, so its first card is
-   visible at scrollLeft 0 and its last card scrolls into view. */
+   Each row scrolls on its own (the .tier-group rules below): a row that fits
+   stays centred in the frame; one that overflows starts at its first card, so
+   that card is visible at scrollLeft 0 and the last card scrolls into view,
+   while every other row and the tier labels stay centred and fully visible. */
 .upstream-tiers {
   --card-w: 224px;
   display: flex;
@@ -160,14 +160,13 @@
   flex-direction: column;
   align-items: center;
   gap: calc(var(--space-1) / 2);
-  width: max-content;
-  min-width: 100%;
 }
 
 .tier-row {
   display: flex;
   flex-direction: column;
   align-items: center;
+  width: 100%;
   min-width: 0;
 }
 
@@ -190,13 +189,23 @@
   flex-wrap: wrap;
 }
 
-/* The card row and its bus share one width, so the bus runs from the first
-   card's stem to the last one's. The width is the cards' natural width, so an
-   overflowing row stays whole inside the scrolling frame. */
+/* The card row is its own horizontal scroller, capped at the frame width, so
+   an overflowing tier never pushes the frame or the other rows sideways. */
 .tier-group {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* The cards and their bus share one width inside the scroller, so the bus
+   runs from the first card's stem to the last one's. The auto margins centre
+   the row when it fits; when it overflows they resolve to zero and the row
+   starts at the scroller's left edge, its first card visible at scrollLeft 0. */
+.tier-group-inner {
   display: flex;
   flex-direction: column;
   width: max-content;
+  margin-inline: auto;
 }
 
 /* The link between two tiers: a vertical stem, the label on a plate beside
@@ -304,13 +313,11 @@
    and stems hide, and the link label centers on its own. */
 @container view (max-width: 760px) {
   /* As for .cluster-map at this width, a max-content box would never wrap:
-     the stack takes the frame width and the cards wrap in the grid. */
-  .tier-stack {
-    width: 100%;
-    min-width: 0;
-  }
+     the rows and the card group take the frame width and the cards wrap in
+     the grid. */
   .tier-row,
-  .tier-group {
+  .tier-group,
+  .tier-group-inner {
     width: 100%;
   }
   .tier-link {

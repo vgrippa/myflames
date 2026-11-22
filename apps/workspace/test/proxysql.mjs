@@ -962,61 +962,72 @@ try {
   assert.equal(await page.$(`${ptopo} .cluster-stem.is-active`), null, "a config-only ONLINE row gets no active stem");
   await refreshTo(multiTierProxy);
 
-  // F7: a tier row wider than the frame never hides its first cards. With ten
-  // backends the backend tier overflows the frame: at scrollLeft 0 the first
-  // card starts at the frame's left edge (never clipped on the unreachable
-  // side of a centred row), scrolled fully right the last card ends at the
-  // frame's right edge, and the bus keeps running stem to stem.
+  // F8: an overflowing tier row scrolls on its own; every other row stays
+  // centred and fully visible in the frame. With ten backends the backend
+  // row's own scroller overflows: at scrollLeft 0 the first card starts at
+  // the scroller's left edge (never clipped on the unreachable side of a
+  // centred row), scrolled fully right the last card is reachable, the bus
+  // keeps running stem to stem, and the single ProxySQL Admin card and the
+  // frame itself never move.
   await refreshTo(R.lab);
   await tab("Topology");
   await page.waitForSelector(`${ptopo} .tier-row[aria-label="Database backend hostgroups"] .tier-card`, { visible: true });
   await pause(200);
   const wideRow = await page.evaluate((sel) => {
     const frame = document.querySelector(sel);
+    const admin = frame.querySelector('.tier-row[aria-label="ProxySQL routing layer"] .tier-card');
     const row = frame.querySelector('.tier-row[aria-label="Database backend hostgroups"]');
+    const scroller = row.querySelector(".tier-group");
     const cards = [...row.querySelectorAll(".tier-card")];
     const bus = row.querySelector(".cluster-bus-line");
-    frame.scrollLeft = 0;
+    const f = frame.getBoundingClientRect();
+    const a = admin.getBoundingClientRect();
+    scroller.scrollLeft = 0;
     const atStart = (() => {
-      const f = frame.getBoundingClientRect();
+      const s = scroller.getBoundingClientRect();
       const first = cards[0].getBoundingClientRect();
       const b = bus ? bus.getBoundingClientRect() : null;
-      return { firstLeft: first.left, firstCenter: first.left + first.width / 2, frameLeft: f.left, busLeft: b ? b.left : null };
+      return { firstLeft: first.left, firstCenter: first.left + first.width / 2, scrollerLeft: s.left, busLeft: b ? b.left : null };
     })();
-    frame.scrollLeft = frame.scrollWidth;
-    const f = frame.getBoundingClientRect();
+    scroller.scrollLeft = scroller.scrollWidth;
+    const s = scroller.getBoundingClientRect();
     const last = cards[cards.length - 1].getBoundingClientRect();
     const b = bus ? bus.getBoundingClientRect() : null;
     return {
       cardCount: cards.length,
-      scrollWidth: frame.scrollWidth,
-      clientWidth: frame.clientWidth,
-      scrollLeft: frame.scrollLeft,
+      scrollWidth: scroller.scrollWidth,
+      clientWidth: scroller.clientWidth,
+      scrollLeft: scroller.scrollLeft,
+      adminInside: a.left >= f.left - 0.5 && a.right <= f.right + 0.5 && a.top >= f.top - 0.5 && a.bottom <= f.bottom + 0.5,
+      frameScrolls: frame.scrollWidth > frame.clientWidth + 1,
       ...atStart,
       lastRight: last.right,
       lastCenter: last.left + last.width / 2,
-      frameRight: f.right,
+      scrollerRight: s.right,
       busRight: b ? b.right : null,
     };
   }, ptopo);
   assert.equal(wideRow.cardCount, 10, "all ten lab backends render on the tier");
-  assert.ok(wideRow.scrollWidth > wideRow.clientWidth, `the backend tier overflows the frame: ${JSON.stringify(wideRow)}`);
-  assert.ok(wideRow.scrollLeft > 0, "the frame scrolled right");
-  assert.ok(wideRow.firstLeft >= wideRow.frameLeft - 0.5, `first card not clipped at scrollLeft 0: ${JSON.stringify(wideRow)}`);
-  assert.ok(wideRow.lastRight <= wideRow.frameRight + 0.5, `last card reachable at full scroll: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.adminInside, `the ProxySQL Admin card lies fully inside the frame at first render: ${JSON.stringify(wideRow)}`);
+  assert.equal(wideRow.frameScrolls, false, `the frame itself does not scroll sideways: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.scrollWidth > wideRow.clientWidth, `the backend row's own scroller overflows: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.scrollLeft > 0, "the row scrolled right");
+  assert.ok(wideRow.firstLeft >= wideRow.scrollerLeft - 0.5, `first card starts at the row's left edge: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.lastRight <= wideRow.scrollerRight + 0.5, `last card reachable at full row scroll: ${JSON.stringify(wideRow)}`);
   assert.ok(Math.abs(wideRow.busLeft - wideRow.firstCenter) <= 2, `bus starts at the first stem: ${JSON.stringify(wideRow)}`);
   assert.ok(Math.abs(wideRow.busRight - wideRow.lastCenter) <= 2, `bus ends at the last stem: ${JSON.stringify(wideRow)}`);
   await shot("proxysql-topology-wide-row-1440.png");
   await refreshTo(multiTierProxy);
   await tab("Topology");
-  // A row that fits stays centred in the frame.
+  // A row that fits stays centred in its scroller, with no scroll.
   const fitRow = await page.evaluate((sel) => {
-    const frame = document.querySelector(sel);
-    frame.scrollLeft = 0;
-    const row = frame.querySelector('.tier-row[aria-label="Database backend hostgroups"] .tier-members');
-    const f = frame.getBoundingClientRect();
-    const r = row.getBoundingClientRect();
-    return { rowWidth: r.width, frameWidth: f.width, left: r.left - f.left, right: f.right - r.right, scrollWidth: frame.scrollWidth, clientWidth: frame.clientWidth };
+    const row = document.querySelector(`${sel} .tier-row[aria-label="Database backend hostgroups"]`);
+    const scroller = row.querySelector(".tier-group");
+    scroller.scrollLeft = 0;
+    const members = row.querySelector(".tier-members");
+    const s = scroller.getBoundingClientRect();
+    const r = members.getBoundingClientRect();
+    return { left: r.left - s.left, right: s.right - r.right, scrollWidth: scroller.scrollWidth, clientWidth: scroller.clientWidth };
   }, ptopo);
   assert.ok(fitRow.scrollWidth <= fitRow.clientWidth + 1, `two backends fit without scroll: ${JSON.stringify(fitRow)}`);
   assert.ok(Math.abs(fitRow.left - fitRow.right) <= 2, `a row that fits stays centred: ${JSON.stringify(fitRow)}`);

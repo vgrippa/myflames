@@ -164,7 +164,8 @@ export function TierNode({
 
 /** One tier: a row label with its jump buttons, then the cards on their
  * stems. With more than one card a bus line joins the stems, as the Cluster
- * group line does. */
+ * group line does. The card row scrolls on its own when it is wider than the
+ * frame (.tier-group in readyset.css); the label stays centred in view. */
 export function TierRow({
   label,
   jumps = null,
@@ -185,12 +186,14 @@ export function TierRow({
         {jumps && <span className="tier-row-jumps">{jumps}</span>}
       </div>
       <div className="tier-group">
-        {bus && (
-          <div className="cluster-bus tier-bus" aria-hidden="true">
-            <span className="cluster-bus-line" />
-          </div>
-        )}
-        <ul className="cluster-members tier-members">{children}</ul>
+        <div className="tier-group-inner">
+          {bus && (
+            <div className="cluster-bus tier-bus" aria-hidden="true">
+              <span className="cluster-bus-line" />
+            </div>
+          )}
+          <ul className="cluster-members tier-members">{children}</ul>
+        </div>
       </div>
     </div>
   );
