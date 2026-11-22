@@ -236,6 +236,13 @@ async function editorChecks(page, expected, helpers) {
     return second?.textContent === 'SELECT 2;' && rect.top >= Math.max(0, scroller.top)
       && rect.bottom <= Math.min(innerHeight, scroller.bottom);
   }, {}, EDITOR).catch(error => { throw new Error('line 2 never became visible: ' + error.message); });
+  // Each setting is saved on its own and reaches the editor a moment later; the
+  // wrap class above proves only Wrap long lines. Wait for Multiple cursors too
+  // (seen on CI: Option-click landed before the editor allowed a second cursor).
+  const multi = expected.multi_cursor ? 'on' : 'off';
+  await page.waitForFunction((selector, value) => document.querySelector(selector)?.dataset.multiCursor === value,
+    {}, EDITOR, multi)
+    .catch(error => { throw new Error(`the editor never applied Multiple cursors ${multi}: ` + error.message); });
   await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, CURSORS)
     .catch(error => { throw new Error('the editor never showed exactly one cursor before Option-click: ' + error.message); });
   const point = await page.$eval(EDITOR, editor => {
