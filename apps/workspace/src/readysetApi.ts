@@ -360,6 +360,13 @@ export type ReadysetReport = {
     variables: ReadysetAction[];
     schemas: ReadysetAction[];
   };
+  /** Per-item drop_shallow_allowed entries, parallel to shallow_allowlists[kind]:
+   * entry i is the removal eligibility of item i (absent in older reports). */
+  allowlist_item_actions?: {
+    functions: ReadysetAction[];
+    variables: ReadysetAction[];
+    schemas: ReadysetAction[];
+  };
   connections: ReadysetClientConnection[];
   upstreams: ReadysetUpstream[];
   topology: ReadysetTopology | null;

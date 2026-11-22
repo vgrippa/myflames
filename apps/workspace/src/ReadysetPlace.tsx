@@ -1735,28 +1735,22 @@ function ReadysetView({
                     <h3 className="readyset-section-heading">Shallow cache allowlists</h3>
                     {(
                       [
-                        ["function", "Allowed SQL functions", report.shallow_allowlists.functions, report.allowlist_actions?.functions],
-                        ["variable", "Allowed session/global variables", report.shallow_allowlists.variables, report.allowlist_actions?.variables],
-                        ["schema", "Allowed schemas", report.shallow_allowlists.schemas, report.allowlist_actions?.schemas],
+                        ["function", "Allowed SQL functions", report.shallow_allowlists.functions, report.allowlist_actions?.functions, report.allowlist_item_actions?.functions],
+                        ["variable", "Allowed session/global variables", report.shallow_allowlists.variables, report.allowlist_actions?.variables, report.allowlist_item_actions?.variables],
+                        ["schema", "Allowed schemas", report.shallow_allowlists.schemas, report.allowlist_actions?.schemas, report.allowlist_item_actions?.schemas],
                       ] as const
-                    ).map(([kindKey, label, items, kindActions]) => {
+                    ).map(([kindKey, label, items, kindActions, kindItemActions]) => {
                       const kindEntries = kindActions || [];
                       const dropEntry = kindEntries.find((a) => a.id === "drop_shallow_allowed") || null;
                       const dropIndex = kindEntries.findIndex((a) => a.id === "drop_shallow_allowed");
                       // Fail closed: a missing catalog entry is not offered,
                       // so the Remove chip stays off with the reason.
-                      const dropOff = !!changeBlock || actions.busy || !dropEntry || !dropEntry.enabled;
+                      const kindOff = !dropEntry || !dropEntry.enabled;
+                      // Per-item drop entries, parallel to items: one unusable
+                      // name disables only its own chip with its own reason;
+                      // it never re-enables what the kind entry refuses.
+                      const itemDrops = kindItemActions || [];
                       const kindBase = `${allowIdBase}-${kindKey}`;
-                      // A disabled chip's accessible description: the visible
-                      // block that holds the reason (the client block wins over
-                      // catalog state), never only a title.
-                      const dropWhy = changeBlock
-                        ? `${kindBase}-blocked`
-                        : !dropEntry
-                          ? `${kindBase}-not-offered`
-                          : dropEntry.why_not || dropEntry.fix
-                            ? `${kindBase}-why-${dropIndex}`
-                            : null;
                       return (
                         <div key={kindKey} className="readyset-allowlist-row">
                           <div className="readyset-allowlist-head">
@@ -1797,46 +1791,70 @@ function ReadysetView({
                             <span className="readyset-allowlist-empty">None configured</span>
                           ) : (
                             <div className="readyset-allowlist-chips">
-                              {items.map((item, itemIndex) => (
-                                <span key={item} className="readyset-allow-chip">
-                                  <code className="proxysql-code"><bdi>{item}</bdi></code>
-                                  <button
-                                    type="button"
-                                    className="text-button"
-                                    ref={
-                                      itemIndex === 0
-                                        ? (el) => {
-                                            firstChipRef.current[kindKey] = el;
-                                          }
-                                        : undefined
-                                    }
-                                    aria-disabled={dropOff || undefined}
-                                    aria-describedby={dropOff && dropWhy ? dropWhy : undefined}
-                                    title={
-                                      changeBlock ||
-                                      (!dropEntry
-                                        ? "Readyset did not offer this change in this report. Refresh first."
-                                        : !dropEntry.enabled
-                                          ? reason(dropEntry)
-                                          : `Remove ${item}`)
-                                    }
-                                    onClick={() => {
-                                      if (dropOff) return;
-                                      setRemoveHint("");
-                                      void actions.review(`drop:${kindKey}:${item}`, (c) =>
-                                        planReadysetAction(
-                                          c,
-                                          "drop_shallow_allowed",
-                                          { kind: kindKey, allow_kind: kindKey, name: item },
-                                          { allow_kind: kindKey, name: item },
-                                        ),
-                                      );
-                                    }}
-                                  >
-                                    Remove
-                                  </button>
-                                </span>
-                              ))}
+                              {items.map((item, itemIndex) => {
+                                const itemEntry = itemDrops[itemIndex] || null;
+                                const off = !!changeBlock || actions.busy || kindOff || !!(itemEntry && !itemEntry.enabled);
+                                const itemWhyId = `${kindBase}-item-${itemIndex}-why`;
+                                // A disabled chip's accessible description: the
+                                // visible block that holds the reason (the client
+                                // block wins over catalog state), never only a title.
+                                const dropWhy = changeBlock
+                                  ? `${kindBase}-blocked`
+                                  : itemEntry && !itemEntry.enabled
+                                    ? itemWhyId
+                                    : !dropEntry
+                                      ? `${kindBase}-not-offered`
+                                      : dropEntry.why_not || dropEntry.fix
+                                        ? `${kindBase}-why-${dropIndex}`
+                                        : null;
+                                return (
+                                  <span key={item} className="readyset-allow-chip">
+                                    <code className="proxysql-code"><bdi>{item}</bdi></code>
+                                    <button
+                                      type="button"
+                                      className="text-button"
+                                      ref={
+                                        itemIndex === 0
+                                          ? (el) => {
+                                              firstChipRef.current[kindKey] = el;
+                                            }
+                                          : undefined
+                                      }
+                                      aria-disabled={off || undefined}
+                                      aria-describedby={off && dropWhy ? dropWhy : undefined}
+                                      title={
+                                        changeBlock ||
+                                        (itemEntry && !itemEntry.enabled
+                                          ? reason(itemEntry)
+                                          : !dropEntry
+                                            ? "Readyset did not offer this change in this report. Refresh first."
+                                            : !dropEntry.enabled
+                                              ? reason(dropEntry)
+                                              : `Remove ${item}`)
+                                      }
+                                      onClick={() => {
+                                        if (off) return;
+                                        setRemoveHint("");
+                                        void actions.review(`drop:${kindKey}:${item}`, (c) =>
+                                          planReadysetAction(
+                                            c,
+                                            "drop_shallow_allowed",
+                                            { kind: kindKey, allow_kind: kindKey, name: item },
+                                            { allow_kind: kindKey, name: item },
+                                          ),
+                                        );
+                                      }}
+                                    >
+                                      Remove
+                                    </button>
+                                    {itemEntry && !itemEntry.enabled && !changeBlock && (
+                                      <span className="hint readyset-allowlist-why" id={itemWhyId}>
+                                        {reason(itemEntry)}
+                                      </span>
+                                    )}
+                                  </span>
+                                );
+                              })}
                             </div>
                           )}
                           {removeHint === kindKey && (

@@ -504,6 +504,7 @@ def _not_readyset(message, version=None):
         "table_counts": {"total": 0, "snapshotted": 0, "snapshotting": 0, "ignored": 0, "error": 0, "other": 0},
         "shallow_allowlists": {"functions": [], "variables": [], "schemas": []},
         "allowlist_actions": {"functions": [], "variables": [], "schemas": []},
+        "allowlist_item_actions": {"functions": [], "variables": [], "schemas": []},
         "connections": [],
         "upstreams": [],
         "topology": None,
@@ -1739,7 +1740,8 @@ def _allowlist_actions(report, list_key, name=None):
 
 def attach_actions(report):
     """Attach the action catalog to *report*: server scope on ``actions``, row
-    scope on every cache, table and proxied query, and per-kind ``allowlist_actions``.
+    scope on every cache, table and proxied query, per-kind ``allowlist_actions``
+    and per-item ``allowlist_item_actions`` (parallel to ``shallow_allowlists``).
     Never raises on a server-supplied name and is linear in rows: a row whose
     name cannot be canonicalized gets its actions disabled with a fixed reason
     while other rows stay enabled."""
@@ -1752,6 +1754,11 @@ def attach_actions(report):
         p["actions"] = _proxied_row_actions(report)
     report["allowlist_actions"] = dict(
         (key, _allowlist_actions(report, key)) for key in ("functions", "variables", "schemas"))
+    report["allowlist_item_actions"] = dict(
+        (key, [next(a for a in _allowlist_actions(report, key, name=item)
+                    if a["id"] == "drop_shallow_allowed")
+               for item in (report.get("shallow_allowlists") or {}).get(key) or ()])
+        for key in ("functions", "variables", "schemas"))
     return report
 
 

@@ -2629,6 +2629,30 @@ class TestReviewTextSafety(ReadysetBase):
                         self.assertTrue(all(entry["enabled"] for entry in good))
                         self.assertEqual(conn.writes, [])
 
+    def test_allowlist_item_actions_disable_only_the_unusable_item(self):
+        conn = FakeReadyset()
+        bad = "bad\u202ename"
+        conn.allowlists["FUNCTIONS"].append(bad)
+        report = readyset.read_status(conn)
+        assert_matches_schema(self, report, SCHEMA)
+        names = report["shallow_allowlists"]["functions"]
+        entries = report["allowlist_item_actions"]["functions"]
+        self.assertEqual(len(entries), len(names))
+        for name, entry in zip(names, entries):
+            self.assertEqual(entry["id"], "drop_shallow_allowed")
+            if name == bad:
+                self.assertFalse(entry["enabled"])
+                self.assertEqual((entry["why_not"], entry["fix"]), readyset._CONTROL_ROW_NAME)
+            else:
+                self.assertTrue(entry["enabled"], name)
+                self.assertIsNone(entry["why_not"])
+                self.assertIsNone(entry["fix"])
+        bad_entry = entries[names.index(bad)]
+        with self.assertRaises(reviewed_writes.ActionUnavailable) as caught:
+            readyset.plan_action(report, "drop_shallow_allowed", {"kind": "function", "name": bad})
+        self.assertEqual(str(caught.exception), bad_entry["why_not"] + " " + bad_entry["fix"])
+        self.assertEqual(conn.writes, [])
+
     def test_legacy_control_allowlist_plan_refuses_at_apply_and_audits_once(self):
         conn = FakeReadyset()
         plan = readyset.plan_action(readyset.read_status(conn), "drop_shallow_allowed",

@@ -59,6 +59,11 @@
   "variables": [],
   "schemas": []
  },
+ "allowlist_item_actions": {
+  "functions": [],
+  "variables": [],
+  "schemas": []
+ },
  "connections": [],
  "upstreams": [],
  "topology": null,

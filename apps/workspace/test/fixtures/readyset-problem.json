@@ -419,6 +419,58 @@
    }
   ]
  },
+ "allowlist_item_actions": {
+  "functions": [
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this function; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   },
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this function; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
+  ],
+  "variables": [
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this variable; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
+  ],
+  "schemas": [
+   {
+    "id": "drop_shallow_allowed",
+    "label": "Remove…",
+    "scope": "row",
+    "tone": "danger",
+    "danger": true,
+    "description": "Stops automatic shallow cache creation from accepting queries that reference this schema; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+    "enabled": true,
+    "why_not": null,
+    "fix": null
+   }
+  ]
+ },
  "connections": [
   {
    "client_addr": "172.18.0.5:51234",

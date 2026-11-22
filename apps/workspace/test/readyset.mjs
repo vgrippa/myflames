@@ -1445,6 +1445,66 @@ try {
   }, view);
   await pause(200);
   assert.equal(plans.length, plansBeforeChipOff, "a disabled Remove chip plans nothing");
+
+  // R3: a per-item drop entry disables only that item's Remove chip, with its
+  // own reason visible and tied by aria-describedby before any click; the
+  // other items' chips stay enabled.
+  const badItem = "bad\u202ename";
+  const mixed = structuredClone(R.lab);
+  const origFns = R.lab.shallow_allowlists.functions;
+  const origEntries = R.lab.allowlist_item_actions.functions;
+  mixed.shallow_allowlists.functions = [...origFns, badItem].sort();
+  mixed.allowlist_item_actions.functions = mixed.shallow_allowlists.functions.map((name) =>
+    name === badItem
+      ? {
+          id: "drop_shallow_allowed",
+          label: "Remove…",
+          scope: "row",
+          tone: "danger",
+          danger: true,
+          description: "Stops automatic shallow cache creation from accepting queries that reference this function; existing caches and explicit CREATE SHALLOW CACHE are not affected.",
+          enabled: false,
+          why_not: "Readyset reported a name with control or format characters.",
+          fix: "Run this change on Readyset by hand.",
+        }
+      : origEntries[origFns.indexOf(name)],
+  );
+  await refreshTo(mixed);
+  const perItem = await page.evaluate((sel) => {
+    const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
+      /Allowed SQL functions/.test(r.textContent || ""),
+    );
+    const chips = [...(row?.querySelectorAll(".readyset-allow-chip") || [])];
+    const pick = (c) => {
+      const b = c.querySelector("button");
+      return {
+        off: b.getAttribute("aria-disabled"),
+        reason: (document.getElementById(b.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim(),
+      };
+    };
+    const badChip = chips.find((c) => (c.textContent || "").includes("bad"));
+    const goodChip = chips.find((c) => c !== badChip);
+    return { bad: badChip ? pick(badChip) : null, good: goodChip ? pick(goodChip) : null, count: chips.length };
+  }, view);
+  assert.equal(perItem.count, 3, "the functions allowlist renders the bad item beside the normal ones");
+  assert.ok(perItem.bad, "the control-character item renders a chip");
+  assert.equal(perItem.bad.off, "true", "the unusable item's Remove chip is aria-disabled before any click");
+  assert.match(perItem.bad.reason, /control or format characters/, "the chip's description is its own visible why_not");
+  assert.match(perItem.bad.reason, /by hand/, "the chip's description carries its fix");
+  assert.ok(perItem.good, "a normal item keeps its chip");
+  assert.equal(perItem.good.off, null, "the normal item's Remove chip stays enabled (no aria-disabled)");
+  const plansBeforeItem = plans.length;
+  await page.evaluate((sel) => {
+    const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
+      /Allowed SQL functions/.test(r.textContent || ""),
+    );
+    const chip = [...(row?.querySelectorAll(".readyset-allow-chip") || [])].find((c) =>
+      (c.textContent || "").includes("bad"),
+    );
+    chip?.querySelector("button")?.click();
+  }, view);
+  await pause(200);
+  assert.equal(plans.length, plansBeforeItem, "a disabled per-item Remove chip sends no plan request");
   await refreshTo(R.lab);
   await tab("Parameters");
 
