@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { appliedThemeBase } from "./themes";
 import { api, type Connection } from "./api";
 import { connectionKey, connectionLabel, nextGeneration, useConnectionReads } from "./binding";
@@ -319,7 +319,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   // "Database list updated." only after Reload database list was pressed.
   const [reloadAsked, setReloadAsked] = useState(false);
   // A load started from the empty state moves focus to the diagram it drew
-  // (its button goes away with the empty state).
+  // after React commits it (its button goes away with the empty state).
   const focusDiagram = useRef(false);
   const [readAt, setReadAt] = useState<{key: string; database: string; at: Date} | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 30, y: 30, zoom: 1 });
@@ -361,6 +361,19 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     observer.observe(el); return ()=>observer.disconnect();
   }, [!!d, view]);
   useEffect(() => { if(d)fit(d.tables,diagramPositions(d)); }, [d?.tables]);
+  useLayoutEffect(() => {
+    if (!focusDiagram.current || !d || view !== "diagram") return;
+    const el = canvas.current;
+    if (!el || !el.isConnected) return;
+    focusDiagram.current = false;
+    if (importOpen || replacement || exportFile || el.closest("[hidden], [inert]") || document.querySelector("dialog[open]")) return;
+    const active = document.activeElement;
+    // Only when focus fell to the page, stayed detached, or remained inside the
+    // replaced empty state; never steal focus the user moved elsewhere.
+    if (!active || active === document.body || active === document.documentElement || !active.isConnected || active.closest(".diagram-view .view-empty")) {
+      el.focus({ preventScroll: true });
+    }
+  }, [d, view, importOpen, replacement, exportFile]);
   // A new connection or default database drops the reads on their way,
   // Refresh all's too. Opening the place (this view mounting) does not:
   // Refresh all started on Server and still reading the diagram keeps its answer.
@@ -374,7 +387,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     setDatabase(target); setReplacement(null); setPickedOther(false); setReloadAsked(false); focusDiagram.current = false;
     onDatabaseChange?.(key, target);
   }, [key, connection.database]);
-  useEffect(() => { mounted.current=true; return ()=>{ mounted.current=false; request.current?.abort(); fileRead.current++; }; }, []);
+  useEffect(() => { mounted.current=true; return ()=>{ mounted.current=false; focusDiagram.current=false; request.current?.abort(); fileRead.current++; }; }, []);
   const cancelRequest = () => { request.current?.abort(); revision.current++; };
   // Choosing a database never reads it: a diagram read can be large, a keyboard
   // walk through the list would start one read per step, and a diagram on
@@ -396,7 +409,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     onDocument({diagram:normalized,source}); selection.select("",false); setSearch(""); setError(""); setPickedOther(false);
     fit(normalized.tables,diagramPositions(normalized));
   }
-  async function load(target = database.trim()) {
+  async function load(target = database.trim(), options: { focusCanvas?: boolean } = {}) {
     if (!target || disabled || !canRead || busy || reads.loading) return;
     cancelRequest(); const n=revision.current, controller=new AbortController(); request.current=controller; setError("");
     await reads.run(`diagram:${JSON.stringify(target)}`,`Reading ${target}…`,
@@ -408,15 +421,11 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
           .finally(()=>signal.removeEventListener("abort",abort));
       }, bound=>{
         if(n!==revision.current) return;
+        const shouldFocusCanvas = !!options.focusCanvas && !latestDoc.current;
         accept(bound.report,{kind:"server",key:bound.key,label:bound.label,database:target});
         setReadAt({key:bound.key,database:target,at:new Date()});
-        if(focusDiagram.current) window.requestAnimationFrame(()=>{
-          // Only when focus fell to the page with the empty state's button.
-          const active=document.activeElement;
-          if(mounted.current&&(!active||active===document.body))canvas.current?.focus({preventScroll:true});
-        });
+        if(shouldFocusCanvas) focusDiagram.current=true;
       },{force:true});
-    focusDiagram.current=false;
   }
   function rebuild() {
     const target=database.trim() || (doc?.source.kind==="server" && doc.source.key===key ? doc.source.database || "" : "");
@@ -438,7 +447,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   }
   async function importDiagram() {
     if(busy||!text.trim())return;
-    cancelRequest(); nextGeneration("diagram"); const n=revision.current;
+    cancelRequest(); nextGeneration("diagram"); focusDiagram.current = false; const n=revision.current;
     const controller=new AbortController();request.current=controller; setBusy("Importing…");setError("");
     try {
       if(new TextEncoder().encode(text).byteLength>MAX_IMPORT_BYTES) throw new Error("Imports must be 2 MiB or smaller.");
@@ -522,11 +531,13 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   // diagram yet, an imported one, another database's or another connection's.
   const showsChosen = !!targetDb && doc?.source.kind === "server" && doc.source.key === key && doc.source.database === targetDb;
   const loadDisabled = disabled || !!busy || !canRead || !targetDb;
-  const openImport = () => { setImportOpen(true); setError(""); };
+  const openImport = () => { focusDiagram.current = false; setImportOpen(true); setError(""); };
   function loadFromEmpty() {
     if (reads.loading) return;
-    focusDiagram.current = true;
-    rebuild();
+    const target = database.trim();
+    if (!target || disabled || !canRead || busy) return;
+    if (doc) rebuild();
+    else void load(target, { focusCanvas: true });
   }
   // Before a diagram is shown, the empty state's Load button owns the read's
   // progress and its error (beside the action); afterwards the status line does.
