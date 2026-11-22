@@ -901,6 +901,31 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.topology-map-cluster .is-peer').length === 1);
   assert.equal(await page.$eval(`${diagram} .topology-map-cluster .is-peer`, (e) => getComputedStyle(e).borderTopStyle), "dashed");
 
+  // ProxySQL route edges: SHUNNED_REPLICATION_LAG gets the problem tone and an
+  // unreported (configuration-only) state gets the unknown tone and wording.
+  const proxyNode = makeNode("proxy", { role: "proxy", product: "ProxySQL", version: "3.0.2" });
+  reports.map.map = {
+    ...originalMap,
+    nodes: [...originalMap.nodes, proxyNode],
+    edges: [
+      ...originalMap.edges,
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10" }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: null, label: "hostgroup 20" }),
+    ],
+  };
+  reports.map.members = [...originalMembers, member({
+    profile_id: proxyNode.profile_id, profile_name: proxyNode.label, host: proxyNode.host, role: proxyNode.role, state: proxyNode.state,
+  })];
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 2);
+  const proxyEdgeStates = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"]`, (els) =>
+    els.map((el) => ({ cls: el.getAttribute("class"), text: el.querySelector("text")?.textContent || "" })));
+  assert.deepEqual(proxyEdgeStates, [
+    { cls: "topology-map-edge tone-problem", text: "hostgroup 10 · SHUNNED_REPLICATION_LAG" },
+    { cls: "topology-map-edge tone-unknown", text: "hostgroup 20 · State not reported" },
+  ], "SHUNNED_REPLICATION_LAG reads as problem and null state reads as unknown");
+  reports.map.members = originalMembers;
+
   // Empty reports do not produce invalid geometry or hide the text alternative.
   reports.map.map = { nodes: [], edges: [], clusters: [], notes: [] };
   await h.refresh();

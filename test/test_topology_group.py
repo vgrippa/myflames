@@ -2672,6 +2672,49 @@ class TopologyReadTests(GroupCase):
                 else:
                     self.assertEqual(peers, [])
 
+    def test_map_proxysql_config_fallback_omits_edge_state(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        proxy = member_fixture(
+            proxy='proxysql',
+            error_on='SELECT hostgroup_id, hostname, port, status, weight, comment FROM runtime_mysql_servers',
+            query_error='ERROR 1045 (28000): ProxySQL Admin Error: no such table: runtime_mysql_servers',
+            servers=[
+                {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+                {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
+            ])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}) as observed:
+            report = self.read('map')
+        self.assert_map_schema(report)
+        sqls = self.statements(observed, 'active.example')
+        self.assertTrue(any('FROM runtime_mysql_servers' in sql for sql in sqls))
+        self.assertTrue(any('FROM mysql_servers' in sql for sql in sqls))
+        edges = {edge['to']: edge for edge in report['map']['edges']}
+        self.assertEqual(set(edges), {'a', 'b'})
+        self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', None))
+        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', None))
+
+    def test_map_proxysql_runtime_keeps_shunned_replication_lag_and_online(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'}])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}) as observed:
+            report = self.read('map')
+        self.assert_map_schema(report)
+        sqls = self.statements(observed, 'active.example')
+        self.assertTrue(any('FROM runtime_mysql_servers' in sql for sql in sqls))
+        self.assertFalse(any('FROM mysql_servers' in sql for sql in sqls))
+        edges = {edge['to']: edge for edge in report['map']['edges']}
+        self.assertEqual(set(edges), {'a', 'b'})
+        self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
+        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_REPLICATION_LAG'))
+
     def test_map_readyset_upstream_projects_endpoints_without_user_or_sql(self):
         self.save('source', 'G')
         readyset = member_fixture(proxy='readyset', upstreams=[{

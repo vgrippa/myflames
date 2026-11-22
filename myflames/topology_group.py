@@ -823,8 +823,8 @@ def _build_map(entries, probes, profiles):
             for backend in probe.get('servers', []):
                 destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
                 hostgroup = _number(backend.get('hostgroup_id'))
-                state = backend.get('status')
-                if state not in ('ONLINE', 'SHUNNED', 'OFFLINE_SOFT', 'OFFLINE_HARD'):
+                state = None if backend.get('status_source') == 'config' else backend.get('status')
+                if state not in ('ONLINE', 'SHUNNED', 'SHUNNED_REPLICATION_LAG', 'OFFLINE_SOFT', 'OFFLINE_HARD'):
                     state = None
                 edge(pid, pid, destination, 'proxy_route', evidence, verified, state,
                      'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?'))

@@ -71,7 +71,7 @@ export function mapEdgeText(edge: MapEdge): string {
 function stateTone(state: string | null): string {
   switch ((state || "").toLowerCase()) {
     case "online": case "running": case "reachable": case "up": case "healthy": return "ok";
-    case "stopped": case "shunned": case "offline": case "offline_hard": case "down": case "unhealthy": case "error": return "problem";
+    case "stopped": case "shunned": case "shunned_replication_lag": case "offline": case "offline_hard": case "down": case "unhealthy": case "error": return "problem";
     case "connecting": case "recovering": case "offline_soft": return "watch";
     default: return "unknown";
   }
