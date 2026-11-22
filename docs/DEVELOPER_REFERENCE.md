@@ -1813,8 +1813,10 @@ checked without following links where supported. POSIX directories are 0700
 and files 0600; Windows retains its platform helper. A SQLite sidecar that
 another request's transaction removes or replaces during that check is not
 tampering: a removed sidecar needs nothing, a replacement is checked again
-(at most 8 times), and a link, a foreign owner or a wrong file type still
-fails before `sqlite3.connect`. On Windows the vault's ACL update likewise
+(at most 9 checks, then the request fails closed), and a link, a foreign owner
+or a wrong file type is refused at once, never retried, before
+`sqlite3.connect`. This applies on POSIX; on Windows, sidecars inherit the store
+folder's owner-only ACL, and the vault also rewrites existing ones. On Windows the vault's ACL update likewise
 skips a sidecar that is gone after a failed call. SQLite connections close if
 setup fails. Session persistence redacts recognized SQL credential literals
 in editor text as well as password fields; ordinary SELECT drafts are retained.
@@ -8339,7 +8341,7 @@ if `remaining < QUERY_SECONDS` (30 s) the read raises `_NotReached` so a queued
 member never logs in without a full 30 s query window (`outcome: "not_reached"`,
 `message: "Not read: the time budget did not allow this member to start."`).
 Once login has started, `remaining <= 0` raises `ConnectorError` (`outcome:
-"failed"`). On `map`, the per-member topology probe (`topology_links._probe_connection`) keeps its own 2 s per query (`topology_links.QUERY_TIMEOUT_S`, applied through `param_compare.BoundedConnection.run`), as in the topology bars, while identity, status, parameters, accounts and plugins queries get the 30 s window. `_ReadConnection` latches transport failures (`code is None`),
+"failed"`). On `map`, the shared per-member topology probe (`topology_links._probe_connection`: replication channels, wsrep status and membership, InnoDB Cluster metadata, Group Replication members, ProxySQL and Readyset) keeps its own 2 s per query (`topology_links.QUERY_TIMEOUT_S`, applied through `param_compare.BoundedConnection.run`), as in the topology bars; `_map_probe`'s follow-up reads (for example the PXC node view) and every other section's queries get the 30 s window. `_ReadConnection` latches transport failures (`code is None`),
 client errors (`reviewed_writes.client_error(code)`), and login refusals
 (`not sql_reply` with initial coded failures or explicit login codes `1040,
 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151`, `1226` with

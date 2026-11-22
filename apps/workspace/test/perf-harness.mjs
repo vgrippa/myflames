@@ -381,10 +381,19 @@ export async function open(endpoint, name, extra = {}, {
       // Centered first: scrolled only as far as needed, a row can sit under the fixed top bar.
       await page.$eval(target, (e) => e.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
       await page.locator(target).click();
-      await page.waitForSelector(".view-inspector .inspector-title");
+      // The inspector of the view on screen: a hidden place can keep its own
+      // inspector (and title) mounted.
+      await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .inspector-title")]
+        .some((e) => e.getClientRects().length > 0));
     },
-    /** The inspector's text (title, meta, actions and body). */
-    inspector: () => page.$eval(".view-inspector", (e) => e.textContent),
+    /** The inspector's text (title, meta, actions and body): the one on screen,
+     * else the first mounted one (a hidden place can keep its own inspector). */
+    inspector: () => page.evaluate(() => {
+      const all = [...document.querySelectorAll(".view-inspector")];
+      const shown = all.find((e) => e.getClientRects().length > 0) || all[0];
+      if (!shown) throw new Error("No .view-inspector is mounted");
+      return shown.textContent;
+    }),
     /** Open an ⓘ popover by its label and return its text; Escape closes it again. */
     async popover(label) {
       await page.click(`button[aria-label="${label}"]`);

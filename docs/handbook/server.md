@@ -6,7 +6,7 @@
 - **Workload** groups five views into two categories: **Queries** (**Top statements**, **Processlist**) and **Resources** (**Memory**, **Waits**, **I/O**).
 - **Tuning** scores the checks that **Health**, **Parameters**, **Tables** and **Full analysis** evaluate, and runs **Full analysis** in its own tab.
 - **Topology** sits after **Workload** and shows a whole **Group connection** (its map, members, and how parameters, accounts and plugins differ) with a rolling parameter change; see [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology) and [Change a parameter on every server](howto-topology.md#change-a-parameter-on-every-server).
-- **Replication**, **Cluster**, **ProxySQL** and **Readyset** follow in the sidebar as dedicated single-connection topology and operations places.
+- **Replication**, **Cluster**, **ProxySQL** and **Readyset** follow in the sidebar as dedicated topology and operations places.
 
 Opening any view only reads. Every action that changes server state, kills a session, modifies an index or table, changes a parameter or instrument, runs a maintenance tool, skips a replication transaction, switches a cluster role, or updates ProxySQL or Readyset opens a review sheet first, shows the exact SQL or command it will run, checks the connection's write policy (**Production**, **Development** or **Read-only**), re-verifies the target right before sending, and records the outcome in the local **Audit** log. For host-level SFTP browsing and SSH key management, see [File transfer and SSH](files.md).
 

@@ -623,7 +623,7 @@ history NAME`.
 background polling: **Map** (topology diagram and server, peer, link and cluster lists), **Members** (roles, states,
 read-only status, lag and GTID distance behind the primary or source), and **Parameters**, **Accounts** and
 **Plugins** drift tables. Each tab sends one bounded read when it first comes on screen and on **Refresh** (at most
-4 logins at once, 30 s per query or 2 s for each topology query on **Map**, 120 s per tab and 300 s on **Accounts**).
+4 logins at once, 30 s per query, 2 s for the replication, cluster, ProxySQL and Readyset queries that **Map** shares with those places' topology bars, 120 s per tab and 300 s on **Accounts**).
 On **Parameters**, **Change on every member…** plans a sequential rolling parameter change under one review; on a
 single saved connection, the place offers to open its **Group connection** or start **New group…**. See
 [Read a whole group in Topology](handbook/howto-topology.md#read-a-whole-group-in-topology) and

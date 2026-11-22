@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import uuid
 import zlib
 
@@ -2348,42 +2349,48 @@ def _safety_fields(requested, existing):
     return {'type': ctype if ctype in CONNECTION_TYPES else 'production', 'read_only': read_only}
 
 
-def _owner_only(path, mode):
-    """Enforce owner-only storage on POSIX; Windows has no POSIX mode contract."""
-    if os.name != 'posix':
-        return
-    from .secret_store import _protect_private_path
-    _protect_private_path(path, mode, directory=mode == 0o700)
-
-
 def _protect_sidecar(path, mode=0o600):
-    """Owner-only permissions on a SQLite sidecar (-wal, -shm, -journal).
+    """Owner-only permissions on a SQLite sidecar (-wal, -shm, -journal), POSIX
+    only (Windows has no POSIX mode contract; the vault sets its ACLs).
 
     SQLite creates and removes these files during other requests'
     transactions, so one can vanish or be replaced between the open and the
-    identity check in _protect_private_path ("Private storage changed while it
-    was being opened"). That is SQLite's normal lifecycle, not tampering: a
-    sidecar that is gone needs nothing, and a replacement is checked again
-    from the start. Every other refusal still raises: a symbolic link, another
-    user's file or a wrong file type is refused before sqlite3.connect.
+    identity check. That is SQLite's normal lifecycle, not tampering: a sidecar
+    that is gone needs nothing, and a replacement is checked again from the
+    start (at most 9 checks, then the request fails closed). A symbolic link,
+    another user's file or a wrong file type at the path, before or after the
+    open, is refused at once and never retried, before sqlite3.connect.
     """
-    from .secret_store import SecretStoreError, _protect_private_path, _storage_stat
-    for _attempt in range(8):
-        try:
-            _protect_private_path(path, mode)
+    if os.name != 'posix':
+        return
+    from .secret_store import SecretStoreError, _storage_stat, _validate_storage_stat
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    link_codes = tuple(code for code in (errno.ELOOP, getattr(errno, 'EMLINK', None),
+                                         getattr(errno, 'EFTYPE', None)) if code is not None)
+    for _attempt in range(9):
+        if _storage_stat(path) is None:
             return
-        except SecretStoreError:
-            # Raises again for a link, a foreign owner or a wrong file type.
-            if _storage_stat(path) is None:
-                return
+        try:
+            fd = os.open(str(path), flags)
+        except FileNotFoundError:
+            return
         except OSError as exc:
-            # O_NOFOLLOW refuses a link swapped in between lstat and open.
-            link_codes = tuple(code for code in (errno.ELOOP, getattr(errno, 'EMLINK', None),
-                                                 getattr(errno, 'EFTYPE', None)) if code is not None)
             if exc.errno in link_codes:
                 raise SecretStoreError('Refusing a symbolic link for private storage: %s' % path)
             raise
-    _protect_private_path(path, mode)
+        try:
+            info = os.fstat(fd)
+            _validate_storage_stat(path, info)
+            current = _storage_stat(path)
+            if current is None:
+                return
+            if (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino):
+                if stat.S_IMODE(info.st_mode) != mode:
+                    os.fchmod(fd, mode)
+                return
+        finally:
+            os.close(fd)
+    raise SecretStoreError('Private storage changed while it was being opened: %s' % path)
 
 
 def endpoint_value(value, field):

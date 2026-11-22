@@ -2,6 +2,8 @@
 import copy
 import json
 import os
+import stat
+import errno
 from pathlib import Path
 import contextlib
 import sqlite3
@@ -760,11 +762,80 @@ class TestWorkspaceStore(unittest.TestCase):
                 self.store.list('investigation')
         connect.assert_not_called()
 
-    def test_windows_permission_protection_is_a_noop(self):
+    def test_windows_sidecar_protection_is_a_noop(self):
+        journal = Path(str(self.path) + '-journal')  # built before os.name changes
         with patch.object(workspace_store.os, 'name', 'nt'), patch.object(workspace_store.os, 'chmod') as chmod, \
-                patch.object(workspace_store.os, 'stat', side_effect=AssertionError('permission check on Windows')):
-            workspace_store._owner_only(self.path, 0o600)
+                patch.object(workspace_store.os, 'open', side_effect=AssertionError('sidecar open on Windows')), \
+                patch.object(workspace_store.os, 'lstat', side_effect=AssertionError('permission check on Windows')):
+            workspace_store._protect_sidecar(journal, 0o600)
         chmod.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX sidecar refusals')
+    def test_refused_sidecar_is_never_retried_even_if_it_then_vanishes(self):
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        target = Path(self.temp.name) / 'elsewhere'
+        target.write_bytes(b'keep')
+        journal.symlink_to(target)
+        real_lstat = os.lstat
+        calls = []
+
+        def vanish_after_refusal(path, *args, **kwargs):
+            result = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal):
+                calls.append(True)
+                if len(calls) == 1:
+                    journal.unlink()
+            return result
+
+        with patch.object(os, 'lstat', side_effect=vanish_after_refusal):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual(len(calls), 1)
+
+        # Refused at the second lstat (a link swapped in after the open), and
+        # gone right after that refusal.
+        journal.write_bytes(b'journal')
+        real_open = os.open
+        swapped, seen_link = [], []
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal) and not swapped:
+                swapped.append(True)
+                journal.unlink()
+                journal.symlink_to(target)
+            return fd
+
+        def vanish_after_link(path, *args, **kwargs):
+            result = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal) and stat.S_ISLNK(result.st_mode) and not seen_link:
+                seen_link.append(True)
+                journal.unlink()
+            return result
+
+        with patch.object(os, 'open', side_effect=swap_after_open), \
+                patch.object(os, 'lstat', side_effect=vanish_after_link):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual((swapped, seen_link), ([True], [True]))
+
+        # Refused at the open (O_NOFOLLOW on a link swapped in after the first
+        # lstat), and gone before anything could check again.
+        journal.write_bytes(b'journal')
+
+        def link_then_vanish(path, flags, *args, **kwargs):
+            if str(path) == str(journal):
+                journal.unlink()
+                journal.symlink_to(target)
+                journal.unlink()
+                raise OSError(errno.ELOOP, 'Too many levels of symbolic links', str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(os, 'open', side_effect=link_then_vanish):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual(target.read_bytes(), b'keep')
 
     def test_record_kind_isolation(self):
         saved = self.store.save('investigation', bundle(), "id'; DROP TABLE records; --")
