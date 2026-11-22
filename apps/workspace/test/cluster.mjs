@@ -120,6 +120,17 @@ try {
   // Motion conveys known healthy membership, with an OS override.
   const stemMotion = () => page.$eval(`${view} .cluster-stem.is-active`, (e) => getComputedStyle(e, "::after").animationName);
   assert.equal(await stemMotion(), "topology-membership");
+  // Lane F9: Cluster's own stems keep the 18 px default dot travel (the 24 px
+  // stem minus the 6 px dot); only the shorter tier stems override it.
+  const clusterDotTravel = await page.$eval(`${view} .cluster-stem.is-active`, (stem) => {
+    const probe = document.body.appendChild(document.createElement("div"));
+    const travel = getComputedStyle(stem).getPropertyValue("--stem-dot-travel").trim() || "18px";
+    probe.style.cssText = `position:absolute;visibility:hidden;transform:translateY(${travel})`;
+    const t = getComputedStyle(probe).transform;
+    probe.remove();
+    return t === "none" ? 0 : parseFloat(t.slice(7, -1).split(",").pop());
+  });
+  assert.equal(clusterDotTravel, 18, "a Cluster stem keeps the 18 px dot travel");
   assert.equal(await page.$(`${view} .topology-presentation-controls`), null, "no presentation controls");
   const controlLabels = await page.$$eval(`${view} button`, (els) => els.map((e) => (e.textContent || "").trim()));
   for (const label of ["Depth", "Pause motion", "Resume motion"]) assert.ok(!controlLabels.includes(label), `no ${label} button`);
@@ -959,6 +970,29 @@ try {
     "a reported Running replication runs the Readyset tier link",
   );
   assert.ok(await page.$(`${view} .upstream-tiers .cluster-stem.is-active`), "a reported Running replication activates the Readyset stem");
+  // Lane F9: on the shared tier topology the dot travel follows the shorter
+  // stems, so the dot never travels into a tier card.
+  const tierStemDots = await page.$$eval(`${view} .upstream-tiers .cluster-stem.is-active`, (stems) => {
+    const probe = document.body.appendChild(document.createElement("div"));
+    const rows = stems.map((stem) => {
+      const travel = getComputedStyle(stem).getPropertyValue("--stem-dot-travel").trim() || "18px";
+      probe.style.cssText = `position:absolute;visibility:hidden;transform:translateY(${travel})`;
+      const t = getComputedStyle(probe).transform;
+      const ty = t === "none" ? 0 : parseFloat(t.slice(7, -1).split(",").pop());
+      return {
+        cls: String(stem.className),
+        height: stem.getBoundingClientRect().height,
+        dot: parseFloat(getComputedStyle(stem, "::after").height),
+        travel: ty,
+      };
+    });
+    probe.remove();
+    return rows;
+  });
+  for (const dot of tierStemDots) {
+    assert.ok(Number.isFinite(dot.travel) && dot.travel >= 0, `tier stem dot travel resolves: ${JSON.stringify(dot)}`);
+    assert.ok(dot.dot <= 6 && dot.travel + dot.dot <= dot.height + 0.5, `motion dot stays on the tier stem: ${JSON.stringify(dot)}`);
+  }
   assert.match(clusterTierText, /CDC binlog stream & query fallback/, "a running link carries the CDC label");
   // S8: server-reported versions inside the compound role labels sit in <bdi>.
   const roleBdis = await page.$$eval(`${view} .upstream-tiers .cluster-role bdi`, (els) => els.map((e) => e.textContent));

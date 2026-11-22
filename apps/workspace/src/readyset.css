@@ -123,10 +123,20 @@
    1440 px, so its stems run shorter than the shared compact stems. */
 .readyset-topology .tier-link-stem {
   height: 6px;
+  --stem-dot-travel: max(0px, 6px - 6px);
 }
 
 .readyset-topology .tier-node > .cluster-stem {
   height: var(--space-1);
+  --stem-dot-travel: max(0px, var(--space-1) - 6px);
+}
+
+/* The 6 px motion dot is taller than these 4 px stems: it shrinks to fit,
+   keeping the same centre on the line. */
+.readyset-topology .tier-node > .cluster-stem.is-active::after {
+  left: -3px;
+  width: 4px;
+  height: 4px;
 }
 
 /* The upstream tiers above Cluster and Replication, and the tier stack inside
@@ -222,6 +232,7 @@
 .tier-link-stem {
   grid-column: 2;
   height: 10px;
+  --stem-dot-travel: max(0px, 10px - 6px);
 }
 
 /* A reported stop: dashed, without the danger color of a reported error. */
@@ -287,6 +298,7 @@
 
 .tier-node > .cluster-stem {
   height: var(--space-2);
+  --stem-dot-travel: max(0px, var(--space-2) - 6px);
 }
 
 .tier-node .cluster-use-node {

@@ -499,7 +499,7 @@
   animation: topology-membership 2.8s ease-in-out infinite alternate;
 }
 @keyframes topology-direction { from { left: 0; } to { left: calc(100% - 6px); } }
-@keyframes topology-membership { from { transform: translateY(0); } to { transform: translateY(18px); } }
+@keyframes topology-membership { from { transform: translateY(0); } to { transform: translateY(var(--stem-dot-travel, 18px)); } }
 /* Stale and offscreen reports must never suggest a live connection. */
 :is([hidden], .is-stale, .is-other-connection) .topology-line::before, :is([hidden], .is-stale, .is-other-connection) .cluster-stem::after { animation: none !important; display: none !important; }
 @media (prefers-reduced-motion: reduce) {

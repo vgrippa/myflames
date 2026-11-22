@@ -369,6 +369,31 @@ try {
   assert.equal(await page.$(`${view} .readyset-topology .topology-presentation-controls`), null, "no presentation controls");
   assert.equal(await page.$eval(`${view} .readyset-topology`, (e) => e.dataset.motion), "on");
 
+  // Lane F9: an active stem's motion dot stays on the stem: the travel is the
+  // stem height minus the dot, so the dot never enters a tier card.
+  const stemDots = await page.$$eval(`${view} .readyset-topology .cluster-stem.is-active`, (stems) => {
+    const probe = document.body.appendChild(document.createElement("div"));
+    const rows = stems.map((stem) => {
+      const travel = getComputedStyle(stem).getPropertyValue("--stem-dot-travel").trim() || "18px";
+      probe.style.cssText = `position:absolute;visibility:hidden;transform:translateY(${travel})`;
+      const t = getComputedStyle(probe).transform;
+      const ty = t === "none" ? 0 : parseFloat(t.slice(7, -1).split(",").pop());
+      return {
+        cls: String(stem.className),
+        height: stem.getBoundingClientRect().height,
+        dot: parseFloat(getComputedStyle(stem, "::after").height),
+        travel: ty,
+      };
+    });
+    probe.remove();
+    return rows;
+  });
+  assert.ok(stemDots.length > 0, "the lab topology has active stems");
+  for (const dot of stemDots) {
+    assert.ok(Number.isFinite(dot.travel) && dot.travel >= 0, `stem dot travel resolves: ${JSON.stringify(dot)}`);
+    assert.ok(dot.dot <= 6 && dot.travel + dot.dot <= dot.height + 0.5, `motion dot stays on its stem: ${JSON.stringify(dot)}`);
+  }
+
   // Clicking an upstream card opens the 320 px right-pane inspector, which
   // carries the fields the dropped upstream table had.
   await page.click(`${view} .readyset-topology button[data-row-key="upstream:mysql-primary:3306"]`);
