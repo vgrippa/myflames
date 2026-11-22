@@ -141,6 +141,7 @@
       "properties": {
         "readyset": {
           "type": "array",
+          "description": "Readyset cache tiers linked to this server. status and replication_status are null when SHOW READYSET STATUS did not report them (never Online/Unknown). database_connection is the reported Database Connection value or null; replication_error is true when Last replicator error is set, the problem signal Status and Replication Status never carry.",
           "items": {
             "type": "object"
           }

@@ -11,7 +11,8 @@
 // cluster. A report that is not the connection in use's current one (from
 // another connection, or kept after a failed read) is greyed and never marks
 // a member "This connection".
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { ActionGroup as CatalogActionGroup } from "./CatalogActions";
 import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
@@ -238,15 +239,13 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
   groupName?: string;
   onEditGroup?: (name: string) => void;
 }) {
-  const base = useId();
+  // The shared ActionGroup does the rendering; the slot adds the
+  // Cluster-only extras (Edit group, Use <connection>, GRANT Commands,
+  // privileges_unreadable) inside the reason block.
   return (
-    <div className="review-actions" role="group" aria-label={label}>
-      {list.map((a, i) => {
-        const off = !!blocked || busy || !a.enabled;
-        const reasonId = `${base}-why-${i}`;
-        const hasReason = !a.enabled && !!(a.why_not || a.fix || a.grant_sql || a.privileges_unreadable);
+    <CatalogActionGroup list={list} label={label} blocked={blocked} planning={planning} busy={busy} onStart={onStart}
+      slot={(a) => {
         const note = a.enabled ? a.target?.note : undefined;
-        const explanation = [...new Set([a.why_not, a.fix].filter(Boolean))].join(" ");
         const editGroup = !a.enabled && a.scope === "member" && a.target?.profile_id === null && groupName && onEditGroup
           ? () => onEditGroup(groupName) : undefined;
         const member = !a.target?.self ? report.members.find((m) => m.key === a.member_key) : undefined;
@@ -255,43 +254,34 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
         const use = !a.enabled && member && onSwitchConnection
           ? groupName ? namedGroupProfile(a.fix || "", groupName, profiles) : matchingProfile(member, profiles)
           : undefined;
-        return (
-          <Fragment key={a.id}>
-            <button type="button" className={`button${a.danger ? " danger" : ""}`} title={blocked || a.description}
-              aria-disabled={off} aria-describedby={hasReason || note ? reasonId : undefined}
-              onClick={() => { if (!off) onStart(a); }}>
-              {planning === a.id ? "Reading…" : a.label}
-            </button>
-            {note && <div className="cluster-action-why" id={reasonId}><p>{note}</p></div>}
-            {hasReason && (
-              <div className="cluster-action-why" id={reasonId}>
-                {explanation && <p>{explanation}</p>}
-                {editGroup && (
-                  <button type="button" className="text-button cluster-edit-group" onClick={editGroup}>
-                    Edit group…
-                  </button>
-                )}
-                {use && onSwitchConnection && (
-                  <button type="button" className="text-button cluster-use-node" onClick={() => onSwitchConnection(use.id)}>
-                    Use {use.name}
-                  </button>
-                )}
-                {a.grant_sql && (
-                  <>
-                    <Commands text={a.grant_sql} label={`Grant for ${a.label.replace(/[….]+$/, "")}`} />
-                    <p className="hint">Run it as an administrator, then Refresh.</p>
-                  </>
-                )}
-                {a.privileges_unreadable && (
-                  <p className="hint">Privileges could not be read; the server refuses the change if one is missing.</p>
-                )}
-              </div>
-            )}
-          </Fragment>
-        );
-      })}
-      {blocked && <p className="hint">{blocked}</p>}
-    </div>
+        return {
+          note,
+          hasReason: !!(a.grant_sql || a.privileges_unreadable),
+          content: (
+            <>
+              {editGroup && (
+                <button type="button" className="text-button cluster-edit-group" onClick={editGroup}>
+                  Edit group…
+                </button>
+              )}
+              {use && onSwitchConnection && (
+                <button type="button" className="text-button cluster-use-node" onClick={() => onSwitchConnection(use.id)}>
+                  Use {use.name}
+                </button>
+              )}
+              {a.grant_sql && (
+                <>
+                  <Commands text={a.grant_sql} label={`Grant for ${a.label.replace(/[….]+$/, "")}`} />
+                  <p className="hint">Run it as an administrator, then Refresh.</p>
+                </>
+              )}
+              {a.privileges_unreadable && (
+                <p className="hint">Privileges could not be read; the server refuses the change if one is missing.</p>
+              )}
+            </>
+          ),
+        };
+      }} />
   );
 }
 

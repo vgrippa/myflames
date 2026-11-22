@@ -901,6 +901,44 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.topology-map-cluster .is-peer').length === 1);
   assert.equal(await page.$eval(`${diagram} .topology-map-cluster .is-peer`, (e) => getComputedStyle(e).borderTopStyle), "dashed");
 
+  // ProxySQL route edges: every SHUNNED variant (SHUNNED_REPLICATION_LAG,
+  // SHUNNED_AWS_BGD) gets the problem tone and an unreported
+  // (configuration-only) state gets the unknown tone and wording.
+  const proxyNode = makeNode("proxy", { role: "proxy", product: "ProxySQL", version: "3.0.2" });
+  reports.map.map = {
+    ...originalMap,
+    nodes: [...originalMap.nodes, proxyNode],
+    edges: [
+      ...originalMap.edges,
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10" }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_AWS_BGD", label: "hostgroup 15" }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: null, label: "hostgroup 20" }),
+    ],
+  };
+  reports.map.members = [...originalMembers, member({
+    profile_id: proxyNode.profile_id, profile_name: proxyNode.label, host: proxyNode.host, role: proxyNode.role, state: proxyNode.state,
+  })];
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 3);
+  // The edge <title> always carries the label and state; the drawn label may be
+  // omitted when it does not fit beside its line, so it is not the source here.
+  const proxyEdgeStates = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"]`, (els) =>
+    els.map((el) => ({
+      tone: ["tone-problem", "tone-unknown", "tone-ok", "tone-watch"].find((c) => el.classList.contains(c)) || "",
+      title: el.querySelector("title")?.textContent || "",
+    })));
+  const expectedRoutes = [
+    ["tone-problem", "hostgroup 10 · SHUNNED_REPLICATION_LAG"],
+    ["tone-problem", "hostgroup 15 · SHUNNED_AWS_BGD"],
+    ["tone-unknown", "hostgroup 20 · State not reported"],
+  ];
+  assert.equal(proxyEdgeStates.length, expectedRoutes.length);
+  expectedRoutes.forEach(([tone, text], i) => {
+    assert.equal(proxyEdgeStates[i].tone, tone, `route ${i} tone`);
+    assert.ok(proxyEdgeStates[i].title.includes(text), `route ${i} title has "${text}": ${proxyEdgeStates[i].title}`);
+  });
+  reports.map.members = originalMembers;
+
   // Empty reports do not produce invalid geometry or hide the text alternative.
   reports.map.map = { nodes: [], edges: [], clusters: [], notes: [] };
   await h.refresh();

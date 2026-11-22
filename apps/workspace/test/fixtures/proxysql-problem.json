@@ -1622,6 +1622,8 @@
      "writer"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 1000,
     "comment": "galera-1",
     "queries": 0,
@@ -1650,6 +1652,8 @@
      "writer"
     ],
     "status": "SHUNNED",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-2",
     "queries": 10,
@@ -1678,6 +1682,8 @@
      "writer"
     ],
     "status": "SHUNNED",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-3",
     "queries": 40,
@@ -1706,6 +1712,8 @@
      "backup writer"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-2",
     "queries": 20,
@@ -1734,6 +1742,8 @@
      "backup writer"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-3",
     "queries": 50,
@@ -1762,6 +1772,8 @@
      "reader"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-2",
     "queries": 30,
@@ -1790,6 +1802,8 @@
      "reader"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "galera-3",
     "queries": 60,
@@ -1818,6 +1832,8 @@
      "writer"
     ],
     "status": "ONLINE",
+    "status_source": "runtime",
+    "configured_status": "ONLINE",
     "weight": 100,
     "comment": "ic-1",
     "queries": 70,
@@ -1846,6 +1862,8 @@
      "reader"
     ],
     "status": "OFFLINE_SOFT",
+    "status_source": "runtime",
+    "configured_status": "OFFLINE_SOFT",
     "weight": 100,
     "comment": "ic-2",
     "queries": 80,
@@ -1874,6 +1892,8 @@
      "reader"
     ],
     "status": "OFFLINE_SOFT",
+    "status_source": "runtime",
+    "configured_status": "OFFLINE_SOFT",
     "weight": 100,
     "comment": "ic-3",
     "queries": 90,
@@ -1892,5 +1912,12 @@
    }
   ],
   "notes": []
+ },
+ "connection_group": {
+  "name": "",
+  "read": [],
+  "suggestions": [],
+  "join": [],
+  "suggested_name": ""
  }
 }

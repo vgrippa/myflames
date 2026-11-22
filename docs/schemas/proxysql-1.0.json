@@ -924,7 +924,7 @@
         "object",
         "null"
       ],
-      "description": "Classified multi-tier routing topology across ProxySQL, Readyset cache tiers, QueryPilot rules and downstream MySQL/MariaDB servers."
+      "description": "Classified multi-tier routing topology across ProxySQL, Readyset cache tiers, QueryPilot rules and downstream MySQL/MariaDB servers. Each node carries status_source (\"runtime\" when the status came from runtime_mysql_servers or the connection pool, \"config\" when only main.mysql_servers was read, null when neither) and configured_status; a configuration-only row has a null status, never the configuration word presented as runtime health."
     }
   },
   "$defs": {

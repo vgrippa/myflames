@@ -25,6 +25,10 @@
    "stable-250605 (adapter port)"
   ],
   [
+   "Default database",
+   "shop"
+  ],
+  [
    "Cache type",
    "Shallow"
   ],
@@ -52,6 +56,7 @@
  ],
  "expect": {
   "readyset_version": "stable-250605",
+  "session_database": "shop",
   "cache_type": "shallow",
   "name": "c_orders_status",
   "target": "q_3333cccc",

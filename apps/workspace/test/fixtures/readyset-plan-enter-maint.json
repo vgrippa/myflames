@@ -6,7 +6,7 @@
  "eyebrow": "MAINTENANCE MODE",
  "title": "Enter Readyset maintenance mode?",
  "confirm_label": "Enter maintenance mode",
- "description": "Stops serving queries from Readyset caches and proxies traffic directly to upstream.",
+ "description": "Sets Readyset's status to Maintenance Mode: a status signal that tools such as ProxySQL are meant to act on by stopping traffic to Readyset, which keeps serving the queries it receives. The setting is kept in memory; restarting Readyset clears it.",
  "target_text": "Readyset (stable-250605)",
  "statements": [
   "ALTER READYSET ENTER MAINTENANCE MODE;"

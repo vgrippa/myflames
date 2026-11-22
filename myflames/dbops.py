@@ -3331,8 +3331,8 @@ _SET_PASSWORD_FROM_KEYWORD = re.compile(
     r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
 _URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
 _URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
-_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`@]")
-_URL_VALUE_BOUNDARY = re.compile(r"[\s/@]")
+_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`]|@+")
+_URL_VALUE_BOUNDARY = re.compile(r"[\s/]|@+")
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3342,24 +3342,30 @@ def _URL_SECRET(text, quoted=True):
     """Yield password spans in URL authorities, with no credential length limit.
 
     The scheme starts at a character outside the scheme alphabet, preventing
-    retries at each dot in a long scheme-like value. Each authority scan ends
-    at its first delimiter, so even nested or unfinished URLs take linear
-    work. Parameter values can contain quotes in userinfo; SQL/audit text
-    keeps quotes as literal boundaries. A slash ends the authority: an @ in
-    a path is not a credential. MySQL FEDERATED rejects a slash in passwords
-    (storage/federated/ha_federated.cc:815-816).
+    retries at each dot in a long scheme-like value. Each authority scan runs
+    forward once to its first delimiter, remembering the last ``@`` seen so
+    passwords containing ``@`` stay fully redacted while even nested or
+    unfinished URLs take linear work. Parameter values can contain quotes in
+    userinfo; SQL/audit text keeps quotes as literal boundaries. A slash ends
+    the authority: an @ in a path is not a credential. MySQL FEDERATED rejects
+    a slash in passwords (storage/federated/ha_federated.cc:815-816).
     Readyset's N* pool prefix and an empty username require no special case.
     """
     boundary = _URL_SQL_BOUNDARY if quoted else _URL_VALUE_BOUNDARY
     for scheme in _URL_SCHEME.finditer(text):
         if not _URL_SCHEME_LETTER.search(text, scheme.start(), scheme.end() - 3):
             continue
-        end = boundary.search(text, scheme.end())
-        if end is None or end.group() != "@":
+        last_at = -1
+        for mark in boundary.finditer(text, scheme.end()):
+            if text[mark.start()] == "@":
+                last_at = mark.end() - 1
+            else:
+                break
+        if last_at < 0:
             continue
-        colon = text.find(":", scheme.end(), end.start())
+        colon = text.find(":", scheme.end(), last_at)
         if colon >= 0:
-            yield colon + 1, end.start()
+            yield colon + 1, last_at
 
 
 def _redact_literal(match):

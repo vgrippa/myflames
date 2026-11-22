@@ -37,30 +37,8 @@
   margin-bottom: var(--space-1);
 }
 
-/* A disabled action's reason and fix, under the buttons, full width; a long
-   GRANT scrolls inside its box instead of stretching the page. */
-.cluster-action-why {
-  flex-basis: 100%;
-  min-width: 0;
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
-  color: var(--ink-muted);
-  overflow-wrap: anywhere;
-}
-
-.cluster-action-why p {
-  margin: 0 0 var(--space-1);
-}
-
-.cluster-action-why .ops-commands {
-  max-width: 100%;
-}
-
-.cluster-action-why .ops-pre,
-.is-detail .cluster-action-why .ops-pre {
-  max-height: 9em;
-}
+/* The .cluster-action-why rules live in catalog-actions.css beside the
+   shared ActionGroup (CatalogActions.tsx). */
 
 .cluster-tiles .tile-hint {
   min-width: 0;

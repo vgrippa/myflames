@@ -138,12 +138,22 @@ def main():
         maint.repl_status = "Stopped"
         write("maintenance", report(maint))
 
+        # The problem state as Readyset reports it: Replication Status stays
+        # Running (readyset-client/src/status.rs 107-123 emits only Running,
+        # Stopped, Disabled) while Last replicator error carries the failure.
         prob = FakeReadyset(port=3307, database="shop")
-        prob.repl_status = "Error"
         prob.last_error = "Binlog purged on upstream"
         write("problem", report(prob))
 
         write("not", report(_NotReadysetConn()))
+
+        # Failed core reads (S4): SHOW CACHES and SHOW READYSET ALL TABLES
+        # fail, and the cached/shallow statistics sources are unread, so the
+        # sections are findings and the derived telemetry is null, never zero.
+        readfail = FakeReadyset(port=3307, database="shop")
+        readfail.fail_reads = frozenset({"caches", "tables"})
+        readfail.fail_virtual = frozenset({"cached_stats", "shallow"})
+        write("read-fail", report(readfail))
 
         write("explain-both", readyset.explain_cache(FakeReadyset(), "q_3333cccc", cache_type="both"))
         write("explain-collision", readyset.explain_cache(FakeReadyset(), "q_1111aaaa", cache_type="both"))

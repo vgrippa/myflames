@@ -63,23 +63,6 @@
     inset 0 10px 24px -14px light-dark(rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.38));
 }
 
-/* Sub-stage tier decks (Readyset, ProxySQL, UpstreamTopologyTiers) let the stage light through. */
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] :is(.readyset-tier, .upstream-tier-group) {
-  border-color: color-mix(in srgb, var(--line-strong) 48%, var(--line));
-  border-radius: calc(var(--radius-md) + 1px);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface-raised) 68%, transparent) 0%,
-    color-mix(in srgb, var(--surface-muted) 42%, transparent) 100%
-  );
-  box-shadow:
-    inset 0 1px 0 light-dark(
-      color-mix(in srgb, var(--surface-raised) 82%, transparent),
-      color-mix(in srgb, var(--ink) 10%, transparent)
-    ),
-    0 4px 12px -4px light-dark(rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.3));
-}
-
 /* ---- Floating cards on the stage ----------------------------------------- */
 /* Keep highlights on the inset edge, outside the text area: lightening the
    face with --ink reduces contrast in palettes such as Solarized Dark. */
@@ -516,7 +499,7 @@
   animation: topology-membership 2.8s ease-in-out infinite alternate;
 }
 @keyframes topology-direction { from { left: 0; } to { left: calc(100% - 6px); } }
-@keyframes topology-membership { from { transform: translateY(0); } to { transform: translateY(18px); } }
+@keyframes topology-membership { from { transform: translateY(0); } to { transform: translateY(var(--stem-dot-travel, 18px)); } }
 /* Stale and offscreen reports must never suggest a live connection. */
 :is([hidden], .is-stale, .is-other-connection) .topology-line::before, :is([hidden], .is-stale, .is-other-connection) .cluster-stem::after { animation: none !important; display: none !important; }
 @media (prefers-reduced-motion: reduce) {

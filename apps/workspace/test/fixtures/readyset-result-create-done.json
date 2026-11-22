@@ -24,8 +24,8 @@
   "shallow_entries_hits": 1080,
   "proxied_count": 2,
   "tables": {
-   "`shop`.`orders`": "Snapshotted",
-   "`shop`.`audit_blob`": "Ignored"
+   "`shop`.`orders`": "Online",
+   "`shop`.`audit_blob`": "Not replicated"
   },
   "allowlists": {
    "functions": [
@@ -56,5 +56,6 @@
  "checks": [
   "Refresh the Readyset place to inspect the current caches, tables and status.",
   "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
- ]
+ ],
+ "session_guard": []
 }

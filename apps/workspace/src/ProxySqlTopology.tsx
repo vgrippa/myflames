@@ -1,8 +1,17 @@
-// Multi-tier topology diagram for the ProxySQL place:
-// ProxySQL Admin (this connection) -> [Readyset cache & mirror tier] -> [Hostgroups & MySQL/MariaDB backends].
+// Multi-tier topology diagram for the ProxySQL place, on the shared tier
+// module (TopologyTiers): ProxySQL Admin (this connection) -> [Readyset cache
+// & mirror tier] -> [Hostgroups & MySQL/MariaDB backends]. States come only
+// from reported server states (S11): a link runs on a reported ONLINE runtime
+// row, a reported OFFLINE_HARD breaks it, and a config-only row, the UNKNOWN
+// placeholder or an unreported status reads "Not read", never OK.
 import { Pill, type Tone } from "./kit";
-import { ServerGlyph } from "./TopologyPresentation";
-import type { ProxySqlReport, ProxySqlReadysetNode, ProxySqlTopologyBackendNode } from "./proxysqlApi";
+import { TierCard, TierLink, TierNode, TierRow, type TierLinkState, type TierStem, type TierUse } from "./TopologyTiers";
+import type {
+  ProxySqlMonitor,
+  ProxySqlReport,
+  ProxySqlReadysetNode,
+  ProxySqlTopologyBackendNode,
+} from "./proxysqlApi";
 
 const RS_MODE_LABEL: Record<string, string> = {
   cached_and_mirrored: "Cached reads + QueryPilot mirror",
@@ -11,12 +20,83 @@ const RS_MODE_LABEL: Record<string, string> = {
   hostgroup_member: "Hostgroup member",
 };
 
-function serverStatusTone(status: string | null | undefined): Tone {
+type StatusNode = {
+  status: string | null | undefined;
+  status_source?: "runtime" | "config" | null;
+  hostgroup_id?: number | null;
+  host?: string;
+  port?: number;
+  hostgroup_roles?: string[];
+};
+
+/** Only a runtime row is a reported state: a config-only row and the UNKNOWN
+ * placeholder are "Not read", never ONLINE (proxysql.py _server_tones). */
+function isReportedStatus(status: string | null | undefined, statusSource: string | null | undefined): boolean {
   const s = (status || "").toUpperCase();
-  if (s === "ONLINE") return "ok";
-  if (s === "OFFLINE_SOFT" || s === "SHUNNED") return "watch";
-  if (s === "OFFLINE_HARD") return "problem";
-  return "unknown";
+  return !!s && s !== "UNKNOWN" && statusSource !== "config";
+}
+
+/** The status word to show on a card, or null for "Not read". */
+function statusWord(status: string | null | undefined, statusSource: string | null | undefined): string | null {
+  return isReportedStatus(status, statusSource) ? (status as string) : null;
+}
+
+/** Whether ProxySQL serves traffic through the node. The status word follows
+ * the shared backend rule (proxySqlBackendState, mirroring _server_tones in
+ * myflames/proxysql.py); the tier's own addition is the monitor's offline
+ * hostgroup: ONLINE there is out of traffic, and a standby writer ONLINE in
+ * the backup hostgroup is its own row with its own ONLINE state, never a
+ * reason to call the SHUNNED row running. */
+export function servingState(node: StatusNode): "running" | "stopped" | "error" | "unread" {
+  if (!isReportedStatus(node.status, node.status_source)) return "unread";
+  const state = proxySqlBackendState(node.status).state;
+  return state === "running" && (node.hostgroup_roles || []).includes("offline") ? "stopped" : state;
+}
+
+/** The honest ProxySQL backend-status rule, shared with the Readyset
+ * topology's ProxySQL tier: null and the UNKNOWN placeholder are not read
+ * (word null, never shown), ONLINE runs, OFFLINE_HARD breaks, and every
+ * SHUNNED variant (SHUNNED_REPLICATION_LAG included) is a reported stop with
+ * the watch tone. A reported word outside this list stays unread but shows. */
+export type ProxySqlBackendState = {
+  state: "running" | "stopped" | "error" | "unread";
+  tone: Tone;
+  word: string | null;
+};
+
+export function proxySqlBackendState(status: string | null | undefined): ProxySqlBackendState {
+  const s = (status || "").toUpperCase();
+  if (!s || s === "UNKNOWN") return { state: "unread", tone: "unknown", word: null };
+  if (s === "ONLINE") return { state: "running", tone: "ok", word: status as string };
+  if (s === "OFFLINE_HARD") return { state: "error", tone: "problem", word: status as string };
+  if (s.startsWith("SHUNNED") || s === "OFFLINE_SOFT") return { state: "stopped", tone: "watch", word: status as string };
+  return { state: "unread", tone: "unknown", word: status as string };
+}
+
+/** True when the same address is ONLINE in the monitor's backup writer
+ * hostgroup: standby health to describe on a SHUNNED writer's card, never a
+ * claim that the shunned route serves traffic. */
+function standbyOnline(node: StatusNode, pool: StatusNode[], monitors: ProxySqlMonitor[]): boolean {
+  return monitors.some(
+    (m) =>
+      m.active &&
+      m.writer_hostgroup === node.hostgroup_id &&
+      m.backup_writer_hostgroup !== null &&
+      m.backup_writer_hostgroup !== undefined &&
+      pool.some(
+        (d) =>
+          d !== node &&
+          d.hostgroup_id === m.backup_writer_hostgroup &&
+          d.host === node.host &&
+          d.port === node.port &&
+          (d.status || "").toUpperCase() === "ONLINE" &&
+          d.status_source !== "config",
+      ),
+  );
+}
+
+function serverStatusTone(serving: string): Tone {
+  return serving === "running" ? "ok" : serving === "error" ? "problem" : serving === "stopped" ? "watch" : "unknown";
 }
 
 function clusterBadge(kind: string | null | undefined, name: string | null | undefined): string | null {
@@ -32,6 +112,25 @@ function clusterBadge(kind: string | null | undefined, name: string | null | und
             ? "Galera"
             : kind;
   return name ? `${label} (${name})` : label;
+}
+
+/** A tier link runs on a node that serves traffic, breaks on a reported
+ * OFFLINE_HARD, dashes on a reported out-of-traffic state, and is unread when
+ * no node reported a runtime status. */
+function backendLinkState(states: ("running" | "stopped" | "error" | "unread")[]): TierLinkState {
+  if (!states.length || states.every((s) => s === "unread")) return "unread";
+  if (states.some((s) => s === "running")) return "running";
+  if (states.some((s) => s === "error")) return "error";
+  if (states.some((s) => s === "stopped")) return "stopped";
+  return "unread";
+}
+
+function stemOf(tone: Tone): TierStem {
+  return tone === "ok" ? "active" : tone === "problem" ? "broken" : "plain";
+}
+
+function useOf(node: { profile_id: string | null; profile_name: string | null }, fallback: string): TierUse | null {
+  return node.profile_id ? { id: node.profile_id, name: node.profile_name || fallback } : null;
 }
 
 export function ProxySqlTopologyDiagram({
@@ -66,7 +165,9 @@ export function ProxySqlTopologyDiagram({
       address: `${s.hostname}:${s.port}`,
       hostgroup_id: s.hostgroup_id,
       hostgroup_roles: s.role ? [s.role] : [],
-      status: s.runtime_status || s.config?.status || "UNKNOWN",
+      // A config-only row has no runtime health: never borrow its status word.
+      status: s.runtime_status,
+      status_source: s.runtime_status ? ("runtime" as const) : s.config ? ("config" as const) : null,
       weight: typeof s.settings.weight === "number" ? s.settings.weight : (s.config?.weight ?? null),
       comment: typeof s.settings.comment === "string" && s.settings.comment ? s.settings.comment : (s.config?.comment || null),
       queries: s.pool?.queries ?? null,
@@ -85,8 +186,10 @@ export function ProxySqlTopologyDiagram({
     }));
 
   const activeRules = report.query_rules.filter((r) => r.runtime_active ?? r.active).length;
-  const anyOnline = report.servers.some((s) => (s.runtime_status || s.config?.status) === "ONLINE");
   const hasCluster = dbNodes.some((d) => d.cluster_kind && d.cluster_kind !== "none");
+  const monitors = report.monitors || [];
+  const rsStates = rsNodes.map((n) => servingState(n));
+  const dbStates = dbNodes.map((d) => servingState(d));
 
   return (
     <section
@@ -94,125 +197,108 @@ export function ProxySqlTopologyDiagram({
       aria-label="ProxySQL routing topology"
       data-motion={current ? "on" : "off"}
     >
-      <div className="readyset-tier-stack">
-        <div className="readyset-tier" role="group" aria-label="ProxySQL instance">
-          <div className="readyset-tier-label">ProxySQL routing layer</div>
-          <div className="readyset-tier-grid is-single">
-            <div className="readyset-node-wrap">
-              <div className={`cluster-card is-local readyset-node${report.status === "watch" ? " tone-watch" : ""}`}>
-                <span className="cluster-local topology-eyebrow">
-                  <ServerGlyph />
-                  <span>This connection · ProxySQL Admin</span>
-                </span>
-                <span className="cluster-name">ProxySQL {report.version || ""}</span>
-                <span className="cluster-address">
-                  {report.hostgroups.length} {report.hostgroups.length === 1 ? "hostgroup" : "hostgroups"} ·{" "}
-                  {activeRules} active {activeRules === 1 ? "rule" : "rules"}
-                  {(tiers?.querypilot_rule_count || 0) > 0 ? ` (${tiers!.querypilot_rule_count} QueryPilot)` : ""}
-                </span>
-                <span className={`cluster-mark is-${report.status === "problem" ? "problem" : report.status === "watch" ? "watch" : "ok"}`}>
-                  <span className="cluster-shape" aria-hidden="true" />
-                  {report.summary.ONLINE} of {report.summary.backends} backends ONLINE
-                </span>
-                <span className="cluster-flow">
-                  {report.metrics.Client_Connections_connected !== null &&
-                  report.metrics.Client_Connections_connected !== undefined
-                    ? `${report.metrics.Client_Connections_connected.toLocaleString()} client connections`
-                    : "Admin interface"}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+      <div className="tier-stack">
+        <TierRow label="ProxySQL routing layer" ariaLabel="ProxySQL routing layer">
+          <TierNode>
+            <TierCard
+              role="ProxySQL Admin"
+              name={`ProxySQL ${report.version || ""}`.trim()}
+              metas={[
+                `${report.hostgroups.length} ${report.hostgroups.length === 1 ? "hostgroup" : "hostgroups"} · ${activeRules} active ${activeRules === 1 ? "rule" : "rules"}${(tiers?.querypilot_rule_count || 0) > 0 ? ` (${tiers!.querypilot_rule_count} QueryPilot)` : ""}`,
+              ]}
+              tone={
+                report.status === "problem" ? "problem" : report.status === "watch" ? "watch" : report.status === "unknown" ? "unknown" : "ok"
+              }
+              mark={`${report.summary.ONLINE} of ${report.summary.backends} backends ONLINE`}
+              flow={
+                report.metrics.Client_Connections_connected !== null &&
+                report.metrics.Client_Connections_connected !== undefined
+                  ? `${report.metrics.Client_Connections_connected.toLocaleString()} client connections`
+                  : "Admin interface"
+              }
+              local="This connection"
+              label="This ProxySQL connection"
+            />
+          </TierNode>
+        </TierRow>
 
         {rsNodes.length > 0 && (
           <>
-            <div
-              className={`topology-link ${rsNodes.some((n) => serverStatusTone(n.status) === "ok") ? "is-running" : "is-stopped"} readyset-connector`}
-              aria-hidden="true"
+            <TierLink state={backendLinkState(rsStates)}>
+              {(tiers?.querypilot_rule_count || 0) > 0
+                ? `Readyset cache & QueryPilot routing (${tiers!.querypilot_rule_count} rules)`
+                : "Readyset hostgroup routing"}
+            </TierLink>
+            <TierRow
+              label="Readyset cache & mirror tier"
+              ariaLabel="Readyset cache tier"
+              bus={rsNodes.length > 1}
+              jumps={
+                onOpenReadyset && (
+                  <button type="button" className="text-button" onClick={onOpenReadyset}>
+                    Open Readyset
+                  </button>
+                )
+              }
             >
-              <span className="topology-link-state">
-                {(tiers?.querypilot_rule_count || 0) > 0
-                  ? `Readyset cache & QueryPilot routing (${tiers!.querypilot_rule_count} rules)`
-                  : "Readyset hostgroup routing"}
-              </span>
-              <span className="topology-line" />
-            </div>
-
-            <div className="readyset-tier" role="group" aria-label="Readyset cache tier">
-              <div className="readyset-tier-head">
-                <span className="readyset-tier-label">Readyset cache &amp; mirror tier</span>
-                {onOpenReadyset && (
-                  <div className="readyset-tier-jumps">
-                    <button type="button" className="text-button" onClick={onOpenReadyset}>
-                      Open Readyset
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="readyset-tier-grid">
-                {rsNodes.map((rs) => {
-                  const tone = serverStatusTone(rs.status);
-                  const selected = selectedServerKey === rs.server_key;
-                  return (
-                    <div key={rs.key} className="readyset-node-wrap">
-                      <button
-                        type="button"
-                        className={`cluster-card readyset-node${selected ? " is-selected" : ""}${tone === "watch" ? " tone-watch" : ""}`}
-                        data-row-key={rs.server_key}
-                        aria-pressed={selected}
-                        onClick={() => onSelectServer(rs.server_key)}
-                      >
-                        <span className="cluster-local topology-eyebrow">
-                          <ServerGlyph />
-                          <span>
-                            HG {rs.hostgroup_id ?? "—"} · {RS_MODE_LABEL[rs.routing_mode] || rs.routing_mode}
-                          </span>
-                        </span>
-                        <span className="cluster-name">{rs.profile_name || `Readyset ${rs.address}`}</span>
-                        <span className="cluster-address">
-                          {rs.address}
-                          {rs.version ? ` · Readyset ${rs.version}` : ""}
-                        </span>
-                        <span className={`cluster-mark is-${tone}`}>
-                          <span className="cluster-shape" aria-hidden="true" />
-                          {rs.status}
-                          {rs.readyset_status ? ` · ${rs.readyset_status}` : ""}
-                        </span>
-                        <span className="cluster-flow">
-                          {rs.cache_count !== null && rs.cache_count !== undefined
-                            ? `${rs.cache_count} ${rs.cache_count === 1 ? "cache" : "caches"} · `
-                            : ""}
-                          {rs.queries !== null ? `${rs.queries.toLocaleString()} queries` : `Weight ${rs.weight ?? 1}`}
-                          {(rs.upstreams || []).length > 0 ? ` → ${(rs.upstreams || []).map((u) => u.address).join(", ")}` : ""}
-                        </span>
-                      </button>
-                      {rs.profile_id && onSwitchConnection && (
-                        <div className="readyset-node-links">
-                          <button type="button" className="text-button" onClick={() => onSwitchConnection(rs.profile_id!)}>
-                            Use {rs.profile_name || rs.address}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+              {rsNodes.map((rs, i) => {
+                const tone = serverStatusTone(rsStates[i]);
+                const shownStatus = statusWord(rs.status, rs.status_source);
+                const selected = selectedServerKey === rs.server_key;
+                const name = rs.profile_name || `Readyset ${rs.address}`;
+                const flowParts = [RS_MODE_LABEL[rs.routing_mode] || rs.routing_mode];
+                if (rs.cache_count !== null && rs.cache_count !== undefined)
+                  flowParts.push(`${rs.cache_count} ${rs.cache_count === 1 ? "cache" : "caches"}`);
+                flowParts.push(rs.queries !== null ? `${rs.queries.toLocaleString()} queries` : `Weight ${rs.weight ?? 1}`);
+                return (
+                  <TierNode
+                    key={rs.key}
+                    stem={stemOf(tone)}
+                    detached={tone === "problem"}
+                    use={useOf(rs, rs.address)}
+                    onSwitchConnection={onSwitchConnection}
+                  >
+                    <TierCard
+                      role={`HG ${rs.hostgroup_id ?? "—"}`}
+                      name={name}
+                      metas={[`${rs.address}${rs.version ? ` · Readyset ${rs.version}` : ""}`]}
+                      tone={tone}
+                      detached={tone === "problem"}
+                      mark={shownStatus ? `${shownStatus}${rs.readyset_status ? ` · ${rs.readyset_status}` : ""}` : "Not read"}
+                      flow={
+                        <>
+                          {flowParts.join(" · ")}
+                          {(rs.upstreams || []).length > 0 && (
+                            <>
+                              {" → "}
+                              <bdi>{(rs.upstreams || []).map((u) => u.address).join(", ")}</bdi>
+                            </>
+                          )}
+                        </>
+                      }
+                      selected={selected}
+                      rowKey={rs.server_key}
+                      onSelect={onSelectServer}
+                      label={`${name}, Readyset`}
+                      hasUse={!!(rs.profile_id && onSwitchConnection)}
+                    />
+                  </TierNode>
+                );
+              })}
+            </TierRow>
           </>
         )}
 
-        <div className={`topology-link ${anyOnline ? "is-running" : "is-stopped"} readyset-connector`} aria-hidden="true">
-          <span className="topology-link-state">
-            {rsNodes.length > 0 ? "Direct writes, uncached reads & Readyset CDC" : "Hostgroup SQL routing"}
-          </span>
-          <span className="topology-line" />
-        </div>
+        <TierLink state={backendLinkState(dbStates)}>
+          {rsNodes.length > 0 ? "Direct writes, uncached reads & Readyset CDC" : "Hostgroup SQL routing"}
+        </TierLink>
 
-        <div className="readyset-tier" role="group" aria-label="Database backend hostgroups">
-          <div className="readyset-tier-head">
-            <span className="readyset-tier-label">MySQL &amp; MariaDB backend tier</span>
-            <div className="readyset-tier-jumps">
+        <TierRow
+          label="MySQL & MariaDB backend tier"
+          ariaLabel="Database backend hostgroups"
+          bus={dbNodes.length > 1}
+          jumps={
+            <>
               {hasCluster && onOpenCluster && (
                 <button type="button" className="text-button" onClick={onOpenCluster}>
                   Open Cluster
@@ -223,63 +309,66 @@ export function ProxySqlTopologyDiagram({
                   Open Replication
                 </button>
               )}
-            </div>
-          </div>
-
+            </>
+          }
+        >
           {dbNodes.length === 0 ? (
-            <div className="readyset-tier-empty">No MySQL/MariaDB backend servers configured.</div>
+            <li className="readyset-tier-empty">No MySQL/MariaDB backend servers configured.</li>
           ) : (
-            <div className="readyset-tier-grid">
-              {dbNodes.map((db) => {
-                const tone = serverStatusTone(db.status);
-                const selected = selectedServerKey === db.server_key;
-                const cbadge = clusterBadge(db.cluster_kind, db.cluster_name);
-                return (
-                  <div key={db.key} className="readyset-node-wrap">
-                    <button
-                      type="button"
-                      className={`cluster-card readyset-node${selected ? " is-selected" : ""}${tone === "watch" ? " tone-watch" : ""}`}
-                      data-row-key={db.server_key}
-                      aria-pressed={selected}
-                      onClick={() => onSelectServer(db.server_key)}
-                    >
-                      <span className="cluster-local topology-eyebrow">
-                        <ServerGlyph />
-                        <span>
-                          HG {db.hostgroup_id ?? "—"}
-                          {db.hostgroup_roles.length > 0 ? ` · ${db.hostgroup_roles.join(", ")}` : ""}
-                        </span>
-                      </span>
-                      <span className="cluster-name">{db.profile_name || db.address}</span>
-                      <span className="cluster-address">
-                        {db.address}
-                        {db.product ? ` · ${db.product}${db.version ? ` ${db.version}` : ""}` : ""}
-                      </span>
-                      <span className={`cluster-mark is-${tone}`}>
-                        <span className="cluster-shape" aria-hidden="true" />
-                        {db.status}
-                        {db.read_only === true ? " · read_only" : db.read_only === false ? " · read-write" : ""}
-                      </span>
-                      <span className="cluster-flow">
+            dbNodes.map((db, i) => {
+              const tone = serverStatusTone(dbStates[i]);
+              const shownStatus = statusWord(db.status, db.status_source);
+              const selected = selectedServerKey === db.server_key;
+              const cbadge = clusterBadge(db.cluster_kind, db.cluster_name);
+              const name = db.profile_name || db.address;
+              const meta = [
+                db.address !== name ? db.address : "",
+                db.product ? `${db.product}${db.version ? ` ${db.version}` : ""}` : "",
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <TierNode
+                  key={db.key}
+                  stem={stemOf(tone)}
+                  detached={tone === "problem"}
+                  use={useOf(db, db.address)}
+                  onSwitchConnection={onSwitchConnection}
+                >
+                  <TierCard
+                    role={`HG ${db.hostgroup_id ?? "—"}${db.hostgroup_roles.length > 0 ? ` · ${db.hostgroup_roles.join(", ")}` : ""}`}
+                    name={name}
+                    metas={meta ? [meta] : []}
+                    tone={tone}
+                    detached={tone === "problem"}
+                    mark={
+                      shownStatus
+                        ? `${shownStatus}${db.read_only === true ? " · read_only" : db.read_only === false ? " · read-write" : ""}${
+                            shownStatus.toUpperCase().startsWith("SHUNNED") && standbyOnline(db, dbNodes, monitors)
+                              ? " · standby ONLINE"
+                              : ""
+                          }`
+                        : "Not read"
+                    }
+                    flow={
+                      <>
                         {cbadge ? <Pill tone="neutral">{cbadge}</Pill> : null}
                         {cbadge ? " " : ""}
                         {db.queries !== null ? `${db.queries.toLocaleString()} queries` : `Weight ${db.weight ?? 1}`}
                         {db.latency_us !== null ? ` · ${(db.latency_us / 1000).toFixed(2)} ms` : ""}
-                      </span>
-                    </button>
-                    {db.profile_id && onSwitchConnection && (
-                      <div className="readyset-node-links">
-                        <button type="button" className="text-button" onClick={() => onSwitchConnection(db.profile_id!)}>
-                          Use {db.profile_name || db.address}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      </>
+                    }
+                    selected={selected}
+                    rowKey={db.server_key}
+                    onSelect={onSelectServer}
+                    label={`${name}, HG ${db.hostgroup_id ?? "—"}`}
+                    hasUse={!!(db.profile_id && onSwitchConnection)}
+                  />
+                </TierNode>
+              );
+            })
           )}
-        </div>
+        </TierRow>
       </div>
     </section>
   );

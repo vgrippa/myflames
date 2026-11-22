@@ -133,12 +133,15 @@ function progressId(): string {
  * answered or not (read the place again); *onNext* starts the change a done
  * result offers next (Save … to disk…).
  */
-export function useReviewedActions({ connection, operation, send, onSent, onNext }: {
+export function useReviewedActions({ connection, operation, send, onSent, onNext, resetKey = "" }: {
   connection: Connection;
   operation: string;
   send: SendReviewed;
   onSent?: () => void;
   onNext?: (action: string) => void;
+  /** A caller-scoped generation that closes an open review the same way a
+   * connection switch does (Readyset: the report turned database-stale). */
+  resetKey?: string;
 }) {
   const key = connectionKey(connection);
   const policy = useWritePolicy();
@@ -176,15 +179,27 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
   }
   // Another connection closes (and audits) an open review, and closes an
   // answered result; a request already sent belongs to its own connection.
+  // A caller-scoped reset (resetKey) does the same without a key change, but
+  // keeps an answered Outcome unknown panel: the Audit log row alone does
+  // not show whether the change ran, so it stays until it is closed.
+  const resetRef = useRef(resetKey);
+  // The resetKey generation of this render, current before the effect below
+  // runs: a review tags its plan request with it and drops an answer that
+  // returns after a reset changed it.
+  const genRef = useRef(resetKey);
+  genRef.current = resetKey;
   useEffect(() => {
+    const reset = resetRef.current !== resetKey;
+    resetRef.current = resetKey;
     const p = pendingRef.current;
-    if (p && p.key !== key && !sending.current) { decline(p); setPending(null); }
+    if (p && (p.key !== key || reset) && !sending.current) { decline(p); setPending(null); }
     const r = runRef.current;
-    if (r && r.p.key !== key && r.result) setRun(null);
+    if (r && (r.p.key !== key || reset) && r.result) setRun(null);
+    if (reset) setResult((cur) => (cur && cur.value.status === "unknown" ? cur : null));
     setAsk(null);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, resetKey]);
   useEffect(() => () => {
     const p = pendingRef.current;
     if (p && !sending.current) decline(p);
@@ -196,16 +211,20 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
     if (sending.current || pendingRef.current || runRef.current || planning) return;
     const c = { ...connection };
     const live = captureScope();
+    const gen = genRef.current;
     setError(null);
     setPlanning(what);
     try {
       const plan = await planned(c);
-      if (!live()) return;
+      // A reset while planning closed the context this plan was read for:
+      // drop the answer. Nothing was ever pending, so no sheet opens and
+      // there is nothing to decline.
+      if (!live() || gen !== genRef.current) return;
       if (plan.policy?.action === "refuse") { setError({ key: connectionKey(c), text: plan.policy.text }); return; }
       setTyped("");
       setPending({ plan, connection: c, key: connectionKey(c), label: connectionLabel(c) });
     } catch (e) {
-      if (live()) setError({ key: connectionKey(c), text: (e as Error).message });
+      if (live() && gen === genRef.current) setError({ key: connectionKey(c), text: (e as Error).message });
     } finally {
       setPlanning("");
     }

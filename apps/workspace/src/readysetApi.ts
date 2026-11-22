@@ -5,13 +5,33 @@ import { api, type Connection, type ConnectionGroup } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
 
+/** One action catalog entry (readyset-1.0): always listed, never hidden;
+ * enabled or with why_not and fix. danger equals the pre-catalog tone
+ * "danger" set; tone stays for one release. */
 export type ReadysetAction = {
   id: string;
   label: string;
+  scope: "server" | "row";
   tone: "danger" | "default";
+  danger: boolean;
+  description: string;
+  enabled: boolean;
+  why_not: string | null;
+  fix: string | null;
 };
 
 export type ReadysetVerdict = "ok" | "watch" | "problem" | "unknown";
+
+/** One finding (readyset-1.0): a stable snake_case id, a worst-first status,
+ * myflames' own title, the verified explanation, and the tab holding the
+ * evidence. Server values inside title and text are display-safe strings. */
+export type ReadysetFinding = {
+  id: string;
+  status: "watch" | "problem";
+  title: string;
+  text: string;
+  tab: "topology" | "caches" | "proxied" | "tables" | "parameters";
+};
 export type ReadysetPortRole = "adapter" | "admin" | null;
 export type ReadysetSupportVerdict = "yes" | "cached" | "pending" | "skipped" | "unsupported" | "error" | "unknown";
 
@@ -54,6 +74,8 @@ export type ReadysetCache = {
   upstream_saved_ms: number | null;
   cached_stats: ReadysetQueryStats | null;
   upstream_stats: ReadysetQueryStats | null;
+  /** Row-scope action catalog (flush_cache, drop_cache), always listed. */
+  actions?: ReadysetAction[];
 };
 
 export type ReadysetProxiedQuery = {
@@ -67,6 +89,8 @@ export type ReadysetProxiedQuery = {
   already_cached: boolean;
   upstream_stats: ReadysetQueryStats | null;
   cached_stats: ReadysetQueryStats | null;
+  /** Row-scope action catalog (create_cache), always listed. */
+  actions?: ReadysetAction[];
 };
 
 export type ReadysetTable = {
@@ -74,6 +98,8 @@ export type ReadysetTable = {
   status: string;
   bucket: "snapshotted" | "snapshotting" | "ignored" | "error" | "other";
   description: string | null;
+  /** Row-scope action catalog (resnapshot_table), always listed. */
+  actions?: ReadysetAction[];
 };
 
 export type ReadysetUpstream = {
@@ -84,7 +110,8 @@ export type ReadysetUpstream = {
   user: string | null;
   weight: number | null;
   purpose: string;
-  active_cdc: boolean;
+  /** Null when Readyset did not report the CDC role: unknown, never false. */
+  active_cdc: boolean | null;
   health: string | null;
   down_since: string | null;
   last_ok: string | null;
@@ -115,19 +142,21 @@ export type ReadysetReplication = {
   heartbeat_staleness_s: number | null;
 };
 
+/** A statistics source that was not read leaves its counts and every figure
+ * derived from it null: an unread source is not a zero. */
 export type ReadysetTelemetry = {
-  cached_executions: number;
-  upstream_executions: number;
-  total_observed_executions: number;
+  cached_executions: number | null;
+  upstream_executions: number | null;
+  total_observed_executions: number | null;
   cached_share_pct: number | null;
-  shallow_hits: number;
-  shallow_misses: number;
+  shallow_hits: number | null;
+  shallow_misses: number | null;
   shallow_hit_rate_pct: number | null;
-  shallow_refreshes: number;
-  wasted_refreshes: number;
-  dropped_refreshes: number;
-  coalesces: number;
-  upstream_saved_ms: number;
+  shallow_refreshes: number | null;
+  wasted_refreshes: number | null;
+  dropped_refreshes: number | null;
+  coalesces: number | null;
+  upstream_saved_ms: number | null;
 };
 
 export type ReadysetTopologyProxyNode = {
@@ -158,7 +187,8 @@ export type ReadysetTopologyUpstreamNode = {
   purpose: string;
   is_cdc: boolean;
   is_proxy: boolean;
-  active_cdc: boolean;
+  /** Null when Readyset did not report the CDC role: unknown, never false. */
+  active_cdc: boolean | null;
   health: string | null;
   connections: number | null;
   product: string | null;
@@ -201,7 +231,8 @@ export type ReadysetTopology = {
     port_role: ReadysetPortRole;
     version: string | null;
     address: string | null;
-    status: string;
+    /** Null when SHOW READYSET STATUS did not report a Status row (S3). */
+    status: string | null;
     replication_status: string | null;
     connection_count: number;
   };
@@ -221,8 +252,13 @@ export type DatabaseTopologyTiers = {
     port: number | null;
     address: string;
     version: string | null;
-    status: string;
+    /** Null when SHOW READYSET STATUS did not report a Status row (S3). */
+    status: string | null;
     replication_status: string | null;
+    /** "Database Connection" as reported (for example Unreachable); null when not read. */
+    database_connection: string | null;
+    /** True when the server reported a Last replicator error. */
+    replication_error: boolean;
     cache_count: number | null;
     purpose: string;
     profile_id: string | null;
@@ -262,9 +298,13 @@ export type ReadysetReport = {
   port_role: ReadysetPortRole;
   in_readyset_schema: boolean;
   readyset_schema: string;
+  /** The connection's default database exactly as given at read time (null when
+   * empty): a report read with another default database is stale. */
+  session_database: string | null;
   message: string | null;
   status: ReadysetVerdict;
   status_why: string[];
+  findings: ReadysetFinding[];
   status_fields: {
     database_connection?: string | null;
     connection_count?: number | null;
@@ -314,6 +354,19 @@ export type ReadysetReport = {
     variables: string[];
     schemas: string[];
   };
+  /** Per-kind shallow allowlist action catalog (add_shallow_allowed, drop_shallow_allowed). */
+  allowlist_actions: {
+    functions: ReadysetAction[];
+    variables: ReadysetAction[];
+    schemas: ReadysetAction[];
+  };
+  /** Per-item drop_shallow_allowed entries, parallel to shallow_allowlists[kind]:
+   * entry i is the removal eligibility of item i (absent in older reports). */
+  allowlist_item_actions?: {
+    functions: ReadysetAction[];
+    variables: ReadysetAction[];
+    schemas: ReadysetAction[];
+  };
   connections: ReadysetClientConnection[];
   upstreams: ReadysetUpstream[];
   topology: ReadysetTopology | null;
@@ -357,6 +410,12 @@ export type ReadysetExportResponse = {
 };
 
 export const NOT_A_READYSET = "This connection is not a Readyset instance";
+
+/** True when the SHOW CACHES read failed (the read_failed:caches finding):
+ * every cache count is then not read, never zero. */
+export function cachesReadFailed(report: ReadysetReport): boolean {
+  return report.findings.some((f) => f.id === "read_failed:caches");
+}
 
 export type ReadysetNav = "unread" | "none" | "unknown" | "ok" | "watch" | "problem";
 export function readysetNav(bound: Bound<ReadysetReport> | null | undefined, currentKey: string): ReadysetNav {

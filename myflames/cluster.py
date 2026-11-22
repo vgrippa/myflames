@@ -2338,8 +2338,7 @@ def _grant_sql(missing, account, partial_revokes=None):
                      for (database, grantable), names in grouped.items())
 
 
-class ActionUnavailable(ValueError):
-    """A catalog refusal, already worded for the user (including its fix)."""
+from .reviewed_writes import ActionUnavailable  # re-exported; ui.py imports it from here
 
 
 def _shell(checks, minimum=SHELL_MIN_VERSION):

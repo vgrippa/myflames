@@ -1868,7 +1868,14 @@ function App() {
     : proxyIssues > 0
       ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
       : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
-  const readysetNavState = readysetNav(readysetReport, connectionKey(request));
+  // A report read with another default database is stale like an unread one:
+  // the sidebar names Readyset's state only from a report of this database.
+  const readysetDbStale =
+    !!readysetReport &&
+    readysetReport.key === connectionKey(request) &&
+    readysetReport.report.is_readyset &&
+    (readysetReport.report.session_database || null) !== (request.database || null);
+  const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(request));
   const readysetMuted = readysetNavState === "none" || isProxyHere;
   const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(request) ? readysetReport.report : null;
   const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;

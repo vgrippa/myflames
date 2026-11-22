@@ -15,9 +15,11 @@
     "port_role",
     "in_readyset_schema",
     "readyset_schema",
+    "session_database",
     "message",
     "status",
     "status_why",
+    "findings",
     "status_fields",
     "capabilities",
     "replication",
@@ -27,6 +29,8 @@
     "tables",
     "table_counts",
     "shallow_allowlists",
+    "allowlist_actions",
+    "allowlist_item_actions",
     "connections",
     "upstreams",
     "topology",
@@ -184,10 +188,32 @@
     "port_role": { "enum": ["adapter", "admin", null] },
     "in_readyset_schema": { "type": "boolean" },
     "readyset_schema": { "type": "string" },
+    "session_database": {
+      "type": ["string", "null"],
+      "description": "The connection's default database exactly as given at read time (null when empty); the workspace treats a report whose session_database differs from the connection in use's database as stale."
+    },
     "message": { "type": ["string", "null"] },
     "status": { "enum": ["ok", "watch", "problem", "unknown"] },
     "status_why": { "type": "array", "items": { "type": "string" } },
-    "status_fields": { "type": "object" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "title", "text", "tab"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "enum": ["watch", "problem"] },
+          "title": { "type": "string" },
+          "text": { "type": "string" },
+          "tab": { "enum": ["topology", "caches", "proxied", "tables", "parameters"] }
+        }
+      }
+    },
+    "status_fields": {
+      "type": "object",
+      "description": "Raw SHOW READYSET STATUS fields. status is null when the server did not report a Status row (never defaulted to Online); the other fields are null when not reported."
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -210,9 +236,90 @@
     },
     "replication": { "type": ["object", "null"] },
     "telemetry": { "type": "object" },
-    "caches": { "type": "array", "items": { "type": "object" } },
-    "proxied_queries": { "type": "array", "items": { "type": "object" } },
-    "tables": { "type": "array", "items": { "type": "object" } },
+    "caches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "description": "Row-scope action catalog (same entry shape as actions).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "scope": { "enum": ["server", "row"] },
+                "tone": { "enum": ["default", "danger"] },
+                "danger": { "type": "boolean" },
+                "description": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "why_not": { "type": ["string", "null"] },
+                "fix": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "proxied_queries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "description": "Row-scope action catalog (same entry shape as actions).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "scope": { "enum": ["server", "row"] },
+                "tone": { "enum": ["default", "danger"] },
+                "danger": { "type": "boolean" },
+                "description": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "why_not": { "type": ["string", "null"] },
+                "fix": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "description": "Row-scope action catalog (same entry shape as actions).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "scope": { "enum": ["server", "row"] },
+                "tone": { "enum": ["default", "danger"] },
+                "danger": { "type": "boolean" },
+                "description": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "why_not": { "type": ["string", "null"] },
+                "fix": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
     "table_counts": { "type": "object" },
     "shallow_allowlists": {
       "type": "object",
@@ -224,11 +331,174 @@
         "schemas": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "allowlist_actions": {
+      "type": "object",
+      "description": "Row-scope action catalog per shallow allowlist kind (same entry shape as actions).",
+      "additionalProperties": false,
+      "required": ["functions", "variables", "schemas"],
+      "properties": {
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "allowlist_item_actions": {
+      "type": "object",
+      "description": "Per-item drop_shallow_allowed entries, parallel to shallow_allowlists[kind] (same entry shape as actions): entry i is the removal eligibility of item i, so a name with control or format characters is disabled with its own reason while other items stay enabled.",
+      "additionalProperties": false,
+      "required": ["functions", "variables", "schemas"],
+      "properties": {
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "scope": { "enum": ["server", "row"] },
+              "tone": { "enum": ["default", "danger"] },
+              "danger": { "type": "boolean" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "why_not": { "type": ["string", "null"] },
+              "fix": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
     "connections": { "type": "array", "items": { "type": "object" } },
-    "upstreams": { "type": "array", "items": { "type": "object" } },
-    "topology": { "type": ["object", "null"] },
+    "upstreams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "active_cdc": {
+            "type": ["boolean", "null"],
+            "description": "Whether this is the active CDC upstream; null when Readyset did not report it."
+          }
+        }
+      }
+    },
+    "topology": {
+      "type": ["object", "null"],
+      "description": "Multi-tier topology. this_server.status is null when SHOW READYSET STATUS did not report a Status row (never defaulted to Online). Upstream active_cdc is null when Readyset did not report it (its controller could not answer), never coerced to false; the CDC Server fallback upstream has null health because Database Connection is an aggregate any proxy upstream can satisfy, not host evidence. proxysql_nodes carry status_source and a null backend_status when the backend row came only from ProxySQL configuration."
+    },
     "fingerprints": { "type": "object" },
-    "actions": { "type": "array", "items": { "type": "object" } },
+    "actions": {
+      "type": "array",
+      "description": "Server-scope action catalog: every action always listed with enabled/why_not/fix; danger equals the pre-catalog tone \"danger\" set (tone kept for one release).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "scope", "tone", "danger", "description", "enabled", "why_not", "fix"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "scope": { "enum": ["server", "row"] },
+          "tone": { "enum": ["default", "danger"] },
+          "danger": { "type": "boolean" },
+          "description": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "why_not": { "type": ["string", "null"] },
+          "fix": { "type": ["string", "null"] }
+        }
+      }
+    },
     "notes": { "type": "array", "items": { "type": "string" } },
     "statements": { "type": "array", "items": { "type": "string" } }
   }
