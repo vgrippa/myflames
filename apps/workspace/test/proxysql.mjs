@@ -962,6 +962,65 @@ try {
   assert.equal(await page.$(`${ptopo} .cluster-stem.is-active`), null, "a config-only ONLINE row gets no active stem");
   await refreshTo(multiTierProxy);
 
+  // F7: a tier row wider than the frame never hides its first cards. With ten
+  // backends the backend tier overflows the frame: at scrollLeft 0 the first
+  // card starts at the frame's left edge (never clipped on the unreachable
+  // side of a centred row), scrolled fully right the last card ends at the
+  // frame's right edge, and the bus keeps running stem to stem.
+  await refreshTo(R.lab);
+  await tab("Topology");
+  await page.waitForSelector(`${ptopo} .tier-row[aria-label="Database backend hostgroups"] .tier-card`, { visible: true });
+  await pause(200);
+  const wideRow = await page.evaluate((sel) => {
+    const frame = document.querySelector(sel);
+    const row = frame.querySelector('.tier-row[aria-label="Database backend hostgroups"]');
+    const cards = [...row.querySelectorAll(".tier-card")];
+    const bus = row.querySelector(".cluster-bus-line");
+    frame.scrollLeft = 0;
+    const atStart = (() => {
+      const f = frame.getBoundingClientRect();
+      const first = cards[0].getBoundingClientRect();
+      const b = bus ? bus.getBoundingClientRect() : null;
+      return { firstLeft: first.left, firstCenter: first.left + first.width / 2, frameLeft: f.left, busLeft: b ? b.left : null };
+    })();
+    frame.scrollLeft = frame.scrollWidth;
+    const f = frame.getBoundingClientRect();
+    const last = cards[cards.length - 1].getBoundingClientRect();
+    const b = bus ? bus.getBoundingClientRect() : null;
+    return {
+      cardCount: cards.length,
+      scrollWidth: frame.scrollWidth,
+      clientWidth: frame.clientWidth,
+      scrollLeft: frame.scrollLeft,
+      ...atStart,
+      lastRight: last.right,
+      lastCenter: last.left + last.width / 2,
+      frameRight: f.right,
+      busRight: b ? b.right : null,
+    };
+  }, ptopo);
+  assert.equal(wideRow.cardCount, 10, "all ten lab backends render on the tier");
+  assert.ok(wideRow.scrollWidth > wideRow.clientWidth, `the backend tier overflows the frame: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.scrollLeft > 0, "the frame scrolled right");
+  assert.ok(wideRow.firstLeft >= wideRow.frameLeft - 0.5, `first card not clipped at scrollLeft 0: ${JSON.stringify(wideRow)}`);
+  assert.ok(wideRow.lastRight <= wideRow.frameRight + 0.5, `last card reachable at full scroll: ${JSON.stringify(wideRow)}`);
+  assert.ok(Math.abs(wideRow.busLeft - wideRow.firstCenter) <= 2, `bus starts at the first stem: ${JSON.stringify(wideRow)}`);
+  assert.ok(Math.abs(wideRow.busRight - wideRow.lastCenter) <= 2, `bus ends at the last stem: ${JSON.stringify(wideRow)}`);
+  await shot("proxysql-topology-wide-row-1440.png");
+  await refreshTo(multiTierProxy);
+  await tab("Topology");
+  // A row that fits stays centred in the frame.
+  const fitRow = await page.evaluate((sel) => {
+    const frame = document.querySelector(sel);
+    frame.scrollLeft = 0;
+    const row = frame.querySelector('.tier-row[aria-label="Database backend hostgroups"] .tier-members');
+    const f = frame.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    return { rowWidth: r.width, frameWidth: f.width, left: r.left - f.left, right: f.right - r.right, scrollWidth: frame.scrollWidth, clientWidth: frame.clientWidth };
+  }, ptopo);
+  assert.ok(fitRow.scrollWidth <= fitRow.clientWidth + 1, `two backends fit without scroll: ${JSON.stringify(fitRow)}`);
+  assert.ok(Math.abs(fitRow.left - fitRow.right) <= 2, `a row that fits stays centred: ${JSON.stringify(fitRow)}`);
+
   assert.deepEqual(h.errors, []);
   console.log("proxysql: ok");
 } finally {

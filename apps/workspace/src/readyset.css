@@ -129,6 +129,12 @@
   height: var(--space-1);
 }
 
+/* The upstream tiers above Cluster and Replication, and the tier stack inside
+   the Readyset/ProxySQL frame, never centre an overflowing row off-screen.
+   The stack sizes like .cluster-map in cluster.css: as wide as its widest
+   row, at least the frame; the frame scrolls. A row that fits stays centred;
+   one that overflows starts at the frame's left edge, so its first card is
+   visible at scrollLeft 0 and its last card scrolls into view. */
 .upstream-tiers {
   --card-w: 224px;
   display: flex;
@@ -137,6 +143,16 @@
   gap: var(--space-1);
   margin-bottom: var(--space-3);
   min-width: 0;
+  /* The Replication container does not scroll sideways, so the tiers scroll
+     on their own. */
+  overflow-x: auto;
+}
+
+/* The auto margins centre a row that fits; a wider row starts at the
+   scroller's left edge (auto margins resolve to zero on negative free space),
+   which a centred row could never scroll back to. */
+.upstream-tiers > .tier-row {
+  margin-inline: auto;
 }
 
 .tier-stack {
@@ -144,15 +160,14 @@
   flex-direction: column;
   align-items: center;
   gap: calc(var(--space-1) / 2);
-  min-width: 0;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
 }
 
 .tier-row {
   display: flex;
   flex-direction: column;
   align-items: center;
-  max-width: 100%;
   min-width: 0;
 }
 
@@ -176,12 +191,12 @@
 }
 
 /* The card row and its bus share one width, so the bus runs from the first
-   card's stem to the last one's. */
+   card's stem to the last one's. The width is the cards' natural width, so an
+   overflowing row stays whole inside the scrolling frame. */
 .tier-group {
   display: flex;
   flex-direction: column;
   width: max-content;
-  max-width: 100%;
 }
 
 /* The link between two tiers: a vertical stem, the label on a plate beside
@@ -288,6 +303,12 @@
    the Cluster topology (the .cluster-members rules in cluster.css), the bus
    and stems hide, and the link label centers on its own. */
 @container view (max-width: 760px) {
+  /* As for .cluster-map at this width, a max-content box would never wrap:
+     the stack takes the frame width and the cards wrap in the grid. */
+  .tier-stack {
+    width: 100%;
+    min-width: 0;
+  }
   .tier-row,
   .tier-group {
     width: 100%;
