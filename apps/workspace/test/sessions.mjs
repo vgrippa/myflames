@@ -426,7 +426,15 @@ try {
   assert.deepEqual([declined()[3].target.connection_id, declined()[3].target.mode], [100, "query"]);
   // From the keyboard on an idle session: Shift+F10 opens the menu; Kill
   // query… is off with its reason and stays focusable; Kill connection… runs.
-  await page.focus(row(93));
+  // The dialog's and the menu's focus return to row 100 can land a frame
+  // after the wait above (seen on CI: the menu then opened for row 100), so
+  // press Shift+F10 only once row 93 keeps focus across two frames.
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await page.focus(row(93));
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    if (await page.$eval(row(93), (e) => document.activeElement === e)) break;
+  }
+  assert.equal(await page.$eval(row(93), (e) => document.activeElement === e), true, "row 93 keeps focus");
   await page.keyboard.down("Shift"); await page.keyboard.press("F10"); await page.keyboard.up("Shift");
   await page.waitForSelector(ctx);
   const idleItems = await ctxItems();

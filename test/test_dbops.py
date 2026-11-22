@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -917,6 +918,38 @@ class TestPrivileges(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(dbops.strip_credentials(text), expected)
 
+    def test_strip_credentials_visits_many_clauses_once(self):
+        # Repeated clauses used to re-tokenize the whole remaining text.
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "clause = \"IDENTIFIED BY 'secret' REQUIRE NONE \"\n"
+            "count = 65536 // len(clause)\n"
+            "value = clause * count\n"
+            "began = time.monotonic()\n"
+            "clean = dbops.strip_credentials(value)\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert clean == ' '.join(['REQUIRE NONE'] * count)\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
+    def test_strip_credentials_does_not_retry_unterminated_escaped_quotes(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "prefix = \"CREATE USER u IDENTIFIED BY '\"\n"
+            "value = prefix + ('a' + chr(92) + chr(39)) * (65536 // 3) + ' WITH GRANT OPTION'\n"
+            "began = time.monotonic()\n"
+            "clean = dbops.strip_credentials(value)\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert clean == 'CREATE USER u', clean\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
     def test_read_grants_returns_no_credentials(self):
         from _grants_fixtures import grants_batch
         class Conn(object):
@@ -1124,7 +1157,405 @@ class TestPrivileges(unittest.TestCase):
 
 # ---- redaction -----------------------------------------------------------------------------
 
+SET_PASSWORD_REDACTION_CASES = (
+    ('long_executable_assignment',
+     "SET PASSWORD /*!50700 FOR '" + 'u' * 600 + "'@'%' = 'private-value' */",
+     ('private-value',)),
+    ('long_after_apostrophe',
+     "it's; SET PASSWORD FOR '" + 'u' * 600 + "'@'%' = 'private-value'",
+     ('private-value',)),
+    ('long_unbalanced_account',
+     "SET PASSWORD FOR 'app@'%'" + ' ' * 600 + "= 'private-value' REPLACE 'old-value'",
+     ('private-value', 'old-value')),
+    ('quoted_diagnostic_with_account_separator',
+     "ERROR 1064 (42000): near 'SET PASSWORD FOR 'a=b'@'%' = 'private-value'' at line 1",
+     ('private-value',)),
+    ('prose_apostrophe_with_account_separator',
+     "Can't apply: SET PASSWORD FOR 'a=b'@'%' = 'private-value'",
+     ('private-value',)),
+    ('unbalanced_previous_statement',
+     "SELECT 'x;\nSET PASSWORD FOR 'a=b'@'%' = 'private-value'",
+     ('private-value',)),
+    ('double_quoted_prepare',
+     'PREPARE s FROM "SET PASSWORD FOR \'a=b\'@\'%\' = \'private-value\'"',
+     ('private-value',)),
+    ('executable_statement_with_account_separator',
+     "/*!50700 SET PASSWORD FOR 'a=b'@'%' = 'private-value' */",
+     ('private-value',)),
+    ('unfinished_single_character_single_quote',
+     "ERROR near 'SET PASSWORD FOR 'a=b'@'%' = 'Z", ('Z',)),
+    ('unfinished_single_character_double_quote',
+     'ERROR near "SET PASSWORD FOR \'a=b\'@\'%\' = "Z', ('Z',)),
+    ('random_replace_current_user', "SET PASSWORD TO RANDOM REPLACE 'old-value'", ('old-value',)),
+    ('random_replace_named_user', "SET PASSWORD FOR u TO RANDOM REPLACE 'old-value'", ('old-value',)),
+)
+
+
 class TestRedaction(unittest.TestCase):
+    def test_set_password_diagnostic_and_random_replace_regressions(self):
+        for label, raw, secrets in SET_PASSWORD_REDACTION_CASES:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertIn('[redacted]', clean)
+                for secret in secrets:
+                    self.assertNotIn(secret, clean)
+
+    def test_added_set_password_scans_leave_empty_literals_alone(self):
+        for scan in (dbops._set_password_separator_spans, dbops._set_password_keyword_spans):
+            for raw in ("SET PASSWORD = ''", 'SET PASSWORD = ""',
+                        "SET PASSWORD = '", 'SET PASSWORD = "',
+                        "PREPARE s FROM 'SET PASSWORD FOR ''app''@''%'' = ''private-value'''"):
+                with self.subTest(scan=scan.__name__, raw=raw):
+                    self.assertEqual(list(scan(raw)), [])
+
+    def test_added_set_password_scans_keep_unfinished_one_character_secrets(self):
+        for scan in (dbops._set_password_separator_spans, dbops._set_password_keyword_spans):
+            for quote in ("'", '"'):
+                with self.subTest(scan=scan.__name__, quote=quote):
+                    prefix = 'SET PASSWORD FOR u = '
+                    raw = prefix + quote + 'Z'
+                    self.assertEqual(list(scan(raw)), [(len(prefix), len(raw))])
+
+    def test_set_password_union_drops_the_whole_overlapping_literal(self):
+        # The lexical pass starts at the single quote; the raw-separator pass
+        # starts inside it and extends past its end to the final double quote.
+        raw = "SET PASSWORD FOR 'a=b'@'%' = 'first SET PASSWORD = \"overlap' tail-secret\""
+        self.assertEqual(dbops._redact_set_password_all(raw),
+                         "SET PASSWORD FOR 'a=b'@'%' = '[redacted]'")
+        self.assertEqual(dbops.redact(raw), "SET PASSWORD FOR 'a=b'@'%' = '[redacted]'")
+
+    def test_megabyte_added_set_password_scans_finish_within_two_seconds(self):
+        shapes = {
+            'repeated_keywords': ('', 'SET PASSWORD ', ''),
+            'long_account': ("SET PASSWORD FOR '", 'u', "'@'%' = 'private-value'"),
+            'unfinished_quote': ("SET PASSWORD FOR '", 'SET PASSWORD ', ''),
+            'unfinished_comment': ('SET PASSWORD /*', 'SET PASSWORD ', ''),
+            'dense_assignments': ('', "SET PASSWORD FOR 'u'@'%' = 'private-value';", ''),
+            'dense_overlaps': ('',
+                "SET PASSWORD FOR 'a=b'@'%' = 'first SET PASSWORD = \"overlap' tail-secret\";", ''),
+        }
+        for helper in ('_set_password_separator_spans', '_set_password_keyword_spans',
+                       '_redact_set_password_all'):
+            for shape, (prefix, repeated, tail) in shapes.items():
+                with self.subTest(helper=helper, shape=shape):
+                    code = (
+                        "import time\nfrom myflames import dbops\n"
+                        "n = 1024 * 1024\n"
+                        "prefix, repeated, tail = " + repr((prefix, repeated, tail)) + "\n"
+                        "value = prefix + (repeated * (n // len(repeated) + 1))[:n - len(prefix) - len(tail)] + tail\n"
+                        "assert len(value) == n, len(value)\n"
+                        "began = time.monotonic()\n"
+                        "result = dbops." + helper + "(value)\n"
+                        "if not isinstance(result, str):\n"
+                        "    result = list(result)\n"
+                        "elapsed = time.monotonic() - began\n"
+                        "print('%.6f' % elapsed)\n")
+                    try:
+                        result = subprocess.run([sys.executable, '-c', code],
+                            cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    except subprocess.TimeoutExpired:
+                        self.fail('%s exceeded the 5 s subprocess deadline for %s' % (helper, shape))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    elapsed = float(result.stdout.strip())
+                    print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
+                    self.assertLess(elapsed, 2)
+
+    def test_megabyte_hostile_shapes_finish_within_deadline(self):
+        # Each helper gets its own process: a super-linear regex must fail
+        # within a fixed deadline rather than stall the entire test worker.
+        shapes = {
+            'password_spaces': "'PASSWORD' + ' ' * (n - 9) + 'x'",
+            'set_password': "('SET PASSWORD ' * (n // 13 + 1))[:n]",
+            'identified_require': "('IDENTIFIED REQUIRE ' * (n // 19 + 1))[:n]",
+        }
+        for label, quote in (('single', "'"), ('double', '"'), ('backtick', '`')):
+            prefix = repr(quote)
+            pair = repr('\\' + quote)
+            shapes[label + '_quote_pairs'] = prefix + ' + ' + pair + " * ((n - 2) // 2) + 'x'"
+            shapes[label + '_lone_backslash'] = prefix + ' + ' + pair + ' * ((n - 2) // 2) + chr(92)'
+            shapes[label + '_backslash_newline'] = prefix + ' + ' + pair + " * ((n - 4) // 2) + chr(92) + '\\nx'"
+            shapes[label + '_combined'] = ("('IDENTIFIED REQUIRE ' * (n // 57)) + (" + prefix +
+                                           ' + ' + pair + ' * n)[:n - 19 * (n // 57)]')
+        for shape, expression in shapes.items():
+            for helper in ('redact', 'strip_credentials'):
+                with self.subTest(shape=shape, helper=helper):
+                    code = (
+                        "import time\nfrom myflames import dbops\n"
+                        "n = 1024 * 1024\n"
+                        "value = " + expression + "\n"
+                        "assert len(value) == n, len(value)\n"
+                        "began = time.monotonic()\n"
+                        "clean = dbops." + helper + "(value)\n"
+                        "elapsed = time.monotonic() - began\n"
+                        "expected = value\n"
+                        "if " + repr(helper) + " == 'strip_credentials':\n"
+                        "    if " + repr(shape) + " == 'identified_require':\n"
+                        "        expected = ' '.join(value.replace('IDENTIFIED ', '').split())\n"
+                        "    elif " + repr(shape) + ".endswith('_combined'):\n"
+                        "        count = n // 57\n"
+                        "        expected = ' '.join(['REQUIRE'] * count + [value[19 * count:]])\n"
+                        "assert clean == expected, (len(clean), len(expected))\n"
+                        "print('%.6f' % elapsed)\n")
+                    try:
+                        result = subprocess.run([sys.executable, '-c', code],
+                            cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    except subprocess.TimeoutExpired:
+                        print('REDACTION_TIMING %s %s >5s' % (shape, helper), flush=True)
+                        self.fail('%s exceeded the 5 s subprocess deadline for %s' % (helper, shape))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    elapsed = float(result.stdout.strip())
+                    print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
+                    self.assertLess(elapsed, 4)
+
+    def test_redaction_clause_outputs_remain_stable(self):
+        cases = (
+            ("SOURCE_PASSWORD = 'x'", "SOURCE_PASSWORD = '[redacted]'"),
+            ("MASTER_PASSWORD='x'", "MASTER_PASSWORD='[redacted]'"),
+            ("PASSWORD 'x'", "PASSWORD '[redacted]'"),
+            ("OPTIONS (PASSWORD   'x')", "OPTIONS (PASSWORD   '[redacted]')"),
+            ("password\t=\n 'x'", "password\t=\n '[redacted]'"),
+            ('report_password = "x"', 'report_password = "[redacted]"'),
+            ("'caching_sha2_password' AS 'h'", "'caching_sha2_password' AS 'h'"),
+            ("PASSWORD == 'x'", "PASSWORD == 'x'"),
+            ("SET PASSWORD FOR `a`@`%` = 'x'", "SET PASSWORD FOR `a`@`%` = '[redacted]'"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_set_password_for_long_quoted_account_stays_redacted(self):
+        from myflames import privileges
+        # MySQL accepts up to 255 host bytes; identifier quoting doubles
+        # backticks, so valid account SQL can exceed 512 characters.
+        account = privileges.quote_account('u' * 32, '`' * 255)
+        prefix = 'SET PASSWORD FOR ' + account + ' = '
+        self.assertEqual(dbops.redact(prefix + "'private-value'"), prefix + "'[redacted]'")
+
+    def test_set_password_after_a_quoted_command_stays_redacted(self):
+        raw = "SELECT 'SET PASSWORD'; SET PASSWORD FOR 'u'@'%' = 'SECRET';"
+        self.assertEqual(dbops._redact_set_password(raw), raw.replace("'SECRET'", "'[redacted]'"))
+        self.assertNotIn('SECRET', dbops.redact(raw))
+        # Delimiters inside the account prevent the bounded fallback from
+        # hiding a scanner regression. Every prefix must keep its quote context.
+        for before in ("SELECT 'SET PASSWORD'; ", 'SELECT "SET PASSWORD"; ',
+                       "SELECT 'SET PASSWORD \\'text'; ",
+                       'SELECT "SET PASSWORD \\"text"; ',
+                       "SELECT 'SET PASSWORD ''text'; ",
+                       'SELECT "SET PASSWORD ""text"; ',
+                       'SELECT `SET PASSWORD ``text`; ',
+                       '/* SET PASSWORD */ ', '-- SET PASSWORD\n', '# SET PASSWORD\n'):
+            with self.subTest(before=before):
+                raw = before + "SET PASSWORD FOR 'u=;name'@'%' = 'SECRET';"
+                self.assertEqual(dbops._redact_set_password(raw), raw.replace("'SECRET'", "'[redacted]'"))
+                self.assertNotIn('SECRET', dbops.redact(raw))
+
+    def test_set_password_redacts_multiple_commands(self):
+        raw = ("SET PASSWORD FOR 'a=b'@'%' = 'first-private'; "
+               'SET PASSWORD /* x=1; */ FOR `a;b`@`%` = "second-private";')
+        self.assertEqual(dbops.redact(raw),
+                         raw.replace('first-private', '[redacted]').replace('second-private', '[redacted]'))
+
+    def test_set_password_assignment_in_literal_cannot_hide_real_command(self):
+        before = 'SELECT "SET PASSWORD = \'x\'"; '
+        # The lexical pass leaves the example literal alone; the public
+        # redactor may also redact it as a conservative diagnostic fallback.
+        self.assertEqual(dbops._redact_set_password(before), before)
+        raw = before + "SET PASSWORD FOR 'u=;name'@'%' = 'SECRET';"
+        clean = dbops.redact(raw)
+        self.assertNotIn('SECRET', clean)
+        self.assertIn("SET PASSWORD FOR 'u=;name'@'%' = '[redacted]';", clean)
+
+    def test_set_password_in_quoted_diagnostic_stays_redacted(self):
+        for quote in ("'", '"'):
+            with self.subTest(quote=quote):
+                raw = ("ERROR 1064 (42000): syntax error near " + quote +
+                       "SET PASSWORD FOR `u`@`%` = 'private-value';" + quote + " at line 1")
+                self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_megabyte_quoted_set_password_runs_finish(self):
+        for shape in ('quoted_commands', 'unfinished_single', 'unfinished_double'):
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "n = 1024 * 1024\n"
+                    "shape = " + repr(shape) + "\n"
+                    "if shape == 'quoted_commands':\n"
+                    "    tail = \" SET PASSWORD FOR 'u=;name'@'%' = 'private-value';\"\n"
+                    "    repeated = \"'SET PASSWORD';\"\n"
+                    "    value = (repeated * ((n - len(tail)) // len(repeated))).ljust(n - len(tail)) + tail\n"
+                    "else:\n"
+                    "    quote = chr(39) if shape == 'unfinished_single' else chr(34)\n"
+                    "    value = quote + ('SET PASSWORD ' * (n // 13 + 1))[:n - 2] + chr(92)\n"
+                    "assert len(value) == n, len(value)\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "if shape == 'quoted_commands':\n"
+                    "    assert 'private-value' not in clean\n"
+                    "    assert '[redacted]' in clean\n"
+                    "else:\n"
+                    "    assert clean == value\n"
+                    "print(elapsed)\n")
+                result = subprocess.run([sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('REDACTION_TIMING %s redact %.6fs' % (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 4)
+
+    def test_set_password_skips_quoted_names_and_comments_before_assignment(self):
+        for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ",
+                       'SET PASSWORD FOR `a;b`@`%` = ',
+                       'SET PASSWORD FOR "a=;b"@"%" = ',
+                       "SET PASSWORD FOR 'a''=b'@'%' = ",
+                       'SET PASSWORD /* x=1; */ = ',
+                       'SET PASSWORD -- x=1;\n = ',
+                       'SET PASSWORD # x=1;\n = ',
+                       "ERROR near 'SET PASSWORD FOR `u`@`%` = "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + "'private-value'"), prefix + "'[redacted]'")
+                self.assertEqual(dbops.redact(prefix + "'private-value' REPLACE 'old-value'"),
+                                 prefix + "'[redacted]' REPLACE '[redacted]'")
+
+    def test_long_set_password_scanner_respects_assignment_boundaries(self):
+        prefix = 'SET PASSWORD' + ' ' * 513 + 'FOR `u`@`%` = '
+        self.assertEqual(dbops.redact(prefix + "'private-value' REPLACE 'old-value'"),
+                         prefix + "'[redacted]' REPLACE '[redacted]'")
+        repeated = 'SET PASSWORD ' * 100
+        self.assertEqual(dbops.redact(repeated + "= 'private-value'"), repeated + "= '[redacted]'")
+        # A semicolon ends the candidate, so a later ordinary assignment
+        # does not inherit its credential context.
+        unrelated = repeated + "; SELECT ordinary = 'public-value'"
+        self.assertEqual(dbops.redact(unrelated), unrelated)
+        self.assertEqual(dbops.redact(unrelated + '; ' + prefix + "'private-value'"),
+                         unrelated + '; ' + prefix + "'[redacted]'")
+
+    def test_megabyte_set_password_prefixes_with_assignment_finish(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "tail = \"= 'private-value'\"\n"
+            "prefix = ('SET PASSWORD ' * (1024 * 1024 // 13 + 1))[:1024 * 1024 - len(tail)]\n"
+            "began = time.monotonic()\n"
+            "clean = dbops.redact(prefix + tail)\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert clean == prefix + \"= '[redacted]'\"\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 4)
+
+    def test_strip_grant_outputs_remain_stable(self):
+        cases = (
+            ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS '$A$005$x''y\\'z' "
+             "REQUIRE NONE PASSWORD EXPIRE DEFAULT", "CREATE USER `a`@`%` REQUIRE NONE PASSWORD EXPIRE DEFAULT"),
+            ("GRANT USAGE ON *.* TO `a`@`%` IDENTIFIED BY PASSWORD '*HASH' WITH GRANT OPTION",
+             "GRANT USAGE ON *.* TO `a`@`%` WITH GRANT OPTION"),
+            ("CREATE USER `m`@`%` IDENTIFIED VIA ed25519 USING 'k' OR unix_socket REQUIRE SSL",
+             "CREATE USER `m`@`%` REQUIRE SSL"),
+            ("CREATE USER `f`@`%` IDENTIFIED WITH 'a' AS 'h1' AND IDENTIFIED WITH 'b' AS 'h2' REQUIRE NONE",
+             "CREATE USER `f`@`%` REQUIRE NONE"),
+            ("GRANT SELECT ON `db`.* TO `a`@`%`", "GRANT SELECT ON `db`.* TO `a`@`%`"),
+            ("GRANT USAGE ON *.* TO `a`@`%` IDENTIFIED BY PASSWORD '*H'", "GRANT USAGE ON *.* TO `a`@`%`"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.strip_credentials(raw), expected)
+
+    def test_unterminated_literal_tails_remain_secret(self):
+        for quote in ("'", '"'):
+            for tail in ('\\', '\\\n'):
+                with self.subTest(quote=quote, tail=tail):
+                    raw = 'IDENTIFIED BY ' + quote + 'private-value' + tail
+                    self.assertEqual(dbops.redact(raw), 'IDENTIFIED BY ' + quote + '[redacted]' + quote)
+        for quote in ("'", '"', '`'):
+            for tail in ('\\', '\\\nREQUIRE NONE'):
+                with self.subTest(quote=quote, tail=tail):
+                    raw = 'CREATE USER u IDENTIFIED BY ' + quote + 'private-value' + tail
+                    self.assertEqual(dbops.strip_credentials(raw), 'CREATE USER u')
+
+    def test_unterminated_quoted_runs_are_single_grant_tokens(self):
+        for quote in ("'", '"', '`'):
+            for tail in ('', '\\', '\\\nREQUIRE NONE'):
+                with self.subTest(quote=quote, tail=tail):
+                    # Identifier quotes are doubled; backslashes in them
+                    # are literal, including immediately before a close.
+                    escaped = 'private\\' + quote if quote == "'" else 'private' + quote * 2
+                    raw = quote + escaped * 3 + tail
+                    self.assertEqual(dbops.GRANT_TOKEN.findall(raw), [raw])
+
+    def test_identifier_final_backslash_does_not_hide_credential_clause(self):
+        for quote in ('`', '"'):
+            with self.subTest(quote=quote):
+                account = quote + 'user\\' + quote + '@' + quote + '%' + quote
+                prefix = 'GRANT USAGE ON *.* TO ' + account
+                raw = prefix + " IDENTIFIED BY 'private-value' REQUIRE NONE"
+                self.assertEqual(dbops.strip_credentials(raw), prefix + ' REQUIRE NONE')
+
+    def test_url_secret_scan_bounds_unfinished_megabyte_credentials(self):
+        # Bound the test process as well as the measured regex so a regression
+        # cannot monopolize a worker for minutes.
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "value = ('mysql://a:b,' * (1024 * 1024 // 12 + 1))[:1024 * 1024]\n"
+            "began = time.monotonic()\n"
+            "assert not list(dbops._URL_SECRET(value))\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 5)
+
+    def test_url_secret_scan_bounds_megabyte_digit_dot_scheme_run(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "n = 1024 * 1024\nvalue = ('1.' * n)[:n - 3] + '://'\n"
+            "began = time.monotonic()\n"
+            "assert not list(dbops._URL_SECRET(value))\n"
+            "assert not list(dbops._URL_SECRET(value, quoted=False))\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('URL_DIGIT_RUN_TIMING %.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 5)
+
+    def test_url_redaction_starts_at_the_whole_scheme_character_run(self):
+        for prefix in ('-', '+', '1.', '10.0.0.1-'):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + 'mysql://app:SECRET@db1'),
+                                 prefix + 'mysql://app:[redacted]@db1')
+        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path', '1.2://app:public@host'):
+            self.assertEqual(dbops.redact(value), value)
+
+    def test_bounded_url_fields_still_redact_supported_schemes_and_pool_prefixes(self):
+        for scheme in ('mysql', 'mariadb', 'postgres', 'postgresql'):
+            for prefix in ('', '3*'):
+                with self.subTest(scheme=scheme, prefix=prefix):
+                    raw = prefix + scheme + '://' + 'u' * 255 + ':' + 'p' * 1024 + '@db'
+                    clean = dbops.redact(raw)
+                    self.assertEqual(clean, prefix + scheme + '://' + 'u' * 255 + ':[redacted]@db')
+
+    def test_url_secret_scan_has_no_credential_length_limit(self):
+        for scheme in ('mysql', 'mariadb', 'postgres', 'postgresql', 'https'):
+            for username in ('', 'user', 'u' * 5000):
+                with self.subTest(scheme=scheme, username_length=len(username)):
+                    raw = '3*' + scheme + '://' + username + ':' + 'p' * 5000 + '@db/path'
+                    self.assertEqual(dbops.redact(raw), '3*' + scheme + '://' + username + ':[redacted]@db/path')
+
+    def test_url_secret_scan_does_not_cross_path_or_quote_delimiters(self):
+        for boundary in ('/', ' ', '\n', "'", '"', '`'):
+            with self.subTest(boundary=boundary):
+                raw = 'mysql://user:part' + boundary + 'path@host'
+                self.assertEqual(dbops.redact(raw), raw)
+        self.assertEqual(dbops.redact('mysql://user:part%2Fsecret@host'), 'mysql://user:[redacted]@host')
+        self.assertEqual(dbops.redact('mysql://unfinished:mysql://user:secret@host'),
+                         'mysql://unfinished:mysql://user:[redacted]@host')
+
     def test_hex_hashes(self):
         text = ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS "
                 "0x244124303041242A493F2F2725193549337A REQUIRE NONE")
@@ -1182,6 +1613,20 @@ class TestRedaction(unittest.TestCase):
     def test_error_code(self):
         self.assertEqual(dbops.error_code('mysql client exited 1: ERROR 1095 (HY000) at line 1: x'), 1095)
         self.assertIsNone(dbops.error_code('Lost connection'))
+
+
+class TestTargetNotConnected(unittest.TestCase):
+    def test_login_refusals_require_no_statement_or_guard_evidence(self):
+        from myflames.connector import ConnectorError
+        for code in (1045, 1698):
+            with self.subTest(code=code):
+                text = "ERROR %d (28000): Access denied for user 'app'@'localhost'" % code
+                self.assertTrue(dbops.target_not_connected(ConnectorError(text)))
+                self.assertFalse(dbops.target_not_connected(ConnectorError(
+                    text.replace('(28000):', '(28000) at line 2:'))))
+                acknowledged = ConnectorError(text)
+                acknowledged.guard_markers = ('myflames_guard_acknowledged',)
+                self.assertFalse(dbops.target_not_connected(acknowledged))
 
 
 class TestConnectionErrorText(unittest.TestCase):
@@ -1251,6 +1696,31 @@ class TestAudit(TempHome):
         safety = {'profile_id': 'p1', 'profile_name': 'prod', 'type': 'production', 'read_only': False}
         return dbops.AuditTrail(self.store, kw.pop('operation', 'kill'), kw.pop('surface', 'cli'),
                                 connection=self.CONNECTION, safety=safety, password='pw-not-stored', **kw)
+
+    def test_set_password_diagnostic_and_random_replace_audit_regressions(self):
+        for index, (label, statement, secrets) in enumerate(SET_PASSWORD_REDACTION_CASES, 1):
+            with self.subTest(case=label):
+                self.trail(operation='accounts.password').outcome(
+                    [statement], 'refused', message=statement)
+                records = self.store.audit_records()
+                self.assertEqual(len(records), index)
+                stored = json.dumps(records)
+                for secret in secrets:
+                    self.assertNotIn(secret, stored)
+                self.assertTrue(all('[redacted]' in record['statements'][0] for record in records))
+                self.assertTrue(all('[redacted]' in record['message'] for record in records))
+
+    def test_set_password_names_and_comments_cannot_expose_audit_secrets(self):
+        for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ", 'SET PASSWORD FOR `a;b`@`%` = ',
+                       'SET PASSWORD /* x=1 */ = ',
+                       "SELECT 'SET PASSWORD'; SET PASSWORD FOR 'u=;name'@'%' = "):
+            with self.subTest(prefix=prefix):
+                statement = prefix + "'audit-private-value'"
+                self.trail(operation='accounts.password').outcome([statement], 'refused', message=statement)
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 4)
+        self.assertNotIn('audit-private-value', json.dumps(records))
+        self.assertTrue(all('[redacted]' in record['statements'][0] for record in records))
 
     def test_lifecycle_pending_then_ok(self):
         trail = self.trail(policy={'action': 'confirm', 'kind': 'risky'})

@@ -360,21 +360,40 @@ export async function open(endpoint, name, extra = {}, {
     },
     /** Return to the list, select an object, and open its full-width details. */
     async select(selector) {
-      const back = await page.$(".view-inspector.is-detail .detail-back");
-      if (back) {
-        await back.click();
-        await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+      // Only a detail view on screen counts: places and views stay mounted
+      // while hidden, so a document-wide query can match one the user cannot
+      // see (and wait for it forever). A DOM click on the visible Back button
+      // does not depend on its box, which moves during the inspector's 130 ms
+      // kit-panel-in animation (a mouse click there missed on CI). The view can
+      // also close by itself when a new report clears the selection.
+      const shownDetail = () => page.evaluate(() => [...document.querySelectorAll(".view-inspector.is-detail")]
+        .some((e) => e.getClientRects().length > 0));
+      for (let attempt = 0; attempt < 3 && await shownDetail(); attempt++) {
+        await page.evaluate(() => [...document.querySelectorAll(".view-inspector.is-detail .detail-back")]
+          .find((b) => b.getClientRects().length > 0)?.click());
+        await page.waitForFunction(() => ![...document.querySelectorAll(".view-inspector.is-detail")]
+          .some((e) => e.getClientRects().length > 0), { timeout: 5000 }).catch(() => {});
       }
+      assert.ok(!(await shownDetail()), "the detail view closes after Back");
       const row = await page.waitForSelector(selector, { visible: true });
       // Locator waits for a stable box after Back restores list scroll/focus.
       const target = (await row.$("[data-row-key]")) ? `${selector} [data-row-key]` : selector;
       // Centered first: scrolled only as far as needed, a row can sit under the fixed top bar.
       await page.$eval(target, (e) => e.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
       await page.locator(target).click();
-      await page.waitForSelector(".view-inspector .inspector-title");
+      // The inspector of the view on screen: a hidden place can keep its own
+      // inspector (and title) mounted.
+      await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .inspector-title")]
+        .some((e) => e.getClientRects().length > 0));
     },
-    /** The inspector's text (title, meta, actions and body). */
-    inspector: () => page.$eval(".view-inspector", (e) => e.textContent),
+    /** The inspector's text (title, meta, actions and body): the one on screen,
+     * else the first mounted one (a hidden place can keep its own inspector). */
+    inspector: () => page.evaluate(() => {
+      const all = [...document.querySelectorAll(".view-inspector")];
+      const shown = all.find((e) => e.getClientRects().length > 0) || all[0];
+      if (!shown) throw new Error("No .view-inspector is mounted");
+      return shown.textContent;
+    }),
     /** Open an ⓘ popover by its label and return its text; Escape closes it again. */
     async popover(label) {
       await page.click(`button[aria-label="${label}"]`);

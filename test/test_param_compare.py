@@ -3,11 +3,15 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
-from myflames import param_compare as P, compare_cli
+from myflames import param_compare as P, compare_cli, parameters
+from _perf_replay import ReplayConn, batch
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
 from test_chart_data import validate
@@ -93,6 +97,251 @@ class NormalizeTest(unittest.TestCase):
     def test_truncated_values_not_equal_even_when_same_prefix(self):
         a = snapshot([item('long', 'prefix', 'string', truncated=True)])
         self.assertEqual(P.compare(a, a)['items'][0]['status'], 'not_compared')
+
+    def test_server_cut_prefix_is_never_identical_or_comparable_in_a_group(self):
+        catalog = parameters.compute_parameters('mysql', (8, 4, 11),
+            rows=[['long_value', 'x' * 1024]], info_rows=[], persisted_rows=[])
+        value = snapshot(catalog['items'])
+        pair = P.compare(value, copy.deepcopy(value))
+        self.assertFalse(pair['identical'])
+        self.assertEqual(pair['items'][0]['status'], 'not_compared')
+        group = P.compare_many({'a': value, 'b': copy.deepcopy(value)})
+        self.assertEqual(group[0]['status'], 'missing')
+        self.assertIn('truncated', group[0]['reason'])
+
+    def test_group_per_server_names_and_node_design_reasons(self):
+        names = ('group_replication_group_seeds', 'gtid_binlog_state', 'gtid_owned',
+                 'bind_address', 'admin_address', 'mysqlx_bind_address', 'mysqlx_port', 'mysqlx_socket',
+                 'wsrep_provider_gcache_name', 'wsrep_provider_ist_recv_bind',
+                 'wsrep_provider_socket_ssl_cert', 'wsrep_provider_socket_ssl_key',
+                 'wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment')
+        left = snapshot([item(name, 'node-a', 'string') for name in names])
+        right = snapshot([item(name, 'node-b', 'string') for name in names])
+        rows = {r['name']: r for r in P.compare_many({'a': left, 'b': right})}
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'per_server')
+        for name in ('wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment'):
+            self.assertEqual(rows[name]['reason'], 'Set per node by design')
+
+    def test_group_read_only_drift_folds_only_with_role_evidence(self):
+        left = snapshot([item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
+        right = snapshot([item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
+        cases = ((None, 'different'), (False, 'different'), (True, 'different'),
+                 ({}, 'different'), ({'a': 'source'}, 'different'),
+                 ({'a': 'source', 'b': None}, 'different'),
+                 ({'a': 'standalone', 'b': 'replica'}, 'different'),
+                 ({'a': 'primary', 'b': 'source'}, 'different'),
+                 ({'a': 'secondary', 'b': 'replica'}, 'different'),
+                 ({'a': 'replica', 'b': 'node'}, 'different'),
+                 ({'a': 'primary', 'b': 'secondary'}, 'per_server'),
+                 ({'a': 'source', 'b': 'replica'}, 'per_server'))
+        for role_settings, status in cases:
+            with self.subTest(role_settings=role_settings):
+                rows = P.compare_many({'a': left, 'b': right}, role_settings=role_settings)
+                self.assertEqual([r['status'] for r in rows], [status, status])
+                if status == 'per_server':
+                    self.assertEqual([r['reason'] for r in rows], ["Set by the member's role"] * 2)
+
+    def test_gr_configuration_alone_does_not_explain_read_only_drift(self):
+        group = 'aaaaaaaa-0000-4000-8000-000000000001'
+        for mode in ('ON', 'OFF'):
+            with self.subTest(mode=mode):
+                settings = [item('group_replication_group_name', group, 'string'),
+                            item('group_replication_single_primary_mode', mode, 'boolean')]
+                a = snapshot(settings + [item('read_only', 'OFF', 'boolean'), item('super_read_only', 'OFF', 'boolean')])
+                b = snapshot(settings + [item('read_only', 'ON', 'boolean'), item('super_read_only', 'ON', 'boolean')])
+                rows = {r['name']: r for r in P.compare_many({'a': a, 'b': b})}
+                for name in ('read_only', 'super_read_only'):
+                    self.assertEqual(rows[name]['status'], 'different')
+
+    def test_inverted_read_only_and_galera_roles_are_not_folded(self):
+        for name in ('read_only', 'super_read_only'):
+            for roles, source, replica in (({'a': 'primary', 'b': 'secondary'}, 'ON', 'OFF'),
+                                           ({'a': 'source', 'b': 'replica'}, 'ON', 'OFF'),
+                                           ({'a': 'source', 'b': 'node'}, 'OFF', 'ON'),
+                                           ({'a': 'node', 'b': 'node'}, 'OFF', 'ON')):
+                with self.subTest(name=name, roles=roles):
+                    sides = {'a': snapshot([item(name, source, 'boolean')]),
+                             'b': snapshot([item(name, replica, 'boolean')])}
+                    self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'different')
+
+    def test_mariadb_read_only_modes_fold_only_when_replica_refuses_writes(self):
+        roles = {'a': 'source', 'b': 'replica'}
+        for mode in ('NO_LOCK', 'NO_LOCK_NO_ADMIN'):
+            with self.subTest(mode=mode):
+                sides = {'a': snapshot([item('read_only', 'OFF', 'enum')], engine='mariadb'),
+                         'b': snapshot([item('read_only', mode, 'enum')], engine='mariadb')}
+                self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'per_server')
+                self.assertEqual(P.compare_many(sides, role_settings={'a': 'replica', 'b': 'source'})[0]['status'],
+                                 'different')
+        sides['b']['items'][0]['value'] = 'UNKNOWN'
+        self.assertEqual(P.compare_many(sides, role_settings=roles)[0]['status'], 'different')
+
+    def test_writable_replica_is_drift_even_with_a_source_in_the_comparison(self):
+        roles = {'source': 'source', 'replica': 'replica', 'other': 'secondary'}
+        for name in ('read_only', 'super_read_only'):
+            with self.subTest(name=name):
+                sides = {
+                    'source': snapshot([item(name, 'OFF', 'boolean')]),
+                    'replica': snapshot([item(name, 'ON', 'boolean')]),
+                    'other': snapshot([item(name, 'OFF', 'boolean')]),
+                }
+                row = P.compare_many(sides, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'different')
+                self.assertEqual(row['values']['other'], 'OFF')
+                # Equivalent spellings within the replica bucket permit a
+                # difference between source and replica roles to be folded.
+                sides['other']['items'][0]['value'] = '1'
+                row = P.compare_many(sides, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'per_server')
+                self.assertEqual(row['values']['other'], '1')
+
+    def test_role_folding_keeps_same_values_same_and_unavailable_values_missing(self):
+        roles = {'a': 'primary', 'b': 'secondary'}
+        left = snapshot([item('read_only', 'ON', 'boolean')])
+        right = snapshot([item('read_only', '1', 'boolean')])
+        self.assertEqual(P.compare_many({'a': left, 'b': right}, role_settings=roles)[0]['status'], 'same')
+        for unavailable in (snapshot(), snapshot([item('read_only', 'ON', 'boolean', truncated=True)]),
+                            snapshot([item('read_only', 'ON', 'boolean', redacted=True)])):
+            with self.subTest(items=unavailable['items']):
+                row = P.compare_many({'a': left, 'b': unavailable}, role_settings=roles)[0]
+                self.assertEqual(row['status'], 'missing')
+
+    def test_galera_offsets_need_active_members_and_enabled_generation(self):
+        settings = [item('wsrep_on', 'ON', 'boolean'),
+                    item('wsrep_provider', '/usr/lib/galera/libgalera_smm.so', 'string'),
+                    item('wsrep_auto_increment_control', 'ON', 'boolean')]
+        sides = {
+            'a': snapshot(settings + [item('auto_increment_offset', '1'),
+                                      item('auto_increment_increment', '3')], engine='mariadb'),
+            'b': snapshot(copy.deepcopy(settings) + [item('auto_increment_offset', '2'),
+                                                     item('auto_increment_increment', '4')], engine='mariadb'),
+        }
+        for active, expected in ((None, 'different'), ({}, 'different'),
+                                 ({'a': 'galera'}, 'different'),
+                                 ({'a': 'galera', 'b': 'group_replication'}, 'different'),
+                                 ({'a': 'galera', 'b': 'galera'}, 'per_server')):
+            with self.subTest(active=active):
+                rows = {r['name']: r for r in P.compare_many(sides, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], expected)
+                self.assertEqual(rows['auto_increment_increment']['status'], 'different')
+        active = {'a': 'galera', 'b': 'galera'}
+        for name, value in (('wsrep_on', 'OFF'), ('wsrep_provider', ''),
+                            ('wsrep_provider', 'none'), ('wsrep_auto_increment_control', 'OFF')):
+            with self.subTest(name=name, value=value):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_standalone_mariadb_default_control_does_not_hide_offset_drift(self):
+        control = item('wsrep_auto_increment_control', 'ON', 'boolean')
+        sides = {
+            'a': snapshot([control, item('auto_increment_offset', '1')], engine='mariadb'),
+            'b': snapshot([control, item('auto_increment_offset', '2')], engine='mariadb'),
+        }
+        rows = {r['name']: r for r in P.compare_many(sides)}
+        self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_gr_offsets_need_active_multi_primary_members(self):
+        settings = [item('group_replication_group_name', 'aaaaaaaa-0000-4000-8000-000000000001', 'string'),
+                    item('group_replication_single_primary_mode', 'OFF', 'boolean')]
+        sides = {
+            'a': snapshot(settings + [item('auto_increment_offset', '1')]),
+            'b': snapshot(copy.deepcopy(settings) + [item('auto_increment_offset', '2')]),
+        }
+        for active, expected in ((None, 'different'), ({'a': 'group_replication'}, 'different'),
+                                 ({'a': 'group_replication', 'b': 'group_replication'}, 'per_server')):
+            with self.subTest(active=active):
+                rows = {r['name']: r for r in P.compare_many(sides, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], expected)
+        active = {'a': 'group_replication', 'b': 'group_replication'}
+        for name, value in (('group_replication_single_primary_mode', 'ON'),
+                            ('group_replication_group_name', '')):
+            with self.subTest(name=name):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+        for flag in ('redacted', 'truncated'):
+            with self.subTest(flag=flag):
+                changed = copy.deepcopy(sides)
+                changed['b']['items'][0][flag] = True
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_mariadb_identity_paths_fold_without_hiding_file_policy_drift(self):
+        per_server = ('server_uid', 'log_slow_query_file', 'character_sets_dir',
+                      'relay_log_info_file', 'slave_load_tmpdir', 'aria_log_dir_path')
+        policies = ('core_file', 'init_file', 'ft_stopword_file')
+        left = snapshot([item(name, 'node-a', 'string') for name in per_server + policies], engine='mariadb')
+        right = snapshot([item(name, 'node-b', 'string') for name in per_server + policies], engine='mariadb')
+        rows = {r['name']: r for r in P.compare_many({'a': left, 'b': right})}
+        for name in per_server:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'per_server')
+        for name in policies:
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['status'], 'different')
+
+    def test_provider_options_fold_node_files_addresses_and_design_values(self):
+        node_keys = ('gcache.name', 'ist.recv_bind', 'socket.ssl_cert', 'socket.ssl_key',
+                     'pc.weight', 'gmcast.segment')
+        left = ';'.join(key + '=a' for key in node_keys) + ';gcache.size=128M'
+        right = ';'.join(key + '=b' for key in node_keys) + ';gcache.size=128M'
+        a = snapshot([item('wsrep_provider_options', left, 'string')], engine='mariadb')
+        b = snapshot([item('wsrep_provider_options', right, 'string')], engine='mariadb')
+        self.assertEqual(P.compare_many({'a': a, 'b': b})[0]['status'], 'same')
+        b['items'][0]['value'] = right.replace('128M', '256M')
+        self.assertEqual(P.compare_many({'a': a, 'b': b})[0]['status'], 'different')
+
+    def test_full_provider_capture_replaces_catalog_prefix_before_comparison(self):
+        from myflames.topology_group import TAG
+        full = 'gcache.name=' + 'x' * 2050 + ';gcache.size=128M;'
+        for engine, cap in (('mysql', 1024), ('mariadb', 2048)):
+            with self.subTest(engine=engine):
+                catalog = {'complete': True, 'items': [item('wsrep_provider_options', full[:cap],
+                                                            'string', truncated=True)]}
+                report = {'engine': engine, 'server_version': '8.4.11' if engine == 'mysql' else '11.4.13-MariaDB',
+                          'parameters': catalog, 'notes': []}
+                conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options', batch([[full]])]])
+                with mock.patch('myflames.config_review.config_report', return_value=report):
+                    result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+                captured = result['items'][0]
+                self.assertEqual(captured['value'], full)
+                self.assertFalse(captured.get('truncated', False))
+                self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'same')
+
+    def test_full_provider_capture_denial_keeps_prefix_uncomparable(self):
+        from myflames.topology_group import TAG
+        catalog = {'complete': True, 'items': [item('wsrep_provider_options', 'x' * 2048,
+                                                    'string', truncated=True)]}
+        report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB', 'parameters': catalog, 'notes': []}
+        conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options',
+                            None, 'ERROR 1227 (42000): Access denied']])
+        with mock.patch('myflames.config_review.config_report', return_value=report):
+            result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+        self.assertTrue(result['items'][0]['truncated'])
+        self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'missing')
+
+    def test_full_provider_capture_discards_oversized_exact_value_before_redaction(self):
+        from myflames.topology_group import TAG
+        full = 'a.' * (1024 * 1024 // 2)
+        catalog = {'complete': True, 'items': [item('wsrep_provider_options', full[:2048],
+                                                   'string', truncated=True)]}
+        report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB', 'parameters': catalog, 'notes': []}
+        conn = ReplayConn([[TAG + 'SELECT @@GLOBAL.wsrep_provider_options', batch([[full]])]])
+        began = time.monotonic()
+        with mock.patch('myflames.config_review.config_report', return_value=report), \
+                mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            result = P.capture(conn, {'host': 'db1', 'port': 3306}, full_provider_options=True)
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertTrue(result['items'][0]['truncated'])
+        self.assertIsNone(result['items'][0]['value'])
+        self.assertNotIn(full[:2048], json.dumps(result))
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertEqual(P.compare_many({'a': result, 'b': copy.deepcopy(result)})[0]['status'], 'missing')
 
     def test_file_validation_and_scrubbing(self):
         a = snapshot([item('wsrep_sst_auth', 'root:secret', 'string', 'other'),
@@ -206,6 +455,202 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.parameter_snapshot_get(saved['id'])['snapshot'],value)
 
 class ValidationEdgeTest(unittest.TestCase):
+    def test_all_row_strings_are_capped_before_any_redaction(self):
+        metadata = ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group')
+        full = 'PASSWORD' + ' ' * P.MAX_VALUE_CHARS + 'x'
+        raw = snapshot([dict(item('custom_setting', full, default=full, values=[full]),
+                             **{key: full for key in metadata})])
+        with mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact, \
+                mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as parameter_redact:
+            clean = P.validate_snapshot(raw)
+        row = clean['items'][0]
+        self.assertTrue(row['truncated'])
+        for key in metadata + ('value', 'default', 'values'):
+            self.assertIsNone(row[key], key)
+        self.assertNotIn('dynamic', row)
+        for calls in (redact.call_args_list, parameter_redact.call_args_list):
+            self.assertFalse(any(isinstance(call[0][0], str) and len(call[0][0]) > P.MAX_VALUE_CHARS
+                                 for call in calls))
+        self.assertNotIn(full, json.dumps(clean))
+        self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+        self.assertEqual(P.compare_many({'a': clean, 'b': clean})[0]['status'], 'missing')
+        # Projection must leave the caller's untrusted data unchanged.
+        self.assertEqual(raw['items'][0]['source'], full)
+
+    def test_metadata_limit_preserves_boundary_and_drops_only_overflow(self):
+        metadata = ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group')
+        for key in metadata:
+            with self.subTest(field=key):
+                boundary = dict(item('at_limit', '151'), **{key: 'x' * P.MAX_VALUE_CHARS})
+                overflow = dict(item('over_limit', '151'), **{key: 'x' * (P.MAX_VALUE_CHARS + 1)})
+                clean = P.validate_snapshot(snapshot([boundary, overflow]))['items']
+                self.assertEqual(clean[0][key], boundary[key])
+                self.assertFalse(clean[0].get('truncated', False))
+                self.assertIsNone(clean[1][key])
+                self.assertTrue(clean[1]['truncated'])
+
+    def test_name_limit_rejects_overflow_without_an_invented_identity(self):
+        name = 'x' * P.MAX_VALUE_CHARS
+        self.assertEqual(P.validate_snapshot(snapshot([item(name, '151')]))['items'][0]['name'], name)
+        with mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact:
+            with self.assertRaisesRegex(ValueError, 'Invalid parameter name'):
+                P.validate_snapshot(snapshot([item(name + 'x', '151')]))
+        redact.assert_not_called()
+
+    def test_capture_caps_server_source_metadata_before_redaction(self):
+        full = 'PASSWORD' + ' ' * 70000 + 'x'
+        report = {'engine': 'mysql', 'server_version': '8.4.11', 'notes': [],
+                  'parameters': {'complete': True, 'items': [item('max_connections', '151', source=full)]}}
+        with mock.patch('myflames.config_review.config_report', return_value=report), \
+                mock.patch.object(P.dbops, 'redact', wraps=P.dbops.redact) as redact:
+            captured = P.capture(mock.Mock(host='db', port=3306), {'host': 'db', 'port': 3306})
+        self.assertIsNone(captured['items'][0]['source'])
+        self.assertTrue(captured['items'][0]['truncated'])
+        self.assertEqual(captured['items'][0]['value'], '151')
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertEqual(P.compare(captured, captured)['items'][0]['status'], 'not_compared')
+
+    def test_hostile_value_and_source_shapes_at_cap_finish_within_deadline(self):
+        # Run each shape behind a process deadline: a regex regression can
+        # hold the GIL, preventing a timer thread from interrupting it.
+        code = r'''
+import json
+import sys
+import time
+from myflames import param_compare as p
+n = p.MAX_VALUE_CHARS
+shape = sys.argv[1]
+pairs = n // 57
+shapes = {
+    'password_spaces': ('PASSWORD' + ' ' * n)[:n - 1] + 'x',
+    'set_password': ('SET PASSWORD ' * n)[:n],
+    'identified_require': ('IDENTIFIED REQUIRE ' * n)[:n],
+    'quote_lone_backslash': ("'" + "\\'" * n)[:n],
+    'quote_backslash_newline': ("'" + "\\'" * n)[:n - 3] + '\\\nx',
+    'combined': ('IDENTIFIED REQUIRE ' * pairs) + ("'" + "\\'" * n)[:n - 19 * pairs],
+}
+hostile = shapes[shape]
+assert len(hostile) == n
+raw = dict(schema_version=p.SNAPSHOT_SCHEMA, server=dict(host='db', port=3306, engine='mysql'),
+           captured_at='2026-11-21T00:00:00+00:00', complete=True, notes=[],
+           items=[dict(name='custom_setting', value=hostile, default=hostile, source=hostile)])
+began = time.monotonic()
+clean = p.validate_snapshot(raw)['items'][0]
+assert not clean.get('truncated', False)
+assert clean['source'] == hostile
+assert clean['value'] == clean['default']
+if shape in ('identified_require', 'combined'):
+    assert 'IDENTIFIED' not in clean['value']
+    assert clean['value'].count('REQUIRE') == hostile.count('REQUIRE')
+else:
+    assert clean['value'] == hostile
+raw['items'][0]['source'] = hostile + 'x'
+oversized = p.validate_snapshot(raw)['items'][0]
+assert oversized['source'] is None and oversized['truncated'] is True
+print(time.monotonic() - began)
+'''
+        for shape in ('password_spaces', 'set_password', 'identified_require',
+                      'quote_lone_backslash', 'quote_backslash_newline', 'combined'):
+            with self.subTest(shape=shape):
+                result = subprocess.run([sys.executable, '-c', code, shape],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(float(result.stdout.strip()), 3)
+
+    def test_compare_many_discards_overflow_before_redaction(self):
+        full = 'mysql://user:' + 'p' * (P.MAX_VALUE_CHARS + 1) + '@host'
+        with mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            rows = P.compare_many({'a': snapshot([item('custom_setting', full, 'string')]),
+                                   'b': snapshot([item('custom_setting', full, 'string')])})
+        self.assertEqual(rows[0]['status'], 'missing')
+        self.assertEqual(rows[0]['values'], {'a': None, 'b': None})
+        self.assertIn('truncated', rows[0]['reason'])
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        boundary = 'x' * P.MAX_VALUE_CHARS
+        rows = P.compare_many({'a': snapshot([item('custom_setting', boundary, 'string')])})
+        self.assertEqual(rows[0]['status'], 'same')
+        self.assertEqual(rows[0]['values']['a'], boundary)
+
+    def test_long_and_empty_username_url_credentials_are_never_compared(self):
+        for username in ('', 'user', 'u' * 5000):
+            for password in ('p' * 5000, 'part%2Fsecret'):
+                with self.subTest(username_length=len(username), password_length=len(password)):
+                    raw = snapshot([item('custom_setting', 'mysql://' + username + ':' + password + '@host', 'string')])
+                    clean = P.validate_snapshot(raw)
+                    self.assertEqual(clean['items'][0]['value'], '[redacted]')
+                    self.assertTrue(clean['items'][0]['redacted'])
+                    row = P.compare_many({'a': raw, 'b': raw})[0]
+                    self.assertEqual(row['status'], 'missing')
+                    self.assertEqual(row['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        # A literal slash ends the URL authority; @ in a path is not a password.
+        raw = 'mysql://user:part/path@host'
+        self.assertEqual(P._redact_parameter_value(raw), raw)
+
+    def test_snapshot_redaction_budget_includes_repeated_identified_clauses(self):
+        # A normal full inventory plus a worst-case 64 KiB setting. This
+        # exercises validation and group comparison, not just a private scan.
+        code = (
+            "import time\nfrom myflames import param_compare as p\n"
+            "clause = \"IDENTIFIED BY 'secret' REQUIRE NONE \"\n"
+            "items = [dict(name='setting_' + str(i), value='x' * 80) for i in range(1500)]\n"
+            "items.append(dict(name='custom_setting', value=clause * (65536 // len(clause))))\n"
+            "raw = dict(schema_version=p.SNAPSHOT_SCHEMA, server=dict(host='db', port=3306, engine='mysql'),\n"
+            "           captured_at='2026-11-21T00:00:00+00:00', complete=True, notes=[], items=items)\n"
+            "began = time.monotonic()\n"
+            "clean = p.validate_snapshot(raw)\n"
+            "rows = p.compare_many({'a': raw, 'b': clean})\n"
+            "elapsed = time.monotonic() - began\n"
+            "assert len(rows) == 1501\n"
+            "assert all('secret' not in str(row['values']) for row in rows)\n"
+            "print(elapsed)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 1)
+
+    def test_oversized_values_are_discarded_before_redaction_in_all_snapshot_paths(self):
+        from myflames import compare_api
+        full = 'a.' * (1024 * 1024 // 2)
+        raw = snapshot([item('custom_setting', full, 'string', full, values=[full]),
+                        item('wsrep_sst_auth', full, 'string', full)])
+        began = time.monotonic()
+        with mock.patch.object(P, '_redact_parameter_value', wraps=P._redact_parameter_value) as redact:
+            direct = P.validate_snapshot(raw)
+            imported = compare_api.parse_file(json.dumps(raw))
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertEqual(direct, imported)
+        for row in direct['items']:
+            self.assertTrue(row['truncated'])
+            self.assertIsNone(row['value'])
+            self.assertIsNone(row['default'])
+            self.assertIsNone(row.get('values'))
+        self.assertFalse(any(call[0][0] == full for call in redact.call_args_list))
+        self.assertNotIn(full[:2048], json.dumps(direct))
+
+    def test_value_limit_preserves_exact_boundary_and_discards_only_overflow(self):
+        limit = P.MAX_VALUE_CHARS
+        clean = P.validate_snapshot(snapshot([item('at_limit', 'x' * limit, 'string'),
+                                              item('over_limit', 'x' * (limit + 1), 'string')]))
+        self.assertEqual(clean['items'][0]['value'], 'x' * limit)
+        self.assertFalse(clean['items'][0].get('truncated', False))
+        self.assertIsNone(clean['items'][1]['value'])
+        self.assertTrue(clean['items'][1]['truncated'])
+
+    def test_credential_url_scan_bounds_scheme_like_megabyte(self):
+        # A subprocess deadline also makes a regression fail promptly instead
+        # of blocking the full test worker while the regex holds the GIL.
+        code = (
+            "import time\nfrom myflames import param_compare as p\n"
+            "value = 'a.' * (1024 * 1024 // 2)\n"
+            "began = time.monotonic()\n"
+            "assert not list(p._CREDENTIAL_URL(value))\n"
+            "print(time.monotonic() - began)\n")
+        result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(float(result.stdout.strip()), 5)
+
     def test_password_plugin_settings_compared_and_sst_auth_stays_redacted(self):
         settings = [item('caching_sha2_password_auto_generate_rsa_keys', 'ON', 'boolean'),
                     item('caching_sha2_password_digest_rounds', '5000'),
@@ -249,6 +694,28 @@ class ValidationEdgeTest(unittest.TestCase):
                 self.assertEqual(clean['items'][0]['value'], value)
                 self.assertFalse(clean['items'][0].get('redacted', False))
 
+    def test_credential_urls_with_quotes_and_scheme_prefixes_stay_secret(self):
+        values = ("https://vault:it's-SECRET@vault.example:8200",
+                  'https://otel:"SECRET"@collector:4318/v1/traces',
+                  "https://o'brien:SECRET@collector", 'https://o"brien:SECRET@collector',
+                  'https://o`brien:SECRET@collector', 'https://otel:`SECRET`@collector',
+                  '10.0.0.1-https://u:SECRET@h', '-mysql://app:SECRET@db1',
+                  '+mysql://app:SECRET@db1', '1.mysql://app:SECRET@db1')
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(P._redact_parameter_value(value), '[redacted]')
+                raw = snapshot([item('custom_setting', value, 'string', value, values=[value])])
+                clean = P.validate_snapshot(raw)
+                self.assertNotIn('SECRET', json.dumps(clean))
+                self.assertTrue(clean['items'][0]['redacted'])
+                rows = P.compare_many({'a': raw, 'b': copy.deepcopy(raw)})
+                self.assertNotIn('SECRET', json.dumps(rows))
+                self.assertEqual(rows[0]['status'], 'missing')
+                self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path',
+                      'mysql://app:pa/SECRET@db1/shop'):
+            self.assertEqual(P._redact_parameter_value(value), value)
+
     def test_secret_defaults_and_allowed_values_cannot_leak(self):
         for setting in (item('wsrep_sst_auth', 'masked', 'string', 'numeric-password', values=['allowed-secret']),
                         item('custom_setting', 'ordinary', 'string', 'alice:default-secret'),
@@ -281,3 +748,70 @@ class ValidationEdgeTest(unittest.TestCase):
         self.assertEqual(rows['validate_password.policy']['value'],'MEDIUM')
         self.assertNotIn('redacted',rows['password_history'])
         self.assertTrue(rows['audit_log_encryption_password']['redacted'])
+
+    def test_file_key_management_filekey_is_redacted_and_not_compared(self):
+        self.assertTrue(P.sensitive('file_key_management_filekey'))
+        self.assertTrue(P.sensitive('FILE_KEY_MANAGEMENT_FILEKEY'))
+        captured = {}
+        for side, secret in (('a', 'passphrase-secret'), ('b', 'FILE:/etc/mysql/keyfile.enc')):
+            catalog = {'complete': True,
+                       'items': [item('file_key_management_filekey', secret, 'string', secret)]}
+            report = {'engine': 'mariadb', 'server_version': '11.4.13-MariaDB',
+                      'parameters': catalog, 'notes': []}
+            with mock.patch('myflames.config_review.config_report', return_value=report):
+                snap = P.capture(mock.Mock(host=side, port=3306), {'host': side, 'port': 3306})
+            row = snap['items'][0]
+            self.assertEqual(row['value'], '[redacted]')
+            self.assertEqual(row['default'], '[redacted]')
+            self.assertTrue(row['redacted'])
+            self.assertNotIn(secret, json.dumps(snap))
+            captured[side] = snap
+        for pair in ({'a': captured['a'], 'b': copy.deepcopy(captured['a'])}, captured):
+            rows = P.compare_many(pair)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['status'], 'missing')
+            self.assertEqual(rows[0]['reason'],
+                             'A value was redacted, truncated or unavailable; it cannot be compared.')
+            self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        raw_same = {'a': snapshot([item('file_key_management_filekey', 'same-passphrase', 'string')],
+                                  engine='mariadb'),
+                    'b': snapshot([item('file_key_management_filekey', 'same-passphrase', 'string')],
+                                  engine='mariadb')}
+        rows = P.compare_many(raw_same)
+        self.assertEqual(rows[0]['status'], 'missing')
+        self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
+        self.assertNotIn('same-passphrase', json.dumps(rows))
+
+    def test_telemetry_header_values_and_named_secrets_are_never_compared(self):
+        from myflames import topology_change
+        for signal in ('traces', 'metrics', 'logs'):
+            for suffix in ('headers', 'secret_headers'):
+                name = 'telemetry.otel_exporter_otlp_' + signal + '_' + suffix
+                with self.subTest(name=name):
+                    self.assertTrue(P.sensitive(name))
+                    self.assertTrue(P.sensitive(name.upper()))
+                    secret = 'api-key=telemetry-header-secret'
+                    raw = snapshot([item(name, secret, 'string', secret, values=[secret])])
+                    report = {'engine': 'mysql', 'server_version': '9.7.0', 'notes': [],
+                              'parameters': {'complete': True, 'items': raw['items']}}
+                    with mock.patch('myflames.config_review.config_report', return_value=report):
+                        captured = P.capture(mock.Mock(host='db', port=3306), {'host': 'db', 'port': 3306})
+                    for clean in (P.validate_snapshot(raw), captured):
+                        row = clean['items'][0]
+                        self.assertEqual(row['value'], '[redacted]')
+                        self.assertEqual(row['default'], '[redacted]')
+                        self.assertIsNone(row['values'])
+                        self.assertTrue(row['redacted'])
+                        self.assertNotIn(secret, json.dumps(clean))
+                        self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+                        group = P.compare_many({'a': raw, 'b': clean})[0]
+                        self.assertEqual(group['status'], 'missing')
+                        self.assertEqual(group['values'], {'a': '[redacted]', 'b': '[redacted]'})
+                        self.assertNotIn(secret, json.dumps(group))
+                    # The real rolling planner must refuse before consulting
+                    # profiles, opening a client, or reading saved passwords.
+                    store = mock.Mock()
+                    with self.assertRaisesRegex(ValueError, 'Sensitive variables') as refused:
+                        topology_change.plan(store, 'G', 'a', name, secret, 'global', ['a'])
+                    self.assertNotIn(secret, str(refused.exception))
+                    self.assertEqual(store.mock_calls, [])

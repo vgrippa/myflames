@@ -53,6 +53,7 @@ import csv
 import datetime
 import functools
 import getpass
+import heapq
 import io
 import json
 import re
@@ -2614,7 +2615,7 @@ def shift_guard_error(exc, packet_lines=None):
 def target_not_connected(exc):
     """Only an initial connection/login failure proves no packet was sent."""
     return (not getattr(exc, "guard_markers", ()) and not re.search(r"\bat line \d+", str(exc))
-            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005, 2026))
+            and error_code(str(exc)) in (1044, 1045, 1049, 1129, 1130, 1698, 2002, 2003, 2005, 2026))
 
 
 def redact_target_error(exc, password=None):
@@ -2968,7 +2969,11 @@ def cli_confirm(description, prompt, assume_yes=False, quiet=False, stdin=None, 
 #: Tokens of SHOW GRANTS and SHOW CREATE USER output: quoted identifiers and
 #: strings stay whole (backslashes kept), so a keyword inside a quoted
 #: credential or name is never read as SQL.
-GRANT_TOKEN = re.compile(r'''`(?:``|[^`])*`|"(?:""|[^"])*"|'(?:''|\\.|[^'\\])*'|[.,@()*;]|[^\s.,@()*;`"']+''')
+# An unfinished quoted run is one token through EOF. String escapes include
+# line breaks and a final lone backslash, so a failed match never retries at
+# each escaped quote. Quoted identifiers keep literal backslashes: SHOW
+# GRANTS escapes their quote only by doubling it (privileges.quote_identifier).
+GRANT_TOKEN = re.compile(r'''`(?:``|[^`])*(?:`|\Z)|"(?:""|[^"])*(?:"|\Z)|'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|[.,@()*;]|[^\s.,@()*;`"']+''')
 
 # Words that end an IDENTIFIED clause in SHOW GRANTS (MariaDB) and SHOW CREATE
 # USER (both engines). Everything from IDENTIFIED up to the first of them is a
@@ -2989,18 +2994,36 @@ def strip_credentials(text):
     tokens outside quoted literals, so a credential that contains ``WITH
     GRANT OPTION`` cannot end the clause early."""
     text = str(text or "")
-    while True:
-        matches = list(GRANT_TOKEN.finditer(text))
-        upper = [m.group().upper() for m in matches]
-        start = next((i for i, word in enumerate(upper) if word == "IDENTIFIED"), None)
-        if start is None:
-            return text
-        end = len(text)
-        for j in range(start + 1, len(matches)):
-            if any(tuple(upper[j:j + len(words)]) == words for words in _CREDENTIAL_ENDS):
-                end = matches[j].start()
-                break
-        text = (text[:matches[start].start()].rstrip() + " " + text[end:].lstrip()).strip()
+    matches, cursor = [], 0
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        token = GRANT_TOKEN.match(text, cursor)
+        if token is None:
+            # An unterminated quoted literal consumes the remainder. Never
+            # retry its escaped quotes as new literals or clause boundaries.
+            break
+        matches.append(token)
+        cursor = token.end()
+    upper = [m.group().upper() for m in matches]
+    parts, kept, index = [], 0, 0
+    # Tokenize once and visit each token once. Re-tokenizing the remaining
+    # text for every IDENTIFIED clause makes a long grant quadratic.
+    while index < len(matches):
+        if upper[index] != "IDENTIFIED":
+            index += 1
+            continue
+        parts.append(text[kept:matches[index].start()].strip())
+        index += 1
+        while index < len(matches) and not any(
+                tuple(upper[index:index + len(words)]) == words for words in _CREDENTIAL_ENDS):
+            index += 1
+        kept = matches[index].start() if index < len(matches) else len(text)
+    if not parts:
+        return text
+    parts.append(text[kept:].strip())
+    return " ".join(part for part in parts if part)
 
 
 def parse_grants(grants, engine="mysql"):
@@ -3277,7 +3300,7 @@ def read_grants(conn, tag="/*myflames:dbops*/ ", galera_identity=False):
 # ---- redaction -------------------------------------------------------------------------
 
 REDACTED = "[redacted]"
-_STRING = r"""(?:'(?:''|\\.|[^'\\])*(?:'|$)|"(?:""|\\.|[^"\\])*(?:"|$))"""
+_STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
 _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
@@ -3286,27 +3309,157 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
     # PASSWORD('x'), OLD_PASSWORD('x').
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
-    # SET PASSWORD [FOR user] = 'x'.
-    r"(\bSET\s+PASSWORD\b[^=;]*=\s*)",
+    # Bounded fallback for diagnostics that quote a whole SET PASSWORD statement.
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
-    r"((?<![\w'\"`])\w*PASSWORD\s*=?\s*)",
-    # ALTER USER ... IDENTIFIED BY 'new' or RANDOM PASSWORD REPLACE 'current'.
-    r"((?:\bRANDOM\s+PASSWORD|\[redacted\]['\"])\s+REPLACE\s+)",
+    r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
+    # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
+    r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
+# Quotes and comments consume their whole span, including an unfinished
+# tail, before recognizing commands. Start at the beginning of the text so
+# SET PASSWORD inside a literal cannot shift the quote boundaries.
+_SET_PASSWORD_PART = re.compile(
+    _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
+    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|(?P<command>\bSET\s+PASSWORD\b)|[=;]", re.I)
+_SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
+_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+_SET_PASSWORD_SEPARATOR = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
+_SET_PASSWORD_FROM_KEYWORD = re.compile(
+    _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
+    r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
+_URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
+_URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
+_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`@]")
+_URL_VALUE_BOUNDARY = re.compile(r"[\s/@]")
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
-#: Database URLs with user:secret@host (including Readyset N*mysql://... pool prefixes).
-_URL_SECRET = re.compile(r"(\b(?:\d+\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]+:)([^@\s'\"`]+)(@)", re.I)
+def _URL_SECRET(text, quoted=True):
+    """Yield password spans in URL authorities, with no credential length limit.
+
+    The scheme starts at a character outside the scheme alphabet, preventing
+    retries at each dot in a long scheme-like value. Each authority scan ends
+    at its first delimiter, so even nested or unfinished URLs take linear
+    work. Parameter values can contain quotes in userinfo; SQL/audit text
+    keeps quotes as literal boundaries. A slash ends the authority: an @ in
+    a path is not a credential. MySQL FEDERATED rejects a slash in passwords
+    (storage/federated/ha_federated.cc:815-816).
+    Readyset's N* pool prefix and an empty username require no special case.
+    """
+    boundary = _URL_SQL_BOUNDARY if quoted else _URL_VALUE_BOUNDARY
+    for scheme in _URL_SCHEME.finditer(text):
+        if not _URL_SCHEME_LETTER.search(text, scheme.start(), scheme.end() - 3):
+            continue
+        end = boundary.search(text, scheme.end())
+        if end is None or end.group() != "@":
+            continue
+        colon = text.find(":", scheme.end(), end.start())
+        if colon >= 0:
+            yield colon + 1, end.start()
 
 
 def _redact_literal(match):
     literal = match.group(2)
     quote = literal[0]
     return match.group(1) + quote + REDACTED + quote
+
+
+def _redact_set_password(text):
+    """Visit tokens once, redacting after the first bare assignment operator."""
+    parts, kept, pending = [], 0, False
+    for token in _SET_PASSWORD_PART.finditer(text):
+        if token.lastgroup == 'command':
+            pending = True
+        elif token.group() == ';':
+            pending = False
+        elif pending and token.group() == '=':
+            pending = False
+            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+            if literal is not None:
+                parts.extend((text[kept:token.end()], _redact_literal(literal)))
+                kept = literal.end()
+    return ''.join(parts) + text[kept:] if parts else text
+
+
+def _set_password_lexical_spans(text):
+    """Keep the lexical helper's decisions as spans in the original text."""
+    pending = False
+    for token in _SET_PASSWORD_PART.finditer(text):
+        if token.lastgroup == 'command':
+            pending = True
+        elif token.group() == ';':
+            pending = False
+        elif pending and token.group() == '=':
+            pending = False
+            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+            if literal is not None:
+                yield literal.start(2), literal.end(2)
+
+
+def _set_password_separator_spans(text):
+    """Cover diagnostic and executable-comment assignments without a length cap."""
+    pending, kept = False, 0
+    for token in _SET_PASSWORD_SEPARATOR.finditer(text):
+        if token.start() < kept:
+            continue
+        value = token.group()
+        if value == ';':
+            pending = False
+        elif value == '=':
+            if pending:
+                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
+                    yield literal.start(2), literal.end(2)
+                    kept = literal.end()
+            pending = False
+        else:
+            pending = True
+
+
+def _set_password_keyword_spans(text):
+    """Lex from a keyword even when preceding prose has unmatched quotes."""
+    cursor = 0
+    while cursor < len(text):
+        command = _SET_PASSWORD_KEYWORD.search(text, cursor)
+        if command is None:
+            return
+        cursor = len(text)
+        for token in _SET_PASSWORD_FROM_KEYWORD.finditer(text, command.end()):
+            if token.group() not in ('=', ';'):
+                continue
+            cursor = token.end()
+            if token.group() == '=':
+                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
+                    yield literal.start(2), literal.end(2)
+                    cursor = literal.end()
+            break
+
+
+def _redact_set_password_all(text):
+    """Redact the union of three linear scans over the same original input.
+
+    SQL, malformed diagnostics and executable comments need different quote
+    contexts. Sequential substitutions would change the later scans' context.
+    Each scan yields ordered spans, so merging three streams stays linear;
+    overlapping literals consume their whole union without exposing a tail.
+    """
+    spans = heapq.merge(_set_password_lexical_spans(text),
+                        _set_password_separator_spans(text),
+                        _set_password_keyword_spans(text))
+    parts, kept = [], 0
+    for start, end in spans:
+        if start < kept:
+            kept = max(kept, end)
+            continue
+        quote = text[start]
+        parts.extend((text[kept:start], quote, REDACTED, quote))
+        kept = end
+    return ''.join(parts) + text[kept:] if parts else text
 
 
 def redact(text, password=None):
@@ -3324,9 +3477,15 @@ def redact(text, password=None):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
+    text = _redact_set_password_all(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
-    text = _URL_SECRET.sub(lambda m: m.group(1) + REDACTED + m.group(3), text)
+    parts, kept = [], 0
+    for start, end in _URL_SECRET(text):
+        parts.extend((text[kept:start], REDACTED))
+        kept = end
+    if parts:
+        text = "".join(parts) + text[kept:]
     return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
 
 
@@ -3641,7 +3800,8 @@ def audit_object_matches(operation, target, engine, kind, key):
     if not isinstance(target, dict):
         return False
     if kind == 'parameter':
-        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist') and
+        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist',
+                              'topology.variable') and
                 target.get('name') == key['name'])
     if kind == 'account':
         from .accounts import _name

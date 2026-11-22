@@ -27,6 +27,15 @@ _CATALOG_KEYS = ("name", "global_value", "origin", "default", "scope", "type", "
                  "values", "read_only", "path", "comment", "command_line_argument")
 
 
+def value_truncated(value, engine, catalog=False):
+    """A full source-width value may have been cut before reaching the client."""
+    # MySQL 8.4.0 storage/perfschema/pfs_variable.cc:672-675 caps the byte
+    # length before memcpy; include/mysql/status_var.h:81 defines 1024.
+    # MariaDB sql/sql_show.cc:10528,10537 (SHOW and SYSTEM_VARIABLES).
+    cap = 1024 if engine == "mysql" else 2048 if catalog else 4096
+    return value is not None and (len(value) >= cap or len(value.encode('utf-8')) >= cap)
+
+
 def _location(entry, versions, wanted):
     """(manual version, page index, anchor or None) from a sysvar_docs entry.
 
@@ -132,7 +141,8 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     Row order follows the SELECT constants above; ``rows`` is SHOW GLOBAL
     VARIABLES. None means a read failed; an empty list means it succeeded
     with no rows. Only MySQL 9.0+ requires metadata_rows. MariaDB uses only
-    catalog_rows. Values are already unescaped by perf_common.Reader.
+    catalog_rows, or SHOW rows as an incomplete fallback. Values are already
+    unescaped by perf_common.Reader.
     modifiable="none" means the server sets the value; no option or SET changes it.
     *flavor* (``percona`` on Percona Server) marks the variables Percona adds
     with ``vendor: "percona"`` (server_info.PERCONA_VARIABLES); every other
@@ -151,7 +161,8 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     persisted = set(_index(persisted_rows, ("name",))) if mysql and persisted_rows is not None else None
     if mysql57:
         persisted = set()  # nothing is persisted: 5.7 has no SET PERSIST
-    globals_ = ({row[0].lower(): row[1] for row in rows or [] if len(row) >= 2 and row[0]} if mysql else
+    globals_ = ({row[0].lower(): row[1] for row in rows or [] if len(row) >= 2 and row[0]}
+                if mysql or catalog_rows is None else
                 {name: row.get("global_value") for name, row in catalog.items()})
     associations = _check_names(checks)
     flavor = _flavor(engine, flavor, globals_)
@@ -183,7 +194,7 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
         description = cat.get("comment") if not mysql else meta.get("documentation") or source_help(version_tuple, name)
         items.append({
             "name": name, "value": value[:variables.MAX_VALUE_LENGTH] if value is not None else None,
-            "truncated": value is not None and len(value) > variables.MAX_VALUE_LENGTH,
+            "truncated": value_truncated(value, engine, catalog=catalog_rows is not None and not mysql),
             "scope": scope, "apply_type": None if dynamic is None else "dynamic" if dynamic else "static",
             "modifiable": modifiable, "type": kind, "values": values, "min": low, "max": high,
             "block_size": block, "default": variables._default(info), "source": source,

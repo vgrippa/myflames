@@ -34,7 +34,7 @@ Related: [Connection groups and topology reads](safety.md#connection-groups-and-
 Use this when your saved connections belong to one cluster or replication group and you want to open the group once, then pick which server each view or query tab works on.
 
 1. Open the **Connection in use** picker in the top bar.
-2. Under **Group connections**, click the group you want to open (each row shows its server count and write-safety tags).
+2. Under **Group connections**, click the group you want to open (each row shows its server count and write-safety tags). You can also open a group directly from **Home** by clicking **Open** beside it under **Group connections** (which switches straight to the **Topology** place), or start a new group there with **New group…** (see [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home)).
 3. Open a single-server place such as **Server**, **Workload**, **Tuning**, **Database diagram** or **Query editor**.
 4. In the **Server:** picker in the view header or the **Query editor** tab bar, keep the default server (it starts on the primary or replication source, or the first member when none is marked primary or source) or choose another member of the group.
 5. In **Query editor**, click **+** (**New query tab**) to open a tab bound to the member chosen in **Server:**; each tab shows ` · <connection>` after its name and keeps running on that server even if you later change **Server:** for new tabs.

@@ -173,6 +173,93 @@ class AccountsTest(unittest.TestCase):
 
     # ---- reads -------------------------------------------------------------------------
 
+    def test_oversized_direct_and_inherited_grants_are_omitted_before_redaction(self):
+        original = dbops.strip_credentials
+
+        def bounded(text):
+            self.assertLessEqual(len(text), a.MAX_ACCOUNT_TEXT_CHARS)
+            return original(text)
+
+        hostile = 'PASSWORD' + ' ' * a.MAX_ACCOUNT_TEXT_CHARS + 'never-return-this-secret'
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                conn = FakeConn(engine)
+                role = p.quote_account('r', '%' if engine == 'mysql' else '', True, engine)
+                conn.grants = [hostile, 'GRANT %s TO `app`@`%%`' % role]
+                conn.role_grants = {role: [hostile]}
+                with mock.patch.object(dbops, 'strip_credentials', side_effect=bounded):
+                    result = a.read_account(conn, 'app', include_catalog=False)
+                self.assertIn(a.OMITTED_ACCOUNT_TEXT, result['grants'])
+                self.assertIn(a.OMITTED_ACCOUNT_TEXT, result['role_grants'])
+                self.assertIn('omitted: too long', result['error'])
+                self.assertFalse(result['role_grants_complete'])
+                self.assertFalse(result['effective_model']['checked'])
+                self.assertIn(a.OMITTED_ACCOUNT_TEXT, result['model']['unparsed'])
+                self.assertNotIn('never-return-this-secret', json.dumps(result))
+                self.assertEqual(conn.stdin, [])
+
+    def test_grant_line_cap_preserves_boundary_and_drops_whole_oversized_line(self):
+        self.assertEqual(a.MAX_ACCOUNT_TEXT_CHARS, 1048576)
+        grant = 'GRANT SELECT ON *.* TO `app`@`%`'
+        boundary = grant.ljust(a.MAX_ACCOUNT_TEXT_CHARS)
+        self.assertEqual(a._strip_account_credentials(boundary), boundary)
+        with mock.patch.object(dbops, 'strip_credentials', side_effect=AssertionError('oversized input')):
+            self.assertEqual(a._strip_account_credentials(boundary + 'x'), a.OMITTED_ACCOUNT_TEXT)
+
+    def test_wide_column_grant_stays_readable_changeable_and_fingerprinted(self):
+        columns = ['business_metric_column_%04d' % n for n in range(700)]
+        grant = 'GRANT SELECT (%s) ON `shop`.`orders` TO `app`@`%%`' % ', '.join(
+            p.quote_identifier(name) for name in columns)
+        self.assertGreater(len(grant), 16384)
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                self.conn = FakeConn(engine)
+                self.conn.grants.append(grant)
+                before = a.read_account(self.conn, 'app', include_catalog=False)
+                self.assertIn(grant, before['grants'])
+                self.assertNotIn(a.OMITTED_ACCOUNT_TEXT, json.dumps(before))
+                self.assertFalse(before['model']['unparsed'])
+                self.assertEqual(before['model']['columns'][0]['columns'], columns)
+                plan = self.plan('password', password='new-test-password')
+                self.assertEqual(plan['status'], 'ready')
+                changed = grant.replace(') ON ', '), UPDATE (`price`) ON ')
+                self.conn.grants[-1] = changed
+                after = a.read_account(self.conn, 'app', include_catalog=False)
+                self.assertNotEqual(before['fingerprint'], after['fingerprint'])
+                self.assertIn(grant, a.grant_diff(before, after)['removed'])
+                self.assertIn(changed, a.grant_diff(before, after)['added'])
+
+    def test_omitted_grants_cannot_bypass_account_write_guards(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                self.conn = FakeConn(engine)
+                self.conn.grants = ['GRANT SELECT ON ' + 'x' * a.MAX_ACCOUNT_TEXT_CHARS]
+                plan = self.plan('password', password='new-test-password')
+                self.assertEqual(plan['status'], 'blocked')
+                self.assertTrue(any('grant lines were not understood' in message
+                                    for message in plan['guards']['blocked']))
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'refused')
+                self.assertTrue(all(statement['status'] == 'not_sent' for statement in result['statements']))
+                self.assertEqual(self.conn.stdin, [])
+
+    def test_fingerprint_and_grant_diff_bound_grants_before_processing(self):
+        hostile = 'PASSWORD' + ' ' * a.MAX_ACCOUNT_TEXT_CHARS + 'never-return-this-secret'
+        before = {'name': 'app', 'host': '%', 'grants': []}
+        after = dict(before, grants=[hostile])
+        original = dbops.strip_credentials
+
+        def bounded(text):
+            self.assertLessEqual(len(text), a.MAX_ACCOUNT_TEXT_CHARS)
+            return original(text)
+
+        with mock.patch.object(dbops, 'strip_credentials', side_effect=bounded):
+            fingerprint = a.fingerprint(after)
+            diff = a.grant_diff(before, after)
+        self.assertEqual(len(fingerprint), 64)
+        self.assertEqual(diff['added'], [a.OMITTED_ACCOUNT_TEXT])
+        self.assertNotIn('never-return-this-secret', json.dumps(diff))
+
     def test_role_graph_deduplicates_when_enqueued_and_reads_each_role_once(self):
         for engine in ('mysql', 'mariadb'):
             with self.subTest(engine=engine):

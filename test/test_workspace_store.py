@@ -2,6 +2,8 @@
 import copy
 import json
 import os
+import stat
+import errno
 from pathlib import Path
 import contextlib
 import sqlite3
@@ -556,6 +558,200 @@ class TestWorkspaceStore(unittest.TestCase):
         for path in paths:
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX sidecar races')
+    def test_concurrent_sidecar_unlink_and_rotation_do_not_fail_status_reads(self):
+        import http.client
+        import threading
+        from myflames.ui import WorkspaceServer
+
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        real_open = os.open
+
+        server = WorkspaceServer(store_path=self.path)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        # Case 1: SQLite commits and unlinks -journal right after os.open succeeds.
+        journal.write_bytes(b'rollback')
+        unlinked = []
+
+        def unlink_after_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal) and not unlinked:
+                unlinked.append(True)
+                journal.unlink()
+            return fd
+
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Myflames-Token': server.token,
+            'Origin': server.origin,
+            'Cookie': server.cookie_name + '=' + server.session_secret,
+        }
+        with patch.object(os, 'open', side_effect=unlink_after_open):
+            conn = http.client.HTTPConnection(*server.server_address, timeout=10)
+            try:
+                conn.request('POST', '/api/app/update/status', body='{}', headers=headers)
+                response = conn.getresponse()
+                status, body = response.status, response.read().decode('utf-8')
+            finally:
+                conn.close()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)['schema_version'], 'app-update-status-1.0')
+        self.assertEqual(unlinked, [True])
+
+        # Case 2: SQLite unlinks -journal and a new transaction recreates it
+        # with a different inode and wide mode right after os.open succeeds.
+        journal.write_bytes(b'old-journal')
+        rotated = []
+
+        def rotate_after_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal) and not rotated:
+                rotated.append(True)
+                journal.unlink()
+                journal.write_bytes(b'new-journal')
+                os.chmod(str(journal), 0o666)
+            return fd
+
+        # The replacement is checked again and tightened before SQLite opens
+        # the database (SQLite then discards the invalid journal, so the mode
+        # is read when sqlite3.connect is called).
+        modes, journal_opens = [], []
+        real_connect = workspace_store.sqlite3.connect
+
+        def spy_open(path, flags, *args, **kwargs):
+            if str(path) == str(journal):
+                journal_opens.append(True)
+            return rotate_after_open(path, flags, *args, **kwargs)
+
+        def spy_connect(*args, **kwargs):
+            if journal.exists():
+                modes.append(journal.stat().st_mode & 0o777)
+            return real_connect(*args, **kwargs)
+
+        with patch.object(os, 'open', side_effect=spy_open), \
+                patch.object(workspace_store.sqlite3, 'connect', side_effect=spy_connect):
+            self.assertIs(self.store.app_update_auto(), True)
+        self.assertEqual(rotated, [True])
+        self.assertGreaterEqual(len(journal_opens), 2)
+        self.assertTrue(modes, 'the replacement journal exists when SQLite connects')
+        self.assertEqual(modes[0], 0o600)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX sidecar races')
+    def test_sidecar_replaced_on_every_open_fails_closed(self):
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        journal.write_bytes(b'journal')
+        real_open = os.open
+        opens = []
+
+        def rotate_always(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal):
+                opens.append(True)
+                journal.unlink()
+                journal.write_bytes(b'journal')
+            return fd
+
+        try:
+            with patch.object(os, 'open', side_effect=rotate_always), \
+                    patch.object(workspace_store.sqlite3, 'connect') as connect:
+                with self.assertRaisesRegex(ValueError, 'changed while it was being opened'):
+                    self.store._connect()
+                connect.assert_not_called()
+            self.assertEqual(len(opens), 9)
+        finally:
+            journal.unlink()
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'FIFOs')
+    def test_fifo_sidecar_is_refused_without_blocking(self):
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        os.mkfifo(str(journal))
+        try:
+            with patch.object(workspace_store.sqlite3, 'connect') as connect:
+                with self.assertRaisesRegex(ValueError, 'wrong file type'):
+                    self.store._connect()
+                connect.assert_not_called()
+        finally:
+            os.unlink(str(journal))
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX sidecar security races')
+    def test_security_sidecar_swap_to_symlink_or_foreign_owner_is_rejected(self):
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        target = Path(self.temp.name) / 'external-target'
+        target.write_bytes(b'keep intact')
+        os.chmod(str(target), 0o644)
+        real_open = os.open
+        real_lstat = os.lstat
+
+        # Abuse 1: symlink swapped in between lstat and open (O_NOFOLLOW).
+        journal.write_bytes(b'legit')
+        swapped = []
+
+        def swap_before_open(path, flags, *args, **kwargs):
+            if str(path) == str(journal) and not swapped:
+                swapped.append(True)
+                journal.unlink()
+                journal.symlink_to(target)
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(os, 'open', side_effect=swap_before_open), \
+                patch.object(workspace_store.sqlite3, 'connect') as connect:
+            with self.assertRaisesRegex(ValueError, 'link|symlink'):
+                self.store._connect()
+            connect.assert_not_called()
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(target.read_bytes(), b'keep intact')
+        journal.unlink()
+
+        # Abuse 2: symlink swapped in between open and post-open lstat.
+        journal.write_bytes(b'legit')
+        swapped_after = []
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal) and not swapped_after:
+                swapped_after.append(True)
+                journal.unlink()
+                journal.symlink_to(target)
+            return fd
+
+        with patch.object(os, 'open', side_effect=swap_after_open), \
+                patch.object(workspace_store.sqlite3, 'connect') as connect:
+            with self.assertRaisesRegex(ValueError, 'link|symlink'):
+                self.store._connect()
+            connect.assert_not_called()
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(target.read_bytes(), b'keep intact')
+        journal.unlink()
+
+        # Abuse 3: foreign-owned file swapped in between open and post-open lstat.
+        journal.write_bytes(b'legit')
+        lstat_calls = [0]
+
+        def foreign_after_open(path, *args, **kwargs):
+            result = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal):
+                lstat_calls[0] += 1
+                if lstat_calls[0] >= 2:
+                    fields = list(result)
+                    fields[4] = os.geteuid() + 1
+                    return os.stat_result(fields)
+            return result
+
+        with patch.object(os, 'lstat', side_effect=foreign_after_open), \
+                patch.object(workspace_store.sqlite3, 'connect') as connect:
+            with self.assertRaisesRegex(ValueError, 'owner|owned'):
+                self.store._connect()
+            connect.assert_not_called()
+
     @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
     def test_permission_failure_prevents_opening_database(self):
         self.store.save('investigation', bundle())
@@ -566,11 +762,80 @@ class TestWorkspaceStore(unittest.TestCase):
                 self.store.list('investigation')
         connect.assert_not_called()
 
-    def test_windows_permission_protection_is_a_noop(self):
+    def test_windows_sidecar_protection_is_a_noop(self):
+        journal = Path(str(self.path) + '-journal')  # built before os.name changes
         with patch.object(workspace_store.os, 'name', 'nt'), patch.object(workspace_store.os, 'chmod') as chmod, \
-                patch.object(workspace_store.os, 'stat', side_effect=AssertionError('permission check on Windows')):
-            workspace_store._owner_only(self.path, 0o600)
+                patch.object(workspace_store.os, 'open', side_effect=AssertionError('sidecar open on Windows')), \
+                patch.object(workspace_store.os, 'lstat', side_effect=AssertionError('permission check on Windows')):
+            workspace_store._protect_sidecar(journal, 0o600)
         chmod.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX sidecar refusals')
+    def test_refused_sidecar_is_never_retried_even_if_it_then_vanishes(self):
+        self.store.save('profile', {'name': 'Primary', 'host': 'db.example', 'user': 'reader'})
+        journal = Path(str(self.path) + '-journal')
+        target = Path(self.temp.name) / 'elsewhere'
+        target.write_bytes(b'keep')
+        journal.symlink_to(target)
+        real_lstat = os.lstat
+        calls = []
+
+        def vanish_after_refusal(path, *args, **kwargs):
+            result = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal):
+                calls.append(True)
+                if len(calls) == 1:
+                    journal.unlink()
+            return result
+
+        with patch.object(os, 'lstat', side_effect=vanish_after_refusal):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual(len(calls), 1)
+
+        # Refused at the second lstat (a link swapped in after the open), and
+        # gone right after that refusal.
+        journal.write_bytes(b'journal')
+        real_open = os.open
+        swapped, seen_link = [], []
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if str(path) == str(journal) and not swapped:
+                swapped.append(True)
+                journal.unlink()
+                journal.symlink_to(target)
+            return fd
+
+        def vanish_after_link(path, *args, **kwargs):
+            result = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal) and stat.S_ISLNK(result.st_mode) and not seen_link:
+                seen_link.append(True)
+                journal.unlink()
+            return result
+
+        with patch.object(os, 'open', side_effect=swap_after_open), \
+                patch.object(os, 'lstat', side_effect=vanish_after_link):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual((swapped, seen_link), ([True], [True]))
+
+        # Refused at the open (O_NOFOLLOW on a link swapped in after the first
+        # lstat), and gone before anything could check again.
+        journal.write_bytes(b'journal')
+
+        def link_then_vanish(path, flags, *args, **kwargs):
+            if str(path) == str(journal):
+                journal.unlink()
+                journal.symlink_to(target)
+                journal.unlink()
+                raise OSError(errno.ELOOP, 'Too many levels of symbolic links', str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(os, 'open', side_effect=link_then_vanish):
+            with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                workspace_store._protect_sidecar(journal, 0o600)
+        self.assertEqual(target.read_bytes(), b'keep')
 
     def test_record_kind_isolation(self):
         saved = self.store.save('investigation', bundle(), "id'; DROP TABLE records; --")

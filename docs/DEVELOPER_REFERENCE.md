@@ -49,6 +49,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Database diagram](#database-diagram)
   - [Schema versions](#schema-versions)
   - [Compare servers: parameters and accounts](#compare-servers-parameters-and-accounts)
+  - [Topology: Group connection reads and rolling changes](#topology-group-connection-reads-and-rolling-changes)
   - [Parameter version catalogs](#parameter-version-catalogs)
   - [Engine words for the Query editor](#engine-words-for-the-query-editor)
   - [MySQL 5.7 support](#mysql-57-support)
@@ -947,8 +948,10 @@ the window-open handler always denies a new app window. Tests:
   view switch); Security: Users and roles (`Accounts.tsx`)). The Workload place
   (`place="workload"`) lists Top statements (`SlowQueries.tsx`), Processlist
   (`sessions`; a saved `running` restores as `sessions`), Waits and I/O;
+  Topology (`TopologyPlace.tsx`, right after Workload),
   Replication (`ReplicationPlace.tsx`), Cluster (`ClusterPlace.tsx`, right
-  after Replication) and Tuning (`place="tuning"`, with the
+  after Replication), ProxySQL (`ProxySqlPlace.tsx`), Readyset
+  (`ReadysetPlace.tsx`) and Tuning (`place="tuning"`, with the
   Full analysis, `report`, as its second tab) are places of their own. A view
   reads when it is opened on screen (once per connection; Refresh retries;
   `useViewOnScreen()` from `viewOnScreen.ts`, `useOpenRead`), Top statements,
@@ -1019,8 +1022,9 @@ the window-open handler always denies a new app window. Tests:
   policy is unknown: the footer says "Production assumed" and Kill is off
   (`WritePolicy.blocked`). `SafetyStatus` (`Connections.tsx`) is the first
   item of the window footer (`WindowStatusBar lead`, `kit.tsx`) on the
-  places that send to the connection in use (Query editor, Server, Workload,
-  Replication, Cluster, Tuning): `data-status="safety"`, `data-safety` production,
+  places that send to the connection in use (Query editor, Query digest,
+  Database diagram, Schema versions, Server, Workload, Topology, Replication,
+  Cluster, ProxySQL, Readyset, Tuning): `data-status="safety"`, `data-safety` production,
   read-only, development or unknown, a dot plus words, `role="note"` with the
   full sentence as `aria-label` and tooltip, and Retry after a failed read.
   Nothing sits under the top bar (`--topbar-height` is the top bar row), and
@@ -1806,8 +1810,15 @@ Workspace database files and SQLite sidecars, vault directories, keys, and
 locks reject symbolic links and foreign owners before opening or changing
 permissions. Creation uses exclusive creation; existing file descriptors are
 checked without following links where supported. POSIX directories are 0700
-and files 0600; Windows retains its platform helper. SQLite connections close
-if setup fails. Session persistence redacts recognized SQL credential literals
+and files 0600; Windows retains its platform helper. A SQLite sidecar that
+another request's transaction removes or replaces during that check is not
+tampering: a removed sidecar needs nothing, a replacement is checked again
+(at most 9 checks, then the request fails closed), and a link, a foreign owner
+or a wrong file type is refused at once, never retried, before
+`sqlite3.connect`. This applies on POSIX; on Windows, sidecars inherit the store
+folder's owner-only ACL, and the vault also rewrites existing ones. On Windows the vault's ACL update likewise
+skips a sidecar that is gone after a failed call. SQLite connections close if
+setup fails. Session persistence redacts recognized SQL credential literals
 in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
 request supplies no password.
@@ -2168,20 +2179,43 @@ does not revoke an otherwise consenting read.
   The workspace opens a group as one **Group connection** from the connection
   picker (`main.tsx` `openGroup`, `api.openConnectionGroup` with
   `probe_members: true` on an explicit open or Refresh, never on automatic
-  refresh): the picker lists groups beside the saved connections
-  (`api.profileGroups`, the same computation as `list_groups`) with the name,
-  the server count and the strictest safety pill. The Group connection
-  carries `group_name` on every request (`binding.ts connectionKey` includes
-  it, so views reload when the group or the active member changes) and is
-  judged by the reply's `effective_safety`; the top bar and the status bar
-  name it (`binding.ts groupConnectionLabel`, "Group connection mf-ic · 3
-  servers") and the status bar has **Edit group…**. One group editor sheet
-  (`GroupEditorSheet.tsx`, a lazy chunk) is shared by the picker, the status
-  bar and Home's Connections place: rename, add and remove members
-  (`profiles/groups/save`), and delete (`profiles/groups/delete`, whose
-  confirmation says the saved connections stay). After a save that removes
-  the active member, the Group connection re-opens without probing on the
-  member the backend picks and says so.
+  refresh) or from **Home** (`Connections.tsx`): the picker lists groups beside
+  the saved connections (`api.profileGroups`, the same computation as
+  `list_groups`) with the name, the server count and the strictest safety pill,
+  and Home renders a **Group connections** section
+  (`data-testid="home-group-connections"`) above the **Saved connections**
+  heading and `#connections-table`. Each Home group card
+  (`.group-connection-row`) shows the group name, server count, member names
+  (with the full list in `title`), `SafetyTags`, **In use** when active, **Open**
+  (or **Refresh** when active; clicking it calls `openGroup(name, { probe: true })`
+  and navigates to the **Topology** place), and **Edit group…**; with no
+  groups, Home shows one sentence and a **New group…** button. Home also
+  offers **New group…** in the Connections header (pre-ticking the saved
+  connection in use when there is one) and **Group (N)…** in the table
+  toolbar when one or more saved connections are selected (unsaved rows are
+  excluded). The Group connection carries `group_name` on every request
+  (`binding.ts connectionKey` includes it, so views reload when the group or the
+  active member changes) and is judged by the reply's `effective_safety`; the
+  top bar and the status bar name it (`binding.ts groupConnectionLabel`,
+  "Group connection mf-ic · 3 servers") and the status bar has **Edit group…**.
+  One group editor sheet (`GroupEditorSheet.tsx`, a lazy chunk) is shared by
+  the picker, the status bar, Home's Connections place and the **Topology**
+  place: in edit mode (`group !== null`) it renames, adds and removes members
+  (`profiles/groups/save`) and deletes the group (`profiles/groups/delete`,
+  whose confirmation says the saved connections stay); in create mode
+  (`group === null`, `initialMembers`) it titles the sheet `"New group"`, uses
+  `"Create group"`, omits `"Delete group…"`, refuses an existing group name
+  (trimmed, `role="alert"`) inline before sending, disables **Create group**
+  when the trimmed name is empty, duplicate, has 0 members or exceeds 16
+  members, and calls `saveConnectionGroup` without `previous_name`. After a
+  save (`main.tsx` `groupSaved`), if the save edited the active Group
+  connection (including a rename or removing its active member) or moved a
+  member out of the active Group connection into another group (`movedOut`),
+  the active Group connection re-opens (`probe: false`) when members remain
+  (when the active member left, it moves to the member the backend picks and
+  says so); if every member moved out of the active Group connection so
+  reopening fails, `setGroupConnection(null)` leaves the active server open as
+  a plain connection with a status note (`connectionNote`).
   Single-server places get a **Server:** picker (`GroupServerPicker.tsx`
   `GroupServerPicker` and `groupMemberLabel`: `"<profile_name> · <host>:<port>"`
   plus `" · <ROLE>"` when `role` is present; a `Segmented` control up to 4
@@ -2276,7 +2310,11 @@ does not revoke an otherwise consenting read.
   connections in the same non-empty `group` as the connection in use
   (`connection_groups.members(profiles, current)`), never to the connection in
   use itself (`id != current["id"]`), and never when the connection in use is
-  unsaved or has `group == ""`. There is no in-memory revocation registry:
+  unsaved or has `group == ""`. By contrast, the Topology place
+  (`topology_group.read_group`) reads every saved member of the active Group
+  connection, the active one included, each through its own saved connection
+  with the same consent re-checks before every login (see
+  [Topology: Group connection reads and rolling changes](#topology-group-connection-reads-and-rolling-changes)). There is no in-memory revocation registry:
   consent is derived from the store at every login. `request_profiles(store, connection)` fails
   closed: if `store` is `None`, `store.list("profile")` raises or does not
   return a `list` or `tuple` of dicts, it returns `([], None)` so no saved
@@ -2365,7 +2403,7 @@ does not revoke an otherwise consenting read.
   (`aria-hidden`, no text, `pointer-events: none`) fixed to the window's top
   edge inside `.topbar-stack` on the places that show `SafetyStatus` (Query
   editor, Query digest, Database diagram, Schema versions, Server, Workload,
-  Replication, Cluster, ProxySQL, Tuning), colored by `--conn-prod-strip`,
+  Topology, Replication, Cluster, ProxySQL, Readyset, Tuning), colored by `--conn-prod-strip`,
   `--conn-dev-strip` or `--conn-readonly-strip` in both appearances; the type
   word stays in the window footer. `ConnectionTypeBand` (`ConfirmSheet.band`)
   heads every write review and confirmation sheet (`ActionReview.tsx`,
@@ -6393,7 +6431,7 @@ later reading of the same server can be compared with it.
   - MariaDB 11.2+ MyISAM primary-key rebuild advice states that the copy holds a table read lock: UPDATE and DELETE wait for the whole copy; only concurrent inserts continue (adding AUTO_INCREMENT blocks those too). InnoDB retains its in-place/LOCK guidance. Hidden InnoDB row IDs use one shared atomic counter on MariaDB 10.6 to 10.11, then a counter per table from 11.0. Test: `test_schema_health.py::test_correctness_regression_myisam_copy_lock`.
   - Rule passes stay linear in the rows read: Indexes builds the `setup_objects` lookup once per report and checks the three precedence keys per table; Tables computes whether any General tablespace exists, and the case-folded tablespace names used when `lower_case_table_names` is 1 or 2, once per report (`schema_health._folded`); Locks builds each metadata-lock group's owner list once and shares it across the pending requests that read it (`locks._mdl_blockers`). `test_indexes.py`, `test_schema_health.py` and `test_locks.py` count these passes.
   - `python3 -m myflames io [--interval N] [--schema NAME] [--limit N] [--all-instances]` (`io-1.0`, `myflames/io_stats.py`, never `io.py`): status deltas (no P_S needed), `table_io_waits_summary_by_table` (schema-scoped), `file_summary_by_instance` and `_by_event_name` (temp files only in the latter), since-start lists; `classify_file` maps FILE_NAME to kinds and schema.table (`#p#`/`#P#`, `@XXXX`). MariaDB has no redo log file instrument. Above `INSTANCE_LIMIT` (2,000) table or file instances a family is left out of both snapshots (`collection.omitted`) unless `--all-instances` / `all_instances`; collection has a 30 s budget plus the interval. No auto-refresh in the UI.
-  - `python3 -m myflames config [--fail-on problem|watch]` (`config-1.0`, `myflames/config_review.py`): checks with engine `DEFAULTS`, `set_by` from `variables_info` (MySQL) or `SYSTEM_VARIABLES` (MariaDB), statuses with `RULES`, `why`, `caveat`, and `action` text; reuses `advisor.buffer_pool_coverage` and `advisor.flush_log_durability` (MariaDB's 3 is durable). Tablespace sizes need PROCESS (else `unknown`). `--fail-on` exits 1 like `health`. Each setting carries `dynamic` (`variables.static_dynamic`: true, false, or null when unknown, no extra read); changing a setting is [`config set`](#server-variables-config-set-reset-persist). The CLI `myflames config` is unchanged (no parameter list, no new flags). `/api/live/config` (still `config-1.0`, internal view id still `config`) calls `config_review.config_report(conn, parameters=True)` and includes `parameters` (`parameters-1.0`, built by `myflames/parameters.py`: `read_parameters` and pure `compute_parameters`) with `complete`, `notes`, and `items[]` (`name`, `value`, `truncated` for values over 4,096 characters, `scope`, `apply_type`, `modifiable` (`now`, `restart`, `option_file`, `none`, `null`), `type`, `values`, `min`, `max`, `block_size`, `default`, `source`, `source_label`, `source_path`, `set_time`, `set_user`, `set_host`, `persisted`, `modified`, `description` capped at 600 characters (MariaDB `VARIABLE_COMMENT`; MySQL 9.0+ `variables_metadata.DOCUMENTATION`; MySQL before 9.0 reports none, so `parameters.source_help` takes the help text the variable is declared with in the tagged source from the generated `myflames/mysql_sysvar_help.py`: `HELP` from the newest 8.4 tag, and `HELP_80` from the newest 8.0 tag where 8.0 declares another text or a name 8.4 removed; a text built with a macro, or one that only repeats the name, is left out), `documentation`, `checks`) and `flavor` (`mysql`, `percona` or `mariadb`: the server object's `flavor` when it has one, else `percona` when `@@version_comment` names Percona). `documentation` is `{url, source}` or null from `parameters.documentation(engine, version_tuple, name, flavor)`: the MySQL Reference Manual for MySQL and Percona servers (the first saved manual at or after the server's major.minor, else the newest; a name that manual leaves out comes from the nearest newer, then older manual, and `source` names it, "MySQL 9.7 Reference Manual"), MariaDB's documentation for MariaDB, and only for a name no MySQL manual documents on a Percona server, Percona Server's then Percona XtraDB Cluster's manual. The locations come from the generated `myflames/sysvar_docs.py`: `scripts/gen_sysvar_docs.py --saved-on DATE` reads saved official pages (never the network): each MySQL manual's "Server Option, System Variable, and Status Variable Reference" (rows whose System Var column says Yes; with `--mysql-pages`, the linked pages, a row that links an option anchor uses the `sysvar_<name>` anchor a saved page defines, and an anchor no saved page defines is dropped), MariaDB's "Full List of MariaDB Options, System and Status Variables" (lowercase system variable names whose link text is the anchor, status variable pages skipped; with `--mariadb-pages`, a stale anchor moves to the one saved `...system-variables` page that defines it, and a heading on such a page that the list leaves out is added) and saved copies of the Percona Server and Percona XtraDB Cluster manuals (a heading whose lowercase text is a variable name with the option table under it). Saved on 2026-10-21 from the MySQL 8.0, 8.4, 9.7 and 26.7 manuals, MariaDB's documentation, Percona Server 8.0, 8.4 and 9.7 and Percona XtraDB Cluster 8.0 and 8.4; a live MySQL 8.4.11 server links 621 of its 623 parameters, MySQL 9.7.2 625 of 631, MariaDB 11.4 657 of 674 and a Percona XtraDB Cluster 8.4 node 719 of 740. The desktop app opens `dev.mysql.com`, `mariadb.com` and `docs.percona.com` (`apps/desktop/backend.cjs` EXTERNAL_HOSTS); `Config.tsx`'s `documentationLink` accepts only HTTPS links to those hosts. Tests: `test/test_sysvar_docs.py`. `scripts/gen_mysql_sysvars.py --mysql-source PATH` writes `mysql_sysvar_help.py` beside `mysql_sysvars.py` (`parse_help`; tests in `test/test_mysql_sysvars.py` and `test/test_parameters.py`); a live MySQL 8.4.11 server describes 571 of its 623 parameters this way and MySQL 8.0.46 577 of 631. `read_parameters` reads MySQL `SHOW GLOBAL VARIABLES`, `performance_schema.variables_info`, `persisted_variables` and (9.0+) `variables_metadata`, or MariaDB `information_schema.SYSTEM_VARIABLES` without `SESSION ONLY` variables; a denied or missing table becomes a note and `complete: false`, never an error.
+  - `python3 -m myflames config [--fail-on problem|watch]` (`config-1.0`, `myflames/config_review.py`): checks with engine `DEFAULTS`, `set_by` from `variables_info` (MySQL) or `SYSTEM_VARIABLES` (MariaDB), statuses with `RULES`, `why`, `caveat`, and `action` text; reuses `advisor.buffer_pool_coverage` and `advisor.flush_log_durability` (MariaDB's 3 is durable). Tablespace sizes need PROCESS (else `unknown`). `--fail-on` exits 1 like `health`. Each setting carries `dynamic` (`variables.static_dynamic`: true, false, or null when unknown, no extra read); changing a setting is [`config set`](#server-variables-config-set-reset-persist). The CLI `myflames config` is unchanged (no parameter list, no new flags). `/api/live/config` (still `config-1.0`, internal view id still `config`) calls `config_review.config_report(conn, parameters=True)` and includes `parameters` (`parameters-1.0`, built by `myflames/parameters.py`: `read_parameters` and pure `compute_parameters`) with `complete`, `notes`, and `items[]` (`name`, `value`, `truncated` via `parameters.value_truncated` for values that reach their source cap in characters or UTF-8 bytes (MySQL SHOW/P_S: 1,024; MariaDB I_S `GLOBAL_VALUE`: 2,048; MariaDB SHOW: 4,096), while `value` is capped at `variables.MAX_VALUE_LENGTH` (4,096 characters; `param_compare` treats strings over `MAX_VALUE_CHARS` = 65,536 characters as `truncated: True`); values at a source cap may have been cut by the server and are neither editable inline, comparable, nor allowed in a rolling change unless a MariaDB `SHOW` re-read proves a non-truncated value under 4,096, `scope`, `apply_type`, `modifiable` (`now`, `restart`, `option_file`, `none`, `null`), `type`, `values`, `min`, `max`, `block_size`, `default`, `source`, `source_label`, `source_path`, `set_time`, `set_user`, `set_host`, `persisted`, `modified`, `description` capped at 600 characters (MariaDB `VARIABLE_COMMENT`; MySQL 9.0+ `variables_metadata.DOCUMENTATION`; MySQL before 9.0 reports none, so `parameters.source_help` takes the help text the variable is declared with in the tagged source from the generated `myflames/mysql_sysvar_help.py`: `HELP` from the newest 8.4 tag, and `HELP_80` from the newest 8.0 tag where 8.0 declares another text or a name 8.4 removed; a text built with a macro, or one that only repeats the name, is left out), `documentation`, `checks`) and `flavor` (`mysql`, `percona` or `mariadb`: the server object's `flavor` when it has one, else `percona` when `@@version_comment` names Percona). `documentation` is `{url, source}` or null from `parameters.documentation(engine, version_tuple, name, flavor)`: the MySQL Reference Manual for MySQL and Percona servers (the first saved manual at or after the server's major.minor, else the newest; a name that manual leaves out comes from the nearest newer, then older manual, and `source` names it, "MySQL 9.7 Reference Manual"), MariaDB's documentation for MariaDB, and only for a name no MySQL manual documents on a Percona server, Percona Server's then Percona XtraDB Cluster's manual. The locations come from the generated `myflames/sysvar_docs.py`: `scripts/gen_sysvar_docs.py --saved-on DATE` reads saved official pages (never the network): each MySQL manual's "Server Option, System Variable, and Status Variable Reference" (rows whose System Var column says Yes; with `--mysql-pages`, the linked pages, a row that links an option anchor uses the `sysvar_<name>` anchor a saved page defines, and an anchor no saved page defines is dropped), MariaDB's "Full List of MariaDB Options, System and Status Variables" (lowercase system variable names whose link text is the anchor, status variable pages skipped; with `--mariadb-pages`, a stale anchor moves to the one saved `...system-variables` page that defines it, and a heading on such a page that the list leaves out is added) and saved copies of the Percona Server and Percona XtraDB Cluster manuals (a heading whose lowercase text is a variable name with the option table under it). Saved on 2026-10-21 from the MySQL 8.0, 8.4, 9.7 and 26.7 manuals, MariaDB's documentation, Percona Server 8.0, 8.4 and 9.7 and Percona XtraDB Cluster 8.0 and 8.4; a live MySQL 8.4.11 server links 621 of its 623 parameters, MySQL 9.7.2 625 of 631, MariaDB 11.4 657 of 674 and a Percona XtraDB Cluster 8.4 node 719 of 740. The desktop app opens `dev.mysql.com`, `mariadb.com` and `docs.percona.com` (`apps/desktop/backend.cjs` EXTERNAL_HOSTS); `Config.tsx`'s `documentationLink` accepts only HTTPS links to those hosts. Tests: `test/test_sysvar_docs.py`. `scripts/gen_mysql_sysvars.py --mysql-source PATH` writes `mysql_sysvar_help.py` beside `mysql_sysvars.py` (`parse_help`; tests in `test/test_mysql_sysvars.py` and `test/test_parameters.py`); a live MySQL 8.4.11 server describes 571 of its 623 parameters this way and MySQL 8.0.46 577 of 631. `read_parameters` reads MySQL `SHOW GLOBAL VARIABLES`, `performance_schema.variables_info`, `persisted_variables` and (9.0+) `variables_metadata`, or MariaDB `information_schema.SYSTEM_VARIABLES` without `SESSION ONLY` variables; a denied or missing table becomes a note and `complete: false`, never an error.
   - Generated MySQL system variable catalog: `scripts/gen_mysql_sysvars.py --mysql-source <mysql-server checkout>` writes `myflames/mysql_sysvars.py` (817 variables) from the `mysql-9.7.0` tag and the newest 8.4 tag (`sys_vars.cc` declarations with or without `static` and with `(` or `{` initializers, plus InnoDB, semisync, X plugin, group replication, `caching_sha2_password` and `validate_password` declarations), recording scope, type and the flags `ro` (`READ_ONLY`), `np` (`NON_PERSIST`), `pro` (`PERSIST_AS_READONLY`) and `nc` (no startup option: `NO_CMD_LINE`, the `sys_vars.h` classes that force it, or `PLUGIN_VAR_NOCMDOPT`); facts that differ between the two versions are recorded as unknown; a declaration-count test fails when a new declaration shape appears. `variables.py` keeps its hand-verified map authoritative and falls back to the catalog; `test/test_mysql_sysvars.py` checks that all 84 hand-verified entries agree. On a live MySQL 8.4 server, 597 of 623 parameters get an apply type; the SSL and admin TLS variables (declared in `sql/ssl_init_callback.cc`, and applied only by `ALTER INSTANCE RELOAD TLS` or a restart) and a few plugin variables stay unknown. `modifiable` is `none` for a static variable the server sets itself (MySQL catalog flag `nc`; MariaDB `COMMAND_LINE_ARGUMENT` is NULL), except variables set through separately named mysqld options (`core_file`, `log_bin`, `log_bin_index`, `relay_log_index`, `skip_external_locking`, `locked_in_memory`), which stay `option_file` or `restart`. `modified` is false for MySQL `COMPILED` and MariaDB `COMPILE-TIME` or `AUTO` (sized by the server). Batch output prints SQL NULL and the text NULL alike, so values read as NULL are read again exactly (`VALUE IS NULL, HEX(VALUE)` from `performance_schema.global_variables` or `SYSTEM_VARIABLES`); when that read fails the inventory is `complete: false`. `variable-1.0` carries the same fact as `startup_option` (`variables.startup_option`: false, true or null), so the single-parameter plan offers neither SET PERSIST_ONLY nor an option file line for a value the server sets, and the inspector's Change… is off for `modifiable: none`. In the batch review, a request that fails without a reply is reported as `unknown` (it may have run), never as unchanged.
   UI: `Waits.tsx`, `Indexes.tsx`, `Tables.tsx` (+ `tables.css`), `IoStats.tsx`, `Config.tsx` (Parameters), shared `PerfShared.tsx` (incl. `SchemaPicker` and `useSchemaCatalog`, one cached list per connection) + `perf.css`; endpoints `/api/live/waits|indexes|tables|schemas|io|config` (in `ui._SERVER_VIEW_PATHS`, saved-password helper). Session restore keeps the tab, the shared `schema` (I/O and Top statements' schema filter), per-tab `indexes_schemas`/`tables_schemas` (omitted when empty = all user databases) and `waits_interval`/`io_interval`, never reports. Links: I/O table rows open Index health or Top statements for that schema; Indexes and Tables rows open each other for the same table (picker set to its database, a "Showing only" focus chip); wait rows open Locks or I/O; Full analysis links that name a check open Parameters at that check's first parameter, InnoDB's link reads "Open Parameters", and the Full analysis section is named Parameters. Tests: `test/test_waits.py`, `test_indexes.py`, `test_schema_health.py`, `test_io_stats.py`, `test_config_review.py`, `test_mysql_sysvars.py` (replay fixtures recorded live in `test/fixtures/perf/`, helper `test/_perf_replay.py`), browser suites `apps/workspace/test/{waits,indexes,tables,io,config}.mjs` (`npm run test:waits|test:indexes|test:tables|test:io|test:config`, shared `perf-harness.mjs`, whose `open(endpoint, name, extra)` mocks extra paths such as `/api/live/schemas`).
 
@@ -6478,6 +6516,9 @@ Backend `myflames/variables.py` (contract: the db-operations skill; facts and so
 - `plan_change(conn, name, value, mode)` and the pure `build_plan(v, value, mode, grants)` (`variable-plan-1.0`): the mode must be available (MariaDB has no PERSIST, PERSIST_ONLY or RESET PERSIST: refused with `alternative.config_line`, the `[mysqld]` line; a read-only MySQL variable offers only `persist_only`; wrong scope; NON_PERSIST; a session value that is read-only), and the value valid (`normalize_value`: integers within the range, K/M/G/T converted for byte sizes, doubles, ON/OFF, enum and set items matched without case, `DEFAULT`; string values preserve leading and trailing whitespace exactly, while numeric, boolean and enum input is trimmed; text as `'...'` when plain, else `CONVERT(X'..' USING utf8mb4)` so no escaping rule or sql_mode matters). Returns `statement` (untagged), `display`, `before {global, session, persisted}`, `undo`, `effect {now, after_restart, needs_restart, text}`, `caveats` (the server does not check a PERSIST_ONLY value, persisted_globals_load OFF, mysqld-auto.cnf applied after the option files, buffer pool rounding to chunk size x instances and the 1 GiB rule with several instances, MariaDB block size, memory per connection, durability, MariaDB's log_slow_query copied per connection, replication-sensitive session variables), `privileges` (`privileges(v, mode, grants)` over plain `SHOW GRANTS`: dbops' operations, MariaDB's per-variable SET GLOBAL privileges `MARIADB_GLOBAL_PRIVILEGE`, restricted SET SESSION per engine with MySQL's `_no_super` ones, both privileges to reset a PERSIST_AS_READONLY entry), `classification`, `config_line` and `expect {name, mode, statement, global_value, session_value, persisted_value}`. Status `refused` with `problems [{code, message}]` sends nothing.
 - `apply_change(conn, plan, expect, decision, confirmed, audit)` (`variable-change-1.0`): `dbops.gate` first (SET GLOBAL, PERSIST, PERSIST_ONLY and RESET PERSIST are risky, so Production and Development confirm; SET SESSION follows dbops' variable lists; read-only refuses), then a fresh read and plan; nothing is sent when the plan is refused, its statement differs from `expect.statement`, or the global, session (session mode) or persisted value changed. The audit record is written before sending; one statement tagged `/*myflames:variable*/` with `dbops.WRITE_CLIENT_FLAGS`; SET SESSION and its `SHOW SESSION VARIABLES` go in one client call (one session). Server errors: `denied` (1227, 1095, 3630, 1142, 1044, 1045), `refused_by_server` (1228, 1229, 1238, 1231, 1232, 1193, 1621, 3615, 3976, 1210, 1290), `interrupted` (1317, 1205, 1213), else `failed`; client errors (2000 and up) raise, and an interrupt, time limit or 2013 leaves the record `unknown`. Then the variable is read again (`after {global, session, persisted, resize_status}`): `changed` (`adjusted` when the server rounded or clamped it) or `unchanged` (the server kept the old value, a warning-only refusal). Audit operations `set_global`, `set_persist`, `set_persist_only`, `set_session`, `reset_persist`.
 - `python3 -m myflames config set NAME VALUE [--persist | --persist-only | --session] [--yes] [--json] [-o PATH] [-q]` and `config reset-persist NAME [--yes] [--json] [-o PATH] [-q]` (`change_cli`): the policy from `--profile` runs before any prompt or connection (read-only refuses, exit 2); the plan (statement, values, effect, privileges, caveats, undo) on stderr; `[y/N]` when the policy confirms (a harmless SET SESSION on Development runs without); non-TTY needs `--yes`. Exit 0 changed or already set to the requested value, 1 a sent change was denied, refused by the server or not applied, 2 an unsent refusal, decline, bad input or connection failure. `myflames config` alone stays the read-only review. `config set --session` prints a stderr note that it applies only to the one-off connection myflames opens, useful to test a value; `--yes -q` suppresses this note with the plan.
+- Secret-variable CLI attempts use `variables._SensitiveAudit` from audit creation,
+  including Read-only refusals, non-TTY refusals, refused plans and connection
+  failures; current and requested values are never persisted as text or SQL hex.
 - Endpoints: `POST /api/live/variable` (`name`) and `POST /api/live/variable/plan` (`name`, `value`, `mode`; adds `policy {action, tone, title, text, connection_type, read_only}`) read with the saved password like the views (`_VARIABLE_READ_PATHS`, not `_SERVER_VIEW_PATHS`); `POST /api/live/variable/apply` (`name`, `value`, `mode`, `expect`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `apply_change`). A refused or unconfirmed request is audited.
 - UI (**Parameters**, `Config.tsx` + `config.css`, modelled on an AWS RDS parameter group): reads on open (one attempt per connection; Refresh retries), while the sidebar badge still comes from the checks. One table lists every global parameter the server reports with columns Name, Value, Allowed values, Apply type (Dynamic, Static, Unknown), Source, Data type, and Description; search ("Filter parameters") matches name, value and description, and the Show filter offers All, Modified (source is not the compiled default), Dynamic, Static, Recommendations (parameters covered by a Watch or Problem check), and Pending while editing. The view toolbar stays pinned under the top bar. **Edit** turns the Value column into inline controls (switch, list or text box from the parameter's type) for changeable parameters: MySQL dynamic (applies now) and MySQL persistable static (applies after the next restart through `SET PERSIST_ONLY`), or MariaDB dynamic only; MariaDB static parameters are option-file only and parameters with an unknown apply type are not editable in the table. **Preview changes** lists Name, Current value, New value, Apply type and When it applies. **Review and apply** opens one batch review for up to 25 changes: the server plans each change (exact statement, problems, privileges, effect, undo); MySQL dynamic rows use "Keep after restart" (checked: `SET PERSIST`, unchecked: `SET GLOBAL`), MySQL static rows use `SET PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and show the option file line to copy. Confirm applies the changes one at a time (each re-read and checked first), stops at the first change that is not confirmed, and shows a result per row; Cancel or Escape records a declined attempt for every planned row in the audit trail. The inspector has one compact section per parameter: one sentence (`oneLine`: the server's description, else the opening sentence of a check whose first setting it is), the **Documentation** link (`documentationLink`), and **Current value** (Value, Default, Source with path and who set it when, Changes in words from apply type, scope and `modifiable`, Allowed values, Persisted on MySQL, and Checked when covering checks do not flag it); a **Recommendation** follows only for a Watch or Problem check, the most severe one (reason, `action.text`, the statement and option file line as CopySql, the caveat), naming any other flagging check once. Never repeat the manual there. The actions sit in the inspector's action bar: **Stage value for review** (`editParameter`: turns on inline editing, filters the table to that parameter and focuses its value control), **Reset to default** (stages `DEFAULT` for MySQL numeric and boolean dynamic parameters), **Change this parameter…** (the single-parameter `VariableSheet` with every mode, including This session only), and **Reset persisted value…** (MySQL, when persisted); exact review, policy checks, connection binding, cancel and apply are unchanged. While the shared inspector is a sheet (below 1,040 px) the table uses the existing compact preset (`compact={sharedInspector?.sheet}`, `detailColumns={["allowed", "type", "description"]}`): Name, Value, Apply type and Source stay, and Allowed values (still in the inspector), Data type and Description become detail columns that Columns can restore through the persisted-width override. Permission details appear in the review dialog body; entry and confirmation buttons omit the Unverified badge.
 - Session in Parameters (**Change this parameter…** > This session only) prepares SQL only. `ConfigView.onOpenSql(sql)` receives the exact server-planned `SET SESSION` statement plus its terminator; `VariableSheet` calls it for **Open in Query editor**, never `/api/live/variable/apply`. Cancel/Escape on a Session draft creates no declined audit. The editor owns execution and its existing policy checks. The planning session value is labelled as a snapshot; its undo is omitted because the editor may have a different value. Without the optional callback the button is disabled and the statement stays copyable. Shell integration: pass `onOpenSql` through `Server` to `ConfigView`; in `main.tsx` call `labRef.current?.openSql(sql)` and `setMode("query")`. Add `openSql` to `QueryLabHandle` and its imperative handle to update the current tab via `changeTab`, clear stale digest source/selection metadata, and focus it without calling `send` or capture. These shell files are owned separately from Config. `node test/config.mjs --unit` checks the handoff without a browser.
@@ -8206,6 +8247,700 @@ JSON Schemas and runs the typed API helpers, `--compile-only` builds the
 fixture page, `COMPARE_SHOTS` keeps screenshots), with
 `test/fixtures/server-compare.json` generated by the Python comparison and
 export functions.
+
+### Topology: Group connection reads and rolling changes
+
+Whole-group read-only topology inspection (`map`, `members`, `parameters`,
+`accounts`, `plugins`) and sequential rolling global parameter changes over
+explicitly saved connection groups. Modules: `myflames/topology_group.py`
+(`read_group`, `compare_plugins`, `parse_mysql_gtids`, `subtract_mysql_gtids`,
+`count_mysql_gtids`, `parse_mariadb_gtids`, `mariadb_behind`),
+`myflames/topology_change.py` (`plan`, `apply`, `stop`, `progress`,
+`share_progress`), `myflames/group_members.py` (`open_group_member`),
+`myflames/param_compare.py` (`compare_many`,
+`capture(..., full_provider_options=True)`), `myflames/account_compare.py`
+(`compare_many`, `incomplete_account`), `myflames/parameters.py`
+(`value_truncated`), `myflames/variables.py` (`_SensitiveAudit`),
+`myflames/connection_groups.py`, `myflames/accounts_api.py`
+(`_group_login_guard`), `myflames/dbops.py` (`_URL_SECRET`,
+`audit_object_matches`), `myflames/ui.py`, and workspace `TopologyPlace.tsx`,
+`TopologyMap.tsx`, `RollingChangeSheet.tsx`, `rollingRuns.ts`,
+`GroupDriftTable.tsx`, `topologyApi.ts`, `topology-place.css`, `Audit.tsx` (plus
+`Connections.tsx`, `GroupEditorSheet.tsx`, `Sidebar.tsx`, `main.tsx`). Schemas:
+`docs/schemas/topology-group-1.0.json`,
+`docs/schemas/topology-change-plan-1.0.json` and
+`docs/schemas/topology-change-1.0.json` (plus `action-progress-1.0` via
+`reviewed_writes.Progress`).
+
+**Endpoints and refusals** (POST JSON, workspace authentication, in the `ui.py`
+allowlist; none is in `_SERVER_VIEW_PATHS`, and only
+`/api/live/topology/variable/apply` is in `_WRITE_PATHS`):
+
+- `POST /api/live/topology`: `{connection, section}`. Requires a `connection`
+  dict with non-empty `group_name` and `section` in `SECTIONS` (`"map"`,
+  `"members"`, `"parameters"`, `"accounts"`, `"plugins"`; exact case). Runs
+  `editor_session._connection_facts(payload, workspace.store)` and
+  `connection_groups.request_profiles(workspace.store, connection)` before any
+  secret lookup or login; missing/empty `group_name`, unknown/removed
+  `profile_id`, mismatched `group`, or modified `ENDPOINT_FIELDS` refuses with
+  HTTP 400 (`"This saved connection is outside the current connection group."`)
+  before opening any connection. Passes the validated `expected_current=current`
+  and `expected_generation=current.get("group_generation")` consent snapshot into
+  `read_group` (so dispatch races cannot reuse a stale snapshot); `read_group`
+  also validates `connection_groups.validate_group`, matching endpoints and
+  `group_generation` on every group member, and `len(members) <= 16`
+  (`GROUP_MAX_MEMBERS`).
+- `POST /api/live/topology/variable/plan`: `{connection, name, value, mode,
+  member_ids}` (strict exact key allowlist; extra or missing keys refuse with
+  HTTP 400). Passes `active_endpoint=topology_change._endpoint(current)` and
+  `group_generation=current.get('group_generation')` to `topology_change.plan`.
+- `POST /api/live/topology/variable/apply`: `{connection, plan_id, expect,
+  confirmed, progress_id, typed_name?}` (strict exact key allowlist).
+- `POST /api/live/topology/variable/stop`: `{connection, progress_id}` (strict
+  exact key allowlist).
+- For all three `/api/live/topology/variable/*` endpoints
+  (`ui._topology_variable_response`): `connection` allows only
+  `set(ENDPOINT_FIELDS) | {'profile_id', 'group_name', 'database', 'type',
+  'read_only', 'name'}` (so request-supplied `password` or `group_generation`
+  are rejected with HTTP 400), requires non-empty `group_name` and `profile_id`
+  (1 to 200 characters), integer ports `0..65535`, boolean `read_only`, and
+  bounded strings (`<= 4096`); `progress_id` must match
+  `reviewed_writes._PROGRESS_ID` (`^[A-Za-z0-9_-]{16,64}$`); `apply` checks
+  `plan_id` (`1..128` str), `expect` (dict), boolean `confirmed`, and optional
+  `typed_name` (`<= 80` str). All three run `_connection_facts`,
+  `request_profiles`, and `topology_change.share_progress(workspace.store,
+  _action_progress(workspace))` before secret lookup (`current is None` refuses
+  with HTTP 400); `plan` also refuses with HTTP 400 if
+  `connection.get('read_only') is True` or any member in the group is
+  `read_only` before opening any connection.
+- `POST /api/live/action/progress` (`_ACTION_PROGRESS_PATH`): calls
+  `topology_change.share_progress(workspace.store, _action_progress(workspace)).get(payload.get('progress_id'))`.
+  Known rolling progress IDs return `_MemberProgress.snapshot()` with
+  `profile_id`, `profile_name`, and `message: "<profile_name>: <phase>."` (or
+  `null` when no member is active); unknown validly formatted IDs return
+  `ProgressRegistry.get`'s base `phase: "unknown"` response without member
+  fields (`profile_id`, `profile_name`, `message`), and invalid IDs raise
+  `ValueError`.
+
+**Bounds (`topology_group.read_group`)**: `MAX_CONCURRENCY = 4`
+(`ThreadPoolExecutor(max_workers=4)`), up to `GROUP_MAX_MEMBERS` (16) saved
+members. Each member opens one standard `MySQLConnection` via
+`open_group_member` (`query_timeout = 30`, `connect_timeout = 30`; `QUERY_SECONDS
+= 30`), wrapped in `param_compare.BoundedConnection(..., seconds=min(remaining,
+request_seconds))` and `_ReadConnection` inside `REQUEST_SECONDS = 120` for
+`map`/`members`/`parameters`/`plugins` or **`ACCOUNTS_REQUEST_SECONDS = 300`**
+for `accounts`. Topology's own probes use `/*myflames:topology*/ ` (`TAG`,
+`topology_links.TOPOLOGY_TAG`), while reused collectors keep their own tags
+(`/*myflames:config*/ ` in `config_review`, `/*myflames:accounts*/ ` in
+`accounts`, and `/*myflames:variable*/ ` in `variables`); every query uses the
+connector's guarded client path, never a custom subprocess path, never logs in
+to reported peers, never retries, and never polls. Before starting
+`open_group_member`, inside `login_guard()` when `not
+member_conn._group_login_started`, and before constructing `BoundedConnection`,
+if `remaining < QUERY_SECONDS` (30 s) the read raises `_NotReached` so a queued
+member never logs in without a full 30 s query window (`outcome: "not_reached"`,
+`message: "Not read: the time budget did not allow this member to start."`).
+Once login has started, `remaining <= 0` raises `ConnectorError` (`outcome:
+"failed"`). On `map`, the shared per-member topology probe (`topology_links._probe_connection`: replication channels, wsrep status and membership, InnoDB Cluster metadata, Group Replication members, ProxySQL and Readyset) keeps its own 2 s per query (`topology_links.QUERY_TIMEOUT_S`, applied through `param_compare.BoundedConnection.run`), as in the topology bars; `_map_probe`'s follow-up reads (for example the PXC node view) and every other section's queries get the 30 s window. `_ReadConnection` latches transport failures (`code is None`),
+client errors (`reviewed_writes.client_error(code)`), and login refusals
+(`not sql_reply` with initial coded failures or explicit login codes `1040,
+1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151`, `1226` with
+`max_user_connections`, or `1044/1045/1049` `"Access denied for user"` without
+`"to database"`) so a failed login costs at most one client invocation per
+member; authenticated SQL errors (with SQL position evidence, `guard_markers`,
+or ProxySQL Admin `1045` `proxysql admin error:`) do not latch so optional
+probes stay optional. Non-excluded members run a second `_identity` and
+subsequent section reads inside `dbops.TargetEvidenceConnection`, refusing
+`"The member identity changed during the read."` if `server_uuid` (MySQL) or
+`('server_id', 'hostname', 'version')` (MariaDB) drifts, and re-checking
+`conn.check()` and `transport.check()` at the end so optional readers cannot
+mask identity or transport failures. Member errors pass through
+`connection_groups.probe_note` and `safe_problem` (never echoing raw SQL,
+server text or passwords).
+
+**Consent (`open_group_member` and `_group_login_guard`)**: `read_group` and
+`topology_change` derive membership, endpoints and `group_generation` solely
+from the store. `open_group_member(store, group_name, profile, active_guard,
+options_override=None)` builds connection options from the stored profile's
+endpoint fields (`host`, `port`, `user`, `database`, `ssl_mode`, `ssl_ca`,
+`ssh_host`, `ssh_user`, `ssh_port`) plus `profile_id` and `group_name`,
+accepts overrides only for `query_timeout` and `connect_timeout` (`ValueError`
+otherwise), fills that member's own saved password with
+`store.connection_with_saved_password`, redacts the password from any
+exception (`ui._reraise_redacted`), and installs `conn._login_guard`. Before
+every client invocation and after transport setup, `login_guard()` runs
+`active_guard()` (re-checking the active member's membership, endpoint and
+`group_generation`) and re-reads `store.get("profile", profile["id"])` to
+verify matching `group`, `_same_endpoint(current, profile)` and
+`group_generation`, raising `ProfileReadError` if any changed.
+`MySQLConnection` tracks `_group_login_started` so a pre-login refusal never
+logs in.
+
+**Section reads and fields per engine**:
+
+- Common identity (`_identity`): probes `SELECT @@version_comment` for Readyset
+  (`is_readyset_comment` -> `SHOW READYSET VERSION`,
+  `topology_links.parse_readyset_version`; sets `engine='mysql'`,
+  `product='Readyset'`, `role='cache'`, `state='reachable'`, excludes from
+  members/drift reads with `'Readyset is read for identity only.'`), then
+  `proxysql.identify(conn)` (verifies `admin-version` matches `@@version` so a
+  proxied backend never supplies its UUID; sets `engine='mysql'`,
+  `product='ProxySQL Admin'`, `role='proxy'`, `state='reachable'`, excludes
+  with `'ProxySQL Admin is read for identity only.'`). Otherwise runs `SHOW
+  GLOBAL VARIABLES` for `version`, `version_comment`, `server_uuid`,
+  `server_id`, `hostname`, `port`, `report_host`, `read_only`,
+  `super_read_only`, `gtid_mode`, `group_replication_group_name`,
+  `group_replication_single_primary_mode`, `wsrep_on`,
+  `wsrep_auto_increment_control`, `wsrep_provider`, `wsrep_cluster_name`,
+  `wsrep_node_name`, `wsrep_node_incoming_address`. `read_only_value` retains
+  raw text; `read_only` is `True` for any value other than `OFF`/`0`/`FALSE`
+  (covering MariaDB 12.0.1 `NO_LOCK` and `NO_LOCK_NO_ADMIN`, which both refuse
+  writes). `super_read_only` and `server_uuid` are populated on MySQL only
+  (`None` on MariaDB; all-zero UUID normalized to `None`). GTID position is
+  read via `SELECT @@GLOBAL.gtid_current_pos` on MariaDB or `SELECT
+  @@GLOBAL.gtid_executed` on MySQL, never from `SHOW GLOBAL VARIABLES` (which
+  reads a capped catalog column: MySQL `sql/sql_show_status.cc:297`, MariaDB
+  `sql/sql_show.cc:10528`; even a syntactically valid 1,024-character prefix
+  is not a complete GTID set).
+- `members` (and collected during `map` and `parameters`, `_member_facts`):
+  - On MySQL when `gtid_mode != 'ON'`, `position` is cleared to `None` with a
+    note (an empty set with `gtid_mode` OFF does not prove replication is
+    caught up).
+  - Group Replication (MySQL with `server_uuid`): queries
+    `performance_schema.replication_group_members WHERE MEMBER_ID =
+    @@server_uuid` (`MEMBER_ROLE, MEMBER_STATE` on 8.0.2+, else
+    `MEMBER_STATE`). An `OFFLINE` own row falls through to async/standalone
+    checks (a loaded or stopped plugin can expose its own `OFFLINE` row without
+    being a member: MySQL `ps_information.cc:45-76,96-104`). Below 8.0.2,
+    reads `SHOW GLOBAL STATUS LIKE 'group_replication_primary_member'`
+    (`mysql-5.7.44 rapid/plugin/group_replication/src/member_info.cc:887-890`
+    can return `UNDEFINED`; offline/error nodes keep `role=None`; multi-primary
+    `group_replication_single_primary_mode` OFF sets `role='primary'` for
+    `ONLINE`/`RECOVERING`/`UNREACHABLE`). On 8.0.2+, reads
+    `COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE` from
+    `performance_schema.replication_group_member_stats WHERE MEMBER_ID =
+    @@server_uuid` (`lag.kind = 'gr_applier_queue'`;
+    `COUNT_TRANSACTIONS_IN_QUEUE` is certification, not applier lag: MySQL
+    `plugin/group_replication/src/ps_information.cc:284-290`,
+    `storage/perfschema/table_replication_group_member_stats.cc:161,168`).
+  - Galera / PXC (`wsrep_on` ON, or `wsrep_provider` non-empty and not
+    `'none'`): queries `SHOW GLOBAL STATUS WHERE Variable_name IN
+    ('wsrep_local_state_comment','wsrep_local_recv_queue','wsrep_cluster_status')`
+    (MariaDB `sql/wsrep_var.cc:1098-1126`;
+    `mysql-test/suite/wsrep/r/variables.result:25`), sets `role='node'`,
+    `lag.kind='galera_recv_queue'`, `behind=None`, and `behind_reason`
+    pointing to the receive queue (MariaDB `rpl_gtid.cc:1151-1154` excludes
+    other nodes' binlog GTIDs; `wsrep_gtid_mode` is `OFF` by default,
+    `sys_vars.cc:6780`).
+  - Async / standalone: runs `replication.status_statement(engine, version)`
+    (`SHOW ALL SLAVES STATUS` on MariaDB; `SHOW REPLICA STATUS` on MySQL
+    8.0.22+; `SHOW SLAVE STATUS` on older MySQL). `_channel_facts` projects
+    only `{name, source_host, source_port, source_uuid (MySQL only via
+    Source_UUID/Master_UUID, valid UUID only), source_server_id, io_running,
+    sql_running, seconds_behind}`, stripping login user/password fields.
+    `_replica_state` maps IO `Connecting` or `Preparing` to `'connecting'`
+    (MySQL `sql/rpl_replica.cc:3545`, MariaDB `sql/slave.cc:2863-2869`), any
+    false IO/SQL to `'stopped'`, else `'running'`; `lag.kind =
+    'replica_seconds'` (largest `seconds_behind` when all channels report one,
+    else `None`). With no channels, checks `SHOW REPLICAS` (MySQL 8.0.22+) or
+    `SHOW SLAVE HOSTS` (`role='source'` if non-empty, else `'standalone'`,
+    `state='reachable'`).
+  - Alias annotation (`_duplicate_notes`): on `members` and `map` sections
+    (`check_routed=True`), `_member_facts` runs an optional query on
+    `performance_schema.session_connect_attrs` (`PROCESSLIST_ID =
+    CONNECTION_ID() AND ATTR_NAME IN ('_client_ip','_client_socket')`) to set
+    `routed` (`True` when present, `False` when absent, `None` when unreadable
+    or on `parameters`/`accounts`/`plugins`). In `_duplicate_notes`,
+    successfully read MySQL members sharing a valid non-nil `server_uuid` stay
+    separate member entries and map nodes while electing one canonical saved
+    connection from the highest non-empty tier: (1) matching both the server's
+    reported `port` and `hostname`/`report_host` (`direct`), (2) matching the
+    reported `port` (`matched`), (3) unknown server `port` (`unknown`), or (4)
+    all aliases as a port-forwarding fallback (`fallback_note`). Within the
+    chosen tier, direct sessions (`routed is False`) beat routed or unreadable
+    ones, breaking ties by oldest `updated_at` then `profile_id`. Every other
+    alias sets `duplicate_of` to the canonical `profile_id` and appends a note
+    (adding the port-forwarding note naming the server's reported port and
+    chosen canonical member when fallback applied), and in `map` emits a dotted
+    `'alias'` edge.
+  - Primary resolution (`_primary`): ignores `duplicate_of` entries and prefers
+    a single `ONLINE` `role == 'primary'` (multi-primary or multiple `ONLINE`
+    primaries -> `None` with `'This group has more than one primary or
+    source.'`), else unique root of live in-group replication channels (MySQL by
+    `source_uuid`; MariaDB by unique `server_id > 0` among read MariaDB
+    members), else `connection_groups.group_primary(members)` (only when no
+    unresolved/live channels exist), else `None` (`'No primary or source member
+    was identified.'`).
+  - Behind (`members` and `map`): `_related_members` propagates reachability
+    from `primary_id` across active GR members (`ONLINE`/`RECOVERING`, matching
+    `gr_group`), verified async links (`True`), and MariaDB `server_id`-only
+    links (`False`), copying the canonical reachability to `duplicate_of`
+    aliases. MySQL (`parse_mysql_gtids`, `subtract_mysql_gtids`,
+    `count_mysql_gtids`) merges disjoint inclusive intervals per
+    `(uuid.lower(), tag.lower())` without enumerating IDs (MySQL 8.3+
+    `sql/rpl_gtid_set.cc:517-529,823-837`; `libs/mysql/gtid/tag.cpp:43-47,
+    113-137` lowercases tags and caps them at 32 characters;
+    `behind.kind = 'mysql_gtid_transactions'`). MariaDB (`parse_mariadb_gtids`,
+    `mariadb_behind`) parses `domain-server-sequence` (`sql/rpl_gtid.cc:
+    1074-1086,1321-1345`); `gtid_current_pos` is a per-domain position rather
+    than a transaction set (MariaDB `sql/sys_vars.cc:2154-2159`), so
+    differences are estimates (`behind.kind = 'mariadb_domain_sequence'`,
+    includes `domains`; uncorroborated `server_id` links note
+    `"source matched by server ID"`). Malformed GTIDs raise `ValueError` and
+    leave `behind=None` with `behind_reason`; cross-engine, missing-position or
+    Galera pairs also leave `behind=None` with `behind_reason`.
+- `map` (`_map_probe` + `_build_map`): calls `topology_links._probe_connection`
+  and aborts the member read as failed if `kind` or `server_uuid` changed
+  between `_identity` and the probe. For wsrep, reads
+  `mysql.wsrep_cluster_members` (`_WSREP_MEMBERS_SQL`), `wsrep_cluster_state_uuid`,
+  `wsrep_gcomm_uuid` and `wsrep_cluster_status`, and on PXC also reads
+  `cluster.PXC_VIEW_SQL` (`performance_schema.pxc_cluster_view`), preserving
+  incoming addresses from `wsrep_cluster_members` because `HOST_NAME` is a node
+  name rather than a SQL endpoint (`cluster.py:1013`). For GR below 8.0.2,
+  reads `MEMBER_ID, MEMBER_HOST, MEMBER_PORT, MEMBER_STATE`; for
+  `innodb_cluster`, reads `cluster._MD_CLUSTERS_SQL` (`v2_gr_clusters`) for
+  `cluster_name`.
+  - **Map evidence rules and caps**: bounded at `MAP_ROWS_PER_MEMBER = 2048`,
+    `MAP_PEERS_PER_MEMBER = 256`, `MAP_EDGES_PER_MEMBER = 1024`,
+    `MAP_MAX_NODES = 4096` (emitting one cap note per observer/cap). Saved
+    endpoints may match an address even for a failed member, but only
+    successful own-connection reads supply identities (`server_uuid`,
+    `wsrep_node_uuid`). Alias members (`duplicate_of`) emit one `'alias'` edge
+    (`kind: 'alias'`, `evidence: 'server_uuid'`, `verified: false`, `label:
+    'same server (alias)'`), skip cluster attestation, and are excluded from
+    UUID candidate lists so aliases never duplicate cluster or replication
+    targets. Cluster boxes (`gr:<uuid>`, `wsrep:<uuid>`) require each saved
+    member to attest its own membership (`wsrep_cluster_status == 'Primary'` with
+    own `wsrep_gcomm_uuid` in `cluster_members` for wsrep; `ONLINE` or
+    `RECOVERING` own `server_uuid` row for GR/InnoDB Cluster; MariaDB
+    `wsrep_server_service.cc:356-378`, MySQL `ps_information.cc:96`). Another
+    member's listing never attests a saved member. Unmatched targets become
+    `peer` nodes (`kind: 'peer'`, `profile_id: null`, `reason: 'Not in this
+    group'`, deduplicated by UUID or lowercased address) and are never logged in
+    to. Edges (`replication`, `proxy_route`, `cache_upstream`) have `verified:
+    true` only on identity match: `'server_uuid'` (from
+    `match_database_endpoint`), or `'server_id'` only when `not uuid`, observer
+    is MariaDB, `server_id > 0` matches a single read MariaDB database member
+    AND `match_database_endpoint` matched that exact same member by address. An
+    uncorroborated MariaDB `server_id` match keeps `verified: false` and `label:
+    'server ID match, not verified'` (both engines default `server_id` to `1`:
+    MySQL `sql/sys_vars.cc:3951`, MariaDB `sql/sys_vars.cc:3656`). A contrary
+    `server_uuid` or contrary MariaDB `server_id` blocks address-only matching
+    (`contrary_uuid`, `contrary_sid`). Under
+    `topology_links._endpoint_matches_profile`, loopback addresses
+    (`127.0.0.1`, `localhost`, `::1`, `127.*`) match a saved member only when
+    `observer_host` is also loopback AND the candidate saved member has no
+    `ssh_host` (so a remote proxy or server accessed over SSH never matches a
+    local loopback saved connection). Address-only matches (`'endpoint'`,
+    `'hostname_port'`, proxy routes, Readyset upstreams) have `verified: false`.
+- `parameters`: `param_compare.capture(conn, server=entry,
+  full_provider_options=True)` + `param_compare.compare_many(snapshots,
+  role_settings=..., active_clusters=...)`. Re-reads
+  `SELECT @@GLOBAL.wsrep_provider_options` directly (marking `truncated: True`
+  if unavailable or over `MAX_VALUE_CHARS` so prefixes are never compared).
+  - **Truncation (`parameters.value_truncated`, `param_compare.MAX_VALUE_CHARS`)**:
+    MySQL `SHOW GLOBAL VARIABLES` caps values at 1,024 bytes/characters
+    (`pfs_variable.cc:672-675`, `include/mysql/status_var.h:81`), MariaDB
+    `information_schema.SYSTEM_VARIABLES` (`catalog=True`) at 2,048 and MariaDB
+    `SHOW GLOBAL VARIABLES` at 4,096 (`sql/sql_show.cc:10528,10537`).
+    `parameters.value_truncated` checks `len(value) >= cap or
+    len(value.encode('utf-8')) >= cap`. `param_compare.validate_snapshot` (which
+    `capture` calls) bounds parameter names and retained string fields (`type`,
+    `apply_type`, `source`, `source_label`, `scope`, `modifiable`, `group`,
+    `value`, `default`) and allowed `values` entries at `MAX_VALUE_CHARS =
+    65536` (clearing oversized retained strings or `values` lists to `None` with
+    `truncated: True`), checks metadata types, state flags and the 8 MiB file
+    limit, redacts secrets/values/allowed-values, and runs `dbops.redact_value`.
+    `param_compare.compare_many` independently bounds and redacts each item's
+    current `value` (`None` + `truncated: True` over `MAX_VALUE_CHARS`,
+    `sensitive(name)` and `_redact_parameter_value`) while retaining supplied
+    metadata (`apply_type`, `dynamic`) and `redacted`/`truncated` flags without
+    calling `validate_snapshot`. `param_compare.compare` marks truncated rows
+    `not_compared` and `compare_many` marks them `missing` with a reason.
+  - **Drift rules (`param_compare.compare_many`)**: sorts rows by status
+    (`'different'`, `'missing'`, `'same'`, `'per_server'`) then `name`.
+    Bounds and redacts each input item's current `value` as noted above. `per_server` includes `IDENTITY_NAMES`,
+    `group_replication_local_address`, `group_replication_group_seeds`,
+    `gtid_binlog_state`, `gtid_owned`, `bind_address`, `admin_address`,
+    `mysqlx_bind_address`, `mysqlx_port`, `mysqlx_socket`,
+    `group_replication_advertise_recovery_endpoints`,
+    `group_replication_recovery_public_key_path`,
+    `group_replication_recovery_ssl_ca|capath|cert|key|crl|crlpath`,
+    `wsrep_node_incoming_address`, `wsrep_sst_receive_address`,
+    `wsrep_sst_donor`, `wsrep_start_position`, `wsrep_status_file`,
+    `wsrep_provider_base_host|port|dir`, `wsrep_provider_gcache_dir|name`,
+    `wsrep_provider_gmcast_listen_addr`, `wsrep_provider_ist_recv_addr|bind`,
+    `wsrep_provider_socket_ssl_cert|key`, MariaDB identity/location settings
+    (`server_uid`, `log_slow_query_file`, `character_sets_dir`,
+    `relay_log_info_file`, `slave_load_tmpdir`, `aria_log_dir_path`:
+    `mariadb-11.8.3 sql/sys_vars.cc:3610,5399,770,5628,5862`,
+    `ha_maria.cc:168`), node design settings (`wsrep_provider_pc_weight`,
+    `wsrep_provider_gmcast_segment`, reason `"Set per node by design"`),
+    `read_only` and `super_read_only` only when `role_settings` maps every
+    compared member to `'source'` (`primary`/`source`) or `'replica'`
+    (`secondary`/`replica`) (other roles such as Galera `'node'` or
+    non-primary `'standalone'` map to `None` and never fold), both buckets
+    exist, all sources are `OFF`/`0`/`FALSE`, all replicas are
+    `ON`/`1`/`TRUE`/`NO_LOCK`/`NO_LOCK_NO_ADMIN`, and every member within each
+    role agrees (reason `"Set by the member's role"`, MySQL
+    `read_mode_handler.cc:32-60`; in `read_group`, `duplicate_of` aliases
+    inherit their canonical member's observed role), and `auto_increment_offset`
+    only when `active_clusters` proves an independently observed active
+    cluster (`'group_replication'` `ONLINE`/`RECOVERING` with valid UUID and
+    multi-primary mode, or `'galera'` with `wsrep_on` ON, non-none
+    `wsrep_provider`, `wsrep_cluster_status == 'Primary'`, and
+    `wsrep_auto_increment_control` ON) on every compared member (MySQL
+    `plugin/group_replication/src/plugin.cc:2578-2581`,
+    `auto_increment.cc:61-84`; MariaDB `sql/wsrep_server_service.cc:231-236`;
+    `auto_increment_increment` stays compared). `wsrep_provider_options`
+    compares sorted key-value pairs after stripping per-node keys (`base_host`,
+    `base_port`, `base_dir`, `gcache.dir`, `gcache.name`, `gmcast.listen_addr`,
+    `ist.recv_addr`, `ist.recv_bind`, `socket.ssl_cert`, `socket.ssl_key`,
+    `pc.weight`, `gmcast.segment`), treating malformed or duplicate-key strings
+    as `'missing'`. Secret settings (`_SECRET_VARIABLES`: `wsrep_sst_auth`,
+    `report_password`, `audit_log_encryption_password`,
+    `keyring_encrypted_file_password`, `keyring_hashicorp_secret_id`,
+    `s3_secret_key`, `handlersocket_plain_secret`,
+    `handlersocket_plain_secret_wr`, `utility_user_password`,
+    `file_key_management_filekey`, and all six
+    `telemetry.otel_exporter_otlp_{logs,metrics,traces}_{headers,secret_headers}`)
+    and credential syntax (`_CREDENTIAL_URL` calls `dbops._URL_SECRET` with
+    `quoted=False`, a linear scan without credential length limits) stay redacted and `'missing'`. ProxySQL
+    Admin and Readyset members appear in `not_compared`.
+- `accounts`: `account_compare.capture` + `account_compare.compare_many`.
+  Uses `ACCOUNTS_REQUEST_SECONDS = 300`; when a member read takes `>=
+  QUERY_SECONDS` (30 s), its message notes `"Accounts are read one at a time;
+  %d accounts took %.1f s on this server."`. Captures up to `MAX_ACCOUNTS =
+  1000` accounts (`complete=False` beyond 1,000; incomplete or error inventories
+  go to `not_compared`). In `accounts._strip_account_credentials`, grant lines
+  longer than `accounts.MAX_ACCOUNT_TEXT_CHARS = 1048576` characters are replaced
+  by `OMITTED_ACCOUNT_TEXT` (`'[omitted: too long]'`) rather than truncated or
+  scanned for credentials. `accounts.read_account` sets `error = 'Account
+  grants omitted: too long.'` and includes `OMITTED_ACCOUNT_TEXT` in `grants`
+  and `model['unparsed']` (oversized inherited role grants set
+  `role_grants_complete = False` with a warning), so that account cannot be
+  compared (`account_compare.compare` marks it `not_compared`), exported
+  (`account_compare.export_sql` refuses), or changed (`accounts.plan_change`
+  / `apply` blocks via `_guards`). In `_comparison_inputs`, accounts with
+  `account_compare.incomplete_account(item)` (`error`, `exists is False`, or
+  any `*_checked is False`) are treated as unreadable and dropped from EVERY
+  member's snapshot so an unreadable account on one server is never mistaken
+  for absent drift, while the affected member adds a `not_compared` entry
+  naming those `MAX_ACCOUNT_TEXT_CHARS`-bounded, credential-stripped,
+  JSON-escaped accounts and keeps its readable accounts in `compared`. Strips
+  role and default-role `GRANT`/`REVOKE`/`SET DEFAULT ROLE`
+  lines from privilege grants (MariaDB `SHOW GRANTS` emits defaults:
+  `sql/sql_acl.cc:9829-9850`) so roles compare only once in
+  `roles`/`default_roles`. Emits fixed difference counts and descriptions
+  relative to the first present profile in sorted order (`kind`: `'privileges'
+  | 'roles' | 'attributes'`), never grant text, hashes or server errors.
+- `plugins` (`_plugins` + `compare_plugins`): reads `PLUGIN_NAME,
+  PLUGIN_STATUS, PLUGIN_TYPE, PLUGIN_VERSION, PLUGIN_LIBRARY, LOAD_OPTION` from
+  `information_schema.PLUGINS` (MySQL `sql/sql_show.cc:5654-5664`, MariaDB
+  `sql/sql_show.cc:10595-10605`), and on MySQL >= 8.0.0 also reads
+  `SELECT component_urn FROM mysql.component` (`mysql-8.0.11
+  scripts/mysql_system_tables.sql:214`, `kind='component'`,
+  `status='registered'`, `version=None`), noting that manifest-loaded
+  components are not listed; a denied `mysql.component` read adds a note in
+  `plugins.notes` without failing the plugin comparison.
+
+**Rolling variable changes (`myflames/topology_change.py`,
+`topology-change-plan-1.0.json`, `topology-change-1.0.json`)**:
+
+- `OPERATION = 'topology.variable'`; `MODES = ('global', 'persist',
+  'persist_only')`; `PLAN_TTL = 300` s, `PLAN_LIMIT = 64` retained plans,
+  `PLAN_BYTES = 8 MiB`.
+- **Plan and policy**: `_snapshot` computes `effective_safety` across all
+  current group members (strictest `type`, `read_only = True` if any member in
+  the group is read-only) and requires a non-empty, matching `group_generation`
+  on every member. `plan(store, group_name, active_member_profile_id, name,
+  value, mode, member_ids, active_endpoint=None, group_generation=None)`
+  validates `name` (`variables.check_name`), rejects `param_compare.sensitive(name)`
+  and bare `'DEFAULT'` (`value.strip().upper() == 'DEFAULT'`) before any
+  password lookup, validates scalar `value` (`len(json.dumps(value,
+  allow_nan=False)) <= MAX_VALUE_LENGTH * 6`), `mode`, and 1 to 16 distinct
+  group `member_ids`, verifies `active_endpoint` and `group_generation` against
+  `_snapshot` (`'changed_target'`), and refuses before any secret lookup if any
+  member of the group is `read_only`. During member planning,
+  `variables.plan_change` (via `variables.normalize_value`) separately limits
+  requested value text to `variables.MAX_VALUE_LENGTH = 4096` characters,
+  independently of the serialized-size precheck and current-value source
+  truncation limits. It reads every current group member
+  sequentially within `REQUEST_SECONDS = 120` (`QUERY_SECONDS = 30` per
+  connect/query) via `planning_guard` and `_facts` (`TargetEvidenceConnection`,
+  `target_galera_identity`, `target_session_guard`), refusing proxy members
+  (`'proxy'`), unavailable roles (`'role_unavailable'`), and identity switches
+  (`'identity_mismatch'`). On MariaDB, `_session_guard` requires `server_uid`
+  (28-character base64 decoding to 20 bytes, MariaDB 10.11.9 / 11.4.3+) and
+  `version` (`<= 256` chars), refusing missing/unknown values with
+  `'identity_unavailable'`, and `_IdentityConnection` injects the guard into
+  the same evidence packet. Selected members run `variables.plan_change` (on
+  MariaDB, `persist` and `persist_only` plan `SET GLOBAL` with
+  `effective_mode = 'global'`, `after` scoped to `{'global'}`, `config_line` and
+  caveat `_NOT_PERSISTED`: `"Not persisted: add this line to the server's
+  option file"`, never `SET PERSIST`). Selected members are refused if `value`
+  contains a `DEFAULT` token (`\bdefault\b`) for a `'set'` or `'flagset'`
+  variable when effective `mode in ('global', 'persist')` (including MariaDB
+  `persist`/`persist_only` fallback; MySQL `persist_only` allows `DEFAULT`
+  tokens), or if `parameters.value_truncated` triggers on `global_value` or
+  `persisted.value` (on MariaDB at 2,048 `catalog=True`, `_facts` re-reads
+  `SHOW GLOBAL VARIABLES` directly and refuses if `SHOW` fails, differs, or
+  reaches 4,096 characters/UTF-8 bytes, outcome `'truncated'`). After ordering,
+  duplicate selected servers sharing `_identity_key` (MySQL `server_uuid` +
+  `wsrep_gcomm_uuid`; MariaDB `server_uid`, `server_id`, `hostname`, `port`,
+  `version`, `wsrep_gcomm_uuid`) mark later aliases `status='refused'`,
+  `statement=None`, `after=None`, `duplicate_of=first['profile_id']`
+  (unselected aliases do not refuse selected targets). Other selected members
+  get `status='planned'`, `status='unchanged'` (`statement=None` when all
+  requested scopes already match), or `status='refused'` (`statement=None` with
+  sanitized reason).
+- **Order rules (`_order`)**: deterministic precedence DAG combining cluster and
+  async constraints, then ties:
+  1. Group Replication / InnoDB Cluster (`secondary` before its `primary` with
+     matching `gr_group_name`).
+  2. Asynchronous replication (parent edges from `source_uuid` or
+     `source_server_id`; deepest replicas first, root source last; cycles or
+     conflicting source identities raise `ValueError`). When any source was
+     matched by `source_server_id` without `source_uuid`, `order_rule` names
+     `"MariaDB sources matched by server ID"`.
+  3. Galera / PXC ties use live `wsrep_node_name` order (falling back to
+     `profile_name`).
+  4. Remaining ties use saved name order (`profile_name.lower(), profile_name,
+     profile_id`).
+  Confirmed proxies and caches (`exc.outcome == 'proxy'`, recorded in
+  `proxy_ids`) are excluded from `expect.order_dependencies` so they do not
+  block ordered changes on database members; other unselected members (such
+  as relays or unreadable database members) become `expect.order_dependencies`
+  when `order_rule != 'Saved name order.'`, and if any such dependency lacked
+  `_facts` or `identity`, `plan` sets every selected member to
+  `status='refused'` (`statement=None`, `'The replication order could not be
+  verified on every group member.'`).
+- **Token binding, re-checks, execution, audit and progress**: `ReviewTokens`
+  (`ttl=300`, `capacity=64` in `_Registry.tokens`) binds `OPERATION` and `expect`
+  (`group_name`, `group_generation`, `active_member_profile_id`,
+  `active_endpoint`, `effective_safety`, ordered member bindings with
+  `profile_id`, `endpoint`, `endpoint_fingerprint`, `identity`, `statement`,
+  `before`, `order_facts`, `variable_expect`, plus `order_dependencies`) to the
+  retained immutable deep copy. If `plan_id` is expired, evicted, or already
+  consumed (`entry is None`), `apply` bypasses `refuse_all` and returns
+  `status='stale'`, `members: []`, `null` change metadata (`change_set_id`,
+  `group_name`, `name`, `value`, `mode`), and one generic audit record. For a
+  retained plan, `apply` checks for `stale` expect/token, caller Group
+  connection ownership/read-only, any selected member with `status ==
+  'refused'` (`status='refused'`, `'invalid_plan'`, `'Untick the refused
+  servers and review again.'` before `dbops.gate`), `dbops.gate` (`read_only`
+  / `needs_confirmation`), `tokens.check`, `_guard`, and `typed_name ==
+  group_name` when `effective_safety.type == 'production'`
+  (`needs_typed_name`), calling `refuse_all` (`not_sent` rows and one audit
+  record per selected member) if any fails (confirmation/safety failures leave
+  the plan usable). Once ready under `registry.lock`, `apply` atomically re-checks
+  `_guard` + `tokens.check`, starts `_MemberProgress`, consumes the single-use
+  token (`consume=True`) and deletes the retained plan, and registers `_Run`,
+  so any concurrent or later replay returns `status='stale'` even if the first
+  member refuses before writing. During the sequential loop over
+  `reviewed['members']`: each member (both `planned` and `unchanged`) opens
+  `open_group_member` (`query_timeout=30, connect_timeout=10`,
+  `BoundedConnection` 120 s) and runs `check_target` (`_guard`, re-opening all
+  `order_dependencies` and later selected members `index + 1:` when `order_rule
+  != 'Saved name order.'`, own `_facts` identity and role checks, and at the
+  send boundary `variable=True` re-reading `variables.read_variable` plus final
+  `_guard`). `unchanged` members run `check_target(variable=True)` and record
+  `'unchanged'` / audit `'ok'` without sending SQL; `planned` members call
+  `variables.apply_change` through `_SendingConnection`, whose `run_write` runs
+  `check_target(variable=True)` (`before_send`) and replaces the base
+  `target_session_guard` in the write packet with `_session_guard` (binding
+  MariaDB `server_uid` and `version` in the same packet as the `SET`, and
+  updating readback `after_identity` for MariaDB `SET GLOBAL server_id`).
+  Warning-only no-ops or adjusted values where `variables._matches` is not
+  `True` become `refused` (`not_matched`: `"The server did not take the exact
+  reviewed value. No later member was sent."`) and stop later members;
+  `applied_unverified` (`"The statement was sent but its effect could not be
+  verified. Check this server."`), post-send timeouts, or lost connections
+  become `unknown` (`"The statement may have run. Check this server before
+  reviewing another change."`); pre-send failures (`connect_failed`,
+  `recheck_failed`, `identity_mismatch`, `identity_unavailable`,
+  `role_changed`, `dependency_changed`, `changed_target`, `changed_variable`,
+  `policy_changed`, `read_only`) stay `refused` (each explicitly stating nothing
+  was sent to this member or to review again); in `_SendingConnection.run_write`,
+  initial connection or login failures matching `dbops.target_not_connected`
+  (including MariaDB `ERROR 1698` at login) reset `self.sent = False` and
+  raise `Refusal(..., 'connect_failed')` so nothing was sent and the member
+  stays `refused` rather than `unknown` or `ERROR <n>`; server SQL errors
+  retain `ERROR <n>` (`"The server returned error %d. No later member was
+  sent."`) without
+  echoing SQL or passwords. Overall statuses and messages: `'applied'`
+  (`"Every selected member has the reviewed value."`), `'partial'` (`"The
+  rolling change stopped. Check each member result before reviewing another
+  change."`), `'refused'` (`"Untick the refused servers and review again."` for
+  `invalid_plan`, pre-run refusal message, or `"The rolling change stopped.
+  Check each member result before reviewing another change."`), `'stopped'`
+  (`"Stop requested. No later member will start."`), `'stale'` (`"The review
+  changed or expired. Review the change again."`); per-member statuses:
+  `'applied'` (`"The reviewed value was applied."`), `'unchanged'` (`"The
+  requested value is already set."`), `'refused'`, `'not_sent'` (`"Not sent
+  because this rolling change stopped."`), `'unknown'`. Writes one durable `_MemberAudit` (`dbops.AuditTrail`, `operation='topology.variable'`,
+  `target` carrying `change_set_id`, `group_name`, `name`, `mode` from
+  `effective_mode or reviewed['mode']`, sanitized outcome/message) per member,
+  matched by `dbops.audit_object_matches` (`kind='parameter'`).
+  `topology_change.share_progress` merges `_ProgressRegistry` (`LIMIT=64`,
+  `TTL=600`, preserving `received` rolling runs from abandonment pruning) with
+  `ui._action_progress`. `stop(store, progress_id, group_name,
+  active_member_profile_id)` verifies group and `run.generation` (`_snapshot`),
+  sets `run.stopped = True`, and prevents only the next member from starting
+  without interrupting an in-flight statement.
+- Identity evidence failures during the first pre-send member recheck retain
+  `identity_unavailable` or `identity_mismatch` in the audit outcome instead
+  of falling back to a generic refusal. No statement is sent to that member.
+- **Secret redaction in audit and comparisons**: `ui._variable_response` wraps
+  `audit` in `variables._SensitiveAudit` whenever `param_compare.sensitive(name)`
+  is true before `declined`, `blocked` (`read_only`/`needs_confirmation`),
+  `changed`, or `apply_change` (which also wraps `audit`), redacting statements
+  and values in every audit outcome including declined and refused attempts.
+  The deprecated CLI creates the same wrapper in `workspace_cli._config_change`
+  before policy refusal, connection setup or `variables.change_cli`, so early
+  refusals and connection failures cannot persist either value or its SQL hex
+  representation.
+  `dbops._URL_SECRET` (shared by `param_compare._CREDENTIAL_URL`) and
+  `dbops._redact_set_password` scan long/incomplete URL credentials and
+  `SET PASSWORD` clauses linearly. URL matching starts at the beginning of a
+  scheme-character run containing a letter, including numeric or punctuation
+  prefixes; parameter values allow quotes in userinfo while SQL/audit text
+  keeps quote boundaries. SET PASSWORD unions three linear scans of the same
+  input: the lexical walk from the start, an unbounded first-separator scan,
+  and a keyword-anchored lexical walk, covering SQL diagnostics, unmatched
+  preceding quotes and executable comments; the latter two scans leave empty
+  literals alone.
+
+**Workspace place (`TopologyPlace.tsx`, `TopologyMap.tsx`,
+`RollingChangeSheet.tsx`, `rollingRuns.ts`, `GroupDriftTable.tsx`,
+`topologyApi.ts`, `topology-place.css`, `Audit.tsx`, `Sidebar.tsx`,
+`main.tsx`)**:
+
+- Sidebar item `"Topology"` (`place: "topology"`, icon `"topology"`) right
+  after `"Workload"`, lazy-mounted in `main.tsx` on first visit and wrapped in
+  `ViewOnScreenContext`. `Audit.tsx` maps `'topology.variable': "Rolling
+  parameter change"` in `OPERATIONS`.
+- Connection states (`NonGroupState` and Group connection):
+  1. No connection (`!connection.host && !connection.profile_id`): EmptyState
+     asking to connect to a server.
+  2. Unsaved connection (`!connection.profile_id`): EmptyState `"Save this
+     connection to add it to a group."`
+  3. Saved connection in a group (`savedGroup`): EmptyState `"This connection
+     is in group <name>."` with **Open group connection `<name>`**
+     (`onOpenGroup`).
+  4. Saved connection not in a group: note, **New group…** (`onNewGroup`
+     opening `GroupEditorSheet` in create mode with this connection ticked),
+     and `ConnectionGroupBar`.
+  5. Group connection (`connection.group_name`): segmented tabs **Map**,
+     **Members**, **Parameters**, **Accounts**, **Plugins** (default **Map**).
+- Read gating: `reportKey` combines `connectionKey(connection)` with sorted
+  `profile_id@host:port` membership from `group` (`groupActive` in `main.tsx`).
+  Saving group membership changes or reopening the Group connection updates
+  that snapshot, invalidating old reports and marking the edited group's tabs
+  as `tried` without reading automatically; editing a non-active saved member's
+  host or port via Home only refreshes `profiles`, leaving cached topology
+  reports intact until an explicit **Refresh** or reopening the Group
+  connection. Switching groups or leaving a Group connection aborts all
+  in-flight `AbortController` requests and drops out-of-date replies. A tab
+  sends `POST /api/live/topology` only when it first comes on screen
+  (`useViewOnScreen()`) without a cached report/error/tried entry, and on
+  explicit **Refresh** (or **Load** / **Retry**); never on automatic refresh,
+  never polling.
+- Views: **Map** renders `TopologyMap` (tiers **ProxySQL routing**, **Readyset
+  caches**, **Database servers**, **Replicas · level N**, cluster boxes,
+  `Alias of <member>` badges, legend for solid verified / dashed unverified
+  address or server ID match / dotted alias, `EDGE_CAP = 600` SVG links with
+  cap note) above the accessible text view (Servers, `Not in this group` peers
+  with `seen_by`, Links showing `from -> to` and `"verified"` / `"server ID
+  match, not verified"` / `"address match, not verified"` / `"Same server
+  (alias)"`, Clusters, Notes; **Links** pages by 200 via **Show 200 more** and
+  retains all links past the 600-link diagram cap, while **Servers** and
+  **Not in this group** peers stay complete up to 500 entries and page by 200
+  when over 500, resetting on each new report). **Members** renders
+  `SummaryLine` (naming version drift when >1 version is seen plus
+  read/failed/not_reached counts) and `DataTable` (`id="topology.members"`,
+  `Alias of` badge, `Read only` combining `read_only` and `super_read_only`
+  with raw `read_only_value` for MariaDB modes) with an inspector showing
+  member facts, optional **Alias** note, channels, `MapNodeLinks` on Map, and
+  actions (**Use in Server views**, which selects that member in `memberByPlace`
+  for Server without navigating; **Open in Cluster** and **Open in
+  Replication**, which navigate to those places). **Parameters**, **Accounts** and
+  **Plugins** share `GroupDriftTable` (`id="topology.parameters" |
+  "topology.accounts" | "topology.plugins"`): **Show: Differences | All** starts
+  on **Differences** (`row.status !== "same" && row.status !== "per_server"`),
+  **All** adds `same` and `per_server` rows (with a `Per server` pill), search
+  filters by item name, notes render above the table, and **Not compared** lists
+  excluded and unread members with reasons below; **Accounts** rows open an
+  inspector with differences and **Open in Users and roles on `<member>`**
+  links.
+- **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
+  **Parameters** row's inspector offers **Change on every member…** (disabled
+  with its reason by `rollingChangeBlock` when `effective_safety.read_only` or
+  `connection.read_only`, `per_server`, `row.reason`, or a compared member
+  value is `undefined`/`null`/`"[redacted]"`). The sheet pre-fills `commonValue`,
+  shows only `SET GLOBAL` when all changeable members are MariaDB (else all
+  three modes with MariaDB note, defaulting to `persist`), lists every group
+  member with proxies/caches and `not_compared` members unticked and disabled,
+  renders the reviewed `order_rule`, `effective_mode` statement kind, exact
+  SQL, `memberScopes` before/after, `effect.text`, caveats, `config_line`,
+  refused member reasons (keeping **Apply** off), typed group name on
+  Production, and a required acknowledgement checkbox (`"I understand <names>
+  will not be changed."`) whenever any member is excluded. Cancelling an
+  unapplied reviewed plan filters out `null` statements and calls
+  `recordDeclined("topology.variable", ...)`, recording a declined attempt when
+  at least one member has a planned SQL statement; all-`unchanged` or
+  all-`refused` plans send `[]`, which `/api/audit/declined` rejects and
+  `recordDeclined` ignores, recording no attempt. The single-flight
+  `RollingRun` in `rollingRuns.ts` is keyed by `runBinding` (`groupName` +
+  sorted `profile_id@host:port`); its owner refuses a new run while any run
+  is unfinished, regardless of binding. It outlives closing the sheet, switching
+  connections/groups, or refreshing the tab: the **Topology** banner shows
+  `Rolling change running: <name>, server <at> of <of>.` / `Rolling change
+  finished: <name>.` with **Show** on `ownPlaceRun` (`placeBinding === null` or
+  matching `runBinding`), or `Rolling change running in group <group>.` without
+  **Show** on another group or edited membership; after a run finishes,
+  **Parameters** notes that **Refresh** re-reads the group without
+  auto-reading. On a lost `apply` reply (`!(error instanceof ApiError)`),
+  polling `/api/live/action/progress` backs off from 1 s to 10 s (`POLL_MS` to
+  `MAX_POLL_MS`); failed polls mark `progressSilent` without ending the run,
+  **Stop** retries on error until acknowledged (`stopAcked`), `phase:
+  "unknown"` keeps polling and keeps **Stop** available (showing
+  `progressSilent` and the last snapshot) for up to `UNKNOWN_GRACE_MS` (30 s
+  from the lost reply, reset by any real snapshot) before ending (`lostDone`,
+  `lostUnknown`) with `"The server no longer reports this change; check the
+  Audit log for each member."` and **Open the Audit log**, and `finished` or
+  non-null `status` ends immediately (`lostDone`) with **Open the Audit log**.
+
+**Tests**: `test/test_topology_group.py` (GTID math, `compare_many`,
+`compare_plugins`, `open_group_member`, `/api/live/topology` auth/allowlist,
+consent snapshots, bounded synthetic client concurrency <= 4, 300 s accounts
+budget vs 120 s other sections, `_ReadConnection` login latching vs optional SQL
+errors, `TargetEvidenceConnection`, `not_reached` window, revocation mid-read,
+redaction, `value_truncated`, map alias/server-ID/SSH-loopback/peer/cap rules,
+`topology-group-1.0.json` schema validation), `test/test_topology_change.py`
+(ordering including mixed GR+async and MariaDB `server_id`, MariaDB
+`server_uid` + version packet guard, `server_id` write readback, MariaDB
+option-file fallback, `DEFAULT` and flagset default refusals, secret and
+`value_truncated` refusals, duplicate server alias refusals, unselected order
+dependencies, unchanged/refused/partial stops, read-only blocking before secret
+lookup, typed group name on Production, `ReviewTokens` single-use consumption,
+atomic progress/Stop handle, live dependency/role/variable re-checks, warning
+no-op/adjusted-value refusal, `Stop`, sanitized errors, `topology.variable`
+parameter audit history, `topology-change-plan-1.0.json` and
+`topology-change-1.0.json` schema validation), `test/test_variables.py`
+(`_SensitiveAudit` declined/refused redaction), `test/test_dbops.py`
+(`_URL_SECRET` linear scan), `test/test_param_compare.py`
+(`file_key_management_filekey` and telemetry header secrets),
+`apps/workspace/test/topology-place.mjs` (sidebar order, all connection states,
+tab order, first-show & Refresh reads, no polling, Map/Members/Parameters/
+Accounts UI, alias/server-ID/cap rendering, rolling change sheet, excluded
+member acknowledgement, Production typed name, MariaDB effective scopes, lost
+reply polling, Stop retry, banner binding, and 1440/720 px light/dark layout)
+and `apps/workspace/test/group-connections.mjs` (picker & Home group cards,
+**New group…**, **Group (N)…**, **Open**/**Refresh** landing on Topology,
+**Saved connections** heading, create mode duplicate check & refreshing active
+group on member move, group delete, `Server:` picker, editor tab binding,
+Cluster routes, 1440/720 px layout).
 
 ### Parameter version catalogs
 

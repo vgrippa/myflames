@@ -99,6 +99,7 @@ void QueryLab.preload().catch(() => {});
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
+const TopologyPlace = lazyComponent(() => import("./TopologyPlace").then((m) => m.TopologyPlace));
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
 const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
 const FilesPlace = lazyComponent(() => import("./FilesPlace").then((m) => m.FilesPlace));
@@ -130,8 +131,8 @@ type PlanExportSnapshot =
 // in either direction; home and server are new. Each maps to one place, except
 // audit and settings: the Audit log and Settings are local to this computer
 // and open from the gear, so no place is "you are here" while one is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit" | "settings";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit", "settings"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "topology" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit" | "settings";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "topology", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit", "settings"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -156,6 +157,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   schema: "schema",
   server: "server",
   workload: "workload",
+  topology: "topology",
   replication: "replication",
   cluster: "cluster",
   proxysql: "proxysql",
@@ -562,6 +564,9 @@ function App() {
   const [groupConnection, setGroupConnection] = useState<GroupConnection | null>(null);
   // The group open in the group editor sheet (picker, status bar).
   const [groupEditor, setGroupEditor] = useState<string | null>(null);
+  // The group editor in create mode, with these saved connections ticked
+  // (Topology's New group...).
+  const [groupCreate, setGroupCreate] = useState<string[] | null>(null);
   const [groupRevision, setGroupRevision] = useState(0);
   // Any explicit connection choice invalidates an older group probe.
   const connectionChoice = useRef(0);
@@ -586,14 +591,15 @@ function App() {
   }
   /** Open a connection group as one Group connection (an explicit open or
    * Refresh probes the other members). Starts on the member the backend
-   * picks (the primary or source) unless *activeMember* names one. */
-  async function openGroup(name: string, options: { activeMember?: string; probe?: boolean } = {}) {
+   * picks (the primary or source) unless *activeMember* names one. Resolves
+   * true only when this group became the connection in use. */
+  async function openGroup(name: string, options: { activeMember?: string; probe?: boolean } = {}): Promise<boolean> {
     const choice = ++connectionChoice.current;
     const probe = options.probe !== false;
     setConnectionNote("");
     try {
       const result = await openConnectionGroup(name, { activeMember: options.activeMember, probe });
-      if (choice !== connectionChoice.current) return;
+      if (choice !== connectionChoice.current) return false;
       const gc = result.group_connection;
       if (groupActiveRef.current?.group_name !== gc.group_name) {
         setMemberByPlace({});
@@ -608,21 +614,34 @@ function App() {
       setConnectionNote(
         `${groupConnectionLabel(gc.group_name, gc.members.length)}: ${member?.profile_name || gc.active_member_profile_id} is the active member.`,
       );
+      return true;
     } catch (e) {
-      if (choice !== connectionChoice.current) return;
+      if (choice !== connectionChoice.current) return false;
       setConnectionNote(`Could not open group ${name}: ${(e as Error).message}`);
+      return false;
     }
   }
   /** After a group edit: refresh the saved connections and move an active
-   * Group connection (rename, or the active member leaving the group). */
+   * Group connection (rename, or the active member leaving the group). The
+   * same re-open applies when the saved group is another one (a create has no
+   * previousName) that took a member of the active Group connection: that
+   * group lost the member and shows it again without probing. */
   async function groupSaved(result: GroupSaveResult, previousName: string) {
     const current = groupActiveRef.current;
-    const choice = current?.group_name === previousName ? ++connectionChoice.current : connectionChoice.current;
+    const movedOut = !!current && current.group_name !== result.name &&
+      result.profile_ids.some((id) => current.members.some((m) => m.profile_id === id));
+    const affected = !!current && (current.group_name === previousName || movedOut);
+    const choice = affected ? ++connectionChoice.current : connectionChoice.current;
     const fresh = await refreshProfiles().catch(() => null);
-    if (!current || current.group_name !== previousName || choice !== connectionChoice.current) return;
+    if (!current || !affected || choice !== connectionChoice.current) return;
+    // The group to open again: the edited one (its name after a rename), or
+    // the active one another group's save took a member from.
+    const name = current.group_name === previousName ? result.name : current.group_name;
     try {
-      const stillMember = result.profile_ids.includes(labStateRef.current.profile_id);
-      const reopened = await openConnectionGroup(result.name, {
+      const stillMember = name === result.name
+        ? result.profile_ids.includes(labStateRef.current.profile_id)
+        : (fresh || profilesRef.current).some((p) => p.id === labStateRef.current.profile_id && (p.group || "").trim() === name);
+      const reopened = await openConnectionGroup(name, {
         activeMember: stillMember ? labStateRef.current.profile_id : undefined,
         probe: false,
       });
@@ -650,7 +669,7 @@ function App() {
       // The group is gone or has no member left: the connection in use stays
       // as the plain member connection.
       setGroupConnection(null);
-      setConnectionNote(`Group ${result.name} could not be opened again: ${(e as Error).message}`);
+      setConnectionNote(`Group ${name} could not be opened again: ${(e as Error).message}`);
     }
   }
   /** After a group delete: its saved connections stay; an active Group
@@ -1874,7 +1893,7 @@ function App() {
       : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "topology" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning";
   // Server renders Server, Workload, Tuning and Database diagram. While
   // another place is on screen it keeps the one shown last, so leaving it
   // never swaps (and mounts) a different view in the hidden place.
@@ -1887,10 +1906,11 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false, teach: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false, teach: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, topology: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false, teach: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, topology: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false, teach: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
+  if (ready && mode === "topology") visited.current.topology = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
   if (ready && mode === "readyset") visited.current.readyset = true;
@@ -1903,6 +1923,7 @@ function App() {
   const mountTeach = visited.current.teach;
   const mountDigest = visited.current.digest;
   const mountSchema = visited.current.schema;
+  const mountTopology = visited.current.topology;
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
   const mountReadyset = visited.current.readyset;
@@ -1918,7 +1939,7 @@ function App() {
     // A session restored on Plans or Compare gets its chunks now (all three
     // together), not when the idle queue reaches them.
     if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -2143,7 +2164,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(placeRequest)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(placeRequest)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : (mode === "inspect" ? `plans:${activeId}` : `place:${mode}`);
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "topology" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(placeRequest)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : (mode === "inspect" ? `plans:${activeId}` : `place:${mode}`);
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -2298,6 +2319,7 @@ function App() {
     { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
+    { id: "place-topology", label: "Topology", group: "Places", icon: "topology", keywords: "connection group members parameters accounts plugins map servers fleet drift", run: () => go("topology") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
@@ -2403,7 +2425,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "topology" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {linkBack && (
             <button type="button" className="nav-back-chip" aria-label={`Back to ${linkBack.label}`}
@@ -2607,6 +2629,13 @@ function App() {
                   onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
                   onGroupSaved={groupSaved}
                   onGroupDeleted={groupDeleted}
+                  onOpenGroup={(name) => {
+                    // Topology reads the group in use: navigate only once the
+                    // requested group is it, so the place's first read never
+                    // lands on the previous group.
+                    void openGroup(name, { probe: true }).then((opened) => { if (opened) go("topology"); });
+                  }}
+                  activeGroup={groupActive ? { name: groupActive.group_name, count: groupActive.members.length } : null}
                   addRequest={addConnection}
                   onAddHandled={() => setAddConnection(0)}
                 />
@@ -2816,6 +2845,22 @@ function App() {
                 />
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountTopology && (
+            // The Topology place reads only on a Group connection, and only
+            // when a tab first comes on screen or its Refresh is pressed.
+            <div hidden={mode !== "topology"}>
+              <ViewOnScreenContext.Provider value={mode === "topology"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <TopologyPlace connection={request} group={groupActive} profiles={profiles} disabled={labBusy}
+                  onOpenGroup={(name) => void openGroup(name, { probe: true })}
+                  onNewGroup={(members) => setGroupCreate(members)}
+                  onUseInServer={(id) => chooseMember("server", id)}
+                  onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")}
+                  onOpenAccounts={(id) => { chooseMember("server", id); chooseServerView("accounts"); }} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
             </div>
           )}
           {ready && mountCluster && (
@@ -3070,6 +3115,16 @@ function App() {
           onSaved={groupSaved}
           onDeleted={groupDeleted}
           onClose={() => setGroupEditor(null)}
+        />
+      )}
+      {groupCreate && (
+        <GroupEditorSheet
+          group={null}
+          initialMembers={groupCreate}
+          profiles={profiles}
+          onSaved={groupSaved}
+          onDeleted={groupDeleted}
+          onClose={() => setGroupCreate(null)}
         />
       )}
       {commandPaletteOpen && (

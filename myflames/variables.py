@@ -1536,7 +1536,7 @@ def _result(plan, status, message, **extra):
 
 
 def _unsent(plan, audit, status, outcome, message, expect, verified=None):
-    result = _result(plan, status, message, verified=list(verified or []))
+    result = _result(plan, status, message, outcome=outcome, verified=list(verified or []))
     if audit is not None:
         statement = plan.get("statement") or (expect or {}).get("statement")
         if not statement and plan.get("name") and plan.get("mode") in MODES:
@@ -1545,6 +1545,60 @@ def _unsent(plan, audit, status, outcome, message, expect, verified=None):
                                            status if status in ("declined", "refused") else "refused",
                                            outcome=outcome, message=message, target=expect, verified=verified)
     return result
+
+
+class _SensitiveAudit(object):
+    """Redact secret-variable values at persistence without changing results.
+
+    Connection passwords are covered by AuditTrail. A variable can contain
+    an unrelated credential, including a numeric password, so redact by its
+    explicit variable policy instead of trying to recognize secret text.
+    """
+    _VALUES = frozenset(('statement', 'requested', 'value', 'default', 'global_value', 'session_value',
+                         'persisted_value', 'global', 'session', 'persisted'))
+
+    def __init__(self, audit):
+        self.audit = audit
+
+    def __getattr__(self, name):
+        return getattr(self.audit, name)
+
+    def __setattr__(self, name, value):
+        if name == 'audit':
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.audit, name, value)
+
+    @classmethod
+    def _safe(cls, value):
+        if isinstance(value, dict):
+            return {key: dbops.REDACTED if key in cls._VALUES and item is not None else cls._safe(item)
+                    for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._safe(item) for item in value]
+        return value
+
+    def attempt(self, statements, target=None, verified=None):
+        return self.audit.attempt([dbops.REDACTED for _ in statements],
+                                  target=self._safe(target), verified=self._safe(verified))
+
+    def complete(self, status, outcome=None, error=None, message=None, **kwargs):
+        if 'after' in kwargs:
+            kwargs['after'] = self._safe(kwargs['after'])
+        code = dbops.error_code(str(error)) if error is not None else None
+        return self.audit.complete(status, outcome=outcome, error=code,
+                                   message='Sensitive variable change: values are redacted.', **kwargs)
+
+    def outcome(self, statements, status, outcome=None, message=None, error=None, target=None, verified=None):
+        code = dbops.error_code(str(error)) if error is not None else None
+        return self.audit.outcome([dbops.REDACTED for _ in statements], status, outcome=outcome,
+            message='Sensitive variable change: values are redacted.', error=code,
+            target=self._safe(target), verified=self._safe(verified))
+
+    def fail(self, exc, statements=()):
+        # Reuse the outcome classification while keeping every persistence
+        # call on this wrapper, including exceptions before apply_change.
+        return dbops.AuditTrail.fail(self, exc, statements)
 
 
 def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None):
@@ -1565,6 +1619,10 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     if not isinstance(plan, dict):
         raise ValueError("Send the change to make (name, mode and value).")
     name, mode = check_name(plan.get("name")), check_mode(plan.get("mode"))
+    if audit is not None:
+        from .param_compare import sensitive
+        if sensitive(name) and not isinstance(audit, _SensitiveAudit):
+            audit = _SensitiveAudit(audit)
     requested = plan.get("requested") if mode != "reset_persist" else None
     expect = check_expect(expect, name, mode)
     stub = {"engine": None, "server_version": None, "name": name, "mode": mode, "requested": requested,
@@ -1589,6 +1647,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
             p["message"] for p in fresh["problems"]), expect)
     verified = []
     problem = None
+    drift_outcome = "changed_variable"
     if fresh["statement"] != expect["statement"]:
         problem = ("The statement myflames would send now (%s) differs from the one you confirmed (%s), so nothing "
                    "was sent. Review it again." % (fresh["statement"], expect["statement"]))
@@ -1607,13 +1666,17 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         if problem:
             break
         if not _same(now, expect.get(key)):
+            if key == "server_identity":
+                drift_outcome = "identity_mismatch"
+            elif key in ("engine", "server_version"):
+                drift_outcome = "changed_target"
             problem = ("The %s of %s changed since you reviewed it (%s, now %s), so nothing was sent. Review it "
                        "again." % (label, name, expect.get(key) if expect.get(key) is not None else "none",
                                    now if now is not None else "none"))
         else:
             verified.append(label)
     if problem:
-        return _unsent(fresh, audit, "refused", "changed", problem, expect, verified)
+        return _unsent(fresh, audit, "refused", drift_outcome, problem, expect, verified)
     statement = fresh["statement"]
     try:
         guard = dbops.target_session_guard(expect["engine"], expect["server_identity"])
@@ -1668,6 +1731,7 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
                                error=str(exc), message=message)
             raise ValueError(message)
         result["status"], result["message"] = error_status(exc)
+        result["sent"] = [] if dbops.target_not_connected(exc) else [statement]
         if audit is not None:
             audit.complete("error", outcome=result["status"], error=str(exc), message=result["message"])
         return result

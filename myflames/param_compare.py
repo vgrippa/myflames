@@ -15,6 +15,7 @@ COMPARE_SCHEMA = 'parameter-compare-1.0'
 READ_SECONDS = 120
 MAX_ITEMS = 10000
 MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_VALUE_CHARS = 65536
 STATUS_TEXT = {'different': 'Different', 'only_in_source': 'Only in source',
                'only_in_target': 'Only in target', 'identical': 'Identical', 'not_compared': 'Not compared'}
 # One inventory for folding server identity and installation-specific locations.
@@ -59,10 +60,20 @@ _SECRET_VARIABLES = frozenset((
     'wsrep_sst_auth', 'report_password', 'audit_log_encryption_password',
     'keyring_encrypted_file_password', 'keyring_hashicorp_secret_id', 's3_secret_key',
     'handlersocket_plain_secret', 'handlersocket_plain_secret_wr', 'utility_user_password',
+    'file_key_management_filekey',
+    'telemetry.otel_exporter_otlp_logs_headers',
+    'telemetry.otel_exporter_otlp_metrics_headers',
+    'telemetry.otel_exporter_otlp_traces_headers',
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
     'telemetry.otel_exporter_otlp_traces_secret_headers'))
-_CREDENTIAL_URL = re.compile(r'\b[a-z][a-z0-9+.-]*://[^\s/@:]*:[^\s/@]+@', re.I)
+# Use the same linear authority scan as SQL/audit redaction, including URLs
+# with arbitrarily long passwords or empty usernames. A server value has
+# no SQL literal delimiters, so quotes in its userinfo do not end the scan.
+def _CREDENTIAL_URL(value):
+    return dbops._URL_SECRET(value, quoted=False)
+
+
 _CREDENTIAL_PAIR = re.compile(r'[^\s:/\\;=@]+:[^\s:/\\;]+')
 
 # Earlier snapshots inherited these config-review explanations. Remove the
@@ -81,7 +92,7 @@ def _redact_parameter_value(value):
     # Bare host:port and Windows paths are not evidence of credentials. Secret
     # variables still redact numeric passwords through the explicit inventory.
     pair = _CREDENTIAL_PAIR.fullmatch(value.strip())
-    if _CREDENTIAL_URL.search(value) or pair and not pair.group().split(':', 1)[1].isdigit():
+    if next(_CREDENTIAL_URL(value), None) is not None or pair and not pair.group().split(':', 1)[1].isdigit():
         return dbops.REDACTED
     return dbops.redact(dbops.strip_credentials(value))
 
@@ -147,7 +158,8 @@ def validate_snapshot(value):
         raise ValueError('Use an ISO 8601 snapshot timestamp with a time zone.') from None
     names = set()
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get('name'), str) or not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name']):
+        if (not isinstance(item, dict) or not isinstance(item.get('name'), str) or
+                len(item['name']) > MAX_VALUE_CHARS or not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name'])):
             raise ValueError('Invalid parameter name.')
         name = item['name'].lower()
         if name in names:
@@ -158,8 +170,6 @@ def validate_snapshot(value):
         if 'value' not in row:
             raise ValueError('Every parameter needs a raw value; use null for SQL NULL.')
         row.setdefault('default', None)
-        if 'dynamic' not in row and row.get('apply_type') in ('dynamic', 'static'):
-            row['dynamic'] = row['apply_type'] == 'dynamic'
         for key in ('type', 'apply_type', 'source', 'source_label', 'scope', 'modifiable', 'group'):
             if row.get(key) is not None and not isinstance(row[key], str):
                 raise ValueError('Invalid parameter metadata.')
@@ -169,11 +179,27 @@ def validate_snapshot(value):
         for key in ('dynamic', 'truncated', 'redacted'):
             if row.get(key) is not None and type(row[key]) is not bool:
                 raise ValueError('Invalid parameter state.')
-        if sensitive(name):
-            row['values'] = None
         for key in ('value', 'default'):
             if row.get(key) is not None and not isinstance(row[key], (str, int, float, bool)):
                 raise ValueError('Parameter values must be scalar.')
+
+        # Server metadata, including VARIABLE_SOURCE / GLOBAL_VALUE_ORIGIN,
+        # reaches the final recursive redaction too. Bound every retained
+        # string before any redaction, and never compare an incomplete row.
+        # Names were bounded above: dropping their identity would be invalid.
+        oversized = {key for key, raw in row.items()
+                     if isinstance(raw, str) and len(raw) > MAX_VALUE_CHARS}
+        for key in oversized:
+            row[key], row['truncated'] = None, True
+        if row.get('values') is not None and any(len(v) > MAX_VALUE_CHARS for v in row['values']):
+            row['values'], row['truncated'] = None, True
+        if 'dynamic' not in row and row.get('apply_type') in ('dynamic', 'static'):
+            row['dynamic'] = row['apply_type'] == 'dynamic'
+        if sensitive(name):
+            row['values'] = None
+        for key in ('value', 'default'):
+            if key in oversized:
+                continue
             if sensitive(name):
                 row[key], row['redacted'] = '[redacted]', True
             elif isinstance(row.get(key), str):
@@ -190,9 +216,11 @@ def validate_snapshot(value):
     return dbops.redact_value(clean)
 
 
-def capture(conn, server=None, label=''):
+def capture(conn, server=None, label='', full_provider_options=False):
     from .config_review import config_report
-    report = config_report(BoundedConnection(conn), parameters=True)
+    from .perf_common import Reader
+    conn = BoundedConnection(conn)
+    report = config_report(conn, parameters=True)
     identity = {k: (server or {}).get(k) for k in ('host', 'port')}
     identity.update(host=identity['host'] or getattr(conn, 'host', 'localhost'),
                     port=identity['port'] or getattr(conn, 'port', 3306))
@@ -204,13 +232,26 @@ def capture(conn, server=None, label=''):
     # parameters-1.0 has check associations rather than a group field today.
     groups = {c['key']: c['group'] for c in report.get('checks', [])}
     items = [dict(i) for i in catalog['items']]
+    notes = list(catalog.get('notes', []))
     for item in items:
+        if full_provider_options and item['name'] == 'wsrep_provider_options':
+            # SHOW/P_S and SYSTEM_VARIABLES have narrower columns than this
+            # provider's option list. Read the variable itself before parsing.
+            rows = Reader(conn, '/*myflames:topology*/ ').optional(
+                'SELECT @@GLOBAL.wsrep_provider_options', 'full wsrep_provider_options', notes)
+            if rows and len(rows) == 1 and len(rows[0]) == 1 and rows[0][0] is not None:
+                value = rows[0][0]
+                oversized = len(value) > MAX_VALUE_CHARS
+                item.update(value=None if oversized else value, truncated=oversized)
+            else:
+                # Never compare a prefix when the exact read was unavailable.
+                item['truncated'] = True
         group = next((groups[k] for k in item.get('checks', []) if k in groups), None)
         if group is not None:
             item['group'] = group
     return validate_snapshot({'schema_version': SNAPSHOT_SCHEMA, 'server': identity,
                               'captured_at': now(), 'label': label, 'complete': catalog['complete'],
-                              'notes': catalog.get('notes', []), 'items': items})
+                              'notes': notes, 'items': items})
 
 
 def source_key(snapshot):
@@ -263,3 +304,195 @@ def compare(source, target, source_meta=None, target_meta=None):
             'counts': {s: sum(r['status'] == s for r in rows) for s in STATUS_TEXT},
             'identical': all(s.get('complete') and not s.get('error') for s in sides) and all(r['status'] == 'identical' for r in rows),
             'complete': all(s.get('complete') and not s.get('error') for s in sides)}
+
+
+def _many_snapshots(snapshots):
+    """Validate the complete inventories admitted to a group comparison.
+
+    The group reader reports failed or incomplete members in not_compared.
+    Treating an incomplete inventory as an empty server would invent missing
+    settings or accounts, so the pure comparison refuses such inputs too.
+    """
+    if not isinstance(snapshots, dict) or any(
+            not isinstance(pid, str) or not pid for pid in snapshots):
+        raise ValueError('Group snapshots must be keyed by saved connection ID.')
+    for side in snapshots.values():
+        if (not isinstance(side, dict) or side.get('complete') is not True or
+                side.get('error') or not isinstance(side.get('items'), list)):
+            raise ValueError('Only complete member inventories can be compared.')
+        if len(side['items']) > MAX_ITEMS:
+            raise ValueError('The member inventory is too large to compare.')
+    return sorted(snapshots)
+
+
+def _group_auto_increment(indexed, active_clusters):
+    """Fold generated offsets only with each member's observed active topology."""
+    # MySQL plugin/group_replication/src/plugin.cc:2578-2581 supplies the
+    # server ID as the offset to auto_increment.cc:61-84, but uses each
+    # member's own group_replication_auto_increment_increment. An increment
+    # difference is real drift; only the generated offset is folded.
+    # MariaDB sql/wsrep_server_service.cc:231-236
+    # derives the offset from the node index.
+    for pid, items in indexed.items():
+        def value(name):
+            item = items.get(name) or {}
+            return None if item.get('redacted') or item.get('truncated') else item.get('value')
+        multi_primary = (active_clusters.get(pid) == 'group_replication' and
+                         normalize(value('group_replication_single_primary_mode'), 'boolean') ==
+                         ('boolean', False) and bool(value('group_replication_group_name')))
+        provider = str(value('wsrep_provider') or '').strip().lower()
+        wsrep_control = (active_clusters.get(pid) == 'galera' and provider and provider != 'none' and
+                         normalize(value('wsrep_on'), 'boolean') == ('boolean', True) and
+                         normalize(value('wsrep_auto_increment_control'), 'boolean') == ('boolean', True))
+        if not (multi_primary or wsrep_control):
+            return False
+    return bool(indexed)
+
+
+def _group_provider_options(value):
+    """Compare provider options by key, excluding only known per-node values.
+
+    Refuse ambiguous or malformed input, including duplicate keys. A failed
+    parse must not turn two unreadable strings into an apparent agreement.
+    """
+    if not isinstance(value, str):
+        raise ValueError('Provider options are unavailable.')
+    per_node = {'base_host', 'base_port', 'base_dir', 'gcache.dir', 'gcache.name',
+                'gmcast.listen_addr', 'ist.recv_addr', 'ist.recv_bind',
+                'socket.ssl_cert', 'socket.ssl_key', 'pc.weight', 'gmcast.segment'}
+    options = {}
+    parts = value.strip().split(';')
+    if not parts[-1].strip():
+        parts.pop()
+    for part in parts:
+        match = re.fullmatch(r'\s*([A-Za-z0-9_.]+)\s*=\s*([^;]*)', part)
+        if not match or match.group(1) in options:
+            raise ValueError('Provider options could not be parsed safely.')
+        options[match.group(1)] = match.group(2).strip()
+    return tuple(sorted((key, val) for key, val in options.items() if key not in per_node))
+
+
+def compare_many(snapshots, role_settings=None, active_clusters=None):
+    """Compare complete member snapshots without performing a server read.
+
+    ``snapshots`` maps saved profile IDs to capture() results. Values retain
+    their raw spelling; typed normalization decides equality only. Missing
+    includes an unavailable, redacted or truncated value, with a reason so a
+    masked secret can never be mistaken for proof that passwords match.
+    ``role_settings`` maps IDs to observed roles; ``active_clusters`` maps
+    IDs to independently observed active Galera or Group Replication kinds.
+    Persisted mode settings alone cannot establish either fact.
+    """
+    profile_ids = _many_snapshots(snapshots)
+    indexed = {}
+    for pid in profile_ids:
+        items = {}
+        for item in snapshots[pid]['items']:
+            if (not isinstance(item, dict) or not isinstance(item.get('name'), str) or
+                    not re.fullmatch(r'[a-zA-Z0-9_.]+', item['name'])):
+                raise ValueError('Invalid parameter name in member inventory.')
+            name = item['name'].lower()
+            if name in items:
+                raise ValueError('Duplicate parameter name in member inventory.')
+            raw = item.get('value')
+            if raw is not None and not isinstance(raw, (str, int, float, bool)):
+                raise ValueError('Parameter values must be scalar.')
+            # Reapply the capture projection at this pure-function boundary.
+            # Do not trust a caller to have removed a secret already.
+            oversized = isinstance(raw, str) and len(raw) > MAX_VALUE_CHARS
+            value = (None if oversized else '[redacted]' if sensitive(name) else
+                     _redact_parameter_value(raw))
+            json.dumps(value, allow_nan=False)
+            items[name] = dict(item, value=value, redacted=bool(
+                item.get('redacted') or sensitive(name) or not oversized and value != raw),
+                truncated=bool(item.get('truncated') or oversized),
+                unavailable='value' not in item)
+        indexed[pid] = items
+    per_server = set(IDENTITY_NAMES) | {'group_replication_local_address', 'group_replication_group_seeds',
+        'gtid_binlog_state', 'gtid_owned', 'bind_address', 'admin_address',
+        'mysqlx_bind_address', 'mysqlx_port', 'mysqlx_socket',
+        'group_replication_advertise_recovery_endpoints', 'group_replication_recovery_public_key_path',
+        'group_replication_recovery_ssl_ca', 'group_replication_recovery_ssl_capath',
+        'group_replication_recovery_ssl_cert', 'group_replication_recovery_ssl_key',
+        'group_replication_recovery_ssl_crl', 'group_replication_recovery_ssl_crlpath',
+        'wsrep_node_incoming_address', 'wsrep_sst_receive_address', 'wsrep_sst_donor',
+        'wsrep_start_position', 'wsrep_status_file', 'wsrep_provider_base_host',
+        'wsrep_provider_base_port', 'wsrep_provider_base_dir', 'wsrep_provider_gcache_dir',
+        'wsrep_provider_gmcast_listen_addr', 'wsrep_provider_ist_recv_addr',
+        'wsrep_provider_gcache_name', 'wsrep_provider_ist_recv_bind',
+        'wsrep_provider_socket_ssl_cert', 'wsrep_provider_socket_ssl_key'}
+    node_design = {'wsrep_provider_pc_weight', 'wsrep_provider_gmcast_segment'}
+    per_server.update(node_design)
+    # MariaDB mariadb-11.8.3 sql/sys_vars.cc:3610 (server_uid), 5399
+    # (log_slow_query_file), 770 (character_sets_dir), 5628
+    # (relay_log_info_file), 5862 (slave_load_tmpdir); and
+    # storage/maria/ha_maria.cc:168 (aria_log_dir_path). These are identity
+    # or file locations, not policy names such as core_file or init_file.
+    per_server.update(('server_uid', 'log_slow_query_file', 'character_sets_dir',
+                       'relay_log_info_file', 'slave_load_tmpdir', 'aria_log_dir_path'))
+    # MySQL read_mode_handler.cc:32-60 changes read-only settings by role.
+    # Live observed roles take precedence over persisted GR configuration.
+    roles = role_settings if isinstance(role_settings, dict) else {}
+    buckets = {pid: ('source' if roles.get(pid) in ('primary', 'source') else
+                     'replica' if roles.get(pid) in ('secondary', 'replica') else None)
+               for pid in profile_ids}
+    if _group_auto_increment(indexed, active_clusters or {}):
+        per_server.add('auto_increment_offset')
+    names = set().union(*(set(items) for items in indexed.values())) if indexed else set()
+    rows = []
+    for name in sorted(names):
+        entries = [indexed[pid].get(name) for pid in profile_ids]
+        present = [item for item in entries if item is not None]
+        unavailable = any(item and (item.get('redacted') or item.get('truncated') or
+                                   item.get('unavailable')) for item in entries)
+        kind = next((item.get('type') for item in present if item.get('type')), None)
+        normalized = [normalize(item.get('value'), kind) for item in present]
+        parse_failed = False
+        if name == 'wsrep_provider_options' and not unavailable:
+            try:
+                normalized = [_group_provider_options(item.get('value')) for item in present]
+            except ValueError:
+                parse_failed = True
+                unavailable = True
+        missing = len(present) != len(profile_ids)
+        role_explained = False
+        if (name in ('read_only', 'super_read_only') and not missing and not unavailable and
+                None not in buckets.values() and len(set(buckets.values())) > 1):
+            # Direction matters: an unwritable source and writable replicas
+            # are drift, even when every member within each role agrees.
+            # MariaDB 12.0.1 sql/sys_vars.cc:2985-3001 adds NO_LOCK modes;
+            # both still refuse writes. Unknown values provide no evidence.
+            expected = {'source': ('OFF', '0', 'FALSE'),
+                        'replica': ('ON', '1', 'TRUE', 'NO_LOCK', 'NO_LOCK_NO_ADMIN')}
+            by_role = {}
+            for pid, value in zip(profile_ids, normalized):
+                by_role.setdefault(buckets[pid], []).append(value)
+            role_explained = (all(str(indexed[pid][name].get('value')).strip().upper() in
+                                  expected[buckets[pid]] for pid in profile_ids) and
+                              all(all(value == values[0] for value in values) for values in by_role.values()))
+        status = ('missing' if unavailable else 'per_server' if name in per_server or role_explained else
+                  'missing' if missing else 'different' if any(
+                      value != normalized[0] for value in normalized[1:]) else 'same')
+
+        def shared(field):
+            values = [item.get(field) if item else None for item in entries]
+            if field == 'dynamic':
+                values = [item.get('dynamic', item.get('apply_type') == 'dynamic'
+                          if item.get('apply_type') in ('dynamic', 'static') else None)
+                          if item else None for item in entries]
+            return values[0] if not missing and all(value == values[0] for value in values) else None
+
+        row = {'name': name, 'status': status,
+               'values': {pid: indexed[pid][name].get('value') if name in indexed[pid] else None
+                          for pid in profile_ids},
+               'apply_type': shared('apply_type'), 'dynamic': shared('dynamic')}
+        if unavailable:
+            row['reason'] = ('Provider options could not be parsed safely; they cannot be compared.' if parse_failed else
+                             'A value was redacted, truncated or unavailable; it cannot be compared.')
+        elif role_explained:
+            row['reason'] = "Set by the member's role"
+        elif name in node_design:
+            row['reason'] = 'Set per node by design'
+        rows.append(row)
+    order = {'different': 0, 'missing': 1, 'same': 2, 'per_server': 3}
+    return sorted(rows, key=lambda row: (order[row['status']], row['name']))

@@ -464,7 +464,10 @@ def _probe_connection(conn, profile, remaining=None):
                 "name": ch_name,
                 "source_host": src_host,
                 "source_port": _int(row.get("Source_Port") or row.get("Master_Port")) or 3306,
-                "source_uuid": _text(row.get("Source_UUID") or row.get("Master_Server_Id")),
+                "source_uuid": next((value.lower() for value in (
+                    _text(row.get("Source_UUID")), _text(row.get("Master_UUID")))
+                    if value and re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value)), None),
+                "source_server_id": _int(row.get("Source_Server_Id") or row.get("Master_Server_Id")),
                 "io_running": _text(row.get("Replica_IO_Running") or row.get("Slave_IO_Running")),
                 "sql_running": _text(row.get("Replica_SQL_Running") or row.get("Slave_SQL_Running")),
                 "lag_s": _int(row.get("Seconds_Behind_Source") or row.get("Seconds_Behind_Master")),
@@ -481,14 +484,15 @@ def _probe_connection(conn, profile, remaining=None):
             rhost = _text(row.get("Host"))
             rport = _int(row.get("Port")) or 3306
             ruuid = _text(row.get("Replica_UUID") or row.get("Slave_UUID"))
-            rsid = _int(row.get("Server_id"))
+            # MySQL 8.0.22+ sql/rpl_source.cc:236 spells this Server_Id.
+            rsid = _int(row.get("Server_Id", row.get("Server_id")))
             if rhost or ruuid:
                 replicas.append({"host": rhost, "port": rport, "uuid": ruuid, "server_id": rsid})
         break
 
-    read_only = (_text(variables.get("super_read_only")) or "").upper() == "ON" or (
-        (_text(variables.get("read_only")) or "").upper() == "ON"
-    )
+    # MariaDB sql/sys_vars.cc:3295-3296 adds NO_LOCK and NO_LOCK_NO_ADMIN.
+    read_only = any(value is not None and str(value).strip().upper() not in ('OFF', '0', 'FALSE')
+                    for value in (variables.get('read_only'), variables.get('super_read_only')))
     base.update({
         "kind": "database",
         "engine": ident["engine"],

@@ -1,0 +1,1107 @@
+{
+  "type": "object",
+  "required": [
+    "schema_version",
+    "section",
+    "group_name",
+    "taken_at",
+    "elapsed_s",
+    "effective_safety",
+    "active_member_profile_id",
+    "primary_profile_id",
+    "members",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "topology-group-1.0"
+    },
+    "section": {
+      "description": "An explicit tab read, with a 300-second request budget for accounts and 120 seconds for other sections. Each query is bounded to 30 seconds.",
+      "enum": [
+        "map",
+        "members",
+        "parameters",
+        "accounts",
+        "plugins"
+      ]
+    },
+    "group_name": {
+      "type": "string"
+    },
+    "taken_at": {
+      "type": "string"
+    },
+    "elapsed_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "effective_safety": {
+      "$ref": "#/definitions/safety"
+    },
+    "active_member_profile_id": {
+      "type": "string"
+    },
+    "primary_profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/member"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "read",
+        "failed",
+        "not_reached",
+        "versions",
+        "text"
+      ],
+      "properties": {
+        "read": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_reached": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/parameter"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "accounts": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/account"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Members whose complete account inventories contribute readable accounts. A member can also appear in not_compared when individual accounts were unreadable."
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Incomplete inventories are excluded entirely. Individual unreadable accounts are named in the affected member reason and omitted from all group rows so they cannot be mistaken for absent accounts."
+        }
+      },
+      "additionalProperties": false
+    },
+    "plugins": {
+      "type": "object",
+      "required": [
+        "rows",
+        "compared",
+        "not_compared",
+        "notes"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/plugin"
+          }
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "reason"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/note"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "map": {
+      "type": "object",
+      "required": [
+        "nodes",
+        "edges",
+        "clusters",
+        "notes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/map_member"
+              },
+              {
+                "$ref": "#/definitions/map_peer"
+              }
+            ]
+          }
+        },
+        "edges": {
+          "type": "array",
+          "maxItems": 16384,
+          "items": {
+            "$ref": "#/definitions/map_edge"
+          }
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/map_cluster"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/note"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Topology connection group read, version 1.0",
+  "definitions": {
+    "safety": {
+      "type": "object",
+      "required": [
+        "type",
+        "read_only"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "production",
+            "staging",
+            "development",
+            "local"
+          ]
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "lag": {
+      "type": "object",
+      "required": [
+        "kind",
+        "value",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "replica_seconds",
+            "gr_applier_queue",
+            "galera_recv_queue"
+          ]
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "behind": {
+      "type": "object",
+      "required": [
+        "kind",
+        "value",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "mysql_gtid_transactions",
+            "mariadb_domain_sequence"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        },
+        "domains": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "member": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "profile_name",
+        "host",
+        "port",
+        "safety",
+        "outcome",
+        "message",
+        "elapsed_s",
+        "engine",
+        "product",
+        "version",
+        "version_comment",
+        "server_uuid",
+        "server_id",
+        "hostname",
+        "read_only",
+        "super_read_only",
+        "role",
+        "state",
+        "lag",
+        "behind",
+        "behind_reason",
+        "channels",
+        "read_only_value",
+        "duplicate_of"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "safety": {
+          "$ref": "#/definitions/safety"
+        },
+        "outcome": {
+          "enum": [
+            "read",
+            "failed",
+            "not_reached"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "elapsed_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb",
+            null
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_id": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "super_read_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "secondary",
+            "node",
+            "source",
+            "replica",
+            "standalone",
+            "proxy",
+            "cache",
+            null
+          ]
+        },
+        "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lag": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/lag"
+            }
+          ]
+        },
+        "behind": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/behind"
+            }
+          ]
+        },
+        "behind_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/channel"
+          }
+        },
+        "read_only_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "routed": {
+          "description": "Whether the member session carried MySQL Router connection attributes (_client_ip or _client_socket); null when not checked or unreadable.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Canonical successfully read MySQL profile with the same non-nil server_uuid. Prefer the saved endpoint matching the reported server port and hostname or report_host, otherwise the oldest updated_at without a contrary port. Null for the canonical member, unique servers, or when no eligible canonical endpoint exists. Each saved connection remains a separate member and map node.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameter": {
+      "type": "object",
+      "required": [
+        "name",
+        "status",
+        "values",
+        "apply_type",
+        "dynamic"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing",
+            "per_server"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "apply_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dynamic": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "account": {
+      "type": "object",
+      "required": [
+        "account",
+        "status",
+        "present_on",
+        "differences"
+      ],
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing"
+          ]
+        },
+        "present_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "differences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_id",
+              "kind",
+              "detail"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "privileges",
+                  "roles",
+                  "attributes"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "plugin": {
+      "type": "object",
+      "required": [
+        "name",
+        "kind",
+        "status",
+        "values"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "plugin",
+            "component"
+          ]
+        },
+        "status": {
+          "enum": [
+            "same",
+            "different",
+            "missing"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status",
+                  "version"
+                ],
+                "properties": {
+                  "status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "version": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "channel": {
+      "type": "object",
+      "required": [
+        "name",
+        "source_host",
+        "source_port",
+        "source_uuid",
+        "source_server_id",
+        "io_running",
+        "sql_running",
+        "seconds_behind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_port": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_server_id": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "io_running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sql_running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seconds_behind": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "note": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "message"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_member": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "profile_id",
+        "label",
+        "host",
+        "port",
+        "engine",
+        "product",
+        "version",
+        "role",
+        "state",
+        "outcome",
+        "server_uuid",
+        "cluster_id",
+        "duplicate_of"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "member"
+        },
+        "profile_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb",
+            null
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "secondary",
+            "node",
+            "source",
+            "replica",
+            "standalone",
+            "proxy",
+            "cache",
+            null
+          ]
+        },
+        "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "read",
+            "failed",
+            "not_reached"
+          ]
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duplicate_of": {
+          "description": "Canonical successfully read MySQL profile with the same non-nil server_uuid. Prefer the saved endpoint matching the reported server port and hostname or report_host, otherwise the oldest updated_at without a contrary port. Null for the canonical member, unique servers, or when no eligible canonical endpoint exists. Each saved connection remains a separate member and map node.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_peer": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "profile_id",
+        "label",
+        "host",
+        "port",
+        "server_uuid",
+        "seen_by",
+        "reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "peer"
+        },
+        "profile_id": {
+          "type": "null"
+        },
+        "label": {
+          "type": "string"
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seen_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "const": "Not in this group"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_edge": {
+      "type": "object",
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "evidence",
+        "verified",
+        "state",
+        "label"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "replication",
+            "proxy_route",
+            "cache_upstream",
+            "alias"
+          ]
+        },
+        "evidence": {
+          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. A read database member's server_id that contradicts the MariaDB channel prevents an address-only match. Alias edges use server_uuid with verified false because they are another connection to the same server.",
+          "enum": [
+            "server_uuid",
+            "server_id",
+            "endpoint",
+            "hostname_port",
+            null
+          ]
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "state": {
+          "description": "Observed member or route state. Replica IO Connecting or Preparing is reported as connecting.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "map_cluster": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "members",
+        "seen_from"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "group_replication",
+            "innodb_cluster",
+            "galera",
+            "pxc"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seen_from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "section": {
+          "const": "map"
+        }
+      },
+      "required": [
+        "section",
+        "map"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "members"
+        }
+      },
+      "required": [
+        "section"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "parameters"
+        }
+      },
+      "required": [
+        "section",
+        "parameters"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "accounts"
+        }
+      },
+      "required": [
+        "section",
+        "accounts"
+      ]
+    },
+    {
+      "properties": {
+        "section": {
+          "const": "plugins"
+        }
+      },
+      "required": [
+        "section",
+        "plugins"
+      ]
+    }
+  ]
+}

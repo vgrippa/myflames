@@ -1210,6 +1210,13 @@
       "timeout": 300,
       "reason": "Every registry theme rendered in the real workspace across window widths via theme-browser-harness; long full-theme tour."
     },
+    "topology-place.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 300,
+      "safety": "Topology reads go only to the Group connection's own group (the mock asserts group name, active member and no password on every /api/live/topology call), only when a tab first comes on screen or Refresh is pressed (header lines 1-6).",
+      "reason": "Topology place shell and states, Members/Parameters/Accounts/Plugins tabs and the text Map on the real workspace server with a throwaway HOME and vault store; connect, profiles and /api/live/topology mocked from fixtures following docs/schemas/topology-group-1.0.json."
+    },
     "topology-appearance.mjs": {
       "kind": "suite",
       "script": null,

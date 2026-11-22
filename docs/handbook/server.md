@@ -5,7 +5,8 @@
 - **Server** groups ten views into five categories: **Overview** (**Health**, **InnoDB**, **Error log**), **Contention** (**Locks**), **Schema** (**Indexes**, **Tables**), **Setup** (**Parameters**, **Instruments**, **Maintenance**), and **Security** (**Users and roles**).
 - **Workload** groups five views into two categories: **Queries** (**Top statements**, **Processlist**) and **Resources** (**Memory**, **Waits**, **I/O**).
 - **Tuning** scores the checks that **Health**, **Parameters**, **Tables** and **Full analysis** evaluate, and runs **Full analysis** in its own tab.
-- **Replication**, **Cluster**, **ProxySQL** and **Readyset** sit in the sidebar as dedicated topology and operations places.
+- **Topology** sits after **Workload** and shows a whole **Group connection** (its map, members, and how parameters, accounts and plugins differ) with a rolling parameter change; see [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology) and [Change a parameter on every server](howto-topology.md#change-a-parameter-on-every-server).
+- **Replication**, **Cluster**, **ProxySQL** and **Readyset** follow in the sidebar as dedicated topology and operations places.
 
 Opening any view only reads. Every action that changes server state, kills a session, modifies an index or table, changes a parameter or instrument, runs a maintenance tool, skips a replication transaction, switches a cluster role, or updates ProxySQL or Readyset opens a review sheet first, shows the exact SQL or command it will run, checks the connection's write policy (**Production**, **Development** or **Read-only**), re-verifies the target right before sending, and records the outcome in the local **Audit** log. For host-level SFTP browsing and SSH key management, see [File transfer and SSH](files.md).
 
@@ -248,6 +249,8 @@ When you open **Replication**, **Cluster**, **ProxySQL** or **Readyset**, myflam
   - When the open server's topology matches an existing group `<G>` (from server identities remembered only from connections you have opened on this computer, or from peer addresses the open server reports): `This connection is part of the topology of group <G> (<evidence>). Add it to <G>?` with **Add to `<G>`** and **Not now**.
   - When other saved connections on this computer match the open server's topology: `<N> saved connection(s) is/are part of this topology` with **Review…**, which opens the **Review topology connections** (or `Add connections to <group>`) sheet where you can check the matching connections, set or confirm the **Group** name, and click **Add `<N>` to `<group>`**.
   - When the connection is saved without a group and no automatic match is waiting: `No connection group: myflames reads only this connection.` with **Create a group…**, which opens **Create a connection group** to name a group and optionally include other saved connections.
+
+To create a group, inspect a whole group in **Topology** and roll a parameter change across its members, see [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home), [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology) and [Change a parameter on every server](howto-topology.md#change-a-parameter-on-every-server).
 
 For connection setup details, see [Connection policies & write safety](safety.md#connection-groups-and-topology-consent) and the [Connections and files how-to guides](howto-connections.md).
 

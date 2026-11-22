@@ -30,7 +30,7 @@ def normalize_grant(line):
     Preserve object and account name case. Do not casefold a database name or
     erase REQUIRE/WITH options. Unusual syntax retains every token.
     """
-    parts = privileges.tokens(dbops.strip_credentials(line).strip().rstrip(';'))
+    parts = privileges.tokens(accounts._strip_account_credentials(line).strip().rstrip(';'))
     upper = [t.upper() for t in parts]
     if not parts or upper[0] not in ('GRANT', 'REVOKE'):
         return _tokens(parts)
@@ -67,7 +67,9 @@ def _safe_account(value):
     out['system'] = out['name'] in accounts.SYSTEM_ACCOUNTS
     out['grants'] = []
     for raw in value.get('grants', []):
-        line = dbops.strip_credentials(raw)
+        line = accounts._strip_account_credentials(raw)
+        if line == accounts.OMITTED_ACCOUNT_TEXT:
+            out['error'] = 'Account grants omitted: too long.'
         try:
             grantee = privileges.grant_source(line)
         except ValueError:
@@ -88,7 +90,9 @@ def _safe_account(value):
 
 
 def capture(conn, server=None):
-    bounded = BoundedConnection(conn)
+    # Group reads already bound this evidence scope's transport. Preserve its
+    # type so read_account reuses it instead of nesting identity packets.
+    bounded = conn if isinstance(conn, dbops.TargetEvidenceConnection) else BoundedConnection(conn)
     listing = accounts.list_accounts(bounded)
     version, engine = listing['version'], listing['engine']
     comment = Reader(bounded, accounts.TAG).pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'version_comment'").get('version_comment')
@@ -195,13 +199,97 @@ def compare(source, target, source_meta=None, target_meta=None):
                         not any(r['status'] == 'not_compared' for r in rows)}
 
 
+def _many_privilege_grants(item):
+    """Keep role membership in the structured roles comparison only."""
+    out = []
+    for line in item['grants']:
+        parts = [part.upper() for part in privileges.tokens(line)]
+        # MariaDB sql/sql_acl.cc:9829-9850 emits defaults in SHOW GRANTS.
+        # They already participate in the structured default_roles comparison.
+        if parts[:3] == ['SET', 'DEFAULT', 'ROLE']:
+            continue
+        boundary = 'FROM' if parts and parts[0] == 'REVOKE' else 'TO'
+        if parts and parts[0] in ('GRANT', 'REVOKE') and boundary in parts:
+            if 'ON' not in parts[:parts.index(boundary)]:
+                continue
+        out.append(line)
+    return out
+
+
+def incomplete_account(item):
+    """A failed field read must never be interpreted as an absent account."""
+    return bool(item.get('error') or item.get('exists') is False or any(
+        key.endswith('_checked') and value is False for key, value in item.items()))
+
+
+def compare_many(snapshots):
+    """Compare credential-free account inventories by saved profile ID.
+
+    Each difference names the member differing from the first present member
+    in sorted profile order. Details contain fixed descriptions and counts,
+    never a grant statement, authentication clause or server error.
+    """
+    from .param_compare import _many_snapshots
+    profile_ids = _many_snapshots(snapshots)
+    indexed = {}
+    for pid in profile_ids:
+        items = {}
+        for raw in snapshots[pid]['items']:
+            if (not isinstance(raw, dict) or not isinstance(raw.get('name'), str) or
+                    not isinstance(raw.get('host'), str)):
+                raise ValueError('Invalid account in member inventory.')
+            key = (raw['name'], raw['host'])
+            if key in items:
+                raise ValueError('Duplicate account in member inventory.')
+            if incomplete_account(raw):
+                raise ValueError('Only completely read accounts can be compared.')
+            item = _safe_account(raw)
+            if incomplete_account(item):
+                raise ValueError('Only completely read accounts can be compared.')
+            item['grants'] = _many_privilege_grants(item)
+            items[key] = item
+        indexed[pid] = items
+    keys = set().union(*(set(items) for items in indexed.values())) if indexed else set()
+    rows = []
+    for key in sorted(keys):
+        present = [pid for pid in profile_ids if key in indexed[pid]]
+        baseline_id = present[0]
+        baseline = indexed[baseline_id][key]
+        differences = []
+        for pid in profile_ids:
+            item = indexed[pid].get(key)
+            if item is None:
+                differences.append({'profile_id': pid, 'kind': 'attributes',
+                                    'detail': 'The account is absent on this member.'})
+                continue
+            changes = _changes(baseline, item)
+            if any(changes['grants'].values()):
+                differences.append({'profile_id': pid, 'kind': 'privileges',
+                    'detail': 'Privilege grants differ from profile %s (%d only there, %d only here).' % (
+                        baseline_id, len(changes['grants']['only_in_source']),
+                        len(changes['grants']['only_in_target']))})
+            if any(changes['roles'].values()) or any(changes['default_roles'].values()):
+                differences.append({'profile_id': pid, 'kind': 'roles',
+                    'detail': 'Assigned roles or default roles differ from profile %s.' % baseline_id})
+            if changes['attributes']:
+                differences.append({'profile_id': pid, 'kind': 'attributes',
+                    'detail': '%d account attributes differ from profile %s.' % (
+                        len(changes['attributes']), baseline_id)})
+        rows.append({'account': '%s@%s' % key,
+                     'status': 'missing' if len(present) != len(profile_ids) else
+                               'different' if differences else 'same',
+                     'present_on': present, 'differences': differences})
+    order = {'different': 0, 'missing': 1, 'same': 2}
+    return sorted(rows, key=lambda row: (order[row['status']], row['account']))
+
+
 def _grant_sql(line, item, engine):
     """Rebuild SHOW GRANTS names with the existing SQL quoting builders.
 
     Authentication, TLS and resource clauses are intentionally absent from this
     grants-only export. The comparison keeps them in its raw grant projection.
     """
-    safe = dbops.strip_credentials(line).strip().rstrip(';')
+    safe = accounts._strip_account_credentials(line).strip().rstrip(';')
     model = privileges.parse_grants([safe], engine)
     if model['unparsed']:
         raise ValueError('A grant could not be safely exported; inspect its original text.')
@@ -217,7 +305,7 @@ def _grant_sql(line, item, engine):
         return None  # Roles and default roles are rebuilt from structured fields.
     if on > boundary:
         return None
-    grantee = privileges.grant_source(line)
+    grantee = privileges.grant_source(safe)
     if (grantee['name'], grantee['host']) != (item['name'], item['host']):
         return None  # MariaDB SHOW GRANTS FOR role also prints inherited lines.
     prefix, depth = [upper[0]], 0

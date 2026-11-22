@@ -1,8 +1,8 @@
 // The one group editor sheet, reused by every entry point (the connection
 // picker, the status bar of a Group connection, the Connections place):
-// rename a group, add and remove members, or delete the group (its saved
-// connections stay). Edits go through /api/profiles/groups/save and
-// /api/profiles/groups/delete and apply at once.
+// create a group, rename one, add and remove members, or delete the group
+// (its saved connections stay). Edits go through
+// /api/profiles/groups/save and /api/profiles/groups/delete and apply at once.
 import { useState } from "react";
 import {
   deleteConnectionGroup,
@@ -17,32 +17,42 @@ import "./group-connections.css";
 
 export function GroupEditorSheet({
   group,
+  initialMembers,
   profiles,
   onSaved,
   onDeleted,
   onClose,
 }: {
-  /** The group's current name. */
-  group: string;
+  /** The group's current name, or null to create a group. */
+  group: string | null;
+  /** Create mode: the saved connections ticked when the sheet opens. */
+  initialMembers?: string[];
   /** Every saved connection (the checklist, with type and address). */
   profiles: Profile[];
-  /** After a save: the backend's answer and the name the group had. */
+  /** After a save: the backend's answer and the name the group had ("" for a create). */
   onSaved?: (result: GroupSaveResult, previousName: string) => void | Promise<unknown>;
   /** After a delete: the group's name. Its saved connections stay. */
   onDeleted?: (name: string) => void | Promise<unknown>;
   onClose: () => void;
 }) {
-  const [name, setName] = useState(group);
-  const [members, setMembers] = useState<Set<string>>(
-    () => new Set(profiles.filter((p) => (p.group || "").trim() === group).map((p) => p.id)),
+  const creating = group === null;
+  const [name, setName] = useState(group || "");
+  const [members, setMembers] = useState<Set<string>>(() =>
+    new Set(group === null
+      ? (initialMembers || []).filter((id) => profiles.some((p) => p.id === id))
+      : profiles.filter((p) => (p.group || "").trim() === group).map((p) => p.id)),
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const action = useAction(`group-editor:${group}`);
-  const remove = useAction(`group-editor-delete:${group}`);
+  const action = useAction(`group-editor:${group || "new"}`);
+  const remove = useAction(`group-editor-delete:${group || "new"}`);
 
   const trimmed = name.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80);
   const ticked = profiles.filter((p) => members.has(p.id));
-  const saveDisabled = !trimmed || ticked.length === 0 || ticked.length > 16;
+  // Create mode refuses a name another group already has, after the same
+  // trim the save applies; the server refuses it too.
+  const existingGroups = new Set(profiles.map((p) => (p.group || "").trim()).filter(Boolean));
+  const duplicate = creating && trimmed && existingGroups.has(trimmed) ? trimmed : "";
+  const saveDisabled = !trimmed || ticked.length === 0 || ticked.length > 16 || !!duplicate;
 
   function toggle(id: string, checked: boolean) {
     setMembers((prev) => {
@@ -58,17 +68,19 @@ export function GroupEditorSheet({
     void action
       .run(
         async (signal) => {
-          const result = await saveConnectionGroup(trimmed, ticked.map((p) => p.id), group, signal);
+          const result = await saveConnectionGroup(trimmed, ticked.map((p) => p.id), group || undefined, signal);
           await refreshSavedConnections().catch(() => {});
-          await onSaved?.(result, group);
+          await onSaved?.(result, group || "");
           return result;
         },
         {
-          pending: `Saving group ${trimmed}…`,
+          pending: creating ? `Creating group ${trimmed}…` : `Saving group ${trimmed}…`,
           done: (result) =>
-            result.name === group
-              ? `Group ${result.name} saved.`
-              : `Group renamed to ${result.name}.`,
+            creating
+              ? `Group ${result.name} created.`
+              : result.name === group
+                ? `Group ${result.name} saved.`
+                : `Group renamed to ${result.name}.`,
         },
       )
       .then((res) => {
@@ -77,6 +89,7 @@ export function GroupEditorSheet({
   }
 
   function drop() {
+    if (group === null) return;
     void remove
       .run(
         async () => {
@@ -95,7 +108,7 @@ export function GroupEditorSheet({
       });
   }
 
-  if (confirmDelete) {
+  if (confirmDelete && group !== null) {
     return (
       <ConfirmSheet
         key="delete"
@@ -118,12 +131,12 @@ export function GroupEditorSheet({
     <ConfirmSheet
       key="edit"
       className="group-editor-sheet"
-      title={`Edit group ${group}`}
+      title={creating ? "New group" : `Edit group ${group}`}
       description="A group opens as one Group connection from the connection picker. Connections in the same group may be read together to draw a cluster or replication topology."
       confirmTone="primary"
-      confirmLabel="Save group"
+      confirmLabel={creating ? "Create group" : "Save group"}
       busy={action.pending}
-      busyLabel="Saving…"
+      busyLabel={creating ? "Creating…" : "Saving…"}
       confirmDisabled={saveDisabled}
       onCancel={onClose}
       onConfirm={save}
@@ -136,6 +149,7 @@ export function GroupEditorSheet({
           value={name}
           disabled={action.pending}
           aria-label="Group name"
+          aria-invalid={duplicate ? true : undefined}
           onChange={(e) => setName(e.target.value)}
         />
       </label>
@@ -160,22 +174,27 @@ export function GroupEditorSheet({
           );
         })}
       </ul>
+      {duplicate && (
+        <p className="hint" role="alert">A group named {duplicate} already exists. Choose another name, or edit {duplicate}.</p>
+      )}
       {ticked.length === 0 && (
         <p className="hint" role="note">A group needs at least one saved connection.</p>
       )}
       {ticked.length > 16 && (
         <p className="hint" role="alert">A group can contain at most 16 saved connections. Uncheck {ticked.length - 16} to save.</p>
       )}
-      <div className="group-editor-footer">
-        <button
-          type="button"
-          className="text-button danger group-editor-delete"
-          disabled={action.pending}
-          onClick={() => setConfirmDelete(true)}
-        >
-          Delete group…
-        </button>
-      </div>
+      {!creating && (
+        <div className="group-editor-footer">
+          <button
+            type="button"
+            className="text-button danger group-editor-delete"
+            disabled={action.pending}
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete group…
+          </button>
+        </div>
+      )}
       <ActionStatus state={action} />
     </ConfirmSheet>
   );

@@ -829,7 +829,16 @@ try {
   // suggested index is reviewed and applied, then measured again; the note
   // and the capture connection keep the recorded schema.
   await nav("Workload");
-  await page.waitForSelector(".server-view tbody tr");
+  // Workload stays mounted while off screen with analyticsProfile's rows and
+  // Statement 5 open (data-other-connection="true"); wait for useOpenRead's
+  // privilegeProfile read to settle before row(1) checks for Back.
+  await page.waitForFunction(() => {
+    const view = document.querySelector(".server-view[data-view=top]");
+    return !!view && view.offsetParent !== null
+      && view.dataset.otherConnection !== "true"
+      && !view.querySelector('[data-action="refresh"][aria-busy="true"]')
+      && view.querySelectorAll("tbody tr").length > 0;
+  });
   await row(1);
   const readSuggestion = await page.$('.view-inspector [data-action="read-index-suggestion"]');
   if (readSuggestion) await readSuggestion.click();
@@ -854,7 +863,8 @@ try {
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
   await nav("Workload");
-  await page.click(".detail-back");
+  await page.locator(".view-inspector.is-detail .detail-back").click();
+  await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
   await setField("Top N", "3");
   mock.busyOnce = true;
   const before = (await page.$$(".plan-item")).length;

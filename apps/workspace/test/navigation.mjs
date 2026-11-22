@@ -169,15 +169,15 @@ try {
   const last = (pathname) => (seen[pathname] || []).at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: sixteen, in order (Cluster right after Replication, then
-  // ProxySQL and Readyset; File transfer after Tuning; Query digest, Database diagram
-  // and Schema versions right below the Query editor in the SQL workspace
-  // group), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "File transfer", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
+  // 1. Places: seventeen, in order (Topology right after Workload, then
+  // Replication and Cluster, ProxySQL and Readyset; File transfer after Tuning;
+  // Query digest, Database diagram and Schema versions right below the Query
+  // editor in the SQL workspace group), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Topology", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "File transfer", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 16);
-  assert.equal(new Set(icons).size, 16, "every place has a distinct icon");
+  assert.equal(icons.length, 17);
+  assert.equal(new Set(icons).size, 17, "every place has a distinct icon");
   // The SQL workspace group: Query editor, Query digest, Database diagram, Schema versions, Plans.
   assert.deepEqual(await page.$$eval(".main-nav > *", (els) => {
     const start = els.findIndex((e) => e.textContent === "SQL workspace");
@@ -213,6 +213,7 @@ try {
     "Database diagram": ".server-place.is-diagram-place .server-view[data-view=diagram]",
     Server: ".server-place",
     Workload: ".server-place",
+    Topology: ".topology-place",
     Replication: ".replication-place",
     Cluster: ".cluster-place",
     ProxySQL: ".proxysql-place",
@@ -573,7 +574,7 @@ try {
   assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
   assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
   const safety = '.window-statusbar[aria-label="Workspace status"] > .window-statusbar-facts > [data-status="safety"]:first-child';
-  for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning"]) {
+  for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Topology", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
     assert.equal(await page.$eval(".connection-type-strip", (e) => [e.dataset.connectionStrip, e.getAttribute("aria-hidden")].join(" ")), "production true");
@@ -1092,9 +1093,17 @@ try {
   await page.waitForSelector(prodRow + " [data-col=password] span");
   assert.equal(await text(prodRow + " [data-col=password]"), "Not saved");
   assert.equal(await page.$eval(prodRow + " [data-col=password] span", el => el.title), "No saved password");
+  // Wait for ViewLayout's deferred focus return after closing the inspector so
+  // it cannot steal focus back from the sidebar below.
+  await page.waitForFunction(
+    () => !document.querySelector(".connections .view-inspector")
+      && !!document.activeElement?.closest("#connections-table, .connections"),
+    { timeout: 1000 },
+  ).catch(() => {});
 
   // 8. Keyboard: arrows move between places, Enter opens one.
   await page.focus(".main-nav button.active");
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".main-nav button.active"));
   await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Server");
   await page.keyboard.press("End");
@@ -1103,8 +1112,8 @@ try {
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
-  // Query editor is the tenth place (after Replication, Cluster, ProxySQL, Readyset, Tuning and File transfer).
-  for (let i = 0; i < 9; i++) await page.keyboard.press("ArrowDown");
+  // Query editor is the eleventh place (after Topology, Replication, Cluster, ProxySQL, Readyset, Tuning and File transfer).
+  for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Query editor");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Query editor");
