@@ -1567,6 +1567,13 @@ class TestExplainAndExportCaches(ReadysetBase):
             "CREATE CACHE a FROM SELECT 1 \\N",
             "CREATE CACHE a FROM SELECT 1 \\q",
             "DELIMITER //",
+            "delimiter //",
+            "delimiter ; CREATE CACHE a FROM SELECT 1;",
+            "delimiter // CREATE CACHE a FROM SELECT 1;",
+            "delimiter_x CREATE CACHE a FROM SELECT 1;",
+            "/* comment */ delimiter // CREATE CACHE a FROM SELECT 1;",
+            "CREATE CACHE a FROM SELECT 1; delimiter //",
+            "CREATE CACHE a FROM SELECT 'first\ndelimiter //';",
             "SELECT 1;",
             "USE `shop`; USE `x`; CREATE CACHE a FROM SELECT 1;",
             "USE `shop`; DROP ALL CACHES;",
@@ -1674,6 +1681,12 @@ class TestExplainAndExportCaches(ReadysetBase):
                 "CREATE CACHE c FROM SELECT 1;",
                 "CREATE SHALLOW CACHE `c` WITH (ttl = 30s) FROM SELECT 1;",
                 "CREATE DEEP CACHE c FROM SELECT 'literal; \\! DELIMITER //';",
+                "CREATE DEEP CACHE c FROM SELECT t.delimiter FROM config t;",
+                "CREATE DEEP CACHE c FROM SELECT delimiter FROM config;",
+                "CREATE DEEP CACHE c FROM SELECT `delimiter` FROM config;",
+                "CREATE DEEP CACHE c FROM SELECT 'delimiter' FROM config;",
+                'CREATE DEEP CACHE c FROM SELECT "delimiter" FROM config;',
+                "CREATE CACHE delimiter FROM SELECT 1 AS delimiter;",
                 "CREATE CACHE c FROM SELECT '$5', '$$ plain literal $$';",
                 'CREATE CACHE c FROM SELECT "$5";',
                 "CREATE CACHE c FROM SELECT '\u4e2d', `\u4e2d_name`;",
@@ -1689,6 +1702,23 @@ class TestExplainAndExportCaches(ReadysetBase):
                 self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, result["sql"])
                 self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
                 self.assertEqual(conn.writes, [])
+
+    def test_export_delimiter_only_refused_as_first_word(self):
+        for sql in (
+                "CREATE DEEP CACHE c FROM SELECT t.delimiter FROM config t;",
+                "CREATE DEEP CACHE c FROM SELECT `delimiter` FROM config;",
+                "CREATE DEEP CACHE c FROM SELECT 'delimiter' FROM config;",
+        ):
+            self.assertTrue(readyset._runnable_export_sql(sql))
+            conn = FakeCacheExport()
+            conn.definition = "USE `shop`; " + sql
+            result = readyset.export_caches(conn)
+            self.assertEqual(result["caches"], [{"database": "shop", "statement": sql}])
+            self.assertEqual(result["sql"].splitlines()[2:], ["USE `shop`;", sql])
+            self.assertEqual(conn.writes, [])
+        for bad in ("DELIMITER //", "delimiter //", "delimiter ; CREATE CACHE c FROM SELECT 1;",
+                    "/* note */ delimiter // CREATE CACHE c FROM SELECT 1;"):
+            self.assertFalse(readyset._runnable_export_sql(bad))
 
     def test_export_redacts_whole_credential_clauses_but_preserves_identifiers(self):
         # probe9_f1: the display path already redacts these clauses. The

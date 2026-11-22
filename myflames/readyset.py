@@ -1488,8 +1488,10 @@ def _runnable_export_sql(sql, check_charset=True):
                 else:
                     code.append(tok)
             code = "".join(code).strip()
-            if (not _EXPORT_CREATE_CACHE.match(code) or not code.endswith(";") or
-                    ";" in code[:-1] or re.search(r"\bDELIMITER\b", code, re.I)):
+            # _EXPORT_CREATE_CACHE anchors on CREATE at the line start and no
+            # line breaks are allowed, so a client DELIMITER command is already
+            # unreachable while SQL identifiers such as t.delimiter stay safe.
+            if not _EXPORT_CREATE_CACHE.match(code) or not code.endswith(";") or ";" in code[:-1]:
                 return False
     return True
 
