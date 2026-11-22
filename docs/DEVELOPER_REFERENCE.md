@@ -309,9 +309,17 @@ by query connections and Maintenance. `snapshot` only stats executable regular
 files: every copy of `mysql`, `mariadb`, `mysqldump`, `mariadb-dump`,
 `mariadb-backup`, `mariadb-upgrade`, `mysqlpump` and `mysqlsh` in nonempty PATH
 entries, then `lifecycle.COMMON_BIN_DIRS` on POSIX, then the bundled folder.
-Aliases are deduplicated by realpath, with MariaDB names preferred for
-compatibility links; there is no implicit current-directory or PATHEXT lookup.
+Aliases are deduplicated by realpath separately for Shell and non-Shell tools,
+with MariaDB names preferred for compatibility links within non-Shell tools.
+A `mysqlsh` symlink cannot suppress a query client at the same realpath;
+there is no implicit current-directory or PATHEXT lookup.
 Query-client resolution scans every client program except `mysqlsh`, so installation groups and order match Settings, and the Shell tree trust walk runs only for Shell discovery and before every Shell launch.
+Installation order counts only non-Shell programs. Chosen-folder installations
+follow the highest existing installation rank, including gaps, in Settings and
+Maintenance, so discovering Shell cannot change the relative order of query
+tools. Shell has its own order; chosen-folder Shell ranks follow the highest
+existing Shell rank in both discovery paths, preserving managed-copy priority
+and PATH order within its probe budget.
 Installations are keyed by `<engine>:<realpath folder>`; `folder` is resolved,
 `found_in` retains the discovery folder. Each program keeps its path, realpath
 and distribution version. Origin codes and labels are `bundled` (Bundled with
@@ -324,7 +332,9 @@ recognized plugin file exists in `../lib/plugin`, `../lib/mysql/plugin` or
 `../lib64/mysql/plugin`: LDAP SASL, Kerberos, OCI, WebAuthn, ed25519, GSSAPI or
 parsec. It is a selection hint, not proof that an account can authenticate.
 
-`discover` requests at most 32 version probes per call, including cache hits;
+`discover` requests at most 32 non-Shell version probes and 4 Shell version
+probes per call, including cache hits (36 total); Shell probes never consume
+the non-Shell probe limit, so full and query-only discovery find the same query tools.
 `discover_choices` and lifecycle discovery can make extra discovery calls for
 chosen folders. `probe` runs `--version` with an isolated HOME and allowlisted
 environment, no stdin and an 8 s timeout; banners retain at most 4,096 characters.
@@ -8510,9 +8520,15 @@ logs in.
     (`kind: 'alias'`, `evidence: 'server_uuid'`, `verified: false`, `label:
     'same server (alias)'`), skip cluster attestation, and are excluded from
     UUID candidate lists so aliases never duplicate cluster or replication
-    targets. Address-only routes first include aliases to preserve matches to
-    their saved endpoints, then retry without aliases only when unmatched so
-    shared reported hostnames and ports can resolve to the canonical member.
+    targets. Address-only routes always check each candidate separately,
+    including aliases to preserve matches to their saved endpoints. If any
+    saved endpoint matches, only saved-endpoint matches participate; reported
+    hostnames cannot override them. A route resolves only if every remaining
+    match represents the same canonical member.
+    That canonical member is preferred when it matches; otherwise only a single
+    alias matching its own saved endpoint can resolve the route. Matches to
+    different canonical members stay unmatched, including identical saved
+    addresses reached through different SSH hosts.
     Cluster boxes (`gr:<uuid>`, `wsrep:<uuid>`) require each saved
     member to attest its own membership (`wsrep_cluster_status == 'Primary'` with
     own `wsrep_gcomm_uuid` in `cluster_members` for wsrep; `ONLINE` or

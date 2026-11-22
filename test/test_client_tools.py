@@ -36,13 +36,14 @@ class DiscoveryTests(unittest.TestCase):
     def discover(self, *folders, **kwargs):
         return ct.discover(path=os.pathsep.join(str(p) for p in folders), common_dirs=(), bundled=False, **kwargs)
 
-    def settings_and_connector(self, folders, server):
+    def settings_and_connector(self, folders, server, choices=None):
         """Compare Settings' pure selection with the query client's resolution."""
         with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, folders)),
                                           'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
                 mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
                 mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
-                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}, clear=True), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES,
+                                dict({'mysql': None, 'mariadb': None}, **(choices or {})), clear=True), \
                 mock.patch.dict(ct._FACTS, clear=True):
             choices = ct.connector.client_choices()
             discovered = ct.discover_choices(choices)
@@ -60,6 +61,85 @@ class DiscoveryTests(unittest.TestCase):
                 except ct.connector.ClientMissingError:
                     executed = None
         return (shown or {}).get('realpath'), executed
+
+    def test_shell_first_and_mixed_chosen_folder_keep_query_selection_order(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        mysql = self.make(self.root / 'z-path/bin')
+        self.make(self.root / 'a-chosen/bin')
+        maria = self.make(self.root / 'a-chosen/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        shown, executed = self.settings_and_connector(
+            (shell.parent, mysql.parent), dict(engine='mysql', version='8.4.13'),
+            choices={'mariadb': str(maria)})
+        self.assertEqual(shown, str(mysql))
+        self.assertEqual(executed, shown)
+
+    def test_chosen_folder_installations_follow_highest_discovered_order(self):
+        dump = self.make(self.root / 'dump/bin', 'mysqldump')
+        self.make(dump.parent, 'mysqlpump')
+        mysql = self.make(self.root / 'z-path/bin')
+        self.make(self.root / 'a-chosen/bin')
+        maria = self.make(self.root / 'a-chosen/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        shown, executed = self.settings_and_connector(
+            (dump.parent, mysql.parent), dict(engine='mysql', version='8.4.13'),
+            choices={'mariadb': str(maria)})
+        self.assertEqual(shown, str(mysql))
+        self.assertEqual(executed, shown)
+
+    def test_lifecycle_duplicate_path_ranks_match_settings_and_query_client(self):
+        from myflames import lifecycle
+        dump = self.make(self.root / 'dump/bin', 'mysqldump', version='8.0.45')
+        mysql = self.make(self.root / 'z-path/bin')
+        self.make(mysql.parent, 'mysqldump')
+        self.make(self.root / 'a-chosen/bin')
+        self.make(self.root / 'a-chosen/bin', 'mysqldump')
+        maria = self.make(self.root / 'a-chosen/bin', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        folders = (dump.parent,) * 4 + (mysql.parent,)
+        choices = {'mariadb': str(maria)}
+        server = dict(engine='mysql', version='8.4.13')
+        shown, executed = self.settings_and_connector(folders, server, choices)
+        self.assertEqual(shown, str(mysql))
+        self.assertEqual(executed, shown)
+        with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, folders)),
+                                          'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'client_choices', return_value=choices):
+            report = lifecycle.detect_tools(server=server)
+        for role, expected in (('client', mysql), ('load', mysql), ('dump', mysql.parent / 'mysqldump')):
+            with self.subTest(role=role):
+                self.assertEqual(report['used'][role]['path'], str(expected))
+
+    def test_equal_version_chosen_shell_follows_path_in_settings_maintenance_and_cluster(self):
+        from myflames import cluster_shell, lifecycle
+        shell = self.make(self.root / 'z-path/bin', 'mysqlsh', version='9.7.0')
+        chosen = self.make(self.root / 'a-chosen/bin')
+        self.make(chosen.parent, 'mysqlsh', version='9.7.0')
+        choices = {'mysql': str(chosen)}
+        server = dict(engine='mysql', version='8.4.13')
+        with mock.patch.dict(os.environ, {'PATH': str(shell.parent), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.connector, 'client_choices', return_value=choices):
+            settings = ct.select(ct.discover_choices(choices), server)['shell']['path']
+            maintenance = lifecycle.detect_tools(server=server)['used']['shell']['path']
+            cluster = cluster_shell.find_shell()['path']
+        for surface, selected in (('Settings', settings), ('Maintenance', maintenance), ('Cluster', cluster)):
+            with self.subTest(surface=surface):
+                self.assertEqual(selected, str(shell))
+
+    def test_shell_symlink_cannot_hide_query_client_in_full_discovery(self):
+        mysql = self.make(self.root / 'z-client/bin')
+        shell_folder = private_client_dir(self.root / 'a-shell/bin')
+        (shell_folder / 'mysqlsh').symlink_to(mysql)
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            full = self.discover(shell_folder, mysql.parent)
+            filtered = self.discover(shell_folder, mysql.parent, names=ct.QUERY_DISCOVERY_NAMES)
+        self.assertEqual([s['realpath'] for s in full['shells']], [str(mysql)])
+        for label, report in (('full', full), ('filtered', filtered)):
+            with self.subTest(discovery=label):
+                self.assertEqual([g['programs']['mysql']['realpath'] for g in report['installations']],
+                                 [str(mysql)])
+                self.assertEqual(ct.select(report, dict(engine='mysql', version='8.4.13'))['client']['path'],
+                                 str(mysql))
 
     def test_F1_query_client_is_the_client_settings_reports_when_a_dump_tool_comes_first(self):
         a = private_client_dir(self.root / 'a/bin')
@@ -398,6 +478,47 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(run.call_count, 32)
         self.assertEqual(len(report['installations']), 32)
         self.assertEqual([s['reason'] for s in report['skipped']], ['probe limit'] * 3)
+
+    def test_shell_does_not_consume_query_tool_probe_budget(self):
+        shell = self.make(self.root / 'shell/bin', 'mysqlsh', version='9.7.0')
+        folders = [shell.parent]
+        for index in range(30):
+            folders.append(self.make(self.root / ('dump-%d/bin' % index), 'mysqldump').parent)
+        old = self.make(self.root / 'old/bin', version='8.4.12')
+        newest = self.make(self.root / 'newest/bin')
+        folders.extend((old.parent, newest.parent))
+        with mock.patch.object(ct.managed_shell, 'installed_bin_dir', return_value=None), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            full = self.discover(*folders)
+            filtered = self.discover(*folders, names=ct.QUERY_DISCOVERY_NAMES)
+        self.assertEqual(full['installations'], filtered['installations'])
+        self.assertEqual([s['path'] for s in full['shells']], [str(shell)])
+        shown, executed = self.settings_and_connector(folders, dict(engine='mysql', version='8.4.13'))
+        self.assertEqual(shown, str(newest))
+        self.assertEqual(executed, shown)
+
+    def test_shell_and_query_probe_budgets_have_a_hard_total_bound(self):
+        folders = [self.make(self.root / ('shell-%d/bin' % index), 'mysqlsh', version='9.7.0').parent
+                   for index in range(6)]
+        folders.extend(self.make(self.root / ('client-%d/bin' % index)).parent for index in range(35))
+        with mock.patch.object(ct.managed_shell, 'installed_bin_dir', return_value=None), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct, 'probe', wraps=ct.probe) as probe:
+            report = self.discover(*folders)
+        self.assertEqual(probe.call_count, 36)
+        self.assertEqual(len(report['installations']), 32)
+        self.assertEqual(len(report['shells']), 4)
+        self.assertEqual([s['reason'] for s in report['skipped']], ['probe limit'] * 5)
+
+    def test_shell_budget_preserves_managed_priority_and_path_order(self):
+        managed = self.make(self.root / 'z-managed/bin', 'mysqlsh', version='9.7.0')
+        paths = [self.make(self.root / ('path-%d/bin' % index), 'mysqlsh', version='10.0.0')
+                 for index in reversed(range(5))]
+        with mock.patch.object(ct.managed_shell, 'installed_bin_dir', return_value=str(managed.parent)), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            report = self.discover(*(path.parent for path in paths))
+        self.assertEqual([s['path'] for s in report['shells']], [str(managed)] + list(map(str, paths[:3])))
+        self.assertEqual([s['path'] for s in report['skipped']], list(map(str, paths[3:])))
 
     def test_lru_bounds_and_refreshes_recency(self):
         for i in range(65):

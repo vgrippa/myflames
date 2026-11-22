@@ -406,7 +406,7 @@ def _client_auth_error(stderr, binary, used=None):
         used = None
     if used is None:
         from . import client_tools
-        found = client_tools.discover_choices(client_choices())
+        found = client_tools.discover_choices(client_choices(), names=client_tools.QUERY_DISCOVERY_NAMES)
         used = next((client_tools._use(g, 'client', name, 'unknown_server')
                      for g in found['installations'] for name, program in g['programs'].items()
                      if name in ('mysql', 'mariadb') and

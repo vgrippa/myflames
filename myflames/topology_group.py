@@ -685,18 +685,37 @@ def _build_map(entries, probes, profiles):
     def target(observer, host, port, uuid=None, server_id=None, identity_only=False, galera=False):
         host, port, uuid = _map_host(host), _map_port(port), _uuid(uuid)
         matching = galera_candidates if galera else candidates
+        observer_host = replication.reached_host(stored[observer])
         # Aliases attest the canonical server's identity, never a second
         # server. Address-only routes can still name their saved endpoint.
         if uuid:
             matching = [candidate for candidate in matching if not candidate.get('duplicate_of')]
-        found, evidence = topology_links.match_database_endpoint(
-            host, port, matching, uuid=uuid, observer_host=replication.reached_host(stored[observer]))
-        if found is None and not uuid and any(candidate.get('duplicate_of') for candidate in matching):
-            # Aliases can make a server's reported hostname and port ambiguous.
-            # Retry without them only after checking their saved endpoints.
             found, evidence = topology_links.match_database_endpoint(
-                host, port, [candidate for candidate in matching if not candidate.get('duplicate_of')],
-                uuid=uuid, observer_host=replication.reached_host(stored[observer]))
+                host, port, matching, uuid=uuid, observer_host=observer_host)
+        else:
+            # Resolve saved endpoints before considering reported hostnames.
+            # A hostname fallback must not bypass tied saved endpoints, even
+            # when their aliases all represent the same canonical server.
+            found, evidence = None, None
+            matches = []
+            for candidate in matching:
+                match, reason = topology_links.match_database_endpoint(
+                    host, port, [candidate], observer_host=observer_host)
+                if match is not None:
+                    matches.append((match, reason))
+            saved_matches = [(match, reason) for match, reason in matches if reason == 'endpoint']
+            if saved_matches:
+                matches = saved_matches
+            canonical_ids = {match.get('duplicate_of') or match['profile_id'] for match, _ in matches}
+            if len(canonical_ids) == 1:
+                canonical_id = next(iter(canonical_ids))
+                resolved = next(((match, reason) for match, reason in matches
+                                 if match['profile_id'] == canonical_id), None)
+                if resolved is None:
+                    if len(saved_matches) == 1:
+                        resolved = saved_matches[0]
+                if resolved is not None:
+                    found, evidence = resolved
         if evidence == 'server_uuid':
             return found['profile_id'], evidence, True
         # IDs can collide (including the default 1), so retain an ID-only

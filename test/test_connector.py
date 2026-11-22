@@ -1095,6 +1095,26 @@ class TestVersionAwareClients(unittest.TestCase):
                 'the account uses the authentication_ldap_sasl_client plugin, which these client tools do not include. '
                 'Choose client tools that include it in Settings > Client tools.')
 
+    def test_fast_path_2059_diagnostic_never_discovers_shell(self):
+        from myflames import client_tools as ct
+        path = self.binary(body=("import sys\n"
+            "if '--version' in sys.argv:\n print('mysql Ver 8.4.13')\n"
+            "else:\n sys.stderr.write(\"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded\"); sys.exit(1)"))
+        self.binary(name='mysqlsh', body="print('mysqlsh 9.7.0')")
+        os.environ['PATH'] = os.path.dirname(path)
+        with mock.patch.object(ct.managed_shell, 'installed_bin_dir',
+                               wraps=ct.managed_shell.installed_bin_dir) as installed, \
+                mock.patch.object(connector, '_check_shell_tree_trust',
+                                  wraps=connector._check_shell_tree_trust) as walk, \
+                mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR',
+                                  os.path.join(self.temp.name, 'etc-mysql')):
+            with self.assertRaises(connector.ClientAuthPluginError) as caught:
+                MySQLConnection(host='single-client-auth').run('SELECT 1')
+        self.assertIn('mysql 8.4.13 (On PATH)', str(caught.exception))
+        self.assertIn('client_ed25519', str(caught.exception))
+        installed.assert_not_called()
+        walk.assert_not_called()
+
     def test_choice_replacement_while_discovering_cannot_publish_stale_binary(self):
         from myflames import client_tools as ct
         first = self.binary(folder='first')
