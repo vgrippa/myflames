@@ -386,7 +386,7 @@ class FakeReadyset(object):
                 raise ConnectorError("ERROR 1064 (42000) at line 1: syntax error near 'ALL CACHES'")
             return xml_rows([
                 {"query": "CREATE DEEP CACHE `c_orders_deep` FROM SELECT id, total FROM orders WHERE customer_id = 1;", "database": "shop"},
-                {"query": "CREATE SHALLOW CACHE `c_recent_shallow` WITH (ttl = 30s) FROM SELECT id, status FROM orders WHERE created_at > '2026-01-01';", "database": "shop"},
+                {"query": "USE `shop`; CREATE SHALLOW CACHE `c_recent_shallow` WITH (ttl = 30s) FROM SELECT id, status FROM orders WHERE created_at > '2026-01-01';", "database": "shop"},
             ])
         if upper == "EXPLAIN CACHES":
             return xml_rows([
@@ -1298,10 +1298,12 @@ class TestFindings(ReadysetBase):
 
 class FakeCacheExport(FakeReadyset):
     definition = "CREATE CACHE c FROM SELECT 1;"
+    export_rows = None
 
     def run(self, sql, extra_flags=None, timeout=None):
         if sql in ("EXPLAIN ALL CACHES", "EXPLAIN CACHES"):
-            return xml_rows([{"query": self.definition}])
+            return xml_rows(self.export_rows if self.export_rows is not None else
+                            [{"query": self.definition}])
         return super().run(sql, extra_flags, timeout)
 
 
@@ -1322,7 +1324,22 @@ class TestExplainAndExportCaches(ReadysetBase):
             "CREATE CACHE a FROM SELECT 1 \\q",
             "DELIMITER //",
             "SELECT 1;",
-            "USE `shop`; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop`; USE `x`; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop`; DROP ALL CACHES;",
+            "USE `shop`; CREATE CACHE a FROM SELECT 1; DROP ALL CACHES;",
+            "USE shop; CREATE CACHE a FROM SELECT 1;",
+            "USE 'shop'; CREATE CACHE a FROM SELECT 1;",
+            'USE "shop"; CREATE CACHE a FROM SELECT 1;',
+            "USE ``; CREATE CACHE a FROM SELECT 1;",
+            "USE `unfinished; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop`.`other`; CREATE CACHE a FROM SELECT 1;",
+            "USE /* comment */ `shop`; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop` /* comment */; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop` CREATE CACHE a FROM SELECT 1;",
+            "USE `shop\\name`; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop\nname`; CREATE CACHE a FROM SELECT 1;",
+            "USE `shop`;\nCREATE CACHE a FROM SELECT 1;",
+            "USEFUL `shop`; CREATE CACHE a FROM SELECT 1;",
             "CREATE CACHE a FROM SELECT 1 /*! ; ALTER READYSET SHUTDOWN */;",
             "CREATE CACHE a FROM SELECT 1 /*rs+ create shallow */;",
             "CREATE CACHE a FROM SELECT 'unfinished",
@@ -1332,7 +1349,8 @@ class TestExplainAndExportCaches(ReadysetBase):
             "CREATE CACHE `a\nb` FROM SELECT 1;",
             "CREATE CACHE a FROM SELECT 'x\\'; ALTER READYSET SHUTDOWN; -- ';",
         )
-        for definition in definitions:
+        # A valid USE prefix must not make any earlier abuse case runnable.
+        for definition in definitions + tuple("USE `shop`; " + sql for sql in definitions):
             with self.subTest(definition=definition):
                 conn = FakeCacheExport()
                 conn.definition = definition
@@ -1343,6 +1361,65 @@ class TestExplainAndExportCaches(ReadysetBase):
                 self.assertIn(readyset._EXPORT_UNSAFE_COMMENT + "\n" + expected + "\n", result["sql"])
                 self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
                 self.assertEqual(conn.writes, [])
+
+    def test_export_extracts_readyset_use_prefix_and_groups_databases(self):
+        shallow = ("CREATE SHALLOW CACHE `c` WITH (ttl = 30s) FROM "
+                   "SELECT id FROM orders WHERE id = ?;")
+        other = "CREATE CACHE a FROM SELECT 1;"
+        for field in ("query", "create statement"):
+            for column in (None, "different_column_database"):
+                with self.subTest(field=field, column=column):
+                    conn = FakeCacheExport()
+                    conn.export_rows = [
+                        {field: "USE `shop`; " + shallow, "database": column},
+                        {field: "  USE `shop`; " + other, "database": column},
+                        {field: "USE `next`; " + other, "database": column},
+                    ]
+                    result = readyset.export_caches(conn)
+                    self.assertEqual(result["count"], 3)
+                    self.assertEqual(result["caches"], [
+                        {"database": "shop", "statement": shallow},
+                        {"database": "shop", "statement": other},
+                        {"database": "next", "statement": other},
+                    ])
+                    self.assertEqual(result["sql"].splitlines()[2:], [
+                        "USE `shop`;", shallow, other, "USE `next`;", other,
+                    ])
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_use_prefix_round_trips_quoted_database(self):
+        # R4 formerly rejected this valid Readyset prefix as a second
+        # statement. Only the exporter-generated USE is now runnable.
+        statement = "CREATE CACHE a FROM SELECT 1;"
+        for quoted, database in (("`shop`", "shop"),
+                                 ("`a``b`", "a`b"),
+                                 ("```shop```", "`shop`"),
+                                 ("` shop `", " shop "),
+                                 ("`semi;colon`", "semi;colon")):
+            with self.subTest(database=database):
+                conn = FakeCacheExport()
+                conn.definition = "USE %s; %s" % (quoted, statement)
+                self.assertFalse(readyset._runnable_export_sql(conn.definition))
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"], [
+                    {"database": database, "statement": statement},
+                ])
+                self.assertEqual(result["sql"].splitlines()[2:], [
+                    "USE %s;" % quoted, statement,
+                ])
+                self.assertEqual(conn.writes, [])
+
+    def test_export_use_prefix_preserves_redaction(self):
+        conn = FakeCacheExport()
+        conn.definition = "USE `shop`; CREATE CACHE c FROM SELECT 'rs-secret-pw';"
+        result = readyset.export_caches(conn)
+        statement = "-- CREATE CACHE c FROM SELECT '[redacted]';"
+        self.assertEqual(result["caches"], [{"database": "shop", "statement": statement}])
+        self.assertEqual(result["sql"].splitlines()[2:], [
+            "USE `shop`;", readyset._EXPORT_REDACTED_COMMENT, statement,
+        ])
+        self.assertNotIn(conn.password, json.dumps(result))
+        self.assertEqual(conn.writes, [])
 
     def test_export_keeps_only_single_create_cache_definitions_runnable(self):
         for definition in (
@@ -1782,6 +1859,9 @@ class TestExplainAndExportCaches(ReadysetBase):
         exp_legacy = readyset.export_caches(legacy)
         self.assertEqual(exp_legacy["count"], 2)
         self.assertIn("CREATE DEEP CACHE", exp_legacy["sql"])
+        self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, exp_legacy["sql"])
+        self.assertEqual(exp_legacy["caches"][1]["database"], "shop")
+        self.assertTrue(exp_legacy["caches"][1]["statement"].startswith("CREATE SHALLOW CACHE"))
         self.assertTrue(any("EXPLAIN CACHES" in n for n in exp_legacy["notes"]))
 
     def test_ui_live_endpoints_accept_workspace_payload_shapes(self):

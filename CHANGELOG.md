@@ -48,6 +48,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where a very long URL-like value read from a server could freeze the app for seconds while myflames hid the passwords in it.
 - Fixed an issue where the **Software update** dialog's **View on GitHub** link used the address from the update check without checking it. It now opens only a myflames release page on GitHub.
 - Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.
+- Fixed an issue where a **Readyset** cache export could contain extra statements or `mysql` client commands supplied by the server, which would run when the file was loaded. Only a single `CREATE CACHE` statement now stays runnable; anything else is commented out.
 - Fixed an issue where database URL passwords and the connection password could appear unredacted in **Readyset** cached or proxied queries, table errors, cacheability notes, `EXPLAIN CREATE CACHE` results, exported cache definitions, and connection error messages. Those fields are now redacted before display or export, and redacted exported definitions are commented out with a warning.
 
 ### Packaging notes

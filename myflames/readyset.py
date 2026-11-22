@@ -1441,6 +1441,36 @@ def _runnable_export_sql(sql):
     return True
 
 
+def _split_export_use(sql):
+    """Extract Readyset's quoted database prefix only before one safe CREATE.
+
+    Return malformed prefixes and extra statements intact so the exporter
+    comments out the whole definition. Never copy server-supplied USE text
+    into the runnable output; its parsed name is quoted by the exporter.
+    """
+    tokens = dbops.lex_sql(sql)["tokens"]
+    if (len(tokens) < 3 or tokens[0][0] != "code" or
+            sql[tokens[0][1]:tokens[0][2]].strip(" \t").upper() != "USE" or
+            tokens[1][0] != "identifier"):
+        return None, sql
+    _, start, end = tokens[1]
+    prefix = sql[:end]
+    if "\\" in prefix or any(ch in _EXPORT_LINE_BREAKS for ch in prefix):
+        return None, sql
+    tail = sql[end:].lstrip(" \t")
+    if not tail.startswith(";"):
+        return None, sql
+    try:
+        db = _rs_ident_parse(sql[start:end], "Database")
+    except ValueError:
+        return None, sql
+    definition = tail[1:].lstrip(" \t")
+    stmt = definition if definition.endswith(";") else definition + ";"
+    if not _runnable_export_sql(stmt):
+        return None, sql
+    return db, definition
+
+
 def export_caches(conn):
     """Run ``EXPLAIN ALL CACHES`` (falling back to ``EXPLAIN CACHES`` on older Readyset releases)."""
     ok, version = identify(conn)
@@ -1466,8 +1496,11 @@ def export_caches(conn):
         raw_q = r.get("query") or r.get("create statement") or ""
         if not raw_q.strip():
             continue
+        prefix_db, raw_q = _split_export_use(raw_q)
         q, redacted = _redact_export_sql(raw_q, pw)
-        raw_db = r.get("database")
+        # Readyset's prefix is the schema used by CREATE, even when the
+        # database column disagrees with the shallow cache's search path.
+        raw_db = prefix_db if prefix_db is not None else r.get("database")
         db = str(raw_db) if raw_db not in (None, "") else None
         if db and db != last_db:
             lines.append("USE %s;" % _rs_ident_server(db, "Database"))
