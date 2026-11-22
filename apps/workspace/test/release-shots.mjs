@@ -6,8 +6,8 @@
 // `npm run build`) through the perf harness, with the real Python server on a
 // throwaway HOME and store. Every database read is answered from the fixtures
 // and mocks the suites already use (group-connections.mjs, cluster.mjs,
-// topology-appearance.mjs, settings-page.mjs, client-tools.mjs,
-// editor-toolbar-layout.mjs, table-data.mjs); nothing is requested outside
+// topology-place.mjs, topology-appearance.mjs, settings-page.mjs,
+// client-tools.mjs, editor-toolbar-layout.mjs, table-data.mjs); nothing is requested outside
 // 127.0.0.1. A view that cannot be reached fails the run (non-zero exit, the
 // view named) instead of saving an empty frame.
 //
@@ -59,7 +59,11 @@ const profiles = [
   { ...base, id: "p-ic-1", name: "db-1", host: "10.0.0.11", type: "development", group: "mf-ic" },
   { ...base, id: "p-ic-2", name: "db-2", host: "10.0.0.12", type: "production", group: "mf-ic" },
   { ...base, id: "p-ic-3", name: "db-3", host: "10.0.0.13", type: "development", group: "mf-ic" },
+  { ...base, id: "p-ic-4", name: "db-4", host: "10.0.0.14", type: "development", group: "mf-ic" },
   { ...base, id: "p-solo", name: "solo-db", host: "10.0.0.99", type: "development", group: "" },
+  // A second group (topology-place.mjs's mf-two) so Home lists two group cards.
+  { ...base, id: "p-two-1", name: "two-1", host: "10.0.0.21", type: "development", group: "mf-two" },
+  { ...base, id: "p-two-2", name: "two-2", host: "10.0.0.22", type: "development", group: "mf-two" },
 ];
 const primaryId = "p-ic-2";
 
@@ -107,6 +111,144 @@ const shellStatus = { status: 200, body: { schema_version: "managed-shell-status
     license_url: "https://www.mysql.com/about/legal/licensing/oem/", downloads_url: "https://dev.mysql.com/downloads/shell/9.7.html" },
   installed: null, job: null } };
 
+// ---- Topology place (topology-place.mjs's group report and rolling plan) ---
+// The group is mf-ic here: three readable members in one Group Replication
+// cluster (a verified link between them), a failed member, a router alias of
+// db-1 and an outside peer reached through an address-only (unverified) link.
+const topoMember = (over) => ({
+  profile_id: "", profile_name: "", host: "", port: 3306,
+  safety: { type: "production", read_only: false },
+  outcome: "read", message: "Read from this member.", elapsed_s: 0.1,
+  engine: "mysql", product: "MySQL", version: "8.4.6", version_comment: "MySQL Community Server - GPL",
+  server_uuid: null, server_id: null, hostname: null,
+  read_only: false, read_only_value: "OFF", super_read_only: false,
+  role: "standalone", state: "reachable", lag: null, behind: null, behind_reason: null, channels: [],
+  ...over,
+});
+const lagMessage = "Transactions waiting in this member's applier queue.";
+const behindMessage = "Transactions in the primary or source sample absent from this member sample.";
+const topoMembers = [
+  topoMember({ profile_id: "p-ic-1", profile_name: "db-1", host: "10.0.0.11", version: "8.4.6",
+    role: "primary", state: "ONLINE",
+    lag: { kind: "gr_applier_queue", value: 0, message: lagMessage },
+    behind: { kind: "mysql_gtid_transactions", value: 0, message: behindMessage } }),
+  topoMember({ profile_id: "p-ic-2", profile_name: "db-2", host: "10.0.0.12", version: "8.4.4",
+    role: "secondary", state: "ONLINE", super_read_only: true, read_only: true, read_only_value: "ON",
+    lag: { kind: "gr_applier_queue", value: 3, message: lagMessage },
+    behind: { kind: "mysql_gtid_transactions", value: 1204, message: behindMessage } }),
+  topoMember({ profile_id: "p-ic-3", profile_name: "db-3", host: "10.0.0.13", version: "8.4.6",
+    role: "secondary", state: "ONLINE", super_read_only: true, read_only: true, read_only_value: "ON",
+    lag: { kind: "gr_applier_queue", value: 0, message: lagMessage },
+    behind: { kind: "mysql_gtid_transactions", value: 0, message: behindMessage } }),
+  topoMember({ profile_id: "p-ic-4", profile_name: "db-4", host: "10.0.0.14",
+    outcome: "failed", message: "Access denied for user 'dba'@'10.0.0.14'.",
+    engine: null, product: null, version: null, version_comment: null,
+    read_only: null, read_only_value: null, super_read_only: null, role: null, state: null }),
+];
+const topoAliasMember = topoMember({
+  profile_id: "p-ic-5", profile_name: "db-1-router", host: "10.0.0.15", port: 6446,
+  role: "primary", state: "ONLINE", duplicate_of: "p-ic-1",
+  server_uuid: "11111111-1111-1111-1111-111111111111",
+});
+const topoSummary = { read: 3, failed: 1, not_reached: 0, versions: ["8.4.4", "8.4.6"], text: "3 read, 1 failed." };
+function topoReport(section, extraReport = {}) {
+  return {
+    schema_version: "topology-group-1.0", section, group_name: "mf-ic",
+    taken_at: "2026-11-21T12:00:00Z", elapsed_s: 0.4,
+    effective_safety: { type: "production", read_only: false },
+    active_member_profile_id: "p-ic-1", primary_profile_id: "p-ic-1",
+    members: topoMembers, summary: topoSummary, ...extraReport,
+  };
+}
+const topoNode = (id, over) => ({
+  id, kind: "member", profile_id: id, label: over.profile_name || "", host: "", port: 3306,
+  engine: "mysql", product: "MySQL", version: "8.4.6", role: "standalone", state: "ONLINE", outcome: "read",
+  server_uuid: null, cluster_id: null, ...over,
+});
+const GR_CLUSTER = "gr:cccccccc-cccc-cccc-cccc-cccccccccccc";
+const topoPeerId = "peer:10.0.0.77:3306";
+const topologyReports = {
+  map: topoReport("map", {
+    members: [...topoMembers, topoAliasMember],
+    map: {
+      nodes: [
+        topoNode("p-ic-1", { label: "db-1", host: "10.0.0.11", role: "primary", version: "8.4.6",
+          server_uuid: "11111111-1111-1111-1111-111111111111", cluster_id: GR_CLUSTER }),
+        topoNode("p-ic-2", { label: "db-2", host: "10.0.0.12", role: "secondary", version: "8.4.4",
+          server_uuid: "22222222-2222-2222-2222-222222222222", cluster_id: GR_CLUSTER }),
+        topoNode("p-ic-3", { label: "db-3", host: "10.0.0.13", role: "secondary", version: "8.4.6",
+          server_uuid: "33333333-3333-3333-3333-333333333333", cluster_id: GR_CLUSTER }),
+        topoNode("p-ic-4", { label: "db-4", host: "10.0.0.14", role: null, state: null, outcome: "failed",
+          engine: null, product: null, version: null }),
+        topoNode("p-ic-5", { label: "db-1-router", host: "10.0.0.15", port: 6446, role: "primary",
+          server_uuid: "11111111-1111-1111-1111-111111111111", duplicate_of: "p-ic-1" }),
+        { id: topoPeerId, kind: "peer", profile_id: null, label: "10.0.0.77:3306", host: "10.0.0.77", port: 3306,
+          server_uuid: null, seen_by: ["p-ic-2"], reason: "Not in this group" },
+      ],
+      edges: [
+        { from: "p-ic-1", to: "p-ic-2", kind: "replication", evidence: "server_uuid", verified: true, state: "running", label: "Replication" },
+        { from: "p-ic-1", to: "p-ic-3", kind: "replication", evidence: "server_uuid", verified: true, state: "running", label: "Replication" },
+        { from: "p-ic-1", to: topoPeerId, kind: "replication", evidence: "endpoint", verified: false, state: null, label: "Replication" },
+        { from: "p-ic-5", to: "p-ic-1", kind: "alias", evidence: "server_uuid", verified: false, state: null, label: "same server (alias)" },
+      ],
+      clusters: [
+        { id: GR_CLUSTER, kind: "group_replication", name: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+          members: ["p-ic-1", "p-ic-2", "p-ic-3"], seen_from: ["p-ic-1", "p-ic-2", "p-ic-3"] },
+      ],
+      notes: [{ profile_id: "p-ic-4", message: "Access denied for user 'dba'@'10.0.0.14'." }],
+    },
+  }),
+  members: topoReport("members"),
+  parameters: topoReport("parameters", {
+    parameters: {
+      rows: [
+        { name: "group_replication_group_name", status: "missing", values: { "p-ic-1": "cccccccc-cccc-cccc-cccc-cccccccccccc" }, apply_type: null, dynamic: false },
+        { name: "max_connections", status: "different", values: { "p-ic-1": 500, "p-ic-2": 200, "p-ic-3": 500 }, apply_type: null, dynamic: true },
+        { name: "innodb_buffer_pool_size", status: "same", values: { "p-ic-1": 134217728, "p-ic-2": 134217728, "p-ic-3": 134217728 }, apply_type: null, dynamic: false },
+        { name: "server_id", status: "per_server", values: { "p-ic-1": 11, "p-ic-2": 12, "p-ic-3": 13 }, apply_type: null, dynamic: false, reason: "Server identity: each member keeps its own value." },
+        { name: "audit_log_encryption", status: "missing", values: { "p-ic-1": "[redacted]", "p-ic-2": "[redacted]", "p-ic-3": "[redacted]" }, apply_type: null, dynamic: true, reason: "A value was redacted, truncated or unavailable; it cannot be compared." },
+      ],
+      compared: ["p-ic-1", "p-ic-2", "p-ic-3"],
+      not_compared: [{ profile_id: "p-ic-4", reason: "Access denied for user 'dba'@'10.0.0.14'." }],
+    },
+  }),
+};
+// The rolling change plan (topology-place.mjs's planned members): db-2 and
+// db-3 as secondaries first, then the primary db-1, each with its statement
+// and before and after values.
+const rollingMember = (over) => ({
+  profile_id: "", profile_name: "", host: "", port: 3306, identity: null,
+  status: "planned", statement: null, before: null, after: null, effect: null,
+  caveats: [], privileges: null, config_line: null, reason: null, ...over,
+});
+const ROLLING_ORDER = "Group Replication and InnoDB Cluster secondaries first, then the primary; ties use saved name order.";
+const rollingPlanReply = {
+  schema_version: "topology-change-plan-1.0", plan_id: "plan-1", change_set_id: "cs-1",
+  group_name: "mf-ic", name: "max_connections", value: "400", mode: "persist",
+  order_rule: ROLLING_ORDER,
+  effective_safety: { type: "production", read_only: false },
+  confirmation: { required: true, typed_name: "mf-ic" },
+  members: [
+    rollingMember({ profile_id: "p-ic-2", profile_name: "db-2", host: "10.0.0.12",
+      statement: "SET PERSIST max_connections = 400;",
+      before: { global: "200", persisted: null }, after: { global: "400", persisted: "400" },
+      effect: { global: "200 to 400" } }),
+    rollingMember({ profile_id: "p-ic-3", profile_name: "db-3", host: "10.0.0.13",
+      statement: "SET PERSIST max_connections = 400;",
+      before: { global: "500", persisted: null }, after: { global: "400", persisted: "400" },
+      effect: { global: "500 to 400" } }),
+    rollingMember({ profile_id: "p-ic-1", profile_name: "db-1", host: "10.0.0.11",
+      statement: "SET PERSIST max_connections = 400;",
+      before: { global: "500", persisted: null }, after: { global: "400", persisted: "400" },
+      effect: { global: "500 to 400" } }),
+  ],
+  expect: {
+    group_name: "mf-ic", group_generation: "g1", active_member_profile_id: "p-ic-1",
+    active_endpoint: { host: "10.0.0.11", port: 3306, user: "dba", ssl_mode: "PREFERRED", ssl_ca: "", ssh_host: "", ssh_user: "", ssh_port: 22 },
+    effective_safety: { type: "production", read_only: false }, members: [],
+  },
+};
+
 const ok = (body) => ({ status: 200, body });
 const extra = {
   "/api/profiles/list": ok({ items: profiles, secret_store: { backend: "vault", label: "myflames encrypted vault", available: true } }),
@@ -135,6 +277,13 @@ const extra = {
     });
   },
   "/api/live/health": ok(health),
+  // The Topology place's one endpoint: one read of the whole group per tab
+  // (topology-place.mjs's mock, without its request assertions).
+  "/api/live/topology": (body) => {
+    const reply = topologyReports[body.section];
+    return reply ? ok(reply) : { status: 400, body: { error: `unknown topology section ${body.section}` } };
+  },
+  "/api/live/topology/variable/plan": () => ok(rollingPlanReply),
   "/api/live/readiness": ok({ engine: "mysql", flavor: "mysql", product: "MySQL", version: "8.4.11", read_only: false,
     super_read_only: false, performance_schema: true, replica: false, group_member: false, galera_member: false,
     privileges: {}, actions: {}, notes: [], checked_at: "2026-11-17T12:00:00Z" }),
@@ -262,6 +411,28 @@ const backToList = async () => {
 };
 
 try {
+  // home-groups: Home with two group cards (members listed, Open on each),
+  // the Saved connections heading and New group… beside Add connection.
+  await view("home-groups", async () => {
+    await page.click('.main-nav button[data-place="home"]');
+    await page.waitForSelector('[data-testid="home-group-connections"]', { visible: true });
+    await until(() => {
+      for (const group of ["mf-ic", "mf-two"]) {
+        const row = document.querySelector(`[data-testid="home-group-connections"] .group-connection-row[data-group="${group}"]`);
+        if (!row || !row.offsetParent) return false;
+        if (!row.querySelector(".group-connection-members")?.textContent.trim()) return false;
+        if (row.querySelector('button[data-action="open-group"]')?.textContent.trim() !== "Open") return false;
+      }
+      return true;
+    });
+    await until(() => [...document.querySelectorAll(".connections h3")]
+      .some((e) => e.textContent.trim() === "Saved connections"));
+    await until(() => [...document.querySelectorAll(".connections-header-actions button")]
+      .some((b) => b.textContent.includes("New group…"))
+      && [...document.querySelectorAll(".connections-header-actions button")]
+        .some((b) => b.textContent.includes("Add connection")));
+  });
+
   // group-picker: the connection picker listing the Group connection.
   await page.click('.main-nav button[data-place="query"]');
   await page.waitForSelector(".window-toolbar .connection-pill", { visible: true });
@@ -293,6 +464,92 @@ try {
     await page.waitForSelector('.server-view[data-view="health"] .group-server-picker', { visible: true });
     await until(() => document.querySelector('.server-view[data-view="health"] .view-server-name')?.textContent.includes("db-2"));
   });
+
+  // topology-map: the Topology place on the Group connection, Map tab: a
+  // cluster box with three members, a verified link, an unverified link, a
+  // router alias and an outside peer, with the diagram drawn.
+  await view("topology-map", async () => {
+    await page.click('.main-nav button[data-place="topology"]');
+    await page.waitForSelector(".topology-place .segmented button", { visible: true });
+    await page.waitForSelector(".topology-map-diagram .topology-map-cluster", { visible: true });
+    await until(() => document.querySelectorAll(".topology-map-diagram .topology-map-cluster button").length === 3);
+    await until(() => !!document.querySelector('.topology-map-diagram button[data-node="p-ic-5"]')
+      && document.querySelector('.topology-map-diagram button[data-node="p-ic-5"]').textContent.includes("Alias of db-1"));
+    await until(() => !!document.querySelector('.topology-map-diagram button[data-node="peer:10.0.0.77:3306"]'));
+    await until(() => !!document.querySelector('.topology-map-diagram .topology-map-edge[data-verified="true"]')
+      && !!document.querySelector('.topology-map-diagram .topology-map-edge[data-verified="false"]'));
+  });
+
+  // topology-members: the Members tab with roles, state, version, read-only
+  // and lag filled.
+  await view("topology-members", async () => {
+    await clickButton("Members", ".topology-place .segmented ");
+    await page.waitForSelector('.topology-place tr[data-row-key="p-ic-2"]', { visible: true });
+    await until(() => document.querySelector('.topology-place tr[data-row-key="p-ic-1"]')?.textContent.includes("Primary")
+      && document.querySelector('.topology-place tr[data-row-key="p-ic-2"]')?.textContent.includes("Secondary")
+      && document.querySelector('.topology-place tr[data-row-key="p-ic-2"]')?.textContent.includes("MySQL 8.4.4")
+      && document.querySelector('.topology-place tr[data-row-key="p-ic-2"]')?.textContent.includes("On (both)")
+      && [...document.querySelectorAll('.topology-place tr[data-row-key="p-ic-2"] [title]')]
+        .some((e) => e.title.includes("gr_applier_queue")));
+  });
+
+  // topology-parameters: the Parameters tab with the differing rows, the Per
+  // server row and the Not compared member, a row selected so its inspector
+  // shows Change on every member….
+  await view("topology-parameters", async () => {
+    await clickButton("Parameters", ".topology-place .segmented ");
+    await page.waitForSelector('.topology-place tr[data-row-key="max_connections"]', { visible: true });
+    await clickButton("All", ".topology-place .drift-controls ");
+    await page.waitForSelector('.topology-place tr[data-row-key="server_id"]', { visible: true });
+    await until(() => [...document.querySelectorAll('.topology-place tr[data-row-key="server_id"] .pill')]
+      .some((e) => e.textContent.trim() === "Per server"));
+    await until(() => document.querySelector(".topology-place")?.textContent.includes("Not compared"));
+    await h.select('.topology-place tr[data-row-key="max_connections"]');
+    await until(() => [...document.querySelectorAll(".view-inspector button")]
+      .some((b) => b.textContent.trim() === "Change on every member…"));
+    // Back to the matrix for the frame: the row keeps its selection.
+    await page.click(".view-inspector.is-detail .detail-back");
+    await until(() => !document.querySelector(".view-inspector.is-detail"));
+    await until(() => !!document.querySelector('.topology-place tr[data-row-key="max_connections"].is-selected'));
+  });
+
+  // topology-rolling-review: the Change on every member… sheet at its review
+  // step (each member's statement and before and after values, the order
+  // sentence).
+  const sheetSel = "dialog.rolling-change-sheet[open]";
+  const sheetClick = async (text) => {
+    const found = await page.evaluate((t) => {
+      const button = [...document.querySelectorAll("dialog.rolling-change-sheet .sheet-buttons button, dialog.rolling-change-sheet .rolling-applying button")]
+        .find((b) => b.textContent.trim() === t && !b.disabled);
+      if (!button) return false;
+      button.click();
+      return true;
+    }, text);
+    assert.ok(found, `sheet button "${text}"`);
+  };
+  await view("topology-rolling-review", async () => {
+    await h.select('.topology-place tr[data-row-key="max_connections"]');
+    await until(() => [...document.querySelectorAll(".view-inspector button")]
+      .some((b) => b.textContent.trim() === "Change on every member…"));
+    await page.evaluate(() => [...document.querySelectorAll(".view-inspector button")]
+      .find((b) => b.textContent.trim() === "Change on every member…").click());
+    await page.waitForSelector(sheetSel, { visible: true });
+    await until((sel) => document.querySelector(`${sel} .rolling-field input`)?.value === "500", sheetSel);
+    await page.click(`${sheetSel} .rolling-field input`, { clickCount: 3 });
+    await page.type(`${sheetSel} .rolling-field input`, "400");
+    await sheetClick("Review");
+    await page.waitForSelector(`${sheetSel} .rolling-review-list li[data-member="p-ic-2"]`, { visible: true });
+    await until(() => {
+      const text = document.querySelector("dialog.rolling-change-sheet")?.textContent || "";
+      return text.includes("SET PERSIST max_connections = 400;") && text.includes("200 → 400")
+        && text.includes("secondaries first, then the primary");
+    });
+  });
+  await sheetClick("Back");
+  await page.waitForSelector(`${sheetSel} .rolling-members`, { visible: true });
+  await sheetClick("Cancel");
+  await until(() => !document.querySelector("dialog.rolling-change-sheet"));
+  await backToList();
 
   // The cluster views run on a plain saved connection.
   await chooseConnection(page, "p-ic-1");

@@ -6,7 +6,7 @@
 # durations, non-zero on any failure.
 #
 # Usage:
-#   scripts/live-tests.sh [ic|galera|proxysql|shell|writes|ga|all] [--record]
+#   scripts/live-tests.sh [ic|galera|proxysql|shell|writes|topology|ga|all] [--record]
 #
 # Brings up only the labs the chosen suites need (idempotent
 # cluster-matrix.sh up, then check) and leaves them running for the next run.
@@ -52,7 +52,7 @@ selection="all"
 record=0
 for arg in "$@"; do
   case "$arg" in
-    ic|galera|proxysql|shell|writes|ga|all) selection="$arg" ;;
+    ic|galera|proxysql|shell|writes|topology|ga|all) selection="$arg" ;;
     --record) record=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -91,15 +91,18 @@ galera_lane=""
 writes_lane=""
 ga_lane=""
 case "$selection" in
-  ic)       labs="ic";                  ic_lane="live_ic_group_routing" ;;
-  galera)   labs="galera";              galera_lane="live_galera" ;;
+  ic)       labs="ic";                  ic_lane="live_ic_group_routing live_topology_ic" ;;
+  galera)   labs="galera";              galera_lane="live_galera live_topology_galera" ;;
   proxysql) labs="ic galera proxysql";  ic_lane="live_editor_proxysql" ;;
   shell)    labs="ic";                  ic_lane="live_shell" ;;
   writes)   labs="ic galera";           writes_lane="live_writes" ;;
+  topology) labs="ic galera proxysql"
+            ic_lane="live_topology_ic"
+            galera_lane="live_topology_galera" ;;
   ga)       labs="";                    ga_lane="live_writes_ga" ;;
   all)      labs="ic galera proxysql"
-            ic_lane="live_ic_group_routing live_shell live_editor_proxysql"
-            galera_lane="live_galera"
+            ic_lane="live_ic_group_routing live_topology_ic live_shell live_editor_proxysql"
+            galera_lane="live_galera live_topology_galera"
             writes_lane="live_writes"
             ga_up && ga_lane="live_writes_ga" ;;
 esac
