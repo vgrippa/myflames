@@ -8456,12 +8456,13 @@ logs in.
     else `None`). With no channels, checks `SHOW REPLICAS` (MySQL 8.0.22+) or
     `SHOW SLAVE HOSTS` (`role='source'` if non-empty, else `'standalone'`,
     `state='reachable'`).
-  - Alias annotation (`_duplicate_notes`): on `members` and `map` sections
-    (`check_routed=True`), `_member_facts` runs an optional query on
+  - Alias annotation (`_duplicate_notes`): on every section, `_read_routed`
+    runs one optional query for each MySQL database member (excluding ProxySQL,
+    Readyset, proxies and caches) on
     `performance_schema.session_connect_attrs` (`PROCESSLIST_ID =
     CONNECTION_ID() AND ATTR_NAME IN ('_client_ip','_client_socket')`) to set
     `routed` (`True` when present, `False` when absent, `None` when unreadable
-    or on `parameters`/`accounts`/`plugins`). In `_duplicate_notes`,
+    or inapplicable). In `_duplicate_notes`,
     successfully read MySQL members sharing a valid non-nil `server_uuid` stay
     separate member entries and map nodes while electing one canonical saved
     connection from the highest non-empty tier: (1) matching both the server's

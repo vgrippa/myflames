@@ -2068,6 +2068,36 @@ class TopologyReadTests(GroupCase):
                 self.assertEqual(report['map']['edges'], [{'from': 'active', 'to': 'z-node', 'kind': 'alias',
                     'evidence': 'server_uuid', 'verified': False, 'state': None, 'label': 'same server (alias)'}])
 
+    def test_router_alias_with_equal_save_times_has_same_canonical_member_on_every_section(self):
+        # Equal timestamps leave the router's earlier profile ID as the
+        # fallback winner unless every section reads the session attributes.
+        with mock.patch('myflames.workspace_store._now', return_value='2026-11-22T12:00:00+00:00'):
+            self.save('active', 'G', type='development', port=34306)
+            self.save('z-node', 'G', port=34301)
+        profiles = self.store.list('profile')
+        self.assertEqual(len({profile['updated_at'] for profile in profiles}), 1)
+        self.assertEqual(min(profile['id'] for profile in profiles), 'active')
+        router = member_fixture(UUID_A, routed=True)
+        direct = member_fixture(UUID_A, routed=False)
+        schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
+        for section in ('members', 'map', 'parameters', 'accounts', 'plugins'):
+            with self.subTest(section=section):
+                with self.clients(
+                        {'active.example': copy.deepcopy(router), 'z-node.example': copy.deepcopy(direct)}) as observed, \
+                        mock.patch.object(param_compare, 'capture', return_value=snapshot([item('max_connections', '151')])), \
+                        mock.patch.object(account_compare, 'capture', return_value=side([account('app')])):
+                    report = self.read(section)
+                validate(report, schema)
+                self.assertEqual(report['summary']['read'], 2, report)
+                members = {member['profile_id']: member for member in report['members']}
+                self.assertIsNone(members['z-node']['duplicate_of'])
+                self.assertEqual(members['active']['duplicate_of'], 'z-node')
+                self.assertIs(members['z-node']['routed'], False)
+                self.assertIs(members['active']['routed'], True)
+                for host in ('active.example', 'z-node.example'):
+                    queries = [sql for sql in self.statements(observed, host) if 'session_connect_attrs' in sql]
+                    self.assertEqual(len(queries), 1, (section, host))
+
     def test_routed_preference_applies_in_direct_and_port_match_steps(self):
         for case, port, host_var in (('direct', 3306, 'active.example'), ('matched', 3306, 'other-host')):
             with self.subTest(case=case):
@@ -2093,21 +2123,24 @@ class TopologyReadTests(GroupCase):
         router = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', attrs_error=err)
         direct = self.gr_map_fixture(UUID_A, 'PRIMARY', rows, gtid=UUID_A + ':1-10', attrs_error=err)
         schema = json.loads((ROOT / 'docs/schemas/topology-group-1.0.json').read_text(encoding='utf-8'))
-        for section in ('members', 'map'):
+        for section in ('members', 'map', 'parameters', 'accounts', 'plugins'):
             with self.subTest(section=section), self.clients(
-                    {'active.example': copy.deepcopy(router), 'z-node.example': copy.deepcopy(direct)}):
+                    {'active.example': copy.deepcopy(router), 'z-node.example': copy.deepcopy(direct)}), \
+                    mock.patch.object(param_compare, 'capture', return_value=snapshot([item('max_connections', '151')])), \
+                    mock.patch.object(account_compare, 'capture', return_value=side([account('app')])):
                 report = self.read(section)
             validate(report, schema)
             self.assertEqual(report['summary']['read'], 2, report)
             self.assertEqual(report['summary']['failed'], 0)
-            self.assertEqual(report['primary_profile_id'], 'active')
+            if section in ('members', 'map', 'parameters'):
+                self.assertEqual(report['primary_profile_id'], 'active')
             members = {member['profile_id']: member for member in report['members']}
             self.assertIsNone(members['active']['routed'])
             self.assertIsNone(members['z-node']['routed'])
             self.assertIsNone(members['active']['duplicate_of'])
             self.assertEqual(members['z-node']['duplicate_of'], 'active')
 
-    def test_proxysql_and_non_member_sections_never_run_session_connect_attrs_query(self):
+    def test_only_mysql_database_members_run_session_connect_attrs_query_on_every_section(self):
         self.save('proxy', 'G', port=6032)
         self.save('readyset', 'G', port=3307)
         self.save('maria', 'G')
@@ -2119,22 +2152,21 @@ class TopologyReadTests(GroupCase):
                     'maria.example': member_fixture(engine='mariadb'),
                     'proxy.example': proxy,
                     'readyset.example': readyset}
-        for section in ('members', 'map', 'parameters', 'plugins'):
+        for section in ('members', 'map', 'parameters', 'accounts', 'plugins'):
             with self.subTest(section=section), self.clients(fixtures) as observed, \
-                    mock.patch.object(param_compare, 'capture', return_value=snapshot([item('max_connections', '151')])):
+                    mock.patch.object(param_compare, 'capture', return_value=snapshot([item('max_connections', '151')])), \
+                    mock.patch.object(account_compare, 'capture', return_value=side([account('app')])):
                 report = self.read(section)
             self.assertEqual(report['summary']['read'], 4, report)
             for host in ('proxy.example', 'readyset.example', 'maria.example'):
                 self.assertFalse(any('session_connect_attrs' in sql for sql in self.statements(observed, host)),
                                  (section, host))
-            if section in ('parameters', 'plugins'):
-                self.assertFalse(any('session_connect_attrs' in sql for sql in self.statements(observed)),
-                                 section)
-            else:
-                members = {member['profile_id']: member for member in report['members']}
-                self.assertIs(members['active']['routed'], False)
-                for pid in ('proxy', 'readyset', 'maria'):
-                    self.assertIsNone(members[pid]['routed'])
+            queries = [sql for sql in self.statements(observed, 'active.example') if 'session_connect_attrs' in sql]
+            self.assertEqual(len(queries), 1, section)
+            members = {member['profile_id']: member for member in report['members']}
+            self.assertIs(members['active']['routed'], False)
+            for pid in ('proxy', 'readyset', 'maria'):
+                self.assertIsNone(members[pid]['routed'])
 
     def test_live_mariadb_dns_and_ipv6_rows_make_one_id_match_edge(self):
         self.save('replica', 'G')
