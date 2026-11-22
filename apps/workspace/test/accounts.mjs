@@ -347,9 +347,10 @@ try {
     assert.ok(await handle.asElement(), `button ${text}`); await handle.asElement().click(); await handle.dispose();
   };
   const backToAccounts = async () => {
-    const back = await page.$(".accounts-view .detail-back");
-    if (!back) return;
-    await back.click();
+    if (!(await page.$(".accounts-view .view-inspector.is-detail .detail-back"))) return;
+    // A locator waits for a stable box: a handle click during the inspector's
+    // 130 ms kit-panel-in animation can land beside the moving Back button.
+    await page.locator(".accounts-view .view-inspector.is-detail .detail-back").click();
     // The row click below races the close: the rows stay inside the hidden
     // .view-main until the close commits, and the close then returns focus to
     // the selected row, scrolling the table. Wait for both before clicking.
