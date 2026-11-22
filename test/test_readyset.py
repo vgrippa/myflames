@@ -1327,13 +1327,20 @@ class TestExplainAndExportCaches(ReadysetBase):
         self.assertEqual(conn.writes, [])
 
     def test_export_numbered_placeholder_boundaries(self):
-        for expression in ("$0", "$1", "$123", "($1)", "$1, $2", "$1 + $2", "$1+$2"):
+        for expression in ("$0", "$1", "$123", "($1)", "$1, $2", "$1 + $2", "$1+$2", "$1 ^ $2"):
             with self.subTest(expression=expression):
                 definition = "CREATE CACHE c FROM SELECT %s;" % expression
                 self.assertTrue(readyset._runnable_export_sql(definition))
                 self.assertEqual(readyset._split_export_use("USE `shop`; " + definition),
                                  ("shop", definition))
+                conn = FakeCacheExport()
+                conn.definition = definition
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"][0]["statement"], definition)
+                self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, result["sql"])
+                self.assertEqual(conn.writes, [])
         for token in ("$", "$$", "$a$", "$1$", "$_", "$1a", "$12a", "$1_", "$1$2",
+                      "$1^$2", "$1[$2]", "$1{", "$1~$2", "$1]$2", "$1}", "$1\\",
                       "$1\u00e9", "$1\u0301", "$1\u00a0", "$\uff11", "$\u0661"):
             for prefix in ("", "USE `shop`; "):
                 with self.subTest(token=token, prefix=prefix):
@@ -1344,6 +1351,7 @@ class TestExplainAndExportCaches(ReadysetBase):
                                      (None, conn.definition))
                     result = readyset.export_caches(conn)
                     self.assertEqual(result["caches"][0]["statement"], "-- " + conn.definition)
+                    self.assertIn(readyset._EXPORT_UNSAFE_COMMENT + "\n", result["sql"])
                     self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
                     self.assertEqual(conn.writes, [])
 
@@ -1369,6 +1377,55 @@ class TestExplainAndExportCaches(ReadysetBase):
                     self.assertEqual(result["caches"][0]["statement"], "-- " + conn.definition)
                     self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
                     self.assertEqual(conn.writes, [])
+
+    def test_export_charset_ambiguity_gets_charset_note_unless_other_unsafe_reason_applies(self):
+        expected_note = (
+            "-- This definition was not exported as runnable SQL: a non-ASCII character comes "
+            "right before a backtick or backslash, which some client character sets read "
+            "differently. Load it with --default-character-set=utf8mb4 after checking it."
+        )
+        self.assertEqual(readyset._EXPORT_CHARSET_COMMENT, expected_note)
+        for row in (
+                {"query": "CREATE CACHE c FROM SELECT * FROM `caf\u00e9`;"},
+                {"query": "CREATE CACHE `caf\u00e9` FROM SELECT 1;"},
+                {"query": "USE `shop`; CREATE CACHE c FROM SELECT * FROM `caf\u00e9`;"},
+                {"query": "USE `caf\u00e9`; CREATE CACHE c FROM SELECT 1;"},
+                {"query": "CREATE CACHE c FROM SELECT 1;", "database": "caf\u00e9"},
+        ):
+            with self.subTest(charset_row=row):
+                conn = FakeCacheExport()
+                conn.export_rows = [row]
+                result = readyset.export_caches(conn)
+                self.assertIn(expected_note + "\n", result["sql"])
+                self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, result["sql"])
+                self.assertTrue(result["caches"][0]["statement"].startswith("-- "))
+                self.assertEqual(conn.writes, [])
+
+        for row in (
+                {"query": "CREATE CACHE c FROM SELECT 1 \\! id"},
+                {"query": "CREATE CACHE c FROM SELECT 1;\n\\! id"},
+                {"query": "CREATE CACHE c FROM SELECT * FROM `caf\u00e9` \\! id"},
+                {"query": "CREATE CACHE `caf\u00e9` FROM SELECT 1;\n\\! id"},
+                {"query": "CREATE CACHE c FROM SELECT * FROM `caf\u00e9` WHERE x = $1^$2;"},
+                {"query": "CREATE CACHE c FROM SELECT * FROM `caf\u00e9`; DROP ALL CACHES;"},
+                {"query": "CREATE CACHE c FROM SELECT 1 \\! id", "database": "caf\u00e9"},
+        ):
+            with self.subTest(unsafe_row=row):
+                conn = FakeCacheExport()
+                conn.export_rows = [row]
+                result = readyset.export_caches(conn)
+                self.assertIn(readyset._EXPORT_UNSAFE_COMMENT + "\n", result["sql"])
+                self.assertNotIn(expected_note, result["sql"])
+                self.assertTrue(result["caches"][0]["statement"].startswith("-- "))
+                self.assertEqual(conn.writes, [])
+
+        conn = FakeCacheExport()
+        conn.export_rows = [{"query": "CREATE CACHE `caf\u00e9` FROM SELECT 'rs-secret-pw';"}]
+        redacted_result = readyset.export_caches(conn)
+        self.assertIn(expected_note + "\n" + readyset._EXPORT_REDACTED_COMMENT + "\n",
+                      redacted_result["sql"])
+        self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, redacted_result["sql"])
+        self.assertEqual(conn.writes, [])
 
     def test_export_requires_identical_token_spans_across_escape_readings(self):
         # Both readings close every token and flag no lexer issue, but one

@@ -1304,6 +1304,11 @@ _EXPORT_REDACTED_COMMENT = (
 _EXPORT_UNSAFE_COMMENT = (
     "-- This definition was not exported as runnable SQL: it is not a single CREATE CACHE statement."
 )
+_EXPORT_CHARSET_COMMENT = (
+    "-- This definition was not exported as runnable SQL: a non-ASCII character comes right "
+    "before a backtick or backslash, which some client character sets read differently. "
+    "Load it with --default-character-set=utf8mb4 after checking it."
+)
 _EXPORT_CREATE_CACHE = re.compile(r"\ACREATE\s+(?:(?:SHALLOW|DEEP)\s+)?CACHE\s+\S", re.I)
 _EXPORT_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 # A legacy multibyte client charset can consume either ASCII byte as the
@@ -1430,19 +1435,25 @@ def _export_has_unsafe_dollars(text):
             return True  # No ASCII digits after the dollar.
         if end < len(text):
             nxt = text[end]
-            if nxt.isalnum() or nxt in "_$" or ord(nxt) >= 128:
+            # Include swe7 identifier letters ([ \ ] ^ { } ~) as well.
+            if nxt.isalnum() or nxt in "_$[]\\^{}~" or ord(nxt) >= 128:
                 return True
     return False
 
 
-def _runnable_export_sql(sql):
+def _export_db_safe(db):
+    return not db or not (_export_has_controls(db) or _export_has_unsafe_dollars(db) or
+                          "\\" in db or any(ch in _EXPORT_LINE_BREAKS for ch in db))
+
+
+def _runnable_export_sql(sql, check_charset=True):
     """Accept one CREATE CACHE under both server and mysql-client readings.
 
     The importing client's quote mode is unknown. Refuse lexical uncertainty,
     executable comments and line/client framing outside strings, rather than
     letting server-supplied text control how the rest of the file is read.
     """
-    if _export_has_controls(sql) or _EXPORT_CHARSET_AMBIGUITY.search(sql):
+    if _export_has_controls(sql) or (check_charset and _EXPORT_CHARSET_AMBIGUITY.search(sql)):
         return False
     token_spans = {}
     for escapes in (True, False):
@@ -1483,7 +1494,7 @@ def _runnable_export_sql(sql):
     return True
 
 
-def _split_export_use(sql):
+def _split_export_use(sql, check_charset=True):
     """Extract Readyset's quoted database prefix only before one safe CREATE.
 
     Return malformed prefixes and extra statements intact so the exporter
@@ -1492,7 +1503,7 @@ def _split_export_use(sql):
     """
     # Check before trimming: tabs and other controls must not disappear into
     # the prefix parser and become runnable in an exporter-generated USE.
-    if _export_has_controls(sql) or _EXPORT_CHARSET_AMBIGUITY.search(sql):
+    if _export_has_controls(sql) or (check_charset and _EXPORT_CHARSET_AMBIGUITY.search(sql)):
         return None, sql
     tokens = dbops.lex_sql(sql)["tokens"]
     if (len(tokens) < 3 or tokens[0][0] != "code" or
@@ -1513,7 +1524,7 @@ def _split_export_use(sql):
         return None, sql
     definition = tail[1:].lstrip(" \t")
     stmt = definition if definition.endswith(";") else definition + ";"
-    if not _runnable_export_sql(stmt):
+    if not _runnable_export_sql(stmt, check_charset=check_charset):
         return None, sql
     return db, definition
 
@@ -1540,10 +1551,10 @@ def export_caches(conn):
              "-- Recognized credentials in query text are shown as [redacted]."]
     last_db = None
     for r in rows:
-        raw_q = r.get("query") or r.get("create statement") or ""
-        if not raw_q.strip():
+        source_q = r.get("query") or r.get("create statement") or ""
+        if not source_q.strip():
             continue
-        prefix_db, raw_q = _split_export_use(raw_q)
+        prefix_db, raw_q = _split_export_use(source_q)
         q, redacted = _redact_export_sql(raw_q, pw)
         # Readyset's prefix is the schema used by CREATE, even when the
         # database column disagrees with the shallow cache's search path.
@@ -1555,26 +1566,40 @@ def export_caches(conn):
         if db_redacted:
             db = dbops.REDACTED
             redacted = True
-        db_safe = not db or not (_export_has_controls(db) or _export_has_unsafe_dollars(db) or
-                                 "\\" in db or any(ch in _EXPORT_LINE_BREAKS for ch in db))
+        db_safe_no_charset = _export_db_safe(db)
+        db_charset_unsafe = False
         if db and db != last_db:
             try:
                 use = "USE %s;" % _rs_ident_server(db, "Database")
                 # Include the generated closing backtick in the charset
                 # check, especially for names ending in non-ASCII text.
-                db_safe = db_safe and not _EXPORT_CHARSET_AMBIGUITY.search(use)
+                db_charset_unsafe = bool(_EXPORT_CHARSET_AMBIGUITY.search(use))
             except ValueError:
                 use = "Database name could not be exported as runnable SQL."
-                db_safe = False
+                db_safe_no_charset = False
+            db_safe = db_safe_no_charset and not db_charset_unsafe
             if not db_safe or db_redacted:
                 use = "-- " + _review_text(use)
             else:
                 last_db = db
             lines.append(use)
+        else:
+            db_safe = db_safe_no_charset
         stmt = q if q.endswith(";") else (q + ";")
         runnable = db_safe and _runnable_export_sql(stmt)
         if not runnable:
-            lines.append(_EXPORT_UNSAFE_COMMENT)
+            charset_only = False
+            if db_safe_no_charset and (db_charset_unsafe or _EXPORT_CHARSET_AMBIGUITY.search(stmt)):
+                if _runnable_export_sql(stmt, check_charset=False):
+                    charset_only = True
+                elif prefix_db is None:
+                    alt_db, alt_q = _split_export_use(source_q, check_charset=False)
+                    if alt_db is not None and _export_db_safe(alt_db):
+                        alt_stmt, _ = _redact_export_sql(alt_q, pw)
+                        if not alt_stmt.endswith(";"):
+                            alt_stmt += ";"
+                        charset_only = _runnable_export_sql(alt_stmt, check_charset=False)
+            lines.append(_EXPORT_CHARSET_COMMENT if charset_only else _EXPORT_UNSAFE_COMMENT)
         if redacted:
             lines.append(_EXPORT_REDACTED_COMMENT)
         if redacted or not runnable:
