@@ -371,14 +371,15 @@ def identify(conn):
         code = error_number(str(exc))
         if code is None or client_error(code) or "Access denied" in str(exc):
             raise
-        return False, "SELECT @@version_comment failed (%s)" % dbops.redact(_short(exc), pw)
+        return False, "SELECT @@version_comment failed (%s)" % _short(dbops.redact(str(exc), pw))
     comment = _text(next(iter(rows[0].values()))) if rows and rows[0] else ""
     if not is_readyset_comment(comment):
-        return False, "@@version_comment is %s, not Readyset" % (comment[:60] if comment else "empty")
+        shown_comment = _display(dbops.redact(comment, pw))[:60] if comment else "empty"
+        return False, "@@version_comment is %s, not Readyset" % shown_comment
     try:
         vrows = select(conn, "SHOW READYSET VERSION")
     except ConnectorError as exc:
-        return False, "SHOW READYSET VERSION failed (%s)" % dbops.redact(_short(exc), pw)
+        return False, "SHOW READYSET VERSION failed (%s)" % _short(dbops.redact(str(exc), pw))
     version = parse_readyset_version(vrows) or "unknown"
     return True, version
 
@@ -1217,7 +1218,7 @@ def _explain_one(conn, target, kind):
             "cache_type": kind,
             "supported": "error",
             "raw_support": None,
-            "reason": dbops.redact(_short(exc), pw),
+            "reason": _short(dbops.redact(str(exc), pw)),
             "query_id": None,
             "query": None,
             "statement": sql,
@@ -1299,6 +1300,13 @@ _EXPORT_ESCAPES = {
 _EXPORT_REDACTED_COMMENT = (
     "-- Credentials in this definition are shown as [redacted]; it will not run as is."
 )
+# Export also covers malformed URL credentials with a slash in the password.
+# The scheme boundary prevents retries within a long scheme-like word; the
+# username stops at ':' or '/', and the password scan is bounded at 1,024.
+_EXPORT_URL_CREDENTIALS = re.compile(
+    r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://[^:/@\s'\"`]*:)"
+    r"[^@\s'\"`]{0,1024}@"
+)
 
 
 def _unescape_sql_literal(body, quote):
@@ -1326,8 +1334,9 @@ def _redact_export_sql(sql, password=None):
 
     Applies ``dbops.redact`` outside quoted identifiers, and replaces any
     quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
-    with ``'[redacted]'``. Returns ``(redacted_sql, changed)``, with *changed*
-    true exactly when the output differs from the input.
+    with ``'[redacted]'``, or a comment's content with ``[redacted]``.
+    Returns ``(redacted_sql, changed)``; a detected connection password marks
+    the definition changed even when it already equals the redaction marker.
     """
     pw = password if isinstance(password, str) and password else None
     scan = dbops.lex_sql(sql)
@@ -1339,8 +1348,9 @@ def _redact_export_sql(sql, password=None):
         if kind == "identifier":
             parts.append(tok)
             continue
-        # Keep connection-password matching scoped to SQL literals below.
+        # Keep connection-password matching scoped to literals and comments.
         updated = dbops.redact(tok)
+        updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", updated)
         if kind == "string" and pw:
             quote = tok[0]
             body = tok[1:] if (start, end) in unclosed else tok[1:-1]
@@ -1352,6 +1362,13 @@ def _redact_export_sql(sql, password=None):
                     pw in _unescape_sql_literal(check_body, quote) or
                     pw in check_body.replace(quote * 2, quote)):
                 updated = "'" + dbops.REDACTED + "'"
+                changed = True
+        elif kind == "comment" and pw and pw in tok:
+            if tok.startswith("/*"):
+                updated = "/* " + dbops.REDACTED + " */"
+            else:
+                updated = ("-- " if tok.startswith("--") else "# ") + dbops.REDACTED
+            changed = True
         if updated != tok:
             changed = True
         parts.append(updated)
@@ -1374,6 +1391,8 @@ def export_caches(conn):
         notes.append("Exported with EXPLAIN CACHES (EXPLAIN ALL CACHES requires a newer Readyset release).")
     items = []
     pw = getattr(conn, "password", None)
+    # Redact before bounding, and keep server text on its comment line.
+    version = _display(dbops.redact(version, pw))
     lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
              "-- Credentials in query text are shown as [redacted]."]
     last_db = None

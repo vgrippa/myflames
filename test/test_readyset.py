@@ -1237,8 +1237,126 @@ class TestFindings(ReadysetBase):
         self.assertNotIn("rs-secret-pw", detail)
         self.assertIn("[redacted]", detail)
 
+    def test_error_redaction_precedes_truncation(self):
+        class ErrorConn(FakeReadyset):
+            def run(self, sql, extra_flags=None, timeout=None):
+                if sql.startswith(self.failing_sql):
+                    raise ConnectorError(self.error)
+                return super().run(sql, extra_flags, timeout)
+
+        for failing_sql in ("SELECT @@version_comment", "SHOW READYSET VERSION", "EXPLAIN CREATE"):
+            for password in ("connection-secret-" * 32, "connection-secret-\n" + "tail" * 100):
+                for url_first in (False, True):
+                    with self.subTest(sql=failing_sql, multiline="\n" in password, url_first=url_first):
+                        conn = ErrorConn()
+                        conn.password = password
+                        conn.failing_sql = failing_sql
+                        url = "mysql://u:" + "url-secret-" * 40 + "@h/db"
+                        details = (url, password) if url_first else (password, url)
+                        conn.error = "ERROR 1105 (HY000): failed for %s via %s" % details
+                        if failing_sql == "EXPLAIN CREATE":
+                            result = readyset.explain_cache(conn, "SELECT 1")
+                            reasons = [result[kind]["reason"] for kind in ("shallow", "deep")]
+                            self.assertTrue(all(result[kind]["supported"] == "error"
+                                                for kind in ("shallow", "deep")))
+                        else:
+                            ok, reason = readyset.identify(conn)
+                            self.assertFalse(ok)
+                            reasons = [reason, json.dumps(readyset.read_status(conn))]
+                        for reason in reasons:
+                            self.assertNotIn("connection-secret-", reason)
+                            self.assertNotIn("url-secret-", reason)
+                            self.assertNotIn("tailtail", reason)
+                            self.assertIn("[redacted]", reason)
+                            self.assertNotIn("\n", reason)
+                        self.assertEqual(conn.writes, [])
+
+    def test_non_readyset_comment_is_redacted_single_line_and_bounded(self):
+        class CommentConn(FakeReadyset):
+            def run(self, sql, extra_flags=None, timeout=None):
+                if sql == "SELECT @@version_comment":
+                    return xml_rows([{"@@version_comment": self.comment}])
+                return super().run(sql, extra_flags, timeout)
+
+        conn = CommentConn()
+        conn.password = "connection-secret-" * 32
+        conn.comment = "mysql://u:url-secret@h " + conn.password + "\n\r\t\u202e\u2028\u2029" + "x" * 100
+        ok, reason = readyset.identify(conn)
+        self.assertFalse(ok)
+        prefix = "mysql://u:[redacted]@h [redacted]"
+        self.assertEqual(reason, "@@version_comment is %s, not Readyset" %
+                         (prefix + "x" * (60 - len(prefix))))
+        self.assertFalse(any(unicodedata.category(c) in ("Cc", "Cf") or c in "\u2028\u2029"
+                             for c in reason))
+        dumped = json.dumps(readyset.read_status(conn))
+        for secret in ("connection-secret-", "url-secret"):
+            self.assertNotIn(secret, reason)
+            self.assertNotIn(secret, dumped)
+        self.assertEqual(conn.writes, [])
+
+
+class FakeCacheExport(FakeReadyset):
+    definition = "SELECT 1;"
+
+    def run(self, sql, extra_flags=None, timeout=None):
+        if sql in ("EXPLAIN ALL CACHES", "EXPLAIN CACHES"):
+            return xml_rows([{"query": self.definition}])
+        return super().run(sql, extra_flags, timeout)
+
 
 class TestExplainAndExportCaches(ReadysetBase):
+
+    def test_export_version_header_is_redacted_single_line_and_bounded(self):
+        conn = FakeCacheExport()
+        conn.password = "connection-secret-" * 32
+        conn.version = ("stable\nDROP CACHE planted;\r\n" + conn.password +
+                        "\t\u202e\u2028\u2029mysql://u:url-secret@h " + "x" * 100)
+        result = readyset.export_caches(conn)
+        self.assertEqual(len(result["version"]), 80)
+        self.assertTrue(result["version"].startswith(
+            "stableDROP CACHE planted;[redacted]mysql://u:[redacted]@h "))
+        self.assertFalse(any(unicodedata.category(c) in ("Cc", "Cf") or c in "\u2028\u2029"
+                             for c in result["version"]))
+        self.assertEqual(result["sql"].splitlines(), [
+            "-- Readyset cache definitions exported by myflames (Readyset %s)" % result["version"],
+            "-- Credentials in query text are shown as [redacted].",
+            "SELECT 1;",
+        ])
+        self.assertNotIn("connection-secret-", json.dumps(result))
+        self.assertNotIn("url-secret", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
+    def test_export_redacts_url_password_with_slash(self):
+        for password in ("secret/part", "prefix/" + "x" * 1017):
+            for token in ("'mysql://u:%s@h/db'", '"mysql://u:%s@h/db"',
+                          "/* mysql://u:%s@h/db */", "mysql://u:%s@h/db",
+                          "'postgresql://:%s@h/db'"):
+                with self.subTest(length=len(password), token=token):
+                    conn = FakeCacheExport()
+                    identifier = "`mysql://u:identifier/part@h`"
+                    conn.definition = "SELECT %s, %s;" % (identifier, token % password)
+                    result = readyset.export_caches(conn)
+                    expected = "-- SELECT %s, %s;" % (identifier, token % dbops.REDACTED)
+                    self.assertEqual(result["caches"][0]["statement"], expected)
+                    self.assertIn(readyset._EXPORT_REDACTED_COMMENT + "\n" + expected, result["sql"])
+                    self.assertNotIn(password, json.dumps(result))
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_redacts_connection_password_in_comments(self):
+        for comment, replacement in (("/* before rs-secret-pw after */", "/* [redacted] */"),
+                                     ("-- before rs-secret-pw after", "-- [redacted]"),
+                                     ("# before rs-secret-pw after", "# [redacted]"),
+                                     ("/* before\nrs-secret-pw\nafter */", "/* [redacted] */")):
+            with self.subTest(comment=comment):
+                conn = FakeCacheExport()
+                conn.definition = "CREATE CACHE c FROM SELECT 1 %s\n;" % comment
+                result = readyset.export_caches(conn)
+                statement = result["caches"][0]["statement"]
+                self.assertEqual(statement, "-- CREATE CACHE c FROM SELECT 1 %s\n-- ;" % replacement)
+                self.assertTrue(all(line.startswith("-- ") for line in statement.splitlines()))
+                self.assertIn(readyset._EXPORT_REDACTED_COMMENT + "\n" + statement, result["sql"])
+                self.assertNotIn(conn.password, json.dumps(result))
+                self.assertEqual(conn.writes, [])
 
     def test_explain_collision_keeps_exact_server_name(self):
         for name in (" c_orders_deep ", "   ", "`literal`", "a``b", None, ""):
@@ -1419,21 +1537,31 @@ class TestExplainAndExportCaches(ReadysetBase):
 
     def test_export_redaction_password_matches_redaction_marker(self):
         # A marker introduced by URL redaction is not an original password;
-        # an existing marker inside a literal still is. Identical output
-        # must not flag a definition as changed.
+        # an existing marker inside a literal still is. Detecting the password
+        # must disable the definition even if replacement leaves identical text.
         cases = (
-            ("SELECT '[redacted]';", "SELECT '[redacted]';", False),
+            ("SELECT '[redacted]';", "SELECT '[redacted]';", True),
             ('SELECT "[redacted]";', "SELECT '[redacted]';", True),
             ("SELECT 'prefix[redacted]suffix';", "SELECT '[redacted]';", True),
             ("SELECT 'mysql://u:p@h';", "SELECT 'mysql://u:[redacted]@h';", True),
             ("SELECT 'mysql://u:[redacted]@h';", "SELECT '[redacted]';", True),
             ("SELECT 'mysql://u:p@h/[redacted]';", "SELECT '[redacted]';", True),
+            ("SELECT 1 /* [redacted] */;", "SELECT 1 /* [redacted] */;", True),
+            ("SELECT `[redacted]`;", "SELECT `[redacted]`;", False),
             ("SELECT 'unrelated';", "SELECT 'unrelated';", False),
         )
         for sql, expected, changed in cases:
             with self.subTest(sql=sql):
                 self.assertEqual(readyset._redact_export_sql(sql, dbops.REDACTED),
                                  (expected, changed))
+                conn = FakeCacheExport()
+                conn.password = dbops.REDACTED
+                conn.definition = sql
+                result = readyset.export_caches(conn)
+                statement = "-- " + expected if changed else expected
+                self.assertEqual(result["caches"][0]["statement"], statement)
+                self.assertEqual(readyset._EXPORT_REDACTED_COMMENT in result["sql"], changed)
+                self.assertEqual(conn.writes, [])
 
     def test_redacted_export_comments_every_line_in_sql_and_structured_items(self):
         class MultilineExportConn(FakeReadyset):
