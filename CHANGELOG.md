@@ -50,6 +50,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue on Windows where another program on the same computer could open the workspace's local port too. The workspace now keeps that port to itself.
 - Fixed an issue where a **Readyset** cache export could contain extra statements or `mysql` client commands supplied by the server, which would run when the file was loaded. Only a single `CREATE CACHE` statement now stays runnable; anything else is commented out.
 - Fixed an issue where database URL passwords and the connection password could appear unredacted in **Readyset** cached or proxied queries, table errors, cacheability notes, `EXPLAIN CREATE CACHE` results, exported cache definitions, and connection error messages. Those fields are now redacted before display or export, and redacted exported definitions are commented out with a warning.
+- Fixed an issue where a password containing `@` in a database URL could stay partly visible in status and error text, query text, and the **Audit log**. URL redaction now hides the whole password up to the final `@` before the host.
 
 ### Packaging notes
 

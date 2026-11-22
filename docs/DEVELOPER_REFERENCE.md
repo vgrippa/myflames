@@ -8852,8 +8852,10 @@ logs in.
   `dbops._redact_set_password` scan long/incomplete URL credentials and
   `SET PASSWORD` clauses linearly. URL matching starts at the beginning of a
   scheme-character run containing a letter, including numeric or punctuation
-  prefixes; parameter values allow quotes in userinfo while SQL/audit text
-  keeps quote boundaries. SET PASSWORD unions three linear scans of the same
+  prefixes, and scans forward once to the authority delimiter (`/` or
+  whitespace, plus quotes in SQL/audit text; parameter values allow quotes in
+  userinfo), ending the password at the last `@` seen so passwords containing
+  `@` stay fully redacted. SET PASSWORD unions three linear scans of the same
   input: the lexical walk from the start, an unbounded first-separator scan,
   and a keyword-anchored lexical walk, covering SQL diagnostics, unmatched
   preceding quotes and executable comments; the latter two scans leave empty

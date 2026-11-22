@@ -1556,6 +1556,97 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(dbops.redact('mysql://unfinished:mysql://user:secret@host'),
                          'mysql://unfinished:mysql://user:[redacted]@host')
 
+    def test_url_password_containing_at_redacts_to_last_authority_at(self):
+        scheme = 'mysql:' + '//'
+
+        # Case 1: single "@" inside password.
+        url1 = scheme + 'u' + ':' + 'Pr0d' + '@' + 'Tail99' + '@h/db'
+        expected1 = scheme + 'u:' + dbops.REDACTED + '@h/db'
+        clean1 = dbops.redact(url1)
+        self.assertEqual(clean1, expected1)
+        for piece in ('Pr0d', 'Tail99'):
+            self.assertNotIn(piece, clean1)
+
+        # Case 2: multiple "@" characters inside password, with host port and path.
+        url2 = scheme + 'admin' + ':' + 'a' + '@' + 'b' + '@' + 'c' + '@db.internal:3306/app'
+        expected2 = scheme + 'admin:' + dbops.REDACTED + '@db.internal:3306/app'
+        clean2 = dbops.redact(url2)
+        self.assertEqual(clean2, expected2)
+        for piece in ('a' + '@' + 'b', 'b' + '@' + 'c', '@' + 'c'):
+            self.assertNotIn(piece, clean2)
+
+        # Case 3: two URLs in one string; last-"@" stays inside each URL across whitespace and quotes.
+        first = scheme + 'u' + ':' + 'pw' + '@' + 'h1'
+        second = scheme + 'v' + ':' + 'p' + '@' + 'q' + '@h2/d'
+        expected_first = scheme + 'u:' + dbops.REDACTED + '@h1'
+        expected_second = scheme + 'v:' + dbops.REDACTED + '@h2/d'
+        clean3 = dbops.redact('x ' + first + ' y ' + second)
+        self.assertEqual(clean3, 'x ' + expected_first + ' y ' + expected_second)
+        for piece in ('pw', 'p' + '@' + 'q', '@' + 'q', 'p' + '@'):
+            self.assertNotIn(piece, clean3)
+        self.assertIn('@h1', clean3)
+        self.assertIn('@h2/d', clean3)
+        for quote in ("'", '"', '`'):
+            with self.subTest(quote=quote):
+                wrapped = quote + first + quote + ',' + quote + second + quote
+                clean_wrapped = dbops.redact(wrapped)
+                self.assertEqual(clean_wrapped,
+                                 quote + expected_first + quote + ',' + quote + expected_second + quote)
+                for piece in ('pw', 'p' + '@' + 'q', '@' + 'q', 'p' + '@'):
+                    self.assertNotIn(piece, clean_wrapped)
+
+        # Case 4: "@" in query string after "/" stays outside the authority.
+        url4 = scheme + 'u' + ':' + 'pw' + '@h/db?x=a@b'
+        clean4 = dbops.redact(url4)
+        self.assertEqual(clean4, scheme + 'u:' + dbops.REDACTED + '@h/db?x=a@b')
+        self.assertNotIn('pw', clean4)
+        self.assertIn('@h/db?x=a@b', clean4)
+
+        # Case 5: case-1 URL in single quotes, with "jdbc:" prefix, and with "2*" prefix.
+        for before, after in (("'", "'"), ('jdbc:', ''), ('2*', '')):
+            with self.subTest(before=before, after=after):
+                clean5 = dbops.redact(before + url1 + after)
+                self.assertEqual(clean5, before + expected1 + after)
+                for piece in ('Pr0d', 'Tail99'):
+                    self.assertNotIn(piece, clean5)
+        quoted_no_path = "'" + scheme + 'u' + ':' + 'Pr0d' + '@' + 'Tail99' + "@h'"
+        clean_quoted_no_path = dbops.redact(quoted_no_path)
+        self.assertEqual(clean_quoted_no_path, "'" + scheme + 'u:' + dbops.REDACTED + "@h'")
+        for piece in ('Pr0d', 'Tail99'):
+            self.assertNotIn(piece, clean_quoted_no_path)
+
+    def test_url_at_redaction_stays_linear_on_400kb_inputs(self):
+        for shape in ('repeated_urls', 'at_run'):
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "n = 400 * 1024\n"
+                    "scheme = 'mysql:' + '//'\n"
+                    "prefix = scheme + 'a' + ':'\n"
+                    "shape = " + repr(shape) + "\n"
+                    "if shape == 'repeated_urls':\n"
+                    "    unit = prefix + 'b' + '@' + 'h/'\n"
+                    "    value = (unit * (n // len(unit) + 1))[:n]\n"
+                    "else:\n"
+                    "    value = prefix + '@' * (n - len(prefix))\n"
+                    "assert len(value) == n, len(value)\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "if shape == 'repeated_urls':\n"
+                    "    assert (':' + 'b' + '@') not in clean\n"
+                    "    assert clean.startswith(prefix + dbops.REDACTED + '@h/')\n"
+                    "else:\n"
+                    "    assert clean == prefix + dbops.REDACTED + '@'\n"
+                    "print(elapsed)\n")
+                result = subprocess.run([sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('URL_AT_TIMING %s %.6fs' % (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 1)
+
     def test_hex_hashes(self):
         text = ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS "
                 "0x244124303041242A493F2F2725193549337A REQUIRE NONE")
