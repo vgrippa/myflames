@@ -886,8 +886,22 @@ line names the version, the uptime, the backends and hostgroups and how many
 backends are ONLINE; problems come first (a hostgroup in use with no ONLINE
 server, an active rule ProxySQL runs that sends to a hostgroup with no server;
 when what runs cannot be read the status is unknown, with the reason), then
-tiles and four tabs:
+tiles and five tabs:
 
+- **Topology**: the connection group bar above a multi-tier routing diagram
+  linking the connected ProxySQL Admin card (**This connection**) to any
+  **Readyset cache & mirror tier** (with QueryPilot routing mode, cache count,
+  upstream addresses and **Open Readyset**) and the **MySQL & MariaDB backend
+  tier** (with hostgroup and roles, cluster badges, **Open Cluster** when a
+  backend belongs to a cluster, and **Open Replication**). Links animate only
+  when a tier has a runtime `ONLINE` row outside a monitor's `offline` hostgroup
+  and stop with reduced motion (`OFFLINE_HARD` backends draw detached,
+  `OFFLINE_SOFT`, `SHUNNED` variants and offline-hostgroup rows stay stopped
+  while a shunned writer notes `standby ONLINE` when its backup writer is
+  `ONLINE` in runtime, and configuration-only or unreported rows read **Not
+  read**); selecting a backend card opens its inspector with its runtime, pool,
+  configuration and changes, and cards matched by the backend to a saved
+  connection in the group offer **Use `<connection>`**.
 - **Servers**: each backend as ProxySQL runs it (runtime), with its hostgroup,
   its role in a Galera, Group Replication, replication or Aurora monitor's
   hostgroups, status (with the shared status dot), weight, connections in use and free, connection errors
