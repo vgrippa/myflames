@@ -24,7 +24,7 @@ const group = value => page.click(`${view} [aria-label="Error log grouping"] but
 const rowCount = () => page.$$eval(rows, els => els.length);
 const filter = async value => {
   const selector = `${view} input[aria-label="Filter error log"]`;
-  await page.click(selector, { clickCount: 3 });
+  await page.click(selector, { count: 3 });
   await page.keyboard.press("Backspace");
   if (value) await page.type(selector, value);
 };

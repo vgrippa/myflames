@@ -41,7 +41,7 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
     }, text);
     const input = handle.asElement();
     assert.ok(input, `input for ${text}`);
-    await input.click({ clickCount: 3 });
+    await input.click({ count: 3 });
     await page.keyboard.press('Backspace');
     await input.type(value);
   }

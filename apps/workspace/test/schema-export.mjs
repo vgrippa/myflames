@@ -155,7 +155,7 @@ try {
   await page.waitForFunction((s) => /CREATE DATABASE `xp_src`/.test(document.querySelector(`${s} .schema-script`)?.textContent || ""), {}, sheet);
   assert.equal(sent("/api/schema-versions/export-sql").at(-1).create_database, true);
   // Another name: applied on Enter, views are written for it.
-  await page.click(`${sheet} #schema-export-name`, { clickCount: 3 });
+  await page.click(`${sheet} #schema-export-name`, { count: 3 });
   await page.type(`${sheet} #schema-export-name`, "copy");
   await page.keyboard.press("Enter");
   await page.waitForFunction((s) => /USE `copy`;/.test(document.querySelector(`${s} .schema-script`)?.textContent || ""), {}, sheet);

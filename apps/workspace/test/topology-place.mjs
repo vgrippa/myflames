@@ -602,7 +602,7 @@ try {
   await page.type(".topology-place .drift-search", "max_conn");
   await page.waitForFunction(() => !document.querySelector('.topology-place tr[data-row-key="server_id"]'));
   assert.ok(await paramRow("max_connections"), "the search keeps matching rows");
-  await page.click(".topology-place .drift-search", { clickCount: 3 });
+  await page.click(".topology-place .drift-search", { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForSelector('.topology-place tr[data-row-key="server_id"]', { visible: true });
 
@@ -1269,7 +1269,7 @@ try {
   assert.match(await sheetText(), /This server now \(SET GLOBAL\)/);
   assert.match(await sheetText(), /Now and after restart \(SET PERSIST\)/);
   assert.match(await sheetText(), /After restart only \(SET PERSIST_ONLY\)/);
-  await page.click(`${sheetSel} .rolling-field input`, { clickCount: 3 });
+  await page.click(`${sheetSel} .rolling-field input`, { count: 3 });
   await page.type(`${sheetSel} .rolling-field input`, "400");
   assert.deepEqual(await tickOf("db-1"), { checked: true, disabled: false }, "editing the value keeps a differing member ticked");
 

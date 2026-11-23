@@ -321,7 +321,7 @@ async function stage(name, value) {
   await page.waitForSelector(input(name));
   if (await page.$eval(input(name), e => e.getAttribute("role") === "switch")) { await page.click(input(name)); return; }
   if (await page.$eval(input(name), e => e.tagName === "SELECT")) { await page.select(input(name), value); return; }
-  await page.click(input(name), { clickCount: 3 }); await page.keyboard.press("Backspace"); await page.type(input(name), value);
+  await page.click(input(name), { count: 3 }); await page.keyboard.press("Backspace"); await page.type(input(name), value);
 }
 async function review(count) {
   await pendingCount(count);
@@ -358,7 +358,7 @@ const audit = () =>
 const statement = () => page.$eval(`${single} .variable-statement`, (e) => e.textContent).catch(() => "");
 async function setValue(name, value) {
   const input = `${single} #variable-value-${name}`;
-  await page.click(input, { clickCount: 3 });
+  await page.click(input, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(input, value);
 }
@@ -573,7 +573,7 @@ try {
   await search("sql_mode");
   await page.click(`${input("sql_mode")} .set-value-as-text`);
   await page.waitForSelector(`${input("sql_mode")}.variable-input`);
-  await page.click(`${input("sql_mode")}.variable-input`, { clickCount: 3 });
+  await page.click(`${input("sql_mode")}.variable-input`, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(`${input("sql_mode")}.variable-input`, "NO_ZERO_DATE");
   await review(1);

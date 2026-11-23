@@ -106,7 +106,7 @@ export const SCENARIOS = [
       await (await byText("Add connection")(page)).click();
       await pause(400);
       const name = await waitVisible(page, '.connection-panel .connection-fields input');
-      await name.click({ clickCount: 3 });
+      await name.click({ count: 3 });
       await name.type("Audit server");
     },
     target: byText("Save connection"),

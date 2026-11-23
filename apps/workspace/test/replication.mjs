@@ -419,7 +419,7 @@ try {
   await page.click(`${sheet} .ops-loop-options label:first-of-type input`);
   assert.equal(await page.$eval(confirmButton, (e) => e.disabled), false);
   const skipsField = `${sheet} .ops-loop-options label:nth-of-type(4) input`;
-  await page.click(skipsField, { clickCount: 3 });
+  await page.click(skipsField, { count: 3 });
   await page.keyboard.press("Backspace");
   assert.equal(await page.$eval(confirmButton, (e) => e.disabled), true, "the cap is required");
   await page.type(skipsField, "2");

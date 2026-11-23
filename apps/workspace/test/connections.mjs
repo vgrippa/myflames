@@ -267,7 +267,7 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
   // A new form has no user yet, so the name starts as the host.
   assert.equal(await nameField.evaluate(e => e.value), '127.0.0.1');
   const host = await field('Host');
-  await host.click({ clickCount: 3 });
+  await host.click({ count: 3 });
   await host.type('  10.0.0.5:3307 ');
   await page.keyboard.press('Tab');
   await page.waitForFunction(() => /Moved the port from Host/.test(document.querySelector('.connection-panel .connections-status')?.textContent || ''));
@@ -275,17 +275,17 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
   assert.equal(await (await field('Port')).evaluate(e => e.value), '3307');
   assert.equal(await nameField.evaluate(e => e.value), '10.0.0.5:3307');
   const userField = await field('User');
-  await userField.click({ clickCount: 3 });
+  await userField.click({ count: 3 });
   await userField.type('app');
   assert.equal(await nameField.evaluate(e => e.value), 'app@10.0.0.5:3307');
   const port = await field('Port');
-  await port.click({ clickCount: 3 });
+  await port.click({ count: 3 });
   await port.type('3306');
   assert.equal(await nameField.evaluate(e => e.value), 'app@10.0.0.5');
   // Editing Name stops auto-fill; duplicate names (trimmed, case-insensitive) show an inline error and refuse Save.
-  await nameField.click({ clickCount: 3 });
+  await nameField.click({ count: 3 });
   await nameField.type('  connection 05  ');
-  await userField.click({ clickCount: 3 });
+  await userField.click({ count: 3 });
   await userField.type('dba');
   assert.equal(await nameField.evaluate(e => e.value), '  connection 05  ', 'editing Name stops auto-fill');
   assert.equal(await page.$eval('#connection-name-problem', e => e.textContent.trim()), 'A saved connection named Connection 05 already exists.');
@@ -325,10 +325,10 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
   assert.match(await page.$eval('#connection-schema-hint', e => e.textContent), /Could not read the database list \(Access denied for SHOW DATABASES\)/);
   assert.ok(await page.$('.connection-panel input[aria-label="Default database"]'));
   testReply = null;
-  await host.click({ clickCount: 3 });
+  await host.click({ count: 3 });
   await host.type('db 1.example');
   assert.match(await page.$eval('#connection-host-problem', e => e.textContent), /cannot contain spaces/);
-  await port.click({ clickCount: 3 });
+  await port.click({ count: 3 });
   await page.keyboard.press('Backspace');
   assert.match(await page.$eval('#connection-port-problem', e => e.textContent), /port from 1 to 65535/);
   await exact('.connection-panel button', 'Use without saving');
@@ -340,10 +340,10 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
   await page.waitForSelector('#connection-form-title');
   assert.equal(await page.$('#connection-name-problem'), null, 'editing an existing connection may keep its own name');
   const editName = await field('Connection name');
-  await editName.click({ clickCount: 3 });
+  await editName.click({ count: 3 });
   await editName.type('connection 05');
   assert.equal(await page.$('#connection-name-problem'), null, 'case-insensitive match with its own name is allowed');
-  await editName.click({ clickCount: 3 });
+  await editName.click({ count: 3 });
   await editName.type('connection 06');
   assert.equal(await page.$eval('#connection-name-problem', e => e.textContent.trim()), 'A saved connection named Connection 06 already exists.');
   await page.keyboard.press('Escape');

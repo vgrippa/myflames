@@ -178,7 +178,7 @@ try {
   await page.keyboard.press('ArrowLeft'); assert.equal(await width(),208);
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('End'); assert.equal(await width(),208);
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('Home'); assert.equal(await width(),208);
-  await drag(56); await page.click('.sidebar-resizer',{clickCount:2}); assert.equal(await width(),208);
+  await drag(56); await page.click('.sidebar-resizer',{count: 2}); assert.equal(await width(),208);
   await drag(72); await stored('sidebar_width',280);
   await page.click('button[aria-label="Settings"]');
   await page.waitForSelector('.settings-page');
@@ -215,7 +215,7 @@ try {
   await page.waitForSelector('button[aria-label="Float the list of views"]');
   await page.waitForSelector('.health-panel .auto-refresh select');
   assert.equal(await page.$eval('.health-panel .auto-refresh select',e=>e.value),'30','Health control restores its preference');
-  await page.click('.sidebar-resizer',{clickCount:2});
+  await page.click('.sidebar-resizer',{count: 2});
   // A saved connection exposes Delete at the bottom of its edit form,
   // reproducing the Home control that the fixed footer used to cover.
   await page.evaluate(async () => {
@@ -322,7 +322,7 @@ try {
       await api({theme});
       await page.reload();
       await page.waitForSelector('.update-badge[data-phase="available"]');
-      await page.click('.sidebar-resizer',{clickCount:2});
+      await page.click('.sidebar-resizer',{count: 2});
       for (const sidebarWidth of [208,264,320]) {
         if (await width() !== sidebarWidth) await drag(sidebarWidth - await width());
         const row = await page.evaluate(() => {

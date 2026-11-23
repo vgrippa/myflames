@@ -141,20 +141,20 @@ try {
 
   // A value the server would refuse is shown at once, and Use sends nothing.
   const sshHost = await page.$('.connection-panel details[data-section=ssh] input');
-  await sshHost.click({ clickCount: 3 });
+  await sshHost.click({ count: 3 });
   await sshHost.type('-oProxyCommand=x');
   await page.waitForSelector('.connection-panel details[data-section=ssh] .form-error');
   assert.match(await page.$eval('.connection-panel details[data-section=ssh] .form-error', el => el.textContent), /not starting with a hyphen/);
   assert.equal(await page.$eval('.connection-panel details[data-section=ssh] input', el => el.getAttribute('aria-invalid')), 'true');
 
   // Clearing the SSH host makes it a direct connection again; Save stores that.
-  await sshHost.click({ clickCount: 3 });
+  await sshHost.click({ count: 3 });
   await page.keyboard.press('Backspace');
   const user = (await page.$$('.connection-panel details[data-section=ssh] input'))[2];
-  await user.click({ clickCount: 3 });
+  await user.click({ count: 3 });
   await page.keyboard.press('Backspace');
   const port = (await page.$$('.connection-panel details[data-section=ssh] input'))[1];
-  await port.click({ clickCount: 3 });
+  await port.click({ count: 3 });
   await page.keyboard.press('Backspace');
   assert.equal(await page.$('.connection-panel details[data-section=ssh] .form-error'), null);
   await page.locator('.connection-panel button ::-p-text(Save connection)').click();

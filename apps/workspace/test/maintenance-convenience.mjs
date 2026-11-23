@@ -106,7 +106,7 @@ try {
  // The kit's action line reports the failure under the field (role=status, warning icon).
  await page.waitForSelector('.ops-folder-row .action-status[data-phase=failed]');
  assert.match(await h.text('.ops-folder-row .action-status[data-phase=failed]'),/enter the output path/);
- const input=await page.$('.ops-folder-input input');await input.click({clickCount:3});await page.keyboard.press('Backspace');await input.type('/tmp/manual-backup');
+ const input=await page.$('.ops-folder-input input');await input.click({count: 3});await page.keyboard.press('Backspace');await input.type('/tmp/manual-backup');
  assert.equal(await field(),'/tmp/manual-backup');
  assert.equal(await page.$('.ops-folder-row .action-status[data-phase=failed]'),null,'typing a path clears the Browse failure');
  await page.click('.ops-dump-options summary');

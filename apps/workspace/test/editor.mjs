@@ -787,7 +787,7 @@ try {
   assert.equal(await disabledConfirm(), true);
   await page.type(targetInput, "camel");
   assert.equal(await disabledConfirm(), true);
-  await page.click(targetInput, { clickCount: 3 });
+  await page.click(targetInput, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(targetInput, "Camel");
   assert.equal(await disabledConfirm(), false);
@@ -1008,11 +1008,11 @@ try {
   assert.equal(calls("/api/live/catalog").at(-1).prefix, "archive");
   assert.equal(calls("/api/live/catalog").at(-1).after, null, "a new prefix starts at the first page");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 1);
-  await page.click(prefixField, { clickCount: 3 });
+  await page.click(prefixField, { count: 3 });
   await page.keyboard.type("%_");
   await treeRow("table", "%_literal");
   assert.equal(calls("/api/live/catalog").at(-1).prefix, "%_");
-  await page.click(prefixField, { clickCount: 3 });
+  await page.click(prefixField, { count: 3 });
   await page.keyboard.press("Backspace");
   await treeRow("table", "users");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "clearing the prefix restores all loaded pages");

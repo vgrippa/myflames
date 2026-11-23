@@ -173,7 +173,7 @@ const connect = async (name) => {
 async function field(label, value) {
   const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label}), ${view} .form-row > label ::-p-text(${label})`);
   const input = await handle.evaluateHandle((span) => span.closest("label").control || span.closest("label").querySelector("input"));
-  await input.click({ clickCount: 3 });
+  await input.click({ count: 3 });
   await page.keyboard.press("Backspace");
   if (value) await input.type(value);
 }

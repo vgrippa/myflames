@@ -111,7 +111,7 @@ try {
   await page.click("#tables-schemas-panel .perf-picker-list input");
   assert.equal(await page.$eval("#tables-schemas-panel .perf-picker-all input", (e) => e.checked), false);
   // A name the list does not have can be typed and used (Enter).
-  await page.click("#tables-schemas-panel .perf-picker-search", { clickCount: 3 });
+  await page.click("#tables-schemas-panel .perf-picker-search", { count: 3 });
   await page.keyboard.type("archive_db");
   assert.match(await text("#tables-schemas-panel .perf-picker-foot"), /Use “archive_db”/);
   await page.keyboard.press("Enter");
@@ -198,7 +198,7 @@ try {
     throw new Error('Filter tables "uk": expected every rendered table name to include "uk" within 5000 ms');
   });
   assert.ok((await rows(missingLabel)).every((t) => t.includes("uk")));
-  await page.click(`${view} input[aria-label="Filter tables"]`, { clickCount: 3 });
+  await page.click(`${view} input[aria-label="Filter tables"]`, { count: 3 });
   await page.keyboard.press("Backspace");
 
   // Row details in the inspector: why, the NULL check and the fix to copy, the caveat.
@@ -558,7 +558,7 @@ try {
   await page.type('input[aria-label="Minimum fragmentation percent"]', "90");
   await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 2);
   assert.deepEqual(await rows(freeLabel), ["analytics.hourly", "s.`name.t.`name"]);
-  await page.click('input[aria-label="Minimum fragmentation percent"]', { clickCount: 3 });
+  await page.click('input[aria-label="Minimum fragmentation percent"]', { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 3);
   const quoted = "`s.``name`.`t.``name`";

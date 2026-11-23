@@ -584,7 +584,7 @@ try {
   await page.$eval(".account-typed input", e => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; setter.call(e, ""); e.dispatchEvent(new Event("input", { bubbles: true })); });
   await page.type(".account-typed input", nextTyped);
   const readsBeforeApply = privilegeReads;
-  await page.click(".account-review .danger-solid", { clickCount: 2 });
+  await page.click(".account-review .danger-solid", { count: 2 });
   await page.waitForSelector('[aria-label="Account change result"]');
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), 1); assert.ok(privilegeReads > readsBeforeApply);

@@ -300,7 +300,7 @@ try {
     throw new Error('Filter statements "WHERE `id`": expected only statement 2 within 5000 ms');
   });
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.rank)), ["2"]);
-  await page.click(`${view} input[aria-label="Filter statements"]`, { clickCount: 3 });
+  await page.click(`${view} input[aria-label="Filter statements"]`, { count: 3 });
   await page.keyboard.press("Backspace");
 
   await page.select(`${view} .view-toolbar select`, "avg");

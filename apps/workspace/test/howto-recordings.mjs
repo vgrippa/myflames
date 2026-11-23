@@ -860,7 +860,7 @@ const GUIDES = [
     box = await (await page.waitForSelector(".sidebar-resizer")).boundingBox();
     await rec.caption("double-click to reset");
     const p = resizerPoint();
-    await page.mouse.click(p.x, p.y, { clickCount: 2 });
+    await page.mouse.click(p.x, p.y, { count: 2 });
     await page.waitForFunction(() => document.querySelector(".sidebar-resizer")?.getAttribute("aria-valuenow") === "208");
     await rec.caption("");
     await rec.hold(2200);
@@ -879,7 +879,7 @@ const GUIDES = [
     await page.waitForSelector(".table-data-panel input");
     await rec.hold(2500);
     await rec.caption("change new to paid");
-    await page.click('input[aria-label="status for r1"]', { clickCount: 3 });
+    await page.click('input[aria-label="status for r1"]', { count: 3 });
     await page.keyboard.type("paid", { delay: 80 });
     await rec.hold(1200);
     await rec.caption("Review 1 change");
@@ -1893,7 +1893,7 @@ GUIDES.push(
     if (await page.$eval(input, (e) => e.getAttribute("role") === "switch" || e.tagName === "SELECT")) {
       await page.click(input);
     } else {
-      await page.click(input, { clickCount: 3 });
+      await page.click(input, { count: 3 });
       await page.keyboard.type("200", { delay: 90 });
     }
     await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="config"] .toolbar-controls button')]
@@ -2026,7 +2026,7 @@ GUIDES.push(
     await rec.caption("name the group");
     // The sheet pre-fills the topology's suggested name (mfcluster here);
     // select it outright, then type the guide's name over it.
-    await page.click(".connection-group-field input", { clickCount: 3 });
+    await page.click(".connection-group-field input", { count: 3 });
     await page.keyboard.type("shop-pipeline", { delay: 70 });
     // The Create sheet groups the connection in use; ticking other saved
     // connections is the Review sheet's flow (the bar's Review… state).
@@ -2084,7 +2084,7 @@ GUIDES.push(
     await page.click('dialog.group-editor-sheet .group-editor-item[data-profile-id="p-ic-3"] input[type="checkbox"]');
     await rec.hold(1300);
     await rec.caption("rename the group");
-    await page.click('dialog.group-editor-sheet input[aria-label="Group name"]', { clickCount: 3 });
+    await page.click('dialog.group-editor-sheet input[aria-label="Group name"]', { count: 3 });
     await page.keyboard.type("mf-ic-eu", { delay: 70 });
     await rec.hold(1000);
     await rec.caption("Save group");

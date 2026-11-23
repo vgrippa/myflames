@@ -25,7 +25,7 @@
     "package:win": "electron-builder --win --x64 --publish never --config electron-builder.json"
   },
   "devDependencies": {
-    "electron": "44.8.0",
-    "electron-builder": "26.15.3"
+    "electron": "44.11.5",
+    "electron-builder": "26.18.0"
   }
 }

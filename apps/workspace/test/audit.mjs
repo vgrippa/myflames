@@ -313,7 +313,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.click(`${view} .audit-retention button`);
   await page.waitForSelector('[role=dialog][aria-label="Keep audit records"]');
   const days = '[role=dialog][aria-label="Keep audit records"] input';
-  await page.click(days, { clickCount: 3 });
+  await page.click(days, { count: 3 });
   await page.keyboard.type("30");
   await page.click('[role=dialog][aria-label="Keep audit records"] button[type=submit]');
   await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Keep audit records"]'));
