@@ -3338,6 +3338,13 @@ def sensitive(name):
 
 
 _STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
+_STRING_NO_BACKSLASH = r"""(?:'(?:''|[^'])*(?:'|\Z)|"(?:""|[^"])*(?:"|\Z))"""
+# Stored text includes rejected SQL too. Hide introduced/encoded literals
+# even where that credential clause would reject their spelling on a server.
+# Escaped openers belong to dynamic SQL and need its enclosing-string end.
+_SECRET_VALUE = (r"(?:0[xb][\w]+|(?:(?:[XBN]|_[\w]+)\s*)?(?:" + _STRING +
+                 r"|\\['\"])(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?)")
+_SECRET_VALUE_OPENER = re.compile(r"(?:(?:[XBN]|_[\w]+)\s*)?(\\?)(['\"])", re.I)
 # A bounded inventory also protects quoted SQL and server echoes, where a
 # whole-statement lexer cannot know which quote belongs to the surrounding text.
 # Recognize each quoted component as well as a quoted dotted inventory name.
@@ -3348,18 +3355,21 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     for name in sorted(_SECRET_VARIABLES)) + r")"
 _SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
-    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _STRING + r"|\\['\"])", re.I | re.S)
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _SECRET_VALUE + r")", re.I | re.S)
 # Keep original enclosing-string boundaries, including whether the final
 # quote closed the string or was escaped. The ordinary literal fallback
 # cannot distinguish a doubled quote in dynamic SQL from an empty value.
 _SECRET_LITERAL_CONTEXT = re.compile(
     r"'(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"
     r'|"(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)')
+_SECRET_LITERAL_CONTEXT_NO_BACKSLASH = re.compile(
+    r"'(?:''|[^'])*(?P<single_end>'|\Z)"
+    r'|"(?:""|[^"])*(?P<double_end>"|\Z)')
 _SECRET_CONCAT_PREFIX = re.compile(
     r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
 _SECRET_CONCAT_QUOTE = re.compile(
     r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
-_SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
+_SECRET_PATTERNS = tuple(re.compile(p + "(" + _SECRET_VALUE + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
     r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
@@ -3367,19 +3377,29 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
     # PASSWORD('x'), OLD_PASSWORD('x').
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
-    # Bounded fallback for diagnostics that quote a whole SET PASSWORD statement.
-    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
+    # Skip quoted account names before recognizing an assignment. Otherwise
+    # the b in FOR 'a=b'@'%' could be mistaken for an introduced bit literal.
+    r"(\bSET\s+PASSWORD\b(?:" + _STRING + r"|`(?:``|[^`])*(?:`|\Z)|[^=;'\"`]){0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
 )) + (
-    # Keep inventory substitutions in order: changing quote boundaries can
-    # affect the following RANDOM PASSWORD / REPLACE fallback.
     _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
     re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(" +
-               _STRING + r")", re.I | re.S),
+               _SECRET_VALUE + r")", re.I | re.S),
 )
+# Retain every old diagnostic match, including malformed quoted accounts.
+# Only the new introduced-literal alternative needs the stricter account walk.
+_SET_PASSWORD_LEGACY_LITERAL = re.compile(
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)(" + _STRING + r")", re.I | re.S)
+_SECRET_PATTERNS_NO_BACKSLASH = {
+    # A backslash before an opener is only an escaped dynamic quote in the
+    # escaping reading; treating it as an opener in the other mode invents a
+    # value with no end and can consume subsequent, independent statements.
+    pattern: re.compile(pattern.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
+                        .replace(r"|\\['\"]", ''), pattern.flags)
+    for pattern in _SECRET_PATTERNS + (_SET_PASSWORD_LEGACY_LITERAL,)}
 # Each keyword is required by its corresponding pattern, independent of SQL
 # context. REPLACE must not require RANDOM: earlier substitutions supply the
 # alternative [redacted] prefix. Unicode inputs always take the full path.
@@ -3431,6 +3451,12 @@ _SET_VARIABLE_TOKEN = (
 _SET_VARIABLE_COMPONENT_PART = re.compile(_SET_VARIABLE_COMPONENT, re.I)
 _SET_VARIABLE_PART = re.compile(_SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_EXECUTABLE_PART = re.compile(r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN, re.I)
+_SET_VARIABLE_COMPONENT_NO_BACKSLASH = re.compile(
+    _SET_VARIABLE_COMPONENT.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
+_SET_VARIABLE_PART_NO_BACKSLASH = re.compile(
+    _SET_VARIABLE_TOKEN.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
+_SET_VARIABLE_EXECUTABLE_NO_BACKSLASH = re.compile(
+    r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
 _SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
 _SET_VARIABLE_DELIMITER = re.compile(r"(?P<delimiter>[\s\S]+)")
 _SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
@@ -3453,6 +3479,12 @@ _SET_ALIAS_VALUE = re.compile(
 # and line breaks inside it are not SQL quote or message boundaries.
 _WRONG_VALUE_FOR_VAR = re.compile(
     r"\bVariable '([^'\r\n]{1,64})' can't be set to the value of '", re.I)
+# Match the same client code spelling as error_code / connection_error_text,
+# including wrappers and the client's optional SQLSTATE / at-line suffix.
+_CLIENT_ERROR_CODE = re.compile(r"\bERROR\s+(\d{3,5})\b", re.I)
+_ERROR_QUOTED_NAME = re.compile(r"(['\"`])([^'\"`\r\n]{1,64})\1")
+# Apostrophes in prose (can't, Italian puo') are not value openers.
+_ERROR_VALUE_OPEN = re.compile(r"(?<!\w)['\"`]")
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3503,7 +3535,7 @@ def _URL_SECRET(text, quoted=True):
             yield colon + 1, last_at
 
 
-def _secret_variable_tokens(text):
+def _secret_variable_tokens(text, backslash_escapes=True):
     """Scan redaction tokens, recognizing closers only in executable bodies.
 
     Only the shared client splitter can establish custom statement endings.
@@ -3528,7 +3560,10 @@ def _secret_variable_tokens(text):
     cursor, executable = 0, False
     while cursor < len(text):
         limit = boundaries[boundary][0] if boundary < len(boundaries) else len(text)
-        pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
+        if backslash_escapes:
+            pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
+        else:
+            pattern = _SET_VARIABLE_EXECUTABLE_NO_BACKSLASH if executable else _SET_VARIABLE_PART_NO_BACKSLASH
         token = pattern.search(text, cursor, limit)
         if token is None:
             if boundary < len(boundaries):
@@ -3567,19 +3602,21 @@ def _may_have_secret_variables(text):
             or _SECRET_VARIABLE_FRAGMENT.search(folded) is not None)
 
 
-def _redact_secret_variables(text):
-    """Redact SET values from the shared inventory in one token pass.
+def _secret_variable_spans(text, backslash_escapes=True):
+    """Find SET values from the shared inventory in one quote-mode reading.
 
     Top-level clauses end a value; commas and later SET statements start new
     assignments. Parentheses, strings and ordinary comments protect separators.
     Executable-comment markers are transparent to SQL state. Track the last
     value token to leave a trailing closing marker and whitespace intact.
     """
-    parts, kept, value_start, value_end = [], 0, None, None
+    value_start, value_end = None, None
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
     insert, value_can_end = False, False
     version_tail_at = None
-    tokens, components = _secret_variable_tokens(text), iter(())
+    tokens, components = _secret_variable_tokens(text, backslash_escapes), iter(())
+    component_pattern = (_SET_VARIABLE_COMPONENT_PART if backslash_escapes
+                         else _SET_VARIABLE_COMPONENT_NO_BACKSLASH)
     while True:
         token = next(components, None)
         if token is None:
@@ -3590,7 +3627,7 @@ def _redact_secret_variables(text):
             # Only a secret RHS needs atomic variables. Elsewhere preserve
             # the old conservative SET recognition in malformed text, and
             # the existing LHS normalization of @@ scopes and quoted names.
-            components = _SET_VARIABLE_COMPONENT_PART.finditer(text, token.start(), token.end())
+            components = component_pattern.finditer(text, token.start(), token.end())
             token = next(components)
         value = ';' if token.lastgroup == 'delimiter' else token.group()
         if token.lastgroup == 'executable':
@@ -3629,8 +3666,8 @@ def _redact_secret_variables(text):
                 and (restart or clause_end)):
             body = text[value_start:value_end]
             quote = body[0] if body[:1] in ("'", '"') else ''
-            parts.extend((text[kept:value_start], quote, REDACTED, quote))
-            kept, value_start, value_end = value_end, None, None
+            yield value_start, value_end, quote
+            value_start, value_end = None, None
             in_set, name_parts = False, None
             insert = False
         if awaiting_value:
@@ -3657,8 +3694,8 @@ def _redact_secret_variables(text):
             if value_start is not None:
                 body = text[value_start:value_end]
                 quote = body[0] if body[:1] in ("'", '"') else ''
-                parts.extend((text[kept:value_start], quote, REDACTED, quote))
-                kept, value_start, value_end = value_end, None, None
+                yield value_start, value_end, quote
+                value_start, value_end = None, None
             if value == ';':
                 in_set, depth = False, 0
                 insert = False
@@ -3680,9 +3717,43 @@ def _redact_secret_variables(text):
     if value_start is not None:
         body = text[value_start:value_end]
         quote = body[0] if body[:1] in ("'", '"') else ''
-        parts.extend((text[kept:value_start], quote, REDACTED, quote))
-        kept = value_end
+        yield value_start, value_end, quote
+
+
+def _redact_spans(text, spans):
+    """Replace ordered spans, hiding the union before changing any offsets."""
+    parts, kept, pending = [], 0, None
+    for start, end, quote in spans:
+        if pending is not None and start < pending[1]:
+            old_start, old_end, old_quote = pending
+            # An enclosing-string interpretation can omit a quote that the
+            # standalone-literal interpretation would otherwise insert.
+            pending = (old_start, max(old_end, end),
+                       min(old_quote, quote) if start == old_start else old_quote)
+            continue
+        if pending is not None:
+            old_start, old_end, old_quote = pending
+            parts.extend((text[kept:old_start], old_quote, REDACTED, old_quote))
+            kept = old_end
+        pending = start, end, quote
+    if pending is not None:
+        start, end, quote = pending
+        parts.extend((text[kept:start], quote, REDACTED, quote))
+        kept = end
     return ''.join(parts) + text[kept:] if parts else text
+
+
+def _redact_secret_variables(text):
+    """Hide SET secrets under both possible NO_BACKSLASH_ESCAPES readings.
+
+    Both scans read the original text: a substitution in one mode must not
+    remove an assignment or change the quote boundaries seen by the other.
+    Inputs without backslashes need just the original linear scan.
+    """
+    spans = _secret_variable_spans(text)
+    if '\\' in text:
+        spans = heapq.merge(spans, _secret_variable_spans(text, False))
+    return _redact_spans(text, spans)
 
 
 def _redact_literal(match):
@@ -3691,7 +3762,7 @@ def _redact_literal(match):
     return match.group(1) + quote + REDACTED + quote
 
 
-def _redact_secret_variable_literals(text, pattern):
+def _secret_literal_spans(text, pattern, backslash_escapes=True):
     """Extend ambiguous dynamic values through their original enclosing string.
 
     Ordered scans preserve the diagnostic fallback's entire hidden span.
@@ -3699,9 +3770,10 @@ def _redact_secret_variable_literals(text, pattern):
     QUOTE(@value)) statement: its closing quote is not a value opener. An
     arbitrary diagnostic must still take the conservative fallback.
     """
-    strings = _SECRET_LITERAL_CONTEXT.finditer(text)
+    context = _SECRET_LITERAL_CONTEXT if backslash_escapes else _SECRET_LITERAL_CONTEXT_NO_BACKSLASH
+    strings = context.finditer(text)
     enclosing, context_start = next(strings, None), 0
-    parts, kept, cursor = [], 0, 0
+    cursor = 0
     while cursor < len(text):
         match = pattern.search(text, cursor)
         if match is None:
@@ -3710,7 +3782,9 @@ def _redact_secret_variable_literals(text, pattern):
         while enclosing is not None and enclosing.end() <= match.start():
             context_start = enclosing.end()
             enclosing = next(strings, None)
-        quote = text[start] if text[start] in ("'", '"') else ''
+        opener = _SECRET_VALUE_OPENER.match(text, start, end)
+        escaped = opener is not None and bool(opener.group(1))
+        quote = '' if escaped else opener.group(2) if opener is not None else "'"
         if enclosing is not None and enclosing.start() < match.start():
             outer_quote = text[enclosing.start()]
             closed = enclosing.group(enclosing.lastgroup) == outer_quote
@@ -3722,17 +3796,38 @@ def _redact_secret_variable_literals(text, pattern):
                 # that match may have swallowed a later real assignment.
                 cursor = enclosing.end()
                 continue
-            if start < limit:
+            inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
+                                 _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
+            # Different inner/outer quotes have an unambiguous value end.
+            # Keep diagnostic punctuation after it, while preserving the
+            # inventory fallback's older conservative enclosing-string rule.
+            if start < limit and (inventory_pattern or escaped or quote == outer_quote):
                 end = max(end, limit)
                 if quote == outer_quote:
                     quote = ''
-        if not quote and text[start] == '\\' and end == match.end():
+        if escaped and end == match.end():
             # An escaped opener without a known enclosing string has no
             # trustworthy end. Never leave its trailing value visible.
             end = len(text)
-        parts.extend((text[kept:start], quote, REDACTED, quote))
-        kept = cursor = end
-    return ''.join(parts) + text[kept:] if parts else text
+        yield start, end, quote
+        cursor = end
+
+
+def _secret_literal_readings(text, pattern):
+    """Credential spans under both modes, before either reading changes text.
+
+    This also applies to account/replication patterns, preserving the enclosing
+    literal boundary for doubled and backslash-escaped dynamic SQL values.
+    """
+    spans = _secret_literal_spans(text, pattern)
+    if '\\' in text:
+        spans = heapq.merge(spans, _secret_literal_spans(
+            text, _SECRET_PATTERNS_NO_BACKSLASH[pattern], False))
+    return spans
+
+
+def _redact_secret_variable_literals(text, pattern):
+    return _redact_spans(text, _secret_literal_readings(text, pattern))
 
 
 def _redact_variable_errors(text):
@@ -3752,6 +3847,33 @@ def _redact_variable_errors(text):
         if end < 0:
             end = limit
         parts.extend((text[kept:message.end()], REDACTED))
+        kept = end
+    text = ''.join(parts) + text[kept:] if parts else text
+    # The English fallback also handles diagnostics without an error code.
+    # Numbered messages cannot depend on lc_messages or the word "Variable".
+    # Values are printed verbatim, not SQL-escaped: hide from the first value
+    # opener through the last quote, including embedded quotes and newlines.
+    # Stop at the next client diagnostic, regardless of its error number.
+    messages = list(_CLIENT_ERROR_CODE.finditer(text))
+    parts, kept = [], 0
+    for index, message in enumerate(messages):
+        if message.group(1) != '1231':
+            continue
+        limit = messages[index + 1].start() if index + 1 < len(messages) else len(text)
+        name = _ERROR_QUOTED_NAME.search(text, message.end(), limit)
+        known_name = name is not None and sensitive(name.group(2))
+        start = name.end() if known_name else message.end()
+        opener = _ERROR_VALUE_OPEN.search(text, start, limit)
+        if opener is None:
+            continue
+        end = max(text.rfind(quote, opener.end(), limit) for quote in ("'", '"', '`'))
+        # An unknown name gives no trusted message structure. An odd quote
+        # count can be a raw embedded apostrophe or an unfinished final value;
+        # either way a last-quote guess could expose its trailing bytes.
+        if (not known_name or end < 0 or
+                any(text.count(quote, opener.start(), limit) % 2 for quote in ("'", '"', '`'))):
+            end = limit
+        parts.extend((text[kept:opener.end()], REDACTED))
         kept = end
     return ''.join(parts) + text[kept:] if parts else text
 
@@ -3872,21 +3994,37 @@ def redact(text, password=None, quoted=True):
     # Preserve Python re.I's non-ASCII equivalences by disabling all guards
     # on non-ASCII input, just as the inventory guard does.
     folded = text.lower() if text.isascii() else None
-    if folded is None or 'password' in folded and 'set' in folded:
-        text = _redact_set_password_all(text)
-    if folded is None or 'variable' in folded:
+    if folded is None or 'variable' in folded or '1231' in folded:
         text = _redact_variable_errors(text)
     inventory = _may_have_secret_variables(text)
+    scans = []
+    if '=' in text and (folded is None or 'password' in folded and 'set' in folded):
+        spans = heapq.merge(_set_password_lexical_spans(text),
+                            _set_password_separator_spans(text),
+                            _set_password_keyword_spans(text))
+        scans.append((start, end, text[start]) for start, end in spans)
+        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL))
     if inventory:
-        text = _redact_secret_variables(text)
+        scans.append(_secret_variable_spans(text))
+        if '\\' in text:
+            scans.append(_secret_variable_spans(text, False))
     for pattern, keyword in zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS):
         if pattern is _SECRET_VARIABLE_LITERAL:
             if inventory:
-                text = _redact_secret_variable_literals(text, pattern)
+                scans.append(_secret_literal_readings(text, pattern))
             continue
         if folded is not None and keyword is not None and keyword not in folded:
             continue
-        text = pattern.sub(_redact_literal, text)
+        if pattern is _SECRET_PATTERNS[3] and '=' not in text:
+            continue
+        scans.append(_secret_literal_readings(text, pattern))
+    # Every scan uses the original quote boundaries, so one replacement
+    # cannot hide a later pattern or shorten its other SQL-mode reading.
+    if scans:
+        text = _redact_spans(text, heapq.merge(*scans))
+    if folded is None or 'replace' in folded:
+        # A preceding credential now supplies the [redacted] REPLACE arm.
+        text = _redact_secret_variable_literals(text, _SECRET_PATTERNS[-1])
     parts, kept = [], 0
     if folded is None or '://' in folded:
         for start, end in _URL_SECRET(text, quoted=quoted):

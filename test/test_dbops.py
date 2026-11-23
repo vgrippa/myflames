@@ -1201,7 +1201,220 @@ SET_PASSWORD_REDACTION_CASES = (
 )
 
 
+# Each entry exercises a different credential clause, including the keyword
+# guards that make ordinary editor text inexpensive to scan.
+R352_CREDENTIAL_CLAUSES = (
+    ('identified_by', 'CREATE USER u IDENTIFIED BY ', ''),
+    ('identified_hash', 'CREATE USER u IDENTIFIED BY PASSWORD ', ''),
+    ('identified_as', 'ALTER USER u IDENTIFIED WITH auth_plugin AS ', ''),
+    ('via_using', 'ALTER USER u IDENTIFIED VIA auth_plugin USING ', ''),
+    ('with_using', 'ALTER USER u IDENTIFIED WITH auth_plugin USING ', ''),
+    ('via_password', 'ALTER USER u IDENTIFIED VIA auth_plugin USING PASSWORD(', ')'),
+    ('password_function', 'SELECT PASSWORD(', ')'),
+    ('old_password_function', 'SELECT OLD_PASSWORD(', ')'),
+    ('set_password', 'SET PASSWORD = ', ''),
+    ('named_set_password', 'SET PASSWORD FOR u = ', ''),
+    ('source_password', 'CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD = ', ''),
+    ('master_password', 'CHANGE MASTER TO MASTER_PASSWORD = ', ''),
+    ('report_password', 'SET GLOBAL report_password = ', ''),
+    ('password_option', 'CREATE SERVER s OPTIONS (PASSWORD ', ')'),
+    ('random_replace', 'ALTER USER u IDENTIFIED BY RANDOM PASSWORD REPLACE ', ''),
+    ('set_random_replace', 'SET PASSWORD TO RANDOM REPLACE ', ''),
+)
+
+
 class TestRedaction(unittest.TestCase):
+    def test_r352_secret_literals_cover_both_backslash_readings(self):
+        for names in (('wsrep_sst_auth', 's3_secret_key'),
+                      ('s3_secret_key', 'wsrep_sst_auth'),
+                      ('wsrep_sst_auth', 'wsrep_provider_options')):
+            for quote in ("'", '"'):
+                with self.subTest(names=names, quote=quote):
+                    raw = ('SET GLOBAL ' + names[0] + ' = ' + quote + 'mode-first\\' + quote +
+                           ', @@global.' + names[1] + ' = ' + quote + 'mode-second' + quote)
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('mode-first', clean)
+                    self.assertNotIn('mode-second', clean)
+                    self.assertIn('[redacted]', clean)
+        # With escaping the middle quote closes the string. With literal
+        # backslashes the adjacent quotes form an escaped quote instead.
+        for lead in ('SET GLOBAL ', 'echo '):
+            for quote in ("'", '"'):
+                with self.subTest(lead=lead, later_no_backslash_end=quote):
+                    raw = (lead + 'wsrep_sst_auth = ' + quote + 'mode-head\\' +
+                           quote * 2 + 'mode-tail' + quote + '; SELECT 37')
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('mode-head', clean)
+                    self.assertNotIn('mode-tail', clean)
+                    self.assertIn('[redacted]', clean)
+        ordinary = "SELECT 'it\\'s', 'ordinary'; SET SESSION max_execution_time = 1000"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_localized_wrong_value_errors_use_error_number(self):
+        # MySQL messages_to_clients.txt and MariaDB errmsg-utf8.txt use
+        # ASCII apostrophes for both German and Japanese ER_WRONG_VALUE_FOR_VAR.
+        messages = (
+            "Variable 'wsrep_sst_auth' kann nicht auf 'locale-private' gesetzt werden",
+            "変数 'wsrep_sst_auth' に値 'locale-private' を設定できません。",
+        )
+        prefixes = ('ERROR 1231 (42000): ', 'ERROR 1231 (42000) at line 7: ',
+                    'ERROR 1231: ', 'mysql client exited 1: ERROR 1231 (42000): ',
+                    'mysqlsh exited 1: ERROR 1231 (42000): ',
+                    'Could not change parameter: ERROR 1231 (42000): ')
+        for message in messages:
+            for prefix in prefixes:
+                with self.subTest(message=message, prefix=prefix):
+                    raw = prefix + message
+                    self.assertEqual(dbops.redact(raw), raw.replace('locale-private', '[redacted]'))
+        unrelated = 'ERROR 9999 (42000): ' + messages[0]
+        self.assertEqual(dbops.redact(unrelated), unrelated)
+
+    def test_r352_localized_errors_hide_unknown_names_and_every_value(self):
+        for message in (
+                "ERROR 1231 (42000): 未知 'opaque-name' と 'locale-first' と \"locale-second\"",
+                "ERROR 1231 (42000): 'wsrep_sst_auth': 'locale-first' oder \"locale-second\"",
+                "ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-first'locale-second' gesetzt werden",
+                "ERROR 1231 (42000): 変数 'wsrep_sst_auth' に値 'locale-first\nlocale-second' を設定できません。"):
+            with self.subTest(message=message):
+                clean = dbops.redact(message)
+                for secret in ('opaque-name', 'locale-first', 'locale-second'):
+                    self.assertNotIn(secret, clean)
+                self.assertIn('[redacted]', clean)
+        raw = ("ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-private' gesetzt werden\n"
+               "ERROR 9999 (42000): 'ordinary-value'")
+        clean = dbops.redact(raw)
+        self.assertNotIn('locale-private', clean)
+        self.assertTrue(clean.endswith("ERROR 9999 (42000): 'ordinary-value'"))
+
+    def test_r352_all_dynamic_credential_clauses_hide_escaped_values(self):
+        suffix = '; SELECT 37'
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for quote in ("'", '"'):
+                for escaped in (quote * 2, '\\' + quote):
+                    with self.subTest(clause=label, quote=quote, escape=escaped):
+                        raw = ('PREPARE s FROM ' + quote + prefix + escaped +
+                               'dynamic-private' + escaped + tail +
+                               '; SELECT ' + escaped + 'dynamic-tail' + escaped + quote + suffix)
+                        clean = dbops.redact(raw)
+                        self.assertNotIn('dynamic-private', clean)
+                        self.assertNotIn('dynamic-tail', clean)
+                        self.assertIn('[redacted]', clean)
+                        self.assertTrue(clean.endswith(suffix), clean)
+
+    def test_r352_dynamic_replace_hides_both_credentials(self):
+        for quote in ("'", '"'):
+            for escaped in (quote * 2, '\\' + quote):
+                with self.subTest(quote=quote, escape=escaped):
+                    raw = ('PREPARE s FROM ' + quote + 'ALTER USER u IDENTIFIED BY ' +
+                           escaped + 'new-private' + escaped + ' REPLACE ' +
+                           escaped + 'old-private' + escaped + quote + '; SELECT 37')
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('new-private', clean)
+                    self.assertNotIn('old-private', clean)
+                    self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_credential_clauses_hide_encoded_literal_forms(self):
+        literals = (("X'616263'", '616263'), ("x'616263'", '616263'),
+                    ('0x707731', '707731'), ('0X707731', '707731'),
+                    ("B'01110111'", '01110111'), ("b'01110111'", '01110111'),
+                    ('0b01110111', '01110111'), ('0B01110111', '01110111'),
+                    ("N'encoded-private'", 'encoded-private'),
+                    ("n'encoded-private'", 'encoded-private'),
+                    ("_utf8mb4'encoded-private'", 'encoded-private'),
+                    ("_utf8mb4'encoded-private' COLLATE utf8mb4_bin", 'encoded-private'))
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for literal, secret in literals:
+                with self.subTest(clause=label, literal=literal):
+                    raw = prefix + literal + tail + '; SELECT 37'
+                    clean = dbops.redact(raw)
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.endswith(tail + '; SELECT 37'), clean)
+        ordinary = "SELECT X'616263', 0x707731, B'01110111', 0b01110111, N'public', _utf8mb4'public'"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_encoded_dynamic_credentials_keep_enclosing_boundary(self):
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for literal, secret in (("X'616263'", '616263'), ('0x707731', '707731'),
+                                    ("b'01110111'", '01110111'), ('0b01110111', '01110111'),
+                                    ("N'encoded-private'", 'encoded-private'),
+                                    ("_utf8mb4'encoded-private' COLLATE utf8mb4_bin", 'encoded-private')):
+                for quote in ("'", '"'):
+                    for escaped in (quote * 2, '\\' + quote):
+                        with self.subTest(clause=label, literal=literal, quote=quote, escape=escaped):
+                            inner = (prefix + literal + tail).replace(quote, escaped)
+                            raw = 'PREPARE s FROM ' + quote + inner + quote + '; SELECT 37'
+                            clean = dbops.redact(raw)
+                            self.assertNotIn(secret, clean)
+                            self.assertIn('[redacted]', clean)
+                            self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_every_credential_clause_unions_quote_mode_readings(self):
+        # Replacing a short reading before collecting the longer one loses
+        # the original quote context and can expose the remainder of a value.
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for quote in ("'", '"'):
+                with self.subTest(clause=label, quote=quote):
+                    value = quote + 'mode-head\\' + quote * 2 + 'mode-tail' + quote
+                    clean = dbops.redact(prefix + value + tail + '; SELECT 37')
+                    self.assertNotIn('mode-head', clean)
+                    self.assertNotIn('mode-tail', clean)
+                    self.assertIn('[redacted]', clean)
+
+    def test_r352_introduced_set_password_values_preserve_accounts(self):
+        long_account = "'" + 'account' * 80 + "=b'@'%'"
+        prefixes = (
+            "SET PASSWORD FOR 'a=b'@'%' = ",
+            'SET PASSWORD FOR ' + long_account + ' = ',
+            "SET PASSWORD FOR 'a=b'@'%' /* account policy */ = ",
+            'SET PASSWORD /* account policy */ FOR ' + long_account + ' /* assignment */ = ',
+        )
+        for prefix in prefixes:
+            for literal, secret in (("X'616263'", '616263'), ('0x707731', '707731'),
+                                    ("B'01110111'", '01110111'), ('0b01110111', '01110111'),
+                                    ("N'introduced-private'", 'introduced-private'),
+                                    ("_utf8mb4'introduced-private' COLLATE utf8mb4_bin",
+                                     'introduced-private')):
+                with self.subTest(prefix=prefix, literal=literal):
+                    clean = dbops.redact(prefix + literal + '; SELECT 37')
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.startswith(prefix), clean)
+                    self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_secret_assignments_after_ambiguous_ordinary_strings(self):
+        for quote in ("'", '"'):
+            for close in (quote, quote * 2):
+                for name in ('wsrep_sst_auth', 's3_secret_key'):
+                    with self.subTest(quote=quote, close=close, name=name):
+                        # One close exposes SET only with literal backslashes;
+                        # two closes expose it only with backslash escapes.
+                        prefix = 'SELECT ' + quote + 'ordinary\\' + close + '; '
+                        raw = prefix + 'SET GLOBAL ' + name + ' = reading_private; SELECT 37'
+                        clean = dbops.redact(raw)
+                        self.assertNotIn('reading_private', clean)
+                        self.assertIn('[redacted]', clean)
+
+    def test_r352_localized_errors_hide_unfinished_values_across_error_lines(self):
+        for translated in (
+                "Variable 'wsrep_sst_auth' kann nicht auf 'locale-unfinished",
+                "変数 'wsrep_sst_auth' に値 'locale-unfinished",
+                "不明 'unknown-private' と 'locale-unfinished"):
+            with self.subTest(translated=translated):
+                raw = 'ERROR 1231 (42000): ' + translated
+                clean = dbops.redact(raw)
+                self.assertNotIn('locale-unfinished', clean)
+                self.assertNotIn('unknown-private', clean)
+                self.assertIn('[redacted]', clean)
+        raw = ("ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-first\n"
+               "ERROR 9999 (42000): 'ordinary-value'\n"
+               "mysql client exited 1: ERROR 1231 (42000): 変数 's3_secret_key' に値 'locale-last'")
+        clean = dbops.redact(raw)
+        self.assertNotIn('locale-first', clean)
+        self.assertNotIn('locale-last', clean)
+        self.assertIn("ERROR 9999 (42000): 'ordinary-value'", clean)
+        self.assertIn('s3_secret_key', clean)
+
     def test_set_password_diagnostic_and_random_replace_regressions(self):
         for label, raw, secrets in SET_PASSWORD_REDACTION_CASES:
             with self.subTest(case=label):
