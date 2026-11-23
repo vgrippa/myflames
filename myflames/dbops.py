@@ -3543,9 +3543,19 @@ _WRONG_VALUE_FOR_VAR = re.compile(
 # Match the same client code spelling as error_code / connection_error_text,
 # including wrappers and the client's optional SQLSTATE / at-line suffix.
 _CLIENT_ERROR_CODE = re.compile(r"\bERROR\s+(\d{3,5})\b", re.I)
-_ERROR_QUOTED_NAME = re.compile(r"(['\"`])([^'\"`\r\n]{1,64})\1")
-# Apostrophes in prose (can't, Italian puo') are not value openers.
-_ERROR_VALUE_OPEN = re.compile(r"(?<!\w)['\"`]")
+_ERROR_QUOTED_NAME = re.compile(r"(?<![A-Za-z0-9_])(['\"`])([^'\"`\r\n]{1,64})\1")
+# System variable names (including component.name) are ASCII identifiers in both engines.
+_ERROR_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+# ASCII prose apostrophes (can't, Italian puo') are not value openers, while
+# non-ASCII labels (MariaDB Chinese 变量'...'无法设置为'...') can touch the quote.
+_ERROR_VALUE_OPEN = re.compile(r"(?<![A-Za-z0-9_])['\"`]")
+# Fail closed across a custom DELIMITER boundary when the remaining text
+# contains a credential keyword or inventory variable name, matching 3.5.1.
+_DELIMITER_TAIL_CREDENTIAL = re.compile(
+    r"\b(?:IDENTIFIED|USING|REPLACE)\b|PASSWORD|" +
+    "|".join(r"\b" + re.escape(name.split(".")[-1]) + r"\b"
+             for name in sorted(_SECRET_VARIABLES)),
+    re.I)
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3694,6 +3704,7 @@ def _secret_variable_spans(text, backslash_escapes=True):
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
     insert, value_can_end = False, False
     version_tail_at = None
+    tail_clean_from = len(text)
     tokens, components = _secret_variable_tokens(text, backslash_escapes), iter(())
     component_pattern = (_SET_VARIABLE_COMPONENT_PART if backslash_escapes
                          else _SET_VARIABLE_COMPONENT_NO_BACKSLASH)
@@ -3750,6 +3761,28 @@ def _secret_variable_spans(text, backslash_escapes=True):
             value_start, value_end = None, None
             in_set, name_parts = False, None
             insert = False
+        if token.lastgroup == 'delimiter' and (value_start is not None or awaiting_value):
+            tail_at = token.end()
+            # Keep hiding through the end of text (as 3.5.1 did) when the tail
+            # holds a credential keyword or inventory name, or when the custom
+            # delimiter appears glued to non-whitespace / a flipped-parity
+            # doubled-quote value. Memoize the earliest clean suffix so at most
+            # one regex search runs per call.
+            keep_hiding = tail_at < len(text) and (
+                text[tail_at] not in _CLIENT_SPACE or
+                (value_start is not None and value_end is not None and
+                 text[value_start:value_start + 2] in ("''", '""') and
+                 value_end - value_start > 2))
+            if not keep_hiding and tail_at < tail_clean_from:
+                if _DELIMITER_TAIL_CREDENTIAL.search(text, tail_at) is not None:
+                    keep_hiding = True
+                else:
+                    tail_clean_from = tail_at
+            if keep_hiding:
+                start = token.start() if value_start is None else value_start
+                quote = text[start] if value_start is not None and text[start:start + 1] in ("'", '"') else ''
+                yield start, len(text), quote
+                return
         if awaiting_value:
             value_start = token.start() if value not in (',', ';') else None
             awaiting_value = False
@@ -4002,8 +4035,19 @@ def _redact_variable_errors(text):
         if message.group(1) != '1231':
             continue
         limit = messages[index + 1].start() if index + 1 < len(messages) else len(text)
-        name = _ERROR_QUOTED_NAME.search(text, message.end(), limit)
-        known_name = name is not None and sensitive(name.group(2))
+        # In every ER_WRONG_VALUE_FOR_VAR translation in MySQL and MariaDB,
+        # the quoted variable name comes first on the error line. Leave
+        # ordinary recognizable variable names readable; fail closed on secret
+        # or unrecognizable names, or when an earlier quote precedes the name.
+        line_end = text.find('\n', message.end(), limit)
+        name_limit = limit if line_end < 0 else line_end
+        name = _ERROR_QUOTED_NAME.search(text, message.end(), name_limit)
+        first_quote = name is not None and not any(
+            quote in text[message.end():name.start()] for quote in ("'", '"', '`'))
+        var_name = name.group(2) if first_quote else ''
+        known_name = first_quote and sensitive(var_name)
+        if first_quote and not known_name and _ERROR_VARIABLE_NAME.fullmatch(var_name):
+            continue
         start = name.end() if known_name else message.end()
         opener = _ERROR_VALUE_OPEN.search(text, start, limit)
         if opener is None:

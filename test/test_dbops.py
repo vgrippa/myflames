@@ -1665,10 +1665,13 @@ class TestRedaction(unittest.TestCase):
 
     def test_r352_localized_wrong_value_errors_use_error_number(self):
         # MySQL messages_to_clients.txt and MariaDB errmsg-utf8.txt use
-        # ASCII apostrophes for both German and Japanese ER_WRONG_VALUE_FOR_VAR.
+        # ASCII apostrophes for German, Italian, Japanese and Chinese
+        # ER_WRONG_VALUE_FOR_VAR; Chinese has no space before either quote.
         messages = (
             "Variable 'wsrep_sst_auth' kann nicht auf 'locale-private' gesetzt werden",
+            "Alla variabile 'wsrep_sst_auth' non puo' essere assegato il valore 'locale-private'",
             "変数 'wsrep_sst_auth' に値 'locale-private' を設定できません。",
+            "变量'wsrep_sst_auth'无法设置为'locale-private'的值",
         )
         prefixes = ('ERROR 1231 (42000): ', 'ERROR 1231 (42000) at line 7: ',
                     'ERROR 1231: ', 'mysql client exited 1: ERROR 1231 (42000): ',
@@ -1679,8 +1682,50 @@ class TestRedaction(unittest.TestCase):
                 with self.subTest(message=message, prefix=prefix):
                     raw = prefix + message
                     self.assertEqual(dbops.redact(raw), raw.replace('locale-private', '[redacted]'))
+        # Chinese 1231 with a colon/secret value (MariaDB errmsg-utf8.txt) and
+        # an embedded apostrophe (odd quote count fails closed).
+        chinese = "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'sst:S3cr3t'的值"
+        self.assertEqual(dbops.redact(chinese),
+                         "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'[redacted]'的值")
+        chinese_apos = "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'it's S3cr3t'的值"
+        clean_apos = dbops.redact(chinese_apos)
+        self.assertNotIn('S3cr3t', clean_apos)
+        self.assertIn('[redacted]', clean_apos)
         unrelated = 'ERROR 9999 (42000): ' + messages[0]
         self.assertEqual(dbops.redact(unrelated), unrelated)
+
+    def test_r352_error_1231_keeps_ordinary_variables_readable(self):
+        # In every translation in both engine trees the quoted variable name
+        # comes first. Ordinary recognizable variable names stay readable;
+        # secret or unrecognizable names still fail closed.
+        ordinary = (
+            "ERROR 1231 (42000) at line 1: Variable 'sql_mode' can't be set to the value of 'BOGUS'",
+            "ERROR 1231 (42000): Variable 'max_connections' can't be set to the value of '-1'",
+            "ERROR 1231 (42000): Variable 'time_zone' kann nicht auf 'Mars/Phobos' gesetzt werden",
+            "ERROR 1231 (42000): Alla variabile 'sql_mode' non puo' essere assegato il valore 'BOGUS'",
+            "ERROR 1231 (42000): 变量'sql_mode'无法设置为'BOGUS'的值",
+            "ERROR 1231 (42000): Variable 'validate_password.policy' can't be set to the value of 'NOPE'",
+        )
+        for message in ordinary:
+            with self.subTest(ordinary=message):
+                self.assertEqual(dbops.redact(message), message)
+        # Mixed ordinary and secret 1231 lines preserve only the ordinary one.
+        mixed = (
+            "ERROR 1231 (42000) at line 1: Variable 'sql_mode' can't be set to the value of 'BOGUS'\n"
+            "ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'S3cr3t' gesetzt werden"
+        )
+        self.assertEqual(dbops.redact(mixed), mixed.replace('S3cr3t', '[redacted]'))
+        # A secret variable or unrecognizable/preceded-by-quote name stays hidden.
+        for hidden, secret in (
+                ("ERROR 1231 (42000) at line 1: Variable 'wsrep_sst_auth' can't be set to the value of 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): Variable 'telemetry.otel_exporter_otlp_logs_headers' kann nicht auf 'k=S3cr3t' gesetzt werden", 'S3cr3t'),
+                ("ERROR 1231 (42000): can't'sql_mode' 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): 'unclosed 'sql_mode' 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): unknown 'bad-name' 'S3cr3t'", 'S3cr3t')):
+            with self.subTest(hidden=hidden):
+                clean = dbops.redact(hidden)
+                self.assertNotIn(secret, clean)
+                self.assertIn('[redacted]', clean)
 
     def test_r352_localized_errors_hide_unknown_names_and_every_value(self):
         for message in (
@@ -2988,10 +3033,54 @@ class TestRedaction(unittest.TestCase):
                     expected = prefix + quote + '[redacted]' + quote + suffix
                     self.assertEqual(dbops._redact_secret_variables(prefix + expression + suffix), expected)
                     self.assertEqual(dbops.redact(prefix + expression + suffix), expected)
-        raw = ("  delimiter $$ ignored\nSET GLOBAL wsrep_sst_auth = 'first-private'$$\n"
+        raw = ("  delimiter $$ ignored\nSET GLOBAL max_connections = 500$$\n"
                "DELIMITER //\nSET GLOBAL s3_secret_key = 'second-private'//\nSELECT 1//")
-        self.assertEqual(dbops.redact(raw),
-                         raw.replace('first-private', '[redacted]').replace('second-private', '[redacted]'))
+        self.assertEqual(dbops.redact(raw), raw.replace('second-private', '[redacted]'))
+
+    def test_r352_custom_delimiter_fails_closed_when_tail_has_credentials(self):
+        # When a custom-delimiter boundary would end a hidden value and the
+        # remaining text contains a credential keyword or inventory variable
+        # name, keep hiding through the end of text (parity with 3.5.1).
+        tails = (
+            "CREATE USER app IDENTIFIED BY'S3cr3t'$$",
+            "CREATE USER app identified/**/by'S3cr3t'$$",
+            "START REPLICA USER='r' PASSWORD = /* c */ 'S3cr3t'$$",
+            "CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD /* c */ = 'S3cr3t'$$",
+            "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x533363723374$$",
+            "CREATE USER app IDENTIFIED VIA ed25519 USING/**/'S3cr3t'$$",
+            "ALTER USER app IDENTIFIED BY 'new'/**/REPLACE/**/'S3cr3t'$$",
+            "DELIMITER //\nSET GLOBAL s3_secret_key = 'S3cr3t'//\nSELECT 1//",
+            "PREPARE s FROM 'SET GLOBAL wsrep_sst_auth /**/ = ''S3cr3t'''$$",
+            "EXECUTE IMMEDIATE \"INSERT INTO cfg SET telemetry.otel_exporter_otlp_logs_headers = _utf8mb4 0x533363723374\"$$",
+        )
+        for tail in tails:
+            with self.subTest(tail=tail):
+                raw = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first-private'$$\n" + tail
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = '[redacted]'")
+                self.assertNotIn('first-private', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertNotIn('533363723374', clean)
+        # An earlier unclosed quote can flip parity so a custom delimiter
+        # lands inside a doubled-quote secret value; fail closed there too.
+        flipped = ("DELIMITER go\nSELECT 'unclosed\n"
+                   "SET @q = 'SET GLOBAL file_key_management_filekey = ''headgoS3cr3t'', GLOBAL read_only = ON';")
+        clean_flipped = dbops.redact(flipped)
+        self.assertNotIn('S3cr3t', clean_flipped)
+        self.assertIn('[redacted]', clean_flipped)
+        # Without credential keywords in the tail, ordinary statements remain visible.
+        ordinary = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first-private'$$\nSELECT 1$$\nSELECT 'plain'$$"
+        self.assertEqual(dbops.redact(ordinary), ordinary.replace('first-private', '[redacted]'))
+        # Repeated custom delimiters with fragmented names search the tail at most once.
+        repeated = ("DELIMITER //\n" +
+                    "SET GLOBAL w/**/srep_sst_auth = 'first-private'//\n" * 200 +
+                    "SELECT 1//\n")
+        with mock.patch.object(dbops, '_DELIMITER_TAIL_CREDENTIAL',
+                               wraps=dbops._DELIMITER_TAIL_CREDENTIAL) as tail_search:
+            clean_repeated = dbops.redact(repeated)
+        self.assertLessEqual(tail_search.search.call_count, 1)
+        self.assertNotIn('first-private', clean_repeated)
+        self.assertTrue(clean_repeated.endswith('SELECT 1//\n'))
 
     def test_r352_delimiters_inside_secret_literals_are_not_value_ends(self):
         for expression in ("'before$$delimiter-private'",
