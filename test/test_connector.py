@@ -11,6 +11,7 @@ Integration tests that hit real MySQL / MariaDB containers live in
 """
 import concurrent.futures
 import contextlib
+import errno
 import json
 import ntpath
 import os
@@ -1473,6 +1474,67 @@ class TestVersionAwareClients(unittest.TestCase):
             returncode=1)
         return conn, mysql, maria, failure
 
+    def test_unknown_marker_output_and_statement_errors_never_retry_auth(self):
+        auth = "ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded"
+        statement = 'ERROR 1064 (42000) at line 2: syntax error'
+        echoed = '--------------\nSELECT 1;\n' + auth + '\n--------------\n'
+        cases = (
+            (b'1\n', echoed + statement),
+            (b'1\n', auth),
+            (b' \n', auth),
+            (b'', echoed + 'ERROR 2013 (HY000): Lost connection'),
+            (b'', (echoed + 'ERROR 2013 (HY000): Lost connection').replace('\n', '\r\n')),
+            (b'', auth + '\n' + statement),
+            (b'', echoed + statement),
+            (b'', '--------------\n' + statement + '\n--------------\n' + auth),
+            (b'', echoed),
+            (b'', echoed.rstrip('\n')),
+            (b'', '--------------\nSELECT 1;\n' + auth),
+            (b'', 'client warning\n--------------\nSELECT 1;\n' + auth),
+            (b'', '--------------\nSELECT 1;\n--------------\n' + auth),
+            (b'', '--------------\nSELECT \'unfinished literal\n--------------\n' + auth),
+        )
+        for method in ('run', 'run_script', 'run_write'):
+            conn, mysql, unused, failure = self._unknown_auth_clients('auth-output-' + method)
+            for stdout, stderr in cases:
+                with self.subTest(method=method, stdout=stdout, stderr=stderr), mock.patch.object(
+                        connector, '_run_bounded', return_value=_fake_completed(
+                            stdout=stdout, stderr=stderr.encode(), returncode=1)) as run:
+                    if method == 'run_script' and ' at line ' in stderr:
+                        self.assertEqual(conn.run_script('SELECT 1; SELECT 2'),
+                                         (stdout.decode(), stderr))
+                    else:
+                        with self.assertRaises(ConnectorError) as caught:
+                            getattr(conn, method)('SELECT 1; SELECT 2')
+                        self.assertNotIsInstance(caught.exception, connector.ClientAuthPluginError)
+                    self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+
+    def test_unknown_marker_connection_phase_2059_retries_reads_once(self):
+        diagnostics = (
+            "ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded",
+            'ERROR 2059 (HY000): Plugin client_ed25519 could not be loaded: missing',
+        )
+        for method in ('run', 'run_script'):
+            conn, mysql, maria, unused = self._unknown_auth_clients('auth-handshake-' + method)
+            for stderr in diagnostics:
+                failure = _fake_completed(stderr=stderr.encode(), returncode=1)
+                with self.subTest(method=method, stderr=stderr), mock.patch.object(
+                        connector, '_run_bounded', side_effect=[failure, _fake_completed(b'1\n')]) as run:
+                    result = getattr(conn, method)('SELECT 1')
+                self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+
+    def test_unknown_marker_write_auth_failure_never_retries(self):
+        conn, mysql, unused, failure = self._unknown_auth_clients('auth-write-once')
+        sql = 'UPDATE app.counter SET value = value + 1'
+        with mock.patch.object(connector, '_run_bounded', side_effect=[failure, _fake_completed()]) as run, \
+                mock.patch.object(conn, '_unidentified_auth_retry', wraps=conn._unidentified_auth_retry) as retry:
+            with self.assertRaises(connector.ClientAuthPluginError):
+                conn.run_write(sql)
+        self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+        self.assertEqual(run.call_args[1]['input'], sql.encode())
+        retry.assert_not_called()
+
     def test_unknown_marker_auth_retry_rechecks_settings_at_each_selection_boundary(self):
         from myflames import client_tools as ct
         for stage in ('discover', 'select', 'check'):
@@ -1556,9 +1618,13 @@ class TestVersionAwareClients(unittest.TestCase):
                     return _fake_completed(b'1\n')
 
                 with mock.patch.object(connector, '_run_bounded', side_effect=read):
-                    result = getattr(conn, method)('SELECT 1')
-                self.assertEqual(calls, [mysql, maria])
-                self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+                    if method == 'run_write':
+                        with self.assertRaises(connector.ClientAuthPluginError):
+                            conn.run_write('SELECT 1')
+                    else:
+                        result = getattr(conn, method)('SELECT 1')
+                        self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+                self.assertEqual(calls, [mysql] if method == 'run_write' else [mysql, maria])
 
     def test_unknown_marker_auth_retry_preserves_sql_flags_and_option_file_family(self):
         sql = "SELECT 'snowman \u2603';\nSELECT 2;\n"
@@ -1573,11 +1639,17 @@ class TestVersionAwareClients(unittest.TestCase):
                     return failure if len(options) == 1 else _fake_completed(b'1\n')
 
                 with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
-                    result = getattr(conn, method)(sql, extra_flags=['--raw'], timeout=17)
-                self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
-                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+                    if method == 'run_write':
+                        with self.assertRaises(connector.ClientAuthPluginError):
+                            conn.run_write(sql, extra_flags=['--raw'], timeout=17)
+                    else:
+                        result = getattr(conn, method)(sql, extra_flags=['--raw'], timeout=17)
+                        self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list],
+                                 [mysql] if method == 'run_write' else [mysql, maria])
                 self.assertIn('get-server-public-key', options[0])
-                self.assertNotIn('get-server-public-key', options[1])
+                if method != 'run_write':
+                    self.assertNotIn('get-server-public-key', options[1])
                 for call in run.call_args_list:
                     argv, kwargs = call[0][0], call[1]
                     self.assertEqual(kwargs['timeout'], 17)
@@ -1609,8 +1681,12 @@ class TestVersionAwareClients(unittest.TestCase):
 
                 conn._login_guard = guard
                 with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
-                    with self.assertRaisesRegex(ProfileReadError, 'Consent revoked'):
-                        getattr(conn, method)('SELECT 1')
+                    if method == 'run_write':
+                        with self.assertRaises(connector.ClientAuthPluginError):
+                            conn.run_write('SELECT 1')
+                    else:
+                        with self.assertRaisesRegex(ProfileReadError, 'Consent revoked'):
+                            getattr(conn, method)('SELECT 1')
                 self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
 
     def test_unknown_marker_auth_retry_is_limited_to_one_alternate(self):
@@ -1620,7 +1696,8 @@ class TestVersionAwareClients(unittest.TestCase):
                 with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
                     with self.assertRaises(connector.ClientAuthPluginError):
                         getattr(conn, method)('SELECT 1')
-                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+                self.assertEqual([call[0][0][0] for call in run.call_args_list],
+                                 [mysql] if method == 'run_write' else [mysql, maria])
 
     def test_unknown_marker_cannot_enable_fallback_for_explicit_binary(self):
         for method in ('run', 'run_script', 'run_write'):
@@ -3181,6 +3258,61 @@ class TestBoundedTransport(unittest.TestCase):
 
 
 class TestBoundedTransportCleanup(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX process groups')
+    def test_process_group_permission_failure_still_reaps_and_joins(self):
+        # Use real pipes and a real child. The finalizer also cleans up the
+        # pre-fix failure, so reproducing the bug cannot leak a process.
+        real_popen, real_thread = subprocess.Popen, threading.Thread
+        errors = [PermissionError('group is not ready'), ProcessLookupError('group exited')]
+        for code in (errno.EPERM, errno.ESRCH):
+            error = OSError('process group unavailable')
+            error.errno = code
+            errors.append(error)
+        for outcome in ('success', 'failure', 'timeout'):
+            for error in errors:
+                children, workers = [], []
+
+                def launch(*args, **kwargs):
+                    child = real_popen(*args, **kwargs)
+                    children.append(child)
+                    return child
+
+                def thread(*args, **kwargs):
+                    worker = real_thread(*args, **kwargs)
+                    worker.join = mock.Mock(wraps=worker.join)
+                    workers.append(worker)
+                    return worker
+
+                script = ('import os\nr,w=os.pipe()\nos.read(r,1)' if outcome == 'timeout' else
+                          'import sys\nsys.stdout.write("result")\nsys.exit(%d)' %
+                          (1 if outcome == 'failure' else 0))
+                with self.subTest(outcome=outcome, error=repr(error)):
+                    try:
+                        with mock.patch.object(subprocess, 'Popen', side_effect=launch), \
+                                mock.patch.object(threading, 'Thread', side_effect=thread), \
+                                mock.patch.object(connector.os, 'killpg', side_effect=error) as killpg:
+                            if outcome == 'timeout':
+                                with self.assertRaises(subprocess.TimeoutExpired):
+                                    connector._run_bounded([sys.executable, '-c', script],
+                                                           timeout=0.1, input=b'', kill_tree=True)
+                            else:
+                                result = connector._run_bounded([sys.executable, '-c', script],
+                                                                timeout=3, input=b'', kill_tree=True)
+                                self.assertEqual(result.stdout, b'result')
+                                self.assertEqual(result.returncode, 1 if outcome == 'failure' else 0)
+                        killpg.assert_called_once_with(children[0].pid, signal.SIGKILL)
+                        self.assertIsNotNone(children[0].returncode, 'child must already be reaped')
+                        self.assertTrue(all(worker.join.called and not worker.is_alive() for worker in workers))
+                        self.assertTrue(all(pipe.closed for pipe in
+                                            (children[0].stdin, children[0].stdout, children[0].stderr)))
+                    finally:
+                        for child in children:
+                            if child.poll() is None:
+                                child.kill()
+                            child.wait(timeout=3)
+                        for worker in workers:
+                            worker.join(timeout=3)
+
     def test_killed_client_wait_and_blocked_pipe_joins_are_bounded(self):
         # Stand in for descendants retaining the pipe after the client dies.
         # Release every real test thread even if an assertion fails.

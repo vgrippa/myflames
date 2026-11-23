@@ -162,6 +162,47 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn('error', body)
         self.assertIn('KeyError', log.getvalue())
+    def test_handler_error_log_redacts_sql_and_url_credentials(self):
+        from myflames import ui
+        messages = (
+            "ALTER USER app IDENTIFIED BY 'secret1'",
+            'failed to read mysql://app:secret2@db.example/schema',
+            "IDENTIFIED BY 'secret1'; mysql://app:secret2@db.example/schema",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=KeyError(message)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list')
+                self.assertIn(status, (400, 500))
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+                logged = log.getvalue()
+                self.assertIn('KeyError', logged)
+                self.assertIn('[redacted]', logged)
+                for secret in ('secret1', 'secret2'):
+                    self.assertNotIn(secret, logged)
+                    self.assertNotIn(secret, json.dumps(body))
+
+    def test_handler_error_traceback_is_bounded_after_redaction(self):
+        from myflames import ui
+        messages = (
+            "IDENTIFIED BY 'secret1'; " + 'x' * (128 * 1024),
+            # The credential begins before the cap and ends well beyond it.
+            # Truncating first would leave an open literal with secret bytes.
+            'x' * 62000 + " IDENTIFIED BY '" + 'boundary-secret' * 1000 + "'",
+        )
+        for message in messages:
+            with self.subTest(length=len(message)):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=KeyError(message)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    unused, body, unused_headers = self.request('/api/profiles/list')
+                logged = log.getvalue()
+                self.assertTrue('secret1' not in logged and 'boundary-secret' not in logged,
+                                'the complete secret must be redacted before truncating the log')
+                self.assertIn('[redacted]', logged)
+                self.assertLessEqual(len(logged), 64 * 1024 + 128)
 
     def test_incomplete_report_and_wrong_plan_field_types_are_400s(self):
         from myflames import ui

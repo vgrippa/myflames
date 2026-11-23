@@ -3393,8 +3393,9 @@ def _secret_values(value, store=None, found=None, depth=0):
 
 def _log_unexpected_error(path, exc_info, payload=None, store=None):
     """Write the traceback of an unexpected error to stderr, never to the
-    response, with the request's passwords (typed or saved) removed."""
+    response, with request passwords and SQL/URL credentials removed."""
     import traceback
+    from .dbops import redact
     try:
         text = "".join(traceback.format_exception(*exc_info))
         variants = set()
@@ -3403,6 +3404,11 @@ def _log_unexpected_error(path, exc_info, payload=None, store=None):
             variants.update((secret, repr(secret)[1:-1], json.dumps(secret)[1:-1]))
         for secret in sorted(variants, key=len, reverse=True):
             text = text.replace(secret, "[redacted]")
+        # Redact complete literals before truncating, including credentials
+        # that cross the log limit and are absent from the request payload.
+        text = redact(text)
+        if len(text) > 64 * 1024:
+            text = text[:64 * 1024] + "\n[traceback truncated]\n"
         sys.stderr.write("myflames: unexpected error in POST %s\n%s" % (path, text))
         sys.stderr.flush()
     except Exception:

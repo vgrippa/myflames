@@ -120,7 +120,15 @@ def probe(name, binary, refresh=False, job=None, stop=None):
                 else:
                     # The bounded runner polls cancellation and kills/reaps the
                     # process group before the probe's temporary HOME closes,
-                    # including an ordinary discovery owned by a live read.
+                    # including an ordinary discovery owned by a live read. A
+                    # warm-up stop and the caller's read cancellation both end it.
+                    outer_cancel = read_cancel.current()
+                    if stop is not None and outer_cancel is not None:
+                        class ProbeCancellation:
+                            def is_set(self):
+                                return stop.is_set() or outer_cancel.is_set()
+
+                        cancel = ProbeCancellation()
                     with read_cancel.scope(cancel, guard=read_cancel.current_guard()):
                         child = connector._run_bounded(argv, timeout=8, input=b'', env=env, kill_tree=True)
                     child.stdout += child.stderr
@@ -162,6 +170,9 @@ def probe(name, binary, refresh=False, job=None, stop=None):
         # shared its flight retries instead of inheriting the stopped result.
         flight['error'] = exc
         if stop is not None and stop.is_set():
+            # The original scope is restored here. A caller cancellation
+            # takes precedence when both events were set during the probe.
+            read_cancel.check()
             return stopped
         raise
     except BaseException as exc:

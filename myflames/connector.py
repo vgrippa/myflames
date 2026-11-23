@@ -26,6 +26,7 @@ single source of truth.
 """
 from contextlib import contextmanager
 import collections
+import errno
 import ntpath
 import os
 import re
@@ -268,8 +269,13 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             else:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                except (ProcessLookupError, PermissionError):
+                    pass  # The group may be gone or not yet signalable on macOS.
+                except OSError as exc:
+                    if exc.errno not in (errno.EPERM, errno.ESRCH):
+                        raise
+                # A failed group kill must still reach the direct-child kill,
+                # reap and pipe-worker joins below.
         if proc.poll() is None:
             proc.kill()
         cleanup_deadline = time.monotonic() + PROCESS_CLEANUP_TIMEOUT
@@ -400,9 +406,17 @@ class ClientAuthPluginError(ClientMissingError):
     code = 'client-auth-plugin'
 
 
-def _auth_plugin_error(stderr, binary, used=None):
-    """Recognize the client error number, never a server SQL error mentioning it."""
-    first = re.search(r'^ERROR[^\r\n]*', stderr, re.M)
+def _auth_plugin_error(stderr, binary, used=None, stdout=None):
+    """Recognize a connection-phase diagnostic, never output from executed SQL."""
+    if stdout or _STATEMENT_ERROR.search(stderr):
+        return None
+    # An echoed SQL packet means authentication already completed. Its text
+    # can contain both fake ERROR lines and fake closing separators, so no
+    # diagnostic after an echo can safely authorize replaying the statements.
+    diagnostic = stderr.replace('\r\n', '\n')
+    if re.search(r'^--------------(?:\n|\Z)', diagnostic, re.M):
+        return None
+    first = re.search(r'^ERROR[^\r\n]*', diagnostic, re.M)
     # Connector/C errmsg.h: CR_AUTH_PLUGIN_CANNOT_LOAD is 2059. MariaDB
     # words this as "Plugin <name> could not be loaded: <reason>".
     match = (re.match(r"ERROR 2059 \(HY000\): (?:Authentication plugin '([A-Za-z0-9_]+)' cannot be loaded(?:$|:|\.)"
@@ -420,9 +434,9 @@ def _auth_plugin_error(stderr, binary, used=None):
                                        used.get('origin_label') or 'Explicit client', plugin))
 
 
-def _client_auth_error(stderr, binary, used=None):
+def _client_auth_error(stderr, binary, used=None, stdout=None):
     """Describe even the unprobed fast-path client, only after a 2059 failure."""
-    if _auth_plugin_error(stderr, binary, used) is None:
+    if _auth_plugin_error(stderr, binary, used, stdout=stdout) is None:
         return None
     if used and os.path.realpath(used['path']) != os.path.realpath(binary):
         used = None
@@ -433,7 +447,7 @@ def _client_auth_error(stderr, binary, used=None):
                      for g in found['installations'] for name, program in g['programs'].items()
                      if name in ('mysql', 'mariadb') and
                      os.path.realpath(program['path']) == os.path.realpath(binary)), None)
-    return _auth_plugin_error(stderr, binary, used)
+    return _auth_plugin_error(stderr, binary, used, stdout=stdout)
 
 
 _MACOS_ADMIN_GID = 80
@@ -959,7 +973,7 @@ class MySQLConnection:
         return alternate
 
     def _unidentified_auth_retry(self, client_engine):
-        """Resolve one account's alternate without caching it for the endpoint."""
+        """Resolve one read's alternate without caching it for the endpoint."""
         from . import client_tools, read_cancel
         if (self._binary_override or client_engine not in ('mysql', 'mariadb') or
                 not client_tools.first_contact_unidentified(self._endpoint_key())):
@@ -1587,7 +1601,8 @@ class MySQLConnection:
             ) from e
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used),
+                                      stdout=proc.stdout)
             if auth is not None:
                 # An unidentified statement says nothing about another
                 # account's plugins. Retry a genuine failed handshake once;
@@ -1649,7 +1664,8 @@ class MySQLConnection:
             raise ConnectorError("Cannot execute MySQL client binary: {}".format(e)) from e
         stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
         if proc.returncode != 0:
-            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used),
+                                      stdout=proc.stdout)
             if auth is not None:
                 retry = (self._unidentified_auth_retry(getattr(defaults_path, 'client_engine', None))
                          if binary is None else None)
@@ -1718,15 +1734,8 @@ class MySQLConnection:
 
     def _run_write(self, sql, extra_flags, timeout):
         with self._invocation_defaults() as defaults_path:
-            try:
-                return self._run_write_with_defaults(sql, extra_flags, timeout, defaults_path)
-            except ClientAuthPluginError:
-                retry = self._unidentified_auth_retry(getattr(defaults_path, 'client_engine', None))
-                if retry is None:
-                    raise
-        # Only a failed authentication handshake can reach this retry; no
-        # statement ran. Keep the exact SQL and repeat all consent checks.
-        with self._invocation_defaults(retry[0], retry[1]) as defaults_path:
+            # Never replay writes, even for an apparent authentication error.
+            # The caller must review the failure before choosing to retry.
             return self._run_write_with_defaults(sql, extra_flags, timeout, defaults_path)
 
     def _run_write_with_defaults(self, sql, extra_flags, timeout, defaults_path):
@@ -1745,7 +1754,8 @@ class MySQLConnection:
                                 timeout=timeout or self.query_timeout, env=env)
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', None))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', None),
+                                      stdout=proc.stdout)
             if auth is not None:
                 raise auth
             if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):

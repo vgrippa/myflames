@@ -393,6 +393,90 @@ class DiscoveryTests(unittest.TestCase):
             with ct._PROBE_LOCK:
                 ct._PROBE_FLIGHTS.pop(key, None)
 
+    def test_probe_stop_preserves_outer_read_cancellation_and_guard(self):
+        from myflames import read_cancel
+        for trigger in ('stop', 'read', 'both'):
+            with self.subTest(trigger=trigger):
+                binary = self.make(self.root / trigger)
+                stop, cancel = threading.Event(), threading.Event()
+                guard = mock.Mock()
+                continued = []
+
+                def run(*args, **kwargs):
+                    self.assertIs(read_cancel.current_guard(), guard)
+                    if trigger in ('stop', 'both'):
+                        stop.set()
+                    if trigger in ('read', 'both'):
+                        cancel.set()
+                    # Model the bounded runner's next cancellation poll.
+                    read_cancel.check()
+                    continued.append(True)
+                    return subprocess.CompletedProcess(args[0], 0, b'mysql Ver 8.4.13', b'')
+
+                with read_cancel.scope(cancel, guard), mock.patch.object(
+                        ct.connector, '_run_bounded', side_effect=run):
+                    if trigger == 'stop':
+                        result = ct.probe('mysql', str(binary), stop=stop)
+                        self.assertEqual(result, {'available': False, 'error': 'Version probe stopped.'})
+                    else:
+                        with self.assertRaises(read_cancel.CancelledRead):
+                            ct.probe('mysql', str(binary), stop=stop)
+                    self.assertIs(read_cancel.current(), cancel)
+                    self.assertIs(read_cancel.current_guard(), guard)
+                self.assertFalse(continued, 'either cancellation must interrupt the owned runner')
+                self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+                self.assertFalse(ct._PROBE_FLIGHTS)
+
+
+    def test_outer_read_cancellation_reaps_probe_with_an_unset_stop(self):
+        from myflames import read_cancel
+        binary = self.make(self.root / 'cancelled/bin')
+        started = self.root / 'cancelled-probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(5)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        cancel, stop = threading.Event(), threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def probe():
+            with read_cancel.scope(cancel):
+                return ct.probe('mysql', str(binary), stop=stop)
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(probe)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the slow version probe never started')
+                t0 = time.monotonic()
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    future.result(timeout=10)
+                self.assertLess(time.monotonic() - t0, 0.75)
+                self.assertFalse(stop.is_set(), 'the outer event alone must stop the probe')
+                self.assertIsNotNone(children[0].returncode, 'the owned child must be reaped')
+                self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+                self.assertFalse(ct._PROBE_FLIGHTS)
+            finally:
+                cancel.set()
+                stop.set()
+                try:
+                    future.result(timeout=10)
+                except read_cancel.CancelledRead:
+                    pass
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=3)
+
+
     def test_read_cancel_kills_and_reaps_owned_version_probe(self):
         from myflames import read_cancel
         binary = self.make(self.root / 'slow-read/bin')
