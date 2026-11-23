@@ -3346,6 +3346,9 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     r"\s*\.\s*".join(r"(?:" + re.escape(part) + r"|`" + re.escape(part) +
                       r"`|\"" + re.escape(part) + r"\")" for part in name.split('.')) + r")"
     for name in sorted(_SECRET_VARIABLES)) + r")"
+_SECRET_VARIABLE_LITERAL = re.compile(
+    r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _STRING + r")", re.I | re.S)
 _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
@@ -3359,12 +3362,22 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
-    # Inventory assignments in dynamic SQL, diagnostics and quoted examples.
-    r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
-    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)",
+)) + (
+    # Keep inventory substitutions in order: changing quote boundaries can
+    # affect the following RANDOM PASSWORD / REPLACE fallback.
+    _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
-    r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)",
-))
+    re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(" +
+               _STRING + r")", re.I | re.S),
+)
+# Four characters suffice for a cheap candidate check, never classification.
+# The SET scanner also joins malformed name fragments. Preserve those cases
+# when a shorter initial token ends at a gap or quote.
+_SECRET_VARIABLE_STARTS = tuple(sorted({name[:4] for name in _SECRET_VARIABLES}))
+_SECRET_VARIABLE_FRAGMENT = re.compile(
+    r"(?<![\w$])(?:" + "|".join(sorted({start[:size]
+        for start in _SECRET_VARIABLE_STARTS for size in range(1, len(start))})) +
+    r")(?=\s|[\"`]|/\*|--(?=\s|\Z)|\#)")
 # Quotes and comments consume their whole span, including an unfinished
 # tail, before recognizing commands. Start at the beginning of the text so
 # SET PASSWORD inside a literal cannot shift the quote boundaries.
@@ -3389,14 +3402,31 @@ _URL_DATABASE_SCHEMES = frozenset(('mysql', 'mariadb', 'mysqlx', 'postgres', 'po
 # or the assignment operator without hiding a sensitive system variable.
 _SET_VARIABLE_TOKEN = (
     r"(?P<quoted>" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
-    r"|(?P<executable>/\*(?:!|M!)-?\d{0,5})"
+    # Reversed MariaDB markers need five digits before a version is present;
+    # fewer digits are SQL, possibly the secret value. Keep the established
+    # permissive normal-marker handling, and leave sixth digits to the lexer.
+    r"|(?P<executable>/\*(?:!|M!)(?:!(?:[0-9]{5})?|-?\d{0,5}))"
     r"|(?P<comment>/\*[\s\S]*?(?:\*/|\Z)|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
     r"|(?P<word>[\w$]+)|@+|:=|[=.,;()]|[^\w\s'\"`@=.,;()/*]+|[^\s]")
 _SET_VARIABLE_PART = re.compile(_SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_EXECUTABLE_PART = re.compile(r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
 _SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
-_SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR'))
+_SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR', 'AS'))
+# Recognize a complete row alias before revealing it. Unrecognized or
+# unfinished suffixes stay inside the hidden value, including arithmetic
+# containing an AS identifier. Ordinary comments here also fail closed.
+_SET_ALIAS_IDENTIFIER = r"(?:`(?:``|[^`])+`|[A-Za-z_$][\w$]*)"
+_SET_ROW_ALIAS = re.compile(
+    r"AS\s+" + _SET_ALIAS_IDENTIFIER +
+    r"(?:\s*\(\s*" + _SET_ALIAS_IDENTIFIER +
+    r"(?:\s*,\s*" + _SET_ALIAS_IDENTIFIER + r")*\s*\))?\s*" +
+    r"(?=ON\s+DUPLICATE\s+KEY\s+UPDATE\b|;|\Z)", re.I)
+# Only reveal an alias after a value with an unambiguous outer shape. Infix
+# expressions and unfinished operator phrases stay hidden through the alias.
+# The token walk separately checks balanced parentheses and quote boundaries.
+_SET_ALIAS_VALUE = re.compile(
+    r"(?:" + _STRING + r"|@[\w$]+|[0-9]+|(?:[A-Za-z_$][\w$]*\s*)?\([\s\S]*\))")
 # ER_WRONG_VALUE_FOR_VAR prints the rejected value verbatim, so apostrophes
 # and line breaks inside it are not SQL quote or message boundaries.
 _WRONG_VALUE_FOR_VAR = re.compile(
@@ -3431,10 +3461,15 @@ def _URL_SECRET(text, quoted=True):
         end = mark.start() if mark is not None else len(text)
         last_at = text.rfind("@", scheme.end(), end)
         colon = text.find(":", scheme.end(), last_at if last_at >= 0 else end)
-        if colon >= 0 and text.find("[", scheme.end(), colon) >= 0:
-            colon = -1  # A colon inside a bracketed host is not user-info.
+        # An unclosed bracket with no preceding authority @ identifies an
+        # IPv6 host. Brackets in a user name must not disable redaction.
+        if (colon >= 0 and last_at < 0 and
+                text.rfind("[", scheme.end(), colon) > text.rfind("]", scheme.end(), colon)):
+            colon = -1
         if (last_at < 0 and colon >= 0 and end < len(text) and text[end] == "/"
-                and (scheme.group()[:-3].lower() in _URL_DATABASE_SCHEMES
+                # A ':' prefix is already outside the matched scheme; for
+                # '+' prefixes, classify by the final component as well.
+                and (scheme.group()[:-3].lower().rsplit('+', 1)[-1] in _URL_DATABASE_SCHEMES
                      or not text[colon + 1:end].isdigit())):
             mark = value_end.search(text, end)
             end = mark.start() if mark is not None else len(text)
@@ -3471,6 +3506,18 @@ def _secret_variable_tokens(text):
             yield token
 
 
+def _may_have_secret_variables(text):
+    """Skip inventory scans only when no supported name can start here."""
+    # Python's Unicode re.I also matches dotless i, long s and Kelvin sign.
+    # Keep that behavior, and leave executable version/name joins to the lexer.
+    if not text.isascii():
+        return True
+    folded = text.lower()
+    return (any(start in folded for start in _SECRET_VARIABLE_STARTS)
+            or '/*!' in folded or '/*m!' in folded
+            or _SECRET_VARIABLE_FRAGMENT.search(folded) is not None)
+
+
 def _redact_secret_variables(text):
     """Redact SET values from the shared inventory in one token pass.
 
@@ -3481,6 +3528,7 @@ def _redact_secret_variables(text):
     """
     parts, kept, value_start, value_end = [], 0, None, None
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
+    insert, value_can_end = False, False
     version_tail_at = None
     for token in _secret_variable_tokens(text):
         value = token.group()
@@ -3497,22 +3545,39 @@ def _redact_secret_variables(text):
         if version_tail and name_parts is not None:
             continue
         word = value.upper() if token.lastgroup == 'word' else None
-        restart = (word == 'SET' and in_set and depth == 0
-                   and name_parts is None and not awaiting_value)
+        # Assignment-free SET NAMES and CHARACTER SET must not hide a later
+        # SET command. The SET belonging to CHARACTER SET is not a restart.
+        restart = (word == 'SET' and in_set and depth == 0 and not awaiting_value
+                   and (not name_parts or name_parts[-1].upper() != 'CHARACTER'))
         if restart:
             in_set = False
+            insert = False
+        if depth == 0 and not in_set:
+            if word == 'INSERT':
+                insert = True
+            elif insert and word in ('SELECT', 'UPDATE', 'DELETE', 'REPLACE', 'ALTER',
+                                     'CREATE', 'DROP', 'VALUES', 'VALUE'):
+                insert = False
+        # AS ends an INSERT SET value at its row alias. In other statements
+        # it can be ambiguous secret text; keep hiding the whole value there.
+        clause_end = (word in _SET_VALUE_ENDS and (word != 'AS' or
+                      insert and value_start is not None and value_end is not None and
+                      value_can_end and _SET_ROW_ALIAS.match(text, token.start()) and
+                      _SET_ALIAS_VALUE.fullmatch(text, value_start, value_end)))
         if (value_start is not None and value_end is not None and depth == 0
-                and (restart or word in _SET_VALUE_ENDS)):
+                and (restart or clause_end)):
             body = text[value_start:value_end]
             quote = body[0] if body[:1] in ("'", '"') else ''
             parts.extend((text[kept:value_start], quote, REDACTED, quote))
             kept, value_start, value_end = value_end, None, None
             in_set, name_parts = False, None
+            insert = False
         if awaiting_value:
             value_start = token.start() if value not in (',', ';') else None
             awaiting_value = False
         if value_start is not None and (value not in (',', ';') or value == ',' and depth > 0):
             value_end = token.end()
+            value_can_end = token.lastgroup in ('quoted', 'word') or value == ')'
         if token.lastgroup == 'quoted':
             if name_parts is not None:
                 quote = value[0]
@@ -3533,6 +3598,7 @@ def _redact_secret_variables(text):
                 kept, value_start, value_end = value_end, None, None
             if value == ';':
                 in_set, depth = False, 0
+                insert = False
             name_parts = [] if in_set else None
         elif in_set and depth == 0 and name_parts is not None:
             if value in ('=', ':='):
@@ -3696,8 +3762,12 @@ def redact(text, password=None, quoted=True):
                 text = text.replace(variant, REDACTED)
     text = _redact_set_password_all(text)
     text = _redact_variable_errors(text)
-    text = _redact_secret_variables(text)
+    inventory = _may_have_secret_variables(text)
+    if inventory:
+        text = _redact_secret_variables(text)
     for pattern in _SECRET_PATTERNS:
+        if pattern is _SECRET_VARIABLE_LITERAL and not inventory:
+            continue
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0
     for start, end in _URL_SECRET(text, quoted=quoted):

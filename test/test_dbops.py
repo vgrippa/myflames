@@ -1914,6 +1914,212 @@ class TestRedaction(unittest.TestCase):
                 print('GATE65_TIMING %s %.6fs' % (shape, elapsed), flush=True)
                 self.assertLess(elapsed, 1)
 
+    def test_r352_brackets_in_url_usernames_do_not_disable_redaction(self):
+        cases = (
+            ('mysql://app[ro]:PW@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://app[ro]:PW/tail@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://app[ro:PW@db1/x', 'mysql://app[ro:[redacted]@db1/x'),
+            ('mysql://[::1]:3306/db', 'mysql://[::1]:3306/db'),
+            ('mysql://u:p@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+        )
+        for raw, expected in cases:
+            for quoted in (True, False):
+                with self.subTest(raw=raw, quoted=quoted):
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+
+    def test_r352_assignment_free_set_restarts_secret_assignments(self):
+        for prefix in ('SET NAMES utf8mb4 ', 'SET CHARACTER SET utf8mb4 ',
+                       'ALTER TABLE t CHARACTER SET utf8mb4 '):
+            for assignment in ('SET GLOBAL wsrep_sst_auth = ',
+                               'SET @@global.wsrep_sst_auth = '):
+                for value in ("CONCAT('private', 'tail')", '@private_value'):
+                    with self.subTest(prefix=prefix, assignment=assignment, value=value):
+                        raw = prefix + assignment + value
+                        expected = prefix + assignment + '[redacted]'
+                        self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                        self.assertEqual(dbops.redact(raw), expected)
+        # SET in CHARACTER SET and inside an expression must not expose a
+        # suffix of the current secret or change the harmless statement.
+        for raw in ('SET CHARACTER SET utf8mb4',
+                    'ALTER TABLE t CHARACTER SET utf8mb4'):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+        raw = "SET GLOBAL wsrep_sst_auth = CONCAT('SET', 'CHARACTER SET', 'private')"
+        self.assertEqual(dbops.redact(raw), 'SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_r352_secret_inventory_pass_skips_editor_text_without_names(self):
+        raw = ("SELECT id, total FROM orders WHERE status = 'open';\n"
+               "SET SESSION max_execution_time = 1000;\n"
+               "ALTER USER app IDENTIFIED BY 'private-login';\n"
+               "SELECT 'mysql://reader:private-url@db1/shop';")
+        expected = raw.replace('private-login', '[redacted]').replace('private-url', '[redacted]')
+        inventory_pattern = next(pattern for pattern in dbops._SECRET_PATTERNS
+                                 if dbops._SECRET_VARIABLE_NAME in pattern.pattern)
+        tracked_pattern = mock.Mock(wraps=inventory_pattern)
+        patterns = tuple(tracked_pattern if pattern is inventory_pattern else pattern
+                         for pattern in dbops._SECRET_PATTERNS)
+        with mock.patch.object(dbops, '_SECRET_PATTERNS', patterns):
+            with mock.patch.object(dbops, '_SECRET_VARIABLE_LITERAL', tracked_pattern, create=True):
+                with mock.patch.object(dbops, '_redact_secret_variables',
+                                       wraps=dbops._redact_secret_variables) as inventory_pass:
+                    self.assertEqual(dbops.redact(raw), expected)
+                    inventory_pass.assert_not_called()
+                    tracked_pattern.sub.assert_not_called()
+
+    def test_r352_secret_inventory_guard_keeps_all_name_spellings(self):
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for identifier in (name.upper(), '`' + name + '`', '"' + name.upper() + '"',
+                               ' . '.join('`' + part.upper() + '`' for part in name.split('.')),
+                               ' /* gap */ . '.join('"' + part + '"' for part in name.split('.'))):
+                with self.subTest(identifier=identifier):
+                    raw = 'SET GLOBAL ' + identifier + " = CONCAT('private', 'tail')"
+                    self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+        # The fallback uses Unicode re.I matching. A fast ASCII-name guard
+        # must not skip spellings that the existing fallback already hides.
+        for name in ('w\u017frep_sst_auth', 'f\u0131le_key_management_filekey',
+                     'f\u0130le_key_management_filekey', '\u212aeyring_hashicorp_secret_id'):
+            with self.subTest(name=name):
+                raw = "diagnostic: " + name + " = 'private-value'"
+                self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_r352_inventory_guard_keeps_fragmented_names_fail_closed(self):
+        # Even malformed names are joined by the existing SET scanner. A
+        # fast path must not expose values it previously hid.
+        for identifier in ('w srep_sst_auth', 'w/**/srep_sst_auth',
+                           'w-- gap\nsrep_sst_auth', 'w# gap\nsrep_sst_auth',
+                           '`w`"srep_sst_auth"',
+                           '`ws` /* gap */ `rep_sst_auth`',
+                           'w/*!80000 */srep_sst_auth',
+                           'w/*M!100100 */srep_sst_auth',
+                           '/*M!100100w srep_sst_auth */'):
+            with self.subTest(identifier=identifier):
+                raw = 'SET GLOBAL ' + identifier + " = CONCAT('private', 'tail')"
+                self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for split in (1, 2, 3):
+                with self.subTest(name=name, split=split):
+                    identifier = name[:split] + ' /**/ ' + name[split:]
+                    raw = 'SET GLOBAL ' + identifier + ' = @private'
+                    self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+
+    def test_r352_insert_set_row_alias_ends_secret_value(self):
+        for expression in ("'private-value'", '"private-value"', '@private_value',
+                           "CONCAT('private', 'tail')", "CAST('private-value' AS CHAR)",
+                           "(SELECT 'private-value' AS hidden)"):
+            for alias in ('AS new', 'as `new`', 'AS new (new_secret)',
+                          'AS new (new_secret, c)'):
+                with self.subTest(expression=expression, alias=alias):
+                    prefix = 'INSERT INTO t SET wsrep_sst_auth = '
+                    suffix = ' ' + alias + ' ON DUPLICATE KEY UPDATE c = new.c'
+                    quote = expression[0] if expression[0] in ('\"', "'") else ''
+                    expected = prefix + quote + '[redacted]' + quote + suffix
+                    self.assertEqual(dbops._redact_secret_variables(prefix + expression + suffix), expected)
+                    self.assertEqual(dbops.redact(prefix + expression + suffix), expected)
+        # VALUES has no SET assignment to parse. Its existing credential
+        # redaction still leaves the row alias and duplicate-key clause intact.
+        raw = ("INSERT INTO t (c) VALUES ('mysql://u:private-value@h/db') AS new "
+               "ON DUPLICATE KEY UPDATE c = new.c")
+        self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_r352_as_inside_secret_values_stays_hidden(self):
+        for prefix in ('SET GLOBAL wsrep_sst_auth = ',
+                       'UPDATE t SET wsrep_sst_auth = ',
+                       'INSERT INTO t SET wsrep_sst_auth = '):
+            for expression in ("'private AS tail'", "CONCAT('private', ' AS tail')",
+                               "CAST('private-value' AS CHAR)",
+                               "(SELECT 'private-value' AS hidden)",
+                               'secrets.AS + private_tail', 'secrets . AS + private_tail',
+                               '@AS + private_tail', 'private-AS-tail',
+                               'private AS + tail', 'private AS tail + remainder',
+                               '@private OR AS tail', '@private AND AS tail',
+                               '@private NOT AS tail', '@private COLLATE AS tail',
+                               "'private AS unfinished"):
+                with self.subTest(prefix=prefix, expression=expression):
+                    quote = expression[0] if expression[0] in ('\"', "'") else ''
+                    self.assertEqual(dbops.redact(prefix + expression),
+                                     prefix + quote + '[redacted]' + quote)
+        for prefix in ('SET GLOBAL wsrep_sst_auth = ', 'UPDATE t SET wsrep_sst_auth = '):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + 'private AS tail'), prefix + '[redacted]')
+                self.assertEqual(dbops.redact(prefix + "'private' WHERE c = 1"),
+                                 prefix + "'[redacted]' WHERE c = 1")
+        raw = 'INSERT INTO t VALUES (1) SET GLOBAL wsrep_sst_auth = private AS tail'
+        self.assertEqual(dbops.redact(raw),
+                         'INSERT INTO t VALUES (1) SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_r352_prefixed_database_schemes_hide_numeric_slash_passwords(self):
+        for scheme in ('pool+mysql', 'jdbc:mysql', 'jdbc:pool+mysql',
+                       'pool+mariadb', 'pool+mysqlx', 'pool+postgres', 'pool+postgresql',
+                       'POOL+MYSQL'):
+            for value in ('p', 'p/w', '123/pw', '2024/one/two'):
+                for quoted in (True, False):
+                    with self.subTest(scheme=scheme, value=value, quoted=quoted):
+                        raw = scheme + '://u:' + value + '@h/db'
+                        self.assertEqual(dbops.redact(raw, quoted=quoted),
+                                         scheme + '://u:[redacted]@h/db')
+        for quoted in (True, False):
+            with self.subTest(quoted=quoted):
+                raw = 'git+https://h:443/path?mail=a@b'
+                self.assertEqual(dbops.redact(raw, quoted=quoted), raw)
+                self.assertEqual(dbops.redact('git+https://u:p@h/repo', quoted=quoted),
+                                 'git+https://u:[redacted]@h/repo')
+
+    def test_r352_reversed_executable_comments_hide_secret_expressions(self):
+        # sql_lex.cc accepts a second ! after either /*! or /*M!, then
+        # consumes five version digits and a sixth when present.
+        for opener in ('/*!!100000 ', '/*M!!100000 ', '/*!!80000 ', '/*M!!80000 ',
+                       '/*!! ', '/*M!! ', '/*!!100000', '/*M!!100000'):
+            for value in ("'private-value'", "CONCAT('private', 'tail')", '@private_value'):
+                with self.subTest(opener=opener, value=value):
+                    raw = opener + 'SET GLOBAL wsrep_sst_auth = ' + value + ' */; SELECT 1'
+                    quote = "'" if value.startswith("'") else ''
+                    expected = (opener + 'SET GLOBAL wsrep_sst_auth = ' + quote +
+                                '[redacted]' + quote + ' */; SELECT 1')
+                    self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                    self.assertEqual(dbops.redact(raw), expected)
+        for marker in ('/*!!100000', '/*M!!100000'):
+            with self.subTest(marker=marker):
+                raw = 'SET ' + marker + "wsrep_sst_auth = CONCAT('private', 'tail') */"
+                self.assertEqual(dbops.redact(raw), 'SET ' + marker + 'wsrep_sst_auth = [redacted] */')
+        # MariaDB consumes no version digits unless there are at least five.
+        # Shorter numeric bodies after '=' must remain secret, as on the base.
+        for marker in ('/*!!', '/*M!!'):
+            for number in ('7', '73', '731', '7319'):
+                with self.subTest(marker=marker, number=number):
+                    raw = 'SET GLOBAL wsrep_sst_auth = ' + marker + number + '*/'
+                    for redact in (dbops._redact_secret_variables, dbops.redact):
+                        clean = redact(raw)
+                        self.assertNotIn(number, clean)
+                        self.assertIn('[redacted]', clean)
+
+    def test_r352_realistic_editor_megabyte_redaction(self):
+        import statistics
+        import time
+
+        unit = ("-- Inspect recent orders and the customers who placed them.\n"
+                "SELECT o.id, o.created_at, o.total, c.name\n"
+                "FROM orders AS o JOIN customers AS c ON c.id = o.customer_id\n"
+                "WHERE o.status = 'open' AND o.total > 25\n"
+                "ORDER BY o.created_at DESC LIMIT 100;\n"
+                "SET SESSION max_execution_time = 1000;\n")
+        for shape, suffix in (('without_secret_name', ''),
+                              ('with_secret_name', "SET GLOBAL wsrep_sst_auth = 'benchmark-private';\n")):
+            with self.subTest(shape=shape):
+                size = 1024 * 1024
+                copies, padding = divmod(size - len(suffix), len(unit))
+                raw = unit * copies + ' ' * padding + suffix
+                expected = raw.replace('benchmark-private', '[redacted]')
+                self.assertEqual(len(raw.encode('utf-8')), size)
+                timings = []
+                for _ in range(3):
+                    began = time.monotonic()
+                    clean = dbops.redact(raw)
+                    timings.append(time.monotonic() - began)
+                    self.assertEqual(clean, expected)
+                print('R352_EDITOR_TIMING %s bytes=%d median=%.6fs samples=%s' %
+                      (shape, size, statistics.median(timings),
+                       ','.join('%.6f' % elapsed for elapsed in timings)), flush=True)
+
     def test_url_password_containing_at_redacts_to_last_authority_at(self):
         scheme = 'mysql:' + '//'
 
