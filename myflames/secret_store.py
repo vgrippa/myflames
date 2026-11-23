@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -53,6 +54,7 @@ LABELS = {
 
 _LOCK = threading.Lock()
 _WINDOWS_ACL_CACHE_SIZE = 256
+_WINDOWS_ACL_CACHE_SECONDS = 60
 _WINDOWS_ACL_CACHE = OrderedDict()
 _WINDOWS_ACL_LOCK = threading.Lock()
 
@@ -147,11 +149,13 @@ def _reset_windows_acl_cache():
 
 
 def _ensure_windows_owner_only(path, directory=False):
-    """Skip only the ACL write for a previously protected path and identity.
+    """Skip only a recent ACL write for a previously protected path and identity.
 
     Keep validation on every call, inside the lock: a waiter must stat the
     current object, not reuse the identity it saw before another request ran.
     The lock also makes concurrent first opens apply each ACL just once.
+    Unavailable inode identities cannot be cached; successful writes expire
+    after a minute so external DACL changes are repaired on the next access.
     """
     cache_path = os.path.normcase(os.path.abspath(str(path)))
     with _WINDOWS_ACL_LOCK:
@@ -162,16 +166,20 @@ def _ensure_windows_owner_only(path, directory=False):
         if info is None:
             raise SecretStoreError('Private storage changed while it was being protected: %s' % path)
         identity = (info.st_dev, info.st_ino, directory)
-        if previous != identity:
+        if (not info.st_ino or previous is None or previous[0] != identity or
+                time.monotonic() - previous[1] >= _WINDOWS_ACL_CACHE_SECONDS):
             _windows_owner_only(path, directory=directory)
             current = _storage_stat(path, directory)
             if current is None or (current.st_dev, current.st_ino) != identity[:2]:
                 # SetNamedSecurityInfoW works by name. Do not remember a
                 # replacement that might not have received the ACL we set.
                 raise SecretStoreError('Private storage changed while it was being protected: %s' % path)
-        _WINDOWS_ACL_CACHE[cache_path] = identity
-        if len(_WINDOWS_ACL_CACHE) > _WINDOWS_ACL_CACHE_SIZE:
-            _WINDOWS_ACL_CACHE.popitem(last=False)
+            previous = (identity, time.monotonic())
+        if info.st_ino:
+            # Reads refresh LRU order, never the last successful ACL-write time.
+            _WINDOWS_ACL_CACHE[cache_path] = previous
+            if len(_WINDOWS_ACL_CACHE) > _WINDOWS_ACL_CACHE_SIZE:
+                _WINDOWS_ACL_CACHE.popitem(last=False)
 
 
 def _protect_private_path(path, mode, directory=False):

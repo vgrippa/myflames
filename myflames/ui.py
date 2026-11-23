@@ -3159,6 +3159,10 @@ class WorkspaceServer(ThreadingHTTPServer):
             self._worker_slots.release()
 
     def server_close(self):
+        # Stop startup probes before cleanup that can wait for remote servers.
+        warmup_stop = getattr(self, "_tools_warmup_stop", None)
+        if warmup_stop is not None:
+            warmup_stop.set()
         # SSH tunnels close after the cleanup below (its KILL QUERY and
         # session ends may go through them), but never later than
         # TUNNEL_CLOSE_SECONDS from now, and also when that cleanup fails.
@@ -3197,11 +3201,7 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
-            # Signal the startup probe warm-up to stop between candidates and
-            # join it boundedly so it never outlives server cleanup.
-            warmup_stop = getattr(self, "_tools_warmup_stop", None)
-            if warmup_stop is not None:
-                warmup_stop.set()
+            # Join the stopped warm-up boundedly before returning from cleanup.
             warmup = getattr(self, "_tools_warmup", None)
             if warmup is not None:
                 warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)

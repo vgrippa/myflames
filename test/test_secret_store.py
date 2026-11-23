@@ -203,6 +203,53 @@ class TestVault(IsolatedHome):
                 secret_store._protect_private_path(alias, 0o600)
             protect.assert_called_once_with(aliases[0], directory=False)
 
+    def test_windows_zero_inode_always_applies_acl_without_caching(self):
+        path = self.home / 'private-file'
+        path.write_bytes(b'')
+        fields = list(path.stat())
+        fields[1] = 0  # FAT and some network filesystems expose no file identity.
+        with mock.patch.object(secret_store.os, 'lstat', return_value=os.stat_result(fields)), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            for _ in range(3):
+                secret_store._ensure_windows_owner_only(path)
+            self.assertEqual(protect.call_count, 3)
+            self.assertFalse(secret_store._WINDOWS_ACL_CACHE)
+
+    def test_windows_acl_cache_expires_from_last_application_not_last_access(self):
+        path = self.home / 'private-file'
+        path.write_bytes(b'')
+        with mock.patch('time.monotonic', return_value=100.0) as clock, \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            secret_store._ensure_windows_owner_only(path)
+            clock.return_value = 159.9
+            secret_store._ensure_windows_owner_only(path)
+            protect.assert_called_once_with(path, directory=False)
+            # A frequent reader must not extend the repair window indefinitely.
+            clock.return_value = 160.0
+            secret_store._ensure_windows_owner_only(path)
+            self.assertEqual(protect.call_count, 2)
+            clock.return_value = 219.9
+            secret_store._ensure_windows_owner_only(path)
+            self.assertEqual(protect.call_count, 2)
+            clock.return_value = 220.1
+            secret_store._ensure_windows_owner_only(path)
+            self.assertEqual(protect.call_count, 3)
+
+    def test_windows_expired_acl_failure_is_not_retained(self):
+        path = self.home / 'private-file'
+        path.write_bytes(b'')
+        with mock.patch('time.monotonic', return_value=100.0) as clock, \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            secret_store._ensure_windows_owner_only(path)
+            clock.return_value = 161.0
+            protect.side_effect = SecretStoreError('Cannot enforce owner-only Windows permissions')
+            with self.assertRaisesRegex(SecretStoreError, 'Cannot enforce owner-only'):
+                secret_store._ensure_windows_owner_only(path)
+            self.assertFalse(secret_store._WINDOWS_ACL_CACHE)
+            protect.side_effect = None
+            secret_store._ensure_windows_owner_only(path)
+            self.assertEqual(protect.call_count, 3)
+
     def test_windows_acl_cache_is_bounded_and_evicts_the_least_recent_path(self):
         limit = secret_store._WINDOWS_ACL_CACHE_SIZE
         paths = [self.home / ('private-%d' % index) for index in range(limit + 1)]

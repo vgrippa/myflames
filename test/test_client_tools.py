@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 import random
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -329,6 +331,67 @@ class DiscoveryTests(unittest.TestCase):
             report = self.discover(self.root)
             self.assertEqual(run.call_count, 2)
             self.assertEqual(report['skipped'][0]['error'], 'TimeoutExpired')
+
+    def test_stop_event_kills_and_reaps_running_discovery_probe(self):
+        binary = self.make(self.root / 'slow/bin')
+        started = self.root / 'probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(5)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        stop = threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.discover, binary.parent, stop=stop)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the slow version probe never started')
+            finally:
+                t0 = time.monotonic()
+                stop.set()
+                report = future.result(timeout=10)
+                elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(report['installations'], [])
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].returncode, 'the probe child must be reaped before discovery ends')
+        self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+        self.assertFalse(ct._PROBE_FLIGHTS)
+
+    def test_stopped_probe_waiter_leaves_the_owners_flight_alone(self):
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        stop = threading.Event()
+        done = mock.Mock()
+
+        def stop_waiting(timeout):
+            stop.set()
+            return False
+
+        done.wait.side_effect = stop_waiting
+        flight = dict(done=done, result=None, error=None)
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.connector, '_run_bounded') as run:
+                result = ct.probe('mysql', str(binary), stop=stop)
+            self.assertFalse(result['available'])
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+            done.set.assert_not_called()
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS[key], flight)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
 
     def test_unrecognized_numeric_banner_is_not_cached(self):
         self.make(self.root, banner='/Applications/myflames 3.1.0/mysql: no version')
@@ -1214,13 +1277,14 @@ class DiscoveryTests(unittest.TestCase):
     def test_stop_event_stops_discover_between_candidates(self):
         folders = [self.make(self.root / str(i)).parent for i in range(3)]
         stop = threading.Event()
-        real_run = ct.subprocess.run
+        real_run = ct.connector._run_bounded
 
         def run_and_stop(*args, **kwargs):
+            result = real_run(*args, **kwargs)
             stop.set()
-            return real_run(*args, **kwargs)
+            return result
 
-        with mock.patch.object(ct.subprocess, 'run', side_effect=run_and_stop) as run:
+        with mock.patch.object(ct.connector, '_run_bounded', side_effect=run_and_stop) as run:
             report = self.discover(*folders, stop=stop)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(len(report['installations']), 1)

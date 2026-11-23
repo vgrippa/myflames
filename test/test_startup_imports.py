@@ -91,6 +91,41 @@ class TestRouteTables(unittest.TestCase):
 
 
 class TestWarmupClose(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable script')
+    def test_server_close_finishes_warmup_with_a_running_slow_probe(self):
+        from _client_tools_fixture import private_client_dir
+        from myflames import client_tools
+        from myflames.ui import WorkspaceServer
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        binary = private_client_dir(root / 'bin') / 'mysql'
+        started = root / 'probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(5)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        binary.chmod(0o700)
+        candidates = client_tools.snapshot(path=str(binary.parent), common_dirs=(), bundled=False,
+                                           names=('mysql',))
+        self.assertEqual(len(candidates), 1)
+        with patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                     'MYFLAMES_SECRET_BACKEND': 'vault'}), \
+                patch.object(client_tools, 'snapshot', return_value=candidates):
+            server = WorkspaceServer(0, store_path=str(root / 'workspace.sqlite3'))
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the warm-up version probe never started')
+                t0 = time.monotonic()
+                server.server_close()
+                elapsed = time.monotonic() - t0
+                alive_after_close = server._tools_warmup.is_alive()
+            finally:
+                server.server_close()
+                server._tools_warmup.join(10)
+        self.assertFalse(alive_after_close, 'server_close returned with its probe still running')
+        self.assertLess(elapsed, 0.5)
+
     def test_server_close_stops_the_tool_warmup_quickly(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

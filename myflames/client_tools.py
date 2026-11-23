@@ -56,16 +56,21 @@ def _banner_version(banner, name):
     return tuple(int(n) for n in match.group(1).split('.')) if match else (0, 0, 0)
 
 
-def probe(name, binary, refresh=False, job=None):
+def probe(name, binary, refresh=False, job=None, stop=None):
     """Return independent lifecycle-compatible banner fields; successes use LRU.
 
     Concurrent requests for an identity share its in-flight result, including
     failures, but failures are never retained for subsequent calls. No child
     runs under the global lock. An identity changed during probing is not cached.
+    With ``stop``, cancellation kills and reaps an owned child, or leaves a
+    shared flight without interrupting the other caller that owns it.
     """
     from . import lifecycle, read_cancel
+    stopped = {'available': False, 'error': 'Version probe stopped.'}
     while True:
         read_cancel.check()
+        if stop is not None and stop.is_set():
+            return stopped
         if job:
             job.check_cancel()
         key = _probe_key(name, binary)
@@ -83,9 +88,13 @@ def probe(name, binary, refresh=False, job=None):
             break
         while not flight['done'].wait(0.1):
             read_cancel.check()
+            if stop is not None and stop.is_set():
+                return stopped
             if job:
                 job.check_cancel()
         read_cancel.check()
+        if stop is not None and stop.is_set():
+            return stopped
         if flight['result'] is None:
             if isinstance(flight.get('error'), read_cancel.CancelledRead):
                 # Another request owns this probe. Its cancellation must not
@@ -102,9 +111,17 @@ def probe(name, binary, refresh=False, job=None):
                     # including --version, must check the whole tree afresh.
                     binary = connector.checked_shell_program(binary)
                 read_cancel.check()
-                child = subprocess.run([os.path.abspath(binary), '--version'],
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       timeout=8, env=lifecycle._clean_env(home, shell=name == 'mysqlsh'))
+                argv = [os.path.abspath(binary), '--version']
+                env = lifecycle._clean_env(home, shell=name == 'mysqlsh')
+                if stop is None:
+                    child = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, timeout=8, env=env)
+                else:
+                    # The bounded runner polls cancellation and kills/reaps the
+                    # process group before the warm-up's temporary HOME closes.
+                    with read_cancel.scope(stop, guard=read_cancel.current_guard()):
+                        child = connector._run_bounded(argv, timeout=8, input=b'', env=env, kill_tree=True)
+                    child.stdout += child.stderr
             banner = child.stdout.decode('utf-8', 'replace').strip()[:4096]
             # Preserve lifecycle's historical tuple semantics here. Discovery
             # derives its distribution version from this cached banner instead.
@@ -126,7 +143,7 @@ def probe(name, binary, refresh=False, job=None):
                     result.update(available=False, error='The resolved program is not MySQL Shell.')
             if not result['available']:
                 result.setdefault('error', 'Version probe failed or returned an unrecognized version.')
-        except (OSError, subprocess.TimeoutExpired, connector.ClientMissingError) as exc:
+        except (OSError, subprocess.TimeoutExpired, connector.ConnectorError) as exc:
             result['error'] = str(exc) if isinstance(exc, connector.ClientMissingError) else type(exc).__name__
         with _PROBE_LOCK:
             if (result['available'] and _banner_version(result['version'], name) != (0, 0, 0)
@@ -138,6 +155,13 @@ def probe(name, binary, refresh=False, job=None):
             flight['result'] = copy.deepcopy(result)
         read_cancel.check()
         return result
+    except read_cancel.CancelledRead as exc:
+        # A stopped owner publishes cancellation, so an unrelated caller that
+        # shared its flight retries instead of inheriting the stopped result.
+        flight['error'] = exc
+        if stop is not None and stop.is_set():
+            return stopped
+        raise
     except BaseException as exc:
         flight['error'] = exc
         raise
@@ -284,7 +308,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
     cached requests. Shell never consumes the query-tool discovery budget.
     mysqlpump is stat-only. Skipped records contain candidate metadata plus
     available=False and error (also reason); presence records are deprecated.
-    Optional ``stop`` (a ``threading.Event``) stops scanning between candidates.
+    Optional ``stop`` (a ``threading.Event``) also interrupts a running probe.
     """
     from . import read_cancel
     read_cancel.check()
@@ -331,7 +355,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
                 continue
             probes[category] += 1
             read_cancel.check()
-            fields = probe(name, candidate['realpath'], refresh=refresh, job=job)
+            fields = probe(name, candidate['realpath'], refresh=refresh, job=job, stop=stop)
             if fields['available']:
                 fields['version_tuple'] = list(_banner_version(fields['version'], name))
                 if fields['version_tuple'] == [0, 0, 0]:
