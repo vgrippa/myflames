@@ -883,6 +883,312 @@ class TestVersionAwareClients(unittest.TestCase):
         os.environ['PATH'] = os.path.dirname(second)
         self.assertEqual(conn._resolve_binary(), second)
 
+    def test_resolution_cache_skips_inventory_but_checks_trust_on_every_use(self):
+        from myflames import client_tools as ct
+        latest, old, bundle = self.layout()
+        for single in (False, True):
+            with self.subTest(single=single):
+                os.environ['PATH'] = os.path.dirname(old) if single else os.pathsep.join(
+                    map(os.path.dirname, (latest, old, bundle)))
+                os.environ['MYFLAMES_BUNDLED_CLIENT_DIR'] = '' if single else os.path.dirname(bundle)
+                conn = MySQLConnection(host='cached-' + str(single))
+                ct.remember_server(conn._endpoint_key(), 'mysql', '8.0.46')
+                self.assertEqual(conn._resolve_binary(), old)
+                with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot, \
+                        mock.patch.object(connector, 'checked_program',
+                                          wraps=connector.checked_program) as checked:
+                    for _ in range(3):
+                        self.assertEqual(conn._resolve_binary(), old)
+                    snapshot.assert_not_called()
+                    self.assertEqual(checked.call_count, 3)
+                    for call in checked.call_args_list:
+                        self.assertEqual(os.path.realpath(call[0][0]), old)
+
+    def test_resolution_cache_invalidates_on_path_change_alone(self):
+        first = self.binary(folder='path-first')
+        second = self.binary(folder='path-second')
+        os.environ['PATH'] = os.path.dirname(first)
+        conn = MySQLConnection(host='path-change')
+        self.assertEqual(conn._resolve_binary(), first)
+        os.environ['PATH'] = os.path.dirname(second)
+        self.assertEqual(conn._resolve_binary(), second)
+
+    def test_resolution_cache_invalidates_after_choices_change_back(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        os.environ['PATH'] = os.path.dirname(path)
+        conn = MySQLConnection(host='generation-only')
+        self.assertEqual(conn._resolve_binary(), path)
+        connector.set_client_choices({'mysql': path})
+        connector.set_client_choices({})
+        with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot:
+            self.assertEqual(conn._resolve_binary(), path)
+            self.assertGreater(snapshot.call_count, 0)
+
+    def test_resolution_cache_follows_updated_and_evicted_endpoint_facts(self):
+        from myflames import client_tools as ct
+        latest, old, bundle = self.layout()
+        conn = MySQLConnection(host='changing-facts')
+        key = conn._endpoint_key()
+        ct.remember_server(key, 'mysql', '8.4.14')
+        self.assertEqual(conn._resolve_binary(), bundle)
+        ct.remember_server(key, 'mysql', '8.0.46')
+        self.assertEqual(conn._resolve_binary(), old)
+        for index in range(256):
+            ct.remember_server(('evict', index), 'mysql', '8.4.14')
+        self.assertIsNone(ct.server_facts(key))
+        with mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(
+                b'9.7.1\tMySQL Community Server\n')) as run:
+            self.assertEqual(conn._resolve_binary(), latest)
+            self.assertEqual(run.call_count, 1)
+
+    def test_cached_trust_failure_cannot_pass_credentials_to_replaced_binary(self):
+        from myflames import client_tools as ct
+        for replacement in ('mode', 'file'):
+            with self.subTest(replacement=replacement):
+                marker = os.path.join(self.temp.name, 'untrusted-ran-' + replacement)
+                path = self.binary(folder='unsafe-' + replacement,
+                                   body='print("mysql Ver 8.4.13")')
+                os.environ['PATH'] = os.path.dirname(path)
+                connector.set_client_choices({'mysql': path})
+                conn = MySQLConnection(host='unsafe-' + replacement, password='private')
+                ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+                with mock.patch.object(connector, '_run_bounded',
+                                       return_value=_fake_completed(b'1\n')) as run:
+                    self.assertEqual(conn.run('SELECT 1').strip(), '1')
+                    run.reset_mock()
+                    if replacement == 'file':
+                        os.rename(path, path + '.previous')
+                        self.binary(folder='unsafe-' + replacement,
+                                    body='open(%r, "w").close()' % marker)
+                    # macOS deliberately trusts admin-group write (gid 80).
+                    # Other fixtures exercise group write alone, with no
+                    # world-write bit that could hide a missing group check.
+                    mode = 0o720 if replacement == 'mode' else 0o702
+                    if sys.platform == 'darwin' and os.stat(path).st_gid == 80:
+                        mode |= 0o002
+                    os.chmod(path, mode)
+                    with self.assertRaises(connector.ClientMissingError):
+                        conn.run('SELECT 1')
+                    run.assert_not_called()
+                self.assertFalse(os.path.exists(marker))
+
+    def test_cached_untrusted_automatic_client_can_fall_back_to_trusted_copy(self):
+        from myflames import client_tools as ct
+        preferred = self.binary(folder='preferred', body='print("mysql Ver 8.4.13")')
+        fallback = self.binary(folder='fallback', body='print("mysql Ver 8.0.45")')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (preferred, fallback)))
+        conn = MySQLConnection(host='automatic-trust')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(conn._resolve_binary(), preferred)
+        os.chmod(preferred, 0o702)
+        self.assertEqual(conn._resolve_binary(), fallback)
+
+    def test_cached_symlink_checks_original_spelling_before_credentials(self):
+        from myflames import client_tools as ct
+        target = self.binary(folder='target')
+        alternate = self.binary(folder='alternate')
+        link_dir = private_client_dir(os.path.join(self.temp.name, 'stable'))
+        link = os.path.join(str(link_dir), 'mysql')
+        os.symlink(target, link)
+        connector.set_client_choices({'mysql': link})
+        conn = MySQLConnection(host='symlink-trust', password='private')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(conn._resolve_binary(), target)
+        os.rename(link, link + '.previous')
+        os.symlink(alternate, link)
+        os.chmod(alternate, 0o702)
+        with mock.patch.object(connector, '_run_bounded') as run:
+            with self.assertRaises(connector.ClientMissingError):
+                conn.run('SELECT 1')
+            run.assert_not_called()
+
+    def test_cached_choice_change_during_trust_check_cannot_return_old_client(self):
+        from myflames import client_tools as ct
+        first = self.binary(folder='race-first')
+        second = self.binary(folder='race-second')
+        connector.set_client_choices({'mysql': first})
+        conn = MySQLConnection(host='cached-choice-race')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(conn._resolve_binary(), first)
+        real_checked = connector.checked_program
+        switched = []
+
+        def check(path, *args, **kwargs):
+            result = real_checked(path, *args, **kwargs)
+            if not switched:
+                switched.append(True)
+                connector.set_client_choices({'mysql': second})
+            return result
+
+        with mock.patch.object(connector, 'checked_program', side_effect=check):
+            self.assertEqual(conn._resolve_binary(), second)
+
+    def test_resolution_cache_is_safe_for_four_threads(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        os.environ['PATH'] = os.path.dirname(path)
+        conn = MySQLConnection(host='threaded-cache')
+        self.assertEqual(conn._resolve_binary(), path)
+        barrier = threading.Barrier(4)
+
+        def resolve(_):
+            barrier.wait(timeout=5)
+            return [conn._resolve_binary() for _ in range(15)]
+
+        with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot, \
+                mock.patch.object(connector, 'checked_program',
+                                  wraps=connector.checked_program) as checked, \
+                concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(resolve, range(4)))
+        self.assertEqual(results, [[path] * 15] * 4)
+        snapshot.assert_not_called()
+        self.assertEqual(checked.call_count, 60)
+
+    def test_explicit_override_remains_pinned_across_settings_and_path_changes(self):
+        from myflames import client_tools as ct
+        conn = MySQLConnection(host='override', binary='/private/override/mysql')
+        with mock.patch.object(ct, 'snapshot', side_effect=AssertionError('override must not discover')):
+            self.assertEqual(conn._resolve_binary(), '/private/override/mysql')
+            connector.set_client_choices({'mysql': '/changed/mysql'})
+            os.environ['PATH'] = '/changed/path'
+            self.assertEqual(conn._resolve_binary(), '/private/override/mysql')
+
+    def test_shared_resolution_rechecks_trust_and_keeps_metadata_private(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        connector.set_client_choices({'mysql': path})
+        first = MySQLConnection(host='shared-cache', user='first-user', password='first-private-value')
+        ct.remember_server(first._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(first._resolve_binary(), path)
+        second = MySQLConnection(host='shared-cache', user='second-user', password='second-private-value')
+        with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot, \
+                mock.patch.object(connector, 'checked_program',
+                                  wraps=connector.checked_program) as checked:
+            self.assertEqual(second._resolve_binary(), path)
+            snapshot.assert_not_called()
+            self.assertEqual(checked.call_count, 1)
+        first._client_use['engine'] = 'changed'
+        self.assertEqual(second._client_use['engine'], 'mysql')
+        third = MySQLConnection(host='shared-cache')
+        self.assertEqual(third._resolve_binary(), path)
+        self.assertEqual(third._client_use['engine'], 'mysql')
+        for private in ('first-user', 'second-user', 'first-private-value', 'second-private-value'):
+            self.assertNotIn(private, repr(connector._CLIENT_RESOLUTIONS))
+        os.chmod(path, 0o702)
+        with mock.patch.object(connector, '_run_bounded') as run:
+            with self.assertRaises(connector.ClientMissingError):
+                MySQLConnection(host='shared-cache', password='third-private-value').run('SELECT 1')
+            run.assert_not_called()
+
+    def test_shared_resolution_invalidates_when_selection_context_changes(self):
+        from myflames import client_tools as ct
+        latest, old, bundle = self.layout()
+        initial_path = os.environ['PATH']
+        for change in ('choices', 'generation', 'path', 'facts', 'actual-choices'):
+            with self.subTest(change=change), \
+                    mock.patch.dict(connector._CLIENT_RESOLUTIONS, clear=True), \
+                    contextlib.ExitStack() as stack:
+                connector.set_client_choices({})
+                os.environ['PATH'] = initial_path
+                first = MySQLConnection(host='shared-context-' + change)
+                ct.remember_server(first._endpoint_key(), 'mysql', '8.4.14')
+                self.assertEqual(first._resolve_binary(), bundle)
+                expected = bundle
+                if change == 'choices':
+                    connector.set_client_choices({'mysql': old})
+                    expected = old
+                elif change == 'generation':
+                    connector.set_client_choices({'mysql': old})
+                    connector.set_client_choices({})
+                elif change == 'path':
+                    os.environ['PATH'] = os.path.dirname(old)
+                elif change == 'facts':
+                    ct.remember_server(first._endpoint_key(), 'mysql', '8.0.46')
+                    expected = old
+                else:
+                    # Also protect callers that install choices under the lock
+                    # without updating a generation (for example isolated tests).
+                    stack.enter_context(mock.patch.dict(connector._CLIENT_CHOICES, {'mysql': old}))
+                    expected = old
+                with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot:
+                    self.assertEqual(MySQLConnection(host=first.host)._resolve_binary(), expected)
+                    self.assertGreater(snapshot.call_count, 0)
+
+    def test_shared_resolution_has_absolute_age_limit(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        os.environ['PATH'] = os.path.dirname(path)
+        first = MySQLConnection(host='shared-age')
+        ct.remember_server(first._endpoint_key(), 'mysql', '8.4.14')
+        started = time.monotonic()
+        self.assertEqual(first._resolve_binary(), path)
+        with mock.patch.object(connector.time, 'monotonic', return_value=started + 2.5), \
+                mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot:
+            self.assertEqual(MySQLConnection(host='shared-age')._resolve_binary(), path)
+            snapshot.assert_not_called()
+        # A hit must not extend the five-second age of the original discovery.
+        with mock.patch.object(connector.time, 'monotonic', return_value=started + 6.0), \
+                mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot:
+            self.assertEqual(MySQLConnection(host='shared-age')._resolve_binary(), path)
+            self.assertGreater(snapshot.call_count, 0)
+
+    def test_shared_resolution_lru_is_bounded_and_refreshes_read_recency(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        host = 'shared-lru'
+        ct.remember_server(MySQLConnection(host=host)._endpoint_key(), 'mysql', '8.4.14')
+
+        def resolve(index):
+            os.environ['PATH'] = os.pathsep.join((os.path.dirname(path),
+                                                  os.path.join(self.temp.name, 'absent-' + str(index))))
+            return MySQLConnection(host=host)._resolve_binary()
+
+        with mock.patch.dict(connector._CLIENT_RESOLUTIONS, clear=True), \
+                mock.patch.object(connector.time, 'monotonic', return_value=time.monotonic()):
+            for index in range(256):
+                self.assertEqual(resolve(index), path)
+            self.assertEqual(len(connector._CLIENT_RESOLUTIONS), 256)
+            self.assertEqual(resolve(0), path)
+            self.assertEqual(resolve(256), path)
+            self.assertEqual(len(connector._CLIENT_RESOLUTIONS), 256)
+            with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot:
+                self.assertEqual(resolve(0), path)
+                snapshot.assert_not_called()
+                self.assertEqual(resolve(1), path)
+                self.assertGreater(snapshot.call_count, 0)
+
+    def test_shared_resolution_is_safe_for_four_threads_with_separate_connections(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        os.environ['PATH'] = os.path.dirname(path)
+        first = MySQLConnection(host='shared-threads')
+        ct.remember_server(first._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(first._resolve_binary(), path)
+        barrier = threading.Barrier(4)
+
+        def resolve(_):
+            barrier.wait(timeout=5)
+            return [MySQLConnection(host='shared-threads')._resolve_binary() for _ in range(15)]
+
+        with mock.patch.object(ct, 'snapshot', wraps=ct.snapshot) as snapshot, \
+                mock.patch.object(connector, 'checked_program',
+                                  wraps=connector.checked_program) as checked, \
+                concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            self.assertEqual(list(pool.map(resolve, range(4))), [[path] * 15] * 4)
+        snapshot.assert_not_called()
+        self.assertEqual(checked.call_count, 60)
+
+    def test_empty_first_contact_and_override_do_not_populate_shared_resolution(self):
+        self.layout()
+        with mock.patch.dict(connector._CLIENT_RESOLUTIONS, clear=True), \
+                mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(b'')) as run:
+            for _ in range(2):
+                MySQLConnection(host='empty-response')._resolve_binary()
+            self.assertEqual(run.call_count, 2)
+            MySQLConnection(host='empty-response', binary='/override/mysql')._resolve_binary()
+            self.assertEqual(len(connector._CLIENT_RESOLUTIONS), 0)
+
     def test_first_contact_is_single_flight_and_preserves_transport(self):
         self.layout()
         entered, release = threading.Event(), threading.Event()
@@ -928,13 +1234,120 @@ class TestVersionAwareClients(unittest.TestCase):
     def test_sql_error_and_proxysql_version_are_not_cached(self):
         from myflames import client_tools as ct
         latest, _, _ = self.layout()
-        for response in (_fake_completed(b'2.7.3\tProxySQL\n'), _fake_completed(
-                stderr=b'ERROR 1064 (42000) at line 1: syntax', returncode=1)):
+        for index, response in enumerate((_fake_completed(b'2.7.3\tProxySQL\n'), _fake_completed(
+                stderr=b'ERROR 1064 (42000) at line 1: syntax', returncode=1))):
             with mock.patch.object(connector, '_run_bounded', return_value=response) as run:
-                conn = MySQLConnection(host='proxy')
+                conn = MySQLConnection(host='proxy-' + str(index))
                 self.assertEqual(conn._resolve_binary(), latest)
                 self.assertIsNone(ct.server_facts(conn._endpoint_key()))
                 self.assertEqual(run.call_count, 1)
+
+    def test_nonempty_unidentified_answer_is_probed_once_across_queries_and_connections(self):
+        from myflames import client_tools as ct
+        self.layout()
+        for index, response in enumerate((b'3.0.11-797-g7c91137\n', b'2.7.3\tProxySQL\n')):
+            with self.subTest(response=response):
+                reads = []
+
+                def read(argv, **kwargs):
+                    sql = argv[argv.index('-e') + 1]
+                    if sql == 'SELECT @@version, @@version_comment':
+                        reads.append(sql)
+                        return _fake_completed(response)
+                    self.assertEqual(sql, 'SELECT 1')
+                    return _fake_completed(b'1\n')
+
+                first = MySQLConnection(host='unidentified-' + str(index))
+                with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
+                    for conn in (first, first, MySQLConnection(host=first.host)):
+                        self.assertEqual(conn.run('SELECT 1').strip(), '1')
+                self.assertEqual(len(reads), 1)
+                self.assertEqual(run.call_count, 4)
+                self.assertIsNone(ct.server_facts(first._endpoint_key()))
+                self.assertTrue(ct.first_contact_unidentified(first._endpoint_key()))
+
+    def test_concurrent_valid_facts_win_over_an_unidentified_contact_answer(self):
+        from myflames import client_tools as ct
+        _, _, bundle = self.layout()
+        for index, response in enumerate((b'3.0.11-797-g7c91137\n', b'2.7.3\tProxySQL\n')):
+            with self.subTest(response=response):
+                conn = MySQLConnection(host='identified-during-contact-' + str(index))
+
+                def read(argv, **kwargs):
+                    # A different successful read publishes while this probe
+                    # is in flight, before its incomplete response arrives.
+                    ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+                    return _fake_completed(response)
+
+                with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
+                    self.assertEqual(conn._resolve_binary(), bundle)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(ct.server_facts(conn._endpoint_key()),
+                                 dict(engine='mysql', version='8.4.14'))
+                self.assertFalse(ct.first_contact_unidentified(conn._endpoint_key()))
+                self.assertIsNone(conn._version_cache)
+                self.assertIsNone(conn._version_comment_cache)
+
+    def test_sql_refusal_is_probed_once_across_queries_and_connections(self):
+        from myflames import client_tools as ct
+        marker = os.path.join(self.temp.name, 'version-probes')
+        body = ("import sys\n"
+                "if '--version' in sys.argv:\n print('mysql Ver 9.7.0'); sys.exit(0)\n"
+                "sql = sys.argv[sys.argv.index('-e') + 1]\n"
+                "if sql == 'SELECT @@version, @@version_comment':\n"
+                " with open(%r, 'a') as handle: handle.write('probe\\n')\n"
+                " sys.stderr.write('ERROR 1064 (42000) at line 1: ProxySQL Admin syntax error')\n"
+                " sys.exit(1)\n"
+                "print('1')" % marker)
+        chosen = self.binary(folder='proxy-client', body=body)
+        other = self.binary(folder='other-client')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (chosen, other)))
+        first = MySQLConnection(host='proxy-refusal')
+        for conn in (first, first, MySQLConnection(host='proxy-refusal')):
+            self.assertEqual(conn.run('SELECT 1').strip(), '1')
+        with open(marker) as handle:
+            self.assertEqual(handle.readlines(), ['probe\n'])
+        self.assertIsNone(ct.server_facts(first._endpoint_key()),
+                          'a refused identity read must not invent an engine or version')
+        # Endpoint eviction also evicts the refusal, so a later contact retries.
+        for index in range(256):
+            ct.remember_server(('evict-proxy', index), 'mysql', '8.4.14')
+        self.assertEqual(first.run('SELECT 1').strip(), '1')
+        with open(marker) as handle:
+            self.assertEqual(handle.readlines(), ['probe\n', 'probe\n'])
+
+    def test_first_contact_authentication_failure_is_retried_on_later_calls(self):
+        from myflames import client_tools as ct
+        marker = os.path.join(self.temp.name, 'authentication-attempts')
+        body = ("import sys\n"
+                "if '--version' in sys.argv:\n print('mysql Ver 9.7.0'); sys.exit(0)\n"
+                "with open(%r, 'a') as handle: handle.write('attempt\\n')\n"
+                "sys.stderr.write('ERROR 1045 (28000): Access denied')\n"
+                "sys.exit(1)" % marker)
+        chosen = self.binary(folder='auth-client', body=body)
+        other = self.binary(folder='other-client')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (chosen, other)))
+        first = MySQLConnection(host='auth-retry')
+        for conn in (first, first, MySQLConnection(host='auth-retry')):
+            with self.assertRaisesRegex(ConnectorError, 'ERROR 1045'):
+                conn.run('SELECT 1')
+        with open(marker) as handle:
+            self.assertEqual(handle.readlines(), ['attempt\n'] * 3)
+        self.assertIsNone(ct.server_facts(first._endpoint_key()))
+
+    def test_first_contact_transport_failure_is_retried_on_later_calls(self):
+        self.layout()
+        for index, error in enumerate((b"ERROR 2003 (HY000): Can't connect",
+                                       b'ERROR 2013 (HY000) at line 1: Lost connection',
+                                       b"ERROR 1045 (28000): Access denied for user "
+                                       b"'ERROR 1064 (42000) at line 1: syntax'")):
+            with self.subTest(error=error), mock.patch.object(connector, '_run_bounded',
+                    return_value=_fake_completed(stderr=error, returncode=1)) as run:
+                conn = MySQLConnection(host='transport-retry-' + str(index))
+                for _ in range(2):
+                    with self.assertRaises(ConnectorError):
+                        conn.run('SELECT 1')
+                self.assertEqual(run.call_count, 2)
 
     def test_2059_retries_other_engine_only_during_first_contact(self):
         from myflames import client_tools as ct

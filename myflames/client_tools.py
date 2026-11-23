@@ -501,12 +501,37 @@ def remember_server(key, engine, version):
             _FACTS.popitem(last=False)
 
 
+def remember_unidentified_server(key):
+    """Remember an answered but unidentified endpoint in the same facts LRU.
+
+    None marks an SQL refusal or an unsupported/incomplete nonempty identity
+    reply, not an engine/version fact. Authentication and transport failures
+    must never enter this cache. Concurrent valid facts take precedence.
+    """
+    with _FACTS_LOCK:
+        if key not in _FACTS:
+            _FACTS[key] = None
+        _FACTS.move_to_end(key)
+        while len(_FACTS) > 256:
+            _FACTS.popitem(last=False)
+
+
+def first_contact_unidentified(key):
+    """Whether a completed probe could not identify this endpoint's engine."""
+    with _FACTS_LOCK:
+        if key in _FACTS:
+            _FACTS.move_to_end(key)
+            return _FACTS[key] is None
+    return False
+
+
 def server_facts(key):
     """Return an independent {engine,version} or None and mark the key recently used."""
     with _FACTS_LOCK:
         facts = _FACTS.get(key)
-        if facts is not None:
+        if key in _FACTS:
             _FACTS.move_to_end(key)
+        if facts is not None:
             return dict(facts)
     return None
 

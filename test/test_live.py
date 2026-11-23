@@ -4,6 +4,9 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -239,9 +242,11 @@ class TestCaptureProtocol(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _script(self, code, marker='mk'):
+    def _script(self, code, marker='mk', sql='SELECT 1;', timeout=None):
         import sys
         job = LiveJob(payload())
+        if timeout is not None:
+            job.timeout = timeout
         conn = MagicMock()
         conn._build_argv.return_value = [sys.executable, '-c', code, 'x', 'y']
         procs = []
@@ -251,7 +256,7 @@ class TestCaptureProtocol(unittest.TestCase):
             return procs[-1]
         with patch('myflames.live.subprocess.Popen', side_effect=spawn):
             try:
-                return job, procs, job._run_script_isolated(conn, 'SELECT 1;', marker, dict(os.environ), None)
+                return job, procs, job._run_script_isolated(conn, sql, marker, dict(os.environ), None)
             except ConnectorError as exc:
                 return job, procs, exc
 
@@ -274,6 +279,121 @@ class TestCaptureProtocol(unittest.TestCase):
         job, procs, result = self._script(code, 'mk')
         self.assertEqual(result, ('mk:connection\n42\nplan\n', 'warn'))
         self.assertIsNone(job.process)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX SIGTERM/SIGKILL behavior')
+    def test_timeout_reaps_a_client_that_ignores_sigterm(self):
+        code = ("import signal, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "print('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        started = time.monotonic()
+        job, procs, result = self._script(code, timeout=1)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIsInstance(result, ConnectorError)
+        self.assertIn('time limit', str(result))
+        self.assertEqual(procs[0].returncode, -signal.SIGKILL)
+        # Unbuffered stdout still supplies the target before cancellation.
+        self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        self.assertIsNone(job.process)
+        self.assertIsNone(job.connection_id)
+        self.assertFalse(job._cancel_thread.is_alive())
+
+    def test_large_stdin_cannot_hold_the_calling_thread_past_its_deadline(self):
+        # The child never reads stdin. The 256 KiB script fills any normal
+        # pipe buffer, so writing it on the caller would defeat the timeout.
+        code = 'import time\ntime.sleep(5)\n'
+        started = time.monotonic()
+        job, procs, result = self._script(code, sql='x' * (256 * 1024), timeout=0.3)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIsInstance(result, ConnectorError)
+        self.assertIn('time limit', str(result))
+        self.assertIsNotNone(procs[0].poll())
+        self.assertIsNone(job.process)
+
+    def test_large_script_is_delivered_completely(self):
+        code = "import sys\nprint(len(sys.stdin.buffer.read()))\n"
+        job, procs, result = self._script(code, sql='x' * (256 * 1024), timeout=2)
+        self.assertEqual(result, ('262144\n', ''))
+        self.assertEqual(procs[0].returncode, 0)
+        self.assertIsNone(job.process)
+
+    def test_slow_kill_control_connection_cannot_extend_the_local_deadline(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_control(sql, timeout=None):
+            entered.set()
+            release.wait(5)
+
+        self.conn.run.side_effect = slow_control
+        code = ("import time\nprint('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        job = None
+        try:
+            started = time.monotonic()
+            job, procs, result = self._script(code, timeout=0.3)
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertTrue(entered.is_set())
+            self.assertIsInstance(result, ConnectorError)
+            self.assertIsNotNone(procs[0].poll())
+            self.assertIsNone(job.process)
+            self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        finally:
+            release.set()
+            if job is not None and job._cancel_thread is not None:
+                job._cancel_thread.join(timeout=1)
+        self.assertFalse(job._cancel_thread.is_alive())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX SIGTERM/SIGKILL behavior')
+    def test_manager_close_reaps_an_active_client_and_joins_its_worker(self):
+        import sys
+        manager = LiveJobs()
+        code = ("import signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "print('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        conn = MagicMock()
+        conn._build_argv.return_value = [sys.executable, '-c', code, 'x', 'y']
+        procs, errors = [], []
+        real = __import__('subprocess').Popen
+
+        def spawn(*args, **kwargs):
+            procs.append(real(*args, **kwargs))
+            return procs[-1]
+
+        def capture(job):
+            job.state = 'running'
+            try:
+                job._run_script_isolated(conn, 'SELECT 1;', 'mk', dict(os.environ), None)
+            except ConnectorError as exc:
+                errors.append(str(exc))
+                job.state = 'cancelled'
+
+        worker = None
+        try:
+            with patch.object(LiveJob, 'run', capture), \
+                    patch('myflames.live.subprocess.Popen', side_effect=spawn):
+                result = manager.start(payload())
+                job = manager.jobs[result['id']]
+                worker = manager.threads[result['id']]
+                deadline = time.monotonic() + 2
+                while job.connection_id is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(job.connection_id, 42)
+                started = time.monotonic()
+                manager.close()
+                self.assertLess(time.monotonic() - started, 2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(job._cancel_thread.is_alive())
+            self.assertEqual(procs[0].returncode, -signal.SIGKILL)
+            self.assertTrue(errors)
+            self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=1)
+            if worker is not None:
+                worker.join(timeout=1)
 
     def test_sections_keep_multiline_raw_json_and_status_deltas(self):
         sections = _sections(captured('marker'), 'marker')
@@ -451,6 +571,7 @@ class TestCaptureProtocol(unittest.TestCase):
         self.conn._build_argv.return_value = ['mysql', '--raw', '--binary-mode', '-e', '']
         proc = MagicMock()
         proc.stdin = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = 0
@@ -481,6 +602,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = proc.returncode = 0
@@ -511,7 +633,7 @@ class TestCaptureProtocol(unittest.TestCase):
         self.conn.run.side_effect = lambda sql, timeout=None: events.append(('server', sql))
         proc = MagicMock()
         proc.stdout = io.BytesIO((marker + ':connection\n42\n').encode())
-        proc.stderr.read1.side_effect = KeyboardInterrupt
+        proc.stderr.read.side_effect = KeyboardInterrupt
         proc.poll.return_value = None
         proc.terminate.side_effect = lambda: events.append('terminate')
         proc.kill.side_effect = lambda: events.append('kill client')
@@ -526,6 +648,8 @@ class TestCaptureProtocol(unittest.TestCase):
             self.target(*self.args)
         def join(self, timeout=None):
             pass
+        def is_alive(self):
+            return False
 
     def test_ctrl_c_sends_kill_query_before_the_client_is_ended(self):
         job = LiveJob(payload())
@@ -566,6 +690,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = 0
@@ -582,6 +707,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO()
         proc.stderr = io.BytesIO(b'Unknown option: unsupported')
         proc.poll.return_value = 1
@@ -594,6 +720,37 @@ class TestCaptureProtocol(unittest.TestCase):
 
 
 class TestCaptureManager(unittest.TestCase):
+    def test_close_has_one_bound_for_stuck_workers_and_refuses_new_jobs(self):
+        from myflames import live
+        manager = LiveJobs()
+        release = threading.Event()
+        entered = threading.Event()
+
+        def stuck(job):
+            job.state = 'running'
+            entered.set()
+            release.wait(5)
+
+        worker = None
+        try:
+            with patch.object(LiveJob, 'run', stuck):
+                result = manager.start(payload())
+            worker = manager.threads[result['id']]
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            with patch.object(live, '_CLOSE_SECONDS', 0.1):
+                manager.close()
+            self.assertLess(time.monotonic() - started, 0.6)
+            self.assertTrue(manager.jobs[result['id']].cancelled.is_set())
+            self.assertTrue(worker.is_alive())
+            with self.assertRaisesRegex(ValueError, 'closed'):
+                manager.start(payload())
+        finally:
+            release.set()
+            if worker is not None:
+                worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+
     def test_repeat_statistics_do_not_treat_missing_as_zero(self):
         result = measurement_summary([{'total_time_ms': n} for n in (1, None, 9, 5)])
         self.assertEqual(result, {'count': 3, 'median_ms': 5, 'min_ms': 1, 'max_ms': 9, 'stdev_ms': 4})

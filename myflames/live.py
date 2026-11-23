@@ -19,6 +19,35 @@ from .collectors import collect_schema, collect_stats, collect_stats_freshness, 
 from .parser import parse_explain
 from .server_info import parse_version_tuple, unsupported_version_note
 
+# Cleanup has its own small budgets, independent of a capture's SQL timeout.
+# A broken client must not hold a pipe, a credential file or shutdown forever.
+_TERM_GRACE_SECONDS = 0.25
+_REAP_SECONDS = 1.0
+_WORKER_JOIN_SECONDS = 1.0
+_CANCEL_WAIT_SECONDS = 6.5
+_CLOSE_SECONDS = 3.0
+
+
+def _stop_client(proc):
+    """Terminate and reap a client, escalating after a bounded grace period."""
+    if proc is None:
+        return True
+    try:
+        if proc.poll() is not None:
+            return True
+        proc.terminate()
+        try:
+            proc.wait(timeout=_TERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=_REAP_SECONDS)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        # An already exited process can race either signal. A process that
+        # still cannot be reaped is kept on the job for a shutdown retry.
+        return proc.poll() is not None
+
+
 #: Comments and quoted strings as the server and the mysql client read them by
 #: default: a backslash escapes the next character inside '...' and "...".
 #: "-- " starts a comment only before the client's ASCII white space (space,
@@ -470,30 +499,51 @@ class LiveJob:
         self.cancelled = threading.Event()
         self.process = None
         self.connection_id = None
+        self._cancel_lock = threading.Lock()
+        self._cancel_thread = None
         self.created = time.monotonic()
 
     def snapshot(self):
         return {'id': self.id, 'state': self.state, 'error': self.error,
                 'progress': self.progress, 'repeat': self.repeat, 'result': self.result}
 
-    def _open_connection(self):
-        conn = MySQLConnection(**self.options)
+    def _open_connection(self, options=None):
+        conn = MySQLConnection(**(self.options if options is None else options))
         if self._login_guard is not None:
             conn._login_guard = self._login_guard
             conn._group_login_started = False
         return conn
 
     def cancel(self):
-        self.cancelled.set()
+        worker = self._request_cancel()
+        if worker is not None:
+            worker.join(timeout=_CANCEL_WAIT_SECONDS)
+
+    def _request_cancel(self):
+        """Request server cancellation without blocking the process deadline."""
+        with self._cancel_lock:
+            if self._cancel_thread is None and (self.process is not None or self.connection_id):
+                # Snapshot ownership and credentials before the capture worker
+                # clears them. Shutdown and the timer share one KILL attempt.
+                self._cancel_thread = threading.Thread(
+                    target=self._cancel_target,
+                    args=(self.process, self.connection_id, dict(self.options)), daemon=True)
+                self._cancel_thread.start()
+            self.cancelled.set()
+            return self._cancel_thread
+
+    def _cancel_target(self, proc, connection_id, options):
         # Kill only the connection owned by this job, never another user's query.
-        connection_id = self.connection_id
-        if connection_id:
-            try:
-                with self._open_connection() as control:
-                    control.run('KILL QUERY %d' % connection_id, timeout=5)
-            except (ConnectorError, ProfileReadError): pass
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
+        try:
+            if connection_id:
+                try:
+                    with self._open_connection(options) as control:
+                        control.run('KILL QUERY %d' % connection_id, timeout=5)
+                except (ConnectorError, ProfileReadError):
+                    pass
+        finally:
+            options.pop('password', None)
+            _stop_client(proc)
 
     def _run_script(self, conn, sql, marker):
         with conn._invocation_defaults() as defaults_path, client_environment() as env:
@@ -510,23 +560,24 @@ class LiveJob:
         # Feed SQL on stdin; credentials and query literals stay out of argv.
         if self._login_guard is not None:
             self._login_guard()
+        deadline = time.monotonic() + self.timeout
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=env)
+                                stderr=subprocess.PIPE, env=env, bufsize=0)
         self.process = proc
         out, err, failed = bytearray(), bytearray(), []
+        changed = threading.Event()
         def drain(pipe, buffer, limit, label, watch):
             # Bounded chunks with a cumulative limit, like the connector's own
             # reader: a huge plan or trace must not exhaust memory.
             tail, section = b'', ''
             try:
                 while True:
-                    chunk = pipe.read1(65536)
+                    chunk = pipe.read(min(65536, limit - len(buffer) + 1))
                     if not chunk: break
                     if len(buffer) + len(chunk) > limit:
                         failed.append(ConnectorError(
                             'Lost connection to the MySQL client: %s response exceeds the %d-byte limit; '
                             'the client was stopped and the outcome is unknown.' % (label, limit)))
-                        proc.kill()
                         break
                     buffer.extend(chunk)
                     if not watch: continue
@@ -545,24 +596,57 @@ class LiveJob:
                                                  'the outcome is unknown.'))
             finally:
                 pipe.close()
+                changed.set()
+
+        def send():
+            try:
+                # FileIO.write may be short. Only this worker owns stdin, so
+                # a client that never reads cannot block the deadline loop.
+                data = memoryview(sql.encode('utf-8'))
+                while data:
+                    written = proc.stdin.write(data[:65536])
+                    if not written:
+                        raise BrokenPipeError()
+                    data = data[written:]
+            except BrokenPipeError:
+                pass  # The client's return code and stderr explain an early exit.
+            except (OSError, ValueError):
+                failed.append(ConnectorError('Lost connection to the MySQL client while sending SQL; '
+                                             'the outcome is unknown.'))
+            finally:
+                proc.stdin.close()
+                changed.set()
+
         readers = [threading.Thread(target=drain, args=(proc.stdout, out, MAX_STDOUT_BYTES, 'stdout', True),
                                     daemon=True),
                    threading.Thread(target=drain, args=(proc.stderr, err, MAX_STDERR_BYTES, 'stderr', False),
                                     daemon=True)]
+        writer = threading.Thread(target=send, daemon=True)
+        workers = []
         timer = threading.Timer(self.timeout, self.cancel)
         timer.daemon = True
         timer.start()
         try:
-            for reader in readers: reader.start()
-            try:
-                proc.stdin.write(sql.encode('utf-8'))
-                proc.stdin.close()
-            except OSError:
-                if not failed: raise
-            for reader in readers: reader.join()
-            proc.wait()
-            if failed:
-                raise failed[0]
+            for worker in readers + [writer]:
+                worker.start()
+                workers.append(worker)
+            while True:
+                changed.clear()
+                if failed:
+                    raise failed[0]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._request_cancel()
+                if self.cancelled.is_set():
+                    raise ConnectorError('Capture cancelled or its time limit was reached.')
+                if not any(worker.is_alive() for worker in workers):
+                    try:
+                        proc.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        self._request_cancel()
+                        raise ConnectorError('Capture cancelled or its time limit was reached.')
+                    break
+                changed.wait(min(remaining, 0.05))
             stderr = err.decode('utf-8', errors='replace')
             output = _client_text(out)
             if self.cancelled.is_set():
@@ -578,15 +662,28 @@ class LiveJob:
             raise
         finally:
             timer.cancel()
-            if proc.poll() is None:
-                proc.kill(); proc.wait()
-            for reader in readers: reader.join(timeout=5)
-            self.process = None
+            stopped = _stop_client(proc)
+            # Share one join budget across pipe and cancellation workers.
+            # Raw (unbuffered) streams have no buffered-I/O lock that close()
+            # could block on while another thread is in read() or write().
+            join_deadline = time.monotonic() + _WORKER_JOIN_SECONDS
+            for worker in workers + [timer, self._cancel_thread]:
+                if worker is not None:
+                    worker.join(timeout=max(0, join_deadline - time.monotonic()))
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                pipe.close()
+            if stopped:
+                self.process = None
             self.connection_id = None
+            if not stopped:
+                raise ConnectorError('The MySQL client could not be stopped within its cleanup deadline; '
+                                     'the outcome is unknown.')
 
     def run(self):
         self.state = 'running'
         try:
+            if self.cancelled.is_set():
+                raise ConnectorError('Capture cancelled.')
             with self._open_connection() as conn:
                 version = conn.server_version()
                 maria = conn.is_mariadb()
@@ -683,11 +780,15 @@ class LiveJob:
 class LiveJobs:
     def __init__(self):
         self.jobs = {}
+        self.threads = {}
         self.lock = threading.Lock()
+        self.closed = False
 
     def start(self, payload, login_guard=None):
         job = LiveJob(payload, login_guard=login_guard)
         with self.lock:
+            if self.closed:
+                raise ValueError('Capture manager is closed.')
             active = [j for j in self.jobs.values() if j.state in ('queued', 'running')]
             if len(active) >= 2: raise ValueError('Two captures are running. Wait or cancel one first.')
             self.jobs = {k: j for k, j in self.jobs.items() if j in active or time.monotonic() - j.created < 3600}
@@ -695,7 +796,12 @@ class LiveJobs:
                 oldest = next(k for k, j in self.jobs.items() if j not in active)
                 del self.jobs[oldest]
             self.jobs[job.id] = job
-        threading.Thread(target=job.run, daemon=True).start()
+            self.threads = {key: worker for key, worker in self.threads.items() if worker.is_alive()}
+            worker = threading.Thread(target=job.run, daemon=True)
+            self.threads[job.id] = worker
+            # Publish and start atomically with close(), so shutdown never
+            # joins an unstarted worker or misses a just-created capture.
+            worker.start()
         return {'id': job.id, 'state': 'queued'}
 
     def get(self, key, identity=None):
@@ -707,5 +813,15 @@ class LiveJobs:
         return job
 
     def close(self):
-        for job in list(self.jobs.values()):
-            if job.state in ('queued', 'running'): job.cancel()
+        deadline = time.monotonic() + _CLOSE_SECONDS
+        with self.lock:
+            self.closed = True
+            jobs = list(self.jobs.values())
+            workers = list(self.threads.values())
+        for job in jobs:
+            if job.state in ('queued', 'running'):
+                cancellation = job._request_cancel()
+                if cancellation is not None:
+                    workers.append(cancellation)
+        for worker in workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))

@@ -1281,6 +1281,54 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNotNone(ct.server_facts(0))
         self.assertEqual(len(ct._FACTS), 256)
 
+    def test_unidentified_server_uses_same_endpoint_key_without_inventing_facts(self):
+        key = ct.endpoint_key(dict(host='proxy', port=6032, user='first'))
+        ct.remember_unidentified_server(key)
+        same_endpoint = ct.endpoint_key(dict(host='proxy', port=6032, user='second',
+                                             password='not-a-real-secret', ssl_mode='REQUIRED'))
+        self.assertTrue(ct.first_contact_unidentified(same_endpoint))
+        self.assertIsNone(ct.server_facts(key))
+        for options in (dict(host='proxy', port=6033), dict(host='proxy-alias', port=6032),
+                        dict(host='proxy', port=6032, ssh_host='jump')):
+            self.assertFalse(ct.first_contact_unidentified(ct.endpoint_key(options)))
+        ct.remember_server(key, 'mysql', '8.4.14')
+        self.assertFalse(ct.first_contact_unidentified(key))
+        self.assertEqual(ct.server_facts(key), dict(engine='mysql', version='8.4.14'))
+        # A slower rejected probe cannot erase a successful concurrent read.
+        ct.remember_unidentified_server(key)
+        self.assertFalse(ct.first_contact_unidentified(key))
+        self.assertEqual(ct.server_facts(key), dict(engine='mysql', version='8.4.14'))
+
+    def test_unidentified_servers_share_fact_lru_limit_and_read_recency(self):
+        for index in range(256):
+            ct.remember_unidentified_server(index)
+        self.assertTrue(ct.first_contact_unidentified(0))
+        ct.remember_server(256, 'mysql', '8.4.14')
+        self.assertFalse(ct.first_contact_unidentified(1))
+        self.assertTrue(ct.first_contact_unidentified(0))
+        self.assertEqual(len(ct._FACTS), 256)
+        # Reading the unknown facts of a retained endpoint is still a use.
+        self.assertIsNone(ct.server_facts(2))
+        ct.remember_unidentified_server(257)
+        self.assertTrue(ct.first_contact_unidentified(2))
+        self.assertFalse(ct.first_contact_unidentified(3))
+
+    def test_unidentified_server_and_valid_facts_are_thread_safe(self):
+        def worker(index):
+            for attempt in range(15):
+                key = ct.endpoint_key(dict(host='refusal-%d-%d' % (index, attempt)))
+                ct.remember_unidentified_server(key)
+                self.assertTrue(ct.first_contact_unidentified(key))
+                self.assertIsNone(ct.server_facts(key))
+                ct.remember_server(key, 'mariadb', '11.8.2-MariaDB')
+                ct.remember_unidentified_server(key)
+                self.assertFalse(ct.first_contact_unidentified(key))
+                self.assertEqual(ct.server_facts(key),
+                                 dict(engine='mariadb', version='11.8.2-MariaDB'))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(worker, range(4)))
+        self.assertEqual(len(ct._FACTS), 60)
+
     def test_thread_safety(self):
         def worker(i):
             key = ct.endpoint_key(dict(host='host' + str(i)))

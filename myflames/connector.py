@@ -352,6 +352,11 @@ def client_missing_error(exc):
 _CLIENT_CHOICES = {'mysql': None, 'mariadb': None}
 _CLIENT_CHOICES_LOCK = threading.RLock()
 _CLIENT_CHOICES_GENERATION = 0
+# Selection metadata only, never credentials or transport. New connections
+# refresh inventory after five seconds even when PATH has not changed (for
+# example, after installing another client in an existing search directory).
+_CLIENT_RESOLUTIONS = collections.OrderedDict()
+_CLIENT_RESOLUTION_SECONDS = 5.0
 _CONTACT_LOCK = threading.Lock()
 _CONTACT_FLIGHTS = {}
 
@@ -364,6 +369,7 @@ def set_client_choices(choices):
         if values != _CLIENT_CHOICES:
             _CLIENT_CHOICES = values
             _CLIENT_CHOICES_GENERATION += 1
+            _CLIENT_RESOLUTIONS.clear()
 
 
 def client_choices():
@@ -866,6 +872,10 @@ class MySQLConnection:
         self._binary_override = binary
         self._binary_cached = None
         self._binary_generation = None
+        self._binary_lock = threading.RLock()
+        self._binary_context = None
+        self._binary_candidate = None
+        self._binary_identity = None
         self._defaults_file_path = None
         self._version_cache = None
         self._version_comment_cache = None
@@ -885,8 +895,8 @@ class MySQLConnection:
     def _first_contact(self, discovered, keys, choices, errors):
         """Single flight per endpoint, using this object's credentials/transport.
 
-        Only valid server facts persist. All waiters share failures as well as
-        successes, and a later request may retry an unknown or failed endpoint.
+        Valid facts and answered but unidentified replies persist in the LRU.
+        All waiters share failures; later requests retry transport/login errors.
         """
         from . import client_tools
         endpoint = self._endpoint_key()
@@ -894,6 +904,8 @@ class MySQLConnection:
             facts = client_tools.server_facts(endpoint)
             if facts is not None:
                 return facts
+            if client_tools.first_contact_unidentified(endpoint):
+                return None
             flight = _CONTACT_FLIGHTS.get(endpoint)
             owner = flight is None
             if owner:
@@ -940,16 +952,31 @@ class MySQLConnection:
                     # Both clients print "at line" only after a statement
                     # starts (client/mysql.cc put_info). Client 2xxx failures
                     # such as a lost connection remain connection failures.
-                    if re.search(r'\bERROR\s+(?!2\d{3}\b)\d+(?:\s+\([^)]*\))? at line \d+', str(exc)):
-                        return None
+                    # Inspect the first diagnostic, not error-like text in a
+                    # quoted username or in a diagnostic's explanation.
+                    message = re.sub(r'\Amysql client exited -?\d+: ', '', str(exc), count=1)
+                    diagnostic = re.search(r'^ERROR[^\r\n]*', message, re.M)
+                    if diagnostic and re.match(
+                            r'ERROR\s+(?!2\d{3}\b)\d+(?:\s+\([^)]*\))? at line \d+\b',
+                            diagnostic.group()):
+                        client_tools.remember_unidentified_server(endpoint)
+                        flight['facts'] = client_tools.server_facts(endpoint)
+                        return flight['facts']
                     raise
             row = text.strip().split('\n')[0].split('\t') if text.strip() else []
             if len(row) >= 2:
                 version, comment = (self._unescape_mysql(v) for v in row[:2])
                 client_tools.remember_server(endpoint, detect_flavor(version, comment), version)
                 flight['facts'] = client_tools.server_facts(endpoint)
-                if flight['facts'] is not None:
+                if flight['facts'] is not None and flight['facts']['version'] == version:
                     self._version_cache, self._version_comment_cache = version, comment
+            if flight['facts'] is None and text.strip():
+                # ProxySQL Admin can accept the SELECT but return only one
+                # column (or an unsupported ProxySQL version). It answered;
+                # retrying cannot improve client selection. Keep its engine
+                # unknown and allow later explicit valid facts to supersede it.
+                client_tools.remember_unidentified_server(endpoint)
+                flight['facts'] = client_tools.server_facts(endpoint)
             return flight['facts']
         except BaseException as exc:
             flight['error'] = exc
@@ -969,11 +996,61 @@ class MySQLConnection:
         if self._binary_override:
             self._binary_cached = self._binary_override
             return self._binary_cached
+        # Query execution remains concurrent. Only selection/cache publication
+        # is serialized so a shared connection cannot mix two choices' metadata.
+        with self._binary_lock:
+            return self._resolve_automatic_binary()
+
+    def _resolution_context(self, generation):
+        from . import client_tools
+        endpoint = self._endpoint_key()
+        return (generation, os.environ.get('PATH'), bundled_client_dir(), endpoint,
+                client_tools.server_facts(endpoint), client_tools.first_contact_unidentified(endpoint),
+                tuple(sorted(client_choices().items())), os.getcwd())
+
+    def _resolve_automatic_binary(self):
         from . import client_tools
         while True:
             with _CLIENT_CHOICES_LOCK:
                 generation = _CLIENT_CHOICES_GENERATION
                 choices = dict(_CLIENT_CHOICES)
+            context = self._resolution_context(generation)
+            cache_key = context[:4] + (tuple(sorted(context[4].items())) if context[4] else None,) + context[5:]
+            if self._binary_context != context:
+                with _CLIENT_CHOICES_LOCK:
+                    shared = _CLIENT_RESOLUTIONS.get(cache_key)
+                    if shared is not None:
+                        if time.monotonic() - shared[0] < _CLIENT_RESOLUTION_SECONDS:
+                            _CLIENT_RESOLUTIONS.move_to_end(cache_key)
+                            self._binary_cached = shared[1]
+                            self._binary_candidate = dict(shared[2])
+                            self._binary_identity = shared[3]
+                            self._client_use = dict(shared[4]) if shared[4] is not None else None
+                            self._binary_context = context
+                            self._binary_generation = generation
+                        else:
+                            _CLIENT_RESOLUTIONS.pop(cache_key, None)
+            if (self._binary_cached and self._binary_generation == generation
+                    and self._binary_context == context):
+                candidate = self._binary_candidate
+                try:
+                    path = self._checked_client(candidate, {})
+                except ClientMissingError:
+                    # Automatic selection may find another trusted client;
+                    # a broken explicit Settings choice still fails below.
+                    self._binary_context = None
+                else:
+                    identity = client_tools._probe_key(candidate['program'], candidate['path'])
+                    if identity is not None and identity == self._binary_identity:
+                        with _CLIENT_CHOICES_LOCK:
+                            if context == self._resolution_context(_CLIENT_CHOICES_GENERATION):
+                                return path
+                        continue
+                self._binary_cached = None
+                with _CLIENT_CHOICES_LOCK:
+                    _CLIENT_RESOLUTIONS.pop(cache_key, None)
+            facts = context[4]
+            contact_attempted = False
             candidates = [c for c in client_tools.snapshot(names=client_tools.QUERY_DISCOVERY_NAMES)
                           if c['name'] in ('mysql', 'mariadb') and not c.get('trust_error')]
             if not any(choices.values()) and len(candidates) <= 1:
@@ -982,6 +1059,7 @@ class MySQLConnection:
                     raise ClientMissingError()
                 candidate = candidates[0]
                 path = checked_program(candidate['path'], candidate['realpath'], candidate['bundled'])
+                checked_candidate = dict(candidate, program=candidate['name'])
                 used = None
             else:
                 discovered = (client_tools.discover_choices(choices, automatic=False, names=client_tools.QUERY_DISCOVERY_NAMES)
@@ -1003,6 +1081,7 @@ class MySQLConnection:
                                     for name, p in g['programs'].items() if name in ('mysql', 'mariadb')} |
                                    {c['realpath'] for c in candidates})
                 if facts is None and (any(errors.values()) or max(len(candidates), client_count) >= 2):
+                    contact_attempted = True
                     facts = self._first_contact(discovered, keys, choices, errors)
                 if facts and errors[facts['engine']]:
                     raise ClientMissingError(errors[facts['engine']])
@@ -1027,12 +1106,37 @@ class MySQLConnection:
                         if generation != _CLIENT_CHOICES_GENERATION:
                             continue
                     raise
+                checked_candidate = used
+            # Facts may have become known during first contact. Everything
+            # else must still describe the environment that chose this client.
+            resolved_context = self._resolution_context(generation)
+            if (context[:4] != resolved_context[:4] or context[6:] != resolved_context[6:]
+                    or facts != resolved_context[4]):
+                continue
+            # Empty successful replies still retry. An unidentified endpoint
+            # evicted during selection must also be probed again.
+            cacheable = not contact_attempted or facts is not None or resolved_context[5]
+            identity = client_tools._probe_key(checked_candidate['program'], checked_candidate['path'])
             with _CLIENT_CHOICES_LOCK:
                 if generation != _CLIENT_CHOICES_GENERATION:
                     continue
                 self._binary_generation = generation
                 self._binary_cached = path
+                self._binary_context = resolved_context if cacheable else None
+                self._binary_candidate = checked_candidate
+                self._binary_identity = identity
                 self._client_use = used
+                # Share only endpoints retained by the facts LRU, including
+                # answered but unidentified endpoints; empty replies retry.
+                if cacheable and (resolved_context[4] is not None or resolved_context[5]):
+                    cache_key = (resolved_context[:4] +
+                                 (tuple(sorted(facts.items())) if facts else None,) + resolved_context[5:])
+                    _CLIENT_RESOLUTIONS[cache_key] = (
+                        time.monotonic(), path, dict(checked_candidate), identity,
+                        dict(used) if used is not None else None)
+                    _CLIENT_RESOLUTIONS.move_to_end(cache_key)
+                    while len(_CLIENT_RESOLUTIONS) > 256:
+                        _CLIENT_RESOLUTIONS.popitem(last=False)
                 return path
 
     def _build_defaults_file_content(self, endpoint=None, client_engine=None):
