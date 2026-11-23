@@ -1259,6 +1259,31 @@ class TestMatching(unittest.TestCase):
         # confirmation still happens before any saved connection is opened.
         self.assertEqual(self.names({'host': '127.0.0.1', 'port': 3306}, ip, '127.0.0.2'), (['ip'], None))
 
+    def test_ssh_localhost_and_shorthand_loopback_never_match_local_profiles(self):
+        # An ssh: observer whose hostname ends in .localhost is never loopback.
+        for ssh_host in ('bastion.localhost', 'VM.Localhost.', 'localhost'):
+            replica_host = rp.reached_host({'host': '127.0.0.1', 'ssh_host': ssh_host})
+            with self.subTest(replica_host=replica_host):
+                self.assertFalse(rp._is_loopback(replica_host))
+                found, problem = self.names(
+                    {'host': '127.0.0.1', 'port': 3306},
+                    [{'name': 'local', 'host': '127.0.0.1', 'port': 3306}],
+                    replica_host,
+                )
+                self.assertEqual(found, [])
+                self.assertIn('not on this computer', problem)
+        # Shorthand and zero-padded loopback forms are blocked on remote replicas.
+        for source_host in ('127.1', '127.000.000.001'):
+            with self.subTest(source_host=source_host):
+                self.assertTrue(rp._is_loopback(source_host))
+                found, problem = self.names(
+                    {'host': source_host, 'port': 3306},
+                    [{'name': 'local', 'host': source_host, 'port': 3306}],
+                    'db9.example.com',
+                )
+                self.assertEqual(found, [])
+                self.assertIn('not on this computer', problem)
+
     def test_no_host(self):
         self.assertEqual(self.names({'host': None, 'port': 3306}, [{'name': 'a'}]),
                          ([], "The replica does not report its source's host."))

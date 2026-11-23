@@ -118,6 +118,9 @@ export function Sidebar({
   placeMuted?: Partial<Record<Place, string>>;
 }) {
   const preferences = useUiPreferences();
+  // While Software update is on its way (its chunk, then its check), the gear
+  // keeps the busy state even after the menu entry that launched it closed.
+  const updateOpening = useUpdateStatus().opening;
   const [width, setWidth] = useState(preferences.sidebar_width);
   const drag = useRef<{ pointer: number; x: number; width: number } | null>(null);
   useEffect(() => { setWidth(preferences.sidebar_width); }, [preferences.sidebar_width]);
@@ -400,12 +403,13 @@ export function Sidebar({
           aria-label="Settings"
           title="Settings"
           aria-current={settingsOpen ? "page" : undefined}
+          aria-busy={updateOpening || undefined}
           onClick={() => {
             setDrawerOpen(false);
             onOpenSettings();
           }}
         >
-          <Icon name="settings" size={16} />
+          {updateOpening ? <span className="spinner" aria-hidden="true" /> : <Icon name="settings" size={16} />}
         </button>
       </div>
     </aside>

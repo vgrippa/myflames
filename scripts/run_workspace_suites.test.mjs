@@ -72,11 +72,13 @@ async function executable(fake, name, source) {
   }
 }
 
-async function controlledPs(fake, { changeOnRecheck = false } = {}) {
+async function controlledPs(fake, { changeOnRecheck = false, failOnce = null } = {}) {
   // ps is denied in the delegate sandbox. The inventory is limited to actual
   // test-owned processes, with their real argv/cwd recorded by the fake suite.
   // Heartbeats below verify the processes really stop, rather than just mock
   // the cleanup's return value. Linux zombies are reported just like real ps.
+  // failOnce makes the named tool exit 3 on its first invocation, as a stalled
+  // inspection under load would, so the runner's single retry is exercised.
   const preamble = `
 import fs from 'node:fs';
 const registry = ${JSON.stringify(path.join(fake.root, 'process-table.json'))};
@@ -84,7 +86,11 @@ let rows = [];
 try { rows = JSON.parse(fs.readFileSync(registry, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 rows = rows.filter(({ pid }) => { try { process.kill(pid, 0); return true; } catch (e) { if (e.code !== 'ESRCH') throw e; return false; } });
 `;
-  await executable(fake, 'ps', preamble + `
+  const failFirst = (tool) => failOnce === tool ? `
+const failMarker = ${JSON.stringify(path.join(fake.root, tool + '-failed-once'))};
+if (!fs.existsSync(failMarker)) { fs.writeFileSync(failMarker, 'x'); process.exit(3); }
+` : '';
+  await executable(fake, 'ps', preamble + failFirst('ps') + `
 const args = process.argv.slice(2);
 const selected = args.includes('-p') ? Number(args[args.indexOf('-p') + 1]) : null;
 const changed = ${JSON.stringify(path.join(fake.root, 'ps-rechecked'))};
@@ -101,7 +107,7 @@ for (const row of rows) {
 }
 if (selected && !rows.length) process.exitCode = 1;
 `);
-  await executable(fake, 'lsof', preamble + `
+  await executable(fake, 'lsof', preamble + failFirst('lsof') + `
 const changed = ${JSON.stringify(path.join(fake.root, 'ps-rechecked'))};
 const args = process.argv.slice(2);
 const pids = args[args.indexOf('-p') + 1].split(',').map(Number);
@@ -948,6 +954,26 @@ test('a denied ps cannot certify cleanup or trigger an unverified group kill',
       assert.match(result.stderr, /Cannot inspect suite processes with ps/);
       assert.doesNotMatch(result.stdout, /QUARANTINED/);
     }
+  });
+
+test('a transient ps or lsof failure is retried once before failing the suite',
+  { skip: process.platform === 'win32' }, async (t) => {
+    // ps runs in every suite's cleanup; lsof runs only when a leftover process
+    // needs its working folder, so the lsof case uses a cwd-only leaker.
+    const fake = await fixture(t, { 'pass.mjs': {} });
+    await controlledPs(fake, { failOnce: 'ps' });
+    const result = await run(fake);
+    assert.equal(result.code, 0, result.output);
+    await fs.access(path.join(fake.root, 'ps-failed-once'));
+    assert.doesNotMatch(result.stderr, /Cannot inspect suite processes/);
+    const leaking = await fixture(t, { 'leak.mjs': { source: leakingSuite({ cwdOnly: true }) } });
+    await controlledPs(leaking, { failOnce: 'lsof' });
+    const leaked = await run(leaking);
+    assert.equal(leaked.code, 0, leaked.output);
+    assert.match(leaked.stderr, /Warning: leak\.mjs left 1 running process/);
+    await fs.access(path.join(leaking.root, 'lsof-failed-once'));
+    assert.doesNotMatch(leaked.stderr, /Cannot inspect suite working folders/);
+    await stoppedHeartbeat(leaking);
   });
 
 test('a long-running suite reports the real 30-second status heartbeat', { timeout: 40_000 }, async (t) => {

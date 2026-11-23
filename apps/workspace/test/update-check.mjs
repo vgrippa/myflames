@@ -226,7 +226,51 @@ try {
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
   await closeSettings();
 
-  // 7. Older than 24 hours: a past result with its date, not current, no Download.
+  // 7. One shared opener. While the dialog's chunk is delayed, the launching
+  // control and the Settings gear stay busy until the dialog is open; a chunk
+  // that cannot be read keeps the dialog closed and leaves a dismissible error
+  // with Retry at the launching control, and Retry with the request allowed
+  // opens the dialog.
+  await page.reload({ waitUntil: "networkidle0" });
+  state.slowAssets = /UpdateDialog-/;
+  state.slowAssetsMs = 3000;
+  await openUpdates();
+  await waitStatus(/^99\.0\.0 available/);
+  await page.click(`${updates} .update-check-download`);
+  await page.waitForSelector(`${updates} .update-check-download[aria-busy="true"]`);
+  await page.waitForSelector(".settings-button[aria-busy=\"true\"]");
+  assert.equal(await page.$("dialog.update-dialog"), null, "no dialog before its chunk arrives");
+  state.slowAssets = null;
+  state.slowAssetsMs = 1500;
+  await page.waitForSelector("dialog.update-dialog[open]");
+  assert.equal(await page.$eval(`${updates} .update-check-download`, (e) => e.getAttribute("aria-busy")), null,
+    "the busy state ends when the dialog is open");
+  assert.equal(await page.$eval(".settings-button", (e) => e.getAttribute("aria-busy")), null,
+    "the gear's busy state ends when the dialog is open");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await closeSettings();
+  await page.reload({ waitUntil: "networkidle0" });
+  state.failAssets = /UpdateDialog-/;
+  await openUpdates();
+  await waitStatus(/^99\.0\.0 available/);
+  await page.click(`${updates} .update-check-download`);
+  await page.waitForSelector(`${updates} .update-open-error[role="alert"]`, { timeout: 15000 });
+  assert.match(await page.$eval(`${updates} .update-open-error`, (e) => e.textContent),
+    /Software update window could not be loaded/);
+  assert.equal(await page.$("dialog.update-dialog"), null, "a failed chunk load opens no dialog");
+  assert.equal(await page.$eval(`${updates} .update-check-download`, (e) => e.getAttribute("aria-busy")), null,
+    "the busy state ends with the failure");
+  await page.screenshot({ path: path.join(shots, "update-open-error-light-1440.png") });
+  state.failAssets = null;
+  await page.click(`${updates} .update-open-error .update-open-retry`);
+  await page.waitForSelector("dialog.update-dialog[open]");
+  assert.equal(await page.$(`${updates} .update-open-error`), null, "the error clears when the dialog opens");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await closeSettings();
+
+  // 8. Older than 24 hours: a past result with its date, not current, no Download.
   const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
   statusMock = { status: 200, body: { schema_version: "app-update-status-1.0", current_version: "3.1.0",
     last_check: record("up_to_date", { checked_at: old.toISOString().replace(/\.\d+Z$/, "Z") }) } };
@@ -248,7 +292,7 @@ try {
   await closeSettings();
   statusMock = null;
 
-  // 8. A failed status read is unknown, not "Not checked yet", and About retries it.
+  // 9. A failed status read is unknown, not "Not checked yet", and About retries it.
   statusMock = { status: 500, body: { error: "Could not read the workspace." } };
   await page.reload({ waitUntil: "networkidle0" });
   await openUpdates();
@@ -256,13 +300,21 @@ try {
   await closeSettings();
   statusMock = null;
 
-  // 9. About myflames: the same status and button, sharing one check.
+  // 10. About myflames: the same status and button, sharing one check, and its
+  // Download opens the dialog through the same shared opener.
   await page.click(".settings-button");
   await page.waitForSelector(".settings-page");
   await page.locator(".settings-page .source-item ::-p-text(About myflames)").click();
   const about = "dialog.about-dialog";
   await page.waitForSelector(about + "[open]");
   await waitStatus(/^99\.0\.0 available · Checked today at/, about);
+  await page.click(`${about} .update-check-download`);
+  await page.waitForSelector("dialog.update-dialog[open]");
+  assert.match(await page.$eval("dialog.update-dialog", (e) => e.textContent), /Software update/);
+  assert.ok(await page.$(about + "[open]"), "About stays open behind Software update");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await page.waitForSelector(about + "[open]");
   checks.push({ status: 200, body: info(record("up_to_date")), delay: 300 });
   await page.click(`${about} .update-check-button`);
   await waitStatus(/Checking for updates…/, about);

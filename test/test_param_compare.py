@@ -727,8 +727,56 @@ print(time.monotonic() - began)
                 self.assertNotIn('SECRET', json.dumps(clean))
                 self.assertNotIn('S3cr3t', json.dumps(clean))
                 self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
-        for value in ('mysql://h:3306/db?mail=a@b', 'mysql://u@h:3306/db', 'http://h/a@b'):
+        # Database schemes fail closed even when a numeric prefix resembles a port.
+        self.assertEqual(P._redact_parameter_value('mysql://h:3306/db?mail=a@b'), '[redacted]')
+        for value in ('mysql://u@h:3306/db', 'http://h/a@b'):
             self.assertEqual(P._redact_parameter_value(value), value)
+
+    def test_gate65_nested_and_adjacent_credential_urls_are_never_compared(self):
+        values = (
+            'mysql://reader@h1,mysql://admin:PW@h2',
+            'https://user@host?next=mysql://dbuser:secret@db',
+            '["mysql://reader@db1:3306","mysql://rs:pw2@db2:3306"]',
+            'mysql://app:2024/secret@db1:3306/shop',
+            'mysql://u:p/w@[::1]:3306/db',
+        )
+        for value in values:
+            with self.subTest(value=value):
+                raw = snapshot([item('custom_setting', value, 'string', value, values=[value])])
+                clean = P.validate_snapshot(raw)
+                row = clean['items'][0]
+                self.assertEqual(row['value'], '[redacted]')
+                self.assertEqual(row['default'], '[redacted]')
+                self.assertTrue(row['redacted'])
+                self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+                group = P.compare_many({'a': raw, 'b': copy.deepcopy(raw)})[0]
+                self.assertEqual(group['values'], {'a': '[redacted]', 'b': '[redacted]'})
+                self.assertEqual(group['status'], 'missing')
+
+    def test_gate65_ipv6_host_path_is_not_a_parameter_password(self):
+        value = 'https://[2001:db8::1]/users/alice@example.com'
+        clean = P.validate_snapshot(snapshot([item('custom_setting', value, 'string', value)]))
+        self.assertEqual(clean['items'][0]['value'], value)
+        self.assertEqual(clean['items'][0]['default'], value)
+        self.assertFalse(clean['items'][0].get('redacted', False))
+        self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'identical')
+
+    def test_gate65_inventory_assignments_and_echoes_are_not_comparable(self):
+        values = (
+            'SET GLOBAL "wsrep_sst_auth" = CONCAT(\'ansi-secret\', \'tail\')',
+            'EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'echo-secret\'"',
+            "SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = CONCAT('script-secret', 'tail')",
+            'SET GLOBAL wsrep_sst_auth = /*!80000987654321*/',
+            "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = CONCAT('marker-secret', 'tail')",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                clean = P.validate_snapshot(snapshot([item('init_connect', value, 'string')]))
+                self.assertTrue(clean['items'][0].get('redacted', False))
+                encoded = json.dumps(clean)
+                for secret in ('ansi-secret', 'echo-secret', 'script-secret', '987654321', 'marker-secret'):
+                    self.assertNotIn(secret, encoded)
+                self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
 
     def test_secret_defaults_and_allowed_values_cannot_leak(self):
         for setting in (item('wsrep_sst_auth', 'masked', 'string', 'numeric-password', values=['allowed-secret']),

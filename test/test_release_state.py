@@ -93,7 +93,10 @@ class ReleaseEntryPointTest(unittest.TestCase):
     def test_npm_children_never_receive_signing_credentials_even_on_resume(self):
         secrets = ('APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER',
                    'APPLE_KEYCHAIN_PROFILE', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD',
-                   'APPLE_TEAM_ID', 'CSC_LINK', 'CSC_KEY_PASSWORD')
+                   'APPLE_TEAM_ID', 'CSC_LINK', 'CSC_KEY_PASSWORD',
+                   'CSC_INSTALLER_LINK', 'CSC_INSTALLER_KEY_PASSWORD',
+                   'WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD', 'GH_TOKEN', 'GITHUB_TOKEN',
+                   'NPM_TOKEN', 'NODE_AUTH_TOKEN')
         # Execute the real shell control flow. Every external build, git and
         # Apple command resolves to this recorder; npm never installs anything.
         fake = '''#!{python}

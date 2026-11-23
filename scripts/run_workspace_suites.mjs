@@ -281,15 +281,22 @@ export function referencesPrivatePath(text, roots) {
 
 function processTable(pid) {
   // -ww prevents long Chrome/Python command lines being cut before the path.
-  const result = spawnSync('ps', [...(pid === undefined ? ['-A'] : ['-p', String(pid)]),
-    '-ww', '-o', 'pid=,pgid=,stat=,command='], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 });
-  if (!result.error && result.status === 1 && !result.stdout.trim() && !result.stderr.trim()) return [];
-  if (result.error || result.status !== 0) throw new Error('Cannot inspect suite processes with ps');
-  return result.stdout.split('\n').flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    return match && !match[3].startsWith('Z') && Number(match[1]) > 1 && Number(match[1]) !== process.pid
-      ? [{ pid: Number(match[1]), group: Number(match[2]), command: match[4] }] : [];
-  });
+  // A busy system can stall ps past the spawn timeout; inspect once more before failing.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = spawnSync('ps', [...(pid === undefined ? ['-A'] : ['-p', String(pid)]),
+      '-ww', '-o', 'pid=,pgid=,stat=,command='], { encoding: 'utf8', timeout: 15000, maxBuffer: 16 << 20 });
+    if (!result.error && result.status === 1 && !result.stdout.trim() && !result.stderr.trim()) return [];
+    if (result.error || result.status !== 0) {
+      if (attempt === 0) continue;
+      throw new Error('Cannot inspect suite processes with ps');
+    }
+    return result.stdout.split('\n').flatMap((line) => {
+      const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      return match && !match[3].startsWith('Z') && Number(match[1]) > 1 && Number(match[1]) !== process.pid
+        ? [{ pid: Number(match[1]), group: Number(match[2]), command: match[4] }] : [];
+    });
+  }
+  throw new Error('unreachable');
 }
 
 function workingDirectories(processes) {
@@ -303,8 +310,11 @@ function workingDirectories(processes) {
   } else if (process.platform === 'darwin') {
     // Darwin ps exposes arguments but not cwd. Its system lsof supplies that
     // field; Linux supplies it through procfs. No environment/secrets are read.
-    const result = spawnSync('lsof', ['-nP', '-a', '-p', processes.map(({ pid }) => pid).join(','),
-      '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 });
+    // A busy system can stall lsof past the spawn timeout; inspect once more before failing.
+    const inspect = () => spawnSync('lsof', ['-nP', '-a', '-p', processes.map(({ pid }) => pid).join(','),
+      '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 15000, maxBuffer: 16 << 20 });
+    let result = inspect();
+    if (result.error || ![0, 1].includes(result.status)) result = inspect();
     if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot inspect suite working folders with lsof');
     let pid;
     for (const line of result.stdout.split('\n')) {

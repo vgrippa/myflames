@@ -433,6 +433,52 @@ class ReadysetBase(unittest.TestCase):
 
 class TestReadStatusAndSchema(ReadysetBase):
 
+    def test_gate65_status_and_error_redact_adjacent_urls_and_numeric_slash_passwords(self):
+        cases = (
+            ('["mysql://rs:pw1@db1:3306","mysql://rs:pw2@db2:3306"]',
+             '["mysql://rs:[redacted]@db1:3306","mysql://rs:[redacted]@db2:3306"]'),
+            ('mysql://reader@h1,mysql://admin:PW@h2',
+             'mysql://reader@h1,mysql://admin:[redacted]@h2'),
+            ('https://user@host?next=mysql://dbuser:secret@db',
+             'https://user@host?next=mysql://dbuser:[redacted]@db'),
+            ('mysql://app:2024/secret@db1:3306/shop',
+             'mysql://app:[redacted]@db1:3306/shop'),
+            ('mysql://u:p/w@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+            ('https://[2001:db8::1]/users/alice@example.com',
+             'https://[2001:db8::1]/users/alice@example.com'),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                conn = FakeReadyset()
+                conn.status_text = value
+                conn.last_error = 'replicator failed at ' + value
+                report = readyset.read_status(conn)
+                self.assertEqual(report['status_fields']['status'], expected)
+                self.assertEqual(report['status_fields']['last_replicator_error'],
+                                 'replicator failed at ' + expected)
+
+    def test_gate65_status_errors_redact_inventory_names_echoes_and_comments(self):
+        cases = (
+            ('SET GLOBAL "wsrep_sst_auth" = CONCAT(\'ansi-secret\', \'tail\')',
+             'SET GLOBAL "wsrep_sst_auth" = [redacted]'),
+            ('SET GLOBAL wsrep_sst_auth = /*!80000987654321*/',
+             'SET GLOBAL wsrep_sst_auth = /*!80000[redacted]*/'),
+            ("SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = CONCAT('marker-secret', 'tail')",
+             "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = [redacted]"),
+            ("UPDATE cfg SET s3_secret_key = 'abc' WHERE id = 1",
+             "UPDATE cfg SET s3_secret_key = '[redacted]' WHERE id = 1"),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                conn = FakeReadyset()
+                conn.last_error = value
+                self.assertEqual(readyset.read_status(conn)['status_fields']['last_replicator_error'], expected)
+        conn = FakeReadyset()
+        conn.last_error = "near 'SET GLOBAL wsrep_sst_auth = 'echo-secret'' at line 1"
+        shown = readyset.read_status(conn)['status_fields']['last_replicator_error']
+        self.assertNotIn('echo-secret', shown)
+        self.assertIn('[redacted]', shown)
+
     def test_gate351_status_and_error_url_passwords_can_contain_quotes(self):
         for password in ("pa'gate351-secret", 'pa"gate351-secret', 'pa`gate351-secret',
                          "pa/quo'te-gate351-secret"):

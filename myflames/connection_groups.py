@@ -468,9 +468,10 @@ def begin_read(store, current):
 
 def finish_read(store, report, connection, profiles, current, identity=None):
     """Persist direct observations only; suggestions never cause a login."""
+    from .replication import reached_host
     reads = (report.get('connection_group') or {}).get('read') or []
     report['connection_group'] = describe(report, profiles, current, reads,
-                                          connection.get('ssh_host') or connection.get('host'), identity=identity)
+                                          reached_host(connection), identity=identity)
     if current:
         try:
             store.record_topology_identity(current['id'], identity_from_report(report, identity), expected=current,

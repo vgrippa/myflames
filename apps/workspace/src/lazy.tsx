@@ -52,20 +52,27 @@ type Loadable = ComponentType<any> | ExoticComponent<any>;
  * (the fallback, then the component), after it the component directly, so a
  * mounted part is never remounted, and never loses state, because its chunk
  * arrived. Refs are forwarded (the Query editor's handle). A failed load keeps
- * its failure notice and Reload control mounted in the part's own boundary. */
-export function lazyComponent<T extends Loadable>(load: () => Promise<T>): T & { preload: () => Promise<T> } {
+ * its failure notice and Reload control mounted in the part's own boundary.
+ * *reload*, when given, reads the same chunk under a cache-busted name: a
+ * failed module fetch is cached for the window, so re-importing the first
+ * address can never retry. Only a new load after a failure uses it, so the
+ * retry below keeps one fresh address in reserve (updateStatus.ts
+ * UpdateDialogView). */
+export function lazyComponent<T extends Loadable>(load: () => Promise<T>, reload?: () => Promise<T>): T & { preload: () => Promise<T> } {
   let loaded: T | null = null;
   let pending: Promise<T> | null = null;
+  let failed = false;
   const preload = () => {
     if (!pending) {
       // A transient read failure (the local server reset a connection under
       // load) gets two retries; a chunk gone after an update fails again and
       // the mount shows LoadFailed, as before.
+      const loader = failed && reload ? reload : load;
       pending = (async () => {
         let lastError: unknown;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            return await load();
+            return await loader();
           } catch (error) {
             lastError = error;
             await new Promise((resolve) => setTimeout(resolve, 250));
@@ -75,6 +82,7 @@ export function lazyComponent<T extends Loadable>(load: () => Promise<T>): T & {
       })().then(
         (component) => (loaded = component),
         (error) => {
+          failed = true;
           pending = null;
           throw error;
         },

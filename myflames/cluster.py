@@ -2898,6 +2898,10 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
     from .topology_links import discover_database_tiers
     srv = report.get("server") or {}
     obs_host = reached_host if reached_host is not None else _reached_host(conn)
+    ssh_host = getattr(conn, "ssh_host", None)
+    ssh_host = ssh_host.strip() if isinstance(ssh_host, str) and ssh_host.strip() else None
+    if ssh_host is None and isinstance(obs_host, str) and obs_host.strip().lower().startswith("ssh:"):
+        ssh_host = obs_host.strip()[4:].strip() or None
     local_ident = {
         "hostname": srv.get("hostname"),
         "port": srv.get("port") or getattr(conn, "port", None) or 3306,
@@ -2905,6 +2909,7 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
         "server_uuid": srv.get("server_uuid"),
         "profile_host": obs_host,
         "profile_port": getattr(conn, "port", None) or srv.get("port") or 3306,
+        "ssh_host": ssh_host,
     }
     peers = [
         {"host": m.get("host"), "port": m.get("port") or 3306, "server_uuid": m.get("uuid")}

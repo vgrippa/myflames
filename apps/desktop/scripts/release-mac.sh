@@ -36,11 +36,14 @@ fi
 
 # Install both lockfiles on every release, including resume. The settings
 # smokes attach to Electron, so workspace dependencies need no browser download.
-# Package lifecycle scripts must not inherit credentials reserved for signing.
+# Package lifecycle scripts must not inherit signing or publishing credentials.
 without_signing_credentials() {
   env -u APPLE_API_KEY -u APPLE_API_KEY_ID -u APPLE_API_ISSUER \
     -u APPLE_KEYCHAIN_PROFILE -u APPLE_ID -u APPLE_APP_SPECIFIC_PASSWORD \
-    -u APPLE_TEAM_ID -u CSC_LINK -u CSC_KEY_PASSWORD "$@"
+    -u APPLE_TEAM_ID -u CSC_LINK -u CSC_KEY_PASSWORD \
+    -u CSC_INSTALLER_LINK -u CSC_INSTALLER_KEY_PASSWORD \
+    -u WIN_CSC_LINK -u WIN_CSC_KEY_PASSWORD -u GH_TOKEN -u GITHUB_TOKEN \
+    -u NPM_TOKEN -u NODE_AUTH_TOKEN "$@"
 }
 without_signing_credentials python3 scripts/release_state.py run --label 'installing desktop build dependencies' -- npm ci
 without_signing_credentials env PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace dependencies' -- npm --prefix "$root/apps/workspace" ci

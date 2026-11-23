@@ -38,6 +38,7 @@ QUERY_TIMEOUT_S = 2
 
 _LOCAL_NAMES = frozenset(("127.0.0.1", "localhost", "::1"))
 _NIL_UUID = "00000000-0000-0000-0000-000000000000"
+_NUMERIC_HOST_RE = re.compile(r"[0-9.]+")
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _READYSET_META_RE = re.compile(r"readyset-meta:\s*(\{.*\})", re.I | re.S)
 
@@ -125,10 +126,16 @@ def _norm_host(host):
 
 def _host_key(host):
     """A host as compared: a name in lower case without a trailing dot, or an
-    IP address in canonical form (IPv4-mapped IPv6 collapsed to IPv4)."""
+    IP address in canonical form (IPv4-mapped IPv6 collapsed to IPv4, numeric
+    shorthand/padded IPv4 canonicalized with ``inet_aton``)."""
     text = _norm_host(host)
     if not text:
         return ""
+    if _NUMERIC_HOST_RE.fullmatch(text):
+        try:
+            text = socket.inet_ntoa(socket.inet_aton(text))
+        except (OSError, ValueError):
+            pass
     try:
         address = ipaddress.ip_address(text)
     except ValueError:
@@ -139,9 +146,10 @@ def _host_key(host):
 def is_loopback(host):
     """True for a host that names the computer it is used on: localhost and
     names under it, 127.0.0.0/8, ::1 in any spelling, their IPv4-mapped forms,
-    and the unspecified 0.0.0.0 and ::."""
+    and the unspecified 0.0.0.0 and ::. An ``ssh:`` observer value is never
+    loopback."""
     key = _host_key(host)
-    if not key:
+    if not key or key.startswith("ssh:"):
         return False
     if key == "localhost" or key.endswith(".localhost"):
         return True
@@ -1066,6 +1074,7 @@ def _cached_probe_kind(profile_id):
 def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None, current=None):
     """Every consenting group member is a candidate except known local/peer endpoints."""
     profiles = members(profiles, current_profile(profiles, skip_profile_id, current))
+    local_ssh = bool(_text(local_identity.get("ssh_host"))) if isinstance(local_identity, dict) else False
     known_eps = set()
     for item in [local_identity] + list(peer_endpoints or ()):
         if not isinstance(item, dict):
@@ -1073,7 +1082,7 @@ def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_pr
         eh = _host_key(item.get("profile_host") or item.get("host"))
         ep = _int(item.get("profile_port") or item.get("port")) or 3306
         if eh:
-            known_eps.add((eh, ep))
+            known_eps.add((eh, ep, local_ssh or bool(_text(item.get("ssh_host")))))
     candidates = []
     for p in profiles or ():
         if not isinstance(p, dict):
@@ -1085,8 +1094,11 @@ def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_pr
         pp = _profile_port(p, 3306)
         ssh = bool(_text(p.get("ssh_host")))
         is_known_db = any(
-            pp == ep and (ph == eh or (not ssh and is_loopback(ph) and is_loopback(eh)))
-            for eh, ep in known_eps
+            pp == ep and (
+                (ph == eh and not is_loopback(ph))
+                or (not ssh and not item_ssh and is_loopback(ph) and is_loopback(eh))
+            )
+            for eh, ep, item_ssh in known_eps
         )
         if is_known_db:
             continue

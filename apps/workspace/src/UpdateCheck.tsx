@@ -4,8 +4,22 @@
 // check (kept in the workspace store) is shown with its local time.
 import { useEffect, useRef, useState } from "react";
 import {
-  checkForUpdates, checkedWhen, loadUpdateStatus, openUpdateDialog, updateStatusText, useUpdateStatus,
+  checkForUpdates, checkedWhen, dismissUpdateOpenError, loadUpdateStatus, openUpdateDialog, updateStatusText,
+  useUpdateStatus,
 } from "./updateStatus";
+
+/** A failed opening of Software update, at the control that launched it. */
+export function UpdateOpenError({ from, retry }: { from: string; retry: () => void }) {
+  const s = useUpdateStatus();
+  if (!s.openError || s.openError.from !== from) return null;
+  return (
+    <p className="hint error update-open-error" role="alert">
+      <span>{s.openError.message}</span>
+      <button type="button" className="text-button update-open-retry" onClick={retry}>Retry</button>
+      <button type="button" className="text-button" onClick={dismissUpdateOpenError}>Dismiss</button>
+    </p>
+  );
+}
 
 /** Re-render once a minute so "today" and the 24-hour limit stay true. */
 export function useMinuteClock() {
@@ -48,11 +62,13 @@ export function UpdateCheckStatus() {
       </span>
       {available && (
         <button ref={nextButton} type="button" className="text-button update-check-download" aria-haspopup="dialog"
-          aria-disabled={s.checking || undefined}
-          onClick={() => { if (!s.checking) void openUpdateDialog(nextButton.current); }}>
-          {next}
+          aria-busy={s.opening || undefined} aria-disabled={s.checking || s.opening || undefined}
+          onClick={() => { if (!s.checking && !s.opening) void openUpdateDialog(nextButton.current, "check"); }}>
+          {s.opening ? <span className="spinner" aria-hidden="true" /> : null}{next}
         </button>
       )}
+      <UpdateOpenError from="check"
+        retry={() => { if (!s.checking && !s.opening) void openUpdateDialog(nextButton.current, "check"); }} />
     </>
   );
 }

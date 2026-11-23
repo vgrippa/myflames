@@ -1146,6 +1146,103 @@ class ExportTests(unittest.TestCase):
             ed.export_result("xml", {"columns": [], "rows": []})
 
 
+class RedactionPersistenceTests(unittest.TestCase):
+    """Persist the real history, saved-query and audit records without a client."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        patcher = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                              'MYFLAMES_SECRET_BACKEND': 'vault'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.store = WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3')
+
+    def assert_stored_sql(self, sql, expected=None, secrets=()):
+        run = types.SimpleNamespace(sql_text=sql, started_at='2026-11-23T00:00:00+00:00',
+                                    kind='sql', scope='all')
+        session = types.SimpleNamespace(tab_id='redaction', profile_id=None, name='Local',
+                                        host='localhost', port=3306, engine='mysql')
+        snapshot = {'counts': {'statements': 1, 'run': 0, 'rows': 0, 'affected_rows': 0},
+                    'duration_ms': 0, 'state': 'error'}
+        entry = ed.history_entry(run, snapshot, session)
+        self.store.history_add(entry, ed.HISTORY_MAX_ENTRIES, ed.HISTORY_MAX_BYTES)
+        saved = ed.saved_query_entry('Regression', '', sql, '', None)
+        self.store.saved_query_save(saved, ed.SAVED_QUERY_MAX_ENTRIES, ed.SAVED_QUERY_MAX_BYTES)
+        audit_id = dbops.record_outcome(self.store, 'editor_run', [sql], 'ui', 'refused',
+                                       message=sql)
+        audit = next(row for row in self.store.audit_records() if row['id'] == audit_id)
+        actual = {'history': self.store.history_list()[0]['sql'],
+                  'saved query': self.store.saved_query_list()[0]['sql'],
+                  'audit statement': audit['statements'][0], 'audit message': audit['message']}
+        for sink, value in actual.items():
+            with self.subTest(sink=sink):
+                if expected is not None:
+                    self.assertEqual(value, expected)
+                else:
+                    self.assertIn('[redacted]', value)
+                    for secret in secrets:
+                        self.assertNotIn(secret, value)
+
+    def test_gate65_adjacent_and_numeric_slash_urls_in_persisted_editor_text(self):
+        cases = (
+            ("SELECT 'mysql://app:pw1@db1,mysql://app:pw2@db2'",
+             "SELECT 'mysql://app:[redacted]@db1,mysql://app:[redacted]@db2'"),
+            ("SELECT 'mysql://reader@h1,mysql://admin:PW@h2'",
+             "SELECT 'mysql://reader@h1,mysql://admin:[redacted]@h2'"),
+            ("SELECT 'https://user@host?next=mysql://dbuser:secret@db'",
+             "SELECT 'https://user@host?next=mysql://dbuser:[redacted]@db'"),
+            ("SELECT 'mysql://app:2024/secret@db1:3306/shop'",
+             "SELECT 'mysql://app:[redacted]@db1:3306/shop'"),
+            ("SELECT 'https://[2001:db8::1]/users/alice@example.com'",
+             "SELECT 'https://[2001:db8::1]/users/alice@example.com'"),
+        )
+        for sql, expected in cases:
+            with self.subTest(sql=sql):
+                self.assert_stored_sql(sql, expected)
+
+    def test_gate65_secret_assignments_preserve_persisted_sql_clauses(self):
+        cases = (
+            ("UPDATE cfg SET s3_secret_key = 'abc' WHERE id = 1",
+             "UPDATE cfg SET s3_secret_key = '[redacted]' WHERE id = 1"),
+            ("INSERT INTO cfg SET s3_secret_key = 'abc' ON DUPLICATE KEY UPDATE is_admin = 1",
+             "INSERT INTO cfg SET s3_secret_key = '[redacted]' ON DUPLICATE KEY UPDATE is_admin = 1"),
+            ("SET GLOBAL wsrep_sst_auth = CONCAT('a', 'b')",
+             "SET GLOBAL wsrep_sst_auth = [redacted]"),
+        )
+        for sql, expected in cases:
+            with self.subTest(sql=sql):
+                self.assert_stored_sql(sql, expected)
+
+    def test_gate65_new_set_without_semicolon_in_persisted_editor_text(self):
+        for prefix in ('SET GLOBAL max_connections = 500\n',
+                       'DELIMITER //\nSET GLOBAL max_connections = 500//\n',
+                       "SET GLOBAL s3_secret_key = 'first-secret'\n"):
+            sql = prefix + "SET GLOBAL wsrep_sst_auth = CONCAT('second-secret', 'tail')"
+            expected_prefix = prefix.replace("'first-secret'", "'[redacted]'")
+            with self.subTest(prefix=prefix):
+                self.assert_stored_sql(sql, expected_prefix + 'SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_gate65_quoted_names_echoes_and_comment_markers_in_persisted_editor_text(self):
+        cases = (
+            ('SET GLOBAL "wsrep_sst_auth" = CONCAT(\'ansi-secret\', \'tail\')',
+             'SET GLOBAL "wsrep_sst_auth" = [redacted]'),
+            ('EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'echo-secret\'"',
+             'EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'[redacted]\'"'),
+            ('SET GLOBAL wsrep_sst_auth = /*!80000987654321*/',
+             'SET GLOBAL wsrep_sst_auth = /*!80000[redacted]*/'),
+            ("SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = CONCAT('marker-secret', 'tail')",
+             "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = [redacted]"),
+        )
+        for sql, expected in cases:
+            with self.subTest(sql=sql):
+                self.assert_stored_sql(sql, expected)
+        # Diagnostic quote doubling is ambiguous: an unfinished literal may
+        # include the suffix, but its secret must never survive in any sink.
+        self.assert_stored_sql("near 'SET GLOBAL wsrep_sst_auth = 'echo-secret'' at line 1",
+                               secrets=('echo-secret',))
+
+
 @unittest.skipIf(os.name == "nt", "the fake client is a POSIX script")
 class ProcessTests(unittest.TestCase):
     """The real session code against the fake client."""
