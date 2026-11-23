@@ -314,6 +314,12 @@ export async function open(endpoint, name, extra = {}, {
      * COMPACT_WIDTH in Server.tsx, which includes the 720 px window) the
      * pushed list or the pushed view with its Back button. */
     async views() {
+      // ResizeObserver applies the measured place width after setViewport.
+      // A Back control from the preceding narrow layout may still have a box
+      // for one frame before it is removed. Wait for the layout we will use.
+      await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place)")]
+        .filter((e) => !e.closest("[hidden]") && e.offsetParent !== null)
+        .every((e) => e.querySelector(".server-layout")?.classList.contains("is-compact") === (e.clientWidth < 720)));
       // Any of them on screen (kept views stay mounted, hidden, with their own title).
       await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) :is(.source-list, .view-switcher, .server-view .server-back)")]
         .some((e) => !e.closest("[hidden]") && e.offsetParent !== null));

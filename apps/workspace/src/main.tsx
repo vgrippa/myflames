@@ -38,6 +38,7 @@ import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
+import { showCreateSql } from "./sqlHighlight";
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
@@ -2277,9 +2278,9 @@ function App() {
       }
       const kind = o.kind;
       if (kind === "procedure" || kind === "function" || kind === "trigger" || kind === "event")
-        // The highlighter belongs to the editor chunks; this cross-link is
-        // the shell's only use, so it loads on demand.
-        void import("./sqlHighlight").then(({ showCreateSql }) => lab.openSql(showCreateSql(kind, o.schema, o.name)));
+        // Open the tab in the same update as finishLink: deferring this until
+        // after history records the destination loses a same-place Back stop.
+        lab.openSql(showCreateSql(kind, o.schema, o.name));
       else lab.revealInSchemaBrowser(o.schema, kind === "schema" ? null : o.name);
       finishLink(back);
     });

@@ -92,6 +92,15 @@ for (const dimensions of [[904, 620, 920, 1416], [390, 420, 920, 1416], [320, 36
   checkZoom(...dimensions, true);
   checkZoom(...dimensions, false);
 }
+// A host with neither window.performance nor a global Performance clock still
+// supports fit, zoom and resize through Date.now(). Restore Node's clock after.
+const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, "performance");
+try {
+  Object.defineProperty(globalThis, "performance", { configurable: true, value: undefined });
+  checkZoom(904, 620, 920, 1416, true);
+} finally {
+  Object.defineProperty(globalThis, "performance", performanceDescriptor);
+}
 // A report column that shrinks the 1200-unit SVG to 60%: fit zooms in so
 // the text still renders at 11 px.
 checkZoom(1200, 660, 920, 1416, false, 0.6);

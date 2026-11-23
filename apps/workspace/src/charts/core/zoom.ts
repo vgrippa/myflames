@@ -75,6 +75,10 @@ export function createZoom(options: ZoomOptions): ZoomController {
   const { root, viewport, graphWidth, graphHeight, buttons } = options;
   let { width, height } = options;
   const win = root.ownerDocument.defaultView || window;
+  // Reports and embedded hosts may expose only a partial window. Keep the
+  // readout on one clock, with a wall-clock fallback when Performance is absent.
+  const now = typeof performance !== "undefined" && typeof performance.now === "function"
+    ? () => performance.now() : () => Date.now();
   let box: Box = { x: 0, y: 0, w: width, h: height };
   let drag: { x: number; y: number; bx: number; by: number; scaleX: number; scaleY: number } | null = null;
   let moved = false;
@@ -124,7 +128,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     const percent = Math.round(width / box.w * 100) + "%";
     if (percent !== lastReadout) {
       lastReadout = percent;
-      lastReadoutAt = win.performance.now();
+      lastReadoutAt = now();
       buttons.reset.textContent = percent;
       buttons.reset.setAttribute("aria-label", "Zoom " + percent + ". Reset to 100%");
       buttons.reset.setAttribute("title", "Current zoom: " + percent + ". Click to reset to 100%");
@@ -160,7 +164,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     // layout without it), which costs more than the transform itself.
     // commitGesture -> paint writes the exact final percent on settle, so the
     // readout and its accessible name are correct after every gesture.
-    if (win.performance.now() - lastReadoutAt >= READOUT_MS) paintReadout();
+    if (now() - lastReadoutAt >= READOUT_MS) paintReadout();
   }
 
   /** The gesture is over: the viewBox shows the final box again and the

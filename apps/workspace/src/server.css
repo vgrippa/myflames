@@ -166,6 +166,15 @@
 .server-layout.is-compact .server-view {
   min-height: 0;
 }
+/* Back is the way out of a pushed view. Keep it and the view's controls
+   below the window bar when a long report scrolls the page, so they cannot
+   sit underneath that bar while still appearing to be in the viewport. */
+.server-layout.is-compact .server-view > .view-toolbar {
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 3;
+  background: var(--surface);
+}
 /* The list of views sits in .server-source-wrap: on narrow layouts it is a
    screen of its own, and a chosen view replaces it (Back returns). */
 .server-layout.is-compact > .server-source-wrap > .source-list {

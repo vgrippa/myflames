@@ -431,6 +431,9 @@ try {
   async function runSql(sql, replyRun) {
     queuedRuns.push({ status: "complete", session: session(), run: replyRun });
     await page.locator('[aria-label="SQL editor"]').fill(sql);
+    // fill() can return without focusing when the text is already identical
+    // (for example after Pin result). Run shortcuts belong to the editor.
+    await page.focus('[aria-label="SQL editor"]');
     await chord("Enter");
     await page.waitForFunction((id) => !document.querySelector(".results-running") && !!document.querySelector(".result-table"), {}, replyRun.id);
   }

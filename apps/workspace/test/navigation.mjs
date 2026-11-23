@@ -269,6 +269,13 @@ try {
     assert.equal(await page.$('.window-toolbar button[aria-label="Privileges"], .window-toolbar .privileges-button'), null, `${label}: no Privileges button`);
     // Server and Workload have one visible Refresh, with the wider read in its menu.
     if (label === "Server" || label === "Workload") {
+      if (label === "Workload") {
+        // The later footer checks use this report. A lazy view's container
+        // can appear before its first read and status publication complete.
+        await page.waitForFunction(() =>
+          document.querySelector('.window-statusbar [data-status="engine"]')?.textContent === "MySQL 8.4.3" &&
+          !!document.querySelector('.window-statusbar [data-status="refreshed"] time[datetime]'));
+      }
       assert.equal(await page.$('.place-toolbar [data-action=refresh-all]'), null,
         `${label}: no competing Refresh all in the top bar`);
       const geometry = await page.evaluate(() => {
@@ -596,10 +603,14 @@ try {
     await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="connection"]')?.textContent === "Local MySQL (127.0.0.1:3306)");
     if (label === "Query editor")
       await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="session"]')?.textContent === "No session");
+    const serverDrawn = ["Server", "Workload", "Tuning", "Database diagram"].includes(label);
+    if (serverDrawn)
+      await page.waitForFunction(() =>
+        document.querySelector('.window-statusbar [data-status="engine"]')?.textContent === "MySQL 8.4.3" &&
+        !!document.querySelector('.window-statusbar [data-status="refreshed"] time[datetime]'));
     // A read still on its way (Health against this suite's unmocked server) shows "refreshing" until it ends.
     await page.waitForFunction(() => !document.querySelector('.window-statusbar [data-status="refreshing"]'), { timeout: 20000 });
     const fields = await page.$$eval(".window-statusbar [data-status]", (els) => els.map((e) => e.dataset.status));
-    const serverDrawn = ["Server", "Workload", "Tuning", "Database diagram"].includes(label);
     assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"]
       : label === "Query digest" ? ["safety", "engine", "connection"]
       : serverDrawn ? ["safety", "engine", "connection", "refreshed"] : ["safety", "connection"], `${label} status fields`);
