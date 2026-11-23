@@ -1105,8 +1105,18 @@ def read_group(store, group_name, section, active_member_profile_id,
         entry['elapsed_s'] = round(time.monotonic() - began, 3)
         return entry, snapshot, position, exclusion, multi_primary
 
+    from . import read_cancel
+    request_cancel = read_cancel.current()
+    request_guard = read_cancel.current_guard()
+
+    def read_member(profile):
+        # Thread-local request state is intentionally not inherited by pools.
+        # Carry only this read's trusted event, never data from request JSON.
+        with read_cancel.scope(request_cancel, request_guard):
+            return read_one(profile)
+
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
-        results = list(pool.map(read_one, members))
+        results = list(pool.map(read_member, members))
     entries = [result[0] for result in results]
     duplicate_notes = _duplicate_notes(entries, members, facts)
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))

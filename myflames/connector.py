@@ -148,6 +148,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     Probes opt into a private process group so descendants holding a pipe
     cannot extend the deadline after the original process exits.
     """
+    from . import read_cancel
+    read_cancel.check()
     stdout_limit = MAX_STDOUT_BYTES if stdout_limit is None else stdout_limit
     stderr_limit = MAX_STDERR_BYTES if stderr_limit is None else stderr_limit
     tail_marker = (re.compile(rb'(?:^|\n)' + re.escape(tail_timeout[0].encode('ascii')) + rb'\r?\n')
@@ -159,6 +161,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             process_options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             process_options['start_new_session'] = True
+    read_cancel.check()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0,
                             **process_options)
@@ -228,6 +231,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             workers.append(worker)
         while True:
             changed.clear()
+            read_cancel.check()
             if failed:
                 raise failed[0]
             remaining = (tail_deadline[0] if tail_deadline else deadline) - time.monotonic()
@@ -898,21 +902,31 @@ class MySQLConnection:
         Valid facts and answered but unidentified replies persist in the LRU.
         All waiters share failures; later requests retry transport/login errors.
         """
-        from . import client_tools
+        from . import client_tools, read_cancel
         endpoint = self._endpoint_key()
-        with _CONTACT_LOCK:
-            facts = client_tools.server_facts(endpoint)
-            if facts is not None:
-                return facts
-            if client_tools.first_contact_unidentified(endpoint):
-                return None
-            flight = _CONTACT_FLIGHTS.get(endpoint)
-            owner = flight is None
+        while True:
+            read_cancel.check()
+            with _CONTACT_LOCK:
+                facts = client_tools.server_facts(endpoint)
+                if facts is not None:
+                    return facts
+                if client_tools.first_contact_unidentified(endpoint):
+                    return None
+                flight = _CONTACT_FLIGHTS.get(endpoint)
+                owner = flight is None
+                if owner:
+                    flight = {'done': threading.Event(), 'facts': None, 'error': None}
+                    _CONTACT_FLIGHTS[endpoint] = flight
             if owner:
-                flight = {'done': threading.Event(), 'facts': None, 'error': None}
-                _CONTACT_FLIGHTS[endpoint] = flight
-        if not owner:
-            flight['done'].wait()
+                break
+            while not flight['done'].wait(0.05):
+                read_cancel.check()
+            read_cancel.check()
+            if isinstance(flight['error'], read_cancel.CancelledRead):
+                # Discovery is shared across otherwise unrelated reads and
+                # writes. A departing owner's cancellation is not our own:
+                # retry with this caller's credentials and request context.
+                continue
             if flight['error'] is not None:
                 raise flight['error']
             return flight['facts']
@@ -1417,9 +1431,15 @@ class MySQLConnection:
         Only the trusted profile opener installs the guard. Check before
         acquiring transport and again at spawn, after any setup that can wait.
         """
+        from . import read_cancel
+        read_cancel.check()
+        request_guard = read_cancel.current_guard()
+        if request_guard is not None:
+            request_guard()
         guard = getattr(self, '_login_guard', None)
         if guard is not None:
             guard()
+        read_cancel.check()
 
     def _run_client(self, argv, **options):
         """Check immediately before spawning, and retain sent probe attempts."""

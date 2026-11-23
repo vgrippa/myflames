@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import select
 import socket
 import socketserver
 import sqlite3
@@ -21,6 +22,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .connector import ConnectorError, client_missing_error
 from .connection_groups import ProfileReadError
+from . import read_cancel
 from .parser import analyze_plan
 # Compatibility exports for one release; validation is independent of HTTP.
 from .plan_input import MAX_PLAN, _plan
@@ -267,20 +269,92 @@ def _report_response(payload, options, schemas, workspace=None):
     password = options.get("password")
     interval = payload.get("interval", report_module.DEFAULT_INTERVAL)
     limit = None if payload.get("all_schemas") is True else ALL_SCHEMAS_TABLE_LIMIT
-    # Only requests that would authenticate the same way share a run: the
-    # profile, every connection and TLS setting, and a password fingerprint.
     connection = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
-    key = report_module.flight_key(options, connection.get("profile_id"),
-                                   {"type": connection.get("type"), "read_only": connection.get("read_only")})
-    settings = (interval, tuple(schemas or ()), limit)
 
     def work():
         with _group_guarded_connection(options, connection, getattr(workspace, "store", None)) as conn:
             return report_module.analysis_report(conn, interval, schemas=schemas, require_choice_above=limit)
     try:
-        return report_module.run_single_flight(key, settings, work)
+        return _single_flight_read("/api/live/report", payload, workspace, work,
+                                   options=options, exclusive=True)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, password)
+
+
+def _single_flight_read(path, payload, workspace, work, options=None, exclusive=False):
+    """Share only identical reads within one workspace and consent snapshot.
+
+    Resolve ordinary view credentials before this call. Topology instead
+    binds the stored credential references (rotated on every password save),
+    leaving secret lookup behind its per-member consent checks.
+    Every request field participates,
+    even fields a view currently ignores, so adding a parameter cannot silently
+    broaden sharing. Hash request data with the process secret, never retain a
+    plaintext password in a registry key. Saved profile snapshots also bind
+    peer endpoints, credential references and group incarnations.
+    """
+    from . import report as report_module
+    from .accounts_api import _group_login_guard
+    from .connection_groups import members, request_profiles
+    from .live import connection_options
+    connection = payload.get("connection") or {}
+    options = connection_options(connection) if options is None else options
+    store = getattr(workspace, "store", None)
+    profiles, current = request_profiles(store, connection)
+    live_guard = _group_login_guard(store, connection)
+    guard = None
+    if live_guard is not None:
+        if current is None:
+            raise ProfileReadError("This saved connection is outside the current connection group.")
+        consent = (current.get("group"), current.get("group_generation"))
+
+        def guard():
+            # Bind the read to the key's original consent snapshot, even if
+            # the live guard was constructed after a group recreation. Read
+            # consent deliberately does not bind type or read-only policy.
+            live_guard()
+            _profiles, fresh = request_profiles(store, connection)
+            if fresh is None or (fresh.get("group"), fresh.get("group_generation")) != consent:
+                raise ProfileReadError("The connection group changed. Refresh before reading it again.")
+
+        guard()
+    peers = members(profiles, current)
+    credentials = []
+    if path == "/api/live/topology":
+        from .workspace_store import _same_endpoint, _stored_ref
+        # Public profile projections deliberately omit secret_ref. Read only
+        # private metadata here, never the vault/keychain password. A save
+        # rotates this reference even when its public timestamp is unchanged.
+        for profile in [current] + peers:
+            stored = store._profile(profile["id"])
+            if (not isinstance(stored, dict) or not _same_endpoint(profile, stored)
+                    or stored.get("group") != profile.get("group")
+                    or stored.get("group_generation") != profile.get("group_generation")):
+                raise ProfileReadError("The connection group changed. Refresh before reading it again.")
+            credentials.append((profile["id"], stored.get("remember_password"),
+                                stored.get("secret_backend"), _stored_ref(profile["id"], stored)))
+    scope = report_module.request_fingerprint([current, peers, credentials])
+    # Direct in-process callers retain their injected timing hooks. A socket
+    # request must own a cancellable flight, not join that synchronous work.
+    key = ("live-read", path, store, scope, read_cancel.current() is not None,
+           report_module.flight_key(options, connection.get("profile_id"),
+                                    {"type": connection.get("type"), "read_only": connection.get("read_only")}))
+    settings = report_module.request_fingerprint(payload)
+    # Full analysis retains its existing one-analysis-per-connection refusal.
+    # Ordinary views allow different settings to run independently.
+    if not exclusive:
+        key += (settings,)
+
+    def checked_work():
+        with read_cancel.scope(read_cancel.current(), guard):
+            if guard is not None:
+                guard()
+            return work()
+
+    result = report_module.run_single_flight(key, settings, checked_work, cancel=read_cancel.current())
+    if guard is not None:
+        guard()
+    return result
 
 
 def _export_response(payload):
@@ -1360,6 +1434,8 @@ _SERVER_VIEW_PATHS = ("/api/live/sessions/history", "/api/live/index-suggestion"
                       "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
                       "/api/live/proxysql/digests", "/api/live/readyset", "/api/live/readyset/explain-cache",
                       "/api/live/readyset/export-caches", "/api/live/digest-histogram", "/api/live/digest-tables")
+_SINGLE_FLIGHT_READ_PATHS = ("/api/live/health", "/api/live/waits", "/api/live/io", "/api/live/memory",
+                            "/api/live/locks", "/api/live/indexes", "/api/live/tables")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1495,6 +1571,12 @@ _FILES_PATHS = ("/api/files/remote/list", "/api/files/remote/mkdir", "/api/files
 #: (reviewed_writes.Progress by the action request's progress_id). No
 #: connection, no SQL, no credentials: phases and statement states only.
 _ACTION_PROGRESS_PATH = "/api/live/action/progress"
+
+# A positive allowlist: live/start, job controls and all reviewed writes keep
+# their existing lifetime. The handler also checks _WRITE_PATHS defensively.
+_CANCELLABLE_READ_PATHS = (_SERVER_VIEW_PATHS + _REPLICATION_READ_PATHS + _CATALOG_PATHS
+                         + _TABLE_COLUMNS_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_READ_PATHS
+                         + ("/api/live/topology", "/api/live/readiness"))
 _ACTION_PROGRESS_LOCK = threading.Lock()
 #: Maximum database names returned by /api/connection/test.
 _TEST_DATABASES_LIMIT = 1000
@@ -2590,9 +2672,9 @@ def api_response(path, payload, workspace=None):
         _profiles, current = connection_groups.request_profiles(workspace.store, connection)
         if current is None:
             raise ValueError("This saved connection is outside the current connection group.")
-        return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"],
-                                         expected_current=current,
-                                         expected_generation=current.get("group_generation"))
+        return _single_flight_read(path, payload, workspace, lambda: topology_group.read_group(
+            workspace.store, connection["group_name"], section, current["id"],
+            expected_current=current, expected_generation=current.get("group_generation")))
     if path in _TOPOLOGY_CHANGE_PATHS:
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -2794,6 +2876,9 @@ def api_response(path, payload, workspace=None):
             return topology_change.share_progress(workspace.store, _action_progress(workspace)).get(
                 payload.get('progress_id'))
         if path in _SERVER_VIEW_PATHS:
+            if path in _SINGLE_FLIGHT_READ_PATHS:
+                return _single_flight_read(path, payload, workspace,
+                                           lambda: _discover_response(path, payload, workspace=workspace))
             return _discover_response(path, payload, workspace=workspace)
         raise ValueError("Unknown workspace operation.")
     if path.startswith("/api/teach/"):
@@ -3460,6 +3545,43 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         self._send(200, {"token": self.server.token}, cookie="%s=%s; Path=/api/; HttpOnly; SameSite=Strict" %
                    (self.server.cookie_name, self.server.session_secret))
 
+    def _cancellable_read(self, payload):
+        """Watch EOF only after the complete body has been read.
+
+        MSG_PEEK never consumes bytes, including a pipelined request. The
+        socket is nonblocking until the watcher is joined; response writes
+        begin only after its original timeout has been restored.
+        """
+        cancel, stopped = threading.Event(), threading.Event()
+        timeout = self.connection.gettimeout()
+
+        def watch():
+            while not stopped.wait(0.1):
+                try:
+                    readable, _, _ = select.select([self.connection], [], [], 0)
+                    if readable and self.connection.recv(1, socket.MSG_PEEK) == b"":
+                        cancel.set()
+                        return
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except (OSError, ValueError):
+                    cancel.set()
+                    return
+
+        watcher = threading.Thread(target=watch, name="myflames-read-disconnect", daemon=True)
+        self.connection.setblocking(False)
+        try:
+            watcher.start()
+            with read_cancel.scope(cancel):
+                result = api_response(self.path, payload, self.server)
+                read_cancel.check()
+                return result
+        finally:
+            stopped.set()
+            if watcher.ident is not None:
+                watcher.join()
+            self.connection.settimeout(timeout)
+
     def do_POST(self):
         if not self._local_request():
             return
@@ -3527,8 +3649,16 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                                  % ("64 MiB" if large else "12 MiB")})
                 return
             payload = json.loads(self._read_body(size).decode("utf-8"))
-            result = api_response(self.path, payload, self.server)
+            if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
+                    and hasattr(self, "connection")):
+                result = self._cancellable_read(payload)
+            else:
+                result = api_response(self.path, payload, self.server)
             self._send(200, result)
+        except read_cancel.CancelledRead:
+            # The caller has gone away. No response and no error/fallback read.
+            self.close_connection = True
+            return
         except SessionConflict as exc:
             self._send(409, {"error": str(exc), "code": "session_conflict", "revision": exc.revision})
         except SessionTooLarge as exc:

@@ -410,12 +410,16 @@ def sample_twice(take, interval, sleep=None, clock=None):
     result arrived) and ``taken_at``. Waits only for the time left after the
     first snapshot, as health.py does.
     """
-    sleep = sleep or time.sleep
+    from . import read_cancel
+    if sleep is None and read_cancel.current() is None:
+        sleep = time.sleep
     clock = clock or time.monotonic
+    read_cancel.check()
     first = take(clock)
     remaining = interval - (clock() - first["t"])
     if remaining > 0:
-        sleep(remaining)
+        read_cancel.wait(remaining, sleep)
+    read_cancel.check()
     second = take(clock)
     return first, second
 
