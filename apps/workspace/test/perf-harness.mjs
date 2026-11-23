@@ -162,8 +162,9 @@ export async function open(endpoint, name, extra = {}, {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  // slowAssets (a RegExp of paths) holds matching static files back by slowAssetsMs (a lazy chunk that loads late).
-  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], blocked: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  // slowAssets (a RegExp of paths) holds matching static files back by slowAssetsMs (a lazy chunk that loads late);
+  // failAssets (a RegExp of paths) aborts matching static files (a lazy chunk that cannot be read).
+  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, failAssets: null, seen: [], other: [], blocked: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
   const server = new URL(url).origin;
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -198,6 +199,7 @@ export async function open(endpoint, name, extra = {}, {
         return request.respond({ status: 400, contentType: "application/json",
           body: JSON.stringify({ error: "Not mocked in this suite." }) });
       }
+      if (state.failAssets && state.failAssets.test(pathname)) return request.abort("failed");
       if (state.slowAssets && state.slowAssets.test(pathname)) return void setTimeout(() => request.continue(), state.slowAssetsMs);
       return request.continue();
     }
@@ -455,7 +457,25 @@ export async function open(endpoint, name, extra = {}, {
       await pause(150);
     },
     async close() {
-      await browser.close();
+      // browser.close() waits on the browser answering Browser.close, with no
+      // bound: on a saturated machine the answer never came (the browser was
+      // still alive minutes later; health.mjs stalled here twice in release
+      // runs until the runner's timeout). Bound the wait, then stop the
+      // browser process directly.
+      const browserProcess = browser.process();
+      const force = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+            browserProcess.kill("SIGKILL");
+          }
+          resolve();
+        }, 15000);
+        timer.unref();
+      });
+      await Promise.race([browser.close().catch(() => undefined), force]);
+      if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+        browserProcess.kill("SIGKILL");
+      }
       proc.kill();
       await fs.rm(directory, { recursive: true, force: true });
     },

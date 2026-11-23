@@ -10,6 +10,20 @@ import {
   appUpdateSettings, appUpdateStatus, appVersion, checkAppUpdate, stageAppUpdate,
   type AppUpdateInfo, type AppUpdateLastCheck, type AppUpdateStaging,
 } from "./api";
+import { lazyComponent } from "./lazy";
+
+// The dialog (with the release-notes renderer) is off the first screen: its
+// chunk loads when the badge or the Settings entry is pointed at or focused,
+// or at the latest when one of them is clicked. Every opener goes through
+// openUpdateDialog, which awaits this preload, so no entry point can open the
+// dialog before its chunk is ready. A failed module fetch is cached for the
+// window, so the retry reads a cache-busted copy of the same chunk (Vite
+// bundles the ?open-retry variant too).
+const loadUpdateDialog = () => import("./UpdateDialog").then((m) => m.UpdateDialog);
+const reloadUpdateDialog = Object.values(
+  import.meta.glob("./UpdateDialog.tsx", { query: "?open-retry", import: "UpdateDialog" }),
+)[0] as () => ReturnType<typeof loadUpdateDialog>;
+export const UpdateDialogView = lazyComponent(loadUpdateDialog, reloadUpdateDialog);
 
 /** What the desktop app answers about updating this copy in place. */
 export type DesktopUpdateSupport = { ok: boolean; supported: boolean; reason: string | null; ready: string | null };
@@ -48,6 +62,12 @@ export type UpdateState = {
   installError: string | null;
   /** The Software update dialog is open, with the check answer captured when it opened. */
   dialog: { info: AppUpdateInfo | null } | null;
+  /** An opener clicked: the dialog's chunk (and, when needed, a check) is on
+   * its way. Every launching control shows busy until the dialog is open. */
+  opening: boolean;
+  /** The dialog's chunk could not be read: the dialog stayed closed, and the
+   * control named by *from* ("badge", "menu" or "check") shows this with Retry. */
+  openError: { from: string; message: string } | null;
 };
 
 /** A result older than this is shown as a past result, never as current. */
@@ -58,6 +78,7 @@ const RETRY_FAILED_AFTER_MS = 60 * 60 * 1000;
 let state: UpdateState = {
   loaded: false, loadFailed: false, checking: false, last: null, info: null, autoCheck: null,
   support: null, staging: null, installing: false, ready: null, installError: null, dialog: null,
+  opening: false, openError: null,
 };
 const listeners = new Set<() => void>();
 let loading = false;
@@ -268,11 +289,30 @@ export async function restartToUpdate(): Promise<void> {
   }
 }
 
-/** Open Software update. Without a fresh answer, an available result is checked again first (it holds the download). */
-export async function openUpdateDialog(from?: HTMLElement | null) {
+/** Open Software update from a launching control (*launcher* is "badge",
+ * "menu" or "check", the control an error belongs to). The dialog's chunk is
+ * awaited first: controls stay busy (state.opening) until the dialog is open,
+ * and a chunk that cannot be read keeps the dialog closed and leaves a
+ * dismissible error with Retry at the launching control instead. Without a
+ * fresh answer, an available result is checked again first (it holds the
+ * download). */
+export async function openUpdateDialog(from?: HTMLElement | null, launcher = "badge"): Promise<boolean> {
+  if (state.opening) return false;
   returnFocus = from ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-  const info = state.info?.update_available || state.ready || state.installing ? state.info : await checkForUpdates();
-  set({ dialog: { info: info ?? state.info } });
+  set({ opening: true, openError: null });
+  try {
+    await UpdateDialogView.preload();
+    const info = state.info?.update_available || state.ready || state.installing ? state.info : await checkForUpdates();
+    set({ dialog: { info: info ?? state.info }, opening: false, openError: null });
+    return true;
+  } catch {
+    set({ opening: false, openError: { from: launcher, message: "The Software update window could not be loaded." } });
+    return false;
+  }
+}
+/** Dismiss the error a failed opening left at its launching control. */
+export function dismissUpdateOpenError() {
+  if (state.openError) set({ openError: null });
 }
 /** Check again from Software update: a successful answer replaces what the open dialog shows. */
 export async function checkAgainInDialog() {

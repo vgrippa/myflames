@@ -1247,6 +1247,336 @@ class TestMultiTierTopology(unittest.TestCase):
         self.assertEqual(len(tiers["readyset"]), 1)
         self.assertEqual(tiers["readyset"][0]["profile_id"], "p-rs")
 
+    def test_loopback_classification_canonical_ipv6_and_shared_helper(self):
+        from myflames import replication
+        self.assertIs(topology_links.is_loopback, replication._is_loopback)
+        for host in (
+            "127.0.0.1", "127.0.0.2", "127.255.255.254",
+            "::1", "[::1]", "0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]",
+            "::ffff:127.0.0.1", "[::FFFF:127.0.0.1]", "::ffff:7f00:1", "[::FFFF:7F00:0001]",
+            "0:0:0:0:0:ffff:127.0.0.1", "::ffff:127.0.0.2",
+            "localhost", "LOCALHOST.", "db.localhost", "0.0.0.0", "::", "::ffff:0.0.0.0",
+        ):
+            with self.subTest(loopback=host):
+                self.assertTrue(topology_links.is_loopback(host))
+        for host in (
+            "::ffff:10.0.0.5", "[::ffff:10.0.0.5]", "10.0.0.5", "128.0.0.1",
+            "127.foo", "localhost.example.com", "ssh:bastion", "", None,
+        ):
+            with self.subTest(non_loopback=host):
+                self.assertFalse(topology_links.is_loopback(host))
+
+    def test_loopback_cross_ssh_host_does_not_match(self):
+        # A loopback target seen on SSH host A must never match a saved DB on
+        # SSH host B or a direct local DB, regardless of IPv4-mapped spelling.
+        for saved_host in ("::ffff:127.0.0.1", "127.0.0.1", "::ffff:7f00:1", "[::1]"):
+            db_b = {
+                "kind": "database", "profile_id": "db-b", "profile_name": "DB B",
+                "profile_host": saved_host, "profile_port": 3306, "ssh_host": "ssh-b.example",
+                "hostname": saved_host, "port": 3306, "server_uuid": "bbbbbbbb-0000-4000-8000-000000000002",
+            }
+            db_local = {
+                "kind": "database", "profile_id": "db-local", "profile_name": "DB Local",
+                "profile_host": saved_host, "profile_port": 3306, "ssh_host": None,
+                "hostname": saved_host, "port": 3306, "server_uuid": "cccccccc-0000-4000-8000-000000000003",
+            }
+            for target_host in ("::ffff:127.0.0.1", "::ffff:7f00:1", "[::1]", "127.0.0.1", "localhost"):
+                with self.subTest(saved_host=saved_host, target_host=target_host):
+                    self.assertEqual(
+                        topology_links.match_database_endpoint(
+                            target_host, 3306, [db_b], observer_host="ssh:ssh-a.example",
+                        ),
+                        (None, None),
+                    )
+                    self.assertEqual(
+                        topology_links.match_database_endpoint(
+                            target_host, 3306, [db_local], observer_host="ssh:ssh-a.example",
+                        ),
+                        (None, None),
+                    )
+                    self.assertFalse(
+                        topology_links._database_matches_target(
+                            db_b, target_host, 3306, observer_host="ssh:ssh-a.example",
+                        )
+                    )
+                    self.assertFalse(
+                        topology_links._database_matches_target(
+                            db_local, target_host, 3306, observer_host="ssh:ssh-a.example",
+                        )
+                    )
+
+    def test_loopback_ssh_never_matches_and_direct_local_matches_canonical_forms(self):
+        db_a = {
+            "kind": "database", "profile_id": "db-a", "profile_name": "DB A",
+            "profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": "ssh-a.example",
+            "hostname": "db-a", "port": 3306,
+        }
+        db_b = {
+            "kind": "database", "profile_id": "db-b", "profile_name": "DB B",
+            "profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": "ssh-b.example",
+            "hostname": "db-b", "port": 3306,
+        }
+        db_local = {
+            "kind": "database", "profile_id": "db-local", "profile_name": "DB Local",
+            "profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": None,
+            "hostname": "db-local", "port": 3306,
+        }
+        for target_host in ("::ffff:127.0.0.1", "::ffff:7f00:1", "[::1]", "127.0.0.1", "LocalHost."):
+            with self.subTest(scope="same-ssh", target_host=target_host):
+                self.assertEqual(
+                    topology_links.match_database_endpoint(
+                        target_host, 3306, [db_a, db_b, db_local], observer_host="ssh:SSH-A.EXAMPLE.",
+                    ),
+                    (None, None),
+                )
+                self.assertFalse(
+                    topology_links._database_matches_target(
+                        db_a, target_host, 3306, observer_host="ssh:ssh-a.example",
+                    )
+                )
+                self.assertEqual(
+                    topology_links.match_database_endpoint(
+                        target_host, 3306, [db_local], observer_host="ssh:bastion.localhost",
+                    ),
+                    (None, None),
+                )
+            with self.subTest(scope="direct", target_host=target_host):
+                self.assertEqual(
+                    topology_links.match_database_endpoint(
+                        target_host, 3306, [db_a, db_b, db_local], observer_host="[::1]",
+                    ),
+                    (db_local, "endpoint"),
+                )
+        # Non-default 127.0.0.0/8 addresses require exact loopback match on direct
+        # local connections and never match through SSH.
+        self.assertEqual(
+            topology_links.match_database_endpoint("127.0.0.2", 3306, [db_a], observer_host="ssh:ssh-a.example"),
+            (None, None),
+        )
+        db_a2 = dict(db_a, profile_host="127.0.0.2")
+        self.assertEqual(
+            topology_links.match_database_endpoint("::ffff:127.0.0.2", 3306, [db_a2], observer_host="ssh:ssh-a.example"),
+            (None, None),
+        )
+        self.assertEqual(
+            topology_links.match_database_endpoint("127.0.0.2", 3306, [db_local], observer_host="127.0.0.1"),
+            (None, None),
+        )
+        db_local2 = dict(db_local, profile_host="127.0.0.2")
+        self.assertEqual(
+            topology_links.match_database_endpoint("::ffff:127.0.0.2", 3306, [db_local2], observer_host="127.0.0.1"),
+            (db_local2, "endpoint"),
+        )
+
+    def test_bastion_proxysql_loopback_backend_does_not_match_bastion_local_database(self):
+        # ProxySQL at 10.0.0.5:6033 via bastion A reports 127.0.0.1:3306 (10.0.0.5's
+        # own machine); a DB saved as 127.0.0.1:3306 via bastion A is bastion A itself.
+        proxy_profile = {
+            "id": "p-proxy", "name": "Proxy via Bastion", "host": "10.0.0.5", "port": 6033,
+            "ssh_host": "bastion-a.example", "remember_password": True, "group": "lab",
+        }
+        bastion_db_profile = {
+            "id": "p-bastion-db", "name": "Bastion Local DB", "host": "127.0.0.1", "port": 3306,
+            "ssh_host": "bastion-a.example", "remember_password": True, "group": "lab",
+        }
+        bastion_db = {
+            "kind": "database", "profile_id": "p-bastion-db", "profile_name": "Bastion Local DB",
+            "profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": "bastion-a.example",
+            "hostname": "bastion-a", "port": 3306, "server_uuid": "aaaaaaaa-0000-4000-8000-000000000001",
+        }
+        observer = topology_links._observer_host(proxy_profile)
+        self.assertEqual(observer, "ssh:bastion-a.example")
+        self.assertEqual(
+            topology_links.match_database_endpoint("127.0.0.1", 3306, [bastion_db], observer_host=observer),
+            (None, None),
+        )
+        self.assertFalse(
+            topology_links._database_matches_target(bastion_db, "127.0.0.1", 3306, observer_host=observer)
+        )
+        px_report = {
+            "servers": [{
+                "key": "rt|10|127.0.0.1|3306", "hostgroup_id": 10,
+                "hostname": "127.0.0.1", "port": 3306, "runtime_status": "ONLINE",
+            }],
+            "query_rules": [],
+        }
+        db_conn = FakeProbeConn("database", hostname="bastion-a", port=3306,
+                                uuid="aaaaaaaa-0000-4000-8000-000000000001")
+        topo = topology_links.classify_proxysql_topology(
+            px_report,
+            profiles=[proxy_profile, bastion_db_profile],
+            open_profile=lambda p: db_conn,
+            observer_host=observer,
+            current_profile_id="p-proxy",
+        )
+        self.assertEqual(len(topo["database_nodes"]), 1)
+        node = topo["database_nodes"][0]
+        self.assertFalse(node["verified"])
+        self.assertIsNone(node["profile_id"])
+        self.assertIsNone(node["evidence"])
+
+    def test_filter_tier_candidates_canonical_hosts_and_loopback_rule(self):
+        current = {"id": "p-cur", "host": "localhost", "port": 3306, "group": "lab"}
+        direct_mapped = {"id": "p-direct", "host": "::ffff:127.0.0.1", "port": 3306, "group": "lab"}
+        ssh_loopback = {"id": "p-ssh-lo", "host": "127.0.0.1", "port": 3306, "ssh_host": "bastion-a.example", "group": "lab"}
+        mapped_peer = {"id": "p-peer", "host": "::ffff:10.0.0.5", "port": 3306, "group": "lab"}
+        upstream = {"id": "p-proxy", "host": "10.0.0.9", "port": 6032, "group": "lab"}
+        candidates = topology_links._filter_tier_candidates(
+            [current, direct_mapped, ssh_loopback, mapped_peer, upstream],
+            {"profile_host": "localhost", "profile_port": 3306},
+            peer_endpoints=[{"host": "10.0.0.5", "port": 3306}],
+            skip_profile_id="p-cur",
+            current=current,
+        )
+        self.assertEqual([c["id"] for c in candidates], ["p-ssh-lo", "p-proxy"])
+
+    def test_non_loopback_ipv4_mapped_matches_ipv4(self):
+        db = {
+            "kind": "database", "profile_id": "db-v4", "profile_name": "DB IPv4",
+            "profile_host": "10.0.0.5", "profile_port": 3306, "ssh_host": None,
+            "hostname": "db-v4", "port": 3306,
+        }
+        for target_host in ("::ffff:10.0.0.5", "[::FFFF:10.0.0.5]", "::ffff:0a00:0005"):
+            with self.subTest(target_host=target_host):
+                self.assertEqual(
+                    topology_links.match_database_endpoint(target_host, 3306, [db], observer_host="proxy.example"),
+                    (db, "endpoint"),
+                )
+                self.assertTrue(
+                    topology_links._database_matches_target(db, target_host, 3306, observer_host="proxy.example")
+                )
+        db_mapped = dict(db, profile_host="::ffff:10.0.0.5")
+        self.assertEqual(
+            topology_links.match_database_endpoint("10.0.0.5", 3306, [db_mapped], observer_host="proxy.example"),
+            (db_mapped, "endpoint"),
+        )
+
+    def test_filter_tier_candidates_keeps_ssh_loopback_when_direct_db_is_mapped_loopback(self):
+        # Regression 1(a): canonicalizing ::ffff:7f00:1 to 127.0.0.1 must not
+        # drop a different ProxySQL saved at 127.0.0.1:3306 through SSH.
+        current = {"id": "p-cur", "host": "::ffff:7f00:1", "port": 3306, "group": "lab"}
+        ssh_proxy = {
+            "id": "p-ssh-px", "name": "SSH ProxySQL", "host": "127.0.0.1", "port": 3306,
+            "ssh_host": "bastion.example", "remember_password": True, "group": "lab",
+        }
+        direct_alias = {
+            "id": "p-direct-lo", "name": "Direct Local", "host": "127.0.0.1", "port": 3306,
+            "remember_password": True, "group": "lab",
+        }
+        candidates = topology_links._filter_tier_candidates(
+            [current, ssh_proxy, direct_alias],
+            {"profile_host": "::ffff:7f00:1", "profile_port": 3306},
+            skip_profile_id="p-cur",
+            current=current,
+        )
+        self.assertEqual([c["id"] for c in candidates], ["p-ssh-px"])
+
+        # End-to-end: discover_database_tiers actually probes the SSH ProxySQL.
+        probed_ids = []
+        px_conn = FakeProbeConn(
+            "proxysql",
+            servers=[{
+                "hostgroup_id": "10", "hostname": "db-primary", "port": "3306",
+                "status": "ONLINE", "weight": "100", "comment": "writer",
+            }],
+        )
+
+        def opener(profile):
+            probed_ids.append(profile["id"])
+            return px_conn
+
+        tiers = topology_links.discover_database_tiers(
+            FakeProbeConn("database", hostname="db-primary", port=3306),
+            {"profile_host": "::ffff:7f00:1", "profile_port": 3306, "hostname": "db-primary", "port": 3306},
+            profiles=[current, ssh_proxy, direct_alias],
+            open_profile=opener,
+            observer_host="::ffff:7f00:1",
+            current_profile_id="p-cur",
+        )
+        self.assertEqual(probed_ids, ["p-ssh-px"])
+        self.assertEqual([node["profile_id"] for node in tiers["proxysql"]], ["p-ssh-px"])
+
+        # An SSH local identity never drops a direct local saved connection on loopback.
+        ssh_current = {"id": "p-ssh-cur", "host": "127.0.0.1", "port": 3306,
+                       "ssh_host": "bastion.example", "group": "lab"}
+        direct_proxy = {"id": "p-local-px", "host": "127.0.0.1", "port": 3306, "group": "lab"}
+        ssh_candidates = topology_links._filter_tier_candidates(
+            [ssh_current, direct_proxy],
+            {"profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": "bastion.example"},
+            peer_endpoints=[{"host": "127.0.0.1", "port": 3306}],
+            skip_profile_id="p-ssh-cur",
+            current=ssh_current,
+        )
+        self.assertEqual([c["id"] for c in ssh_candidates], ["p-local-px"])
+
+    def test_ssh_localhost_observer_is_never_loopback(self):
+        from myflames import replication
+        for host in ("ssh:bastion.localhost", "SSH:vm.localhost.", "ssh:localhost", "ssh:127.0.0.1", "ssh:127.1"):
+            with self.subTest(host=host):
+                self.assertFalse(topology_links.is_loopback(host))
+                self.assertFalse(replication._is_loopback(host))
+        obs = replication.reached_host({"host": "127.0.0.1", "ssh_host": "bastion.localhost"})
+        self.assertEqual(obs, "ssh:bastion.localhost")
+        found, problem = replication.match_source_profiles(
+            {"host": "127.0.0.1", "port": 3306},
+            [{"name": "local", "host": "127.0.0.1", "port": 3306}],
+            replica_host=obs,
+        )
+        self.assertEqual(found, [])
+        self.assertIn("not on this computer", problem)
+
+    def test_shorthand_and_padded_ipv4_loopback_canonicalization(self):
+        from myflames import connection_groups, replication
+        for host, expected in (
+            ("127.1", "127.0.0.1"),
+            ("127.0.1", "127.0.0.1"),
+            ("127.000.000.001", "127.0.0.1"),
+            ("0177.0.0.1", "127.0.0.1"),
+            ("2130706433", "127.0.0.1"),
+            ("127.2", "127.0.0.2"),
+        ):
+            with self.subTest(loopback=host):
+                self.assertEqual(topology_links._host_key(host), expected)
+                self.assertTrue(topology_links.is_loopback(host))
+        for host, expected in (
+            ("10.1", "10.0.0.1"),
+            ("10.000.000.005", "10.0.0.5"),
+            ("127.foo", "127.foo"),
+            ("db1.example.com", "db1.example.com"),
+            ("999.1.1.1", "999.1.1.1"),
+            ("127..1", "127..1"),
+        ):
+            with self.subTest(non_loopback=host):
+                self.assertEqual(topology_links._host_key(host), expected)
+                self.assertFalse(topology_links.is_loopback(host))
+
+        # A remote member reporting 127.1:3306 or 127.000.000.001:3306 must
+        # never match a local saved connection.
+        for reported in ("127.1", "127.000.000.001"):
+            with self.subTest(reported=reported):
+                local_db = {
+                    "kind": "database", "profile_id": "p-local", "profile_name": "Local",
+                    "profile_host": reported, "profile_port": 3306, "ssh_host": None,
+                    "hostname": "local-box", "port": 3306,
+                }
+                self.assertEqual(
+                    topology_links.match_database_endpoint(reported, 3306, [local_db], observer_host="remote.example"),
+                    (None, None),
+                )
+                self.assertFalse(
+                    topology_links._database_matches_target(local_db, reported, 3306, observer_host="remote.example")
+                )
+                prof = {"id": "p-local", "name": "Local", "host": reported, "port": 3306, "group": ""}
+                described = connection_groups.describe(
+                    {"members": [{"host": reported, "port": 3306}]}, [prof], observer_host="remote.example",
+                )
+                self.assertEqual(described["suggestions"], [])
+                found, problem = replication.match_source_profiles(
+                    {"host": reported, "port": 3306}, [prof], replica_host="remote.example",
+                )
+                self.assertEqual(found, [])
+                self.assertIn("not on this computer", problem)
+
 
 if __name__ == "__main__":
     unittest.main()

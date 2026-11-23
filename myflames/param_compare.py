@@ -53,20 +53,9 @@ class BoundedConnection(object):
         return unescape_mysql(text)
 
 
-# Names describe policy, paths and plugin tuning too, so never infer a secret
-# from a name fragment. This explicit inventory includes plugin credentials;
-# even a server-masked value remains unavailable for comparison.
-_SECRET_VARIABLES = frozenset((
-    'wsrep_sst_auth', 'report_password', 'audit_log_encryption_password',
-    'keyring_encrypted_file_password', 'keyring_hashicorp_secret_id', 's3_secret_key',
-    'handlersocket_plain_secret', 'handlersocket_plain_secret_wr', 'utility_user_password',
-    'file_key_management_filekey',
-    'telemetry.otel_exporter_otlp_logs_headers',
-    'telemetry.otel_exporter_otlp_metrics_headers',
-    'telemetry.otel_exporter_otlp_traces_headers',
-    'telemetry.otel_exporter_otlp_logs_secret_headers',
-    'telemetry.otel_exporter_otlp_metrics_secret_headers',
-    'telemetry.otel_exporter_otlp_traces_secret_headers'))
+# Compatibility exports: audit/history and parameter comparison share policy.
+_SECRET_VARIABLES = dbops._SECRET_VARIABLES
+sensitive = dbops.sensitive
 # Use the same linear authority scan as SQL/audit redaction, including URLs
 # with arbitrarily long passwords or empty usernames. A server value has
 # no SQL literal delimiters, so quotes in its userinfo do not end the scan.
@@ -80,10 +69,6 @@ _CREDENTIAL_PAIR = re.compile(r'[^\s:/\\;=@]+:[^\s:/\\;]+')
 # known boilerplate on import as well as fixing capture's note provenance.
 _CONFIG_NOTE_PREFIXES = ('Counters run from server start.', 'Statuses are rules of thumb,',
                          'The server started ', 'innodb_log_file_size is set explicitly;')
-
-
-def sensitive(name):
-    return name.lower() in _SECRET_VARIABLES
 
 
 def _redact_parameter_value(value):

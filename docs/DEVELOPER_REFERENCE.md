@@ -101,7 +101,15 @@ runs `npm ci` in `apps/desktop`, followed by
 `PUPPETEER_SKIP_DOWNLOAD=true npm ci` and `NODE_ENV=production npm run build:ui` in `apps/workspace`,
 installing both dependency sets from their committed lockfiles and building the
 workspace before the backend build or resume decision. The workspace dependencies
-let the packaged settings smokes attach to Electron without downloading a browser. Unless `--resume` finds a
+let the packaged settings smokes attach to Electron without downloading a browser.
+All three npm steps run through `without_signing_credentials`, which removes
+the Apple and CSC signing variables, installer and Windows CSC credentials,
+`GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN` and `NODE_AUTH_TOKEN` from their subprocess
+environment. The
+workspace install and build overrides are passed through `env` inside that
+call, so `PUPPETEER_SKIP_DOWNLOAD` and `NODE_ENV` apply only to their respective
+steps; later backend, packaging and smoke commands retain the caller's environment.
+Unless `--resume` finds a
 valid backend build manifest, it provisions the build venv
 (`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`, stamped
 with the Python version and the build-requirements digest and never a
@@ -645,6 +653,14 @@ is pending, the Settings page's Updates and news section also lists **Update
 available…**, **Update progress…** or **Restart to update…**; clicking the
 badge or the menu item
 opens the Software update dialog.
+Every opener (the badge, the menu item, **Download…** in Updates and news and
+in About myflames) goes through `openUpdateDialog` (`updateStatus.ts`), which
+awaits the dialog's lazy chunk (`UpdateDialogView`) before the dialog opens:
+`state.opening` keeps every launching control busy (aria-busy and a spinner,
+the Settings gear included, so the state survives the menu closing) until the
+dialog is open, and a chunk that cannot be read keeps the dialog closed and
+leaves a dismissible error with **Retry** (`UpdateOpenError`) at the launching
+control instead of the generic lazy-load failure.
 **Download…** appears for a current newer release (unavailable while a check
 runs) and opens the update dialog with the result captured at the click;
 after a reload it checks again first, because the download needs the asset the
@@ -2388,8 +2404,8 @@ does not revoke an otherwise consenting read.
   `same_clusterset`, `same_galera_cluster`, `replication_source`,
   `replica_of_this_server`, `same_server`, `address_named_by_this_server` (from
   remembered `topology_identity` fields and addresses reported by the open
-  server, with loopback addresses matched only when the observer host is
-  loopback and the profile has no `ssh_host`). `join` lists deduplicated
+  server, with loopback addresses matched only when both the observer and the
+  saved connection are direct on this computer, never through SSH). `join` lists deduplicated
   `{group, evidence, evidence_text}` entries for each other non-empty `group`
   present among `suggestions`. `suggested_name` (`connection_groups.suggested_name`)
   is the InnoDB Cluster `cluster.name`, else `clusterset.name`, else Galera/PXC
@@ -3671,7 +3687,48 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   USING, PASSWORD(...), SET PASSWORD, `*PASSWORD = '...'` (SOURCE_PASSWORD,
   MASTER_PASSWORD, START REPLICA PASSWORD, CREATE SERVER OPTIONS), REPLACE
   '...' after a redacted password, and the connection's own password anywhere
-  (also with doubled or backslash-escaped quotes). Retention: 90 days by default
+  (also with doubled or backslash-escaped quotes). It also removes URL user-info
+  passwords, including embedded `@` and malformed slash-bearing passwords.
+  A user-info colon must precede any `[` in the authority, so bracketed IPv6
+  hosts are preserved. When the first boundary after that colon is `/`, the
+  scan continues to the last `@` before whitespace or a quote. Database schemes
+  (`mysql`, `mariadb`, `mysqlx`, `postgres`, `postgresql`) fail closed even when
+  the prefix before `/` is numeric: `mysql://app:2024/secret@db` is redacted.
+  This deliberately also redacts `mysql://h:3306/db?mail=a@b` to
+  `mysql://h:[redacted]@b`. Other schemes retain the numeric-port exemption;
+  username-only URL paths stay unchanged. Adjacent and nested URL authorities
+  are scanned independently; only the long slash-password scan skips schemes
+  it has already covered. Both paths take linear work on long inputs.
+  Parameter values and Readyset status/error values use `quoted=False` so
+  quotes inside URL passwords do not stop redaction; SQL text retains quote
+  boundaries. Readyset cache export keeps its separate redaction rules.
+  `SET` assignments to the explicit `dbops._SECRET_VARIABLES` inventory also
+  hide their values, including `wsrep_sst_auth`: bare, GLOBAL, SESSION, PERSIST
+  and PERSIST_ONLY forms, scoped or bare `@@` forms, backticked or double-quoted
+  name components, case-insensitive names, quoted or unquoted values, and
+  comma-separated assignments. Parenthesized expressions are hidden in full;
+  top-level `WHERE`, `ORDER`, `LIMIT`, `ON`, `RETURNING` and `FOR` end the hidden
+  value so following clauses survive in stored SQL. A new top-level `SET`
+  after an assignment starts fresh even without a semicolon, including scripts
+  with a custom delimiter. A context-free inventory pattern also hides quoted
+  literals after `=` or `:=` in dynamic SQL and server echoes, accepting scoped
+  `@@` forms and quoted names. This applies inside ordinary comments and quoted
+  examples too; ordinary comments do not otherwise change the assignment lexer.
+  Executable comment bodies (`/*!NNNNN ... */`, `/*! ... */`, and
+  `/*M!NNNNNN ... */`) are scanned as SQL, including fragments continuing a
+  surrounding `SET`. Their opening markers consume an optional `-` and at most
+  five version digits; extra digits remain SQL tokens for redaction. This is a
+  conservative redaction rule, not an emulation of engine version gating.
+  A closing `*/` is a marker only inside an executable comment, so a stray
+  closer cannot consume the opener of a following ordinary comment.
+  `ER_WRONG_VALUE_FOR_VAR` diagnostics (`Variable '<name>' can't be set to the
+  value of '<value>'`) also hide the rejected value when the variable belongs
+  to that inventory, including literal apostrophes or newlines in the value
+  and incomplete diagnostics. Adjacent diagnostics for other variables stay intact.
+  Ordinary settings such as `SET GLOBAL max_connections = 500`
+  stay intact. Parameter comparison re-exports the same inventory and
+  `sensitive` predicate; audit records, editor history, saved queries and saved
+  session tabs all use this shared redaction before storage. Retention: 90 days by default
   (`settings` table, `audit_retention_days`, 1 to 3650), purged on every insert
   and when the setting changes. `audit-1.0` envelope: `{schema_version,
   retention_days, records[]}`; each record has a nested `connection` object.
@@ -8570,12 +8627,20 @@ logs in.
     MySQL `sql/sys_vars.cc:3951`, MariaDB `sql/sys_vars.cc:3656`). A contrary
     `server_uuid` or contrary MariaDB `server_id` blocks address-only matching
     (`contrary_uuid`, `contrary_sid`). Under
-    `topology_links._endpoint_matches_profile`, loopback addresses
-    (`127.0.0.1`, `localhost`, `::1`, `127.*`) match a saved member only when
-    `observer_host` is also loopback AND the candidate saved member has no
-    `ssh_host` (so a remote proxy or server accessed over SSH never matches a
-    local loopback saved connection). Address-only matches (`'endpoint'`,
-    `'hostname_port'`, proxy routes, Readyset upstreams) have `verified: false`.
+    `topology_links._endpoint_matches_profile`, canonical host keys
+    (`topology_links._host_key`, shared with `replication._host_key`) collapse
+    IPv4-mapped IPv6 addresses to IPv4, compress IPv6, strip brackets and
+    trailing dots, and compare case-insensitively. Loopback classification
+    (`topology_links.is_loopback`, shared with `replication._is_loopback`)
+    covers `localhost` and `.localhost` names, `127.0.0.0/8`, `::1` in any
+    spelling, their IPv4-mapped IPv6 forms (such as `::ffff:127.0.0.1` and
+    `::ffff:7f00:1`), and unspecified `0.0.0.0` / `::`. Loopback addresses
+    match a saved member only when both the observer and the saved member are
+    direct on this computer (`observer_host` is direct and loopback, not
+    `"ssh:..."`, and the candidate has no `ssh_host`), never through SSH (the
+    same rule as `replication.match_source_profiles`). Address-only matches
+    (`'endpoint'`, `'hostname_port'`, proxy routes, Readyset upstreams) have
+    `verified: false`.
     ProxySQL `proxy_route` edge `state` comes only from runtime rows
     (`status_source` `"config"` gives `state: None`), keeping `ONLINE` (`ok`),
     `OFFLINE_SOFT` (`watch`), `OFFLINE_HARD` (`problem`) and every `SHUNNED*`
@@ -9778,7 +9843,9 @@ Pass runner flags after npm's `--`, for example
   does not expose cwd. Each candidate's command and, when needed, cwd are
   read again immediately before signaling; a reused PID that no longer
   references the path is left alone. Group cleanup is allowed only when
-  every current member still proves that ownership. There is no blind
+  every current member still proves that ownership. A stalled inspection
+  (a busy machine can keep `ps` or `lsof` past its 15 s spawn timeout) is
+  tried once more before it counts. There is no blind
   process-group fallback when inspection fails: cleanup errors fail the
   run. A warning naming the suite reports leftover processes as a suite
   bug, even when cleanup succeeds. Windows retains `taskkill /F /T`, without

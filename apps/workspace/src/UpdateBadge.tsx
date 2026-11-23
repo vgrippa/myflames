@@ -1,18 +1,23 @@
 // The update badge beside the logo: a newer version is available, its
 // download is running, or it is ready to install at restart. It starts the
 // automatic check and hosts the one Software update dialog, which the
-// Settings Updates and news section and About myflames open too
-// (updateStatus.ts).
+// Settings Updates and news section and About myflames open too. Every opener
+// goes through openUpdateDialog (updateStatus.ts), which loads the dialog's
+// chunk first; state.opening keeps each launching control busy and
+// state.openError lands at the control a failed load belongs to.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./components";
 import { Checkbox } from "./kit";
-import { useMinuteClock } from "./UpdateCheck";
-import { UpdateDialog } from "./UpdateDialog";
+import { UpdateOpenError, useMinuteClock } from "./UpdateCheck";
 import {
   closeUpdateDialog, openUpdateDialog, setAutoCheck, stagingPercent, startAutomaticChecks,
-  updateDialogReturnFocus, updatePhase, updatePhaseLabel, useUpdateStatus,
+  UpdateDialogView, updateDialogReturnFocus, updatePhase, updatePhaseLabel, useUpdateStatus,
 } from "./updateStatus";
+
+// Pointing at or focusing an opener starts the chunk on its way, so a click
+// rarely waits. A failed warm-up is quiet: the click's own load reports it.
+const warmUpdateDialog = () => { void UpdateDialogView.preload().catch(() => {}); };
 
 function ProgressRing({ percent }: { percent: number }) {
   const radius = 6;
@@ -34,6 +39,8 @@ export function UpdateBadge() {
   const phase = updatePhase(s, now);
   const label = phase ? updatePhaseLabel(s, phase) : "";
   const percent = stagingPercent(s.staging);
+  const opening = s.opening;
+  const open = () => { if (!opening) void openUpdateDialog(button.current, "badge"); };
   const [announcement, setAnnouncement] = useState("");
   const announced = useRef(new Set<string>());
   const milestone = phase === "available" || phase === "ready" ? label : "";
@@ -54,15 +61,19 @@ export function UpdateBadge() {
       )}
       {phase && (
         <button ref={button} type="button" className="update-badge" data-phase={phase} aria-label={label} title={label}
-          aria-haspopup="dialog" onClick={() => void openUpdateDialog(button.current)}>
-          {phase === "downloading" && percent !== null ? <ProgressRing percent={percent} />
-            : phase === "available" || phase === "ready" ? <Icon name={phase === "ready" ? "refresh" : "import"} size={14} />
-              : <span className="spinner" aria-hidden="true" />}
+          aria-haspopup="dialog" aria-busy={opening || undefined} aria-disabled={opening || undefined}
+          onPointerEnter={warmUpdateDialog} onFocus={warmUpdateDialog} onClick={open}>
+          {opening || phase === "preparing" ? <span className="spinner" aria-hidden="true" />
+            : phase === "downloading" && percent !== null ? <ProgressRing percent={percent} />
+              : phase === "available" || phase === "ready" ? <Icon name={phase === "ready" ? "refresh" : "import"} size={14} />
+                : <span className="spinner" aria-hidden="true" />}
         </button>
       )}
+      {/* The badge is one icon wide: its failure reads as a card under the brand. */}
+      <UpdateOpenError from="badge" retry={open} />
       {/* Rendered at the page root so About's styles and layout never reach it. */}
       {s.dialog && createPortal(
-        <UpdateDialog updateInfo={s.dialog.info} onClose={closeUpdateDialog} returnFocus={updateDialogReturnFocus} />,
+        <UpdateDialogView updateInfo={s.dialog.info} onClose={closeUpdateDialog} returnFocus={updateDialogReturnFocus} />,
         document.body,
       )}
     </>
@@ -74,14 +85,25 @@ export function UpdateMenuItem({ onChoose }: { onChoose: () => void }) {
   const s = useUpdateStatus();
   const now = useMinuteClock();
   const phase = updatePhase(s, now);
+  const opening = s.opening;
+  const open = () => {
+    if (opening) return;
+    onChoose();
+    // The gear keeps the busy state once onChoose has closed the menu.
+    void openUpdateDialog(document.querySelector<HTMLElement>(".settings-button"), "menu");
+  };
   if (!phase) return null;
   const text = phase === "ready" ? "Restart to update…" : phase === "available" ? "Update available…" : "Update progress…";
   return (
-    <button type="button" className="settings-item update-menu-item" data-phase={phase} aria-haspopup="dialog"
-      onClick={() => { const from = document.querySelector<HTMLElement>(".settings-button"); onChoose(); void openUpdateDialog(from); }}>
-      <Icon name={phase === "ready" ? "refresh" : "import"} size={16} />
-      {text}
-    </button>
+    <>
+      <button type="button" className="settings-item update-menu-item" data-phase={phase} aria-haspopup="dialog"
+        aria-busy={opening || undefined} aria-disabled={opening || undefined}
+        onPointerEnter={warmUpdateDialog} onFocus={warmUpdateDialog} onClick={open}>
+        {opening ? <span className="spinner" aria-hidden="true" /> : <Icon name={phase === "ready" ? "refresh" : "import"} size={16} />}
+        {text}
+      </button>
+      <UpdateOpenError from="menu" retry={open} />
+    </>
   );
 }
 

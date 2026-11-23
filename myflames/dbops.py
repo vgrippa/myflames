@@ -2974,6 +2974,8 @@ def cli_confirm(description, prompt, assume_yes=False, quiet=False, stdin=None, 
 # each escaped quote. Quoted identifiers keep literal backslashes: SHOW
 # GRANTS escapes their quote only by doubling it (privileges.quote_identifier).
 GRANT_TOKEN = re.compile(r'''`(?:``|[^`])*(?:`|\Z)|"(?:""|[^"])*(?:"|\Z)|'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|[.,@()*;]|[^\s.,@()*;`"']+''')
+_GRANT_CLOSED_QUOTE = re.compile(r"""`(?:``|[^`])*`|"(?:""|[^"])*"|'(?:''|\\[\s\S]|[^'\\])*'""")
+_GRANT_SECRET_CLAUSE = re.compile(r"\b(?:IDENTIFIED|PASSWORD)\b", re.I)
 
 # Words that end an IDENTIFIED clause in SHOW GRANTS (MariaDB) and SHOW CREATE
 # USER (both engines). Everything from IDENTIFIED up to the first of them is a
@@ -2995,6 +2997,7 @@ def strip_credentials(text):
     GRANT OPTION`` cannot end the clause early."""
     text = str(text or "")
     matches, cursor = [], 0
+    first_quote, unfinished = None, False
     while cursor < len(text):
         if text[cursor].isspace():
             cursor += 1
@@ -3003,9 +3006,23 @@ def strip_credentials(text):
         if token is None:
             # An unterminated quoted literal consumes the remainder. Never
             # retry its escaped quotes as new literals or clause boundaries.
+            unfinished = True
             break
+        if text[cursor] in "'\"`":
+            if first_quote is None:
+                first_quote = cursor
+            if _GRANT_CLOSED_QUOTE.fullmatch(token.group()) is None:
+                unfinished = True
         matches.append(token)
         cursor = token.end()
+    if unfinished and first_quote is not None:
+        # A missing account quote can pair with the credential's opening
+        # quote, leaving only its final quote unfinished. In that case the
+        # apparent earlier quote boundaries cannot protect a secret clause.
+        clause = _GRANT_SECRET_CLAUSE.search(text, first_quote + 1)
+        if clause is not None:
+            text = text[:clause.start()].rstrip()
+            matches = [m for m in matches if m.end() <= len(text)]
     upper = [m.group().upper() for m in matches]
     parts, kept, index = [], 0, 0
     # Tokenize once and visit each token once. Re-tokenizing the remaining
@@ -3300,7 +3317,35 @@ def read_grants(conn, tag="/*myflames:dbops*/ ", galera_identity=False):
 # ---- redaction -------------------------------------------------------------------------
 
 REDACTED = "[redacted]"
+# Names describe policy, paths and plugin tuning too, so never infer a secret
+# from a name fragment. Parameter comparison re-exports this same inventory.
+_SECRET_VARIABLES = frozenset((
+    'wsrep_sst_auth', 'report_password', 'audit_log_encryption_password',
+    'keyring_encrypted_file_password', 'keyring_hashicorp_secret_id', 's3_secret_key',
+    'handlersocket_plain_secret', 'handlersocket_plain_secret_wr', 'utility_user_password',
+    'file_key_management_filekey',
+    'telemetry.otel_exporter_otlp_logs_headers',
+    'telemetry.otel_exporter_otlp_metrics_headers',
+    'telemetry.otel_exporter_otlp_traces_headers',
+    'telemetry.otel_exporter_otlp_logs_secret_headers',
+    'telemetry.otel_exporter_otlp_metrics_secret_headers',
+    'telemetry.otel_exporter_otlp_traces_secret_headers'))
+
+
+def sensitive(name):
+    """Whether a system variable's value is always treated as a secret."""
+    return name.lower() in _SECRET_VARIABLES
+
+
 _STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
+# A bounded inventory also protects quoted SQL and server echoes, where a
+# whole-statement lexer cannot know which quote belongs to the surrounding text.
+# Recognize each quoted component as well as a quoted dotted inventory name.
+_SECRET_VARIABLE_NAME = r"(?:" + "|".join(
+    r"(?:`" + re.escape(name) + r"`|\"" + re.escape(name) + r"\"|" +
+    r"\s*\.\s*".join(r"(?:" + re.escape(part) + r"|`" + re.escape(part) +
+                      r"`|\"" + re.escape(part) + r"\")" for part in name.split('.')) + r")"
+    for name in sorted(_SECRET_VARIABLES)) + r")"
 _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
@@ -3314,6 +3359,9 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
+    # Inventory assignments in dynamic SQL, diagnostics and quoted examples.
+    r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)",
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
     r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)",
 ))
@@ -3331,8 +3379,28 @@ _SET_PASSWORD_FROM_KEYWORD = re.compile(
     r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|[=;]")
 _URL_SCHEME = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z0-9+.-]+://")
 _URL_SCHEME_LETTER = re.compile(r"[a-zA-Z]")
-_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`]|@+")
-_URL_VALUE_BOUNDARY = re.compile(r"[\s/]|@+")
+_URL_SQL_BOUNDARY = re.compile(r"[\s/'\"`]")
+_URL_VALUE_BOUNDARY = re.compile(r"[\s/]")
+_URL_SQL_END = re.compile(r"[\s'\"`]")
+_URL_VALUE_END = re.compile(r"\s")
+_URL_DATABASE_SCHEMES = frozenset(('mysql', 'mariadb', 'mysqlx', 'postgres', 'postgresql'))
+# Literal and comment tokens protect commas and SET words inside values.
+# Keep name components separate so comments and backticks can surround dots
+# or the assignment operator without hiding a sensitive system variable.
+_SET_VARIABLE_TOKEN = (
+    r"(?P<quoted>" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
+    r"|(?P<executable>/\*(?:!|M!)-?\d{0,5})"
+    r"|(?P<comment>/\*[\s\S]*?(?:\*/|\Z)|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
+    r"|(?P<word>[\w$]+)|@+|:=|[=.,;()]|[^\w\s'\"`@=.,;()/*]+|[^\s]")
+_SET_VARIABLE_PART = re.compile(_SET_VARIABLE_TOKEN, re.I)
+_SET_VARIABLE_EXECUTABLE_PART = re.compile(r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN, re.I)
+_SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
+_SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
+_SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR'))
+# ER_WRONG_VALUE_FOR_VAR prints the rejected value verbatim, so apostrophes
+# and line breaks inside it are not SQL quote or message boundaries.
+_WRONG_VALUE_FOR_VAR = re.compile(
+    r"\bVariable '([^'\r\n]{1,64})' can't be set to the value of '", re.I)
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3341,37 +3409,178 @@ _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b",
 def _URL_SECRET(text, quoted=True):
     """Yield password spans in URL authorities, with no credential length limit.
 
-    The scheme starts at a character outside the scheme alphabet, preventing
-    retries at each dot in a long scheme-like value. Each authority scan runs
-    forward once to its first delimiter, remembering the last ``@`` seen so
-    passwords containing ``@`` stay fully redacted while even nested or
-    unfinished URLs take linear work. Parameter values can contain quotes in
-    userinfo; SQL/audit text keeps quotes as literal boundaries. A slash ends
-    the authority: an @ in a path is not a credential. MySQL FEDERATED rejects
-    a slash in passwords (storage/federated/ha_federated.cc:815-816).
-    Readyset's N* pool prefix and an empty username require no special case.
+    A slash normally ends an authority. Before any ``@``, the value after a
+    user-info colon can instead be a malformed password containing slashes;
+    scan it through the last ``@`` before whitespace or a quote. Only database
+    schemes treat a numeric prefix as a possible password; other schemes keep
+    numeric host ports intact. Bracketed IPv6 hosts and username-only paths
+    stay untouched. Only the long slash scan skips schemes it already covered,
+    keeping adjacent URLs visible and nested or unfinished URLs linear.
+    SQL keeps quotes as boundaries; server values can contain quotes in a
+    password and use ``quoted=False``. Pool prefixes and empty users work too.
     """
     boundary = _URL_SQL_BOUNDARY if quoted else _URL_VALUE_BOUNDARY
+    value_end = _URL_SQL_END if quoted else _URL_VALUE_END
+    scanned = 0
     for scheme in _URL_SCHEME.finditer(text):
+        if scheme.start() < scanned:
+            continue
         if not _URL_SCHEME_LETTER.search(text, scheme.start(), scheme.end() - 3):
             continue
-        last_at = -1
-        for mark in boundary.finditer(text, scheme.end()):
-            if text[mark.start()] == "@":
-                last_at = mark.end() - 1
-            else:
-                break
-        if last_at < 0:
-            continue
-        colon = text.find(":", scheme.end(), last_at)
-        if colon >= 0:
+        mark = boundary.search(text, scheme.end())
+        end = mark.start() if mark is not None else len(text)
+        last_at = text.rfind("@", scheme.end(), end)
+        colon = text.find(":", scheme.end(), last_at if last_at >= 0 else end)
+        if colon >= 0 and text.find("[", scheme.end(), colon) >= 0:
+            colon = -1  # A colon inside a bracketed host is not user-info.
+        if (last_at < 0 and colon >= 0 and end < len(text) and text[end] == "/"
+                and (scheme.group()[:-3].lower() in _URL_DATABASE_SCHEMES
+                     or not text[colon + 1:end].isdigit())):
+            mark = value_end.search(text, end)
+            end = mark.start() if mark is not None else len(text)
+            last_at = text.rfind("@", colon + 1, end)
+            # A normal authority scan can end at the next scheme's slash.
+            # Skip schemes only after a long scan has covered their values.
+            scanned = end
+        if colon >= 0 and last_at >= 0:
             yield colon + 1, last_at
+
+
+def _secret_variable_tokens(text):
+    """Scan SQL once, recognizing closing markers only in executable bodies."""
+    cursor, executable = 0, False
+    while cursor < len(text):
+        pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
+        token = pattern.search(text, cursor)
+        if token is None:
+            return
+        cursor = token.end()
+        if token.lastgroup == 'executable':
+            executable = True
+            yield token
+            # MariaDB also accepts a sixth version digit adjacent to SQL.
+            # Keep leftover digits as a token, separate from a following SET
+            # or name, so both names and numeric secret values remain visible.
+            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor)
+            if tail is not None:
+                cursor = tail.end()
+                yield tail
+        elif token.lastgroup == 'end':
+            executable = False
+        elif token.lastgroup != 'comment':
+            yield token
+
+
+def _redact_secret_variables(text):
+    """Redact SET values from the shared inventory in one token pass.
+
+    Top-level clauses end a value; commas and later SET statements start new
+    assignments. Parentheses, strings and ordinary comments protect separators.
+    Executable-comment markers are transparent to SQL state. Track the last
+    value token to leave a trailing closing marker and whitespace intact.
+    """
+    parts, kept, value_start, value_end = [], 0, None, None
+    in_set, depth, name_parts, awaiting_value = False, 0, None, False
+    version_tail_at = None
+    for token in _secret_variable_tokens(text):
+        value = token.group()
+        if token.lastgroup == 'executable':
+            version_tail_at = token.end() if value[-1:].isdigit() else None
+            continue
+        # Six-digit version markers can split a surrounding assignment name.
+        # Their remaining digits must not poison that name, but still count as
+        # SQL value tokens after '=' so a long numeric secret cannot be hidden
+        # in a marker. The position ties this exception to the opening marker.
+        version_tail = (token.start() == version_tail_at
+                        and token.lastgroup == 'word' and value.isdigit())
+        version_tail_at = None
+        if version_tail and name_parts is not None:
+            continue
+        word = value.upper() if token.lastgroup == 'word' else None
+        restart = (word == 'SET' and in_set and depth == 0
+                   and name_parts is None and not awaiting_value)
+        if restart:
+            in_set = False
+        if (value_start is not None and value_end is not None and depth == 0
+                and (restart or word in _SET_VALUE_ENDS)):
+            body = text[value_start:value_end]
+            quote = body[0] if body[:1] in ("'", '"') else ''
+            parts.extend((text[kept:value_start], quote, REDACTED, quote))
+            kept, value_start, value_end = value_end, None, None
+            in_set, name_parts = False, None
+        if awaiting_value:
+            value_start = token.start() if value not in (',', ';') else None
+            awaiting_value = False
+        if value_start is not None and (value not in (',', ';') or value == ',' and depth > 0):
+            value_end = token.end()
+        if token.lastgroup == 'quoted':
+            if name_parts is not None:
+                quote = value[0]
+                name_parts.append(value[1:-1].replace(quote * 2, quote)
+                                  if quote in ('`', '"') else value)
+            continue
+        if word == 'SET' and not in_set:
+            in_set, depth, name_parts = True, 0, []
+        elif value == '(':
+            depth += 1
+        elif value == ')':
+            depth = max(0, depth - 1)
+        elif value == ';' or value == ',' and depth == 0:
+            if value_start is not None:
+                body = text[value_start:value_end]
+                quote = body[0] if body[:1] in ("'", '"') else ''
+                parts.extend((text[kept:value_start], quote, REDACTED, quote))
+                kept, value_start, value_end = value_end, None, None
+            if value == ';':
+                in_set, depth = False, 0
+            name_parts = [] if in_set else None
+        elif in_set and depth == 0 and name_parts is not None:
+            if value in ('=', ':='):
+                if name_parts and name_parts[0].upper() in _SET_VARIABLE_SCOPES:
+                    name_parts = name_parts[1:]
+                if name_parts[:1] == ['@@']:
+                    name_parts = name_parts[1:]
+                    if (len(name_parts) >= 2 and name_parts[0].upper() in _SET_VARIABLE_SCOPES
+                            and name_parts[1] == '.'):
+                        name_parts = name_parts[2:]
+                if sensitive(''.join(name_parts)):
+                    awaiting_value = True
+                name_parts = None
+            else:
+                name_parts.append(value)
+    if value_start is not None:
+        body = text[value_start:value_end]
+        quote = body[0] if body[:1] in ("'", '"') else ''
+        parts.extend((text[kept:value_start], quote, REDACTED, quote))
+        kept = value_end
+    return ''.join(parts) + text[kept:] if parts else text
 
 
 def _redact_literal(match):
     literal = match.group(2)
     quote = literal[0]
     return match.group(1) + quote + REDACTED + quote
+
+
+def _redact_variable_errors(text):
+    """Hide rejected secrets without consuming another variable's diagnostic.
+
+    Raw values can contain quotes or newlines. Use the last closing quote
+    before the next diagnostic, and hide an unfinished value through its end.
+    Each search visits a disjoint interval, keeping long diagnostics linear.
+    """
+    messages = list(_WRONG_VALUE_FOR_VAR.finditer(text))
+    parts, kept = [], 0
+    for index, message in enumerate(messages):
+        if not sensitive(message.group(1)):
+            continue
+        limit = messages[index + 1].start() if index + 1 < len(messages) else len(text)
+        end = text.rfind("'", message.end(), limit)
+        if end < 0:
+            end = limit
+        parts.extend((text[kept:message.end()], REDACTED))
+        kept = end
+    return ''.join(parts) + text[kept:] if parts else text
 
 
 def _redact_set_password(text):
@@ -3468,12 +3677,14 @@ def _redact_set_password_all(text):
     return ''.join(parts) + text[kept:] if parts else text
 
 
-def redact(text, password=None):
+def redact(text, password=None, quoted=True):
     """*text* with secrets replaced by ``[redacted]``: the literals after
     IDENTIFIED BY / AS / USING, PASSWORD('...'), SET PASSWORD, SOURCE_PASSWORD,
-    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, database URL
-    credentials, and the connection's own *password* anywhere (also as written
-    in SQL with a doubled or backslash-escaped quote)."""
+    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, SET assignments
+    to secret variables and their rejected values in server errors, database
+    URL credentials, and the connection's own
+    *password* anywhere (also with doubled or backslash-escaped SQL quotes).
+    Set *quoted* to False for URL passwords in non-SQL server values."""
     if text is None:
         return None
     text = str(text)
@@ -3484,10 +3695,12 @@ def redact(text, password=None):
             if variant:
                 text = text.replace(variant, REDACTED)
     text = _redact_set_password_all(text)
+    text = _redact_variable_errors(text)
+    text = _redact_secret_variables(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0
-    for start, end in _URL_SECRET(text):
+    for start, end in _URL_SECRET(text, quoted=quoted):
         parts.extend((text[kept:start], REDACTED))
         kept = end
     if parts:

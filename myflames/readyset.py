@@ -371,17 +371,17 @@ def identify(conn):
         code = error_number(str(exc))
         if code is None or client_error(code) or "Access denied" in str(exc):
             raise
-        return False, "SELECT @@version_comment failed (%s)" % _short(dbops.redact(str(exc), pw))
+        return False, "SELECT @@version_comment failed (%s)" % _short(dbops.redact(str(exc), pw, quoted=False))
     comment = _text(next(iter(rows[0].values()))) if rows and rows[0] else ""
     if not is_readyset_comment(comment):
-        shown_comment = _display(dbops.redact(comment, pw))[:60] if comment else "empty"
+        shown_comment = _display(dbops.redact(comment, pw, quoted=False))[:60] if comment else "empty"
         return False, "@@version_comment is %s, not Readyset" % shown_comment
     try:
         vrows = select(conn, "SHOW READYSET VERSION")
     except ConnectorError as exc:
-        return False, "SHOW READYSET VERSION failed (%s)" % _short(dbops.redact(str(exc), pw))
+        return False, "SHOW READYSET VERSION failed (%s)" % _short(dbops.redact(str(exc), pw, quoted=False))
     version = parse_readyset_version(vrows) or "unknown"
-    return True, _display(dbops.redact(version, pw))
+    return True, _display(dbops.redact(version, pw, quoted=False))
 
 
 def _detect_port_mode(conn, schema_name, timeout=None):
@@ -449,7 +449,8 @@ class _Reads(object):
         try:
             rows = select(self.conn, sql)
         except ConnectorError as exc:
-            self.missing.append((label or sql, _short(exc)))
+            self.missing.append((label or sql, _short(dbops.redact(
+                str(exc), getattr(self.conn, "password", None), quoted=False))))
             return None
         self.statements.append(label or sql)
         return rows
@@ -629,7 +630,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     status_rows = reads.query("SHOW READYSET STATUS", "SHOW READYSET STATUS") or []
     raw_status_map = _parse_kv_rows(status_rows)
     status_map = dict(
-        (k, dbops.redact(v, pw) if isinstance(v, str) else v)
+        (k, dbops.redact(v, pw, quoted=False) if isinstance(v, str) else v)
         for k, v in raw_status_map.items()
     )
     report["status_fields"] = {
@@ -736,7 +737,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         {
             "client_addr": _text(r.get("client_addr")),
             "username": _text(r.get("username")),
-            "upstream": dbops.redact(_text(r.get("upstream")), pw) if _text(r.get("upstream")) else None,
+            "upstream": dbops.redact(_text(r.get("upstream")), pw, quoted=False) if _text(r.get("upstream")) else None,
         }
         for r in conn_rows
     ]
@@ -759,7 +760,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
             "table": tname,
             "status": tstatus,
             "bucket": bucket,
-            "description": dbops.redact(tdesc, pw),
+            "description": dbops.redact(tdesc, pw, quoted=False),
         })
     report["tables"] = tables
     report["table_counts"] = counts
@@ -852,7 +853,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 "query": dbops.redact(r.get("query") or r.get("proxied query") or "", pw),
                 "count": _int(r.get("count")),
                 "deep_support": sup,
-                "deep_reason": dbops.redact(reason_txt, pw),
+                "deep_reason": dbops.redact(reason_txt, pw, quoted=False),
                 "shallow_support": "unknown",
                 "shallow_reason": None,
             }
@@ -867,7 +868,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 "query": dbops.redact(r.get("query") or r.get("proxied query") or "", pw),
                 "count": _int(r.get("count")),
                 "deep_support": sup,
-                "deep_reason": dbops.redact(reason_txt, pw),
+                "deep_reason": dbops.redact(reason_txt, pw, quoted=False),
                 "shallow_support": "unknown",
                 "shallow_reason": None,
             }
@@ -885,11 +886,11 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                     "deep_support": "unknown",
                     "deep_reason": None,
                     "shallow_support": sup,
-                    "shallow_reason": dbops.redact(reason_txt, pw),
+                    "shallow_reason": dbops.redact(reason_txt, pw, quoted=False),
                 }
             else:
                 item["shallow_support"] = sup
-                item["shallow_reason"] = dbops.redact(reason_txt, pw)
+                item["shallow_reason"] = dbops.redact(reason_txt, pw, quoted=False)
                 if item["count"] is None:
                     item["count"] = _int(r.get("count"))
 
@@ -951,7 +952,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         "cdc_server": sf.get("cdc_server"),
         "max_offset": sf.get("max_replication_offset"),
         "min_offset": sf.get("min_replication_offset"),
-        "last_error": dbops.redact(sf.get("last_replicator_error")) if sf.get("last_replicator_error") else None,
+        "last_error": dbops.redact(sf.get("last_replicator_error"), quoted=False) if sf.get("last_replicator_error") else None,
         "last_started": sf.get("last_started_replication"),
         "last_snapshot": sf.get("last_completed_snapshot"),
         "mode": None,
@@ -1042,7 +1043,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         findings.append({"id": fid, "status": fstatus, "title": title, "text": text, "tab": tab})
 
     def _shown(value):
-        return _display(dbops.redact(value, pw))
+        return _display(dbops.redact(value, pw, quoted=False))
 
     if sf.get("database_connection") == "Unreachable":
         _finding("problem", "upstream_unreachable",
@@ -1219,7 +1220,7 @@ def _explain_one(conn, target, kind):
             "cache_type": kind,
             "supported": "error",
             "raw_support": None,
-            "reason": _short(dbops.redact(str(exc), pw)),
+            "reason": _short(dbops.redact(str(exc), pw, quoted=False)),
             "query_id": None,
             "query": None,
             "statement": sql,
@@ -1230,8 +1231,8 @@ def _explain_one(conn, target, kind):
     return {
         "cache_type": kind,
         "supported": verdict,
-        "raw_support": dbops.redact(sup_raw, pw),
-        "reason": dbops.redact(detail, pw),
+        "raw_support": dbops.redact(sup_raw, pw, quoted=False),
+        "reason": dbops.redact(detail, pw, quoted=False),
         "query_id": _text(row.get("query_id") if "query_id" in row else row.get("query id")),
         "query": dbops.redact(row.get("query") if "query" in row else row.get("proxied query"), pw),
         "statement": sql,
@@ -1548,7 +1549,7 @@ def export_caches(conn):
     items = []
     pw = getattr(conn, "password", None)
     # Redact before bounding, and keep server text on its comment line.
-    version = _display(dbops.redact(version, pw))
+    version = _display(dbops.redact(version, pw, quoted=False))
     lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
              "-- Recognized credentials in query text are shown as [redacted]."]
     last_db = None

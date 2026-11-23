@@ -1262,6 +1262,106 @@ class TestMCP(unittest.TestCase):
 
 
 
+class TestAttachTopologyTiers(unittest.TestCase):
+    """attach_topology_tiers forwards ssh_host in local_identity without altering direct connections."""
+
+    def setUp(self):
+        from myflames import topology_links
+        topology_links._reset_cache_for_tests()
+
+    def _report(self, hostname='shared-box', port=3306):
+        return {
+            'available': True,
+            'kind': 'group_replication',
+            'performance_schema': False,
+            'server': {
+                'hostname': hostname,
+                'port': port,
+                'report_host': None,
+                'server_uuid': 'aaaaaaaa-0000-4000-8000-000000000001',
+            },
+            'members': [{'host': '127.0.0.1', 'port': port, 'uuid': 'aaaaaaaa-0000-4000-8000-000000000001'}],
+        }
+
+    def test_ssh_connection_passes_ssh_host_and_blocks_local_loopback_tier_match(self):
+        from test_topology_links import FakeProbeConn
+        conn = FakeProbeConn('database', hostname='shared-box', port=3306)
+        conn.host = '127.0.0.1'
+        conn.port = 3306
+        conn.ssh_host = 'bastion.example'
+        current = {'id': 'p-cur', 'name': 'SSH Cluster', 'host': '127.0.0.1', 'port': 3306,
+                   'ssh_host': 'bastion.example', 'group': 'lab'}
+        local_rs = {'id': 'p-rs', 'name': 'Local Readyset', 'host': '127.0.0.1', 'port': 13307,
+                    'remember_password': True, 'group': 'lab'}
+        local_px = {'id': 'p-px', 'name': 'Local Proxy', 'host': '127.0.0.1', 'port': 3306,
+                    'remember_password': True, 'group': 'lab'}
+        rs_conn = FakeProbeConn('readyset', upstreams=[
+            {'host': '127.0.0.1', 'port': '3306', 'database': 'shop', 'user': 'rs',
+             'weight': '100', 'purpose': 'cdc', 'active_cdc': 'true', 'health': 'up', 'connections': '1'},
+        ], cdc_server='127.0.0.1:3306')
+        px_conn = FakeProbeConn('proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': '127.0.0.1', 'port': '3306', 'status': 'ONLINE', 'weight': '100'},
+        ])
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return rs_conn if profile['id'] == 'p-rs' else px_conn
+
+        # Even when the SSH server shares the local hostname, ssh_host stops local
+        # loopback tier matching and keeps the direct local proxy eligible as a candidate.
+        with mock.patch('myflames.topology_links.socket.gethostname', return_value='shared-box.local'):
+            out = m.attach_topology_tiers(
+                conn, self._report('shared-box'),
+                profiles=[current, local_rs, local_px], open_profile=opener,
+                current_profile_id='p-cur',
+            )
+        with self.subTest('tier_matchers_block_local_loopback'):
+            self.assertEqual(out['topology_tiers']['readyset'], [])
+            self.assertEqual(out['topology_tiers']['proxysql'], [])
+        with self.subTest('filter_keeps_direct_local_proxy'):
+            self.assertEqual(opened, ['p-rs', 'p-px'])
+
+        # Also check local_identity directly carries ssh_host.
+        with self.subTest('local_identity_carries_ssh_host'):
+            with mock.patch('myflames.topology_links.discover_database_tiers', return_value={'readyset': [], 'proxysql': []}) as disc:
+                m.attach_topology_tiers(conn, self._report('shared-box'), profiles=[current], current_profile_id='p-cur')
+            self.assertEqual(disc.call_args[0][1].get('ssh_host'), 'bastion.example')
+
+    def test_direct_connection_preserves_local_tier_discovery_and_filtering(self):
+        from test_topology_links import FakeProbeConn
+        conn = FakeProbeConn('database', hostname='shared-box', port=3306)
+        conn.host = '127.0.0.1'
+        conn.port = 13306
+        conn.ssh_host = None
+        current = {'id': 'p-cur', 'name': 'Direct DB', 'host': '127.0.0.1', 'port': 13306, 'group': 'lab'}
+        direct_alias = {'id': 'p-alias', 'name': 'Direct Alias', 'host': 'localhost', 'port': 13306,
+                        'remember_password': True, 'group': 'lab'}
+        local_rs = {'id': 'p-rs', 'name': 'Local Readyset', 'host': '127.0.0.1', 'port': 13307,
+                    'remember_password': True, 'group': 'lab'}
+        rs_conn = FakeProbeConn('readyset', upstreams=[
+            {'host': '127.0.0.1', 'port': '3306', 'database': 'shop', 'user': 'rs',
+             'weight': '100', 'purpose': 'cdc', 'active_cdc': 'true', 'health': 'up', 'connections': '1'},
+        ], cdc_server='127.0.0.1:3306')
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return rs_conn
+
+        with mock.patch('myflames.topology_links.socket.gethostname', return_value='shared-box.local'):
+            out = m.attach_topology_tiers(
+                conn, self._report('shared-box'),
+                profiles=[current, direct_alias, local_rs], open_profile=opener,
+                current_profile_id='p-cur',
+            )
+        self.assertEqual(opened, ['p-rs'])
+        self.assertEqual([node['profile_id'] for node in out['topology_tiers']['readyset']], ['p-rs'])
+        with mock.patch('myflames.topology_links.discover_database_tiers', return_value={'readyset': [], 'proxysql': []}) as disc:
+            m.attach_topology_tiers(conn, self._report('shared-box'), profiles=[current], current_profile_id='p-cur')
+        self.assertIsNone(disc.call_args[0][1]['ssh_host'])
+
+
 class TestRecorder(unittest.TestCase):
     """scripts/record-cluster-fixtures.py, which makes the recordings above:
     committed, named by the fixture helper, password from the matrix's

@@ -270,6 +270,32 @@ class TestEvidence(GroupCase):
         self.assertEqual(cg.describe(report, [local], observer_host='remote')['suggestions'], [])
         self.assertEqual(cg.describe(report, [dict(local, ssh_host='remote')], observer_host='127.0.0.1')['suggestions'], [])
 
+    def test_finish_read_ssh_loopback_host_gets_no_loopback_suggestions(self):
+        local = self.save('local-db', host='127.0.0.1', port=3306)
+        local_proxy = self.save('local-proxy', name='Local ProxySQL', host='127.0.0.1', port=6032)
+        report = {
+            'members': [{'host': '127.0.0.1', 'port': 3306}],
+            'topology_tiers': {'live_footprint': {'clients': [
+                {'program': 'ProxySQL', 'host': '127.0.0.1:40123'},
+            ]}},
+        }
+        for ssh_host in ('127.0.0.1', 'localhost', 'vm.localhost'):
+            with self.subTest(ssh_host=ssh_host):
+                current = self.save('ssh-' + ssh_host, host='127.0.0.1', port=3306,
+                                    ssh_host=ssh_host, ssh_port=2222)
+                out = cg.finish_read(self.store, copy.deepcopy(report), self.request(current),
+                                     [current, local, local_proxy], current)
+                self.assertEqual(out['connection_group']['suggestions'], [])
+        with self.subTest(ssh_host='::1'):
+            conn_v6 = {'host': '127.0.0.1', 'port': 3306, 'ssh_host': '::1', 'ssh_port': 2222}
+            out = cg.finish_read(self.store, copy.deepcopy(report), conn_v6, [local, local_proxy], None)
+            self.assertEqual(out['connection_group']['suggestions'], [])
+        direct = self.save('direct-db', host='127.0.0.1', port=3307)
+        out_direct = cg.finish_read(self.store, copy.deepcopy(report), self.request(direct),
+                                    [direct, local, local_proxy], direct)
+        self.assertEqual({item['id'] for item in out_direct['connection_group']['suggestions']},
+                         {'local-db', 'local-proxy'})
+
     def test_client_footprint_and_performance_schema_off(self):
         conn = FakeProbeConn('database', connect_attrs=[['proxy-host:40123', 'program_name', 'ProxySQL'],
                                                        ['rs-host:49999', 'program_name', 'READYSET']])

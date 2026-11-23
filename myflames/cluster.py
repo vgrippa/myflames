@@ -2457,6 +2457,7 @@ def _member_address_profiles(report, member, checks):
     profile separately so duplicate addresses remain ambiguous, including
     profiles without a saved password.
     """
+    from .replication import reached_host
     from .topology_links import match_database_endpoint, split_host_port
     uuid = member.get("uuid")
     if not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
@@ -2464,6 +2465,7 @@ def _member_address_profiles(report, member, checks):
     host, port = split_host_port(member.get("address"), 3306)
     host, port = member.get("host") or host, member.get("port") or port
     current = checks.get("current_profile") or {}
+    observer = reached_host(current)
     candidates = {}
     for profile in checks.get("group_profiles") or ():
         if (not isinstance(profile, dict) or not profile.get("id") or
@@ -2471,7 +2473,7 @@ def _member_address_profiles(report, member, checks):
             continue
         endpoint = {"kind": "database", "profile_host": profile.get("host"),
                     "profile_port": profile.get("port") or 3306, "ssh_host": profile.get("ssh_host")}
-        match, _ = match_database_endpoint(host, port, [endpoint], observer_host=current.get("host"))
+        match, _ = match_database_endpoint(host, port, [endpoint], observer_host=observer)
         if match is not None:
             candidates[profile["id"]] = profile
     return list(candidates.values())
@@ -2892,9 +2894,14 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
     """Attach verified upstream Readyset and ProxySQL tiers from saved connections."""
     if not report or not report.get("available"):
         return report
+    from .replication import reached_host as _reached_host
     from .topology_links import discover_database_tiers
     srv = report.get("server") or {}
-    obs_host = reached_host if reached_host is not None else getattr(conn, "host", None)
+    obs_host = reached_host if reached_host is not None else _reached_host(conn)
+    ssh_host = getattr(conn, "ssh_host", None)
+    ssh_host = ssh_host.strip() if isinstance(ssh_host, str) and ssh_host.strip() else None
+    if ssh_host is None and isinstance(obs_host, str) and obs_host.strip().lower().startswith("ssh:"):
+        ssh_host = obs_host.strip()[4:].strip() or None
     local_ident = {
         "hostname": srv.get("hostname"),
         "port": srv.get("port") or getattr(conn, "port", None) or 3306,
@@ -2902,6 +2909,7 @@ def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_
         "server_uuid": srv.get("server_uuid"),
         "profile_host": obs_host,
         "profile_port": getattr(conn, "port", None) or srv.get("port") or 3306,
+        "ssh_host": ssh_host,
     }
     peers = [
         {"host": m.get("host"), "port": m.get("port") or 3306, "server_uuid": m.get("uuid")}

@@ -481,6 +481,12 @@ try {
   assert.match(unverifiedEdge, /db-1 → 10\.0\.0\.77:3306/);
   assert.match(unverifiedEdge, /address match, not verified/, "an address-only link says it is not verified");
   assert.match(mapText, /group replication · 2 members/, "the cluster box is listed");
+  // The text lists under the Map keep the body size: the 11 px rule is for
+  // the SVG label layer only (.topology-map-label-layer .topology-map-label).
+  const listLabelSize = await page.$eval('.topology-map-section[aria-label="Servers"] .topology-map-list .topology-map-label',
+    (e) => getComputedStyle(e).fontSize);
+  assert.equal(listLabelSize, await page.evaluate(() => getComputedStyle(document.body).fontSize),
+    "a list label keeps the body size, not the diagram's 11 px SVG label size");
   // The diagram keeps cluster membership, evidence and read outcomes visible.
   const diagram = ".topology-map-diagram";
   const nodeButton = (id) => `${diagram} button[data-node="${id}"]`;

@@ -35,6 +35,49 @@ class TestWorkspaceStore(unittest.TestCase):
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
 
+    def test_gate65_session_restore_keeps_clauses_and_redacts_restarted_set(self):
+        cases = (
+            ("UPDATE cfg SET s3_secret_key = 'abc' WHERE id = 1",
+             "UPDATE cfg SET s3_secret_key = '[redacted]' WHERE id = 1"),
+            ("INSERT INTO cfg SET s3_secret_key = 'abc' ON DUPLICATE KEY UPDATE is_admin = 1",
+             "INSERT INTO cfg SET s3_secret_key = '[redacted]' ON DUPLICATE KEY UPDATE is_admin = 1"),
+            ("SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = CONCAT('script-secret', 'tail')",
+             'SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = [redacted]'),
+            ("DELIMITER //\nSET GLOBAL max_connections = 500//\n"
+             "SET GLOBAL wsrep_sst_auth = CONCAT('script-secret', 'tail')",
+             'DELIMITER //\nSET GLOBAL max_connections = 500//\nSET GLOBAL wsrep_sst_auth = [redacted]'),
+        )
+        state = {'tabs': [{'sql': sql} for sql, _ in cases]}
+        expected = {'tabs': [{'sql': sql} for _, sql in cases]}
+        self.assertEqual(workspace_store.validate_session_state(state), expected)
+        self.store.save_session(state, 0)
+        self.assertEqual(WorkspaceStore(self.path).load_session()['state'], expected)
+        # Saving must not alter the editor's original in-memory SQL.
+        self.assertEqual(state['tabs'][0]['sql'], cases[0][0])
+
+    def test_gate65_session_restore_redacts_urls_names_echoes_and_comment_values(self):
+        cases = (
+            ("SELECT 'mysql://reader@h1,mysql://admin:PW@h2'",
+             "SELECT 'mysql://reader@h1,mysql://admin:[redacted]@h2'"),
+            ("SELECT 'mysql://app:2024/secret@db1:3306/shop'",
+             "SELECT 'mysql://app:[redacted]@db1:3306/shop'"),
+            ('SET GLOBAL "wsrep_sst_auth" = CONCAT(\'ansi-secret\', \'tail\')',
+             'SET GLOBAL "wsrep_sst_auth" = [redacted]'),
+            ('EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'echo-secret\'"',
+             'EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'[redacted]\'"'),
+            ('SET GLOBAL wsrep_sst_auth = /*!80000987654321*/',
+             'SET GLOBAL wsrep_sst_auth = /*!80000[redacted]*/'),
+            ("SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = CONCAT('marker-secret', 'tail')",
+             "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = [redacted]"),
+        )
+        # Every SQL-bearing session key uses the same storage boundary.
+        fields = ('sql', 'text', 'query', 'statement', 'sql_text')
+        state = {'tabs': [{key: sql for key in fields} for sql, _ in cases]}
+        expected = {'tabs': [{key: sql for key in fields} for _, sql in cases]}
+        self.assertEqual(workspace_store.validate_session_state(state), expected)
+        self.store.save_session(state, 0)
+        self.assertEqual(WorkspaceStore(self.path).load_session()['state'], expected)
+
     def test_topology_observations_keep_start_order_across_store_instances(self):
         profile = self.store.save('profile', {'name': 'db', 'host': 'db.example', 'user': 'monitor'}, 'db')
         older = self.store.begin_topology_observation()

@@ -5204,6 +5204,29 @@ kbd {
   .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge > * { display: none; }
   .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge:is([data-phase="downloading"], [data-phase="preparing"]) { background: var(--accent); }
 }
+/* A failed opening of Software update, at the control that launched it
+   (UpdateCheck.tsx UpdateOpenError): the reason with Retry and Dismiss. The
+   badge is one icon wide, so its copy floats as a card under the brand. */
+.update-open-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+.brand-group { position: relative; }
+.brand-group .update-open-error {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 30;
+  width: 240px;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+}
 /* Update dialog */
 .update-dialog {
   max-width: 480px;

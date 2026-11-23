@@ -39,12 +39,15 @@ fetcher = load_script('release_client_tests', SCRIPTS / 'fetch-mysql-client.py')
 
 
 class ReleaseEntryPointTest(unittest.TestCase):
-    """Static dependency guards: never install, build or call Apple services."""
+    """Dependency guards with fake tools: never install, build or call Apple services."""
 
-    DESKTOP_INSTALL = r"^python3 scripts/release_state\.py run --label '[^'\n]+' -- npm ci$"
-    WORKSPACE_INSTALL = (r"^PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state\.py run "
+    DESKTOP_INSTALL = (r"^without_signing_credentials python3 scripts/release_state\.py run "
+                       r"--label '[^'\n]+' -- npm ci$")
+    WORKSPACE_INSTALL = (r"^without_signing_credentials env PUPPETEER_SKIP_DOWNLOAD=true "
+                         r"python3 scripts/release_state\.py run "
                          r"--label '[^'\n]+' -- npm --prefix \"\$root/apps/workspace\" ci$")
-    WORKSPACE_BUILD = (r"^NODE_ENV=production python3 scripts/release_state\.py run --label '[^'\n]+' "
+    WORKSPACE_BUILD = (r"^without_signing_credentials env NODE_ENV=production "
+                       r"python3 scripts/release_state\.py run --label '[^'\n]+' "
                        r"-- npm --prefix \"\$root/apps/workspace\" run build:ui$")
 
     def test_workspace_ui_build_does_not_rebuild_tracked_charts(self):
@@ -86,6 +89,107 @@ class ReleaseEntryPointTest(unittest.TestCase):
         packager = (SCRIPTS / 'package-mac-release.sh').read_text(encoding='utf-8')
         self.assertLess(packager.index('state manifest-check'), packager.index('if needs app; then'))
         self.assertGreater(packager.rindex('state manifest-check'), packager.index('state complete checksums'))
+
+    def test_npm_children_never_receive_signing_credentials_even_on_resume(self):
+        secrets = ('APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER',
+                   'APPLE_KEYCHAIN_PROFILE', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD',
+                   'APPLE_TEAM_ID', 'CSC_LINK', 'CSC_KEY_PASSWORD',
+                   'CSC_INSTALLER_LINK', 'CSC_INSTALLER_KEY_PASSWORD',
+                   'WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD', 'GH_TOKEN', 'GITHUB_TOKEN',
+                   'NPM_TOKEN', 'NODE_AUTH_TOKEN')
+        # Execute the real shell control flow. Every external build, git and
+        # Apple command resolves to this recorder; npm never installs anything.
+        fake = '''#!{python}
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+mode = Path(sys.argv[0]).name
+args = sys.argv[1:]
+names = {secrets!r} + ('NODE_ENV', 'PUPPETEER_SKIP_DOWNLOAD')
+if mode == 'helper':
+    mode, args = args[0], args[1:]
+with open(os.environ['MYFLAMES_TEST_LOG'], 'a') as output:
+    environment = dict((key, os.environ[key]) for key in names if key in os.environ)
+    output.write(json.dumps(dict(mode=mode, args=args, env=environment)) + '\\n')
+if mode == 'uname':
+    print('Darwin' if args == ['-s'] else 'arm64')
+elif mode == 'git' and 'rev-parse' in args:
+    print('a' * 40)
+elif mode == 'python3' and len(args) > 1 and args[1] == 'run':
+    command = args[args.index('--') + 1:]
+    if command[0] == 'npm':
+        sys.exit(subprocess.call(command))
+'''.format(python=sys.executable, secrets=secrets)
+        for resume in (False, True):
+            with self.subTest(resume=resume), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                scripts = root / 'apps' / 'desktop' / 'scripts'
+                scripts.mkdir(parents=True)
+                shutil.copyfile(str(SCRIPTS / 'release-mac.sh'), str(scripts / 'release-mac.sh'))
+                (scripts / 'package-mac-release.sh').write_text(
+                    '#!/bin/sh\nexec "$MYFLAMES_TEST_HELPER" packager "$@"\n', encoding='utf-8')
+                binaries = root / 'bin'
+                binaries.mkdir()
+                for command in ('helper', 'uname', 'git', 'python3', 'npm'):
+                    path = binaries / command
+                    path.write_text(fake, encoding='utf-8')
+                    path.chmod(0o700)
+                log = root / 'commands.jsonl'
+                env = dict(os.environ, HOME=str(root), USERPROFILE=str(root),
+                           MYFLAMES_SECRET_BACKEND='vault', MYFLAMES_RELEASE_AWAKE='1',
+                           MYFLAMES_DESKTOP_BUILD_PYTHON='python3',
+                           MYFLAMES_DESKTOP_BUILD_VENV=str(root / 'venv'),
+                           MYFLAMES_MYSQL_CLIENT_CACHE=str(root / 'cache'),
+                           MYFLAMES_TEST_LOG=str(log), MYFLAMES_TEST_HELPER=str(binaries / 'helper'),
+                           PATH=str(binaries) + os.pathsep + os.environ.get('PATH', ''))
+                env.update({key: 'synthetic-' + key for key in secrets})
+                # The caller has no build-only overrides. The real POSIX shell
+                # must not retain assignments made for the three npm steps.
+                for key in ('NODE_ENV', 'PUPPETEER_SKIP_DOWNLOAD'):
+                    env.pop(key, None)
+                command = ['sh', str(scripts / 'release-mac.sh'), 'a' * 40]
+                if resume:
+                    command.append('--resume')
+                result = subprocess.run(command, env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, universal_newlines=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                npm = [event for event in events if event['mode'] == 'npm']
+                self.assertEqual([event['args'] for event in npm], [
+                    ['ci'], ['--prefix', str(root / 'apps' / 'workspace'), 'ci'],
+                    ['--prefix', str(root / 'apps' / 'workspace'), 'run', 'build:ui']])
+                for event in npm:
+                    self.assertTrue(set(secrets).isdisjoint(event['env']), event['args'])
+                self.assertEqual(npm[1]['env'].get('PUPPETEER_SKIP_DOWNLOAD'), 'true')
+                self.assertEqual(npm[2]['env'].get('NODE_ENV'), 'production')
+                self.assertNotIn('NODE_ENV', npm[0]['env'])
+                self.assertNotIn('PUPPETEER_SKIP_DOWNLOAD', npm[0]['env'])
+                self.assertNotIn('NODE_ENV', npm[1]['env'])
+                self.assertNotIn('PUPPETEER_SKIP_DOWNLOAD', npm[2]['env'])
+                runners = [event for event in events if event['mode'] == 'python3' and
+                           len(event['args']) > 1 and event['args'][1] == 'run']
+                labels = [event['args'][event['args'].index('--label') + 1] for event in runners]
+                expected = ['installing desktop build dependencies', 'installing workspace dependencies',
+                            'building the workspace']
+                self.assertEqual(labels, expected if resume else expected + ['building the backend'])
+                for event in runners[:3]:
+                    self.assertTrue(set(secrets).isdisjoint(event['env']), event['args'])
+                # Check actual later commands, including the backend on a fresh
+                # release and the manifest check and packager on both paths.
+                workspace_build = events.index(npm[2])
+                later = events[workspace_build + 1:]
+                self.assertTrue(later)
+                for event in later:
+                    self.assertNotIn('NODE_ENV', event['env'], event['args'])
+                    self.assertNotIn('PUPPETEER_SKIP_DOWNLOAD', event['env'], event['args'])
+                packagers = [event for event in events if event['mode'] == 'packager']
+                self.assertEqual([event['args'] for event in packagers],
+                                 [['--preflight'], ['--resume'] if resume else []])
+                for event in packagers:
+                    self.assertEqual({key: event['env'].get(key) for key in secrets},
+                                     {key: env[key] for key in secrets})
 
     def test_backend_refuses_invalid_assets_before_any_build_subprocess(self):
         for reason in ('missing index.html', 'stale source stamp'):

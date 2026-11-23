@@ -28,9 +28,17 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _lab import (Lab, LabError, check_lab, conn_for, make_home,  # noqa: E402
                   redact, require_live, save_group)
+from myflames.param_compare import IDENTITY_NAMES  # noqa: E402
 
 GROUP = "IC-topology-lab"
 PARAM = "max_connect_errors"
+# GTID positions advance with every write, and the live writes lane commits on
+# the same cluster while this suite runs: the router alias and its canonical
+# member can legitimately be read a transaction apart (param_compare folds them
+# into IDENTITY_NAMES as per-server).
+GTID_POSITIONS = frozenset(("gtid_executed", "gtid_purged", "gtid_binlog_pos",
+                            "gtid_current_pos", "gtid_slave_pos"))
+assert GTID_POSITIONS <= IDENTITY_NAMES
 
 
 def setUpModule():
@@ -345,6 +353,10 @@ class TopologyICTest(unittest.TestCase):
                         values = row.get("values") or {}
                         self.assertIn(router_id, values)
                         self.assertIn(canonical_id, values)
+                        if row.get("name") in GTID_POSITIONS:
+                            # Positions move under the parallel live writes;
+                            # both members carrying the row is the check.
+                            continue
                         self.assertEqual(values[router_id], values[canonical_id],
                                          "%s: alias and canonical member differ for %s"
                                          % (section, row.get("name")))

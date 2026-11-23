@@ -918,6 +918,16 @@ class TestPrivileges(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(dbops.strip_credentials(text), expected)
 
+    def test_gate351_strip_credentials_fails_closed_after_unterminated_quote(self):
+        for value in ("CREATE USER 'a'@'%  IDENTIFIED BY 'gate351-secret'",
+                      'CREATE USER "a"@"%  IDENTIFIED BY \'gate351-secret\'',
+                      "CREATE USER `a`@`%  IDENTIFIED VIA ed25519 USING 'gate351-secret'",
+                      "CREATE USER 'a'@'%  PASSWORD 'gate351-secret'"):
+            with self.subTest(value=value):
+                clean = dbops.strip_credentials(value)
+                self.assertNotIn('gate351-secret', clean)
+                self.assertNotIn('IDENTIFIED', clean)
+
     def test_strip_credentials_visits_many_clauses_once(self):
         # Repeated clauses used to re-tokenize the whole remaining text.
         code = (
@@ -1548,13 +1558,361 @@ class TestRedaction(unittest.TestCase):
                     self.assertEqual(dbops.redact(raw), '3*' + scheme + '://' + username + ':[redacted]@db/path')
 
     def test_url_secret_scan_does_not_cross_path_or_quote_delimiters(self):
-        for boundary in ('/', ' ', '\n', "'", '"', '`'):
+        for boundary in (' ', '\n', "'", '"', '`'):
             with self.subTest(boundary=boundary):
                 raw = 'mysql://user:part' + boundary + 'path@host'
                 self.assertEqual(dbops.redact(raw), raw)
         self.assertEqual(dbops.redact('mysql://user:part%2Fsecret@host'), 'mysql://user:[redacted]@host')
         self.assertEqual(dbops.redact('mysql://unfinished:mysql://user:secret@host'),
-                         'mysql://unfinished:mysql://user:[redacted]@host')
+                         'mysql://unfinished:[redacted]@host')
+
+    def test_gate351_url_slash_password_and_noncredential_paths(self):
+        for password in ('pa/SECRET', 'Zq9/S3cr3t', 'pa/a@b/c@SECRET', '/SECRET'):
+            with self.subTest(password=password):
+                value = "mysql://fed:" + password + "@remote:3306/db/t"
+                expected = "mysql://fed:[redacted]@remote:3306/db/t"
+                self.assertEqual(dbops.redact(value), expected)
+                sql = "CREATE TABLE t (a int) ENGINE=FEDERATED CONNECTION='%s'" % value
+                self.assertEqual(dbops.redact(sql), sql.replace(value, expected))
+        # Database schemes deliberately fail closed: digits before a slash
+        # might be a password, even when the URL could also mean a host port.
+        self.assertEqual(dbops.redact('mysql://h:3306/db?mail=a@b'),
+                         'mysql://h:[redacted]@b')
+        for value in ('mysql://u@h:3306/db', 'http://h/a@b', 'https://h:443/db?mail=a@b'):
+            with self.subTest(value=value):
+                self.assertEqual(dbops.redact(value), value)
+
+    def test_gate351_secret_variable_assignments(self):
+        from myflames.param_compare import _SECRET_VARIABLES, sensitive
+        self.assertIs(_SECRET_VARIABLES, dbops._SECRET_VARIABLES)
+        self.assertIs(sensitive, dbops.sensitive)
+        for name in sorted(_SECRET_VARIABLES):
+            with self.subTest(name=name):
+                self.assertTrue(sensitive(name.upper()))
+                for prefix in ('SET ', 'SET GLOBAL ', 'SET SESSION ', 'SET PERSIST ', 'SET PERSIST_ONLY ',
+                               'SET @@', 'SET @@global.', 'SET @@session.', 'SET @@persist.',
+                               'SET @@persist_only.'):
+                    for identifier in (name.upper(), '`' + name + '`'):
+                        for literal in ("'gate351-secret'", '"gate351-secret"', 'gate351-secret', '987654321'):
+                            statement = prefix + identifier + ' = ' + literal
+                            clean = dbops.redact(statement)
+                            self.assertNotIn(literal.strip('\'"'), clean)
+                            self.assertIn('[redacted]', clean)
+                            self.assertTrue(clean.startswith(prefix + identifier + ' = '))
+        self.assertEqual(dbops.redact('SET GLOBAL max_connections = 500'), 'SET GLOBAL max_connections = 500')
+
+    def test_gate351_secret_assignments_accept_comments_and_quoted_components(self):
+        for assignment in (
+                'SET GLOBAL wsrep_sst_auth /* auth */ = ',
+                'SET SESSION `wsrep_sst_auth` # auth\n = ',
+                'SET PERSIST wsrep_sst_auth -- auth\n = ',
+                'SET @@global /* scope */ . /* name */ `wsrep_sst_auth` /* auth */ = /* value */ ',
+                'SET GLOBAL `telemetry`.`otel_exporter_otlp_logs_headers` = ',
+                'SET GLOBAL telemetry.`otel_exporter_otlp_logs_headers` = ',
+                'SET GLOBAL `telemetry`.otel_exporter_otlp_logs_headers = ',
+                'SET @@global.`telemetry` /* namespace */ . /* component */ `otel_exporter_otlp_logs_headers` = '):
+            with self.subTest(assignment=assignment):
+                self.assertEqual(dbops.redact(assignment + "'gate351-comment-secret'"),
+                                 assignment + "'[redacted]'")
+        nonsecret = 'SET GLOBAL max_connections /* limit */ = 500'
+        self.assertEqual(dbops.redact(nonsecret), nonsecret)
+
+    def test_gate351_multiple_secret_assignments_keep_nonsecret_values(self):
+        statement = ("SET GLOBAL max_connections = 500, wsrep_sst_auth = 'sst:gate351-secret', "
+                     "@@session.`s3_secret_key` = \"key,gate351-tail\", report_password = raw-gate351")
+        clean = dbops.redact(statement)
+        for secret in ('sst:', 'gate351-secret', 'key,gate351-tail', 'raw-gate351'):
+            self.assertNotIn(secret, clean)
+        self.assertEqual(clean.count('[redacted]'), 3)
+        self.assertIn('max_connections = 500', clean)
+
+    def test_gate351_executable_comments_redact_secret_assignments(self):
+        for opener in ('/*!80000 ', '/*! ', '/*!', '/*M!100100 ', '/*M! '):
+            for name in sorted(dbops._SECRET_VARIABLES):
+                for value in ("'sst:private'", '"sst:private"', "CONCAT('sst:', 'private')"):
+                    with self.subTest(opener=opener, name=name, value=value):
+                        statement = opener + 'SET GLOBAL `' + name + '` = ' + value + ' */'
+                        quote = value[0] if value[0] in ('\'', '"') else ''
+                        expected = (opener + 'SET GLOBAL `' + name + '` = ' + quote +
+                                    '[redacted]' + quote + ' */')
+                        self.assertEqual(dbops.redact(statement), expected)
+        statements = (
+            "SET /*!80000 GLOBAL */ wsrep_sst_auth = 'sst:private'",
+            "SET GLOBAL wsrep_sst_auth /*!80000 = 'sst:private' */; SELECT 1",
+            "/*!80000 SET GLOBAL max_connections = 500, wsrep_sst_auth = 'sst:private' */; "
+            "/*M!100100 SET GLOBAL s3_secret_key = 'sst:private' */",
+        )
+        for statement in statements:
+            with self.subTest(statement=statement):
+                self.assertEqual(dbops.redact(statement), statement.replace('sst:private', '[redacted]'))
+        for prefix, name in (('', 'SET GLOBAL wsrep_sst_auth'),
+                             ('SET ', 'wsrep_sst_auth'), ('SET GLOBAL ', 'wsrep_sst_auth'),
+                             ('SET @@', 'global.wsrep_sst_auth'),
+                             ('SET @@global', '.wsrep_sst_auth'),
+                             ('SET @@global.', 'wsrep_sst_auth'),
+                             ('SET GLOBAL telemetry.', 'otel_exporter_otlp_logs_headers')):
+            for marker in ('/*M!100100 ', '/*!800000 ', '/*M!100100'):
+                with self.subTest(prefix=prefix, name=name, marker=marker):
+                    statement = prefix + marker + name + " = CONCAT('sst:', 'private') */"
+                    expected = prefix + marker + name + " = [redacted] */"
+                    self.assertEqual(dbops._redact_secret_variables(statement), expected)
+                    self.assertEqual(dbops.redact(statement), expected)
+
+        # Ordinary comments and quoted examples stay inert to the lexical
+        # scanner. The context-free fallback separately redacts quoted
+        # inventory assignments even inside comments and diagnostic text.
+        for statement in (
+                "/* SET GLOBAL wsrep_sst_auth = 'sst:private' */ SELECT 1",
+                "-- SET GLOBAL wsrep_sst_auth = 'sst:private'\nSELECT 1",
+                "# SET GLOBAL wsrep_sst_auth = 'sst:private'\nSELECT 1",
+                "SELECT '/*!80000 SET GLOBAL wsrep_sst_auth = ''sst:private'' */'",
+                "/*!80000 SET GLOBAL max_connections = 500 */"):
+            with self.subTest(statement=statement):
+                self.assertEqual(dbops._redact_secret_variables(statement), statement)
+
+    def test_gate351_rejected_secret_variable_values_are_redacted(self):
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for value in ('sst:private', "sst:pa'ss", "sst:pa''ss", 'sst:pa\\ss', ''):
+                with self.subTest(name=name, value=value):
+                    prefix = "ERROR 1231 (42000): Variable '%s' can't be set to the value of '" % name.upper()
+                    self.assertEqual(dbops.redact(prefix + value + "'"), prefix + "[redacted]'")
+        for name in ('max_connections', 'password_history', 'require_secure_transport'):
+            message = "Variable '%s' can't be set to the value of 'not-a-valid-value'" % name
+            with self.subTest(name=name):
+                self.assertEqual(dbops.redact(message), message)
+        message = ("Variable 'wsrep_sst_auth' can't be set to the value of 'sst:private'\n"
+                   "Variable 'max_connections' can't be set to the value of 'invalid'")
+        self.assertEqual(dbops.redact(message), message.replace('sst:private', '[redacted]'))
+        for separator in ('; ', '\n'):
+            for names in (('max_connections', 'wsrep_sst_auth'), ('wsrep_sst_auth', 'max_connections')):
+                message = separator.join("Variable '%s' can't be set to the value of '%s'" %
+                                         (name, 'sst:private' if dbops.sensitive(name) else 'invalid')
+                                         for name in names)
+                with self.subTest(separator=separator, names=names):
+                    self.assertEqual(dbops.redact(message), message.replace('sst:private', '[redacted]'))
+        message = "Variable 'wsrep_sst_auth' can't be set to the value of 'sst:multi\nline'"
+        self.assertEqual(dbops.redact(message),
+                         "Variable 'wsrep_sst_auth' can't be set to the value of '[redacted]'")
+        incomplete = "Variable 'wsrep_sst_auth' can't be set to the value of 'sst:private"
+        self.assertEqual(dbops.redact(incomplete),
+                         "Variable 'wsrep_sst_auth' can't be set to the value of '[redacted]")
+
+    def test_gate351_slash_url_scan_stays_linear_on_400kb_inputs(self):
+        for shape in ('repeated_slash_credentials', 'nested_no_at'):
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "shape = " + repr(shape) + "\n"
+                    "unit = 'mysql://u:pa/SECRET@h/db ' if shape == 'repeated_slash_credentials' else 'mysql://u:'\n"
+                    "value = unit * (400 * 1024 // len(unit))\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "assert 'SECRET' not in clean\n"
+                    "assert shape != 'nested_no_at' or clean == value\n"
+                    "print(elapsed)\n")
+                result = subprocess.run([sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(float(result.stdout.strip()), 1)
+
+    def test_gate65_adjacent_credential_urls_redact_every_authority(self):
+        for first, cleaned_first in (
+                ('mysql://app:pw1@db1', 'mysql://app:[redacted]@db1'),
+                ('mysql://reader@db1', 'mysql://reader@db1'),
+                ('mysql://app:pw1@db1:3306', 'mysql://app:[redacted]@db1:3306')):
+            second = 'mysql://admin:pw2@db2:3306'
+            cleaned_second = 'mysql://admin:[redacted]@db2:3306'
+            for separator in (',', ';', '|', '&b=', '","'):
+                for quoted in (True, False):
+                    with self.subTest(first=first, separator=separator, quoted=quoted):
+                        raw = first + separator + second
+                        expected = cleaned_first + separator + cleaned_second
+                        self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+                        if quoted:
+                            self.assertEqual(dbops.redact("SELECT '" + raw + "'"),
+                                             "SELECT '" + expected + "'")
+        raw = '["mysql://rs:pw1@db1:3306","mysql://rs:pw2@db2:3306"]'
+        self.assertEqual(dbops.redact(raw, quoted=False),
+                         '["mysql://rs:[redacted]@db1:3306","mysql://rs:[redacted]@db2:3306"]')
+        self.assertEqual(dbops.redact('https://user@host?next=mysql://dbuser:secret@db'),
+                         'https://user@host?next=mysql://dbuser:[redacted]@db')
+
+    def test_gate65_database_urls_hide_numeric_slash_passwords(self):
+        for scheme in ('mysql', 'mariadb', 'mysqlx', 'postgres', 'postgresql', 'MYSQL'):
+            for password in ('2024/secret', '2024/x', '2024/one/two'):
+                for quoted in (True, False):
+                    with self.subTest(scheme=scheme, password=password, quoted=quoted):
+                        raw = scheme + '://app:' + password + '@db1:3306/shop'
+                        self.assertEqual(dbops.redact(raw, quoted=quoted),
+                                         scheme + '://app:[redacted]@db1:3306/shop')
+        self.assertEqual(dbops.redact('https://h:2024/secret@db'), 'https://h:2024/secret@db')
+
+    def test_gate65_ipv6_hosts_are_not_passwords(self):
+        for raw in ('https://[2001:db8::1]/users/alice@example.com',
+                    'https://[::1]:443/users/alice@example.com',
+                    'mysql://[2001:db8::1]:3306/db?mail=a@b'):
+            for quoted in (True, False):
+                with self.subTest(raw=raw, quoted=quoted):
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), raw)
+        for raw, expected in (
+                ('mysql://u:p/w@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+                ('mysql://u:2024/x@[2001:db8::1]:3306/db',
+                 'mysql://u:[redacted]@[2001:db8::1]:3306/db')):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_gate65_secret_assignments_preserve_following_clauses(self):
+        for clause in ('WHERE id = 1', 'ORDER BY id', 'LIMIT 1',
+                       'ON DUPLICATE KEY UPDATE is_admin = 1', 'RETURNING id', 'FOR UPDATE',
+                       'where id = 1'):
+            for expression in ("'gate65-secret'", "CONCAT('gate65-', 'secret')"):
+                with self.subTest(clause=clause, expression=expression):
+                    statement = 'UPDATE cfg SET s3_secret_key = ' + expression + ' ' + clause
+                    quote = "'" if expression.startswith("'") else ''
+                    expected = ('UPDATE cfg SET s3_secret_key = ' + quote + '[redacted]' + quote +
+                                ' ' + clause)
+                    self.assertEqual(dbops._redact_secret_variables(statement), expected)
+                    self.assertEqual(dbops.redact(statement), expected)
+        statement = "INSERT INTO cfg SET s3_secret_key = 'abc' ON DUPLICATE KEY UPDATE is_admin = 1"
+        self.assertEqual(dbops.redact(statement), statement.replace("'abc'", "'[redacted]'"))
+        for expression in ("CONCAT('a', 'b')", "CONCAT('WHERE', 'ON', 'FOR')",
+                           "CONCAT((SELECT value FROM secrets WHERE id = 1), 'tail')"):
+            with self.subTest(expression=expression):
+                self.assertEqual(dbops.redact('SET GLOBAL wsrep_sst_auth = ' + expression),
+                                 'SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_gate65_new_set_restarts_unterminated_assignment_scripts(self):
+        cases = (
+            ("SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = 'gate65-secret'",
+             "SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = CONCAT('gate65', 'secret')",
+             "SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = [redacted]"),
+            ("SET GLOBAL wsrep_sst_auth = firstsecret\nSET GLOBAL s3_secret_key = secondsecret",
+             "SET GLOBAL wsrep_sst_auth = [redacted]\nSET GLOBAL s3_secret_key = [redacted]"),
+            ("DELIMITER //\nSET GLOBAL max_connections = 500//\n"
+             "SET GLOBAL wsrep_sst_auth = CONCAT('gate65', 'secret')",
+             "DELIMITER //\nSET GLOBAL max_connections = 500//\n"
+             "SET GLOBAL wsrep_sst_auth = [redacted]"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_gate65_double_quoted_secret_variable_names(self):
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for identifier in ('"' + name.upper() + '"',
+                               '.'.join('"' + part + '"' for part in name.split('.'))):
+                for prefix in ('SET GLOBAL ', 'SET @@global.', 'SET @@"GLOBAL".'):
+                    for expression in ("'gate65-secret'", "CONCAT('gate65', 'secret')"):
+                        with self.subTest(identifier=identifier, prefix=prefix, expression=expression):
+                            raw = prefix + identifier + ' := ' + expression
+                            quote = "'" if expression.startswith("'") else ''
+                            expected = prefix + identifier + ' := ' + quote + '[redacted]' + quote
+                            self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                            self.assertEqual(dbops.redact(raw), expected)
+
+    def test_gate65_secret_inventory_literals_redact_in_any_context(self):
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for identifier in (name.upper(), '`' + name + '`', '"' + name + '"'):
+                for prefix in ('', '@@', '@@global.', '@@SESSION.', '@@persist_only.'):
+                    for operator in ('=', ':='):
+                        with self.subTest(name=name, identifier=identifier, prefix=prefix, operator=operator):
+                            assignment = prefix + identifier + ' ' + operator + " 'gate65-secret'"
+                            raw = 'arbitrary diagnostic: ' + assignment + '; keep this text'
+                            self.assertEqual(dbops.redact(raw), raw.replace('gate65-secret', '[redacted]'))
+        for raw in (
+                'EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'gate65-secret\'"',
+                "/* s3_secret_key = 'gate65-secret' */ SELECT 1",
+                'diagnostic: s3_secret_key = "gate65-secret"',
+                "-- s3_secret_key = 'gate65-secret'\nSELECT 1"):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), raw.replace('gate65-secret', '[redacted]'))
+        # An echo's closing quotes can also be an escaped quote in the
+        # secret. This ambiguous diagnostic must fail closed.
+        echoed = "ERROR 1064: near 'SET GLOBAL wsrep_sst_auth = 'gate65-secret'' at line 1"
+        cleaned = dbops.redact(echoed)
+        self.assertNotIn('gate65-secret', cleaned)
+        self.assertIn('[redacted]', cleaned)
+        for raw in ("diagnostic: max_connections = 'public'",
+                    "diagnostic: my_wsrep_sst_auth = 'public'",
+                    "diagnostic: wsrep_sst_auth_suffix = 'public'"):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+
+    def test_gate65_executable_comment_version_digits_do_not_hide_values(self):
+        for marker in ('/*!', '/*!-', '/*M!', '/*M!-'):
+            with self.subTest(marker=marker):
+                raw = 'SET GLOBAL wsrep_sst_auth = ' + marker + '80000987654321*/'
+                expected = 'SET GLOBAL wsrep_sst_auth = ' + marker + '80000[redacted]*/'
+                self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                self.assertEqual(dbops.redact(raw), expected)
+        for marker in ('/*!-80000 ', '/*M!-100100 '):
+            with self.subTest(marker=marker):
+                raw = marker + "SET GLOBAL wsrep_sst_auth = 'gate65-secret' */"
+                self.assertEqual(dbops._redact_secret_variables(raw), raw.replace('gate65-secret', '[redacted]'))
+
+    def test_gate65_stray_comment_close_does_not_consume_next_comment_opener(self):
+        for prefix in ("SELECT 2 */* it's */ 3; ",
+                       "/*!80000 SET GLOBAL max_connections = 500 **/; SELECT 2 */* it's */ 3; "):
+            for expression in ("'gate65-secret'", "CONCAT('gate65', 'secret')", 'unquotedsecret'):
+                with self.subTest(prefix=prefix, expression=expression):
+                    raw = prefix + 'SET GLOBAL wsrep_sst_auth = ' + expression
+                    quote = "'" if expression.startswith("'") else ''
+                    expected = prefix + 'SET GLOBAL wsrep_sst_auth = ' + quote + '[redacted]' + quote
+                    self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                    self.assertEqual(dbops.redact(raw), expected)
+
+    def test_gate65_new_paths_stay_linear_on_400kb_inputs(self):
+        # Each branch has a hard process timeout as well as a timing bound.
+        # Exact output also guards against making a path fast by skipping it.
+        shapes = (
+            ('adjacent_username_urls', 'a://b@c,', 'a://b@c,'),
+            ('adjacent_credentials', 'mysql://u:SECRET@h,mysql://v:SECRET@i ',
+             'mysql://u:[redacted]@h,mysql://v:[redacted]@i '),
+            ('numeric_slash_password', 'mysql://u:2024/SECRET@h/db ', 'mysql://u:[redacted]@h/db '),
+            ('ipv6_host', 'https://[2001:db8::1]/users/alice@example.com ',
+             'https://[2001:db8::1]/users/alice@example.com '),
+            ('clause_boundaries', "UPDATE cfg SET s3_secret_key = 'SECRET' WHERE id = 1; ",
+             "UPDATE cfg SET s3_secret_key = '[redacted]' WHERE id = 1; "),
+            ('restart_set', "SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = SECRET\n",
+             "SET GLOBAL max_connections = 500\nSET GLOBAL wsrep_sst_auth = [redacted]\n"),
+            ('double_quoted_name', 'SET GLOBAL "wsrep_sst_auth" = SECRET; ',
+             'SET GLOBAL "wsrep_sst_auth" = [redacted]; '),
+            ('context_free_inventory', "echo s3_secret_key := 'SECRET'; ",
+             "echo s3_secret_key := '[redacted]'; "),
+            ('executable_digits', 'SET GLOBAL wsrep_sst_auth = /*!80000987654321*/; ',
+             'SET GLOBAL wsrep_sst_auth = /*!80000[redacted]*/; '),
+            ('glued_version_digit', "SET /*M!100100wsrep_sst_auth = CONCAT('SECRET', 'tail') */; "
+             "/*M!100100SET GLOBAL s3_secret_key = CONCAT('SECRET', 'tail') */; ",
+             'SET /*M!100100wsrep_sst_auth = [redacted] */; '
+             '/*M!100100SET GLOBAL s3_secret_key = [redacted] */; '),
+            ('stray_comment_close', "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = SECRET; ",
+             "SELECT 2 */* it's */ 3; SET GLOBAL wsrep_sst_auth = [redacted]; "),
+        )
+        for shape, unit, cleaned_unit in shapes:
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "n = 400 * 1024\n"
+                    "unit, cleaned_unit = " + repr((unit, cleaned_unit)) + "\n"
+                    "copies, padding = divmod(n, len(unit))\n"
+                    "value = unit * copies + ' ' * padding\n"
+                    "expected = cleaned_unit * copies + ' ' * padding\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "assert clean == expected, (len(clean), len(expected), clean[:200])\n"
+                    "print(elapsed)\n")
+                result = subprocess.run([sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('GATE65_TIMING %s %.6fs' % (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 1)
 
     def test_url_password_containing_at_redacts_to_last_authority_at(self):
         scheme = 'mysql:' + '//'
