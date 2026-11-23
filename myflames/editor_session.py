@@ -191,7 +191,8 @@ _NEAR = re.compile(r"near '(.*)' at line (\d+)\s*\Z", re.S)
 # (re builds a bitmap of the whole range per use, and under IGNORECASE the
 # Unicode casefold tables on top). The class contains both cases of every
 # letter, so the keyword patterns scope case folding to their ASCII keywords
-# with (?i:...) or (?ai:...).
+# with (?i:...) or (?ai:...). Keep re.ASCII on patterns whose surrounding
+# whitespace grammar was ASCII too; it does not alter these explicit classes.
 _SQL_ID_CLASS = r"[^\x00-\x23\x25-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
 #: The identifier characters without '$' (dollar-quote tag bodies).
 _SQL_ID_NO_DOLLAR_CLASS = r"[^\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
@@ -208,7 +209,7 @@ _DOLLAR_QUOTE = re.compile(r"(?<!" + _SQL_ID_CLASS + r")\$" + _SQL_ID_NO_DOLLAR_
 _READ_WRITE = re.compile(
     _SQL_BOUNDARY + r"(?ai:READ)\s+(?ai:WRITE)" + _SQL_BOUNDARY +
     r"|(?<!" + _SQL_ID_DOTAT_CLASS + r")(?:@@\s*)?(?:(?ai:SESSION|LOCAL|GLOBAL)\s*\.\s*)?"
-    r"(?ai:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _SQL_BOUNDARY + r"\s*(?::=|=)")
+    r"(?ai:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _SQL_BOUNDARY + r"\s*(?::=|=)", re.ASCII)
 _MODE_CHANGE = re.compile(r"(?:CALL|EXECUTE|SOURCE)", re.I | re.ASCII)
 
 
@@ -3896,12 +3897,12 @@ _DROP_DATABASE = re.compile(r"^\s*(?i:DROP)\s+(?i:DATABASE|SCHEMA)\s+(?:(?i:IF)\
                             _SQL_NAME + r")\s*$")
 _ALTER_TABLE = re.compile(r"^\s*(?i:ALTER)\s+(?:(?i:ONLINE|OFFLINE|IGNORE)\s+)*(?i:TABLE)\s+(?:(?i:IF)\s+(?i:EXISTS)\s+)?(" +
                           _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)")
-_DDL_START = re.compile(r"^\s*(?ai:CREATE|ALTER|DROP|RENAME|TRUNCATE)" + _SQL_BOUNDARY)
+_DDL_START = re.compile(r"^\s*(?ai:CREATE|ALTER|DROP|RENAME|TRUNCATE)" + _SQL_BOUNDARY, re.ASCII)
 _ROUTINE_CREATE = re.compile(
     # MariaDB AGGREGATE FUNCTION: mariadb-server/sql/sql_yacc.yy:20502-20529.
     r"\s*" + _SQL_BOUNDARY + r"(?:(?ai:CREATE)\s+(?:(?ai:OR)\s+(?ai:REPLACE)\s+)?(?:(?ai:DEFINER)\s*=\s*[^;]+?\s+)?|"
     r"(?ai:ALTER)\s+(?:(?ai:DEFINER)\s*=\s*[^;]+?\s+)?(?=(?ai:EVENT)" + _SQL_BOUNDARY + r"))"
-    r"(?:((?ai:AGGREGATE))\s+)?((?ai:PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE))" + _SQL_BOUNDARY, re.S)
+    r"(?:((?ai:AGGREGATE))\s+)?((?ai:PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE))" + _SQL_BOUNDARY, re.S | re.ASCII)
 
 
 # The mask supplies quoted identifiers as `N` and strings as ''. Keep every
@@ -4454,7 +4455,7 @@ def _ddl_parts(units):
 _COMPOUND_START = re.compile(
     r"(?:^|;|" + _SQL_BOUNDARY + r"(?ai:FOR)\s+)\s*(?:" + _MASKED_NAME + r"\s*:\s*)?(?:"
     r"(?ai:BEGIN)" + _SQL_BOUNDARY + r"(?!\s*(?:(?ai:WORK)" + _SQL_BOUNDARY + r")?\s*(?:;|$))|"
-    r"(?ai:DECLARE|IF|WHILE|LOOP|REPEAT|CASE|FOR)" + _SQL_BOUNDARY + r")")
+    r"(?ai:DECLARE|IF|WHILE|LOOP|REPEAT|CASE|FOR)" + _SQL_BOUNDARY + r")", re.ASCII)
 
 
 def _embedded_compound_ddl(unit):
@@ -5045,7 +5046,7 @@ _IMPLICIT_COMMIT = re.compile(
     r"|(?ai:START)\s+(?ai:TRANSACTION)" + _SQL_BOUNDARY + r"|(?ai:BEGIN)" + _SQL_BOUNDARY + r"(?!\s+(?ai:NOT)\s+(?ai:ATOMIC))"
     r"|(?ai:ANALYZE|OPTIMIZE|REPAIR|CHECK)\s+(?:(?ai:NO_WRITE_TO_BINLOG)\s+|(?ai:LOCAL)\s+)?(?ai:TABLES?)" + _SQL_BOUNDARY + r""
     r"|(?ai:FLUSH|RESET)" + _SQL_BOUNDARY + r"|(?ai:CACHE)\s+(?ai:INDEX)" + _SQL_BOUNDARY + r"|(?ai:LOAD)\s+(?ai:INDEX)" + _SQL_BOUNDARY + r"|(?ai:INSTALL|UNINSTALL)\s+(?ai:PLUGIN|COMPONENT|SONAME)" + _SQL_BOUNDARY + r""
-    r"|(?ai:START|STOP)\s+(?ai:REPLICA|SLAVE|GROUP_REPLICATION|ALL\s+SLAVES)" + _SQL_BOUNDARY + r"|(?ai:CHANGE)\s+(?ai:REPLICATION|MASTER)" + _SQL_BOUNDARY + r")")
+    r"|(?ai:START|STOP)\s+(?ai:REPLICA|SLAVE|GROUP_REPLICATION|ALL\s+SLAVES)" + _SQL_BOUNDARY + r"|(?ai:CHANGE)\s+(?ai:REPLICATION|MASTER)" + _SQL_BOUNDARY + r")", re.ASCII)
 def _may_enable_autocommit(code, idents):
     """Recognize assignment targets, not autocommit mentioned in a value.
 
@@ -5103,7 +5104,7 @@ def implicit_commit(unit):
 #: returns to a savepoint inside the open transaction (SQLCOM_ROLLBACK_TO_
 #: SAVEPOINT: M/sql/sql_yacc.yy:17994-18000, Ma/sql/sql_yacc.yy:18751-18762).
 _ENDING_CONTROL = re.compile(r"\s*(?:(?ai:COMMIT)|(?ai:ROLLBACK)(?!\s+(?:(?ai:WORK)\s+)?(?ai:TO)" +
-                             _SQL_BOUNDARY + r"))" + _SQL_BOUNDARY)
+                             _SQL_BOUNDARY + r"))" + _SQL_BOUNDARY, re.ASCII)
 #: ER_PARSE_ERROR: the server rejected the text before running any of it.
 _PARSE_ERROR = 1064
 

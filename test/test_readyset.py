@@ -2208,6 +2208,60 @@ class TestExplainAndExportCaches(ReadysetBase):
         expected = "SELECT `mysql://u:p@h`, 'mysql://u:[redacted]@h';"
         self.assertEqual(readyset._redact_export_sql(mixed), (expected, True))
 
+    def test_export_url_identifier_scan_is_time_bounded(self):
+        # Many authority prefixes share one final @ inside an identifier.
+        # Repeated searches of its remaining suffix make this quadratic.
+        # A child process gives a hard deadline and is reaped on timeout.
+        code = """
+import time
+from myflames import readyset
+sql = "SELECT `" + "mysql://u:" * 100000 + "@h`;"
+started = time.monotonic()
+assert readyset._redact_export_urls(sql) == (sql, False)
+elapsed = time.monotonic() - started
+assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
+"""
+        result = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=5, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_export_password_literals_use_both_backslash_readings(self):
+        password = "export-probe-secret"
+        for quote in ("'", '"'):
+            for prefix in ("prefix", password):
+                with self.subTest(quote=quote, prefix=prefix):
+                    # With escapes, the first closing quote is escaped and
+                    # the second literal's password is read as bare SQL.
+                    # When both literals contain the password, their spans
+                    # overlap across readings: substitutions must use the
+                    # union from the original SQL, not sequential rescans.
+                    sql = "CREATE CACHE c FROM SELECT {q}{prefix}\\{q}, {q}{pw}{q};".format(
+                        q=quote, prefix=prefix, pw=password)
+                    output, changed = readyset._redact_export_literal_passwords(sql, password)
+                    self.assertTrue(changed)
+                    self.assertNotIn(password, output)
+                    if prefix == password:
+                        self.assertEqual(output, "CREATE CACHE c FROM SELECT {q}[redacted]{q};".format(q=quote))
+                    conn = FakeCacheExport()
+                    conn.password = password
+                    conn.definition = sql
+                    exported = readyset.export_caches(conn)
+                    self.assertNotIn(password, json.dumps(exported))
+                    self.assertTrue(exported["caches"][0]["statement"].startswith("-- "))
+                    self.assertIn(readyset._EXPORT_REDACTED_COMMENT, exported["sql"])
+                    self.assertEqual(conn.writes, [])
+
+    def test_export_password_comments_use_both_backslash_readings(self):
+        password = "export-probe-secret"
+        # With escapes, the comment opener is inside a string and the
+        # password is bare SQL. The other reading sees a password comment.
+        sql = "SELECT 'prefix\\' /* harmless ' " + password + " */;"
+        output, changed = readyset._redact_export_literal_passwords(sql, password)
+        self.assertTrue(changed)
+        self.assertNotIn(password, output)
+        self.assertIn(dbops.REDACTED, output)
+
     def test_export_redaction_password_matches_redaction_marker(self):
         # An existing marker counts as a credential only in a credential form
         # when the connection password is unrelated; when the connection

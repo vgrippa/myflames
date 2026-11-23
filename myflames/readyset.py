@@ -24,6 +24,7 @@ state verification.
 """
 import copy
 import hashlib
+import heapq
 import json
 import re
 import unicodedata
@@ -1325,7 +1326,9 @@ def _redact_export_urls(sql):
     """
     scan = dbops.lex_sql(sql)
     unclosed = set(scan['unclosed'])
-    identifiers = [(start, end) for kind, start, end in scan["tokens"]
+    # Find each identifier's final @ once. Searching its remaining suffix
+    # for every URL prefix is quadratic when many prefixes share that @.
+    identifiers = [(start, end, sql.rfind('@', start, end)) for kind, start, end in scan["tokens"]
                    if kind == "identifier" and (start, end) not in unclosed]
     prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(sql))
     parts, kept, scanned, ident, token, pending = [], 0, 0, 0, 0, None
@@ -1336,7 +1339,7 @@ def _redact_export_urls(sql):
             ident += 1
         if (pending is None and ident < len(identifiers) and
                 identifiers[ident][0] <= prefix.start() < identifiers[ident][1] and
-                sql.find('@', prefix.end(), identifiers[ident][1]) >= 0):
+                prefix.end() <= identifiers[ident][2]):
             continue
         end = prefixes[index + 1].start() if index + 1 < len(prefixes) else len(sql)
         while token < len(scan['tokens']) and scan['tokens'][token][2] <= prefix.start():
@@ -1416,19 +1419,10 @@ def _export_token_has_password(body, password, quote=None):
     return False
 
 
-def _redact_export_literal_passwords(sql, password):
-    """Hide connection *password* inside string literals and comments only.
-
-    Identifiers, keywords and bare SQL words stay visible even when they equal
-    *password*. Checks the original token before URL substitution.
-    """
-    if not isinstance(password, str) or not password:
-        return sql, False
-    scan = dbops.lex_sql(sql)
+def _export_literal_password_spans(sql, password, backslash_escapes=True):
+    """Password-bearing strings/comments under one reading of the original SQL."""
+    scan = dbops.lex_sql(sql, backslash_escapes=backslash_escapes)
     unclosed = set(scan["unclosed"])
-    parts = []
-    kept = 0
-    changed = False
     for kind, start, end in scan["tokens"]:
         tok = sql[start:end]
         replacement = None
@@ -1451,10 +1445,38 @@ def _redact_export_literal_passwords(sql, password):
                 if _export_token_has_password(tok[1:], password):
                     replacement = "# %s" % dbops.REDACTED
         if replacement is not None:
-            parts.extend((sql[kept:start], replacement))
-            kept = end
-            changed = True
-    return ("".join(parts) + sql[kept:], True) if changed else (sql, False)
+            yield start, end, replacement
+
+
+def _redact_export_literal_passwords(sql, password):
+    """Hide connection *password* inside strings/comments under either SQL mode.
+
+    The definition's NO_BACKSLASH_ESCAPES setting is unknown. Scan both
+    readings before replacing anything, then hide the union of their spans:
+    replacing one reading first can change the other's quote boundaries.
+    Identifiers, keywords and bare SQL words stay visible only when neither
+    reading places them inside a password-bearing string or comment.
+    """
+    if not isinstance(password, str) or not password:
+        return sql, False
+    spans = _export_literal_password_spans(sql, password)
+    if "\\" in sql:
+        spans = heapq.merge(spans, _export_literal_password_spans(sql, password, False))
+    parts, kept, pending = [], 0, None
+    for start, end, replacement in spans:
+        if pending is not None:
+            old_start, old_end, old_replacement = pending
+            if start < old_end:
+                pending = old_start, max(old_end, end), old_replacement
+                continue
+            parts.extend((sql[kept:old_start], old_replacement))
+            kept = old_end
+        pending = start, end, replacement
+    if pending is not None:
+        start, end, replacement = pending
+        parts.extend((sql[kept:start], replacement))
+        kept = end
+    return ("".join(parts) + sql[kept:], True) if parts else (sql, False)
 
 
 def _redact_export_sql(sql, password=None):

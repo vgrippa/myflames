@@ -244,6 +244,76 @@ class TestParser(unittest.TestCase):
                 self.assertTrue(required.issubset(node.keys()))
 
 
+class TestPlanTextFields(unittest.TestCase):
+    """Malformed text fields are input errors, including below the root."""
+
+    FIELDS = ('operation', 'table_name', 'index_name', 'condition', 'access_type',
+              'schema_name', 'join_algorithm', 'join_type', 'heading',
+              'using_join_buffer', 'index_access_type')
+    CASES = (
+        {'operation': 'Table scan on t', 'table_name': 123},
+        {'operation': 'Index scan on t using idx', 'index_name': ['idx']},
+        {'operation': 'Filter: t.id = 1', 'condition': {'sql': 't.id = 1'}},
+    )
+    STRUCTURAL_CASES = (
+        {'operation': 'Sort: t.id', 'sort_fields': 123},
+        {'query_block': {'table': {'table_name': 't', 'access_type': 123}}},
+    )
+
+    def test_wrong_type_fields_raise_clear_value_error(self):
+        for field in self.FIELDS:
+            for value in (123, 0, True, False, [], {}, ['text']):
+                node = {'operation': 'Table scan on t', field: value}
+                for plan in (node, {'operation': 'Filter', 'inputs': [node]},
+                             {'query_plan': node}):
+                    with self.subTest(field=field, value=value, plan=plan), \
+                            self.assertRaisesRegex(ValueError, field + '.*must be a string'):
+                        parse_explain(json.dumps(plan))
+
+    def test_null_and_empty_text_fields_remain_supported(self):
+        for value in (None, ''):
+            node = dict((field, value) for field in self.FIELDS)
+            with self.subTest(value=value):
+                root = parse_explain(json.dumps(node))
+                self.assertEqual(root['full_label'], 'unknown')
+                self.assertEqual(root['details']['table_name'], '')
+
+    def test_wrong_type_normalizer_and_container_fields_raise_value_error(self):
+        for plan in self.STRUCTURAL_CASES:
+            with self.subTest(plan=plan), self.assertRaisesRegex(
+                    ValueError, '^Not a valid EXPLAIN plan:'):
+                parse_explain(json.dumps(plan))
+
+    def test_analyze_http_rejects_wrong_type_fields_without_listening_socket(self):
+        from email.message import Message
+        from types import SimpleNamespace
+        from myflames.ui import WorkspaceHandler
+
+        # Use the socketless do_POST harness also used by test_ui: parsing,
+        # dispatch and error mapping are real; only transport/auth are supplied.
+        cases = tuple((plan, 'must be a string') for plan in self.CASES) + tuple(
+            (plan, 'Not a valid EXPLAIN plan:') for plan in self.STRUCTURAL_CASES)
+        for plan, expected_error in cases:
+            with self.subTest(plan=plan):
+                handler = WorkspaceHandler.__new__(WorkspaceHandler)
+                handler.server = SimpleNamespace(token='test-token')
+                handler.path = '/api/analyze'
+                handler.headers = Message()
+                body = json.dumps({'plan': json.dumps(plan)}).encode('utf-8')
+                handler.headers['Content-Type'] = 'application/json'
+                handler.headers['Content-Length'] = str(len(body))
+                handler.headers['X-Myflames-Token'] = handler.server.token
+                handler._local_request = lambda: True
+                handler._authenticated = lambda: True
+                handler._read_body = lambda size: body
+                sent = []
+                handler._send = lambda status, reply: sent.append((status, reply))
+                handler.do_POST()
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0][0], 400)
+                self.assertIn(expected_error, sent[0][1]['error'])
+
+
 class TestPlanNumbers(unittest.TestCase):
     """Numeric plan fields are checked before any arithmetic, on both engines."""
 

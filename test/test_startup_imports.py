@@ -147,6 +147,7 @@ _OLD_PATTERNS = {
                     r"|(?<![" + _ID + r"@.])(?:@@\s*)?(?:(?:SESSION|LOCAL|GLOBAL)\s*\.\s*)?"
                     r"(?:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _BOUNDARY + r"\s*(?::=|=)",
                     re.I | re.ASCII),
+    '_MODE_CHANGE': (r"(?:CALL|EXECUTE|SOURCE)", re.I | re.ASCII),
     '_DROP_DATABASE': (r"^\s*DROP\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+)?(" + _NAME + r")\s*$", re.I),
     '_ALTER_TABLE': (r"^\s*ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE\s+(?:IF\s+EXISTS\s+)?(" +
                      _NAME + r")(?:\s*\.\s*(" + _NAME + r"))?(?=\s|$)", re.I),
@@ -178,6 +179,7 @@ _OLD_PATTERNS = {
 
 _SAMPLES = [
     "SELECT 1", "read write", "READ WRITE", "Read Write", "xREAD WRITE", "READ WRITES", "READ  WRITE",
+    "SELECT read write FROM t", "CALL p()", "EXECUTE stmt", "SOURCE file.sql",
     "set transaction_read_only = 1", "SET TRANSACTION_READ_ONLY=0", "set @@global.tx_read_only=1",
     "set @@tx_read_only := 0", "set session.transaction_read_only = 1", "set local.transaction_read_only = 1",
     "set mytransaction_read_only = 1", "set transaction_read_onlyx = 1",
@@ -221,12 +223,12 @@ class TestEditorRegexEquivalence(unittest.TestCase):
     """The (?i:...) scoped-keyword rewrites and the negated identifier classes
     must match exactly what the module-level IGNORECASE patterns matched."""
 
-    def test_patterns_match_the_old_ones(self):
+    def _assert_patterns_match_the_old_ones(self, samples):
         from myflames import editor_session as ed
         for name, (old_text, old_flags) in _OLD_PATTERNS.items():
             old = re.compile(old_text, old_flags)
             new = getattr(ed, name)
-            for sample in _SAMPLES:
+            for sample in samples:
                 for method in ('search', 'match'):
                     with self.subTest(pattern=name, sample=sample, method=method):
                         before = getattr(old, method)(sample)
@@ -234,6 +236,25 @@ class TestEditorRegexEquivalence(unittest.TestCase):
                         self.assertEqual(
                             None if before is None else (before.span(), before.groups()),
                             None if after is None else (after.span(), after.groups()))
+
+    def test_patterns_match_the_old_ones(self):
+        self._assert_patterns_match_the_old_ones(_SAMPLES)
+
+    def test_unicode_whitespace_inside_identifiers_matches_old_flags(self):
+        # With the utf8mb4 client these are identifier characters. Scoped
+        # (?ai:...) keywords must not turn the surrounding ASCII whitespace
+        # grammar into Unicode whitespace. Keep U+200B as a non-whitespace
+        # control, and compare the patterns that always used Unicode too.
+        samples = []
+        for char in ('\u00a0', '\u2003', '\u3000', '\u200b'):
+            for sample in _SAMPLES:
+                samples.extend((sample.replace(' ', char), char + sample))
+            # A Unicode character between ASCII spaces also affects negative
+            # lookaheads, such as the ROLLBACK TO and TEMPORARY exemptions.
+            samples.extend(('ROLLBACK ' + char + 'TO SAVEPOINT sp',
+                            'CREATE ' + char + 'TEMPORARY TABLE t (i INT)',
+                            'BEGIN ' + char + 'WORK;'))
+        self._assert_patterns_match_the_old_ones(samples)
 
     def test_identifier_classes_match_the_old_ones(self):
         # Every code point: the negated classes are exactly the old ranges.

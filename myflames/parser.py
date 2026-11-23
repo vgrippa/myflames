@@ -563,9 +563,17 @@ def build_folded_label(node):
 def parse_node(node):
     if not isinstance(node, dict):
         return None
+    # Pasted JSON is untrusted input. Validate before labels, complexity and
+    # stable IDs call string methods, including fields whose empty non-string
+    # values would otherwise silently become "" through ``value or ""``.
+    for field in ("operation", "table_name", "index_name", "condition", "access_type",
+                  "schema_name", "join_algorithm", "join_type", "heading",
+                  "using_join_buffer", "index_access_type"):
+        value = node.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError("Plan node %s must be a string or null, got %s."
+                             % (field, type(value).__name__))
     operation = node.get("operation")
-    if operation is not None and not isinstance(operation, str):
-        raise ValueError("Plan node operation must be a string, got %s." % type(operation).__name__)
     op = (operation or "unknown").replace("`", "")
     op = re.sub(r"DATE'(\d{4}-\d{2}-\d{2})'", r"\1", op)
     loops = node.get("actual_loops", 1) or 1
@@ -2176,7 +2184,8 @@ def parse_explain(text):
 
     Raises ValueError for text that is not a plan, and for a plan whose
     numeric fields are not finite numbers in range (``_check_plan_numbers``),
-    or whose input exceeds the workspace's maximum of 80 nesting levels.
+    whose fields have invalid types/structure, or whose input exceeds the
+    workspace's maximum of 80 nesting levels.
     """
     depth_error = _PLAN_DEPTH_ERROR
     data = load_explain_json(text)
@@ -2213,6 +2222,11 @@ def parse_explain(text):
             data = _normalize_mariadb(data)
         except RecursionError:
             raise ValueError(depth_error) from None
+        except (TypeError, AttributeError, KeyError) as exc:
+            # The input may be JSON without having the engine's plan shape.
+            # Keep this conversion at the parser boundary: failures during
+            # later analysis or rendering are still internal errors.
+            raise ValueError("Not a valid EXPLAIN plan: %s" % exc) from None
     elif "operation" not in data:
         raise ValueError(
             "Not an EXPLAIN FORMAT=JSON plan: expected an \"operation\" tree "
@@ -2228,6 +2242,8 @@ def parse_explain(text):
     except RecursionError:
         # A flat MariaDB join list can normalize into a deep binary tree.
         raise ValueError(depth_error) from None
+    except (TypeError, AttributeError, KeyError) as exc:
+        raise ValueError("Not a valid EXPLAIN plan: %s" % exc) from None
     return root
 
 

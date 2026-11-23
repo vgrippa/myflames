@@ -1532,6 +1532,56 @@ class TestRedaction(unittest.TestCase):
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
                     self.assertLess(elapsed, 4)
 
+    def test_r352_set_password_quoted_accounts_finish_within_one_second(self):
+        # The leading assignment makes the full SET PASSWORD matcher run.
+        # A failing suffix used to retry every way of splitting doubled
+        # quotes into adjacent literals, despite the 512-token limit.
+        shapes = (
+            ('single_doubled', "'a'", ';'),
+            ('double_doubled', '"a"', ';'),
+            ('backtick_doubled', '`a`', ';'),
+            ('backslashes', "'a\\\\b'", ';'),
+            ('unterminated', "'a'", "'unfinished\\"),
+        )
+        for shape, unit, suffix in shapes:
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "size = 400 * 1024\n"
+                    "prefix = 'x = 1; SET PASSWORD FOR '\n"
+                    "unit, suffix = " + repr((unit, suffix)) + "\n"
+                    "copies, padding = divmod(size - len(prefix) - len(suffix), len(unit))\n"
+                    "value = prefix + unit * copies + ' ' * padding + suffix\n"
+                    "assert len(value) == size\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "assert clean == value, (len(clean), len(value))\n"
+                    "print(elapsed)\n")
+                try:
+                    result = subprocess.run([sys.executable, '-c', code],
+                        cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=3, universal_newlines=True)
+                except subprocess.TimeoutExpired:
+                    self.fail('SET PASSWORD %s exceeded the 3 s deadline for 400 KB' % shape)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('R352_SET_PASSWORD_TIMING %s bytes=409600 elapsed=%.6fs' %
+                      (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 1)
+
+    def test_r352_atomic_account_tokens_preserve_credential_values(self):
+        # Each account is longer than the diagnostic fallback's 512-byte
+        # bound. The token walk must still reach introduced/encoded values
+        # after doubled quotes, without mistaking an account's '=' for it.
+        for quote in ("'", '"', '`'):
+            account = quote + ('a=b' + quote * 2) * 200 + 'z' + quote
+            prefix = 'SET PASSWORD FOR ' + account + "@'%' = "
+            for value in ("_utf8mb4'atomic-private'", "X'61746f6d6963'", '0x61746f6d6963'):
+                with self.subTest(quote=quote, value=value):
+                    self.assertEqual(dbops.redact(prefix + value + '; SELECT 1'),
+                                     prefix + "'[redacted]'; SELECT 1")
+
     def test_redaction_clause_outputs_remain_stable(self):
         cases = (
             ("SOURCE_PASSWORD = 'x'", "SOURCE_PASSWORD = '[redacted]'"),

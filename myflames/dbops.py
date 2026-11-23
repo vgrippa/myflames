@@ -3355,7 +3355,7 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     for name in sorted(_SECRET_VARIABLES)) + r")"
 _SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
-    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _SECRET_VALUE + r")", re.I | re.S)
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
 # Keep original enclosing-string boundaries, including whether the final
 # quote closed the string or was escaped. The ordinary literal fallback
 # cannot distinguish a doubled quote in dynamic SQL from an empty value.
@@ -3369,7 +3369,7 @@ _SECRET_CONCAT_PREFIX = re.compile(
     r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
 _SECRET_CONCAT_QUOTE = re.compile(
     r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
-_SECRET_PATTERNS = tuple(re.compile(p + "(" + _SECRET_VALUE + ")", re.I | re.S) for p in (
+_SECRET_PATTERNS = tuple(re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
     r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
@@ -3379,20 +3379,25 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _SECRET_VALUE + ")", re.I | re.S) 
     r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
     # Skip quoted account names before recognizing an assignment. Otherwise
     # the b in FOR 'a=b'@'%' could be mistaken for an introduced bit literal.
-    r"(\bSET\s+PASSWORD\b(?:" + _STRING + r"|`(?:``|[^`])*(?:`|\Z)|[^=;'\"`]){0,512}=\s*)",
+    # Lock each quoted token to its greedy reading before repeating it.
+    # Otherwise 'a''a' can split into one string or two, causing exponential
+    # retries when '=' is absent. Lookahead plus a backreference is the
+    # Python 3.7-compatible equivalent of an atomic group.
+    r"(\bSET\s+PASSWORD\b(?:(?=(?P<account>" + _STRING +
+    r"|`(?:``|[^`])*(?:`|\Z)))(?P=account)|[^=;'\"`]){0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
     r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
 )) + (
     _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
-    re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(" +
+    re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(?P<secret>" +
                _SECRET_VALUE + r")", re.I | re.S),
 )
 # Retain every old diagnostic match, including malformed quoted accounts.
 # Only the new introduced-literal alternative needs the stricter account walk.
 _SET_PASSWORD_LEGACY_LITERAL = re.compile(
-    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)(" + _STRING + r")", re.I | re.S)
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)(?P<secret>" + _STRING + r")", re.I | re.S)
 _SECRET_PATTERNS_NO_BACKSLASH = {
     # A backslash before an opener is only an escaped dynamic quote in the
     # escaping reading; treating it as an opener in the other mode invents a
@@ -3778,7 +3783,7 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
         match = pattern.search(text, cursor)
         if match is None:
             break
-        start, end = match.start(2), match.end()
+        start, end = match.start("secret"), match.end()
         while enclosing is not None and enclosing.end() <= match.start():
             context_start = enclosing.end()
             enclosing = next(strings, None)
