@@ -146,6 +146,9 @@ export function ImportCsv({ session, currentKey, show, onRunning, onEnd }: {
   const inspectCtl = useRef<AbortController | null>(null);
   const pathInput = useRef<HTMLInputElement>(null);
   const pathId = useId();
+  useEffect(() => {
+    if (pathShown) pathInput.current?.focus();
+  }, [pathShown]);
 
   async function runInspect(f: CsvFile, fmt: CsvFormat | null) {
     inspectCtl.current?.abort();
@@ -203,8 +206,8 @@ export function ImportCsv({ session, currentKey, show, onRunning, onEnd }: {
     } catch (e) {
       if (!alive.current) return;
       setChoosing({ phase: "failed", message: `${errorText(e)} You can type the path instead.`, startedAt: null, endedAt: Date.now() });
-      setPathShown(true);
-      window.requestAnimationFrame(() => pathInput.current?.focus());
+      if (pathShown) pathInput.current?.focus();
+      else setPathShown(true);
     }
   }
   async function openPath() {
@@ -588,11 +591,12 @@ export function ImportCsv({ session, currentKey, show, onRunning, onEnd }: {
   });
   useEffect(() => {
     if (!open) return;
-    window.requestAnimationFrame(() => {
-      if (step === 4) cancelButton.current?.focus();
-      else if (step === 5 && run?.outcome) doneButton.current?.focus();
-      else stepsRef.current?.querySelector<HTMLElement>("[aria-current=step]")?.focus();
-    });
+    // Focus synchronously after React commits the step (useFocusScope above has
+    // already called showModal); deferring to rAF steals focus back if the user
+    // tabs forward before the next paint.
+    if (step === 4) cancelButton.current?.focus();
+    else if (step === 5 && run?.outcome) doneButton.current?.focus();
+    else stepsRef.current?.querySelector<HTMLElement>("[aria-current=step]")?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, open, !!run?.outcome]);
   function go(next: Step) {
@@ -722,7 +726,7 @@ export function ImportCsv({ session, currentKey, show, onRunning, onEnd }: {
             <span>{[bytes(file.size), fileTime(file.modified) ? `modified ${fileTime(file.modified)}` : ""].filter(Boolean).join(" · ")}</span>
           </span>
         )}
-        {!pathShown && <button type="button" className="text-button" onClick={() => { setPathShown(true); window.requestAnimationFrame(() => pathInput.current?.focus()); }}>Type a path instead</button>}
+        {!pathShown && <button type="button" className="text-button" onClick={() => setPathShown(true)}>Type a path instead</button>}
       </div>
       <ActionStatus className="import-csv-line" state={choosing} slowAfter={Number.POSITIVE_INFINITY} />
       {pathShown && (

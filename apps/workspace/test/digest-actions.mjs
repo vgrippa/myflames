@@ -1,4 +1,5 @@
 import { chooseConnection, chooseView, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
+import { applyCpuThrottle } from "./perf-harness.mjs";
 // Top statements row actions: Explain (EXPLAIN in the tab's session, rows in
 // the editor, Plans only through Explore), Run analysis (with its
 // confirmation, measured in the editor's Analysis tab), the parameter path for
@@ -314,9 +315,19 @@ try {
     });
   });
   await page.setViewport({ width: 1440, height: 1000 });
+  await applyCpuThrottle(page);
   await page.goto(url, { waitUntil: "networkidle0" });
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
-  const nav = (label) => page.locator(`.main-nav button ::-p-text(${label})`).click();
+  const nav = async (label) => {
+    await page.locator(`.main-nav button ::-p-text(${label})`).click();
+    await page.waitForFunction((l) => document.querySelector(".main-nav button.active")?.textContent.trim() === l, {}, label);
+    if (label === "Workload") {
+      await page.waitForFunction(() => {
+        const place = document.querySelector(".server-place:not(.is-tuning-place)");
+        return !!place && !place.closest("[hidden]") && place.offsetParent !== null;
+      });
+    }
+  };
   async function clickExact(selector, label) {
     const handles = await page.$$(selector);
     for (const handle of handles)
@@ -348,14 +359,23 @@ try {
       name,
     );
   const activeTab = () => text('.query-tablist [role="tab"][aria-selected="true"]');
+  /** Close the visible Top statements full-width detail view, if open. */
+  async function closeDetail() {
+    const shown = () => page.evaluate(() => [...document.querySelectorAll(".server-view[data-view=top] .view-inspector.is-detail")]
+      .some((e) => e.getClientRects().length > 0));
+    if (!(await shown())) return;
+    const back = await page.evaluateHandle(() => [...document.querySelectorAll(".server-view[data-view=top] .view-inspector.is-detail .detail-back")]
+      .find((b) => b.getClientRects().length > 0) || null);
+    const el = back.asElement();
+    if (el) await el.click().catch(() => {});
+    await back.dispose();
+    await page.waitForFunction(() => ![...document.querySelectorAll(".server-view[data-view=top] .view-inspector.is-detail")]
+      .some((e) => e.getClientRects().length > 0));
+  }
   /** Select a Top statements row and open its full-width detail actions. */
   async function row(rank) {
-    const back = await page.$(".view-inspector.is-detail .detail-back");
-    if (back) {
-      await page.locator(".view-inspector.is-detail .detail-back").click();
-      await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
-    }
-    await page.click(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`);
+    await closeDetail();
+    await page.locator(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`).click();
     await page.waitForFunction((r) => document.querySelector(".view-inspector h3")?.textContent === `Statement ${r}`, {}, rank);
     // The detail's open effect focuses Back once the content is on screen, a
     // focus that can still scroll the page. A click on Back before it lands
@@ -443,7 +463,7 @@ try {
   await refreshPrivileges();
   const beforeGated = starts.length;
   for (const selector of ['[aria-label="Explain statement 1"]', '[aria-label="Run analysis on statement 1"]', '.batch-controls > button']) {
-    if(selector==='.batch-controls > button')await page.click(".detail-back");
+    if(selector==='.batch-controls > button')await closeDetail();
     assert.equal(await page.$eval(selector, e => e.disabled), false);
     assert.equal(await page.$eval(selector, e => e.getAttribute("aria-disabled")), "true");
     // A denial is not the busy look (kit.css is-busy): no dimming here.
@@ -863,8 +883,7 @@ try {
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
   await nav("Workload");
-  await page.locator(".view-inspector.is-detail .detail-back").click();
-  await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+  await closeDetail();
   await setField("Top N", "3");
   mock.busyOnce = true;
   const before = (await page.$$(".plan-item")).length;

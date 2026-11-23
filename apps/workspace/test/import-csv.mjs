@@ -924,9 +924,14 @@ try {
   await page.focus('.schema-browser .tree-row.kind-table[data-node$="orders"]');
   await page.keyboard.down("Shift"); await page.keyboard.press("F10"); await page.keyboard.up("Shift");
   await page.waitForSelector(".schema-browser .context-menu[role=menu]");
+  // Wait for useFocusScope's effect to move focus into the menu and attach its
+  // arrow-key handler before pressing ArrowDown.
+  await page.waitForFunction(() => !!document.activeElement?.closest(".schema-browser .context-menu[role=menu]"));
   for (let i = 0; i < 12 && !(await page.evaluate(() => document.activeElement?.textContent === "Import CSV…")); i++) await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Import CSV…");
   await page.keyboard.press("Enter");
   await page.waitForSelector(`${sheet}[open]`);
+  await page.waitForFunction((s) => !!document.activeElement?.closest(s), {}, sheet);
   chooseMode = "file";
   await tabTo(() => document.activeElement?.textContent === "Choose file…");
   await page.keyboard.press("Enter");

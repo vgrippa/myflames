@@ -19,6 +19,12 @@ export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Extra Chromium launch flags for sandboxes that refuse the defaults
  * (MYFLAMES_BROWSER_ARGS="--no-sandbox"); empty in a normal environment. */
 export const browserArgs = (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean);
+/** Optional CPU throttling rate (Emulation.setCPUThrottlingRate) for stress
+ * runs (MYFLAMES_CPU_THROTTLE=6); off by default (unset or <= 1). */
+export const cpuThrottle = Number(process.env.MYFLAMES_CPU_THROTTLE || 0);
+export async function applyCpuThrottle(page) {
+  if (Number.isFinite(cpuThrottle) && cpuThrottle > 1) await page.emulateCPUThrottling(cpuThrottle);
+}
 
 /** The Server sub-navigation labels by group, in order (SERVER_VIEWS in
  * Server.tsx). The one place suites learn the list: update it with a new view. */
@@ -214,6 +220,7 @@ export async function open(endpoint, name, extra = {}, {
     else setTimeout(reply, state.delay);
   });
   await page.setViewport(viewport);
+  await applyCpuThrottle(page);
   if (beforeGoto) await beforeGoto(page);
   await page.goto(url, { waitUntil: "networkidle0" });
   /** The element is on screen (not in a hidden place, view or list). */

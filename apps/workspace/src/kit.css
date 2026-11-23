@@ -809,7 +809,7 @@
 }
 .workspace .server-view .view-inspector.is-detail { max-height: none; }
 .is-detail .inspector-head { flex-wrap: wrap; padding: var(--space-3) var(--space-5); }
-.is-detail .detail-back { flex: 0 0 auto; justify-content: flex-start; width: fit-content; border-color: transparent; background: transparent; padding-inline: 0; }
+.is-detail .detail-back { flex: 0 0 auto; justify-content: flex-start; width: fit-content; border-color: transparent; background: transparent; padding-inline: 0; scroll-margin-top: calc(var(--topbar-height) + var(--space-3)); }
 .is-detail .inspector-title { flex-basis: 100%; }
 .is-detail .inspector-actions-bar { padding-inline: var(--space-5); }
 .is-detail .inspector-scroll { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-5); padding: var(--space-4) var(--space-5); overflow: visible; }
@@ -2376,6 +2376,12 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
 }
 .popover, .confirm-sheet, .view-inspector {
   animation: kit-panel-in var(--motion-panel);
+}
+/* Full-width detail views replace the list in place (and re-appear when a
+   hidden place becomes visible again): translating them shifts Back and top
+   controls under the pointer. Keep the pop-in motion for panes and sheets. */
+.view-inspector.is-detail {
+  animation: none;
 }
 .view-inspector.is-sheet {
   animation: sheet-in var(--motion-panel);

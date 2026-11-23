@@ -364,6 +364,9 @@ try {
     assert.ok(!(await shown()), "the account detail closes after Back");
   };
   const inspect = async () => {
+    // Wait for any in-flight list read so ViewStatus does not shift Back or
+    // replace table rows while switching back to the list and opening a row.
+    await h.idle(".accounts-view");
     await backToAccounts();
     // A locator re-queries on every attempt: a row replaced by a report
     // arriving between query and click (the stale handle page.click keeps)
@@ -554,6 +557,7 @@ try {
   assert.equal(count("accounts/plan"), plansBeforeChoice, "selection alone never prepares a write");
   await chooseReader();
   await page.locator('.account-selection-review button ::-p-text(Cancel)').click();
+  await page.waitForFunction(() => !document.querySelector(".account-selection-review"));
   assert.ok(await page.$(".account-pending"));
   await chooseReader();
   await page.locator('.account-selection-review button ::-p-text(Discard)').click();

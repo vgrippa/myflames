@@ -139,7 +139,8 @@ try {
   // Nothing is read before the Server place is on screen. Health is the first
   // view and reads once when it opens on screen (the default 5 s window).
   assert.equal(state.seen.length, 0, "nothing is read before Health is on screen");
-  state.delay = 400;
+  let releaseFirst;
+  state.queue.push({ status: 200, body: mysql, wait: new Promise((r) => { releaseFirst = r; }) });
   await h.server();
   assert.deepEqual(await texts(".source-list .source-group h3"), Object.keys(SERVER_GROUPS));
   assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
@@ -147,10 +148,17 @@ try {
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling the server for 5 s/);
   assert.equal(await page.$(`${view} .view-empty`), null, "no empty state while the first read runs");
+  releaseFirst();
   await page.waitForSelector(`${view} .summary-line`);
   await h.idle(view);
-  state.delay = 0;
   assert.equal(state.seen.length, 1, "one read on open");
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1", "While visible is the default");
+  assert.deepEqual(await page.$$eval(`${view} .auto-refresh option`, (els) => els.map((e) => [e.value, e.textContent])),
+    [["-1", "While visible"], ["0", "Off"], ["10", "Every 10 s"], ["30", "Every 30 s"], ["60", "Every 60 s"]]);
+  // Keep the existing report and baseline scenarios manually driven before the
+  // default 5 s automatic refresh can fire under load. The visible-only
+  // lifecycle is exercised separately below with its own clock.
+  await page.select(`${view} .auto-refresh select`, "0");
   // One reading: Live charts holds each value and one muted line, never a
   // chart of one point or a Min equal to its Max.
   assert.equal(await text(`${view} #health-live-h`), "Live charts");
@@ -162,12 +170,6 @@ try {
   [["queries", "283/s", false, false, true], ["threads_running", "2 threads", false, false, true],
     ["bp_disk_reads", "0.30 pages/s", false, false, true], ["threads_connected", "1 connection", false, false, true]]);
   assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /^Queries per second: 283\/s, one reading so far\.$/);
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1", "While visible is the default");
-  assert.deepEqual(await page.$$eval(`${view} .auto-refresh option`, (els) => els.map((e) => [e.value, e.textContent])),
-    [["-1", "While visible"], ["0", "Off"], ["10", "Every 10 s"], ["30", "Every 30 s"], ["60", "Every 60 s"]]);
-  // Keep the existing report and baseline scenarios manually driven. The
-  // visible-only lifecycle is exercised separately below with its own clock.
-  await page.select(`${view} .auto-refresh select`, "0");
   // 900 px and below the tiles form strips that scroll sideways: each group's
   // heading carries its share of the summary's count (a dot plus words), so
   // Diagnostics plus the groups add up to the summary line at a glance.
@@ -387,12 +389,12 @@ try {
   await page.waitForSelector(`${view} .summary-line`);
 
   // Refresh: a second sample draws the sparklines on the key tiles.
-  state.queue.push({ status: 200, body: later });
-  state.delay = 400;
+  let releaseSecond;
+  state.queue.push({ status: 200, body: later, wait: new Promise((r) => { releaseSecond = r; }) });
   await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling the server for 10 s/);
-  state.delay = 0;
+  releaseSecond();
   await page.waitForFunction(() => !!document.querySelector('.tile-item[data-metric="questions"] svg.sparkline'));
   await h.idle(view);
   assert.equal(state.seen.length, 2);
