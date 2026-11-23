@@ -1046,6 +1046,40 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
                    unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
                    ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
+
+    def interval_index(ranges):
+        starts, ends = [], []
+        farthest = -1
+        for left, right in sorted(ranges):
+            starts.append(left)
+            farthest = max(farthest, right)
+            ends.append(farthest)
+        return starts, ends
+
+    def overlaps(index, start, end):
+        starts, ends = index
+        at = bisect.bisect_left(starts, end) - 1
+        return at >= 0 and ends[at] > start
+
+    # Comments can contain many client statement endings. Index their
+    # intervals once instead of scanning every comment for every ending.
+    # Prefix maxima also retain enclosing comments when intervals overlap.
+    executed_comments = interval_index((comment["start"], comment["end"])
+                                      for comment in scan["comments"] if comment["executes"] is not False)
+    unclosed_tokens = interval_index(scan["unclosed"] + framing["unclosed"])
+    all_issues = scan["issues"] + framing["issues"]
+    issue_order = sorted(range(len(all_issues)), key=lambda at: all_issues[at][0])
+    issue_positions = [all_issues[at][0] for at in issue_order]
+
+    def issues_between(start, end):
+        left = bisect.bisect_left(issue_positions, start)
+        right = bisect.bisect_left(issue_positions, end)
+        # Preserve the original server-then-client issue order, including
+        # issues the lexer discovers out of position order when closing a
+        # comment. Sorting the whole list by position would change output.
+        for at in sorted(issue_order[left:right]):
+            yield all_issues[at]
+
     out = []
     consumed_delimiters = set()
     state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
@@ -1071,15 +1105,12 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                     issue(REASON_COMMENT_FRAMING)
                 if kind in ("string", "identifier") and left < boundary < right:
                     issue(REASON_QUOTE_FRAMING)
-            for comment in scan["comments"]:
-                if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
-                    issue(REASON_EXECUTED_FRAMING)
-        for at, reason in scan["issues"] + framing["issues"]:
-            if start <= at < end and not (at in consumed_delimiters and
-                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+            if overlaps(executed_comments, boundary, boundary):
+                issue(REASON_EXECUTED_FRAMING)
+        for at, reason in issues_between(start, end):
+            if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                 issue(reason)
-        unclosed = state["unclosed"] or any(left < end and right > start
-                                            for left, right in scan["unclosed"] + framing["unclosed"])
+        unclosed = state["unclosed"] or overlaps(unclosed_tokens, start, end)
         if code or state["pending"] or state["issues"] or unclosed:
             raw = sql[start:end]
             lead = len(raw) - len(raw.lstrip())
@@ -1116,9 +1147,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
             # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
             prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
-            ignored = not prefix_code and not any(
-                comment["executes"] is not False and comment["start"] < left and
-                comment["end"] > state["start"] for comment in scan["comments"])
+            ignored = not prefix_code and not overlaps(executed_comments, state["start"], left)
             if ignored:
                 consumed_delimiters.add(command.start(1))
                 if discarded_prefixes is not None:
@@ -1128,9 +1157,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                       "before changing DELIMITER.")
             # Suppress only the exact command proved safe above. Other
             # commands and problems in the prefix must still refuse.
-            for at, reason in scan["issues"] + framing["issues"]:
-                if state["start"] <= at < line_end and not (at in consumed_delimiters and
-                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+            for at, reason in issues_between(state["start"], line_end):
+                if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                     issue(reason)
             if not ignored:
                 finish(line_end, line_end)
@@ -3571,27 +3599,43 @@ def _URL_SECRET(text, quoted=True):
             yield colon + 1, last_at
 
 
-def _secret_variable_tokens(text, backslash_escapes=True):
-    """Scan redaction tokens, recognizing closers only in executable bodies.
+def _secret_variable_boundaries(text):
+    """Return custom endings proved safe under both backslash readings.
 
     Only the shared client splitter can establish custom statement endings.
     Ignore ambiguous/unclosed units so uncertain framing still hides more.
     Both backslash readings must agree before revealing anything after it.
+    Above 2 Mi characters or 4,096 semicolons, skip these two complete
+    lexer/splitter passes: redaction also runs synchronously during editor
+    and investigation saves. Count potential endings before lexing, even
+    inside quotes/comments, to bound comment-heavy inputs whose client
+    command lookahead can revisit the remaining text at every ending.
+    Without custom endings, secret values conservatively run to the end, as
+    in 3.5.1; this can hide following SQL but cannot expose a secret tail.
+    The splitter itself stays unbounded for Query editor callers.
+    """
+    if (len(text) > 2 * 1024 * 1024 or 'delimiter' not in text.lower()
+            or text.count(';') > 4096):
+        return []
+    readings = []
+    for escapes in (True, False):
+        endings = set()
+        for statement in split_statements(text, backslash_escapes=escapes):
+            delimiter, end = statement['delimiter'], statement['next_start']
+            start = end - len(delimiter)
+            if (delimiter != ';' and not statement['issues'] and not statement['unclosed']
+                    and statement['end'] <= start and text.startswith(delimiter, start)):
+                endings.add((start, end))
+        readings.append(endings)
+    return sorted(readings[0] & readings[1])
+
+
+def _secret_variable_tokens(text, backslash_escapes=True):
+    """Scan redaction tokens, recognizing closers only in executable bodies.
+
     Bound token searches at proven endings even when a word contains '$$'.
     """
-    boundaries = []
-    if 'delimiter' in text.lower():
-        readings = []
-        for escapes in (True, False):
-            endings = set()
-            for statement in split_statements(text, backslash_escapes=escapes):
-                delimiter, end = statement['delimiter'], statement['next_start']
-                start = end - len(delimiter)
-                if (delimiter != ';' and not statement['issues'] and not statement['unclosed']
-                        and statement['end'] <= start and text.startswith(delimiter, start)):
-                    endings.add((start, end))
-            readings.append(endings)
-        boundaries = sorted(readings[0] & readings[1])
+    boundaries = _secret_variable_boundaries(text)
     boundary = 0
     cursor, executable = 0, False
     while cursor < len(text):

@@ -33,6 +33,375 @@ class TempHome(unittest.TestCase):
         self.store = WorkspaceStore()
 
 
+def _legacy_split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
+                     engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
+                     ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
+                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None):
+    """Client statement boundaries with code masked by the server's SQL lexer.
+
+    ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
+    ``token_spans`` come exclusively from :func:`lex_sql`'s server reading.
+    The client framing pass uses that same lexer with ``client=True``:
+    conditional comments do not suppress client delimiters, regardless of
+    whether the server will execute their contents. An unusable DELIMITER,
+    client command or unclosed token is never a safe unit.
+
+    DELIMITER/get_arg: mysql-server/client/mysql.cc:2661-2682,4652-4671,4897-4935;
+    delimiter and line-comment recognition: :2838-2912; MariaDB :2746-2833.
+    Dollar bodies use the optional newer client grammar (:2715-2746).
+    If supplied, ``discarded_prefixes`` collects (start, end, delimiter)
+    for consumed DELIMITER lines. The editor compares both original ranges
+    and argument values before any prefix disappears from a planned unit.
+    """
+    # Frozen pre-fix implementation: compare every output field, not only
+    # statement text, when changing the position indexes in split_statements.
+    import bisect
+    from myflames.dbops import (
+        _usable_delimiter, lex_sql, _masked_fragment, _DELIMITER_COMMAND,
+        _delimiter_argument, _CLIENT_SPACE, REASON_COMMENT_FRAMING,
+        REASON_QUOTE_FRAMING, REASON_EXECUTED_FRAMING,
+        REASON_NAMED_CLIENT_COMMAND, REASON_CRLF_TRANSPORT, REASON_DELIMITER)
+    if not isinstance(sql, str):
+        raise ValueError("Pass SQL text.")
+    # add_line scans physical lines independently. A caller-supplied
+    # delimiter must not cross a line or depend on CRLF translation either.
+    if not _usable_delimiter(delimiter):
+        raise ValueError("Pass a delimiter of 1 to 15 UTF-8 bytes starting with ASCII, without backslashes, NUL, line endings, "
+                         "or leading or trailing whitespace.")
+    framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
+                      client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
+                      client_engine=client_engine, comment_dialect=comment_dialect,
+                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes)
+    scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
+                   unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
+                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
+    out = []
+    consumed_delimiters = set()
+    state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
+    pos, token_index = 0, 0
+    n = len(sql)
+
+    def issue(reason):
+        if reason not in state["issues"]:
+            state["issues"].append(reason)
+
+    def finish(end, next_start):
+        start = state["start"]
+        code, idents, tokens = _masked_fragment(sql, scan, start, end)
+        # A skipped comment cannot mask SQL across separate COM_QUERYs.
+        # In --force mode a later fragment could execute after the first
+        # fragment's unclosed-comment error. Refuse this framing, including
+        # for classifier callers outside the editor's packet builder.
+        for boundary in (start, end):
+            index = bisect.bisect_right(scan["ends"], boundary)
+            if index < len(scan["tokens"]):
+                kind, left, right = scan["tokens"][index]
+                if kind == "comment" and left < boundary < right:
+                    issue(REASON_COMMENT_FRAMING)
+                if kind in ("string", "identifier") and left < boundary < right:
+                    issue(REASON_QUOTE_FRAMING)
+            for comment in scan["comments"]:
+                if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
+                    issue(REASON_EXECUTED_FRAMING)
+        for at, reason in scan["issues"] + framing["issues"]:
+            if start <= at < end and not (at in consumed_delimiters and
+                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                issue(reason)
+        unclosed = state["unclosed"] or any(left < end and right > start
+                                            for left, right in scan["unclosed"] + framing["unclosed"])
+        if code or state["pending"] or state["issues"] or unclosed:
+            raw = sql[start:end]
+            lead = len(raw) - len(raw.lstrip())
+            text = raw.strip()
+            # MySQL's Windows batch reader changes even CRLF inside quoted
+            # data. MariaDB's binary reader preserves it. Command lines and
+            # whitespace between units are already outside this sent span;
+            # refuse remaining changes instead of rewriting SQL literals.
+            # mysql-8.4.0:client/readline.cc:75-95.
+            if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
+                issue(REASON_CRLF_TRANSPORT)
+            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end)
+            out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
+                        "code": code, "idents": idents, "token_spans": tokens,
+                        "client_token_spans": client_tokens,
+                        "unclosed": bool(unclosed), "issues": list(state["issues"]), "delimiter": delimiter,
+                        "next_start": next_start})
+        state.update(start=next_start, pending=False, issues=[], unclosed=False)
+
+    tokens = framing["tokens"]
+    while pos < n:
+        while token_index < len(tokens) and tokens[token_index][2] <= pos:
+            token_index += 1
+        if token_index == len(tokens):
+            break
+        kind, left, right = tokens[token_index]
+        if kind == "delimiter_command":
+            command = _DELIMITER_COMMAND.match(sql, left)
+            value, line_end = _delimiter_argument(sql, command.end(), client_engine)
+            # A MySQL client treats /*M! SQL */ as an ordinary comment, but
+            # a MariaDB server executes it. Only discard a prefix the server
+            # also ignores. Keep unsafe text in a refused unit, including
+            # when this DELIMITER is the last line of the run.
+            # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
+            # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
+            ignored = not prefix_code and not any(
+                comment["executes"] is not False and comment["start"] < left and
+                comment["end"] > state["start"] for comment in scan["comments"])
+            if ignored:
+                consumed_delimiters.add(command.start(1))
+                if discarded_prefixes is not None:
+                    discarded_prefixes.append((state["start"], line_end, value))
+            else:
+                issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
+                      "before changing DELIMITER.")
+            # Suppress only the exact command proved safe above. Other
+            # commands and problems in the prefix must still refuse.
+            for at, reason in scan["issues"] + framing["issues"]:
+                if state["start"] <= at < line_end and not (at in consumed_delimiters and
+                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                    issue(reason)
+            if not ignored:
+                finish(line_end, line_end)
+            if value and "\\" not in value:
+                delimiter = value
+            else:
+                state["unclosed"] = True
+                issue(REASON_DELIMITER)
+            pos = line_end
+            state["start"] = pos
+            continue
+        if kind == "delimiter":
+            finish(left, right)
+            pos = right
+            continue
+        if kind != "code":
+            if kind in ("identifier", "string"):
+                state["pending"] = True
+            pos = right
+            continue
+        ch = sql[pos]
+        if ch == "\\":
+            following = sql[pos + 1:pos + 2]
+            if following in ("g", "G"):
+                finish(pos, pos + 2)
+                pos += 2
+                continue
+            # lex_sql reports unsupported commands in both complete passes.
+        if ch not in _CLIENT_SPACE:
+            state["pending"] = True
+        pos += 1
+    finish(n, n)
+    return out
+
+
+def _splitter_comment_probe(size):
+    head = "SELECT SLEEP(600) /* delimiter */ "
+    return head + "/*!99999;" * ((size - len(head) - 3) // 9) + " */"
+
+
+# The supplied T1 repro's mysqldump shape, including conditional comments,
+# session settings, table data and per-table trigger DELIMITER changes.
+_SPLITTER_DUMP_HEADER = """-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)
+--
+-- Host: localhost    Database: shop
+-- ------------------------------------------------------
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+"""
+def _splitter_dump_table(i, triggers):
+    t = """
+--
+-- Table structure for table `t%(i)d`
+--
+
+DROP TABLE IF EXISTS `t%(i)d`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t%(i)d` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(64) DEFAULT NULL,
+  `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+LOCK TABLES `t%(i)d` WRITE;
+/*!40000 ALTER TABLE `t%(i)d` DISABLE KEYS */;
+INSERT INTO `t%(i)d` VALUES (1,'alpha','2026-01-01 00:00:00'),(2,'beta','2026-01-02 00:00:00');
+/*!40000 ALTER TABLE `t%(i)d` ENABLE KEYS */;
+UNLOCK TABLES;
+""" % {"i": i}
+    if triggers:
+        t += """/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t%(i)d_bi` BEFORE INSERT ON `t%(i)d` FOR EACH ROW SET NEW.created = NOW() */;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+""" % {"i": i}
+    return t
+
+def _splitter_dump(tables):
+    return _SPLITTER_DUMP_HEADER + ''.join(_splitter_dump_table(i, True) for i in range(tables))
+
+
+class TestSplitterScaling(unittest.TestCase):
+    def test_splitter_matches_frozen_implementation(self):
+        import random
+
+        root = Path(__file__).resolve().parent.parent
+        fixtures = json.loads((root / 'apps/workspace/test/fixtures/sql-split.json').read_text(encoding='utf-8'))
+        corpus = [(case['sql'], {'backslash_escapes': case.get('backslash', True)})
+                  for case in fixtures['statements']]
+        corpus.extend((case['sql'].replace('|', '', 1), {'backslash_escapes': case.get('backslash', True)})
+                      for case in fixtures['cursors'])
+        corpus.extend((sql, {}) for sql, unused_kind, unused_category, unused_verbs in CASES)
+        corpus.extend((path.read_text(encoding='utf-8'), {})
+                      for path in sorted((root / 'test/fixtures/dumps').glob('*.sql')))
+        corpus.append((_splitter_dump(8), {}))
+        # Include nested/overlapping comments, issue positions discovered at
+        # comment close, consumed prefixes, invalid commands and EOF ranges.
+        fragments = (
+            "SELECT 'a; b', `a``;b`, \"quoted; text\";\n",
+            "/*!50000 SELECT 1; SELECT 'x; y' */;\n",
+            "/*!999999 SELECT 1; /*!50000 SELECT 2; */ */;\n",
+            "/*M!100100 SELECT 1; */ SELECT 2;\n",
+            "/*!50000 SELECT 1; /*M!999999 SELECT 2; */ SELECT 3; */;\n",
+            "/*!50000 SELECT 1; /*!!50000 SELECT 2; */ SELECT 3; */;\n",
+            "/*!50000 SELECT 1;\n\\! hidden\nDELIMITER //\n*/;\n",
+            "/*+ SELECT ';'\nDELIMITER $$\n\\C latin1 */ SELECT 1;\n",
+            "/* note */\nDELIMITER //\nSELECT 'inside;//'//\nDELIMITER ;\n",
+            "/*!50000 SELECT 1 */\nDELIMITER //\nSELECT 2//\nDELIMITER ;\n",
+            "DELIMITER ''\nSELECT 1;\nDELIMITER //\nSELECT 2//\n",
+            "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 'a;$$'; SELECT 2; END$$\nDELIMITER ;\n",
+            "DELIMITER ';'';'\nSELECT 'a; b';';\nDELIMITER ;\n",
+            "SELECT 1\\gSELECT 2\\G\n",
+            "SELECT 'a\\'; SELECT 2; -- '\n",
+            "SELECT $tag$ x; y $tag$;\n",
+            "SELECT [a; b], \"a; b\";\n",
+            "/*M!999999\\- enable the sandbox mode */\nSELECT 1;\n",
+            "SELECT 1 --\x01 hidden;\nSELECT 2;\n",
+            "/*!50000 SELECT 1; SELECT 'unterminated",
+            "/* unterminated; /*!50000 SELECT 1;\n",
+        )
+        corpus.extend((sql, {}) for sql in fragments)
+        rng = random.Random(352)
+        for unused in range(40):
+            corpus.append((''.join(rng.choice(fragments) for unused in range(rng.randrange(1, 6))), {}))
+        modes = (
+            {},
+            {'engine': 'mysql', 'server_version': '5.7.44', 'client_engine': 'mysql'},
+            {'engine': 'mysql', 'server_version': '8.4.3', 'client_engine': 'mysql', 'sql_mode': ''},
+            {'engine': 'mysql', 'server_version': '8.4.3', 'unknown_execute': False},
+            {'engine': 'mysql', 'server_version': '9.7.0', 'dollar_quotes': True},
+            {'engine': 'mariadb', 'server_version': '11.4.0', 'client_engine': 'mariadb'},
+            {'engine': 'mariadb', 'server_version': '11.8.0', 'sql_mode': 'ORACLE,MSSQL',
+             'client_ansi_quotes': True, 'client_backslash_escapes': False},
+            {'unknown_execute': False, 'ansi_quotes': True, 'mssql': True, 'dollar_quotes': True},
+            {'backslash_escapes': False, 'unknown_execute': False, 'delimiter': '//'},
+        )
+        comparisons = 0
+        for index, (sql, fixture_mode) in enumerate(corpus):
+            for mode in modes:
+                options = dict(fixture_mode, **mode)
+                with self.subTest(case=index, mode=options):
+                    expected_prefixes, actual_prefixes = [], []
+                    expected = _legacy_split_statements(sql, discarded_prefixes=expected_prefixes, **options)
+                    actual = dbops.split_statements(sql, discarded_prefixes=actual_prefixes, **options)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual_prefixes, expected_prefixes)
+                    comparisons += 1
+        print('R352_SPLITTER_EQUIVALENCE cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
+
+    def test_custom_boundary_semicolon_budget_fails_closed(self):
+        suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
+                  "SELECT 'tail-private'//")
+        raw = 'SELECT 1;\n' * 4096 + suffix
+        self.assertTrue(dbops._secret_variable_boundaries(raw))
+        self.assertIn("SELECT 'tail-private'//", dbops.redact(raw))
+        raw = 'SELECT 1;\n' + raw
+        with mock.patch.object(dbops, 'split_statements', side_effect=AssertionError('over-budget splitter')):
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+            clean = dbops.redact(raw)
+        self.assertNotIn('value-private', clean)
+        self.assertNotIn('tail-private', clean)
+        self.assertIn('[redacted]', clean)
+
+    def test_custom_boundary_text_budget_fails_closed(self):
+        # At the exact size limit the normal proof is still attempted.
+        # Mock only this guard check to avoid making the test lex 2 Mi of
+        # padding four times; the over-limit abuse case uses real redaction.
+        limit = 2 * 1024 * 1024
+        raw = '/* delimiter */' + ' ' * (limit - len('/* delimiter */'))
+        with mock.patch.object(dbops, 'split_statements', return_value=[]) as splitter:
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+        self.assertEqual(splitter.call_args_list,
+                         [mock.call(raw, backslash_escapes=True), mock.call(raw, backslash_escapes=False)])
+        suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
+                  "SELECT 'tail-private'//")
+        raw = '/*' + 'x' * (limit + 1 - len(suffix) - 5) + '*/\n' + suffix
+        self.assertEqual(len(raw), limit + 1)
+        with mock.patch.object(dbops, 'split_statements', side_effect=AssertionError('over-budget splitter')):
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+            clean = dbops.redact(raw)
+        self.assertNotIn('value-private', clean)
+        self.assertNotIn('tail-private', clean)
+        self.assertIn('[redacted]', clean)
+
+    def _assert_timing_ratio(self, shape, operation='redact'):
+        # Time inside a child process so a reintroduced quadratic path has
+        # a hard deadline. Alternate sizes and take medians to reduce load
+        # and warm-up noise; process startup and generation are not timed.
+        code = (
+            "import json, statistics, sys, time\n"
+            "sys.path.insert(0, 'test')\n"
+            "from test_dbops import _splitter_comment_probe, _splitter_dump\n"
+            "from myflames import dbops\n"
+            "shape, operation = %r, %r\n"
+            "values = ([_splitter_comment_probe(size) for size in (16384, 65536)]\n"
+            "          if shape == 'comments' else [_splitter_dump(size) for size in (100, 400)])\n"
+            "fn = getattr(dbops, operation)\n"
+            "samples = [[], []]\n"
+            "for repeat in range(3):\n"
+            "    for index in ((0, 1) if repeat %% 2 == 0 else (1, 0)):\n"
+            "        began = time.perf_counter()\n"
+            "        result = fn(values[index])\n"
+            "        samples[index].append(time.perf_counter() - began)\n"
+            "        if operation == 'redact':\n"
+            "            assert result == values[index], 'ordinary SQL changed'\n"
+            "medians = [statistics.median(group) for group in samples]\n"
+            "print(json.dumps({'shape': shape, 'operation': operation,\n"
+            "                  'characters': list(map(len, values)), 'samples': samples,\n"
+            "                  'medians': medians, 'ratio': medians[1] / medians[0]}))\n"
+        ) % (shape, operation)
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=45, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('%s %s exceeded the 45 s deadline' % (operation, shape))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        measurement = json.loads(result.stdout)
+        print('R352_SPLITTER_TIMING ' + json.dumps(measurement, sort_keys=True), flush=True)
+        self.assertLess(measurement['ratio'], 6, measurement)
+
+    def test_redact_conditional_comments_scale_below_sixfold(self):
+        self._assert_timing_ratio('comments')
+
+    def test_redact_mysqldump_scales_below_sixfold(self):
+        self._assert_timing_ratio('mysqldump')
+
+    def test_splitter_mysqldump_scales_below_sixfold(self):
+        # Exercise the index optimization directly as well: redaction may
+        # conservatively skip custom boundaries above its work budget.
+        self._assert_timing_ratio('mysqldump', 'split_statements')
+
+
 # ---- classification -----------------------------------------------------------------
 
 # (sql, overall kind, category of the worst statement, verbs in order)
