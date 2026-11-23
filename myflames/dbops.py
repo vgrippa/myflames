@@ -3437,6 +3437,8 @@ _URL_VALUE_BOUNDARY = re.compile(r"[\s/]")
 _URL_SQL_END = re.compile(r"[\s'\"`]")
 _URL_VALUE_END = re.compile(r"\s")
 _URL_DATABASE_SCHEMES = frozenset(('mysql', 'mariadb', 'mysqlx', 'postgres', 'postgresql'))
+_URL_IPV6_HOST = re.compile(
+    r"\[[0-9a-fA-F.]*:[0-9a-fA-F.]*:[0-9a-fA-F:.]*(?:%[0-9a-zA-Z._~%-]+)?\](?::[0-9]*)?")
 # Literal and comment tokens protect commas and SET words inside values.
 # Keep name components separate so comments and backticks can surround dots
 # or the assignment operator without hiding a sensitive system variable.
@@ -3520,15 +3522,18 @@ def _URL_SECRET(text, quoted=True):
         end = mark.start() if mark is not None else len(text)
         last_at = text.rfind("@", scheme.end(), end)
         colon = text.find(":", scheme.end(), last_at if last_at >= 0 else end)
-        # An unclosed bracket with no preceding authority @ identifies an
-        # IPv6 host. Brackets in a user name must not disable redaction.
-        if (colon >= 0 and last_at < 0 and
-                text.rfind("[", scheme.end(), colon) > text.rfind("]", scheme.end(), colon)):
-            colon = -1
+        # Only a bracketed IPv6 host directly after "://" treats its colon as
+        # a host colon (after "user-info@", last_at >= 0 already skips it).
+        # Brackets in a user name must not disable redaction.
+        if colon >= 0 and last_at < 0 and text.startswith("[", scheme.end()):
+            host = _URL_IPV6_HOST.match(text, scheme.end(), end)
+            if host is not None and (host.end() == end or text[host.end()] in (",", "?", "#")):
+                colon = -1
         if (last_at < 0 and colon >= 0 and end < len(text) and text[end] == "/"
-                # A ':' prefix is already outside the matched scheme; for
-                # '+' prefixes, classify by the final component as well.
-                and (scheme.group()[:-3].lower().rsplit('+', 1)[-1] in _URL_DATABASE_SCHEMES
+                # A ':' prefix is already outside the matched scheme; for '+'
+                # dialect/driver or pool combinations, match any component.
+                and (any(part in _URL_DATABASE_SCHEMES
+                         for part in text[scheme.start():scheme.end() - 3].lower().split('+'))
                      or not text[colon + 1:end].isdigit())):
             mark = value_end.search(text, end)
             end = mark.start() if mark is not None else len(text)

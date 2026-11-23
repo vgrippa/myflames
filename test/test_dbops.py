@@ -1224,6 +1224,50 @@ R352_CREDENTIAL_CLAUSES = (
 
 
 class TestRedaction(unittest.TestCase):
+    def test_r352_url_database_dialect_components_hide_numeric_slash_passwords(self):
+        for scheme in ('mysql+pymysql', 'mysql+mysqlconnector',
+                       'mariadb+mariadbconnector', 'postgresql+psycopg2',
+                       'postgres+asyncpg', 'mysqlx+srv',
+                       'pool+mysql', 'pool+mysql+pymysql',
+                       'jdbc:mysql+pymysql', 'MySQL+PyMySQL'):
+            for quoted in (True, False):
+                with self.subTest(scheme=scheme, quoted=quoted):
+                    raw = scheme + '://app:12/ab@db1/shop'
+                    expected = scheme + '://app:[redacted]@db1/shop'
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+        for raw in ('https://h:443/path?mail=a@b',
+                    'https+transport://h:443/path?mail=a@b',
+                    'git+https://h:443/path?mail=a@b',
+                    'mysql+pymysql://app@db1/shop',
+                    'mysql+pymysql://db1:3306/shop'):
+            with self.subTest(unchanged=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+
+    def test_r352_url_username_brackets_do_not_hide_slash_passwords(self):
+        cases = (
+            ('mysql://app[ro:pa/ss@db1/x', 'mysql://app[ro:[redacted]@db1/x'),
+            ('mysql://a[b:12/xy@h/db', 'mysql://a[b:[redacted]@h/db'),
+            ('mysql+pymysql://a[b:12/xy@h/db', 'mysql+pymysql://a[b:[redacted]@h/db'),
+            ('mysql://app[ro]:pa/ss@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://[app]:pa/ss@db1/x', 'mysql://[app]:[redacted]@db1/x'),
+            ('mysql://[app:pa/ss@db1/x', 'mysql://[app:[redacted]@db1/x'),
+            ('mysql://[a:12/xy@h/db', 'mysql://[a:[redacted]@h/db'),
+            ('mysql://[a:pa]/ss@db1/x', 'mysql://[a:[redacted]@db1/x'),
+            ('mysql://u:p@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+            ('mysql://u:12/ab@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+            ('mysql://[::1]:3306/db', 'mysql://[::1]:3306/db'),
+            ('mysql://[::1]:3306/db?mail=a@b', 'mysql://[::1]:3306/db?mail=a@b'),
+            ('mysql://[fe80::1%25eth0]:3306/db?mail=a@b', 'mysql://[fe80::1%25eth0]:3306/db?mail=a@b'),
+            ('mysql://user@[::1]:3306/db', 'mysql://user@[::1]:3306/db'),
+            ('mysql://user@[::1]:3306/db?mail=a@b', 'mysql://user@[::1]:3306/db?mail=a@b'),
+            ('https://[2001:db8::1]/users/alice@example.com',
+             'https://[2001:db8::1]/users/alice@example.com'),
+        )
+        for raw, expected in cases:
+            for quoted in (True, False):
+                with self.subTest(raw=raw, quoted=quoted):
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+
     def test_r352_secret_literals_cover_both_backslash_readings(self):
         for names in (('wsrep_sst_auth', 's3_secret_key'),
                       ('s3_secret_key', 'wsrep_sst_auth'),
