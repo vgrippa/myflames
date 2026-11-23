@@ -7,12 +7,34 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./components";
 import { Checkbox } from "./kit";
+import { lazyComponent } from "./lazy";
 import { useMinuteClock } from "./UpdateCheck";
-import { UpdateDialog } from "./UpdateDialog";
 import {
   closeUpdateDialog, openUpdateDialog, setAutoCheck, stagingPercent, startAutomaticChecks,
   updateDialogReturnFocus, updatePhase, updatePhaseLabel, useUpdateStatus,
 } from "./updateStatus";
+
+// The dialog (with the release-notes renderer) is off the first screen: its
+// chunk loads when the badge or the Settings entry is pointed at or focused,
+// or at the latest when one of them is clicked (the button shows busy until
+// the chunk is ready, so a click always reacts).
+const UpdateDialog = lazyComponent(() => import("./UpdateDialog").then((m) => m.UpdateDialog));
+const warmUpdateDialog = () => { void UpdateDialog.preload().catch(() => {}); };
+
+/** Loads the dialog chunk, then opens it; the control shows busy meanwhile. */
+function useOpenUpdateDialog(): [boolean, (from: HTMLElement | null, before?: () => void) => void] {
+  const [preparing, setPreparing] = useState(false);
+  const open = (from: HTMLElement | null, before?: () => void) => {
+    if (preparing) return;
+    before?.();
+    setPreparing(true);
+    UpdateDialog.preload()
+      .catch(() => {})
+      .then(() => void openUpdateDialog(from))
+      .finally(() => setPreparing(false));
+  };
+  return [preparing, open];
+}
 
 function ProgressRing({ percent }: { percent: number }) {
   const radius = 6;
@@ -34,6 +56,7 @@ export function UpdateBadge() {
   const phase = updatePhase(s, now);
   const label = phase ? updatePhaseLabel(s, phase) : "";
   const percent = stagingPercent(s.staging);
+  const [preparing, openDialog] = useOpenUpdateDialog();
   const [announcement, setAnnouncement] = useState("");
   const announced = useRef(new Set<string>());
   const milestone = phase === "available" || phase === "ready" ? label : "";
@@ -54,10 +77,12 @@ export function UpdateBadge() {
       )}
       {phase && (
         <button ref={button} type="button" className="update-badge" data-phase={phase} aria-label={label} title={label}
-          aria-haspopup="dialog" onClick={() => void openUpdateDialog(button.current)}>
-          {phase === "downloading" && percent !== null ? <ProgressRing percent={percent} />
-            : phase === "available" || phase === "ready" ? <Icon name={phase === "ready" ? "refresh" : "import"} size={14} />
-              : <span className="spinner" aria-hidden="true" />}
+          aria-haspopup="dialog" aria-busy={preparing || undefined} aria-disabled={preparing || undefined}
+          onPointerEnter={warmUpdateDialog} onFocus={warmUpdateDialog} onClick={() => openDialog(button.current)}>
+          {preparing || phase === "preparing" ? <span className="spinner" aria-hidden="true" />
+            : phase === "downloading" && percent !== null ? <ProgressRing percent={percent} />
+              : phase === "available" || phase === "ready" ? <Icon name={phase === "ready" ? "refresh" : "import"} size={14} />
+                : <span className="spinner" aria-hidden="true" />}
         </button>
       )}
       {/* Rendered at the page root so About's styles and layout never reach it. */}
@@ -73,13 +98,16 @@ export function UpdateBadge() {
 export function UpdateMenuItem({ onChoose }: { onChoose: () => void }) {
   const s = useUpdateStatus();
   const now = useMinuteClock();
+  const [preparing, openDialog] = useOpenUpdateDialog();
   const phase = updatePhase(s, now);
   if (!phase) return null;
   const text = phase === "ready" ? "Restart to update…" : phase === "available" ? "Update available…" : "Update progress…";
   return (
     <button type="button" className="settings-item update-menu-item" data-phase={phase} aria-haspopup="dialog"
-      onClick={() => { const from = document.querySelector<HTMLElement>(".settings-button"); onChoose(); void openUpdateDialog(from); }}>
-      <Icon name={phase === "ready" ? "refresh" : "import"} size={16} />
+      aria-busy={preparing || undefined} aria-disabled={preparing || undefined}
+      onPointerEnter={warmUpdateDialog} onFocus={warmUpdateDialog}
+      onClick={() => openDialog(document.querySelector<HTMLElement>(".settings-button"), onChoose)}>
+      {preparing ? <span className="spinner" aria-hidden="true" /> : <Icon name={phase === "ready" ? "refresh" : "import"} size={16} />}
       {text}
     </button>
   );

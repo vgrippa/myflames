@@ -3031,6 +3031,52 @@ class ProcessTests(unittest.TestCase):
         self.assertNotIn("s3cret-pw", json.dumps(history))
         self.assertNotIn("s3cret-pw", json.dumps(record))
 
+    def test_gate351_secret_variables_and_slash_urls_leave_no_editor_secrets(self):
+        for sql, secret in (("SET GLOBAL wsrep_sst_auth = 'sst:gate351-secret'", 'sst:gate351-secret'),
+                            ("CREATE TABLE t (a int) ENGINE=FEDERATED "
+                             "CONNECTION='mysql://fed:Zq9/S3cr3t@remote:3306/db/t'", 'Zq9/S3cr3t')):
+            with self.subTest(sql=sql):
+                result = self.run_sql(sql)
+                self.assertEqual(result['status'], 'complete')
+                record = self.store.audit_records()[0]
+                self.assertEqual(record['operation'], 'editor_run')
+                history = self.call('/api/editor/history')['items'][0]
+                saved = ed.saved_query_entry('redaction regression', '', sql, '', None)
+                for sink, value in (('audit', record), ('history', history), ('saved', saved)):
+                    with self.subTest(sink=sink):
+                        self.assertNotIn(secret, json.dumps(value))
+                        self.assertIn('[redacted]', json.dumps(value))
+
+    def test_gate351_rejected_secret_variable_is_redacted_in_editor_errors(self):
+        # Reject the user SET through the real framed stderr parser. The
+        # session's password is different, so only inventory-based redaction
+        # can remove this value from the error audit and plan-helper errors.
+        client = Path(self.temp.name) / 'bin' / 'mysql'
+        source = client.read_text(encoding='utf-8')
+        source = source.replace('        upper = text.upper()\n',
+                                '        upper = text.upper()\n'
+                                '        if (upper.startswith("SET GLOBAL WSREP_SST_AUTH = ") or\n'
+                                '                "REJECT_SECRET()" in text):\n'
+                                '            self.error(line, 1231, "42000", '
+                                '"Variable \'wsrep_sst_auth\' can\'t be set to the value of \'sst:private\'")\n'
+                                '            return\n')
+        client.write_text(source, encoding='utf-8')
+        result = self.run_sql("SET GLOBAL wsrep_sst_auth = 'sst:private'")
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['run']['error']['code'], 1231)
+        expected = "Variable 'wsrep_sst_auth' can't be set to the value of '[redacted]'"
+        self.assertIn(expected, self.store.audit_records()[0]['message'])
+        for sink, value in (('audit', self.store.audit_records()[0]),
+                            ('history', self.call('/api/editor/history')['items'][0])):
+            with self.subTest(sink=sink):
+                self.assertNotIn('sst:private', json.dumps(value))
+                self.assertIn('[redacted]', json.dumps(value))
+        session = self.registry.get('tab1')
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("SELECT 'REJECT_SECRET()'", 'explain')
+        self.assertIn(expected, str(caught.exception))
+        self.assertNotIn('sst:private', str(caught.exception))
+
     def test_decline_and_refuse_are_audited(self):
         declined = self.call("/api/editor/run", sql="INSERT INTO t VALUES (1)", decline=True)
         self.assertEqual(declined["status"], "declined")

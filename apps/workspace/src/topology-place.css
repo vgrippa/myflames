@@ -288,7 +288,7 @@
 /* The visible labels live in .topology-map-label-layer, above every line; the
    copy inside each link stays for its box, tooltip and accessible text. */
 .topology-map-edge text.topology-map-edge-label-anchor { opacity: 0; }
-.topology-map-label {
+.topology-map-label-layer .topology-map-label {
   fill: var(--map-tone-text);
   stroke: var(--surface);
   stroke-width: 4px;
@@ -296,7 +296,7 @@
   paint-order: stroke;
   font-size: 11px;
 }
-.topology-map-label.is-alias { fill: var(--muted); }
+.topology-map-label-layer .topology-map-label.is-alias { fill: var(--muted); }
 .topology-map-section { overflow-wrap: anywhere; }
 /* The rolling change sheet (RollingChangeSheet.tsx): value, mode and member
    choice, then the numbered review and the per-member result. */

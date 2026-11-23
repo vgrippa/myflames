@@ -433,6 +433,31 @@ class ReadysetBase(unittest.TestCase):
 
 class TestReadStatusAndSchema(ReadysetBase):
 
+    def test_gate351_status_and_error_url_passwords_can_contain_quotes(self):
+        for password in ("pa'gate351-secret", 'pa"gate351-secret', 'pa`gate351-secret',
+                         "pa/quo'te-gate351-secret"):
+            with self.subTest(password=password):
+                conn = FakeReadyset()
+                conn.status_text = 'mysql://fed:' + password + '@remote/db'
+                conn.last_error = 'replicator failed at ' + conn.status_text
+                report = readyset.read_status(conn)
+                dumped = json.dumps(report)
+                self.assertNotIn('gate351-secret', dumped)
+                self.assertEqual(report['status_fields']['status'], 'mysql://fed:[redacted]@remote/db')
+                self.assertIn('[redacted]', report['status_fields']['last_replicator_error'])
+
+    def test_gate351_identify_errors_redact_quotes_in_url_passwords(self):
+        class FailedIdentity(FakeReadyset):
+            def run(self, sql, extra_flags=None, timeout=None):
+                if sql == 'SELECT @@version_comment':
+                    raise ConnectorError("ERROR 1105 (HY000): failed mysql://fed:pa'gate351-secret@remote/db")
+                return super().run(sql, extra_flags, timeout)
+
+        ok, reason = readyset.identify(FailedIdentity())
+        self.assertFalse(ok)
+        self.assertNotIn('gate351-secret', reason)
+        self.assertIn('[redacted]', reason)
+
     def test_adapter_read_matches_schema_and_computes_telemetry(self):
         conn = FakeReadyset(port=3307, database="shop")
         report = readyset.read_status(conn)

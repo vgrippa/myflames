@@ -128,7 +128,6 @@ import collections
 import contextlib
 import hashlib
 import hmac
-import ipaddress
 import json
 import os
 import re
@@ -143,6 +142,7 @@ from .connection_groups import ProfileReadError, grouped_read, probe_note, recor
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
 from .server_info import identity_from_version, product_identity, product_name
+from .topology_links import _host_key, _norm_host, is_loopback as _is_loopback
 
 SCHEMA_VERSION = "replication-1.0"
 SKIP_SCHEMA_VERSION = "replication-skip-1.0"
@@ -1144,39 +1144,6 @@ def reset_source_cache():
         _source_cache.clear()
         _source_attempts.clear()
         _source_pending.clear()
-
-
-def _norm_host(host):
-    text = str(host or "").strip().lower().rstrip(".")
-    if text.startswith("[") and text.endswith("]"):
-        text = text[1:-1]
-    return text
-
-
-def _host_key(host):
-    """A host as compared: a name in lower case without a trailing dot, an IP
-    address in its canonical form (an IPv4-mapped IPv6 address as IPv4)."""
-    text = _norm_host(host)
-    try:
-        address = ipaddress.ip_address(text)
-    except ValueError:
-        return text
-    return str(getattr(address, "ipv4_mapped", None) or address)
-
-
-def _is_loopback(host):
-    """True for a host that is the computer it is used on: localhost and the
-    names under it, 127.0.0.0/8, ::1 in any spelling, their IPv4-mapped
-    forms, and the unspecified 0.0.0.0 and :: (a connection to them reaches
-    the local computer)."""
-    key = _host_key(host)
-    if key == "localhost" or key.endswith(".localhost"):
-        return True
-    try:
-        address = ipaddress.ip_address(key)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_unspecified
 
 
 def _profile_port(profile):

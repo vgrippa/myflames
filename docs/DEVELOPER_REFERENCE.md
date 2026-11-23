@@ -101,7 +101,13 @@ runs `npm ci` in `apps/desktop`, followed by
 `PUPPETEER_SKIP_DOWNLOAD=true npm ci` and `NODE_ENV=production npm run build:ui` in `apps/workspace`,
 installing both dependency sets from their committed lockfiles and building the
 workspace before the backend build or resume decision. The workspace dependencies
-let the packaged settings smokes attach to Electron without downloading a browser. Unless `--resume` finds a
+let the packaged settings smokes attach to Electron without downloading a browser.
+All three npm steps run through `without_signing_credentials`, which removes
+the Apple and CSC signing variables from their subprocess environment. The
+workspace install and build overrides are passed through `env` inside that
+call, so `PUPPETEER_SKIP_DOWNLOAD` and `NODE_ENV` apply only to their respective
+steps; later backend, packaging and smoke commands retain the caller's environment.
+Unless `--resume` finds a
 valid backend build manifest, it provisions the build venv
 (`MYFLAMES_DESKTOP_BUILD_VENV`, default `local/desktop-build-venv`, stamped
 with the Python version and the build-requirements digest and never a
@@ -2388,8 +2394,8 @@ does not revoke an otherwise consenting read.
   `same_clusterset`, `same_galera_cluster`, `replication_source`,
   `replica_of_this_server`, `same_server`, `address_named_by_this_server` (from
   remembered `topology_identity` fields and addresses reported by the open
-  server, with loopback addresses matched only when the observer host is
-  loopback and the profile has no `ssh_host`). `join` lists deduplicated
+  server, with loopback addresses matched only when both the observer and the
+  saved connection are direct on this computer, never through SSH). `join` lists deduplicated
   `{group, evidence, evidence_text}` entries for each other non-empty `group`
   present among `suggestions`. `suggested_name` (`connection_groups.suggested_name`)
   is the InnoDB Cluster `cluster.name`, else `clusterset.name`, else Galera/PXC
@@ -3671,7 +3677,30 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   USING, PASSWORD(...), SET PASSWORD, `*PASSWORD = '...'` (SOURCE_PASSWORD,
   MASTER_PASSWORD, START REPLICA PASSWORD, CREATE SERVER OPTIONS), REPLACE
   '...' after a redacted password, and the connection's own password anywhere
-  (also with doubled or backslash-escaped quotes). Retention: 90 days by default
+  (also with doubled or backslash-escaped quotes). It also removes URL user-info
+  passwords, including embedded `@` and malformed slash-bearing passwords.
+  When the first boundary after the user-info colon is `/` and the preceding
+  value is not all digits, the scan continues to the last `@` before whitespace
+  or a quote. Numeric host ports and username-only URL paths stay unchanged;
+  already-scanned URL spans are skipped so nested URLs take linear work.
+  Parameter values and Readyset status/error values use `quoted=False` so
+  quotes inside URL passwords do not stop redaction; SQL text retains quote
+  boundaries. Readyset cache export keeps its separate redaction rules.
+  `SET` assignments to the explicit `dbops._SECRET_VARIABLES` inventory also
+  hide their values, including `wsrep_sst_auth`: bare, GLOBAL, SESSION, PERSIST
+  and PERSIST_ONLY forms, scoped or bare `@@` forms, backticked and
+  case-insensitive names, quoted or unquoted values, and comma-separated
+  assignments. Executable comment bodies (`/*!NNNNN ... */`, `/*! ... */`,
+  and MariaDB `/*M!NNNNNN ... */`) are scanned as SQL, including fragments
+  continuing a surrounding `SET`; ordinary block and line comments stay skipped.
+  `ER_WRONG_VALUE_FOR_VAR` diagnostics (`Variable '<name>' can't be set to the
+  value of '<value>'`) also hide the rejected value when the variable belongs
+  to that inventory, including literal apostrophes or newlines in the value
+  and incomplete diagnostics. Adjacent diagnostics for other variables stay intact.
+  Ordinary settings such as `SET GLOBAL max_connections = 500`
+  stay intact. Parameter comparison re-exports the same inventory and
+  `sensitive` predicate; audit records, editor history and saved queries all
+  use this shared redaction before storage. Retention: 90 days by default
   (`settings` table, `audit_retention_days`, 1 to 3650), purged on every insert
   and when the setting changes. `audit-1.0` envelope: `{schema_version,
   retention_days, records[]}`; each record has a nested `connection` object.
@@ -8570,12 +8599,20 @@ logs in.
     MySQL `sql/sys_vars.cc:3951`, MariaDB `sql/sys_vars.cc:3656`). A contrary
     `server_uuid` or contrary MariaDB `server_id` blocks address-only matching
     (`contrary_uuid`, `contrary_sid`). Under
-    `topology_links._endpoint_matches_profile`, loopback addresses
-    (`127.0.0.1`, `localhost`, `::1`, `127.*`) match a saved member only when
-    `observer_host` is also loopback AND the candidate saved member has no
-    `ssh_host` (so a remote proxy or server accessed over SSH never matches a
-    local loopback saved connection). Address-only matches (`'endpoint'`,
-    `'hostname_port'`, proxy routes, Readyset upstreams) have `verified: false`.
+    `topology_links._endpoint_matches_profile`, canonical host keys
+    (`topology_links._host_key`, shared with `replication._host_key`) collapse
+    IPv4-mapped IPv6 addresses to IPv4, compress IPv6, strip brackets and
+    trailing dots, and compare case-insensitively. Loopback classification
+    (`topology_links.is_loopback`, shared with `replication._is_loopback`)
+    covers `localhost` and `.localhost` names, `127.0.0.0/8`, `::1` in any
+    spelling, their IPv4-mapped IPv6 forms (such as `::ffff:127.0.0.1` and
+    `::ffff:7f00:1`), and unspecified `0.0.0.0` / `::`. Loopback addresses
+    match a saved member only when both the observer and the saved member are
+    direct on this computer (`observer_host` is direct and loopback, not
+    `"ssh:..."`, and the candidate has no `ssh_host`), never through SSH (the
+    same rule as `replication.match_source_profiles`). Address-only matches
+    (`'endpoint'`, `'hostname_port'`, proxy routes, Readyset upstreams) have
+    `verified: false`.
     ProxySQL `proxy_route` edge `state` comes only from runtime rows
     (`status_source` `"config"` gives `state: None`), keeping `ONLINE` (`ok`),
     `OFFLINE_SOFT` (`watch`), `OFFLINE_HARD` (`problem`) and every `SHUNNED*`

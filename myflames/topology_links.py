@@ -15,6 +15,7 @@ Cluster) can render verified cross-tier edges and ``Use <connection>`` actions
 without guessing endpoints.
 """
 import collections
+import ipaddress
 import json
 import re
 import socket
@@ -113,18 +114,62 @@ def _contrary_uuid(reported_uuid, candidate_uuid):
     return bool(reported and candidate and reported != candidate)
 
 
-def _host_key(host):
+def _norm_host(host):
     if not isinstance(host, str):
         return ""
-    h = host.strip().lower()
-    if h.startswith("[") and h.endswith("]"):
-        h = h[1:-1]
-    return h
+    text = host.strip().lower()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
+    return text.rstrip(".")
+
+
+def _host_key(host):
+    """A host as compared: a name in lower case without a trailing dot, or an
+    IP address in canonical form (IPv4-mapped IPv6 collapsed to IPv4)."""
+    text = _norm_host(host)
+    if not text:
+        return ""
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return text
+    return str(getattr(address, "ipv4_mapped", None) or address)
 
 
 def is_loopback(host):
-    h = _host_key(host)
-    return h in _LOCAL_NAMES or h.startswith("127.")
+    """True for a host that names the computer it is used on: localhost and
+    names under it, 127.0.0.0/8, ::1 in any spelling, their IPv4-mapped forms,
+    and the unspecified 0.0.0.0 and ::."""
+    key = _host_key(host)
+    if not key:
+        return False
+    if key == "localhost" or key.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(key)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _observer_host(profile_data):
+    if not isinstance(profile_data, dict):
+        return None
+    ssh = _text(profile_data.get("ssh_host"))
+    if ssh:
+        return "ssh:" + ssh
+    return profile_data.get("profile_host") or profile_data.get("host")
+
+
+def _loopback_scope_matches(observer_host, profile_ssh_host=None):
+    """True only when *observer_host* is direct (not SSH) and loopback, and
+    the saved connection has no ``ssh_host``."""
+    if not isinstance(observer_host, str):
+        return False
+    obs = observer_host.strip()
+    if not obs or obs.lower().startswith("ssh:"):
+        return False
+    return not _text(profile_ssh_host) and is_loopback(obs)
 
 
 def split_host_port(value, default_port=None):
@@ -649,8 +694,11 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
 
 
 def _endpoint_matches_profile(host, port, profile_data, observer_host=None):
-    """True when ``host:port`` directly names *profile_data*'s connection endpoint
-    under the same loopback / SSH safety rules as replication.py."""
+    """True when ``host:port`` directly names *profile_data*'s connection endpoint.
+
+    Loopback targets match only when both the observer and the saved connection
+    are direct on this computer; never through SSH.
+    """
     thost = _host_key(host)
     tport = _int(port)
     if not thost or not tport:
@@ -660,9 +708,7 @@ def _endpoint_matches_profile(host, port, profile_data, observer_host=None):
     if pport != tport:
         return False
     if is_loopback(thost):
-        if not observer_host or not is_loopback(observer_host):
-            return False
-        if profile_data.get("ssh_host"):
+        if not _loopback_scope_matches(observer_host, profile_data.get("ssh_host")):
             return False
         if thost == phost:
             return True
@@ -718,7 +764,7 @@ def _database_matches_target(db_info, target_host, target_port, observer_host=No
         if thost in names and tport in ports:
             return True
     # Loopback target when both Readyset/ProxySQL and the DB run on this local host.
-    if is_loopback(thost) and observer_host and is_loopback(observer_host) and not db_info.get("ssh_host"):
+    if is_loopback(thost) and _loopback_scope_matches(observer_host, db_info.get("ssh_host")):
         local_hostname = _host_key(socket.gethostname()).split(".")[0]
         db_short = _host_key(db_info.get("hostname")).split(".")[0]
         ports = {_int(db_info.get("port")), _int(db_info.get("profile_port"))} - {None}
@@ -807,7 +853,7 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
                 cdc_h, cdc_p = split_host_port(rsp.get("cdc_server"), 3306)
                 if cdc_h:
                     up_endpoints.append((cdc_h, cdc_p))
-                if any(_database_matches_target(dbi, uh, up, observer_host=rsp.get("profile_host"))
+                if any(_database_matches_target(dbi, uh, up, observer_host=_observer_host(rsp))
                        for uh, up in up_endpoints if uh for dbi in known_db_Set):
                     verified.append(rsp)
             if len(verified) == 1:
@@ -907,7 +953,7 @@ def classify_proxysql_topology(report, profiles=(), open_profile=None, observer_
             if rs_match:
                 for u in rs_match.get("upstreams") or ():
                     uh, up = u.get("host"), _int(u.get("port")) or 3306
-                    dbm, _ = match_database_endpoint(uh, up, probed, observer_host=rs_match.get("profile_host"))
+                    dbm, _ = match_database_endpoint(uh, up, probed, observer_host=_observer_host(rs_match))
                     node["upstreams"].append({
                         "host": uh,
                         "port": up,
@@ -1020,14 +1066,14 @@ def _cached_probe_kind(profile_id):
 def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None, current=None):
     """Every consenting group member is a candidate except known local/peer endpoints."""
     profiles = members(profiles, current_profile(profiles, skip_profile_id, current))
-    known_eps = []
+    known_eps = set()
     for item in [local_identity] + list(peer_endpoints or ()):
         if not isinstance(item, dict):
             continue
         eh = _host_key(item.get("profile_host") or item.get("host"))
         ep = _int(item.get("profile_port") or item.get("port")) or 3306
         if eh:
-            known_eps.append((eh, ep))
+            known_eps.add((eh, ep))
     candidates = []
     for p in profiles or ():
         if not isinstance(p, dict):
@@ -1037,14 +1083,11 @@ def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_pr
             continue
         ph = _host_key(p.get("host") or "127.0.0.1")
         pp = _profile_port(p, 3306)
-        ssh = _text(p.get("ssh_host"))
-        is_known_db = False
-        for eh, ep in known_eps:
-            if pp != ep:
-                continue
-            if ph == eh or (not ssh and is_loopback(ph) and is_loopback(eh)):
-                is_known_db = True
-                break
+        ssh = bool(_text(p.get("ssh_host")))
+        is_known_db = any(
+            pp == ep and (ph == eh or (not ssh and is_loopback(ph) and is_loopback(eh)))
+            for eh, ep in known_eps
+        )
         if is_known_db:
             continue
         candidates.append(p)
@@ -1135,7 +1178,7 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
     for rsp in probed:
         if rsp.get("kind") != "readyset":
             continue
-        tier_host = rsp.get("profile_host")
+        tier_host = _observer_host(rsp)
         purposes = []
         matched = False
         for u in rsp.get("upstreams") or ():
@@ -1198,7 +1241,7 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
     for pxp in probed:
         if pxp.get("kind") != "proxysql":
             continue
-        tier_host = pxp.get("profile_host")
+        tier_host = _observer_host(pxp)
         links_db = False
         direct_rs = False
         comment_rs = False
@@ -1342,7 +1385,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
                     continue
                 peer_prof, pev = match_database_endpoint(
                     chost, cport, probed, uuid=cuuid,
-                    observer_host=dbm.get("profile_host"),
+                    observer_host=_observer_host(dbm),
                     uuid_field=uuid_field,
                 )
                 if cuuid:
@@ -1373,7 +1416,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             if (ruuid and ("uuid", ruuid) in seen_db_keys) or (rhost and (_host_key(rhost), rport) in seen_db_keys):
                 continue
             rep_prof, rev = match_database_endpoint(rhost, rport, probed, uuid=ruuid,
-                                                    observer_host=dbm.get("profile_host"))
+                                                    observer_host=_observer_host(dbm))
             # Readyset registers on MySQL as a binlog follower (often reporting port 3307 or a readyset hostname);
             # never list Readyset itself as an unverified downstream MySQL replica peer of itself.
             if rep_prof is None and (rport == 3307 or "readyset" in _host_key(rhost)):
@@ -1412,7 +1455,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             by_host = False if by_uuid else any(
                 _database_matches_target(
                     d, ch.get("source_host"), ch.get("source_port"),
-                    observer_host=p.get("profile_host"), target_uuid=suuid,
+                    observer_host=_observer_host(p), target_uuid=suuid,
                 )
                 for d in matched_db_profiles
             )
@@ -1443,6 +1486,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
     cur_host, cur_port = current_endpoint if isinstance(current_endpoint, tuple) else (None, None)
     for pxp in px_probed:
         px_host = pxp.get("profile_host")
+        px_observer = _observer_host(pxp)
         rs_hgs = set()
         mirror_hgs = set()
         all_mirror_hgs = set()
@@ -1464,11 +1508,11 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
         for srv in pxp.get("servers") or ():
             sh, sp = srv.get("hostname"), _int(srv.get("port")) or 3307
             hg = _int(srv.get("hostgroup_id"))
-            if any(_database_matches_target(dbm, sh, sp, observer_host=px_host) for dbm in matched_db_profiles):
+            if any(_database_matches_target(dbm, sh, sp, observer_host=px_observer) for dbm in matched_db_profiles):
                 continue
             if cur_host and cur_port and _endpoint_matches_profile(
                 sh, sp, {"profile_host": cur_host, "profile_port": cur_port, "ssh_host": None},
-                observer_host=px_host,
+                observer_host=px_observer,
             ):
                 matched_srv = srv
                 rs_hgs.add(hg)
@@ -1476,7 +1520,7 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
             # Or ProxySQL points at the same DB tier AND has a Readyset backend in a Readyset HG / comment.
             if ("readyset" in (srv.get("comment") or "").lower() or hg in dest_hgs or hg in mirror_hgs) and matched_db_profiles:
                 same_db = any(
-                    _database_matches_target(dbm, b.get("hostname"), _int(b.get("port")) or 3306, observer_host=px_host)
+                    _database_matches_target(dbm, b.get("hostname"), _int(b.get("port")) or 3306, observer_host=px_observer)
                     for b in (pxp.get("servers") or ())
                     for dbm in matched_db_profiles
                 )

@@ -2913,6 +2913,83 @@ class MapBoundsTests(unittest.TestCase):
         self.assertEqual(result['edges'][0]['to'], 'peer:127.0.0.1:3306')
         self.assertFalse(result['edges'][0]['verified'])
 
+    def test_ssh_ipv4_mapped_loopback_proxy_route_does_not_cross_ssh_hosts(self):
+        for db_host in ('127.0.0.1', '::ffff:127.0.0.1'):
+            for backend in ('::ffff:127.0.0.1', '::ffff:7f00:1', '[::1]'):
+                with self.subTest(db_host=db_host, backend=backend):
+                    profiles = [
+                        {'id': 'proxy', 'host': '127.0.0.1', 'port': 6032, 'ssh_host': 'ssh-a.example'},
+                        {'id': 'db_b', 'host': db_host, 'port': 3306, 'ssh_host': 'ssh-b.example'},
+                    ]
+                    probes = {
+                        'proxy': {'kind': 'proxysql', 'servers': [self.route(backend)]},
+                        'db_b': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': backend, 'port': 3306},
+                    }
+                    result = self.build(profiles, probes)
+                    routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+                    self.assertEqual(len(routes), 1)
+                    self.assertNotEqual(routes[0]['to'], 'db_b')
+                    self.assertTrue(routes[0]['to'].startswith('peer:'))
+                    self.assertIsNone(routes[0]['evidence'])
+                    self.assertFalse(routes[0]['verified'])
+
+    def test_ssh_loopback_proxy_route_does_not_match_database_on_same_ssh_host(self):
+        for backend in ('::ffff:127.0.0.1', '::ffff:7f00:1', '[::1]', '127.0.0.1', 'localhost'):
+            with self.subTest(backend=backend):
+                profiles = [
+                    {'id': 'proxy', 'host': '127.0.0.1', 'port': 6032, 'ssh_host': 'ssh-a.example'},
+                    {'id': 'db_a', 'host': '127.0.0.1', 'port': 3306, 'ssh_host': 'ssh-a.example'},
+                    {'id': 'db_b', 'host': '127.0.0.1', 'port': 3306, 'ssh_host': 'ssh-b.example'},
+                    {'id': 'local', 'host': '127.0.0.1', 'port': 3306},
+                ]
+                probes = {
+                    'proxy': {'kind': 'proxysql', 'servers': [self.route(backend)]},
+                    'db_a': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-a', 'port': 3306},
+                    'db_b': {'kind': 'database', 'server_uuid': UUID_B, 'hostname': 'db-b', 'port': 3306},
+                    'local': {'kind': 'database', 'server_uuid': UUID_C, 'hostname': 'local', 'port': 3306},
+                }
+                result = self.build(profiles, probes)
+                routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+                self.assertEqual(len(routes), 1)
+                self.assertNotIn(routes[0]['to'], ('db_a', 'db_b', 'local'))
+                self.assertTrue(routes[0]['to'].startswith('peer:'))
+                self.assertIsNone(routes[0]['evidence'])
+                self.assertFalse(routes[0]['verified'])
+
+    def test_bastion_proxysql_loopback_backend_does_not_match_bastion_local_database(self):
+        # ProxySQL at 10.0.0.5:6033 via bastion A reports 127.0.0.1:3306 (10.0.0.5's
+        # own machine); a DB saved as 127.0.0.1:3306 via bastion A is bastion A itself.
+        profiles = [
+            {'id': 'proxy', 'host': '10.0.0.5', 'port': 6033, 'ssh_host': 'bastion-a.example'},
+            {'id': 'bastion_db', 'host': '127.0.0.1', 'port': 3306, 'ssh_host': 'bastion-a.example'},
+        ]
+        probes = {
+            'proxy': {'kind': 'proxysql', 'servers': [self.route('127.0.0.1')]},
+            'bastion_db': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'bastion-a', 'port': 3306},
+        }
+        result = self.build(profiles, probes)
+        routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]['to'], 'peer:127.0.0.1:3306')
+        self.assertNotEqual(routes[0]['to'], 'bastion_db')
+        self.assertIsNone(routes[0]['evidence'])
+        self.assertFalse(routes[0]['verified'])
+
+    def test_map_ipv4_mapped_non_loopback_proxy_route_matches_ipv4_member(self):
+        profiles = [
+            {'id': 'proxy', 'host': 'proxy.example', 'port': 6032},
+            {'id': 'db', 'host': '10.0.0.5', 'port': 3306},
+        ]
+        probes = {
+            'proxy': {'kind': 'proxysql', 'servers': [self.route('::ffff:10.0.0.5')]},
+            'db': {'kind': 'database', 'server_uuid': UUID_A, 'hostname': 'db-v4', 'port': 3306},
+        }
+        result = self.build(profiles, probes)
+        routes = [edge for edge in result['edges'] if edge['kind'] == 'proxy_route']
+        self.assertEqual([(r['from'], r['to'], r['evidence'], r['verified']) for r in routes],
+                         [('proxy', 'db', 'endpoint', False)])
+        self.assertFalse(any(node['kind'] == 'peer' for node in result['nodes']))
+
     def test_alias_and_distinct_server_at_same_endpoint_over_ssh_stay_unmatched(self):
         profiles = [{'id': 'proxy', 'host': 'proxy.example', 'port': 6032},
                     {'id': 'canonical', 'host': 'db-a.example', 'port': 3306},

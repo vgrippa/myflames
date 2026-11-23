@@ -36,9 +36,15 @@ fi
 
 # Install both lockfiles on every release, including resume. The settings
 # smokes attach to Electron, so workspace dependencies need no browser download.
-python3 scripts/release_state.py run --label 'installing desktop build dependencies' -- npm ci
-PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace dependencies' -- npm --prefix "$root/apps/workspace" ci
-NODE_ENV=production python3 scripts/release_state.py run --label 'building the workspace' -- npm --prefix "$root/apps/workspace" run build:ui
+# Package lifecycle scripts must not inherit credentials reserved for signing.
+without_signing_credentials() {
+  env -u APPLE_API_KEY -u APPLE_API_KEY_ID -u APPLE_API_ISSUER \
+    -u APPLE_KEYCHAIN_PROFILE -u APPLE_ID -u APPLE_APP_SPECIFIC_PASSWORD \
+    -u APPLE_TEAM_ID -u CSC_LINK -u CSC_KEY_PASSWORD "$@"
+}
+without_signing_credentials python3 scripts/release_state.py run --label 'installing desktop build dependencies' -- npm ci
+without_signing_credentials env PUPPETEER_SKIP_DOWNLOAD=true python3 scripts/release_state.py run --label 'installing workspace dependencies' -- npm --prefix "$root/apps/workspace" ci
+without_signing_credentials env NODE_ENV=production python3 scripts/release_state.py run --label 'building the workspace' -- npm --prefix "$root/apps/workspace" run build:ui
 
 # A valid backend is reusable only for an explicit resume. A normal invocation
 # always provisions and builds before the packager's clean start.

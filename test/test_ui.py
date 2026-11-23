@@ -23,6 +23,16 @@ MARIA = (TEST_DIR / 'mariadb-explain-join.json').read_text(encoding="utf-8")
 class TestBackendReadLimits(unittest.TestCase):
     """HTTP projections preserve the collectors' paging and opt-in limits."""
 
+    def test_gate351_error_text_redacts_federated_slash_password(self):
+        from myflames import ui
+        from myflames.connector import ConnectorError
+        sql = ("CREATE TABLE t (a int) ENGINE=FEDERATED "
+               "CONNECTION='mysql://fed:Zq9/S3cr3t@remote:3306/db/t'")
+        with self.assertRaises(ConnectorError) as caught:
+            ui._reraise_redacted(ConnectorError('ERROR near ' + sql), None)
+        self.assertNotIn('Zq9/S3cr3t', str(caught.exception))
+        self.assertIn('mysql://fed:[redacted]@remote:3306/db/t', str(caught.exception))
+
     def call(self, path, payload, target):
         from myflames import ui
         with mock.patch('myflames.connector.MySQLConnection') as factory, mock.patch(target) as collect:

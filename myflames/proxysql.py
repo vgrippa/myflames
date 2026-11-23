@@ -369,8 +369,9 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 "runtime hostgroups (seen live on ProxySQL 3.0.11)." % MONITOR_WORD[server["monitor"]])
     for rule in report["query_rules"]:
         rule["actions"] = available_actions(report, {"rule_id": rule["rule_id"]})
+    from .replication import reached_host as _reached_host
     from .topology_links import classify_proxysql_topology
-    obs_host = reached_host if reached_host is not None else getattr(conn, "host", None)
+    obs_host = reached_host if reached_host is not None else _reached_host(conn)
     report["topology"] = classify_proxysql_topology(
         report, profiles=profiles, open_profile=open_profile,
         observer_host=obs_host, current_profile_id=current_profile_id)

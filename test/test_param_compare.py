@@ -583,9 +583,9 @@ print(time.monotonic() - began)
                     row = P.compare_many({'a': raw, 'b': raw})[0]
                     self.assertEqual(row['status'], 'missing')
                     self.assertEqual(row['values'], {'a': '[redacted]', 'b': '[redacted]'})
-        # A literal slash ends the URL authority; @ in a path is not a password.
+        # A nonnumeric password prefix before '/' still contains credentials.
         raw = 'mysql://user:part/path@host'
-        self.assertEqual(P._redact_parameter_value(raw), raw)
+        self.assertEqual(P._redact_parameter_value(raw), '[redacted]')
 
     def test_snapshot_redaction_budget_includes_repeated_identified_clauses(self):
         # A normal full inventory plus a worst-case 64 KiB setting. This
@@ -712,8 +712,22 @@ print(time.monotonic() - began)
                 self.assertNotIn('SECRET', json.dumps(rows))
                 self.assertEqual(rows[0]['status'], 'missing')
                 self.assertEqual(rows[0]['values'], {'a': '[redacted]', 'b': '[redacted]'})
-        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path',
-                      'mysql://app:pa/SECRET@db1/shop'):
+        for value in ('gcomm://10.0.0.1,10.0.0.2', 'https://user@host/path'):
+            self.assertEqual(P._redact_parameter_value(value), value)
+
+    def test_gate351_slash_url_values_are_redacted_and_not_compared(self):
+        for value in ('mysql://fed:Zq9/S3cr3t@remote:3306/db/t',
+                      "mysql://fed:pa/quo'te-SECRET@remote/db", 'mysql://:pa/SECRET@h/db'):
+            with self.subTest(value=value):
+                self.assertEqual(P._redact_parameter_value(value), '[redacted]')
+                raw = snapshot([item('custom_setting', value, 'string', value, values=[value])])
+                clean = P.validate_snapshot(raw)
+                self.assertTrue(clean['items'][0]['redacted'])
+                self.assertEqual(clean['items'][0]['value'], '[redacted]')
+                self.assertNotIn('SECRET', json.dumps(clean))
+                self.assertNotIn('S3cr3t', json.dumps(clean))
+                self.assertEqual(P.compare(clean, clean)['items'][0]['status'], 'not_compared')
+        for value in ('mysql://h:3306/db?mail=a@b', 'mysql://u@h:3306/db', 'http://h/a@b'):
             self.assertEqual(P._redact_parameter_value(value), value)
 
     def test_secret_defaults_and_allowed_values_cannot_leak(self):
