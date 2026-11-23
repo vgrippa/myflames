@@ -2692,5 +2692,163 @@ with open(path, 'a+b') as handle:
                 self.assertIsNone(factory.options)
 
 
+class TestReplicationAttachTiers(ReplicationCase):
+    """_attach_tiers forwards ssh_host in local_ident without breaking direct local reads."""
+
+    def setUp(self):
+        from myflames import topology_links
+        topology_links._reset_cache_for_tests()
+
+    def _replica_conn(self, host='127.0.0.1', port=6033, ssh_host=None,
+                      source_host='127.0.0.1', source_port=6033, hostname='shared-box'):
+        from myflames import topology_links as tl
+        data = fixture('replication', 'mysql-8.4-healthy')
+        calls = []
+        for call in data['calls']:
+            if call[0] == TAG + tl._DB_VARS_SQL:
+                calls.append([
+                    call[0],
+                    'hostname\t%s\nport\t%s\nserver_uuid\taaaaaaaa-0000-4000-8000-000000000001\n' % (hostname, port),
+                ])
+            else:
+                calls.append(call)
+        edit = chain(
+            xml_edit('Source_Host', 'mf-repl-g-src', source_host),
+            xml_edit('Source_Port', '3306', str(source_port)),
+        )
+        conn = ReplayConn(calls, edit=edit)
+        conn.host = host
+        conn.port = port
+        conn.ssh_host = ssh_host
+        return conn
+
+    def test_ssh_replication_tier_identity_blocks_local_loopback_and_keeps_local_candidate(self):
+        from myflames import topology_links
+        from test_topology_links import FakeProbeConn
+        current = {
+            'id': 'p-cur', 'name': 'SSH Replica', 'host': '127.0.0.1', 'port': 6033,
+            'ssh_host': 'bastion.example', 'group': 'lab',
+        }
+        local_px = {
+            'id': 'p-px', 'name': 'Local Proxy', 'host': '127.0.0.1', 'port': 6033,
+            'remember_password': True, 'group': 'lab',
+        }
+        local_rs = {
+            'id': 'p-rs', 'name': 'Local Readyset', 'host': '127.0.0.1', 'port': 13307,
+            'remember_password': True, 'group': 'lab',
+        }
+        px_conn = FakeProbeConn('proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': '127.0.0.1', 'port': '6033', 'status': 'ONLINE', 'weight': '100'},
+        ])
+        rs_conn = FakeProbeConn('readyset', upstreams=[
+            {'host': '127.0.0.1', 'port': '6033', 'database': 'shop', 'user': 'rs',
+             'weight': '100', 'purpose': 'cdc', 'active_cdc': 'true', 'health': 'up', 'connections': '1'},
+        ], cdc_server='127.0.0.1:6033')
+
+        # 1. SSH connection identified via conn.ssh_host.
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return px_conn if profile['id'] == 'p-px' else rs_conn
+
+        conn = self._replica_conn(host='127.0.0.1', port=6033, ssh_host='bastion.example',
+                                  source_host='127.0.0.1', source_port=6033, hostname='shared-box')
+        with mock.patch('myflames.topology_links.socket.gethostname', return_value='shared-box.local'):
+            report = rp.read_status(
+                conn, profiles=[current, local_px, local_rs], open_profile=opener,
+                current_profile_id='p-cur', topology_tiers=True,
+            )
+        with self.subTest('conn_ssh_host_blocks_local_loopback_tiers'):
+            self.assertEqual(report['topology_tiers']['proxysql'], [])
+            self.assertEqual(report['topology_tiers']['readyset'], [])
+        with self.subTest('conn_ssh_host_keeps_local_proxy_candidate'):
+            self.assertEqual(opened, ['p-px', 'p-rs'])
+
+        # 2. SSH connection identified only via an "ssh:" replica_host observer value.
+        topology_links._reset_cache_for_tests()
+        opened_obs = []
+
+        def opener_obs(profile):
+            opened_obs.append(profile['id'])
+            return px_conn if profile['id'] == 'p-px' else rs_conn
+
+        conn_obs = self._replica_conn(host='127.0.0.1', port=6033, ssh_host=None,
+                                      source_host='127.0.0.1', source_port=6033, hostname='shared-box')
+        with mock.patch('myflames.topology_links.socket.gethostname', return_value='shared-box.local'):
+            report_obs = rp.read_status(
+                conn_obs, profiles=[current, local_px, local_rs], open_profile=opener_obs,
+                replica_host='ssh:bastion.example', current_profile_id='p-cur', topology_tiers=True,
+            )
+        with self.subTest('ssh_observer_blocks_local_loopback_tiers'):
+            self.assertEqual(report_obs['topology_tiers']['proxysql'], [])
+            self.assertEqual(report_obs['topology_tiers']['readyset'], [])
+            self.assertEqual(opened_obs, ['p-px', 'p-rs'])
+
+        # 3. Verify local_ident carries ssh_host and observer_host directly in both forms.
+        for label, ssh_attr, rep_host in (
+            ('conn_ssh_host', 'bastion.example', None),
+            ('observer_ssh_prefix', None, 'ssh:bastion.example'),
+        ):
+            with self.subTest(direct_ident=label):
+                check_conn = self._replica_conn(host='127.0.0.1', port=6033, ssh_host=ssh_attr)
+                with mock.patch('myflames.topology_links.discover_database_tiers',
+                                return_value={'readyset': [], 'proxysql': []}) as disc:
+                    rp.read_status(check_conn, profiles=[current], replica_host=rep_host,
+                                   current_profile_id='p-cur', topology_tiers=True)
+                self.assertEqual(disc.call_args[0][1].get('ssh_host'), 'bastion.example')
+                self.assertEqual(disc.call_args[1].get('observer_host'), 'ssh:bastion.example')
+
+    def test_direct_local_replication_tier_discovery_still_matches(self):
+        from test_topology_links import FakeProbeConn
+        current = {'id': 'p-cur', 'name': 'Direct Local', 'host': '127.0.0.1', 'port': 6033, 'group': 'lab'}
+        direct_alias = {
+            'id': 'p-alias', 'name': 'Direct Alias', 'host': 'localhost', 'port': 6033,
+            'remember_password': True, 'group': 'lab',
+        }
+        local_px = {
+            'id': 'p-px', 'name': 'Local Proxy', 'host': '127.0.0.1', 'port': 6032,
+            'remember_password': True, 'group': 'lab',
+        }
+        local_rs = {
+            'id': 'p-rs', 'name': 'Local Readyset', 'host': '127.0.0.1', 'port': 13307,
+            'remember_password': True, 'group': 'lab',
+        }
+        ssh_px = {
+            'id': 'p-ssh-px', 'name': 'SSH Proxy', 'host': '127.0.0.1', 'port': 6032,
+            'ssh_host': 'bastion.example', 'remember_password': True, 'group': 'lab',
+        }
+        px_conn = FakeProbeConn('proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': '127.0.0.1', 'port': '6033', 'status': 'ONLINE', 'weight': '100'},
+        ])
+        rs_conn = FakeProbeConn('readyset', upstreams=[
+            {'host': '127.0.0.1', 'port': '6033', 'database': 'shop', 'user': 'rs',
+             'weight': '100', 'purpose': 'cdc', 'active_cdc': 'true', 'health': 'up', 'connections': '1'},
+        ], cdc_server='127.0.0.1:6033')
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return rs_conn if profile['id'] == 'p-rs' else px_conn
+
+        conn = self._replica_conn(host='127.0.0.1', port=6033, ssh_host=None,
+                                  source_host='10.0.0.10', source_port=3306, hostname='shared-box')
+        with mock.patch('myflames.topology_links.socket.gethostname', return_value='shared-box.local'):
+            report = rp.read_status(
+                conn, profiles=[current, direct_alias, local_px, local_rs, ssh_px],
+                open_profile=opener, current_profile_id='p-cur', topology_tiers=True,
+            )
+        self.assertEqual(opened, ['p-px', 'p-rs', 'p-ssh-px'])
+        self.assertEqual([node['profile_id'] for node in report['topology_tiers']['proxysql']], ['p-px'])
+        self.assertEqual([node['profile_id'] for node in report['topology_tiers']['readyset']], ['p-rs'])
+
+        check_conn = self._replica_conn(host='127.0.0.1', port=6033, ssh_host=None)
+        with mock.patch('myflames.topology_links.discover_database_tiers',
+                        return_value={'readyset': [], 'proxysql': []}) as disc:
+            rp.read_status(check_conn, profiles=[current], current_profile_id='p-cur', topology_tiers=True)
+        self.assertIsNone(disc.call_args[0][1]['ssh_host'])
+        self.assertEqual(disc.call_args[1].get('observer_host'), '127.0.0.1')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -580,10 +580,18 @@ def _read_status(conn, source_versions=False, profiles=(), open_profile=None, re
     def _attach_tiers():
         if topology_tiers:
             from .topology_links import discover_database_tiers, _DB_VARS_SQL
+            ssh_host = getattr(conn, "ssh_host", None)
+            ssh_host = ssh_host.strip() if isinstance(ssh_host, str) and ssh_host.strip() else None
+            if ssh_host is None and isinstance(obs_host, str) and obs_host.strip().lower().startswith("ssh:"):
+                ssh_host = obs_host.strip()[4:].strip() or None
+            tier_obs = ("ssh:" + ssh_host) if (
+                ssh_host and not (isinstance(obs_host, str) and obs_host.strip().lower().startswith("ssh:"))
+            ) else obs_host
             local_ident = {
-                "profile_host": obs_host,
+                "profile_host": tier_obs,
                 "profile_port": getattr(conn, "port", None) or 3306,
                 "port": getattr(conn, "port", None) or 3306,
+                "ssh_host": ssh_host,
             }
             # Reuse the existing optional identity query. SHOW ... IN omits
             # variables absent on this engine, including MariaDB's server UUID.
@@ -599,13 +607,13 @@ def _read_status(conn, source_versions=False, profiles=(), open_profile=None, re
                 pass
             peers = [
                 {"host": ch["source"].get("host"), "port": ch["source"].get("port"),
-                 "server_uuid": ch["source"].get("uuid")}
+                 "server_uuid": ch["source"].get("uuid"), "observer_host": tier_obs}
                 for ch in (report.get("channels") or ())
                 if ch.get("source") and ch["source"].get("host")
             ]
             report["topology_tiers"] = discover_database_tiers(
                 conn, local_ident, peer_endpoints=peers, profiles=profiles, open_profile=open_profile,
-                observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=True,
+                observer_host=tier_obs, current_profile_id=current_profile_id, check_footprint=True,
                 performance_schema=server.ps_on)
 
     if not rows:
