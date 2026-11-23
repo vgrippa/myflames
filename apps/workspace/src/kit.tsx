@@ -137,6 +137,26 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
   }, [ref, options.open]);
 }
 
+/** Focus that follows an inspector or detail opening or closing, or a Back
+ * navigation: the page must not jump to the target, so focus moves with
+ * preventScroll, and only a target outside the visible area (the viewport,
+ * intersected with any scroll container holding it) is scrolled into view
+ * with block: "nearest", so a visible target never moves. */
+export function focusWithoutScroll(element: HTMLElement | null | undefined) {
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  let clipTop = 0;
+  let clipBottom = window.innerHeight;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (!/(auto|scroll)/.test(getComputedStyle(node).overflowY)) continue;
+    const box = node.getBoundingClientRect();
+    clipTop = Math.max(clipTop, box.top);
+    clipBottom = Math.min(clipBottom, box.bottom);
+  }
+  const rect = element.getBoundingClientRect();
+  if (rect.bottom < clipTop || rect.top > clipBottom) element.scrollIntoView({ block: "nearest" });
+}
+
 // ---- Status --------------------------------------------------------------
 
 /** Status roles: never color alone, always a dot plus a short word. */
@@ -3239,7 +3259,7 @@ function Inspector({
   const width = shared?.width ?? INSPECTOR_DEFAULT;
   useEffect(() => {
     body.current?.scrollTo?.({ top: 0 });
-    if(detailBackLabel)root.current?.querySelector<HTMLButtonElement>(".detail-back")?.focus();
+    if(detailBackLabel)focusWithoutScroll(root.current?.querySelector<HTMLButtonElement>(".detail-back"));
   }, [content?.key]);
   // Shared scopes let nested row menus and confirmation dialogs own focus
   // without the sheet trapping their keys or closing underneath them.
@@ -3422,7 +3442,7 @@ export function ViewLayout({
       const active = document.activeElement as HTMLElement | null;
       if (active && active !== document.body && split.contains(active)) return;
       const row = main.current?.querySelector<HTMLElement>('.is-selected[data-row-key], [aria-current="true"][data-row-key]');
-      row?.focus({ preventScroll: false });
+      focusWithoutScroll(row);
     });
   }
   return (

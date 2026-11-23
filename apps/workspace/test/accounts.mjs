@@ -538,6 +538,36 @@ try {
   assert.equal(await h.text(".accounts-view .summary-text"), "Accounts read · 2 users · 1 role", "the read result precedes the pluralized counts");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
+
+  // A scrolled list never jumps when the detail opens or closes: focus moves
+  // with preventScroll, so the table keeps its scroll offset, and focus lands
+  // on the detail's Back button, then back on the selected row. The first row
+  // stays half clipped at the top, the case a plain focus() would scroll to.
+  await backToAccounts();
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.id = "scroll-keep-css";
+    style.textContent = ".accounts-view .data-table-wrap { max-height: 84px !important; }";
+    document.head.append(style);
+  });
+  const scroller = ".accounts-view .data-table-wrap";
+  await page.$eval(scroller, el => { el.scrollTop = 14; });
+  const scrolled = await page.$eval(scroller, el => el.scrollTop);
+  assert.ok(scrolled > 0, "the accounts list is scrolled");
+  await page.$$eval(".accounts-view tbody tr[data-row-key]", rows => rows[0].click());
+  await page.waitForSelector(".account-matrix");
+  assert.equal(await page.evaluate(() => !!document.activeElement?.classList?.contains("detail-back")), true,
+    "opening the detail focuses its Back button");
+  await backToAccounts();
+  assert.equal(await page.$eval(scroller, el => el.scrollTop), scrolled, "closing the detail keeps the list scroll");
+  await page.waitForFunction(() => document.activeElement?.matches?.(".accounts-view tr[data-row-key]"), { timeout: 5000 });
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.rowKey),
+    await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey),
+    "closing the detail focuses the selected row");
+  await page.evaluate(() => document.getElementById("scroll-keep-css")?.remove());
+  // The flow below ticks a privilege in the open detail: restore it.
+  await page.$$eval(".accounts-view tbody tr[data-row-key]", rows => rows[0].click());
+  await page.waitForSelector(".account-matrix");
   const selectedKey = await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey);
   const chooseReader = async () => {
     await backToAccounts();

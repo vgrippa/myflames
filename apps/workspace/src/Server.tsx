@@ -68,6 +68,7 @@ import {
   InspectorContext,
   Popover,
   closePopovers,
+  focusWithoutScroll,
   SourceList,
   StatusPill,
   TONE_TEXT,
@@ -823,7 +824,7 @@ export function Server({
   useEffect(() => {
     if (showList && returningToViews.current) {
       returningToViews.current = false;
-      document.getElementById(`server-nav-${kind}`)?.focus();
+      focusWithoutScroll(document.getElementById(`server-nav-${kind}`));
     }
   }, [showList, kind]);
   function back() {

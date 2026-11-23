@@ -18,6 +18,13 @@
 /** Smallest on-screen text a fit may produce (web-design: nothing below 11 px). */
 export const MIN_TEXT_PX = 11;
 
+/** During a wheel gesture the zoom readout is rewritten at most this often.
+ * Each text write re-lays out the chart's toolbar subtree in the workspace
+ * page (containment on the toolbar alone did not stop it), so a per-frame
+ * write cost more than the transform it accompanies; the final value is
+ * always written when the gesture settles. */
+export const READOUT_MS = 120;
+
 export interface ZoomButtons {
   fit: HTMLButtonElement;
   zoomIn: HTMLButtonElement;
@@ -108,16 +115,16 @@ export function createZoom(options: ZoomOptions): ZoomController {
   }
 
   /** The readout's last written percent: rewriting the same text every wheel
-   * frame still dirties layout, so only a real change touches the DOM. The
-   * write stays affordable in the workspace because the readout button's
-   * width is content-independent there (style.css: the reset control keeps
-   * a fixed floor and inline-size containment, so the flex chain and the
-   * chart below it are not re-laid out). */
+   * frame still dirties layout, so only a real change touches the DOM. */
   let lastReadout = "";
+  /** When the readout text was last written; mid-gesture frames skip the
+   * write until READOUT_MS has passed (see the constant). */
+  let lastReadoutAt = 0;
   function paintReadout() {
     const percent = Math.round(width / box.w * 100) + "%";
     if (percent !== lastReadout) {
       lastReadout = percent;
+      lastReadoutAt = win.performance.now();
       buttons.reset.textContent = percent;
       buttons.reset.setAttribute("aria-label", "Zoom " + percent + ". Reset to 100%");
       buttons.reset.setAttribute("title", "Current zoom: " + percent + ". Click to reset to 100%");
@@ -147,7 +154,13 @@ export function createZoom(options: ZoomOptions): ZoomController {
     style.transform =
       "translate(" + width * (gestureBase.x - box.x) / box.w + "px, " +
       height * (gestureBase.y - box.y) / box.h + "px) scale(" + scale + ")";
-    paintReadout();
+    // The readout follows at READOUT_MS intervals, not per frame: its text
+    // write re-lays out the chart subtree in the workspace page (measured
+    // about 25 layouts, 900 ms per gesture, with the write per frame; one
+    // layout without it), which costs more than the transform itself.
+    // commitGesture -> paint writes the exact final percent on settle, so the
+    // readout and its accessible name are correct after every gesture.
+    if (win.performance.now() - lastReadoutAt >= READOUT_MS) paintReadout();
   }
 
   /** The gesture is over: the viewBox shows the final box again and the
