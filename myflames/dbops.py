@@ -3348,7 +3348,17 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     for name in sorted(_SECRET_VARIABLES)) + r")"
 _SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
-    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _STRING + r")", re.I | re.S)
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(" + _STRING + r"|\\['\"])", re.I | re.S)
+# Keep original enclosing-string boundaries, including whether the final
+# quote closed the string or was escaped. The ordinary literal fallback
+# cannot distinguish a doubled quote in dynamic SQL from an empty value.
+_SECRET_LITERAL_CONTEXT = re.compile(
+    r"'(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"
+    r'|"(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)')
+_SECRET_CONCAT_PREFIX = re.compile(
+    r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
+_SECRET_CONCAT_QUOTE = re.compile(
+    r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
 _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
     # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
@@ -3370,6 +3380,11 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
     re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(" +
                _STRING + r")", re.I | re.S),
 )
+# Each keyword is required by its corresponding pattern, independent of SQL
+# context. REPLACE must not require RANDOM: earlier substitutions supply the
+# alternative [redacted] prefix. Unicode inputs always take the full path.
+_SECRET_PATTERN_KEYWORDS = ('identified', 'using', 'password', 'password',
+                            'password', None, 'replace')
 # Four characters suffice for a cheap candidate check, never classification.
 # The SET scanner also joins malformed name fragments. Preserve those cases
 # when a shorter initial token ends at a gap or quote.
@@ -3400,7 +3415,8 @@ _URL_DATABASE_SCHEMES = frozenset(('mysql', 'mariadb', 'mysqlx', 'postgres', 'po
 # Literal and comment tokens protect commas and SET words inside values.
 # Keep name components separate so comments and backticks can surround dots
 # or the assignment operator without hiding a sensitive system variable.
-_SET_VARIABLE_TOKEN = (
+_SET_VARIABLE_NAME_PART = r"(?:[\w$]+|" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
+_SET_VARIABLE_COMPONENT = (
     r"(?P<quoted>" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
     # Reversed MariaDB markers need five digits before a version is present;
     # fewer digits are SQL, possibly the secret value. Keep the established
@@ -3408,9 +3424,15 @@ _SET_VARIABLE_TOKEN = (
     r"|(?P<executable>/\*(?:!|M!)(?:!(?:[0-9]{5})?|-?\d{0,5}))"
     r"|(?P<comment>/\*[\s\S]*?(?:\*/|\Z)|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
     r"|(?P<word>[\w$]+)|@+|:=|[=.,;()]|[^\w\s'\"`@=.,;()/*]+|[^\s]")
+_SET_VARIABLE_TOKEN = (
+    # A variable's name is never a clause keyword, including @@scope.name.
+    r"(?P<variable>@@?" + _SET_VARIABLE_NAME_PART +
+    r"(?:[ \t]*\.[ \t]*" + _SET_VARIABLE_NAME_PART + r")*)|" + _SET_VARIABLE_COMPONENT)
+_SET_VARIABLE_COMPONENT_PART = re.compile(_SET_VARIABLE_COMPONENT, re.I)
 _SET_VARIABLE_PART = re.compile(_SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_EXECUTABLE_PART = re.compile(r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
+_SET_VARIABLE_DELIMITER = re.compile(r"(?P<delimiter>[\s\S]+)")
 _SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
 _SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR', 'AS'))
 # Recognize a complete row alias before revealing it. Unrecognized or
@@ -3482,12 +3504,39 @@ def _URL_SECRET(text, quoted=True):
 
 
 def _secret_variable_tokens(text):
-    """Scan SQL once, recognizing closing markers only in executable bodies."""
+    """Scan redaction tokens, recognizing closers only in executable bodies.
+
+    Only the shared client splitter can establish custom statement endings.
+    Ignore ambiguous/unclosed units so uncertain framing still hides more.
+    Both backslash readings must agree before revealing anything after it.
+    Bound token searches at proven endings even when a word contains '$$'.
+    """
+    boundaries = []
+    if 'delimiter' in text.lower():
+        readings = []
+        for escapes in (True, False):
+            endings = set()
+            for statement in split_statements(text, backslash_escapes=escapes):
+                delimiter, end = statement['delimiter'], statement['next_start']
+                start = end - len(delimiter)
+                if (delimiter != ';' and not statement['issues'] and not statement['unclosed']
+                        and statement['end'] <= start and text.startswith(delimiter, start)):
+                    endings.add((start, end))
+            readings.append(endings)
+        boundaries = sorted(readings[0] & readings[1])
+    boundary = 0
     cursor, executable = 0, False
     while cursor < len(text):
+        limit = boundaries[boundary][0] if boundary < len(boundaries) else len(text)
         pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
-        token = pattern.search(text, cursor)
+        token = pattern.search(text, cursor, limit)
         if token is None:
+            if boundary < len(boundaries):
+                cursor = boundaries[boundary][1]
+                yield _SET_VARIABLE_DELIMITER.match(text, limit, cursor)
+                boundary += 1
+                executable = False
+                continue
             return
         cursor = token.end()
         if token.lastgroup == 'executable':
@@ -3496,7 +3545,7 @@ def _secret_variable_tokens(text):
             # MariaDB also accepts a sixth version digit adjacent to SQL.
             # Keep leftover digits as a token, separate from a following SET
             # or name, so both names and numeric secret values remain visible.
-            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor)
+            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor, limit)
             if tail is not None:
                 cursor = tail.end()
                 yield tail
@@ -3530,8 +3579,20 @@ def _redact_secret_variables(text):
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
     insert, value_can_end = False, False
     version_tail_at = None
-    for token in _secret_variable_tokens(text):
-        value = token.group()
+    tokens, components = _secret_variable_tokens(text), iter(())
+    while True:
+        token = next(components, None)
+        if token is None:
+            token = next(tokens, None)
+        if token is None:
+            break
+        if token.lastgroup == 'variable' and value_start is None and not awaiting_value:
+            # Only a secret RHS needs atomic variables. Elsewhere preserve
+            # the old conservative SET recognition in malformed text, and
+            # the existing LHS normalization of @@ scopes and quoted names.
+            components = _SET_VARIABLE_COMPONENT_PART.finditer(text, token.start(), token.end())
+            token = next(components)
+        value = ';' if token.lastgroup == 'delimiter' else token.group()
         if token.lastgroup == 'executable':
             version_tail_at = token.end() if value[-1:].isdigit() else None
             continue
@@ -3560,9 +3621,9 @@ def _redact_secret_variables(text):
                 insert = False
         # AS ends an INSERT SET value at its row alias. In other statements
         # it can be ambiguous secret text; keep hiding the whole value there.
-        clause_end = (word in _SET_VALUE_ENDS and (word != 'AS' or
-                      insert and value_start is not None and value_end is not None and
-                      value_can_end and _SET_ROW_ALIAS.match(text, token.start()) and
+        clause_end = (depth == 0 and value_start is not None and value_end is not None
+                      and word in _SET_VALUE_ENDS and (word != 'AS' or
+                      insert and value_can_end and _SET_ROW_ALIAS.match(text, token.start()) and
                       _SET_ALIAS_VALUE.fullmatch(text, value_start, value_end)))
         if (value_start is not None and value_end is not None and depth == 0
                 and (restart or clause_end)):
@@ -3577,7 +3638,9 @@ def _redact_secret_variables(text):
             awaiting_value = False
         if value_start is not None and (value not in (',', ';') or value == ',' and depth > 0):
             value_end = token.end()
-            value_can_end = token.lastgroup in ('quoted', 'word') or value == ')'
+            value_can_end = token.lastgroup in ('quoted', 'word', 'variable') or value == ')'
+        if token.lastgroup == 'variable':
+            continue
         if token.lastgroup == 'quoted':
             if name_parts is not None:
                 quote = value[0]
@@ -3626,6 +3689,50 @@ def _redact_literal(match):
     literal = match.group(2)
     quote = literal[0]
     return match.group(1) + quote + REDACTED + quote
+
+
+def _redact_secret_variable_literals(text, pattern):
+    """Extend ambiguous dynamic values through their original enclosing string.
+
+    Ordered scans preserve the diagnostic fallback's entire hidden span.
+    The sole empty-fragment exception is a SET @q = CONCAT('name = ',
+    QUOTE(@value)) statement: its closing quote is not a value opener. An
+    arbitrary diagnostic must still take the conservative fallback.
+    """
+    strings = _SECRET_LITERAL_CONTEXT.finditer(text)
+    enclosing, context_start = next(strings, None), 0
+    parts, kept, cursor = [], 0, 0
+    while cursor < len(text):
+        match = pattern.search(text, cursor)
+        if match is None:
+            break
+        start, end = match.start(2), match.end()
+        while enclosing is not None and enclosing.end() <= match.start():
+            context_start = enclosing.end()
+            enclosing = next(strings, None)
+        quote = text[start] if text[start] in ("'", '"') else ''
+        if enclosing is not None and enclosing.start() < match.start():
+            outer_quote = text[enclosing.start()]
+            closed = enclosing.group(enclosing.lastgroup) == outer_quote
+            limit = enclosing.end() - int(closed)
+            if (start == limit and closed
+                    and _SECRET_CONCAT_PREFIX.search(text, context_start, enclosing.start())
+                    and _SECRET_CONCAT_QUOTE.match(text, enclosing.end())):
+                # Resume at the real close, not the fallback match's end:
+                # that match may have swallowed a later real assignment.
+                cursor = enclosing.end()
+                continue
+            if start < limit:
+                end = max(end, limit)
+                if quote == outer_quote:
+                    quote = ''
+        if not quote and text[start] == '\\' and end == match.end():
+            # An escaped opener without a known enclosing string has no
+            # trustworthy end. Never leave its trailing value visible.
+            end = len(text)
+        parts.extend((text[kept:start], quote, REDACTED, quote))
+        kept = cursor = end
+    return ''.join(parts) + text[kept:] if parts else text
 
 
 def _redact_variable_errors(text):
@@ -3760,22 +3867,36 @@ def redact(text, password=None, quoted=True):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
-    text = _redact_set_password_all(text)
-    text = _redact_variable_errors(text)
+    # These are candidate checks, not SQL parsing. The substitutions insert
+    # only [redacted] and quotes, so they cannot create a missing keyword.
+    # Preserve Python re.I's non-ASCII equivalences by disabling all guards
+    # on non-ASCII input, just as the inventory guard does.
+    folded = text.lower() if text.isascii() else None
+    if folded is None or 'password' in folded and 'set' in folded:
+        text = _redact_set_password_all(text)
+    if folded is None or 'variable' in folded:
+        text = _redact_variable_errors(text)
     inventory = _may_have_secret_variables(text)
     if inventory:
         text = _redact_secret_variables(text)
-    for pattern in _SECRET_PATTERNS:
-        if pattern is _SECRET_VARIABLE_LITERAL and not inventory:
+    for pattern, keyword in zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS):
+        if pattern is _SECRET_VARIABLE_LITERAL:
+            if inventory:
+                text = _redact_secret_variable_literals(text, pattern)
+            continue
+        if folded is not None and keyword is not None and keyword not in folded:
             continue
         text = pattern.sub(_redact_literal, text)
     parts, kept = [], 0
-    for start, end in _URL_SECRET(text, quoted=quoted):
-        parts.extend((text[kept:start], REDACTED))
-        kept = end
+    if folded is None or '://' in folded:
+        for start, end in _URL_SECRET(text, quoted=quoted):
+            parts.extend((text[kept:start], REDACTED))
+            kept = end
     if parts:
         text = "".join(parts) + text[kept:]
-    return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
+    if folded is None or '0x' in folded:
+        text = _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
+    return text
 
 
 def redact_value(value, password=None):
