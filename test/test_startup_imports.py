@@ -91,7 +91,7 @@ class TestRouteTables(unittest.TestCase):
 
 
 class TestWarmupClose(unittest.TestCase):
-    def test_server_close_does_not_wait_for_tool_warmup(self):
+    def test_server_close_stops_the_tool_warmup_quickly(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         env = patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
@@ -107,7 +107,8 @@ class TestWarmupClose(unittest.TestCase):
         def slow_discover(*args, **kwargs):
             seen.update(kwargs)
             started.set()
-            time.sleep(5)
+            # A probe honors the stop signal between candidates.
+            kwargs['stop'].wait(5)
             return {}
 
         with patch.object(client_tools, 'discover', slow_discover):
@@ -121,11 +122,14 @@ class TestWarmupClose(unittest.TestCase):
                 t0 = time.monotonic()
                 server.server_close()
                 elapsed = time.monotonic() - t0
+                alive_after_close = server._tools_warmup.is_alive()
             finally:
                 server.server_close()
-        # The contract is 100 ms; the old join waited up to 2 s. 0.5 s keeps
-        # the test deterministic on a loaded machine while still proving that
-        # close never waits for the warmup.
+        # close() signals the probe to stop and joins it (bounded, 2 s), so the
+        # probe never outlives the server (commit 6abb5f36: a leftover probe's
+        # temporary folder raced test cleanup on Python 3.7), and a probe that
+        # honors the signal lets close return at once.
+        self.assertFalse(alive_after_close)
         self.assertLess(elapsed, 0.5)
 
 

@@ -2936,6 +2936,8 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: their own process groups, and the desktop's backend entry kills this
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
+    #: Bounded wait for the startup client probe warm-up thread when closing.
+    TOOLS_WARMUP_WAIT_SECONDS = 2.0
 
     def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
                  release_reader=None):
@@ -2990,8 +2992,11 @@ class WorkspaceServer(ThreadingHTTPServer):
         # (client_tools.discover_choices), Maintenance (lifecycle.detect_tools)
         # and Cluster (cluster_shell) discover it when they are opened.
         from . import client_tools
+        self._tools_warmup_stop = threading.Event()
         self._tools_warmup = threading.Thread(target=client_tools.discover,
-                                              kwargs={"names": client_tools.QUERY_DISCOVERY_NAMES}, daemon=True)
+                                              kwargs={"names": client_tools.QUERY_DISCOVERY_NAMES,
+                                                      "stop": self._tools_warmup_stop},
+                                              daemon=True)
         self._tools_warmup.start()
 
 
@@ -3098,8 +3103,14 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
-            # The tools warmup is a daemon thread probing only the local query
-            # clients; close never waits for it.
+            # Signal the startup probe warm-up to stop between candidates and
+            # join it boundedly so it never outlives server cleanup.
+            warmup_stop = getattr(self, "_tools_warmup_stop", None)
+            if warmup_stop is not None:
+                warmup_stop.set()
+            warmup = getattr(self, "_tools_warmup", None)
+            if warmup is not None:
+                warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)
             super().server_close()
 
 

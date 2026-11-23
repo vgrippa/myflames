@@ -248,19 +248,24 @@ def _shell_order(shell):
 
 
 def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False,
-             names=None):
+             names=None, stop=None):
     """Return {installations: [...], shells: [...], skipped: [...]}.
 
     At most 32 non-Shell and 4 Shell version-probe requests per call, including
     cached requests. Shell never consumes the query-tool discovery budget.
     mysqlpump is stat-only. Skipped records contain candidate metadata plus
     available=False and error (also reason); presence records are deprecated.
+    Optional ``stop`` (a ``threading.Event``) stops scanning between candidates.
     """
+    if stop is not None and stop.is_set():
+        return dict(installations=[], shells=[], skipped=[], copies=[])
     groups, shells, skipped = {}, [], []
     copies = []
     probes = {'tools': 0, 'shell': 0}
     cache_shell_trust = cache_shell_trust and not refresh
     for candidate in snapshot(path, common_dirs, bundled, cache_shell_trust=cache_shell_trust, names=names):
+        if stop is not None and stop.is_set():
+            break
         if job:
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']

@@ -1032,6 +1032,25 @@ class DiscoveryTests(unittest.TestCase):
                 mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('no probe')):
             self.discover(self.root, job=job)
 
+    def test_stop_event_stops_discover_between_candidates(self):
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        stop = threading.Event()
+        real_run = ct.subprocess.run
+
+        def run_and_stop(*args, **kwargs):
+            stop.set()
+            return real_run(*args, **kwargs)
+
+        with mock.patch.object(ct.subprocess, 'run', side_effect=run_and_stop) as run:
+            report = self.discover(*folders, stop=stop)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(len(report['installations']), 1)
+
+        with mock.patch.object(ct, 'snapshot', side_effect=AssertionError('must not scan when already stopped')), \
+                mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('no probe')):
+            stopped = self.discover(*folders, stop=stop)
+        self.assertEqual(stopped, dict(installations=[], shells=[], skipped=[], copies=[]))
+
 
 class SelectionTests(unittest.TestCase):
     @staticmethod

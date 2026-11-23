@@ -3376,31 +3376,48 @@ class LifecycleTests(unittest.TestCase):
                 ui.cmd_ui(['--no-browser', '--no-restore'])
         self.assertEqual(caught.exception.code, 2)
 
-    def test_workspace_server_close_does_not_wait_for_probe_warmup(self):
+    def test_workspace_server_probe_warmup_never_outlives_the_server(self):
         from myflames import client_tools, ui
-        started, finished = threading.Event(), threading.Event()
+        started, candidates_probed = threading.Event(), []
 
-        def slow_discover(*args, **kwargs):
-            started.set()
-            time.sleep(0.3)
-            finished.set()
+        def fake_discover(*args, **kwargs):
+            stop = kwargs.get('stop')
+            for index in range(3):
+                if stop is not None and stop.is_set():
+                    break
+                candidates_probed.append(index)
+                if index == 0:
+                    started.set()
+                time.sleep(0.3)
 
-        with mock.patch.object(client_tools, 'discover', slow_discover):
+        with mock.patch.object(client_tools, 'discover', fake_discover):
             # A construction that fails (bad tool groups file) starts no probe.
             with self.assertRaises((ValueError, OSError)):
                 ui.WorkspaceServer(store_path=str(self.root / 'bad.sqlite3'),
                                    tool_groups_file=str(self.root / 'missing' / 'g.json'))
             self.assertFalse(started.is_set())
             server = ui.WorkspaceServer(store_path=str(self.root / 'ws.sqlite3'))
-            self.assertTrue(started.wait(5))
+            try:
+                self.assertTrue(server._tools_warmup.daemon)
+                self.assertTrue(started.wait(5))
+                t0 = time.monotonic()
+                server.server_close()
+                elapsed = time.monotonic() - t0
+            finally:
+                server.server_close()
+            self.assertLess(elapsed, 0.5)
+            self.assertFalse(server._tools_warmup.is_alive())
+            self.assertEqual(candidates_probed, [0])
+
+        real_server = ui.WorkspaceServer(store_path=str(self.root / 'real-ws.sqlite3'))
+        try:
             t0 = time.monotonic()
-            server.server_close()
-            elapsed = time.monotonic() - t0
-            # The warmup probe is a daemon thread; close does not wait for it
-            # (the 0.3 s probe would otherwise hold close).
-            self.assertLess(elapsed, 0.25)
-            self.assertTrue(server._tools_warmup.daemon)
-            self.assertFalse(finished.is_set())
+            real_server.server_close()
+            real_elapsed = time.monotonic() - t0
+        finally:
+            real_server.server_close()
+        self.assertLess(real_elapsed, 0.5)
+        self.assertFalse(real_server._tools_warmup.is_alive())
 
     def test_review_tool_connection_failure_category_survives_password_redaction(self):
         # The password overlaps the numeric error; the display is redacted
