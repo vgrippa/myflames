@@ -4383,6 +4383,12 @@ kbd {
   flex: none;
   gap: var(--space-1);
 }
+/* Reserved while the settings load: the badge keeps its layout so its
+   appearance never shifts the toolbar. */
+.connection-pill .safety-tags.is-reserved,
+.connection-pill .connection-pill-type.is-reserved {
+  visibility: hidden;
+}
 .connection-pill .type-tag {
   font-size: var(--text-xs);
   border: 0;

@@ -784,6 +784,12 @@
       "script": null,
       "reason": "Shared isolated-workspace harness (open/load/pause, mocked endpoints, MYFLAMES_BROWSER_ARGS, MYFLAMES_TEST_ASSETS); imported by table-data.mjs, update-check.mjs, news.mjs, sessions-blocking.mjs, table-column-gutter.mjs and about twenty more suites."
     },
+    "perf-harness-cleanup.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 120,
+      "reason": "no npm script; the force path of the harness close() reaps the browser's whole process tree, checked by its process group before and after."
+    },
     "perf-measure.mjs": {
       "kind": "generator",
       "script": "test:perf-measure",

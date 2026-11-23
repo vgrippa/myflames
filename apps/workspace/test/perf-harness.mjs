@@ -14,6 +14,51 @@ import puppeteer from "puppeteer";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
+/** Launch the suite browser as the leader of its own process group (POSIX:
+ * detached), so closeBrowser's force path can signal the whole tree, renderer,
+ * GPU and utility children included. Windows gets the same tree through
+ * taskkill /T, as the suite runner's stopWorker does. */
+export async function launchBrowser(launchArgs = []) {
+  return puppeteer.launch({ headless: "shell", detached: process.platform !== "win32", args: [...browserArgs, ...launchArgs] });
+}
+
+/** Stop the browser's whole tree, not only its parent process: on POSIX the
+ * group the detached browser leads (kill(-pid)); on Windows taskkill /T. The
+ * parent alone is the fallback when the tree signal is refused. */
+export function killBrowserTree(browserProcess) {
+  if (!browserProcess || browserProcess.exitCode !== null || browserProcess.signalCode !== null) return;
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/F", "/T", "/PID", String(browserProcess.pid)], { stdio: "ignore", timeout: 5000 });
+    if ((result.error || result.status !== 0) && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+      browserProcess.kill("SIGKILL");
+    }
+    return;
+  }
+  // ESRCH means the group is already gone; like EPERM (a group of only an
+  // unreaped zombie) it leaves nothing to stop, as run_workspace_suites.mjs.
+  try { process.kill(-browserProcess.pid, "SIGKILL"); }
+  catch (error) { if (!["ESRCH", "EPERM"].includes(error.code)) throw error; }
+  if (browserProcess.exitCode === null && browserProcess.signalCode === null) browserProcess.kill("SIGKILL");
+}
+
+/** Close the browser with a bound, then force-stop its whole tree. The bound
+ * exists because browser.close() waits on the browser answering Browser.close
+ * with no timeout of its own: on a saturated machine the answer never came
+ * (the browser was still alive minutes later; health.mjs stalled here twice
+ * in release runs until the runner's timeout). */
+export async function closeBrowser(browser, { forceMs = 15000 } = {}) {
+  const browserProcess = browser.process();
+  const force = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      killBrowserTree(browserProcess);
+      resolve();
+    }, forceMs);
+    timer.unref();
+  });
+  await Promise.race([browser.close().catch(() => undefined), force]);
+  killBrowserTree(browserProcess);
+}
+
 export const load = async (name) => JSON.parse(await fs.readFile(path.join(fixtures, name), "utf8"));
 export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Extra Chromium launch flags for sandboxes that refuse the defaults
@@ -164,7 +209,7 @@ export async function open(endpoint, name, extra = {}, {
     });
     proc.on("error", reject);
   });
-  const browser = await puppeteer.launch({ headless: "shell", args: [...browserArgs, ...launchArgs] });
+  const browser = await launchBrowser(launchArgs);
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -464,25 +509,7 @@ export async function open(endpoint, name, extra = {}, {
       await pause(150);
     },
     async close() {
-      // browser.close() waits on the browser answering Browser.close, with no
-      // bound: on a saturated machine the answer never came (the browser was
-      // still alive minutes later; health.mjs stalled here twice in release
-      // runs until the runner's timeout). Bound the wait, then stop the
-      // browser process directly.
-      const browserProcess = browser.process();
-      const force = new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-            browserProcess.kill("SIGKILL");
-          }
-          resolve();
-        }, 15000);
-        timer.unref();
-      });
-      await Promise.race([browser.close().catch(() => undefined), force]);
-      if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-        browserProcess.kill("SIGKILL");
-      }
+      await closeBrowser(browser);
       proc.kill();
       await fs.rm(directory, { recursive: true, force: true });
     },

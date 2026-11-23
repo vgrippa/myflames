@@ -1557,14 +1557,24 @@ export function ConnectionPicker({
           <span className="connection-pill-name">{name}</span>
           {groupTag(activeGroup ? activeGroup.name : profile?.group)}
           <span className="picker-target">{active.fields.name ? ` · ${connectionTarget(active.fields)}` : ""}</span>
-          {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
-          {/* Where the pills yield to width, a short type word stays beside the
-              dot (the Popover label names the type in full). */}
-          {hasConnection && safety.known && (
-            <span className={`connection-pill-type is-${safety.type}${safety.read_only ? " is-read-only" : ""}`} aria-hidden="true">
-              {safety.type === "development" ? "Dev" : "Prod"}
-            </span>
-          )}
+          {/* The badges' space is reserved while the settings load (Production
+              is assumed meanwhile, as the window footer says): they appear
+              without moving the pill or the rest of the toolbar. */}
+          {hasConnection && (() => {
+            const badgeType = safety.known ? safety.type : "production";
+            const badgeReadOnly = safety.known && safety.read_only;
+            return <>
+              <span className={`safety-tags${safety.known ? "" : " is-reserved"}`} aria-hidden={safety.known ? undefined : true}>
+                <span className={`type-tag is-${badgeType}`}>{TYPE_LABEL[badgeType]}</span>
+                {badgeReadOnly && <span className="type-tag is-read-only">Read-only</span>}
+              </span>
+              {/* Where the pills yield to width, a short type word stays beside the
+                  dot (the Popover label names the type in full). */}
+              <span className={`connection-pill-type is-${badgeType}${badgeReadOnly ? " is-read-only" : ""}${safety.known ? "" : " is-reserved"}`} aria-hidden="true">
+                {badgeType === "development" ? "Dev" : "Prod"}
+              </span>
+            </>;
+          })()}
           <span className="down-chevron"><Icon name="disclosure" size={12} /></span>
         </>}>
         <div className="picker-panel">

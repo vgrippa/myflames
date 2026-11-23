@@ -976,6 +976,37 @@ test('a transient ps or lsof failure is retried once before failing the suite',
     await stoppedHeartbeat(leaking);
   });
 
+test('a stalled ps or lsof does not delay a concurrent suite timer on the runner event loop',
+  { skip: process.platform === 'win32' }, async (t) => {
+    const fake = await fixture(t, {
+      'pass.mjs': {},
+      'slow.mjs': { timeout: 1, source: `
+import fs from 'node:fs';
+const beats = '../../slow-heartbeats.txt';
+fs.appendFileSync(beats, Date.now() + '\\n');
+setInterval(() => fs.appendFileSync(beats, Date.now() + '\\n'), 25);
+setInterval(() => {}, 1000);
+` },
+    });
+    // A busy system's stalled inspection: 3 s per ps/lsof call. Answered
+    // synchronously (spawnSync), pass.mjs's cleanup alone held the runner's
+    // event loop for those 3 s and delayed slow.mjs's 1 s timeout stopWorker.
+    for (const tool of ['ps', 'lsof']) {
+      await executable(fake, tool, 'await new Promise((resolve) => setTimeout(resolve, 3000));');
+    }
+    const result = await run(fake, ['--jobs', '2'], { deadline: 30_000 });
+    assert.equal(result.code, 1, result.output);
+    assert.match(result.stderr, /slow\.mjs \(TIMED OUT;/);
+    const beats = (await fs.readFile(path.join(fake.root, 'slow-heartbeats.txt'), 'utf8'))
+      .trim().split('\n').map(Number);
+    assert.ok(beats.length > 1, 'the timed-out suite heartbeated');
+    const lifetime = beats[beats.length - 1] - beats[0];
+    // The 1 s timeout plus its 50 ms poll and the stop itself add under
+    // 100 ms; a synchronous stalled ps would push the lifetime past 3 s.
+    assert.ok(lifetime < 1600,
+      `timed out after ${lifetime} ms of heartbeats; the stalled ps must not delay the concurrent timer by more than ~100 ms`);
+  });
+
 test('a long-running suite reports the real 30-second status heartbeat', { timeout: 40_000 }, async (t) => {
   const fake = await fixture(t, { 'waiting.mjs': {
     source: 'await new Promise((resolve) => setTimeout(resolve, 30_150));', timeout: 35,

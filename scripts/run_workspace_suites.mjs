@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /** Run the tracked workspace suites without npm rebuilding between workers. */
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createReadStream, readlinkSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createInterface } from 'node:readline';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KINDS = new Set(['suite', 'live', 'helper', 'generator', 'fixture']);
@@ -279,14 +282,32 @@ export function referencesPrivatePath(text, roots) {
   });
 }
 
-function processTable(pid) {
+/** Run an inspection tool (ps, lsof) without blocking the event loop: a
+ * stalled inspection under load must not stall every other suite's output
+ * handling and timers. Same timeout and buffer as the synchronous spawnSync
+ * it replaces; a nonzero exit is a result, a spawn/timeout/buffer failure is
+ * `failed`. */
+async function inspect(command, args) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args,
+      { encoding: 'utf8', timeout: 15000, maxBuffer: 16 << 20 });
+    return { failed: false, code: 0, stdout, stderr };
+  } catch (error) {
+    if (typeof error.code === 'number') {
+      return { failed: false, code: error.code, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+    }
+    return { failed: true, code: null, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+  }
+}
+
+async function processTable(pid) {
   // -ww prevents long Chrome/Python command lines being cut before the path.
-  // A busy system can stall ps past the spawn timeout; inspect once more before failing.
+  // A busy system can stall ps past the timeout; inspect once more before failing.
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = spawnSync('ps', [...(pid === undefined ? ['-A'] : ['-p', String(pid)]),
-      '-ww', '-o', 'pid=,pgid=,stat=,command='], { encoding: 'utf8', timeout: 15000, maxBuffer: 16 << 20 });
-    if (!result.error && result.status === 1 && !result.stdout.trim() && !result.stderr.trim()) return [];
-    if (result.error || result.status !== 0) {
+    const result = await inspect('ps', [...(pid === undefined ? ['-A'] : ['-p', String(pid)]),
+      '-ww', '-o', 'pid=,pgid=,stat=,command=']);
+    if (!result.failed && result.code === 1 && !result.stdout.trim() && !result.stderr.trim()) return [];
+    if (result.failed || result.code !== 0) {
       if (attempt === 0) continue;
       throw new Error('Cannot inspect suite processes with ps');
     }
@@ -299,7 +320,7 @@ function processTable(pid) {
   throw new Error('unreachable');
 }
 
-function workingDirectories(processes) {
+async function workingDirectories(processes) {
   const directories = new Map();
   if (!processes.length) return directories;
   if (process.platform === 'linux') {
@@ -310,12 +331,11 @@ function workingDirectories(processes) {
   } else if (process.platform === 'darwin') {
     // Darwin ps exposes arguments but not cwd. Its system lsof supplies that
     // field; Linux supplies it through procfs. No environment/secrets are read.
-    // A busy system can stall lsof past the spawn timeout; inspect once more before failing.
-    const inspect = () => spawnSync('lsof', ['-nP', '-a', '-p', processes.map(({ pid }) => pid).join(','),
-      '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 15000, maxBuffer: 16 << 20 });
-    let result = inspect();
-    if (result.error || ![0, 1].includes(result.status)) result = inspect();
-    if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot inspect suite working folders with lsof');
+    // A busy system can stall lsof past the timeout; inspect once more before failing.
+    const args = ['-nP', '-a', '-p', processes.map(({ pid }) => pid).join(','), '-d', 'cwd', '-Fpn'];
+    let result = await inspect('lsof', args);
+    if (result.failed || ![0, 1].includes(result.code)) result = await inspect('lsof', args);
+    if (result.failed || ![0, 1].includes(result.code)) throw new Error('Cannot inspect suite working folders with lsof');
     let pid;
     for (const line of result.stdout.split('\n')) {
       if (/^p\d+$/.test(line)) pid = Number(line.slice(1));
@@ -325,8 +345,8 @@ function workingDirectories(processes) {
   return directories;
 }
 
-function ownedProcesses(processes, roots) {
-  const directories = workingDirectories(processes.filter(({ command }) => !referencesPrivatePath(command, roots)));
+async function ownedProcesses(processes, roots) {
+  const directories = await workingDirectories(processes.filter(({ command }) => !referencesPrivatePath(command, roots)));
   return processes.filter(({ pid, command }) => referencesPrivatePath(command, roots)
     || referencesPrivatePath(directories.get(pid) || '', roots));
 }
@@ -347,8 +367,8 @@ async function cleanupProcesses(child, home, name) {
   }))];
   let warned = false;
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const table = processTable();
-    const owned = ownedProcesses(table, roots);
+    const table = await processTable();
+    const owned = await ownedProcesses(table, roots);
     if (!owned.length) return;
     if (!warned) {
       console.error(`Warning: ${name} left ${owned.length} running process(es) behind; cleaning up (suite bug).`);
@@ -358,16 +378,18 @@ async function cleanupProcesses(child, home, name) {
     // A reused group leader must not turn cleanup into a kill of another job.
     // Keep group cleanup only when *every* current member still proves ownership.
     if (members.length && members.every(({ pid }) => owned.some((entry) => entry.pid === pid))) {
-      const current = processTable().filter(({ group }) => group === child.pid);
-      if (current.length && current.every(({ pid }) => {
-        const fresh = processTable(pid).filter(({ group }) => group === child.pid);
-        return fresh.length === 1 && ownedProcesses(fresh, roots).length === 1;
-      })) signalProcess(-child.pid);
+      const current = (await processTable()).filter(({ group }) => group === child.pid);
+      let currentOwned = current.length > 0;
+      for (const { pid } of current) {
+        const fresh = (await processTable(pid)).filter(({ group }) => group === child.pid);
+        if (fresh.length !== 1 || (await ownedProcesses(fresh, roots)).length !== 1) currentOwned = false;
+      }
+      if (currentOwned) signalProcess(-child.pid);
     }
     for (const { pid } of owned) {
       // Re-read the full command immediately before each signal. A pid from
       // the inventory may have exited and been reused by an unrelated process.
-      if (ownedProcesses(processTable(pid), roots).length) signalProcess(pid);
+      if ((await ownedProcesses(await processTable(pid), roots)).length) signalProcess(pid);
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
