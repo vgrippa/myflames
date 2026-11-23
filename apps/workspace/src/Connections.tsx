@@ -662,18 +662,24 @@ export function Connections({
         password: storeTyped ? password : undefined,
         remember_password: storeTyped || keepExisting,
       });
-      (await import("./readiness")).copyReadiness(formConnection, { ...settings, profile_id: p.id });
+      // The profile is durable now. Retain its id before another await, so
+      // an optional module or list read failure cannot turn a retry into a
+      // second create request.
+      if (formGen.current === gen) {
+        setEditingId(p.id);
+        setDevFor(settings.type === "development" ? developmentFor(settings) : null);
+      }
       await refresh();
+      try {
+        (await import("./readiness")).copyReadiness(formConnection, { ...settings, profile_id: p.id });
+      } catch {
+        setError("The connection was saved, but readiness details could not be loaded. Reload to check readiness.");
+        setErrorMissing("");
+      }
       // The edited connection stays in use, and a first saved connection
       // becomes the one in use, unless the user chose another connection
       // (Use, Use without saving, the picker) or moved to another form meanwhile.
       const sameForm = formGen.current === gen;
-      if (sameForm) {
-        setEditingId(p.id);
-        // The form now shows what was saved (a moved Development connection
-        // saved as Production stays Production on screen).
-        setDevFor(settings.type === "development" ? developmentFor(settings) : null);
-      }
       if (choice() === chosen && ((sameForm && !startedOn) || startedOn === p.id || (!!targetId && startedOn === targetId)))
         onUse(p.id, connectionFields(settings), password || "");
       statusFromTest.current = false;

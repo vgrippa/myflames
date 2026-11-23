@@ -3302,9 +3302,18 @@ class _HeaderDeadlineReader(io.RawIOBase):
 #: server, a store or a job, so the plan wording would mislead there.
 _PLAN_PATHS = ("/api/analyze", "/api/render", "/api/report", "/api/compare")
 
+#: Error reporting only: persistent-session actions have their own write
+#: policy and review handling rather than the generic _WRITE_PATHS dispatch.
+#: They can still send SQL, including KILL QUERY while ending a session.
+_SQL_OUTCOME_PATHS = _WRITE_PATHS + ("/api/table-data/apply", "/api/table-data/cancel", "/api/table-data/close",
+                                     "/api/editor/rollback", "/api/editor/stop", "/api/editor/close",
+                                     "/api/editor/use")
+
 
 def _unexpected_error_message(path):
     """The neutral 500 text for *path*. The response never carries the cause."""
+    if path in _SQL_OUTCOME_PATHS:
+        return "The request could not be completed. Its outcome is unknown. Check the server state before trying again."
     if path in _PLAN_PATHS:
         return "Could not render this plan. Try another view or the CLI."
     if path.startswith("/api/live/"):
@@ -3684,7 +3693,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 payload = json.loads(self._read_body(size).decode("utf-8"))
             except RecursionError:
                 # Decoder limits describe malformed input. A RecursionError
-                # from endpoint code still reaches the logged 400 below.
+                # from endpoint code still reaches the logged response below.
                 raise ValueError("Request JSON is too deeply nested.") from None
             if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
                     and hasattr(self, "connection")):
@@ -3719,6 +3728,13 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": request_error_text(exc)})
             elif isinstance(exc, ConnectorError):
                 self._send(400, {"error": request_error_text(exc, prefix=False)})
+            elif self.path in _SQL_OUTCOME_PATHS:
+                # An internal error can follow a successful SQL send (for
+                # example during read-back). Only explicit refusals above
+                # establish a 4xx outcome; an unexpected write failure is
+                # uncertain, including malformed-field exception types.
+                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                self._send(500, {"error": _unexpected_error_message(self.path)})
             elif isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
                 return
             elif isinstance(exc, (TypeError, KeyError, AttributeError, RecursionError, OverflowError)):

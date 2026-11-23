@@ -340,11 +340,8 @@ def _is_client_timeout(exc):
 
 
 def _evidence_packet_has_safe_delimiter(sql):
-    # TargetEvidenceConnection.run frames its packet with the first
-    # _TARGET_DELIMITERS candidate absent from the packet. Its identity prefix
-    # is fixed text without any candidate, so the joined statements decide.
-    # Account names are server data: together they can contain every
-    # candidate, and no client delimiter can frame such a packet.
+    # Prefer smaller batches with fixed delimiters. TargetEvidenceConnection
+    # can generate a random delimiter if even one account exhausts them.
     return any(candidate not in sql for candidate in dbops._TARGET_DELIMITERS)
 
 
@@ -360,11 +357,6 @@ def _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial):
         left, partial = _capture_chunk_evidence(bounded, chunk[:mid], engine, version, tls, partial)
         right, partial = _capture_chunk_evidence(bounded, chunk[mid:], engine, version, tls, partial)
         return left + right, partial
-    if not _evidence_packet_has_safe_delimiter(sql):
-        # One account still blocks every delimiter. The run() framing would
-        # refuse before sending and poison the scope, so read it per account
-        # instead of failing the member.
-        return _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
     try:
         stdout = bounded.run(sql, extra_flags=['--comments'],
                              timeout=_capture_timeout(bounded, per_query=False))

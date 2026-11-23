@@ -113,13 +113,15 @@ def probe(name, binary, refresh=False, job=None, stop=None):
                 read_cancel.check()
                 argv = [os.path.abspath(binary), '--version']
                 env = lifecycle._clean_env(home, shell=name == 'mysqlsh')
-                if stop is None:
+                cancel = stop if stop is not None else read_cancel.current()
+                if cancel is None:
                     child = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, timeout=8, env=env)
                 else:
                     # The bounded runner polls cancellation and kills/reaps the
-                    # process group before the warm-up's temporary HOME closes.
-                    with read_cancel.scope(stop, guard=read_cancel.current_guard()):
+                    # process group before the probe's temporary HOME closes,
+                    # including an ordinary discovery owned by a live read.
+                    with read_cancel.scope(cancel, guard=read_cancel.current_guard()):
                         child = connector._run_bounded(argv, timeout=8, input=b'', env=env, kill_tree=True)
                     child.stdout += child.stderr
             banner = child.stdout.decode('utf-8', 'replace').strip()[:4096]

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { connectionAction, connectionRow } from './connection-helpers.mjs';
 import { openConnectionPicker } from './chrome-helpers.mjs';
+import { open } from './perf-harness.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-connections-'));
@@ -394,4 +395,60 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
 } finally {
   if (browser) await browser.close();
   if (server.exitCode === null) { server.kill('SIGINT'); await once(server, 'exit'); }
+}
+
+// A saved profile survives failure of the optional readiness chunk. Use a
+// fresh window so its module cache cannot hide the failed asset request.
+const saves = [];
+const h = await open('/api/unused-connection-chunk', 'connections-chunk', {
+  '/api/profiles/save': (body, request) => {
+    saves.push(body);
+    request.continue();
+    return null;
+  },
+});
+try {
+  const { page, state } = h;
+  state.failAssets = /\/readiness-[^/]+\.js$/;
+  await page.setCacheEnabled(false);
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.locator('.connections .view-toolbar button ::-p-text(Add connection)').click();
+  await page.waitForSelector('#connection-form-title');
+  const name = await page.evaluateHandle(() => [...document.querySelectorAll('.connection-panel label.field')]
+    .find(label => label.firstChild?.textContent?.trim() === 'Connection name').querySelector('input'));
+  await name.click({ count: 3 });
+  await name.type('Saved despite readiness failure');
+  const saved = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  assert.equal((await saved).status(), 200);
+  await page.waitForFunction(() => !document.querySelector('.connection-panel [aria-busy="true"]'));
+  assert.equal(await page.$$eval('.connection-row [data-col=name] strong', els =>
+    els.filter(el => el.textContent === 'Saved despite readiness failure').length), 1,
+  'the successful save refreshes the list even when readiness fails');
+  assert.equal(await page.$('#connection-name-problem'), null, 'the form retains the returned profile id');
+  assert.match(await page.$eval('.connection-panel', el => el.textContent), /Connection .* saved without a password/);
+  assert.match(await page.$$eval('.connection-panel .error', els => els.map(el => el.textContent).join('\n')), /saved.*readiness.*could not/i);
+  assert.equal(saves.length, 1, 'one click creates one saved connection');
+  // Saving again updates that same id instead of creating a second profile.
+  const updated = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  const response = await updated;
+  assert.equal(response.status(), 200);
+  const profile = await response.json();
+  await page.waitForFunction(() => !document.querySelector('.connection-panel [aria-busy="true"]'));
+  assert.equal(saves.length, 2);
+  assert.equal(saves[0].id, undefined);
+  assert.equal(saves[1].id, profile.id, 'retry sends an update for the saved profile');
+  assert.equal(await page.$$eval('.connection-row [data-col=name] strong', els =>
+    els.filter(el => el.textContent === 'Saved despite readiness failure').length), 1);
+  await page.$eval('.connections-live', el => el.scrollIntoView({ block: 'center' }));
+  await page.screenshot({ path: path.join(root, 'local/r352-b1/connection-readiness-failed.png') });
+  await page.click('.connections .inspector-close');
+  await page.waitForSelector(connectionRow('Saved despite readiness failure'), { visible: true });
+  assert.equal((await page.$$(connectionRow('Saved despite readiness failure'))).length, 1);
+  await page.screenshot({ path: path.join(root, 'local/r352-b1/connection-saved-once.png') });
+  assert.deepEqual(h.errors, []);
+  console.log('Connections readiness chunk failure: saved once, retry updates the same profile.');
+} finally {
+  await h.close();
 }

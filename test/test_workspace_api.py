@@ -97,6 +97,72 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertNotIn(secret, log.getvalue())
         self.assertNotIn(secret, json.dumps(body))
 
+    def test_write_internal_errors_after_send_are_logged_redacted_500s(self):
+        from myflames import ui
+        secret = 'write-readback-redaction-secret'
+        # Exercise every SQL-sending route, including reviewed actions, kill,
+        # editor, lifecycle and topology changes. A read-back bug cannot prove
+        # that the statement which preceded it was refused.
+        paths = ui._WRITE_PATHS + ('/api/table-data/apply', '/api/table-data/cancel', '/api/table-data/close',
+                                  '/api/editor/rollback', '/api/editor/stop', '/api/editor/close', '/api/editor/use')
+        for path in paths:
+            for error_type in (TypeError, KeyError, AttributeError, RecursionError,
+                               OverflowError, RuntimeError, OSError):
+                with self.subTest(path=path, error_type=error_type.__name__):
+                    sent = []
+                    def execute_then_read_back(*args):
+                        sent.append(path)
+                        raise error_type('read-back failed with ' + secret)
+                    log = io.StringIO()
+                    with patch.object(ui, 'api_response', side_effect=execute_then_read_back), \
+                            patch.object(ui.sys, 'stderr', log):
+                        status, body, unused = self.request(path, {'connection': {'password': secret}})
+                    self.assertEqual(sent, [path])
+                    self.assertEqual(status, 500)
+                    self.assertEqual(body, {'error': ui._unexpected_error_message(path)})
+                    self.assertIn('outcome is unknown', body['error'])
+                    self.assertIn(error_type.__name__, log.getvalue())
+                    self.assertIn('[redacted]', log.getvalue())
+                    self.assertNotIn(secret, log.getvalue())
+                    self.assertNotIn(secret, json.dumps(body))
+
+    def test_reviewed_executor_readback_error_after_transport_send_is_500(self):
+        from myflames import reviewed_writes, ui
+        secret = 'reviewed-readback-redaction-secret'
+        sent = []
+        transport = types.SimpleNamespace(run_write=lambda sql, **kwargs: sent.append(sql))
+        plan = {'action': 'servers_load', 'statements': ['LOAD MYSQL SERVERS TO RUNTIME;'],
+                'expect': {'engine': 'proxysql'}}
+
+        def read_back():
+            self.assertTrue(sent, 'the transport has already sent SQL')
+            raise KeyError(secret)
+
+        def handle(*args):
+            return reviewed_writes.execute(transport, plan, lambda: plan, 'proxysql-action-1.0',
+                                           read_after=read_back)
+
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=handle), patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/live/proxysql/action',
+                {'connection': {'password': secret}})
+        self.assertEqual(sent, plan['statements'])
+        self.assertEqual(status, 500)
+        self.assertIn('outcome is unknown', body['error'])
+        self.assertIn('KeyError', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn(secret, json.dumps(body))
+
+    def test_read_with_malformed_field_keeps_logged_400(self):
+        from myflames import ui
+        log = io.StringIO()
+        with patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/report/export',
+                {'report': {'schema_version': 'report-1.0'}, 'format': 'text'})
+        self.assertEqual(status, 400)
+        self.assertIn('error', body)
+        self.assertIn('KeyError', log.getvalue())
+
     def test_incomplete_report_and_wrong_plan_field_types_are_400s(self):
         from myflames import ui
         cases = (

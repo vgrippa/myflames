@@ -2168,7 +2168,14 @@ class TargetEvidenceConnection(object):
             body += "\n;\n".join(bodies) + "\n"
             delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
             if delimiter is None:
-                raise ValueError("no safe review evidence packet delimiter")
+                # Account names and other server data may contain every fixed
+                # candidate. Keep framing independent of that data, checking
+                # random candidates against the complete packet as well.
+                # Both clients store at most 15 delimiter bytes: mysql-8.4.7
+                # client/mysql.cc:226,4415 and mariadb-11.4.9:281,4597.
+                import secrets
+                while delimiter is None or delimiter in body:
+                    delimiter = "__mf_" + secrets.token_hex(4) + "__"
             flags = list(extra_flags or [])
             if "--skip-reconnect" not in flags:
                 flags.append("--skip-reconnect")

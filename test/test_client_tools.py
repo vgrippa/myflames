@@ -393,6 +393,45 @@ class DiscoveryTests(unittest.TestCase):
             with ct._PROBE_LOCK:
                 ct._PROBE_FLIGHTS.pop(key, None)
 
+    def test_read_cancel_kills_and_reaps_owned_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root / 'slow-read/bin')
+        started = self.root / 'read-probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(2)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        cancel = threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def discover_read():
+            with read_cancel.scope(cancel):
+                return self.discover(binary.parent)
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(discover_read)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the owned version probe never started')
+            finally:
+                t0 = time.monotonic()
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    future.result(timeout=10)
+                elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].returncode, 'cancellation must reap the owned child')
+        self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+        self.assertFalse(ct._PROBE_FLIGHTS)
+
     def test_unrecognized_numeric_banner_is_not_cached(self):
         self.make(self.root, banner='/Applications/myflames 3.1.0/mysql: no version')
         with mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
@@ -1262,9 +1301,9 @@ class DiscoveryTests(unittest.TestCase):
         with ct._PROBE_LOCK:
             ct._PROBE_FLIGHTS[key] = flight
         try:
-            result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n')
+            result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n', b'')
             with read_cancel.scope(threading.Event()), \
-                    mock.patch.object(ct.subprocess, 'run', return_value=result) as run:
+                    mock.patch.object(ct.connector, '_run_bounded', return_value=result) as run:
                 found = ct.probe('mysql', str(binary))
             self.assertTrue(found['available'])
             self.assertEqual(found['version_tuple'], [8, 4, 13])

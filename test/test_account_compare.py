@@ -563,6 +563,7 @@ class _EvidenceFakeConn(object):
         assert sql.startswith('DELIMITER '), sql
         header, rest = sql.split('\n', 1)
         delimiter = header[len('DELIMITER '):]
+        assert len(delimiter.encode('ascii')) <= 15, 'mysql and mariadb clients truncate longer delimiters'
         assert rest.endswith(delimiter + '\n'), sql
         assert rest.count(delimiter) == 1, 'evidence prefix and chunk must travel in one COM_QUERY packet'
         packet_body = rest[:-len(delimiter) - 1]
@@ -1167,6 +1168,41 @@ class BatchedCaptureParityTest(unittest.TestCase):
         self.assertEqual(actual, expected)
         # Fallback still reads partial_revokes only once per capture.
         self.assertEqual(sum('partial_revokes' in s for s in broken_script_conn.calls), 1)
+
+    def test_evidence_single_account_containing_every_delimiter_candidate(self):
+        entry = _healthy_mysql_entries(1)[0]
+        name = '$$//__mf_end_1____mf_end_2__'
+        entry['name'] = name
+        entry['grants'] = ['GRANT SELECT ON *.* TO `%s`@`%%`' % name]
+        entry['create'] = ("CREATE USER `%s`@`%%` IDENTIFIED WITH 'caching_sha2_password' "
+                           "REQUIRE NONE PASSWORD EXPIRE ACCOUNT UNLOCK" % name)
+        state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'ON', [entry])
+        transport = _EvidenceFakeConn(state)
+        evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
+        with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
+            expected = _capture_unchecked(_PerAccountFakeConn(state))
+            actual = A.capture(evidence)
+        evidence.check()
+        self.assertEqual(actual, expected)
+        self.assertEqual([item['name'] for item in actual['items']], [name])
+        packets = [sql for sql, flags, partial in transport.raw_packets if name in sql]
+        self.assertTrue(packets)
+        for packet in packets:
+            header, body = packet.split('\n', 1)
+            delimiter = header[len('DELIMITER '):]
+            self.assertRegex(delimiter, r'^__mf_[0-9a-f]{8}__$')
+            self.assertEqual(body.count(delimiter), 1)
+
+    def test_evidence_random_delimiter_retries_a_collision_in_the_packet(self):
+        state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'ON', [])
+        transport = _EvidenceFakeConn(state)
+        evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
+        data = '$$//__mf_end_1____mf_end_2____mf_aaaaaaaa__'
+        with mock.patch('secrets.token_hex', side_effect=['aaaaaaaa', 'bbbbbbbb']) as token:
+            self.assertEqual(evidence.run("SELECT '%s'" % data), data + '\n')
+        evidence.check()
+        self.assertEqual(token.call_args_list, [mock.call(4), mock.call(4)])
+        self.assertTrue(transport.raw_packets[0][0].startswith('DELIMITER __mf_bbbbbbbb__\n'))
 
     def test_evidence_batch_splits_when_names_cover_every_delimiter_candidate(self):
         # Server data: four valid account names that together contain every
