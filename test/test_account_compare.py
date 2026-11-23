@@ -526,6 +526,22 @@ class _ScriptFakeConn(_PerAccountFakeConn):
         return ''.join(stdout_parts), ('\n'.join(stderr_lines) + '\n' if stderr_lines else '')
 
 
+class _SlowScriptFakeConn(_ScriptFakeConn):
+    """Fake transport whose cost per statement makes oversized batches time out."""
+    def __init__(self, state, seconds_per_statement):
+        super(_SlowScriptFakeConn, self).__init__(state)
+        self.seconds_per_statement = seconds_per_statement
+        self.timeouts = 0
+
+    def run_script(self, sql, extra_flags=None, timeout=None):
+        limit = timeout if timeout is not None else self.query_timeout
+        statements = len([line for line in sql.split('\n') if line.strip()])
+        if statements * self.seconds_per_statement > limit:
+            self.timeouts += 1
+            raise ConnectorError('Query timed out after %ss.' % limit)
+        return super(_SlowScriptFakeConn, self).run_script(sql, extra_flags=extra_flags, timeout=timeout)
+
+
 class _EvidenceFakeConn(object):
     """Fake transport (no run_script) executing real TargetEvidenceConnection DELIMITER packets."""
     host, port, user = '127.0.0.1', 3306, 'admin'
@@ -993,6 +1009,76 @@ class BatchedCaptureParityTest(unittest.TestCase):
         self.assertEqual(actual, expected)
         # Fallback still reads partial_revokes only once per capture.
         self.assertEqual(sum('partial_revokes' in s for s in broken_script_conn.calls), 1)
+
+    def test_evidence_batch_splits_when_names_cover_every_delimiter_candidate(self):
+        # Server data: four valid account names that together contain every
+        # _TARGET_DELIMITERS candidate, so no client delimiter can frame a
+        # single packet for all of them. The batch must split instead of
+        # failing the member.
+        entries = []
+        for index, candidate in enumerate(dbops._TARGET_DELIMITERS):
+            entry = _healthy_mysql_entries(1, prefix='d%d' % index)[0]
+            name = 'u%d%sx' % (index, candidate)
+            assert candidate in name
+            entry['name'] = name
+            entry['grants'] = ['GRANT SELECT ON *.* TO `%s`@`%%`' % name]
+            entry['create'] = ("CREATE USER `%s`@`%%` IDENTIFIED WITH 'caching_sha2_password' "
+                               "REQUIRE NONE PASSWORD EXPIRE ACCOUNT UNLOCK" % name)
+            entries.append(entry)
+        state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'ON', entries)
+        per_account = _PerAccountFakeConn(state)
+        transport = _EvidenceFakeConn(state)
+        evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
+        with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
+            expected = A.capture(per_account)
+            actual = A.capture(evidence)
+        # The member did not fail: the scope is intact and every account read.
+        evidence.check()
+        self.assertEqual(actual, expected)
+        self.assertFalse(any(item.get('error') for item in actual['items']))
+        self.assertEqual({item['name'] for item in actual['items']},
+                         {entry['name'] for entry in entries})
+        # Split halves travel as evidence packets of two accounts each; no
+        # account needed the per-account fallback.
+        batch_packets = [stmts for stmts in transport.packet_statements
+                         if any('SHOW GRANTS FOR ' in s for s in stmts)]
+        self.assertEqual([sum('SHOW GRANTS FOR ' in s for s in stmts) for stmts in batch_packets], [2, 2])
+
+    def test_script_batch_timeout_splits_and_retries_inside_the_deadline(self):
+        # 0.25s per statement: a 50-account batch (~204 statements) exceeds
+        # the 30s call timeout while its halves and 10-account batches fit.
+        entries = _healthy_mysql_entries(50)
+        state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'ON', entries)
+        per_account = _PerAccountFakeConn(state)
+        slow = _SlowScriptFakeConn(state, 0.25)
+        with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
+            expected = A.capture(per_account)
+            actual = A.capture(slow)
+        self.assertEqual(actual, expected)
+        self.assertFalse(any(item.get('error') for item in actual['items']))
+        # The 50-account batch timed out once; the two 25-account halves fit
+        # the same call timeout, so no per-account fallback was needed.
+        self.assertEqual(slow.timeouts, 1)
+        self.assertEqual([sum('SHOW GRANTS FOR ' in line for line in script.split('\n'))
+                          for script in slow.scripts], [25, 25])
+        self.assertEqual(sum('partial_revokes' in call for call in slow.calls), 0)
+
+    def test_script_batch_timeout_falls_back_to_per_account_reads(self):
+        # 5.5s per statement makes even a one-account batch exceed the call
+        # timeout; each statement then gets its own timeout per account.
+        entries = _healthy_mysql_entries(10)
+        state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'ON', entries)
+        per_account = _PerAccountFakeConn(state)
+        slow = _SlowScriptFakeConn(state, 5.5)
+        with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
+            expected = A.capture(per_account)
+            actual = A.capture(slow)
+        self.assertEqual(actual, expected)
+        self.assertFalse(any(item.get('error') for item in actual['items']))
+        self.assertEqual(len(slow.scripts), 0)
+        self.assertGreater(slow.timeouts, 0)
+        # The per-account fallback still reads partial_revokes exactly once.
+        self.assertEqual(sum('partial_revokes' in call for call in slow.calls), 1)
 
     def test_batched_capture_bounds_oversized_show_create_user(self):
         secret = 'SUPERSECRETHASH999999'

@@ -329,6 +329,22 @@ def _build_batch_results(results, valid, slot_lines, errors, engine, version, tl
     return results, partial
 
 
+def _is_client_timeout(exc):
+    # connector.py marks its client-process timeout as
+    # ConnectorError('Query timed out after ...'); the read budget expiry uses
+    # a different message and must keep failing the capture.
+    return str(exc).startswith('Query timed out after ')
+
+
+def _evidence_packet_has_safe_delimiter(sql):
+    # TargetEvidenceConnection.run frames its packet with the first
+    # _TARGET_DELIMITERS candidate absent from the packet. Its identity prefix
+    # is fixed text without any candidate, so the joined statements decide.
+    # Account names are server data: together they can contain every
+    # candidate, and no client delimiter can frame such a packet.
+    return any(candidate not in sql for candidate in dbops._TARGET_DELIMITERS)
+
+
 def _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial):
     bounded.check()
     read_partial = engine == 'mysql' and partial is None
@@ -336,11 +352,16 @@ def _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial):
     if not valid:
         return results, partial
     sql = '\n'.join(lines)
-    if len(sql) > _MAX_EVIDENCE_SQL_CHARS and len(chunk) > 1:
+    if len(chunk) > 1 and (len(sql) > _MAX_EVIDENCE_SQL_CHARS or not _evidence_packet_has_safe_delimiter(sql)):
         mid = len(chunk) // 2
         left, partial = _capture_chunk_evidence(bounded, chunk[:mid], engine, version, tls, partial)
         right, partial = _capture_chunk_evidence(bounded, chunk[mid:], engine, version, tls, partial)
         return left + right, partial
+    if not _evidence_packet_has_safe_delimiter(sql):
+        # One account still blocks every delimiter. The run() framing would
+        # refuse before sending and poison the scope, so read it per account
+        # instead of failing the member.
+        return _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
     try:
         stdout = bounded.run(sql, extra_flags=['--comments'])
     except ConnectorError:
@@ -361,7 +382,22 @@ def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
         return results, partial
     script = '\n'.join(lines) + '\n'
     timeout = _script_timeout(bounded)
-    stdout, stderr = bounded.run_script(script, timeout=timeout)
+    try:
+        stdout, stderr = bounded.run_script(script, timeout=timeout)
+    except ConnectorError as exc:
+        if not _is_client_timeout(exc):
+            raise
+        # One packet runs every statement of the chunk under a single client
+        # timeout, where the per-account path gives each statement its own.
+        # A slow but healthy server fits smaller chunks inside the same call
+        # timeout and the remaining overall deadline; _script_timeout raises
+        # the budget error once that deadline is spent.
+        if len(chunk) <= 1:
+            return _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
+        mid = len(chunk) // 2
+        left, partial = _capture_chunk_script(bounded, chunk[:mid], engine, version, tls, partial)
+        right, partial = _capture_chunk_script(bounded, chunk[mid:], engine, version, tls, partial)
+        return left + right, partial
     errors = _parse_stderr_errors(stderr, spans)
     slot_lines = _parse_framed_output(stdout, markers, slot_keys)
     return _build_batch_results(results, valid, slot_lines, errors, engine, version, tls, partial, read_partial)
