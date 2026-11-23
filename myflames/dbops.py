@@ -3339,12 +3339,56 @@ def sensitive(name):
 
 _STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
 _STRING_NO_BACKSLASH = r"""(?:'(?:''|[^'])*(?:'|\Z)|"(?:""|[^"])*(?:"|\Z))"""
+_STRING_RE = re.compile(_STRING, re.S)
+_STRING_RE_NO_BACKSLASH = re.compile(_STRING_NO_BACKSLASH, re.S)
+_BACKTICK_RE = re.compile(r"`(?:``|[^`])*(?:`|\Z)", re.S)
 # Stored text includes rejected SQL too. Hide introduced/encoded literals
 # even where that credential clause would reject their spelling on a server.
 # Escaped openers belong to dynamic SQL and need its enclosing-string end.
-_SECRET_VALUE = (r"(?:0[xb][\w]+|(?:(?:[XBN]|_[\w]+)\s*)?(?:" + _STRING +
-                 r"|\\['\"])(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?)")
-_SECRET_VALUE_OPENER = re.compile(r"(?:(?:[XBN]|_[\w]+)\s*)?(\\?)(['\"])", re.I)
+_SECRET_VALUE = (
+    r"(?:(?:_[\w]+\s*)?(?:0[xb][\w]+|(?:[XBN]\s*)?(?:" + _STRING +
+    r"|\\['\"]))(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?)")
+_SECRET_VALUE_NO_BACKSLASH = (
+    _SECRET_VALUE.replace(_STRING, _STRING_NO_BACKSLASH).replace(r"|\\['\"]", ''))
+_SECRET_VALUE_RE = re.compile(_SECRET_VALUE, re.I | re.S)
+_SECRET_VALUE_RE_NO_BACKSLASH = re.compile(_SECRET_VALUE_NO_BACKSLASH, re.I | re.S)
+_SECRET_VALUE_INTRODUCER = re.compile(r"(?:_[\w]+|[XBN])\b", re.I)
+_SECRET_VALUE_OPENER = re.compile(r"(?:_[\w]+\s*)?(?:[XBN]\s*)?(\\?)(['\"])", re.I)
+_GAP_WS = re.compile(r"\s*")
+_GAP_EXEC_COMMENT = re.compile(r"/\*(?:!|[mM]!)(?:!(?:[0-9]{5,6})?|-?[0-9]{5,6})?")
+_GAP_NEWLINE = re.compile(r"[\r\n]")
+_KW_IDENTIFIED = re.compile(r"\bIDENTIFIED\b", re.I)
+_KW_BY = re.compile(r"\bBY\b", re.I)
+_KW_AS = re.compile(r"\bAS\b", re.I)
+_KW_WITH_OR_VIA = re.compile(r"\b(?:WITH|VIA)\b", re.I)
+_KW_VIA = re.compile(r"\bVIA\b", re.I)
+_KW_WITH_OR_OR = re.compile(r"\b(?:WITH|OR)\b", re.I)
+_KW_USING = re.compile(r"\bUSING\b", re.I)
+_KW_BY_AS_USING = re.compile(r"\b(?:BY|AS|USING)\b", re.I)
+_KW_USING_OR_AS = re.compile(r"\b(?:USING|AS)\b", re.I)
+_KW_OR = re.compile(r"\bOR\b", re.I)
+_KW_PASSWORD = re.compile(r"\bPASSWORD\b", re.I)
+_KW_OLD_OR_PASSWORD = re.compile(r"\b(?:OLD_)?PASSWORD\b", re.I)
+_KW_SET = re.compile(r"\bSET\b", re.I)
+_KW_PASSWORD_OPT = re.compile(r"(?<![\w'\"`])\w*PASSWORD\b", re.I)
+_KW_REPLACE = re.compile(r"\bREPLACE\b", re.I)
+_KW_RANDOM_OR_REDACTED = re.compile(r"\bRANDOM\b|\[redacted\]['\"]", re.I)
+_KW_HEX_LEAD = re.compile(r"\b(?:AS|BY|USING)\b", re.I)
+_HEX_LITERAL = re.compile(r"0x[0-9A-F]+\b", re.I)
+_PLUGIN_NAME = re.compile(
+    r"(?:`(?:``|[^`])*`"
+    r"|''[\w.-]+''|\"\"[\w.-]+\"\""
+    r"|\\'[\w.-]+\\'|\\\"[\w.-]+\\\""
+    r"|'(?:[^'\\]|''|\\[\s\S])*'|\"(?:[^\"\\]|\"\"|\\[\s\S])*\""
+    r"|\w+)",
+    re.S)
+_PLUGIN_NAME_NO_BACKSLASH = re.compile(
+    r"(?:`(?:``|[^`])*`"
+    r"|''[\w.-]+''|\"\"[\w.-]+\"\""
+    r"|'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\""
+    r"|\w+)",
+    re.S)
+_SET_PW_WALK_CHUNK = re.compile(r"[^=;'\"`\\/#\-]+")
 # A bounded inventory also protects quoted SQL and server echoes, where a
 # whole-statement lexer cannot know which quote belongs to the surrounding text.
 # Recognize each quoted component as well as a quoted dotted inventory name.
@@ -3352,7 +3396,10 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     r"(?:`" + re.escape(name) + r"`|\"" + re.escape(name) + r"\"|" +
     r"\s*\.\s*".join(r"(?:" + re.escape(part) + r"|`" + re.escape(part) +
                       r"`|\"" + re.escape(part) + r"\")" for part in name.split('.')) + r")"
-    for name in sorted(_SECRET_VARIABLES)) + r")"
+    for name in sorted(_SECRET_VARIABLES, key=lambda s: (-len(s), s))) + r")"
+_SECRET_VARIABLE_ANCHOR = re.compile(
+    r"(?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
+    _SECRET_VARIABLE_NAME, re.I | re.S)
 _SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
     _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
@@ -3380,7 +3427,7 @@ _SECRET_LITERAL_CONTEXT = re.compile(
 _SECRET_LITERAL_CONTEXT_NO_BACKSLASH = re.compile(
     _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH + _SECRET_LITERAL_CONTEXT_SKIP)
 _REPLACE_FOLLOW = re.compile(
-    r"(\s+REPLACE\s+)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
+    r"(\s*REPLACE\b\s*)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
 _REPLACE_FOLLOW_NO_BACKSLASH = re.compile(
     _REPLACE_FOLLOW.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
     .replace(r"|\\['\"]", ''), _REPLACE_FOLLOW.flags)
@@ -3389,13 +3436,15 @@ _SECRET_CONCAT_PREFIX = re.compile(
 _SECRET_CONCAT_QUOTE = re.compile(
     r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
 _SECRET_PATTERNS = tuple(re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.I | re.S) for p in (
-    # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
+    # IDENTIFIED BY 'x', IDENTIFIED WITH|VIA plugin BY|AS|USING 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
     # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
-    r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
-    # MariaDB IDENTIFIED VIA plugin USING 'x' or USING PASSWORD('x').
-    r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
+    r"(\bIDENTIFIED\b\s*(?:(?:WITH|VIA)\b\s*(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s*)?(?:BY|AS|USING)\b\s*(?:PASSWORD\b\s*(?:\(\s*)?)?)",
+    # MariaDB VIA plugin USING|AS 'x' or USING|AS PASSWORD('x').
+    r"(\bVIA\b\s*(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s*(?:USING|AS)\b\s*(?:PASSWORD\b\s*\(\s*)?)",
+    # MariaDB WITH|OR plugin USING 'x' or USING PASSWORD('x').
+    r"(\b(?:WITH|OR)\b\s*(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s*USING\b\s*(?:PASSWORD\b\s*\(\s*)?)",
     # PASSWORD('x'), OLD_PASSWORD('x').
-    r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
+    r"(\b(?:OLD_)?PASSWORD\b\s*\(\s*)",
     # Skip quoted account names before recognizing an assignment. Otherwise
     # the b in FOR 'a=b'@'%' could be mistaken for an introduced bit literal.
     # Lock each quoted token to its greedy reading before repeating it.
@@ -3406,11 +3455,11 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.
     r"|`(?:``|[^`])*(?:`|\Z)))(?P=account)|[^=;'\"`]){0,512}=\s*)",
     # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
     # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
-    r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
+    r"((?<![\w'\"`])\w*PASSWORD\b(?:\s*=)?\s*)",
 )) + (
     _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
-    re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(?P<secret>" +
+    re.compile(r"((?:\bRANDOM\b(?:\s+PASSWORD\b)?|\[redacted\]['\"])\s*REPLACE\b\s*)(?P<secret>" +
                _SECRET_VALUE + r")", re.I | re.S),
 )
 # Retain every old diagnostic match, including malformed quoted accounts.
@@ -3427,7 +3476,7 @@ _SECRET_PATTERNS_NO_BACKSLASH = {
 # Each keyword is required by its corresponding pattern, independent of SQL
 # context. REPLACE must not require RANDOM: earlier substitutions supply the
 # alternative [redacted] prefix. Unicode inputs always take the full path.
-_SECRET_PATTERN_KEYWORDS = ('identified', 'using', 'password', 'password',
+_SECRET_PATTERN_KEYWORDS = ('identified', 'via', 'using', 'password', 'password',
                             'password', None, 'replace')
 # Four characters suffice for a cheap candidate check, never classification.
 # The SET scanner also joins malformed name fragments. Preserve those cases
@@ -3509,8 +3558,12 @@ _WRONG_VALUE_FOR_VAR = re.compile(
 # including wrappers and the client's optional SQLSTATE / at-line suffix.
 _CLIENT_ERROR_CODE = re.compile(r"\bERROR\s+(\d{3,5})\b", re.I)
 _ERROR_QUOTED_NAME = re.compile(r"(['\"`])([^'\"`\r\n]{1,64})\1")
-# Apostrophes in prose (can't, Italian puo') are not value openers.
-_ERROR_VALUE_OPEN = re.compile(r"(?<!\w)['\"`]")
+# System variable names in MySQL and MariaDB are ASCII identifiers, with an
+# optional component prefix (component.variable).
+_ERROR_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+# ASCII prose apostrophes (can't, Italian puo') are not value openers, while
+# CJK/non-ASCII word characters before a quote (MariaDB Chinese error 1231) are.
+_ERROR_VALUE_OPEN = re.compile(r"(?<![A-Za-z0-9_])['\"`]")
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3564,27 +3617,40 @@ def _URL_SECRET(text, quoted=True):
             yield colon + 1, last_at
 
 
-def _secret_variable_tokens(text, backslash_escapes=True):
-    """Scan redaction tokens, recognizing closers only in executable bodies.
+def _secret_variable_boundaries(text):
+    """Return (boundaries, framing_uncertain) for custom DELIMITER scripts.
 
     Only the shared client splitter can establish custom statement endings.
-    Ignore ambiguous/unclosed units so uncertain framing still hides more.
-    Both backslash readings must agree before revealing anything after it.
+    Both backslash readings must agree before revealing anything after a custom
+    delimiter. When any statement in the script has issues or unclosed tokens,
+    also mark framing uncertain so callers union the no-delimiter reading too.
+    """
+    if 'delimiter' not in text.lower():
+        return [], False
+    readings = []
+    uncertain = False
+    for escapes in (True, False):
+        endings = set()
+        for statement in split_statements(text, backslash_escapes=escapes):
+            if statement['issues'] or statement['unclosed']:
+                uncertain = True
+                continue
+            delimiter, end = statement['delimiter'], statement['next_start']
+            start = end - len(delimiter)
+            if (delimiter != ';' and statement['end'] <= start
+                    and text.startswith(delimiter, start)):
+                endings.add((start, end))
+        readings.append(endings)
+    return sorted(readings[0] & readings[1]), uncertain
+
+
+def _secret_variable_tokens(text, backslash_escapes=True, boundaries=None):
+    """Scan redaction tokens, recognizing closers only in executable bodies.
+
     Bound token searches at proven endings even when a word contains '$$'.
     """
-    boundaries = []
-    if 'delimiter' in text.lower():
-        readings = []
-        for escapes in (True, False):
-            endings = set()
-            for statement in split_statements(text, backslash_escapes=escapes):
-                delimiter, end = statement['delimiter'], statement['next_start']
-                start = end - len(delimiter)
-                if (delimiter != ';' and not statement['issues'] and not statement['unclosed']
-                        and statement['end'] <= start and text.startswith(delimiter, start)):
-                    endings.add((start, end))
-            readings.append(endings)
-        boundaries = sorted(readings[0] & readings[1])
+    if boundaries is None:
+        boundaries, _ = _secret_variable_boundaries(text)
     boundary = 0
     cursor, executable = 0, False
     while cursor < len(text):
@@ -3631,7 +3697,7 @@ def _may_have_secret_variables(text):
             or _SECRET_VARIABLE_FRAGMENT.search(folded) is not None)
 
 
-def _secret_variable_spans(text, backslash_escapes=True):
+def _secret_variable_spans(text, backslash_escapes=True, boundaries=None):
     """Find SET values from the shared inventory in one quote-mode reading.
 
     Top-level clauses end a value; commas and later SET statements start new
@@ -3643,7 +3709,8 @@ def _secret_variable_spans(text, backslash_escapes=True):
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
     insert, value_can_end = False, False
     version_tail_at = None
-    tokens, components = _secret_variable_tokens(text, backslash_escapes), iter(())
+    tokens = _secret_variable_tokens(text, backslash_escapes, boundaries)
+    components = iter(())
     component_pattern = (_SET_VARIABLE_COMPONENT_PART if backslash_escapes
                          else _SET_VARIABLE_COMPONENT_NO_BACKSLASH)
     while True:
@@ -3779,9 +3846,15 @@ def _redact_secret_variables(text):
     remove an assignment or change the quote boundaries seen by the other.
     Inputs without backslashes need just the original linear scan.
     """
-    spans = _secret_variable_spans(text)
+    boundaries, uncertain = _secret_variable_boundaries(text)
+    streams = [_secret_variable_spans(text, True, boundaries)]
     if '\\' in text:
-        spans = heapq.merge(spans, _secret_variable_spans(text, False))
+        streams.append(_secret_variable_spans(text, False, boundaries))
+    if uncertain and boundaries:
+        streams.append(_secret_variable_spans(text, True, ()))
+        if '\\' in text:
+            streams.append(_secret_variable_spans(text, False, ()))
+    spans = streams[0] if len(streams) == 1 else heapq.merge(*streams)
     return _redact_spans(text, spans)
 
 
@@ -3791,21 +3864,640 @@ def _redact_literal(match):
     return match.group(1) + quote + REDACTED + quote
 
 
+def _is_word_char(ch):
+    return ch.isalnum() or ch == '_'
+
+
+def _has_boundary(text, before, after):
+    return (after > before or not (
+        before > 0 and after < len(text)
+        and _is_word_char(text[before - 1]) and _is_word_char(text[after])))
+
+
+class _GapScanner(object):
+    """Linear-time whitespace and SQL comment gap skipper with interval caches.
+
+    Skips whitespace, ordinary block comments (/* ... */), executable comment
+    openers (/*!50000, /*M!100500, /*!!100500), and line comments (-- / #).
+    Long comment spans (> 256 chars) and chained comment landings are cached so
+    repeated anchor retries never re-scan the same comment in O(N^2).
+    """
+
+    def __init__(self, text):
+        self.text = text
+        self._n = len(text)
+        self._has_comments = ('/*' in text or '--' in text or '#' in text)
+        self._cache = {}
+        self._block_starts = []
+        self._block_spans = []
+        self._line_starts = []
+        self._line_spans = []
+
+    def _find_block_close(self, q):
+        starts, spans = self._block_starts, self._block_spans
+        idx = bisect.bisect_right(starts, q) - 1
+        if idx >= 0 and q <= spans[idx][1]:
+            return spans[idx][1]
+        close = self.text.find('*/', q)
+        if close < 0:
+            close = self._n
+        if close - q > 256:
+            ins = bisect.bisect_left(starts, q)
+            starts.insert(ins, q)
+            spans.insert(ins, (q, close))
+        return close
+
+    def _find_newline(self, pos):
+        starts, spans = self._line_starts, self._line_spans
+        idx = bisect.bisect_right(starts, pos) - 1
+        if idx >= 0 and pos <= spans[idx][1]:
+            return spans[idx][1]
+        m = _GAP_NEWLINE.search(self.text, pos)
+        nl = m.start() if m is not None else self._n
+        if nl - pos > 256:
+            ins = bisect.bisect_left(starts, pos)
+            starts.insert(ins, pos)
+            spans.insert(ins, (pos, nl))
+        return nl
+
+    def skip(self, pos):
+        text, n = self.text, self._n
+        if pos >= n:
+            return pos
+        if not self._has_comments:
+            ch = text[pos]
+            if not ch.isspace():
+                return pos
+            return _GAP_WS.match(text, pos).end()
+        ch = text[pos]
+        if not ch.isspace() and ch not in ('/', '-', '#'):
+            return pos
+        cache = self._cache
+        trail = []
+        while pos < n:
+            cached = cache.get(pos)
+            if cached is not None:
+                pos = cached
+                break
+            ch = text[pos]
+            if ch.isspace():
+                pos = _GAP_WS.match(text, pos).end()
+                if pos >= n:
+                    break
+                cached = cache.get(pos)
+                if cached is not None:
+                    pos = cached
+                    break
+                ch = text[pos]
+            if ch == '/' and pos + 1 < n and text[pos + 1] == '*':
+                trail.append(pos)
+                exec_m = _GAP_EXEC_COMMENT.match(text, pos)
+                if exec_m is not None:
+                    pos = exec_m.end()
+                    continue
+                close = self._find_block_close(pos + 2)
+                if close >= n:
+                    break
+                pos = close + 2
+                continue
+            if ch == '#' or (ch == '-' and text.startswith('--', pos) and (
+                    pos + 2 == n or text[pos + 2].isspace())):
+                trail.append(pos)
+                nl = self._find_newline(pos)
+                pos = nl + 1 if nl < n else n
+                continue
+            break
+        for p in trail:
+            cache[p] = pos
+        return pos
+
+
+def _match_secret_value(text, pos, gap, backslash_escapes):
+    pattern = _SECRET_VALUE_RE if backslash_escapes else _SECRET_VALUE_RE_NO_BACKSLASH
+    m = pattern.match(text, pos)
+    if m is not None:
+        return pos, m.end()
+    # Allow comments between a charset/type introducer (_utf8mb4, X, B, N) and its literal.
+    cur = pos
+    for _ in range(2):
+        intro = _SECRET_VALUE_INTRODUCER.match(text, cur)
+        if intro is None:
+            break
+        nxt = gap.skip(intro.end())
+        if nxt <= intro.end():
+            break
+        m2 = pattern.match(text, nxt)
+        if m2 is not None:
+            return nxt, m2.end()
+        cur = nxt
+    return None
+
+
+def _match_replace_follow(text, pos, gap, backslash_escapes):
+    p = gap.skip(pos)
+    if not _has_boundary(text, pos, p):
+        return None
+    rep = _KW_REPLACE.match(text, p)
+    if rep is None:
+        return None
+    q = gap.skip(rep.end())
+    if not _has_boundary(text, rep.end(), q):
+        return None
+    val = _match_secret_value(text, q, gap, backslash_escapes)
+    if val is None:
+        return None
+    return p, q, val[0], val[1]
+
+
+def _scan_auth_chain(text, kw_end, first_start, allow_by, gap, backslash_escapes, visited):
+    """Walk MariaDB auth_expression (plugin [USING|AS val] (OR plugin [USING|AS val])*)
+    and MySQL IDENTIFIED WITH plugin (BY|AS) val."""
+    plugin_re = _PLUGIN_NAME if backslash_escapes else _PLUGIN_NAME_NO_BACKSLASH
+    n = len(text)
+    out = []
+    anchor_start = first_start
+    prev_end = kw_end
+    first = True
+    while True:
+        p = gap.skip(prev_end)
+        if not _has_boundary(text, prev_end, p):
+            break
+        plug = plugin_re.match(text, p)
+        if plug is None:
+            break
+        after_plug = plug.end()
+        r = gap.skip(after_plug)
+        if not _has_boundary(text, after_plug, r):
+            break
+        auth_kw = (_KW_BY_AS_USING if (first and allow_by) else _KW_USING_OR_AS).match(text, r)
+        next_from = after_plug
+        if auth_kw is not None:
+            s = gap.skip(auth_kw.end())
+            if _has_boundary(text, auth_kw.end(), s):
+                in_paren = False
+                pw_m = _KW_PASSWORD.match(text, s)
+                if pw_m is not None:
+                    after_pw = gap.skip(pw_m.end())
+                    if after_pw < n and text[after_pw] == '(':
+                        in_paren = True
+                        s = gap.skip(after_pw + 1)
+                    elif _has_boundary(text, pw_m.end(), after_pw):
+                        s = after_pw
+                val = _match_secret_value(text, s, gap, backslash_escapes)
+                if val is not None:
+                    lit_start, val_end = val
+                    out.append((anchor_start, s, lit_start, val_end))
+                    next_from = val_end
+                    if in_paren:
+                        close_p = gap.skip(val_end)
+                        if close_p < n and text[close_p] == ')':
+                            next_from = close_p + 1
+                    r = gap.skip(next_from)
+        if r < visited[0]:
+            break
+        or_m = _KW_OR.match(text, r)
+        if or_m is None or not _has_boundary(text, next_from, r):
+            break
+        visited[0] = or_m.end()
+        anchor_start = r
+        prev_end = or_m.end()
+        first = False
+    return out
+
+
+def _skip_doubled_account_quote(text, p):
+    """Skip a doubled-quote account token inside PREPARE (e.g. ''a;b''@''h'')."""
+    q = text[p]
+    qq = q * 2
+    if not text.startswith(qq, p):
+        return None
+    qqqq = q * 4
+    j = p + 2
+    limit = min(len(text), p + 258)
+    while j < limit:
+        if text[j] in ('\r', '\n'):
+            return None
+        if text.startswith(qqqq, j):
+            j += 4
+            continue
+        if text.startswith(qq, j):
+            if j > p + 2 and (j + 2 == len(text) or text[j + 2] in ('@', '=') or text[j + 2].isspace()):
+                return j + 2
+            return None
+        if text[j] == q:
+            return None
+        j += 1
+    return None
+
+
+def _skip_escaped_account_quote(text, p):
+    """Skip a backslash-escaped account token inside PREPARE (e.g. \\'it\\\\\\'s\\'@\\'%\\')."""
+    n = len(text)
+    if p + 1 >= n or text[p + 1] not in ("'", '"'):
+        return None
+    q = text[p + 1]
+    esc_q = '\\\\\\' + q
+    j = p + 2
+    limit = min(n, p + 258)
+    while j < limit:
+        ch = text[j]
+        if ch == '\\':
+            if text.startswith(esc_q, j) or text.startswith('\\\\\\\\', j):
+                j += 4
+                continue
+            if j + 1 < n and text[j + 1] == q:
+                return j + 2
+            j += 2
+            continue
+        if ch == q:
+            return None
+        j += 1
+    return None
+
+
+def _make_clause_finder(pattern, text, gap, backslash_escapes):
+    """Return a find_next(cursor) callable for *pattern* with O(N) comment/gap skipping."""
+    n = len(text)
+    string_re = _STRING_RE if backslash_escapes else _STRING_RE_NO_BACKSLASH
+    plugin_re = _PLUGIN_NAME if backslash_escapes else _PLUGIN_NAME_NO_BACKSLASH
+    pending = []
+    visited = [0]
+
+    if pattern is _SECRET_PATTERNS[0]:
+        def find_next(cursor):
+            while pending and pending[0][0] < cursor:
+                pending.pop(0)
+            if pending:
+                return pending.pop(0)
+            pos = cursor
+            while pos < n:
+                m = _KW_IDENTIFIED.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if not _has_boundary(text, pos, p):
+                    continue
+                kw = _KW_WITH_OR_VIA.match(text, p)
+                if kw is not None:
+                    matches = _scan_auth_chain(
+                        text, kw.end(), m.start(), kw.group().upper() == 'WITH',
+                        gap, backslash_escapes, visited)
+                    if matches:
+                        pending.extend(matches[1:])
+                        return matches[0]
+                    continue
+                kw = _KW_BY.match(text, p) or _KW_AS.match(text, p)
+                if kw is None:
+                    continue
+                q = gap.skip(kw.end())
+                if not _has_boundary(text, kw.end(), q):
+                    continue
+                pw_m = _KW_PASSWORD.match(text, q)
+                if pw_m is not None:
+                    after_pw = gap.skip(pw_m.end())
+                    if _has_boundary(text, pw_m.end(), after_pw):
+                        q = after_pw
+                val = _match_secret_value(text, q, gap, backslash_escapes)
+                if val is not None:
+                    return m.start(), q, val[0], val[1]
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[1]:
+        def find_next(cursor):
+            while pending and pending[0][0] < cursor:
+                pending.pop(0)
+            if pending:
+                return pending.pop(0)
+            pos = cursor
+            while pos < n:
+                m = _KW_VIA.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                matches = _scan_auth_chain(
+                    text, pos, m.start(), False, gap, backslash_escapes, visited)
+                if matches:
+                    pending.extend(matches[1:])
+                    return matches[0]
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[2]:
+        def find_next(cursor):
+            while pending and pending[0][0] < cursor:
+                pending.pop(0)
+            if pending:
+                return pending.pop(0)
+            pos = cursor
+            while pos < n:
+                m = _KW_WITH_OR_OR.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if not _has_boundary(text, pos, p):
+                    continue
+                plug = plugin_re.match(text, p)
+                if plug is None:
+                    continue
+                r = gap.skip(plug.end())
+                if not _has_boundary(text, plug.end(), r):
+                    continue
+                using_m = _KW_USING.match(text, r)
+                if using_m is None:
+                    continue
+                s = gap.skip(using_m.end())
+                if not _has_boundary(text, using_m.end(), s):
+                    continue
+                in_paren = False
+                pw_m = _KW_PASSWORD.match(text, s)
+                if pw_m is not None:
+                    after_pw = gap.skip(pw_m.end())
+                    if after_pw < n and text[after_pw] == '(':
+                        in_paren = True
+                        s = gap.skip(after_pw + 1)
+                val = _match_secret_value(text, s, gap, backslash_escapes)
+                if val is None:
+                    continue
+                lit_start, val_end = val
+                next_from = val_end
+                if in_paren:
+                    close_p = gap.skip(val_end)
+                    if close_p < n and text[close_p] == ')':
+                        next_from = close_p + 1
+                or_at = gap.skip(next_from)
+                if or_at >= visited[0] and _has_boundary(text, next_from, or_at):
+                    or_m = _KW_OR.match(text, or_at)
+                    if or_m is not None:
+                        visited[0] = or_m.end()
+                        pending.extend(_scan_auth_chain(
+                            text, or_m.end(), or_at, False, gap, backslash_escapes, visited))
+                return m.start(), s, lit_start, val_end
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[3]:
+        def find_next(cursor):
+            pos = cursor
+            while pos < n:
+                m = _KW_OLD_OR_PASSWORD.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if p >= n or text[p] != '(':
+                    continue
+                q = gap.skip(p + 1)
+                val = _match_secret_value(text, q, gap, backslash_escapes)
+                if val is not None:
+                    return m.start(), q, val[0], val[1]
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[4]:
+        def _walk_set_pw(start_cur, skip_comments):
+            cur = start_cur
+            budget = 512
+            saw_line_comment = False
+            while budget > 0 and cur < n:
+                if skip_comments:
+                    nxt = gap.skip(cur)
+                    if nxt > cur and ('#' in text[cur:nxt] or '--' in text[cur:nxt]):
+                        saw_line_comment = True
+                else:
+                    nxt = _GAP_WS.match(text, cur).end() if text[cur].isspace() else cur
+                if nxt > cur:
+                    cur = nxt
+                    budget -= 1
+                    if cur >= n:
+                        break
+                ch = text[cur]
+                if ch == '=':
+                    q = gap.skip(cur + 1)
+                    val = _match_secret_value(text, q, gap, backslash_escapes)
+                    if val is not None:
+                        return (q, val[0], val[1]), saw_line_comment
+                    return None, saw_line_comment
+                if ch == ';':
+                    return None, saw_line_comment
+                if ch in ("'", '"'):
+                    dq_end = _skip_doubled_account_quote(text, cur)
+                    if dq_end is not None:
+                        cur = dq_end
+                        budget -= 1
+                        continue
+                    sm = string_re.match(text, cur)
+                    cur = sm.end() if sm is not None else cur + 1
+                    budget -= 1
+                    continue
+                if ch == '`':
+                    bm = _BACKTICK_RE.match(text, cur)
+                    cur = bm.end() if bm is not None else cur + 1
+                    budget -= 1
+                    continue
+                if ch == '\\' and backslash_escapes:
+                    eq_end = _skip_escaped_account_quote(text, cur)
+                    if eq_end is not None:
+                        cur = eq_end
+                        budget -= 1
+                        continue
+                    cur = min(cur + 2, n)
+                    budget -= 1
+                    continue
+                cm = _SET_PW_WALK_CHUNK.match(text, cur, min(n, cur + budget))
+                if cm is not None:
+                    budget -= cm.end() - cur
+                    cur = cm.end()
+                else:
+                    cur += 1
+                    budget -= 1
+            return None, saw_line_comment
+
+        def find_next(cursor):
+            pos = cursor
+            next_eq = text.find('=', pos)
+            if next_eq < 0:
+                return None
+            while pos < n:
+                m = _KW_SET.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                if pos > next_eq:
+                    next_eq = text.find('=', pos)
+                    if next_eq < 0:
+                        return None
+                p = gap.skip(pos)
+                if not _has_boundary(text, pos, p):
+                    continue
+                pw_m = _KW_PASSWORD.match(text, p)
+                if pw_m is None:
+                    continue
+                found, saw_line = _walk_set_pw(pw_m.end(), True)
+                if found is None and saw_line:
+                    # A flattened diagnostic line (-- SET PASSWORD # c = 'x')
+                    # has no newline after # / --; retry without line comments.
+                    found, _ = _walk_set_pw(pw_m.end(), False)
+                if found is not None:
+                    return m.start(), found[0], found[1], found[2]
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[5]:
+        def find_next(cursor):
+            pos = cursor
+            while pos < n:
+                m = _KW_PASSWORD_OPT.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if p < n and text[p] == '=':
+                    p = gap.skip(p + 1)
+                elif not _has_boundary(text, pos, p):
+                    continue
+                val = _match_secret_value(text, p, gap, backslash_escapes)
+                if val is not None:
+                    return m.start(), p, val[0], val[1]
+            return None
+        return find_next
+
+    if pattern is _SECRET_VARIABLE_LITERAL or pattern is _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL):
+        def find_next(cursor):
+            pos = cursor
+            while pos < n:
+                m = _SECRET_VARIABLE_ANCHOR.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if text.startswith(':=', p):
+                    q = gap.skip(p + 2)
+                elif p < n and text[p] == '=':
+                    q = gap.skip(p + 1)
+                else:
+                    continue
+                val = _match_secret_value(text, q, gap, backslash_escapes)
+                if val is not None:
+                    return m.start(), q, val[0], val[1]
+            return None
+        return find_next
+
+    if pattern is _SECRET_PATTERNS[-1]:
+        def find_next(cursor):
+            pos = cursor
+            while pos < n:
+                m = _KW_RANDOM_OR_REDACTED.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                prev_end = pos
+                p = gap.skip(prev_end)
+                if text[m.start()].lower() == 'r':
+                    if not _has_boundary(text, prev_end, p):
+                        continue
+                    pw_m = _KW_PASSWORD.match(text, p)
+                    if pw_m is not None:
+                        prev_end = pw_m.end()
+                        p = gap.skip(prev_end)
+                if not _has_boundary(text, prev_end, p):
+                    continue
+                rep = _KW_REPLACE.match(text, p)
+                if rep is None:
+                    continue
+                q = gap.skip(rep.end())
+                if not _has_boundary(text, rep.end(), q):
+                    continue
+                val = _match_secret_value(text, q, gap, backslash_escapes)
+                if val is not None:
+                    return m.start(), q, val[0], val[1]
+            return None
+        return find_next
+
+    if pattern is _SET_PASSWORD_LEGACY_LITERAL:
+        def find_next(cursor):
+            pos = cursor
+            while pos < n:
+                m = _KW_SET.search(text, pos)
+                if m is None:
+                    return None
+                pos = m.end()
+                p = gap.skip(pos)
+                if not _has_boundary(text, pos, p):
+                    continue
+                pw_m = _KW_PASSWORD.match(text, p)
+                if pw_m is None:
+                    continue
+                end_limit = min(n, pw_m.end() + 512)
+                eq = text.find('=', pw_m.end(), end_limit)
+                if eq < 0:
+                    continue
+                semi = text.find(';', pw_m.end(), eq)
+                if semi >= 0:
+                    continue
+                q = gap.skip(eq + 1)
+                sm = string_re.match(text, q)
+                if sm is not None:
+                    return m.start(), q, q, sm.end()
+            return None
+        return find_next
+
+    active_pattern = pattern if backslash_escapes else _SECRET_PATTERNS_NO_BACKSLASH.get(pattern, pattern)
+
+    def find_next(cursor):
+        m = active_pattern.search(text, cursor)
+        if m is None:
+            return None
+        return m.start(), m.start("secret"), m.start("secret"), m.end()
+
+    return find_next
+
+
+def _redact_hex_secrets(text, gap):
+    """Hide hex hashes after AS / BY / USING [PASSWORD], including comment gaps."""
+    n = len(text)
+    parts, kept, pos = [], 0, 0
+    while pos < n:
+        m = _KW_HEX_LEAD.search(text, pos)
+        if m is None:
+            break
+        pos = m.end()
+        p = gap.skip(pos)
+        if not _has_boundary(text, pos, p):
+            continue
+        prev_end = pos
+        pw_m = _KW_PASSWORD.match(text, p)
+        if pw_m is not None:
+            prev_end = pw_m.end()
+            p = gap.skip(prev_end)
+            if not _has_boundary(text, prev_end, p):
+                continue
+        hx = _HEX_LITERAL.match(text, p)
+        if hx is not None:
+            parts.extend((text[kept:p], "'", REDACTED, "'"))
+            kept = hx.end()
+            pos = hx.end()
+    return ''.join(parts) + text[kept:] if parts else text
+
+
 def _secret_literal_contexts(text, backslash_escapes=True):
-    """Yield enclosing single/double-quoted string matches in order.
+    """Yield (is_extended, match) enclosing single/double-quoted string matches in order.
 
     Block comments and backtick identifiers bound their own quotes so quotes
     inside them never open false strings across later SQL. Line comments bound
     prose apostrophes (``it's``, ``don't``) and closed strings to the line,
-    while allowing an unclosed standalone quote opener at line end to span
-    into a following line so multiline dynamic SQL after a stray ``--`` or
-    ``#`` still keeps its enclosing-string boundary. Executable comments
-    remain transparent.
+    while also yielding an extended reading for an unclosed standalone quote
+    opener at line end without skipping the following line's own real string
+    boundaries. Tracking the furthest extended end per quote keeps scans O(N).
+    Executable comments remain transparent.
     """
     context = (_SECRET_LITERAL_CONTEXT if backslash_escapes
                else _SECRET_LITERAL_CONTEXT_NO_BACKSLASH)
     plain = (_SECRET_LITERAL_CONTEXT_PLAIN if backslash_escapes
              else _SECRET_LITERAL_CONTEXT_PLAIN_NO_BACKSLASH)
+    extended_limit = {"'": 0, '"': 0}
     cursor = 0
     while cursor < len(text):
         token = context.search(text, cursor)
@@ -3813,7 +4505,7 @@ def _secret_literal_contexts(text, backslash_escapes=True):
             return
         group = token.lastgroup
         if group in ('single_end', 'double_end'):
-            yield token
+            yield False, token
             cursor = token.end()
             continue
         start, end = token.start(), token.end()
@@ -3832,18 +4524,21 @@ def _secret_literal_contexts(text, backslash_escapes=True):
                 and text.find('"', body_start, body_end) == -1):
             continue
         for inner in plain.finditer(text, body_start, body_end):
-            if group == 'line' and inner.group(inner.lastgroup) != text[inner.start()]:
+            quote = text[inner.start()]
+            if group == 'line' and inner.group(inner.lastgroup) != quote:
                 prev = text[inner.start() - 1] if inner.start() > body_start else ''
-                if not (text[inner.start()] == "'" and (prev.isalnum() or prev == '_')):
-                    extended = plain.match(text, inner.start())
-                    if extended is not None:
-                        yield extended
-                        cursor = extended.end()
-                        break
-            yield inner
+                if not (quote == "'" and (prev.isalnum() or prev == '_')):
+                    if inner.start() >= extended_limit[quote]:
+                        extended = plain.match(text, inner.start())
+                        if extended is not None:
+                            closed = extended.group(extended.lastgroup) == quote
+                            extended_limit[quote] = extended.end() - int(closed)
+                            yield True, extended
+                            break
+            yield False, inner
 
 
-def _secret_literal_spans(text, pattern, backslash_escapes=True):
+def _secret_literal_spans(text, pattern, backslash_escapes=True, gap=None):
     """Extend ambiguous dynamic values through their original enclosing string.
 
     Ordered scans preserve the diagnostic fallback's entire hidden span.
@@ -3851,25 +4546,55 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
     QUOTE(@value)) statement: its closing quote is not a value opener. An
     arbitrary diagnostic must still take the conservative fallback.
     """
-    follow_pattern = _REPLACE_FOLLOW if backslash_escapes else _REPLACE_FOLLOW_NO_BACKSLASH
+    if gap is None:
+        gap = _GapScanner(text)
+    find_next = _make_clause_finder(pattern, text, gap, backslash_escapes)
+    inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
+                         _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
+    may_replace = (not text.isascii()) or ('replace' in text.lower())
     strings = None
-    enclosing, context_start = None, 0
+    next_ctx = None
+    real_ctx, context_start = None, 0
+    ext_ctx = {"'": None, '"': None}
     cursor, forced = 0, None
     while cursor < len(text):
-        match, forced = forced or pattern.search(text, cursor), None
-        if match is None:
+        found, forced = forced or find_next(cursor), None
+        if found is None:
             break
-        start, end = match.start("secret"), match.end()
+        match_start, start, lit_start, match_end = found
+        end = match_end
         if strings is None:
             strings = _secret_literal_contexts(text, backslash_escapes)
-            enclosing = next(strings, None)
-        while enclosing is not None and enclosing.end() <= match.start():
-            context_start = enclosing.end()
-            enclosing = next(strings, None)
-        opener = _SECRET_VALUE_OPENER.match(text, start, end)
+            next_ctx = next(strings, None)
+        while next_ctx is not None and next_ctx[1].start() < match_start:
+            is_ext, ctx = next_ctx
+            if is_ext:
+                q = text[ctx.start()]
+                if ctx.end() > match_start and (ext_ctx[q] is None or ctx.end() > ext_ctx[q].end()):
+                    ext_ctx[q] = ctx
+            else:
+                if real_ctx is not None and real_ctx.end() <= match_start:
+                    context_start = max(context_start, real_ctx.end())
+                real_ctx = ctx
+            next_ctx = next(strings, None)
+        if real_ctx is not None and real_ctx.end() <= match_start:
+            context_start = max(context_start, real_ctx.end())
+            real_ctx = None
+        for q in ("'", '"'):
+            if ext_ctx[q] is not None and ext_ctx[q].end() <= match_start:
+                ext_ctx[q] = None
+        opener = _SECRET_VALUE_OPENER.match(text, lit_start, end)
         escaped = opener is not None and bool(opener.group(1))
         quote = '' if escaped else opener.group(2) if opener is not None else "'"
-        if enclosing is not None and enclosing.start() < match.start():
+        covering = []
+        if real_ctx is not None and real_ctx.start() < match_start:
+            covering.append((False, real_ctx))
+        for q in ("'", '"'):
+            ctx = ext_ctx[q]
+            if ctx is not None and ctx.start() < match_start:
+                covering.append((True, ctx))
+        if (covering and len(covering) == 1 and not covering[0][0]):
+            enclosing = covering[0][1]
             outer_quote = text[enclosing.start()]
             closed = enclosing.group(enclosing.lastgroup) == outer_quote
             limit = enclosing.end() - int(closed)
@@ -3880,45 +4605,61 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
                 # that match may have swallowed a later real assignment.
                 cursor = enclosing.end()
                 continue
-            inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
-                                 _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
-            # Different inner/outer quotes have an unambiguous value end.
-            # Keep diagnostic punctuation after it, while preserving the
-            # inventory fallback's older conservative enclosing-string rule.
-            if start < limit and (inventory_pattern or escaped or quote == outer_quote):
-                end = max(end, limit)
+            if (not inventory_pattern and closed and start == limit
+                    and quote == outer_quote and start > 0
+                    and _is_word_char(text[start - 1])
+                    and (enclosing.end() == len(text)
+                         or text[enclosing.end()] in (',', ';', ')', ' ', '\t', '\r', '\n'))):
+                # A quoted keyword string like SELECT 'IDENTIFIED BY', col
+                # ends at its own closing quote, not a following secret value.
+                cursor = enclosing.end()
+                continue
+        has_backslash = '\\' in text[start:match_end]
+        for _, enclosing in covering:
+            outer_quote = text[enclosing.start()]
+            closed = enclosing.group(enclosing.lastgroup) == outer_quote
+            limit = enclosing.end() - int(closed)
+            # An inner literal containing a backslash inside a different-quote
+            # enclosing string (e.g. PREPARE s FROM "... 'a\\'x'") can have an
+            # outer-escaped backslash before its closing quote, so extend to
+            # the enclosing string boundary instead of exposing the tail.
+            if start < limit and (inventory_pattern or escaped or quote == outer_quote
+                                  or has_backslash):
+                if limit > end:
+                    end = limit
                 if quote == outer_quote:
                     quote = ''
-        if escaped and end == match.end():
+        if escaped and end == match_end:
             # An escaped opener without a known enclosing string has no
             # trustworthy end. Never leave its trailing value visible.
             end = len(text)
         yield start, end, quote
-        if end < len(text):
+        if may_replace and end < len(text):
             # Capture a following REPLACE literal in the original text before
             # merged spans from another quote reading can cover its keyword,
             # and run it through the same enclosing-string rule on the next step.
-            forced = follow_pattern.match(text, match.end())
-        # Resume at match.end() after an extension so a later assignment whose
+            forced = _match_replace_follow(text, match_end, gap, backslash_escapes)
+        # Resume at match_end after an extension so a later assignment whose
         # name fell inside an extended false enclosing string is still scanned.
-        cursor = match.end() if end > match.end() and end < len(text) else end
+        cursor = match_end if end > match_end and end < len(text) else end
 
 
-def _secret_literal_readings(text, pattern):
+def _secret_literal_readings(text, pattern, gap=None):
     """Credential spans under both modes, before either reading changes text.
 
     This also applies to account/replication patterns, preserving the enclosing
     literal boundary for doubled and backslash-escaped dynamic SQL values.
     """
-    spans = _secret_literal_spans(text, pattern)
+    if gap is None:
+        gap = _GapScanner(text)
+    spans = _secret_literal_spans(text, pattern, True, gap)
     if '\\' in text:
-        spans = heapq.merge(spans, _secret_literal_spans(
-            text, _SECRET_PATTERNS_NO_BACKSLASH[pattern], False))
+        spans = heapq.merge(spans, _secret_literal_spans(text, pattern, False, gap))
     return spans
 
 
-def _redact_secret_variable_literals(text, pattern):
-    return _redact_spans(text, _secret_literal_readings(text, pattern))
+def _redact_secret_variable_literals(text, pattern, gap=None):
+    return _redact_spans(text, _secret_literal_readings(text, pattern, gap))
 
 
 def _redact_variable_errors(text):
@@ -3942,26 +4683,39 @@ def _redact_variable_errors(text):
     text = ''.join(parts) + text[kept:] if parts else text
     # The English fallback also handles diagnostics without an error code.
     # Numbered messages cannot depend on lc_messages or the word "Variable".
-    # Values are printed verbatim, not SQL-escaped: hide from the first value
-    # opener through the last quote, including embedded quotes and newlines.
-    # Stop at the next client diagnostic, regardless of its error number.
+    # In every MySQL and MariaDB translation of ER_WRONG_VALUE_FOR_VAR (1231),
+    # the single-quoted system variable name comes first and its rejected value
+    # opens on the same line. Leave ordinary variable diagnostics intact; hide
+    # whenever the variable is sensitive or not recognizable.
     messages = list(_CLIENT_ERROR_CODE.finditer(text))
     parts, kept = [], 0
     for index, message in enumerate(messages):
         if message.group(1) != '1231':
             continue
         limit = messages[index + 1].start() if index + 1 < len(messages) else len(text)
-        name = _ERROR_QUOTED_NAME.search(text, message.end(), limit)
-        known_name = name is not None and sensitive(name.group(2))
-        start = name.end() if known_name else message.end()
-        opener = _ERROR_VALUE_OPEN.search(text, start, limit)
-        if opener is None:
+        first_open = _ERROR_VALUE_OPEN.search(text, message.end(), limit)
+        if first_open is None:
             continue
+        name = _ERROR_QUOTED_NAME.match(text, first_open.start(), limit)
+        known_secret = name is not None and sensitive(name.group(2))
+        if known_secret:
+            opener = _ERROR_VALUE_OPEN.search(text, name.end(), limit)
+            if opener is None:
+                continue
+        else:
+            if (name is not None and name.group(1) == "'"
+                    and _ERROR_VARIABLE_NAME.fullmatch(name.group(2)) is not None):
+                value_open = _ERROR_VALUE_OPEN.search(text, name.end(), limit)
+                if (value_open is not None
+                        and '\n' not in text[name.end():value_open.start()]
+                        and '\r' not in text[name.end():value_open.start()]):
+                    continue
+            opener = first_open
         end = max(text.rfind(quote, opener.end(), limit) for quote in ("'", '"', '`'))
         # An unknown name gives no trusted message structure. An odd quote
         # count can be a raw embedded apostrophe or an unfinished final value;
         # either way a last-quote guess could expose its trailing bytes.
-        if (not known_name or end < 0 or
+        if (not known_secret or end < 0 or
                 any(text.count(quote, opener.start(), limit) % 2 for quote in ("'", '"', '`'))):
             end = limit
         parts.extend((text[kept:opener.end()], REDACTED))
@@ -3969,8 +4723,15 @@ def _redact_variable_errors(text):
     return ''.join(parts) + text[kept:] if parts else text
 
 
+def _set_password_value_span(text, eq_end, gap=None):
+    pos = gap.skip(eq_end) if gap is not None else _GAP_WS.match(text, eq_end).end()
+    m = _STRING_RE.match(text, pos)
+    return (pos, m.end()) if m is not None else None
+
+
 def _redact_set_password(text):
     """Visit tokens once, redacting after the first bare assignment operator."""
+    gap = _GapScanner(text)
     parts, kept, pending = [], 0, False
     for token in _SET_PASSWORD_PART.finditer(text):
         if token.lastgroup == 'command':
@@ -3979,14 +4740,16 @@ def _redact_set_password(text):
             pending = False
         elif pending and token.group() == '=':
             pending = False
-            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
-            if literal is not None:
-                parts.extend((text[kept:token.end()], _redact_literal(literal)))
-                kept = literal.end()
+            span = _set_password_value_span(text, token.end(), gap)
+            if span is not None:
+                start, end = span
+                quote = text[start]
+                parts.extend((text[kept:start], quote, REDACTED, quote))
+                kept = end
     return ''.join(parts) + text[kept:] if parts else text
 
 
-def _set_password_lexical_spans(text):
+def _set_password_lexical_spans(text, gap=None):
     """Keep the lexical helper's decisions as spans in the original text."""
     pending = False
     for token in _SET_PASSWORD_PART.finditer(text):
@@ -3996,12 +4759,12 @@ def _set_password_lexical_spans(text):
             pending = False
         elif pending and token.group() == '=':
             pending = False
-            literal = _SET_PASSWORD_LITERAL.match(text, token.end())
-            if literal is not None:
-                yield literal.start(2), literal.end(2)
+            span = _set_password_value_span(text, token.end(), gap)
+            if span is not None:
+                yield span
 
 
-def _set_password_separator_spans(text):
+def _set_password_separator_spans(text, gap=None):
     """Cover diagnostic and executable-comment assignments without a length cap."""
     pending, kept = False, 0
     for token in _SET_PASSWORD_SEPARATOR.finditer(text):
@@ -4012,16 +4775,16 @@ def _set_password_separator_spans(text):
             pending = False
         elif value == '=':
             if pending:
-                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
-                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
-                    yield literal.start(2), literal.end(2)
-                    kept = literal.end()
+                span = _set_password_value_span(text, token.end(), gap)
+                if span is not None and text[span[0]:span[1]] not in ("'", '"', "''", '""'):
+                    yield span
+                    kept = span[1]
             pending = False
         else:
             pending = True
 
 
-def _set_password_keyword_spans(text):
+def _set_password_keyword_spans(text, gap=None):
     """Lex from a keyword even when preceding prose has unmatched quotes."""
     cursor = 0
     while cursor < len(text):
@@ -4034,10 +4797,10 @@ def _set_password_keyword_spans(text):
                 continue
             cursor = token.end()
             if token.group() == '=':
-                literal = _SET_PASSWORD_LITERAL.match(text, token.end())
-                if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
-                    yield literal.start(2), literal.end(2)
-                    cursor = literal.end()
+                span = _set_password_value_span(text, token.end(), gap)
+                if span is not None and text[span[0]:span[1]] not in ("'", '"', "''", '""'):
+                    yield span
+                    cursor = span[1]
             break
 
 
@@ -4049,9 +4812,10 @@ def _redact_set_password_all(text):
     Each scan yields ordered spans, so merging three streams stays linear;
     overlapping literals consume their whole union without exposing a tail.
     """
-    spans = heapq.merge(_set_password_lexical_spans(text),
-                        _set_password_separator_spans(text),
-                        _set_password_keyword_spans(text))
+    gap = _GapScanner(text)
+    spans = heapq.merge(_set_password_lexical_spans(text, gap),
+                        _set_password_separator_spans(text, gap),
+                        _set_password_keyword_spans(text, gap))
     parts, kept = [], 0
     for start, end in spans:
         if start < kept:
@@ -4088,27 +4852,36 @@ def redact(text, password=None, quoted=True):
     if folded is None or 'variable' in folded or '1231' in folded:
         text = _redact_variable_errors(text)
     inventory = _may_have_secret_variables(text)
+    gap = None
     scans = []
     if '=' in text and (folded is None or 'password' in folded and 'set' in folded):
-        spans = heapq.merge(_set_password_lexical_spans(text),
-                            _set_password_separator_spans(text),
-                            _set_password_keyword_spans(text))
+        gap = gap or _GapScanner(text)
+        spans = heapq.merge(_set_password_lexical_spans(text, gap),
+                            _set_password_separator_spans(text, gap),
+                            _set_password_keyword_spans(text, gap))
         scans.append((start, end, text[start]) for start, end in spans)
-        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL))
+        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL, gap))
     if inventory:
-        scans.append(_secret_variable_spans(text))
+        boundaries, uncertain = _secret_variable_boundaries(text)
+        scans.append(_secret_variable_spans(text, True, boundaries))
         if '\\' in text:
-            scans.append(_secret_variable_spans(text, False))
+            scans.append(_secret_variable_spans(text, False, boundaries))
+        if uncertain and boundaries:
+            scans.append(_secret_variable_spans(text, True, ()))
+            if '\\' in text:
+                scans.append(_secret_variable_spans(text, False, ()))
     for pattern, keyword in zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS):
         if pattern is _SECRET_VARIABLE_LITERAL:
             if inventory:
-                scans.append(_secret_literal_readings(text, pattern))
+                gap = gap or _GapScanner(text)
+                scans.append(_secret_literal_readings(text, pattern, gap))
             continue
         if folded is not None and keyword is not None and keyword not in folded:
             continue
-        if pattern is _SECRET_PATTERNS[3] and '=' not in text:
+        if pattern is _SECRET_PATTERNS[4] and ('=' not in text or (folded is not None and 'set' not in folded)):
             continue
-        scans.append(_secret_literal_readings(text, pattern))
+        gap = gap or _GapScanner(text)
+        scans.append(_secret_literal_readings(text, pattern, gap))
     # Every scan uses the original quote boundaries, so one replacement
     # cannot hide a later pattern or shorten its other SQL-mode reading.
     if scans:
@@ -4124,7 +4897,7 @@ def redact(text, password=None, quoted=True):
     if parts:
         text = "".join(parts) + text[kept:]
     if folded is None or '0x' in folded:
-        text = _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
+        text = _redact_hex_secrets(text, _GapScanner(text))
     return text
 
 
