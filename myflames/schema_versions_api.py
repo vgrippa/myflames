@@ -28,13 +28,10 @@ IMPORT_PATH = '/api/schema-versions/import'
 SYNC_PATH = '/api/schema-versions/sync'
 LINT_PATH = '/api/schema-versions/lint'
 EXPORT_SQL_PATH = '/api/schema-versions/export-sql'
-PATHS = (LIST_PATH, '/api/schema-versions/get', SAVE_PATH, '/api/schema-versions/update',
-         '/api/schema-versions/delete', '/api/schema-versions/export', IMPORT_PATH, COMPARE_PATH, SYNC_PATH, LINT_PATH,
-         EXPORT_SQL_PATH)
+from .ui_routes import SCHEMA_VERSION_LARGE_PATHS as LARGE_PATHS, SCHEMA_VERSION_PATHS as PATHS
 #: These open connections to servers (read-only).
 LIVE_PATHS = (SAVE_PATH, COMPARE_PATH, LINT_PATH, EXPORT_SQL_PATH)
 #: A snapshot can be larger than the workspace's usual request limit.
-LARGE_PATHS = (IMPORT_PATH,)
 
 
 # A bounded in-memory cache scoped to the workspace instance. The browser gets

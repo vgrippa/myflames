@@ -5,23 +5,38 @@ import argparse
 import os
 import sys
 from . import __version__
-from .parser import (
-    parse_explain,
-    load_explain_json,
-    format_sql,
-    build_flame_entries,
-    flatten_nodes,
-    enhance_flame_titles,
-    analyze_plan,
-    misestimate_marks,
-    render_info_panel,
-)
-from .flamegraph import folded_to_svg, plan_folded
-from .output_bargraph import render_bargraph
-from .output_diagram import render_diagram
-from .output_tree import render_tree
-from .teach_hooks import build_teach_hooks, build_teach_index_maps
-from .server_info import detect_flavor
+
+# The parser and the SVG renderers load on first use, so commands that never
+# render a plan (ui, or argument errors before it) do not pay for them. Each
+# name is a wrapper that imports the real function on the first call and
+# rebinds the global, so every call site stays unchanged.
+def _deferred(module_name, name):
+    def wrapper(*args, **kwargs):
+        from importlib import import_module
+        value = getattr(import_module("." + module_name, __package__), name)
+        globals()[name] = value
+        return value(*args, **kwargs)
+    wrapper.__name__ = name
+    return wrapper
+
+
+parse_explain = _deferred("parser", "parse_explain")
+load_explain_json = _deferred("parser", "load_explain_json")
+format_sql = _deferred("parser", "format_sql")
+build_flame_entries = _deferred("parser", "build_flame_entries")
+flatten_nodes = _deferred("parser", "flatten_nodes")
+enhance_flame_titles = _deferred("parser", "enhance_flame_titles")
+analyze_plan = _deferred("parser", "analyze_plan")
+misestimate_marks = _deferred("parser", "misestimate_marks")
+render_info_panel = _deferred("parser", "render_info_panel")
+folded_to_svg = _deferred("flamegraph", "folded_to_svg")
+plan_folded = _deferred("flamegraph", "plan_folded")
+render_bargraph = _deferred("output_bargraph", "render_bargraph")
+render_diagram = _deferred("output_diagram", "render_diagram")
+render_tree = _deferred("output_tree", "render_tree")
+build_teach_hooks = _deferred("teach_hooks", "build_teach_hooks")
+build_teach_index_maps = _deferred("teach_hooks", "build_teach_index_maps")
+detect_flavor = _deferred("server_info", "detect_flavor")
 
 
 # ── View recommendation guide ────────────────────────────────────────────

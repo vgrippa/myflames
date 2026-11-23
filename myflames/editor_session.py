@@ -183,21 +183,32 @@ _RESULT_END = re.compile(r"</resultset>\r?\n")
 HEX_VALUE = re.compile(r"0x(?:[0-9A-F]{2})*\Z")
 _TAB_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _NEAR = re.compile(r"near '(.*)' at line (\d+)\s*\Z", re.S)
+# SQL identifiers include '$' and every multibyte character, not just the
+# Unicode letters recognized by Python's word boundaries. A keyword cannot
+# start inside a variable or after a qualification dot either. The classes are
+# written as the negation of the ASCII characters that are not identifier
+# characters: an explicit [A-Za-z0-9_$\u0080-\U0010ffff] compiles very slowly
+# (re builds a bitmap of the whole range per use, and under IGNORECASE the
+# Unicode casefold tables on top). The class contains both cases of every
+# letter, so the keyword patterns scope case folding to their ASCII keywords
+# with (?i:...) or (?ai:...).
+_SQL_ID_CLASS = r"[^\x00-\x23\x25-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
+#: The identifier characters without '$' (dollar-quote tag bodies).
+_SQL_ID_NO_DOLLAR_CLASS = r"[^\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
+#: The identifier characters plus '@' and '.' (a keyword may not start after
+#: a qualification dot or inside a variable).
+_SQL_ID_DOTAT_CLASS = r"[^\x00-\x23\x25-\x2d\x2f\x3a-\x3f\x5b-\x5e\x60\x7b-\x7f]"
+_SQL_BOUNDARY = (r"(?:(?<!" + _SQL_ID_DOTAT_CLASS + r")(?=" + _SQL_ID_CLASS +
+                 r")|(?<=" + _SQL_ID_CLASS + r")(?!" + _SQL_ID_CLASS + r"))")
 #: A $tag$ opener outside strings: MySQL 8.1+ clients read dollar-quoted text
 #: when the server supports it; myflames' splitter does not. With our utf8mb4
 #: client charset, every valid multibyte character is an identifier character,
 #: including inside the tag (mysql.cc:2715-2746; strings/sql_chars.cc:87-121).
-_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_$\u0080-\U0010ffff])\$[A-Za-z0-9_\u0080-\U0010ffff]*\$")
-# SQL identifiers include '$' and every multibyte character, not just the
-# Unicode letters recognized by Python's word boundaries. A keyword cannot
-# start inside a variable or after a qualification dot either.
-_SQL_ID_CHARS = r"A-Za-z0-9_$\u0080-\U0010ffff"
-_SQL_BOUNDARY = (r"(?:(?<![" + _SQL_ID_CHARS + r"@.])(?=[" + _SQL_ID_CHARS +
-                 r"])|(?<=[" + _SQL_ID_CHARS + r"])(?![" + _SQL_ID_CHARS + r"]))")
+_DOLLAR_QUOTE = re.compile(r"(?<!" + _SQL_ID_CLASS + r")\$" + _SQL_ID_NO_DOLLAR_CLASS + r"*\$")
 _READ_WRITE = re.compile(
-    _SQL_BOUNDARY + r"READ\s+WRITE" + _SQL_BOUNDARY +
-    r"|(?<![" + _SQL_ID_CHARS + r"@.])(?:@@\s*)?(?:(?:SESSION|LOCAL|GLOBAL)\s*\.\s*)?"
-    r"(?:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _SQL_BOUNDARY + r"\s*(?::=|=)", re.I | re.ASCII)
+    _SQL_BOUNDARY + r"(?ai:READ)\s+(?ai:WRITE)" + _SQL_BOUNDARY +
+    r"|(?<!" + _SQL_ID_DOTAT_CLASS + r")(?:@@\s*)?(?:(?ai:SESSION|LOCAL|GLOBAL)\s*\.\s*)?"
+    r"(?ai:TRANSACTION_READ_ONLY|TX_READ_ONLY)" + _SQL_BOUNDARY + r"\s*(?::=|=)")
 _MODE_CHANGE = re.compile(r"(?:CALL|EXECUTE|SOURCE)", re.I | re.ASCII)
 
 
@@ -3875,22 +3886,23 @@ def _selection(payload, sql, offsets, backslash=True, context=None):
 # The skill specifies N, not a numeric default; five seconds is our UI policy.
 ALTER_LOCK_WAIT_SECONDS = 5
 ALTER_LOCK_WAIT = TAG + "SET SESSION lock_wait_timeout = %d" % ALTER_LOCK_WAIT_SECONDS
-_SQL_NAME = r"(?:`[0-9]+`|[" + _SQL_ID_CHARS + r"]+)"
-_DROP_DATABASE = re.compile(r"^\s*DROP\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+)?(" + _SQL_NAME + r")\s*$", re.I)
-_ALTER_TABLE = re.compile(r"^\s*ALTER\s+(?:(?:ONLINE|OFFLINE|IGNORE)\s+)*TABLE\s+(?:IF\s+EXISTS\s+)?(" +
-                          _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)", re.I)
-_DDL_START = re.compile(r"^\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE)" + _SQL_BOUNDARY, re.I | re.ASCII)
+_SQL_NAME = r"(?:`[0-9]+`|" + _SQL_ID_CLASS + r"+)"
+_DROP_DATABASE = re.compile(r"^\s*(?i:DROP)\s+(?i:DATABASE|SCHEMA)\s+(?:(?i:IF)\s+(?i:EXISTS)\s+)?(" +
+                            _SQL_NAME + r")\s*$")
+_ALTER_TABLE = re.compile(r"^\s*(?i:ALTER)\s+(?:(?i:ONLINE|OFFLINE|IGNORE)\s+)*(?i:TABLE)\s+(?:(?i:IF)\s+(?i:EXISTS)\s+)?(" +
+                          _SQL_NAME + r")(?:\s*\.\s*(" + _SQL_NAME + r"))?(?=\s|$)")
+_DDL_START = re.compile(r"^\s*(?ai:CREATE|ALTER|DROP|RENAME|TRUNCATE)" + _SQL_BOUNDARY)
 _ROUTINE_CREATE = re.compile(
     # MariaDB AGGREGATE FUNCTION: mariadb-server/sql/sql_yacc.yy:20502-20529.
-    r"\s*" + _SQL_BOUNDARY + r"(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^;]+?\s+)?|"
-    r"ALTER\s+(?:DEFINER\s*=\s*[^;]+?\s+)?(?=EVENT" + _SQL_BOUNDARY + r"))"
-    r"(?:(AGGREGATE)\s+)?(PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE)" + _SQL_BOUNDARY, re.I | re.S | re.ASCII)
+    r"\s*" + _SQL_BOUNDARY + r"(?:(?ai:CREATE)\s+(?:(?ai:OR)\s+(?ai:REPLACE)\s+)?(?:(?ai:DEFINER)\s*=\s*[^;]+?\s+)?|"
+    r"(?ai:ALTER)\s+(?:(?ai:DEFINER)\s*=\s*[^;]+?\s+)?(?=(?ai:EVENT)" + _SQL_BOUNDARY + r"))"
+    r"(?:((?ai:AGGREGATE))\s+)?((?ai:PROCEDURE|FUNCTION|TRIGGER|EVENT|PACKAGE))" + _SQL_BOUNDARY, re.S)
 
 
 # The mask supplies quoted identifiers as `N` and strings as ''. Keep every
 # identifier, qualified name and @/@@ variable atomic. In particular, neither
 # col$end nor @loop can supply a stored-program control token.
-_MASKED_NAME = r"(?:`[0-9]+`|[" + _SQL_ID_CHARS + r"]+)"
+_MASKED_NAME = r"(?:`[0-9]+`|" + _SQL_ID_CLASS + r"+)"
 _MASKED_QUALIFIED = _MASKED_NAME + r"(?:[ \t\r\n\f\v]*\.[ \t\r\n\f\v]*" + _MASKED_NAME + r")*"
 _MASKED_VARIABLE_NAME = r"(?:" + _MASKED_NAME + r"|'')"
 _MASKED_VARIABLE = (r"@(?:[ \t\r\n\f\v]*@)?[ \t\r\n\f\v]*" + _MASKED_VARIABLE_NAME +
@@ -4435,9 +4447,9 @@ def _ddl_parts(units):
 
 
 _COMPOUND_START = re.compile(
-    r"(?:^|;|" + _SQL_BOUNDARY + r"FOR\s+)\s*(?:" + _MASKED_NAME + r"\s*:\s*)?(?:"
-    r"BEGIN" + _SQL_BOUNDARY + r"(?!\s*(?:WORK" + _SQL_BOUNDARY + r")?\s*(?:;|$))|"
-    r"(?:DECLARE|IF|WHILE|LOOP|REPEAT|CASE|FOR)" + _SQL_BOUNDARY + r")", re.I | re.ASCII)
+    r"(?:^|;|" + _SQL_BOUNDARY + r"(?ai:FOR)\s+)\s*(?:" + _MASKED_NAME + r"\s*:\s*)?(?:"
+    r"(?ai:BEGIN)" + _SQL_BOUNDARY + r"(?!\s*(?:(?ai:WORK)" + _SQL_BOUNDARY + r")?\s*(?:;|$))|"
+    r"(?ai:DECLARE|IF|WHILE|LOOP|REPEAT|CASE|FOR)" + _SQL_BOUNDARY + r")")
 
 
 def _embedded_compound_ddl(unit):
@@ -5023,13 +5035,12 @@ def _read_only_problem(units):
 #: "statements that cause an implicit commit"); CREATE and DROP TEMPORARY
 #: TABLE do not.
 _IMPLICIT_COMMIT = re.compile(
-    r"^\s*(?:(?:CREATE|DROP)" + _SQL_BOUNDARY + r"(?!\s+(?:OR\s+REPLACE\s+)?TEMPORARY" + _SQL_BOUNDARY + r")|(?:ALTER|RENAME|TRUNCATE)" + _SQL_BOUNDARY + r""
-    r"|(?:GRANT|REVOKE)" + _SQL_BOUNDARY + r"|SET\s+PASSWORD" + _SQL_BOUNDARY + r"|SET\s+DEFAULT\s+ROLE" + _SQL_BOUNDARY + r"|(?:LOCK|UNLOCK)\s+(?:TABLES?|INSTANCE)" + _SQL_BOUNDARY + r""
-    r"|START\s+TRANSACTION" + _SQL_BOUNDARY + r"|BEGIN" + _SQL_BOUNDARY + r"(?!\s+NOT\s+ATOMIC)"
-    r"|(?:ANALYZE|OPTIMIZE|REPAIR|CHECK)\s+(?:NO_WRITE_TO_BINLOG\s+|LOCAL\s+)?TABLES?" + _SQL_BOUNDARY + r""
-    r"|(?:FLUSH|RESET)" + _SQL_BOUNDARY + r"|CACHE\s+INDEX" + _SQL_BOUNDARY + r"|LOAD\s+INDEX" + _SQL_BOUNDARY + r"|(?:INSTALL|UNINSTALL)\s+(?:PLUGIN|COMPONENT|SONAME)" + _SQL_BOUNDARY + r""
-    r"|(?:START|STOP)\s+(?:REPLICA|SLAVE|GROUP_REPLICATION|ALL\s+SLAVES)" + _SQL_BOUNDARY + r"|CHANGE\s+(?:REPLICATION|MASTER)" + _SQL_BOUNDARY + r")",
-    re.I | re.ASCII)
+    r"^\s*(?:(?ai:CREATE|DROP)" + _SQL_BOUNDARY + r"(?!\s+(?:(?ai:OR)\s+(?ai:REPLACE)\s+)?(?ai:TEMPORARY)" + _SQL_BOUNDARY + r")|(?ai:ALTER|RENAME|TRUNCATE)" + _SQL_BOUNDARY + r""
+    r"|(?ai:GRANT|REVOKE)" + _SQL_BOUNDARY + r"|(?ai:SET)\s+(?ai:PASSWORD)" + _SQL_BOUNDARY + r"|(?ai:SET)\s+(?ai:DEFAULT)\s+(?ai:ROLE)" + _SQL_BOUNDARY + r"|(?ai:LOCK|UNLOCK)\s+(?ai:TABLES?|INSTANCE)" + _SQL_BOUNDARY + r""
+    r"|(?ai:START)\s+(?ai:TRANSACTION)" + _SQL_BOUNDARY + r"|(?ai:BEGIN)" + _SQL_BOUNDARY + r"(?!\s+(?ai:NOT)\s+(?ai:ATOMIC))"
+    r"|(?ai:ANALYZE|OPTIMIZE|REPAIR|CHECK)\s+(?:(?ai:NO_WRITE_TO_BINLOG)\s+|(?ai:LOCAL)\s+)?(?ai:TABLES?)" + _SQL_BOUNDARY + r""
+    r"|(?ai:FLUSH|RESET)" + _SQL_BOUNDARY + r"|(?ai:CACHE)\s+(?ai:INDEX)" + _SQL_BOUNDARY + r"|(?ai:LOAD)\s+(?ai:INDEX)" + _SQL_BOUNDARY + r"|(?ai:INSTALL|UNINSTALL)\s+(?ai:PLUGIN|COMPONENT|SONAME)" + _SQL_BOUNDARY + r""
+    r"|(?ai:START|STOP)\s+(?ai:REPLICA|SLAVE|GROUP_REPLICATION|ALL\s+SLAVES)" + _SQL_BOUNDARY + r"|(?ai:CHANGE)\s+(?ai:REPLICATION|MASTER)" + _SQL_BOUNDARY + r")")
 def _may_enable_autocommit(code, idents):
     """Recognize assignment targets, not autocommit mentioned in a value.
 
@@ -5086,7 +5097,8 @@ def implicit_commit(unit):
 #: COMMIT or ROLLBACK, except ROLLBACK [WORK] TO [SAVEPOINT] name, which
 #: returns to a savepoint inside the open transaction (SQLCOM_ROLLBACK_TO_
 #: SAVEPOINT: M/sql/sql_yacc.yy:17994-18000, Ma/sql/sql_yacc.yy:18751-18762).
-_ENDING_CONTROL = re.compile(r"\s*(?:COMMIT|ROLLBACK(?!\s+(?:WORK\s+)?TO" + _SQL_BOUNDARY + r"))" + _SQL_BOUNDARY, re.I | re.ASCII)
+_ENDING_CONTROL = re.compile(r"\s*(?:(?ai:COMMIT)|(?ai:ROLLBACK)(?!\s+(?:(?ai:WORK)\s+)?(?ai:TO)" +
+                             _SQL_BOUNDARY + r"))" + _SQL_BOUNDARY)
 #: ER_PARSE_ERROR: the server rejected the text before running any of it.
 _PARSE_ERROR = 1064
 

@@ -358,11 +358,15 @@ class TestUiCommand(unittest.TestCase):
                 mock.patch('sys.stderr', io.StringIO()):
             cmd_ui(['--no-browser', '--no-restore'])
         self.assertTrue(created['no_restore'])
-        # Only the real launcher reads Home news feeds (myflames/news.py).
-        from myflames.news import fetch_feed
-        self.assertIs(created['news_reader'], fetch_feed)
-        from myflames.upgrade_targets import fetch_page
-        self.assertIs(created['release_reader'], fetch_page)
+        # Only the real launcher reads Home news feeds (myflames/news.py);
+        # cmd_ui defers the import and the read to first use.
+        from myflames import news, upgrade_targets
+        with mock.patch.object(news, 'fetch_feed', return_value=['item']) as feed, \
+                mock.patch.object(upgrade_targets, 'fetch_page', return_value='page') as page:
+            self.assertEqual(created['news_reader']('https://example.test/feed', deadline=1), ['item'])
+            feed.assert_called_once_with('https://example.test/feed', deadline=1)
+            self.assertEqual(created['release_reader']('https://example.test/releases'), 'page')
+            page.assert_called_once_with('https://example.test/releases')
         with mock.patch('myflames.ui.WorkspaceServer', FakeServer), \
                 mock.patch('sys.stderr', io.StringIO()):
             cmd_ui(['--no-browser'])

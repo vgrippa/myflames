@@ -2,9 +2,7 @@
 from . import schema_diagram
 from .connector import ConnectorError, MySQLConnection
 from .live import connection_options
-
-READ_PATH = '/api/schema-diagram/read'
-PATHS = (READ_PATH, '/api/schema-diagram/import', '/api/schema-diagram/export')
+from .ui_routes import DIAGRAM_PATHS as PATHS, DIAGRAM_READ_PATH as READ_PATH
 
 
 def response(path, payload, with_saved_password=None):

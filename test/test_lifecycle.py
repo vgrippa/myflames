@@ -3376,12 +3376,12 @@ class LifecycleTests(unittest.TestCase):
                 ui.cmd_ui(['--no-browser', '--no-restore'])
         self.assertEqual(caught.exception.code, 2)
 
-    def test_workspace_server_probe_warmup_never_outlives_the_server(self):
+    def test_workspace_server_close_does_not_wait_for_probe_warmup(self):
         from myflames import client_tools, ui
-        started, finished = [], threading.Event()
+        started, finished = threading.Event(), threading.Event()
 
         def slow_discover(*args, **kwargs):
-            started.append(1)
+            started.set()
             time.sleep(0.3)
             finished.set()
 
@@ -3390,11 +3390,17 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaises((ValueError, OSError)):
                 ui.WorkspaceServer(store_path=str(self.root / 'bad.sqlite3'),
                                    tool_groups_file=str(self.root / 'missing' / 'g.json'))
-            self.assertEqual(started, [])
+            self.assertFalse(started.is_set())
             server = ui.WorkspaceServer(store_path=str(self.root / 'ws.sqlite3'))
+            self.assertTrue(started.wait(5))
+            t0 = time.monotonic()
             server.server_close()
-            self.assertEqual(started, [1])
-            self.assertTrue(finished.is_set(), 'server_close returned while the start-up probe was running')
+            elapsed = time.monotonic() - t0
+            # The warmup probe is a daemon thread; close does not wait for it
+            # (the 0.3 s probe would otherwise hold close).
+            self.assertLess(elapsed, 0.25)
+            self.assertTrue(server._tools_warmup.daemon)
+            self.assertFalse(finished.is_set())
 
     def test_review_tool_connection_failure_category_survives_password_redaction(self):
         # The password overlaps the numeric error; the display is redacted

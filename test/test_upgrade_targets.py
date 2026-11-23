@@ -1272,7 +1272,8 @@ class HttpEndpoint(Base):
         self.assertIn(self.PATH, ui._LIFECYCLE_READ_PATHS)
         self.assertIn(self.PATH, ui._CONNECTION_PATHS)
         self.assertNotIn(self.PATH, ui._WRITE_PATHS)
-        self.assertIn('release_reader=fetch_page', inspect.getsource(ui.cmd_ui))
+        self.assertIn('release_reader=_fetch_page', inspect.getsource(ui.cmd_ui))
+        self.assertIn('from .upgrade_targets import fetch_page', inspect.getsource(ui.cmd_ui))
 
     def test_server_without_a_reader_answers_from_the_bundled_catalog(self):
         server = self.serve()

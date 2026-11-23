@@ -1413,18 +1413,22 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS + _TABLE_COLUMNS_PATHS
 _OBJECT_SEARCH_PATHS = ("/api/live/object-search",)
 _CONNECTION_PATHS = _CONNECTION_PATHS + _OBJECT_SEARCH_PATHS
 
-from .schema_diagram_api import PATHS as _DIAGRAM_PATHS, READ_PATH as _DIAGRAM_READ_PATH  # noqa: E402
+#: The route tables live in ui_routes.py so this module knows every path
+#: without importing the feature handler modules at startup; those load on
+#: the first request that needs them (see api_response).
+from .ui_routes import DIAGRAM_PATHS as _DIAGRAM_PATHS, DIAGRAM_READ_PATH as _DIAGRAM_READ_PATH
 _CONNECTION_PATHS = _CONNECTION_PATHS + (_DIAGRAM_READ_PATH,)
 #: Schema versions (schema_versions_api.py). Save and compare read live
 #: databases; each side fills its own connection's saved password, so they
 #: are not in _CONNECTION_PATHS (which fills only the top-level connection).
-from .schema_versions_api import PATHS as _SCHEMA_VERSION_PATHS, LARGE_PATHS as _SCHEMA_VERSION_LARGE  # noqa: E402
-from .compare_api import PATHS as _COMPARE_PATHS  # noqa: E402
+from .ui_routes import (SCHEMA_VERSION_PATHS as _SCHEMA_VERSION_PATHS,
+                        SCHEMA_VERSION_LARGE_PATHS as _SCHEMA_VERSION_LARGE)
+from .ui_routes import COMPARE_PATHS as _COMPARE_PATHS
 #: Baselines (baselines.py): a Health reading or Query digest totals kept on
 #: this computer. List and save read the server's identity through the
 #: connection (its saved password filled for that read); get and delete open
 #: no connection.
-from .baselines import PATHS as _BASELINE_PATHS  # noqa: E402
+from .ui_routes import BASELINE_PATHS as _BASELINE_PATHS
 
 
 #: Parameter version catalogs (param_versions.py): answers from the generated
@@ -1451,7 +1455,7 @@ _WRITE_PATHS = _WRITE_PATHS + ('/api/live/topology/variable/apply',)
 #: plan only read: they get the saved password like the views. Apply is a
 #: write: the connection's policy runs first, then the saved password is
 #: filled, and every attempt is audited.
-from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACCOUNT_WRITE_PATHS  # noqa: E402
+from .ui_routes import ACCOUNT_READ_PATHS as _ACCOUNT_READ_PATHS, ACCOUNT_WRITE_PATHS as _ACCOUNT_WRITE_PATHS
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
@@ -1475,8 +1479,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
 #: audited, before any connection opens), the review token must match the
 #: whole plan, then the saved password is filled. The handler fills passwords
 #: itself, so none of these is in _CONNECTION_PATHS.
-from .csv_import_api import PATHS as _CSV_IMPORT_PATHS, WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS  # noqa: E402
-from .slowlog_api import PATHS as _SLOW_LOG_PATHS  # noqa: E402
+from .ui_routes import CSV_IMPORT_PATHS as _CSV_IMPORT_PATHS, CSV_IMPORT_WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS
+from .ui_routes import SLOW_LOG_PATHS as _SLOW_LOG_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _CSV_IMPORT_WRITE_PATHS
 #: Files uses SSH credentials in its own endpoint-bound namespace. These
 #: host-level file operations are independent of database write policy.
@@ -2932,8 +2936,6 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: their own process groups, and the desktop's backend entry kills this
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
-    #: How long close waits for the start-up client probes (each is bounded).
-    TOOLS_WARMUP_WAIT_SECONDS = 2.0
 
     def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
                  release_reader=None):
@@ -2981,10 +2983,15 @@ class WorkspaceServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
-        # Warm cached version probes without delaying startup or recovery;
-        # started last so a construction that fails leaves no probe running.
+        # Warm cached version probes of the query tools (the same names the
+        # connection layer probes, connector.py) without delaying startup or
+        # recovery; started last so a construction that fails leaves no probe
+        # running. MySQL Shell is not probed here: Settings > Client tools
+        # (client_tools.discover_choices), Maintenance (lifecycle.detect_tools)
+        # and Cluster (cluster_shell) discover it when they are opened.
         from . import client_tools
-        self._tools_warmup = threading.Thread(target=client_tools.discover, daemon=True)
+        self._tools_warmup = threading.Thread(target=client_tools.discover,
+                                              kwargs={"names": client_tools.QUERY_DISCOVERY_NAMES}, daemon=True)
         self._tools_warmup.start()
 
 
@@ -3091,9 +3098,8 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
-            warmup = getattr(self, "_tools_warmup", None)
-            if warmup is not None:
-                warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)
+            # The tools warmup is a daemon thread probing only the local query
+            # clients; close never waits for it.
             super().server_close()
 
 
@@ -3562,13 +3568,20 @@ def cmd_ui(argv):
         parser.error("--port must be between 0 and 65535")
     if not (ASSET_DIR / "index.html").is_file():
         parser.exit(2, "UI assets are missing. Run `npm ci` and `npm run build` in apps/workspace, or reinstall myflames.\n")
-    try:
+    def _fetch_feed(*args, **kwargs):
         from .news import fetch_feed  # Home news: the only server that reads feeds
+        return fetch_feed(*args, **kwargs)
+
+    def _fetch_page(*args, **kwargs):
         from .upgrade_targets import fetch_page
+        return fetch_page(*args, **kwargs)
+
+    try:
         # Set only by the desktop app: a file in its private runtime directory.
+        # The readers import news and upgrade_targets on first use, not here.
         server = WorkspaceServer(args.port, no_restore=args.no_restore,
                                  tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None,
-                                 news_reader=fetch_feed, release_reader=fetch_page)
+                                 news_reader=_fetch_feed, release_reader=_fetch_page)
     except ValueError as exc:
         parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:

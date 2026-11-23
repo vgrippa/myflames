@@ -31,11 +31,9 @@ import time
 
 from . import accounts, dbops, privileges
 from .connector import ConnectorError, MySQLConnection
+from .ui_routes import ACCOUNT_READ_PATHS as READ_PATHS, ACCOUNT_WRITE_PATHS as WRITE_PATHS
 
 PRIVILEGES_PATH = '/api/live/privileges'
-READ_PATHS = (PRIVILEGES_PATH, '/api/accounts/list', '/api/accounts/read', '/api/accounts/plan',
-              '/api/accounts/scope-objects')
-WRITE_PATHS = ('/api/accounts/apply',)
 PATHS = READ_PATHS + WRITE_PATHS
 #: Reviewed plans kept for apply by plan_id: the request and the redacted
 #: statements only, never a password.
