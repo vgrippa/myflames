@@ -1770,9 +1770,11 @@ def _connect_response(payload, workspace):
             try:
                 _report, facts = open_member(profile, True)
                 return profile["id"], facts, True
-            except (ConnectorError, ValueError, OSError):
+            except Exception as exc:
+                if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+                    _log_unexpected_error('/api/connect', sys.exc_info(), active_route, store)
                 # A member that cannot be read is reported unreachable; its
-                # error (and any secret in it) leaves this process nowhere.
+                # response contains neither the error nor any secret in it.
                 return profile["id"], None, False
 
         with ThreadPoolExecutor(max_workers=_CONNECT_PROBE_CONCURRENCY) as pool:

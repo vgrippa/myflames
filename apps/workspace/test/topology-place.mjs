@@ -916,32 +916,42 @@ try {
     nodes: [...originalMap.nodes, proxyNode],
     edges: [
       ...originalMap.edges,
-      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10" }),
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10: Shunned for replication lag. No ONLINE member in this hostgroup." }),
       link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_AWS_BGD", label: "hostgroup 15" }),
       link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: null, label: "hostgroup 20" }),
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "OFFLINE_SOFT", label: "hostgroup 30: No new traffic; existing queries and transactions may finish." }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "OFFLINE_HARD", label: "hostgroup 40: ProxySQL has taken this backend out of traffic. No ONLINE member in this hostgroup." }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "offline", label: "hostgroup 50: In the monitor's offline hostgroup." }),
     ],
   };
   reports.map.members = [...originalMembers, member({
     profile_id: proxyNode.profile_id, profile_name: proxyNode.label, host: proxyNode.host, role: proxyNode.role, state: proxyNode.state,
   })];
   await h.refresh();
-  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 3);
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 6);
   // The edge <title> always carries the label and state; the drawn label may be
   // omitted when it does not fit beside its line, so it is not the source here.
   const proxyEdgeStates = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"]`, (els) =>
     els.map((el) => ({
       tone: ["tone-problem", "tone-unknown", "tone-ok", "tone-watch"].find((c) => el.classList.contains(c)) || "",
       title: el.querySelector("title")?.textContent || "",
+      arrow: el.querySelector("path")?.getAttribute("marker-end") || "",
     })));
   const expectedRoutes = [
-    ["tone-problem", "hostgroup 10 · SHUNNED_REPLICATION_LAG"],
+    ["tone-problem", "hostgroup 10: Shunned for replication lag. No ONLINE member in this hostgroup. · SHUNNED_REPLICATION_LAG"],
     ["tone-problem", "hostgroup 15 · SHUNNED_AWS_BGD"],
     ["tone-unknown", "hostgroup 20 · State not reported"],
+    ["tone-problem", "hostgroup 30: No new traffic; existing queries and transactions may finish. · OFFLINE_SOFT"],
+    ["tone-problem", "hostgroup 40: ProxySQL has taken this backend out of traffic. No ONLINE member in this hostgroup. · OFFLINE_HARD"],
+    ["tone-problem", "hostgroup 50: In the monitor's offline hostgroup. · offline"],
   ];
   assert.equal(proxyEdgeStates.length, expectedRoutes.length);
+  const proxyListText = await page.$$eval('.topology-map-section', (sections) => sections.map((el) => el.textContent).join("\n"));
   expectedRoutes.forEach(([tone, text], i) => {
     assert.equal(proxyEdgeStates[i].tone, tone, `route ${i} tone`);
     assert.ok(proxyEdgeStates[i].title.includes(text), `route ${i} title has "${text}": ${proxyEdgeStates[i].title}`);
+    if (tone === "tone-problem") assert.match(proxyEdgeStates[i].arrow, /-problem\)/, `route ${i} has the down-link arrow`);
+    if (tone === "tone-problem") assert.ok(proxyListText.includes(text), `route ${i} keeps its reason in the list`);
   });
   reports.map.members = originalMembers;
 

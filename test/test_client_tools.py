@@ -133,13 +133,62 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
             full = self.discover(shell_folder, mysql.parent)
             filtered = self.discover(shell_folder, mysql.parent, names=ct.QUERY_DISCOVERY_NAMES)
-        self.assertEqual([s['realpath'] for s in full['shells']], [str(mysql)])
+        self.assertEqual(full['shells'], [])
         for label, report in (('full', full), ('filtered', filtered)):
             with self.subTest(discovery=label):
                 self.assertEqual([g['programs']['mysql']['realpath'] for g in report['installations']],
                                  [str(mysql)])
                 self.assertEqual(ct.select(report, dict(engine='mysql', version='8.4.13'))['client']['path'],
                                  str(mysql))
+
+    def test_mysqlsh_link_to_mysql_is_unavailable_in_settings_and_maintenance(self):
+        from myflames import lifecycle
+        mysql = self.make(self.root / 'client/bin', banner='mysql Ver 8.4.13 for test')
+        aliases = private_client_dir(self.root / 'aliases/bin')
+        shell_link = aliases / 'mysqlsh'
+        shell_link.symlink_to(mysql)
+        server = dict(engine='mysql', version='8.4.13')
+        path = os.pathsep.join((str(aliases), str(mysql.parent)))
+        with mock.patch.dict(os.environ, {'PATH': path, 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.connector, 'client_choices', return_value={'mysql': None, 'mariadb': None}):
+            discovered = self.discover(aliases, mysql.parent)
+            selected = ct.select(discovered, server)
+            self.assertEqual(discovered['shells'], [])
+            self.assertIsNone(selected['shell'])
+            self.assertEqual(selected['client']['realpath'], str(mysql))
+            bad_copy = next(item for item in discovered['copies'] if item['name'] == 'mysqlsh')
+            self.assertFalse(bad_copy['available'])
+            self.assertTrue(bad_copy.get('error'))
+            for facts in (None, server):
+                with self.subTest(server=facts):
+                    report = lifecycle.detect_tools(server=facts)
+                    self.assertFalse(report['tools']['mysqlsh']['available'])
+                    offers = lifecycle.offered_tools(server, report)
+                    self.assertNotIn('mysqlsh', offers['dump'])
+                    self.assertEqual(offers['upgrade'], 'native_subset')
+                    if facts is not None:
+                        self.assertIsNone(report['used']['shell'])
+
+    def test_renamed_shell_binary_is_identified_by_its_version_banner(self):
+        binary = self.make(self.root / 'real/bin', 'shell-launcher',
+                           banner='mysqlsh Ver 9.7.0 for macos15 on arm64 - for MySQL 9.7.0')
+        aliases = private_client_dir(self.root / 'aliases/bin')
+        shell_link = aliases / 'mysqlsh'
+        shell_link.symlink_to(binary)
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            report = self.discover(aliases)
+        self.assertEqual([item['realpath'] for item in report['shells']], [str(binary)])
+        self.assertEqual(ct.select(report, dict(engine='mysql', version='8.4.13'))['shell']['path'],
+                         str(shell_link))
+
+    def test_mysql_banner_cannot_become_shell_when_file_is_named_mysqlsh(self):
+        binary = self.make(self.root / 'renamed/bin', 'mysqlsh', banner='mysql Ver 8.4.13 for test')
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            report = self.discover(binary.parent)
+        self.assertEqual(report['shells'], [])
+        self.assertFalse(report['copies'][0]['available'])
 
     def test_F1_query_client_is_the_client_settings_reports_when_a_dump_tool_comes_first(self):
         a = private_client_dir(self.root / 'a/bin')

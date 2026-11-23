@@ -6,6 +6,7 @@ in to them; background polling and server writes are not permitted here.
 """
 import json
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -548,6 +549,30 @@ def _map_probe(conn, profile, member, variables):
                 'proxysql' if member['product'] == 'ProxySQL Admin' else 'database')
     if probe['kind'] != expected:
         raise ConnectorError('The member identity changed during the topology read.')
+    if probe['kind'] == 'proxysql':
+        # runtime_mysql_servers collapses the pool's replication-lag status
+        # to SHUNNED (ProxySQL MySQL_HostGroups_Manager.h). Match all three
+        # endpoint fields so the same server in another hostgroup cannot
+        # change this route's state. Configuration fallback proves no health.
+        pool = _optional(reader, 'SELECT hostgroup, srv_host, srv_port, status FROM '
+                         'stats_mysql_connection_pool LIMIT %d' % (MAP_ROWS_PER_MEMBER + 1), notes)
+        statuses = {(str(r[0]), str(r[1]), str(r[2])): r[3]
+                    for r in (pool or [])[:MAP_ROWS_PER_MEMBER] if len(r) >= 4}
+        for backend in probe.get('servers', []):
+            if backend.get('status_source') == 'config':
+                continue
+            key = tuple(str(backend.get(k)) for k in ('hostgroup_id', 'hostname', 'port'))
+            status = statuses.get(key)
+            if (backend.get('status') in ('ONLINE', 'SHUNNED') and
+                    status in ('ONLINE', 'SHUNNED', 'SHUNNED_REPLICATION_LAG', 'SHUNNED_AWS_BGD',
+                               'OFFLINE_SOFT', 'OFFLINE_HARD')):
+                backend['status'] = status
+        offline = set()
+        for table in ('runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups'):
+            rows = _optional(reader, 'SELECT offline_hostgroup FROM %s WHERE active = 1 LIMIT %d'
+                             % (table, MAP_ROWS_PER_MEMBER + 1), notes)
+            offline.update(_number(r[0]) for r in (rows or [])[:MAP_ROWS_PER_MEMBER] if r)
+        probe['offline_hostgroups'] = [hg for hg in offline if isinstance(hg, int)]
     if probe['kind'] != 'database':
         return probe, notes
     if (_uuid(probe.get('server_uuid')) and member['server_uuid'] and
@@ -657,6 +682,8 @@ def _build_map(entries, probes, profiles):
             rows = list(islice(iter(probe.get(key) or []), remaining + 1))
             if len(rows) > remaining:
                 cap(pid, 'Map rows capped at %d per member; some reported topology is omitted.' % MAP_ROWS_PER_MEMBER)
+                if key == 'servers':
+                    bounded[pid]['servers_incomplete'] = True
                 rows = rows[:remaining]
             bounded[pid][key] = rows
             remaining -= len(rows)
@@ -826,15 +853,41 @@ def _build_map(entries, probes, profiles):
                                                      replica.get('uuid'), replica.get('server_id'))
             edge(pid, pid, destination, 'replication', evidence, verified, None, 'Replication')
         if probe.get('kind') == 'proxysql':
-            for backend in probe.get('servers', []):
+            servers = probe.get('servers', [])
+            states = {}
+            for backend in servers:
+                hg = _number(backend.get('hostgroup_id'))
+                state = None if backend.get('status_source') == 'config' else backend.get('status')
+                states.setdefault(hg, []).append(state)
+            offline = set(probe.get('offline_hostgroups') or [])
+            no_online = {hg for hg, group_states in states.items()
+                         if isinstance(hg, int) and group_states and
+                         all(s in ('SHUNNED', 'SHUNNED_REPLICATION_LAG', 'SHUNNED_AWS_BGD',
+                                   'OFFLINE_SOFT', 'OFFLINE_HARD') for s in group_states)}
+            for backend in servers:
                 destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
                 hostgroup = _number(backend.get('hostgroup_id'))
                 raw_state = None if backend.get('status_source') == 'config' else backend.get('status')
                 state = (raw_state if isinstance(raw_state, str) and (
                     raw_state in ('ONLINE', 'OFFLINE_SOFT', 'OFFLINE_HARD') or
                     re.fullmatch(r'SHUNNED[A-Za-z0-9_]{0,56}', raw_state)) else None)
-                edge(pid, pid, destination, 'proxy_route', evidence, verified, state,
-                     'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?'))
+                reasons = []
+                if state is not None and hostgroup in offline:
+                    reasons.append("In the monitor's offline hostgroup.")
+                    if state == 'ONLINE':
+                        state = 'offline'
+                if state == 'OFFLINE_SOFT':
+                    reasons.append('No new traffic; existing queries and transactions may finish.')
+                elif state == 'OFFLINE_HARD':
+                    reasons.append('ProxySQL has taken this backend out of traffic.')
+                elif state == 'SHUNNED_REPLICATION_LAG':
+                    reasons.append('Shunned for replication lag.')
+                if hostgroup in no_online and not probe.get('servers_incomplete'):
+                    reasons.append('No ONLINE member in this hostgroup.')
+                label = 'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?')
+                if reasons:
+                    label += ': ' + ' '.join(reasons)
+                edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label)
         if probe.get('kind') == 'readyset':
             upstreams = list(probe.get('upstreams') or [])
             if not upstreams:
@@ -1095,7 +1148,14 @@ def read_group(store, group_name, section, active_member_profile_id,
                     entry['message'] = exclusion or 'Read from this member.'
         except _NotReached:
             exclusion = entry['message']
-        except (ConnectorError, ValueError, OSError) as exc:
+        except Exception as exc:
+            if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+                # A programming error belongs to this member, not its peers.
+                # Reuse HTTP traceback redaction, including the saved group
+                # credentials, without exposing exception text in the report.
+                from .ui import _log_unexpected_error
+                _log_unexpected_error('/api/live/topology', sys.exc_info(), route, store)
+                exc = ConnectorError('The connection could not be read.')
             # No observed identity, role or inventory from a rejected read
             # may influence the group summary or another member's comparison.
             entry = _entry(profile)

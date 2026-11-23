@@ -73,8 +73,8 @@ function stateTone(state: string | null): string {
   if (value.startsWith("shunned")) return "problem";
   switch (value) {
     case "online": case "running": case "reachable": case "up": case "healthy": return "ok";
-    case "stopped": case "offline": case "offline_hard": case "down": case "unhealthy": case "error": return "problem";
-    case "connecting": case "recovering": case "offline_soft": return "watch";
+    case "stopped": case "offline": case "offline_soft": case "offline_hard": case "down": case "unhealthy": case "error": return "problem";
+    case "connecting": case "recovering": return "watch";
     default: return "unknown";
   }
 }

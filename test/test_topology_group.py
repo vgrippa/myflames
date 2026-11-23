@@ -6,6 +6,7 @@ real; only the MySQL client process boundary is replaced in consent tests.
 import ast
 import copy
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -141,6 +142,18 @@ def run_one(part_sql):
     elif 'from runtime_mysql_servers' in lower or 'from mysql_servers' in lower:
         rows = cfg.get('servers', [])
         columns = list(rows[0]) if rows else []
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from stats_mysql_connection_pool' in lower:
+        rows = cfg.get('pool', [])
+        columns = ['hostgroup', 'srv_host', 'srv_port', 'status']
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif any('from ' + table in lower for table in (
+            'runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups')):
+        table = re.search(r'from\s+(runtime_mysql_\w+_hostgroups)', lower).group(1)
+        rows = cfg.get(table, [])
+        if re.search(r'\bwhere\s+active\s*=\s*1', lower):
+            rows = [row for row in rows if str(row.get('active', 1)) == '1']
+        columns = ['offline_hostgroup']
         emit(columns, [[row.get(name) for name in columns] for row in rows])
     elif 'from runtime_mysql_query_rules' in lower or 'from mysql_query_rules' in lower:
         emit(['rule_id', 'comment'], [['1', 'secret_rule_sql']])
@@ -681,6 +694,51 @@ class MemberLoginTests(GroupCase):
         self.assertEqual(helper.call_count, 1)
         self.assertEqual(_FakeMemberConn.logins, ['active.example'])
 
+    def test_connect_member_failure_keeps_siblings_and_logs_only_unexpected_errors(self):
+        self.save('healthy', 'G')
+        secret = "synthetic-'member\\key"
+        self.member = self.store.save('profile', dict(self.member), 'member',
+                                      password=secret, remember=True)
+        original = ui._member_live_facts
+        for error_type in (KeyError, connector.ConnectorError):
+            with self.subTest(error=error_type.__name__):
+                _FakeMemberConn.reset(uuids={'active.example': UUID_A, 'healthy.example': UUID_C})
+
+                def facts(conn):
+                    if conn.host == 'member.example':
+                        raise error_type('synthetic member failure ' + secret)
+                    return original(conn)
+
+                stderr = io.StringIO()
+                with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn), \
+                        mock.patch.object(ui, '_member_live_facts', side_effect=facts), \
+                        mock.patch.object(ui, '_log_unexpected_error', wraps=ui._log_unexpected_error) as logger, \
+                        contextlib.redirect_stderr(stderr):
+                    result = ui.api_response('/api/connect', {
+                        'group_name': 'G', 'active_member_profile_id': 'active', 'probe_members': True},
+                        types.SimpleNamespace(store=self.store))
+                members = {row['profile_id']: row for row in result['group_connection']['members']}
+                self.assertTrue(members['active']['reachable'])
+                self.assertTrue(members['healthy']['reachable'])
+                self.assertEqual(members['healthy']['server_uuid'], UUID_C)
+                self.assertFalse(members['member']['reachable'])
+                self.assertIsNone(members['member']['server_uuid'])
+                self.assertEqual(result['schemas'], ['app'])
+                self.assertNotIn(secret, json.dumps(result))
+                logged = stderr.getvalue()
+                self.assertNotIn(secret, logged)
+                self.assertNotIn(repr(secret)[1:-1], logged)
+                self.assertNotIn(json.dumps(secret)[1:-1], logged)
+                if error_type is KeyError:
+                    self.assertEqual(logger.call_count, 1)
+                    self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                    self.assertIn('KeyError', logged)
+                    self.assertIn('[redacted]', logged)
+                else:
+                    logger.assert_not_called()
+                    self.assertEqual(logged, '')
+                self.assertEqual(_FakeMemberConn.active, 0)
+
 
 class TopologyEndpointTests(GroupCase):
     def setUp(self):
@@ -846,6 +904,48 @@ class TopologyReadTests(GroupCase):
         paths = [observed.logs[host]] if host else observed.logs.values()
         return [json.loads(line) for path in paths if path.exists()
                 for line in path.read_text(encoding='utf-8').splitlines()]
+
+    def test_member_unexpected_error_keeps_siblings_and_logs_one_redacted_traceback(self):
+        broken = self.save('broken', 'G')
+        self.save('healthy', 'G')
+        secret = "synthetic-'member\\key"
+        self.store.save('profile', dict(broken), 'broken', password=secret, remember=True)
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'broken.example': member_fixture(UUID_B),
+                    'healthy.example': member_fixture(UUID_C)}
+        for error_type in (KeyError, connector.ConnectorError):
+            with self.subTest(error=error_type.__name__):
+                def fail_one(host):
+                    if host == 'broken.example':
+                        raise error_type('synthetic member failure ' + secret)
+
+                stderr = io.StringIO()
+                with self.clients(fixtures, after_spawn=fail_one), \
+                        mock.patch.object(ui, '_log_unexpected_error', wraps=ui._log_unexpected_error) as logger, \
+                        contextlib.redirect_stderr(stderr):
+                    report = self.read()
+                members = {row['profile_id']: row for row in report['members']}
+                self.assertEqual(members['active']['outcome'], 'read')
+                self.assertEqual(members['healthy']['outcome'], 'read')
+                self.assertEqual(members['healthy']['server_uuid'], UUID_C)
+                self.assertEqual(members['broken']['outcome'], 'failed')
+                self.assertIsNone(members['broken']['server_uuid'])
+                self.assertEqual(report['summary']['read'], 2)
+                self.assertEqual(report['summary']['failed'], 1)
+                self.assertIn('the connection could not be read.', members['broken']['message'])
+                self.assertNotIn(secret, json.dumps(report))
+                logged = stderr.getvalue()
+                self.assertNotIn(secret, logged)
+                self.assertNotIn(repr(secret)[1:-1], logged)
+                self.assertNotIn(json.dumps(secret)[1:-1], logged)
+                if error_type is KeyError:
+                    self.assertEqual(logger.call_count, 1)
+                    self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                    self.assertIn('KeyError', logged)
+                    self.assertIn('[redacted]', logged)
+                else:
+                    logger.assert_not_called()
+                    self.assertEqual(logged, '')
 
     def test_topology_has_no_custom_client_process_path(self):
         tree = ast.parse((ROOT / 'myflames/topology_group.py').read_text(encoding='utf-8'))
@@ -2750,7 +2850,100 @@ class TopologyReadTests(GroupCase):
                             edge['verified'] is False and edge['evidence'] == 'endpoint'
                             for edge in edges.values()))
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED'))
+        self.assertEqual(edges['b']['state'], 'SHUNNED')
+        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
+        self.assertIn('No ONLINE member', edges['b']['label'])
+
+    def test_map_proxysql_offline_runtime_rows_keep_reason_and_ignore_online_pool(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        for status in ('OFFLINE_SOFT', 'OFFLINE_HARD'):
+            with self.subTest(status=status):
+                proxy = member_fixture(proxy='proxysql', servers=[
+                    {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': status},
+                    {'hostgroup_id': '10', 'hostname': 'b.example', 'port': '3306', 'status': 'ONLINE'},
+                ], pool=[
+                    {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+                    {'hostgroup': '10', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'ONLINE'},
+                ])
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                                   'b.example': member_fixture(UUID_C)}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(edges['a']['state'], status)
+                self.assertTrue(edges['a']['label'].startswith('hostgroup 10'))
+                self.assertNotIn('No ONLINE member', edges['a']['label'])
+                self.assertRegex(edges['a']['label'].lower(), 'no new traffic|out of traffic|stops using')
+                self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
+
+    def test_map_proxysql_monitor_offline_hostgroup_is_offline_even_with_online_row(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        for table in ('runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups'):
+            with self.subTest(table=table):
+                proxy = member_fixture(proxy='proxysql', servers=[
+                    {'hostgroup_id': '40', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+                    {'hostgroup_id': '10', 'hostname': 'b.example', 'port': '3306', 'status': 'ONLINE'},
+                ])
+                proxy[table] = [{'offline_hostgroup': '40', 'active': '1'}]
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                                   'b.example': member_fixture(UUID_C)}) as observed:
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                self.assertTrue(any('FROM ' + table in sql for sql in self.statements(observed, 'active.example')))
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(edges['a']['state'], 'offline')
+                self.assertIn('offline hostgroup', edges['a']['label'])
+                self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
+
+    def test_map_proxysql_pool_lag_reason_and_hostgroup_health_are_scoped_per_route(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '20', 'hostname': 'a.example', 'port': '3306', 'status': 'SHUNNED'},
+            {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'OFFLINE_HARD'},
+        ], pool=[
+            {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+            {'hostgroup': '20', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
+            {'hostgroup': '20', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'ONLINE'},
+        ])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}) as observed:
+            report = self.read('map')
+        self.assert_map_schema(report)
+        self.assertTrue(any('FROM stats_mysql_connection_pool' in sql
+                            for sql in self.statements(observed, 'active.example')))
+        edges = report['map']['edges']
+        self.assertEqual(len(edges), 3)
+        online = next(edge for edge in edges if edge['label'] == 'hostgroup 10')
+        lagged = next(edge for edge in edges if edge['to'] == 'a' and edge['label'].startswith('hostgroup 20'))
+        offline = next(edge for edge in edges if edge['to'] == 'b')
+        self.assertEqual(online['state'], 'ONLINE')
+        self.assertEqual(lagged['state'], 'SHUNNED_REPLICATION_LAG')
+        self.assertIn('Shunned for replication lag', lagged['label'])
+        self.assertIn('No ONLINE member', lagged['label'])
+        self.assertEqual(offline['state'], 'OFFLINE_HARD')
+        self.assertIn('No ONLINE member', offline['label'])
+
+    def test_map_proxysql_pool_online_recovers_runtime_shunned_backend(self):
+        self.save('a', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'SHUNNED'},
+        ], pool=[
+            {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+        ])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B)}):
+            report = self.read('map')
+        self.assert_map_schema(report)
+        self.assertEqual(len(report['map']['edges']), 1)
+        edge = report['map']['edges'][0]
+        self.assertEqual((edge['to'], edge['state'], edge['label']), ('a', 'ONLINE', 'hostgroup 10'))
 
     def test_map_proxysql_address_routes_with_router_alias_and_ambiguous_members(self):
         self.save('router', 'G', port=6446)
@@ -2799,7 +2992,9 @@ class TopologyReadTests(GroupCase):
             servers=[
                 {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
                 {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
-            ])
+            ], pool=[
+                {'hostgroup': '20', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
+            ], runtime_mysql_group_replication_hostgroups=[{'offline_hostgroup': '10', 'active': '1'}])
         proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
         with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
                            'b.example': member_fixture(UUID_C)}) as observed:
@@ -2830,7 +3025,10 @@ class TopologyReadTests(GroupCase):
         edges = {edge['to']: edge for edge in report['map']['edges']}
         self.assertEqual(set(edges), {'a', 'b'})
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_REPLICATION_LAG'))
+        self.assertEqual(edges['b']['state'], 'SHUNNED_REPLICATION_LAG')
+        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
+        self.assertIn('Shunned for replication lag', edges['b']['label'])
+        self.assertIn('No ONLINE member', edges['b']['label'])
 
     def test_map_proxysql_runtime_keeps_shunned_aws_bgd_and_config_drops_it(self):
         self.save('a', 'G')
@@ -2845,7 +3043,9 @@ class TopologyReadTests(GroupCase):
         self.assert_map_schema(report)
         edges = {edge['to']: edge for edge in report['map']['edges']}
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_AWS_BGD'))
+        self.assertEqual(edges['b']['state'], 'SHUNNED_AWS_BGD')
+        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
+        self.assertIn('No ONLINE member', edges['b']['label'])
 
         proxy_cfg = member_fixture(
             proxy='proxysql',
@@ -3020,6 +3220,37 @@ class MapBoundsTests(unittest.TestCase):
 
     def route(self, host='mf-galera-2', hostgroup=10):
         return {'hostname': host, 'port': '3306', 'hostgroup_id': str(hostgroup), 'status': 'ONLINE'}
+
+    def test_unknown_backend_state_prevents_no_online_hostgroup_claim(self):
+        profile = {'id': 'proxy', 'host': 'proxy.example', 'port': 6032}
+        for unknown in ({'status': None}, {'status': 'FUTURE_STATE'},
+                        {'status': 'ONLINE', 'status_source': 'config'}):
+            with self.subTest(unknown=unknown):
+                servers = [dict(self.route('shunned.example'), status='SHUNNED'),
+                           dict(self.route('unknown.example'), **unknown)]
+                result = self.build([profile], {'proxy': {'kind': 'proxysql', 'servers': servers}})
+                self.assertEqual(len(result['edges']), 2)
+                self.assertFalse(any('No ONLINE member' in edge['label'] for edge in result['edges']))
+                states = {edge['to']: edge['state'] for edge in result['edges']}
+                self.assertEqual(states['peer:shunned.example:3306'], 'SHUNNED')
+                self.assertIsNone(states['peer:unknown.example:3306'])
+
+    def test_truncated_backends_prevent_no_online_hostgroup_claim(self):
+        profile = {'id': 'proxy', 'host': 'proxy.example', 'port': 6032}
+        # An ONLINE member beyond the shared traversal cap cannot justify
+        # reporting every visible SHUNNED route's hostgroup as unavailable.
+        # A preceding channel can consume part of that shared row budget.
+        for preceding_rows in (0, 1):
+            with self.subTest(preceding_rows=preceding_rows):
+                servers = [dict(self.route(), status='SHUNNED')
+                           for unused in range(topology_group.MAP_ROWS_PER_MEMBER - preceding_rows)]
+                servers.append(self.route('online-after-cap.example'))
+                probe = {'kind': 'proxysql', 'servers': servers, 'channels': [{}] * preceding_rows}
+                result = self.build([profile], {'proxy': probe})
+                self.assertEqual(len(result['edges']), 1)
+                self.assertEqual(result['edges'][0]['state'], 'SHUNNED')
+                self.assertNotIn('No ONLINE member', result['edges'][0]['label'])
+                self.assertTrue(any('rows capped' in note['message'] for note in result['notes']))
 
     def test_ssh_loopback_proxy_route_cannot_match_a_local_saved_server(self):
         profiles = [{'id': 'proxy', 'host': '127.0.0.1', 'port': 6032, 'ssh_host': 'remote.example'},

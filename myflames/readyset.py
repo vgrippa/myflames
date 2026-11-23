@@ -1291,14 +1291,6 @@ def explain_cache(conn, query_or_id, cache_type=None, schema="readyset"):
     }
 
 
-_EXPORT_ESCAPES = {
-    "0": "\x00",
-    "b": "\b",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "Z": "\x1a",
-}
 _EXPORT_REDACTED_COMMENT = (
     "-- Credentials in this definition are shown as [redacted]; it will not run as is."
 )
@@ -1315,113 +1307,100 @@ _EXPORT_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 # A legacy multibyte client charset can consume either ASCII byte as the
 # tail of the preceding non-ASCII character, changing quote tracking.
 _EXPORT_CHARSET_AMBIGUITY = re.compile(r"[^\x00-\x7f][\\`]")
-# Export also covers malformed URL credentials with '/' or '@' in the password.
-# The scheme boundary prevents retries within a long scheme-like word; the
-# username stops at ':' or '/', and the greedy, bounded password scan ends
-# at the last '@' before whitespace or a quote, never at an interior '@'.
+# Recognize the authority prefix separately from its password: malformed
+# user-info may contain SQL quotes, spaces, slashes or backticks. Scanning
+# each prefix's segment once avoids regex retries on long server text.
 _EXPORT_URL_CREDENTIALS = re.compile(
     r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://[^:/@\s'\"`]*:)"
-    r"[^\s'\"`]{0,1024}@(?![^@\s'\"`]*@)"
 )
+_EXPORT_UTF8_COMMAND = "charset utf8mb4"
 
 
-def _unescape_sql_literal(body, quote):
-    """Decode doubled-quote and backslash escapes inside a SQL string literal body."""
-    out = []
-    i = 0
-    n = len(body)
-    while i < n:
-        ch = body[i]
-        if ch == quote and i + 1 < n and body[i + 1] == quote:
-            out.append(quote)
-            i += 2
-        elif ch == "\\" and i + 1 < n:
-            nxt = body[i + 1]
-            out.append(_EXPORT_ESCAPES.get(nxt, nxt))
-            i += 2
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out)
+def _redact_export_urls(sql):
+    """Hide URL passwords through the last @, even across broken SQL quotes.
+
+    A URL inside a complete backticked identifier is an identifier, not a
+    credential. A second authority before the first @ is part of a malformed
+    password. Ambiguous quoted text is hidden rather than partly exposed.
+    """
+    scan = dbops.lex_sql(sql)
+    unclosed = set(scan['unclosed'])
+    identifiers = [(start, end) for kind, start, end in scan["tokens"]
+                   if kind == "identifier" and (start, end) not in unclosed]
+    prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(sql))
+    parts, kept, scanned, ident, token, pending = [], 0, 0, 0, 0, None
+    for index, prefix in enumerate(prefixes):
+        if prefix.start() < scanned:
+            continue
+        while ident < len(identifiers) and identifiers[ident][1] <= prefix.start():
+            ident += 1
+        if (pending is None and ident < len(identifiers) and
+                identifiers[ident][0] <= prefix.start() < identifiers[ident][1] and
+                sql.find('@', prefix.end(), identifiers[ident][1]) >= 0):
+            continue
+        end = prefixes[index + 1].start() if index + 1 < len(prefixes) else len(sql)
+        while token < len(scan['tokens']) and scan['tokens'][token][2] <= prefix.start():
+            token += 1
+        if token < len(scan['tokens']):
+            # Nested URL-like text, including an earlier @, can belong to
+            # one password. Never split a literal/comment/code token there.
+            end = max(end, scan['tokens'][token][2])
+        if unclosed:
+            end = len(sql)  # Broken quotes cannot establish a safe boundary.
+        # No overlap between segments, including unsuccessful matches.
+        last_at = sql.rfind("@", prefix.end(), end)
+        scanned = end
+        if last_at < 0:
+            if pending is None:
+                pending = prefix
+            continue
+        start = pending.end() if pending is not None else prefix.end()
+        parts.extend((sql[kept:start], dbops.REDACTED))
+        kept = last_at
+        pending = None
+    return ("".join(parts) + sql[kept:], bool(parts)) if parts else (sql, False)
 
 
 def _redact_export_sql(sql, password=None):
-    """Redact exported DDL, preserving identifiers unless they contain *password*.
+    """Redact credential syntax, preserving unrelated SQL and identifiers.
 
-    Applies ``dbops.redact`` to the whole SQL with identifiers masked, and replaces any
-    quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
-    with ``'[redacted]'``, or a comment's content with ``[redacted]``.
-    Returns ``(redacted_sql, changed)``; a detected connection password marks
-    the definition changed even when it already equals the redaction marker.
+    A connection password can also be an ordinary table, column or literal
+    value. Do not pass it as the shared redactor's substring scrubber. URL
+    user-info and the credential clauses recognized by dbops.redact remain
+    sensitive regardless of whether they contain that particular password.
     """
-    pw = password if isinstance(password, str) and password else None
+    sql, changed = _redact_export_urls(sql)
+    parts, identifiers = [], {}
+    used, mask_codepoint = set(sql), 0xe000
     scan = dbops.lex_sql(sql)
-    unclosed = set(scan["unclosed"])
-    parts = []
-    identifiers = {}
-    used = set(sql + (pw or ""))
-    mask_codepoint = 0xe000
-    changed = False
+    unclosed = set(scan['unclosed'])
     for kind, start, end in scan["tokens"]:
         tok = sql[start:end]
-        if kind == "identifier":
-            if pw and (pw in tok or pw in tok[1:-1].replace("``", "`")):
-                tok = "`" + dbops.REDACTED + "`"
-                changed = True
-            # Each identifier gets its own same-length, quote-free mask.
-            # Distinct characters allow restoration even if redaction changes
-            # earlier lengths or consumes a mask in malformed surrounding SQL.
+        if kind == "identifier" and (start, end) not in unclosed:
             while chr(mask_codepoint) in used:
                 mask_codepoint += 1
             mask = chr(mask_codepoint)
             mask_codepoint += 1
             identifiers[mask] = tok
             parts.append(mask * (end - start))
-            continue
-        # Replace whole secret-bearing literals/comments before URL redaction.
-        updated = tok
-        if kind == "string" and pw:
-            quote = tok[0]
-            body = tok[1:] if (start, end) in unclosed else tok[1:-1]
-            # Inspect original bytes before a URL pass can remove a prefix of
-            # a password containing '@', leaving only its tail behind.
-            if (pw in body or
-                    pw in _unescape_sql_literal(body, quote) or
-                    pw in body.replace(quote * 2, quote)):
-                updated = "'" + dbops.REDACTED + "'"
-                changed = True
-        elif kind == "comment" and pw and pw in tok:
-            if tok.startswith("/*"):
-                updated = "/* " + dbops.REDACTED + " */"
-            else:
-                updated = ("-- " if tok.startswith("--") else "# ") + dbops.REDACTED
-            changed = True
-        parts.append(updated)
+        else:
+            parts.append(tok)
     masked = "".join(parts)
-    # A bare password (including the marker itself) must disable the DDL even
-    # when replacement would leave identical text.
-    changed = changed or bool(pw and pw in masked)
-    # Run the export URL pass first: the shared redactor can stop at the first
-    # '@'. Whole-definition redaction then sees both credential keywords and
-    # their literals, without treating identifier contents as SQL clauses.
-    updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", masked)
-    updated = dbops.redact(updated, pw)
+    updated = dbops.redact(masked)
     changed = changed or updated != masked
-    restored = []
-    previous = None
+    if not changed and dbops.REDACTED in masked:
+        # Already-redacted credentials still cannot be exported as runnable
+        # definitions; a coincidental marker in ordinary SQL remains intact.
+        marker_probe = masked.replace(dbops.REDACTED, "myflames_export_secret_marker")
+        changed = dbops.redact(marker_probe) != marker_probe
+    restored, previous = [], None
     for ch in updated:
         if ch not in identifiers:
             restored.append(ch)
         elif ch != previous:
             restored.append(identifiers[ch])
         previous = ch
-    restored = "".join(restored)
-    # Malformed SQL can split a literal password across token boundaries.
-    # Do not let restoring an identifier put those raw bytes back together.
-    if pw and pw in restored:
-        restored = restored.replace(pw, dbops.REDACTED)
-        changed = True
-    return restored, changed
+    return "".join(restored), changed
 
 
 def _export_has_controls(text):
@@ -1553,23 +1532,20 @@ def export_caches(conn):
     lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
              "-- Recognized credentials in query text are shown as [redacted]."]
     last_db = None
+    needs_utf8 = False
     for r in rows:
         source_q = r.get("query") or r.get("create statement") or ""
         if not source_q.strip():
             continue
-        prefix_db, raw_q = _split_export_use(source_q)
+        prefix_db, raw_q = _split_export_use(source_q, check_charset=False)
         q, redacted = _redact_export_sql(raw_q, pw)
         # Readyset's prefix is the schema used by CREATE, even when the
         # database column disagrees with the shallow cache's search path.
         raw_db = prefix_db if prefix_db is not None else r.get("database")
         db = str(raw_db) if raw_db not in (None, "") else None
-        # Extracted USE names and the database column bypass the definition's
-        # redactor. Apply the same secret and framing restrictions here.
-        db_redacted = bool(db and pw and pw in db)
-        if db_redacted:
-            db = dbops.REDACTED
-            redacted = True
-        db_safe_no_charset = _export_db_safe(db)
+        # Database names are identifiers, not credential values, even when
+        # one happens to equal the connection password.
+        db_safe = _export_db_safe(db)
         db_charset_unsafe = False
         if db and db != last_db:
             try:
@@ -1579,30 +1555,19 @@ def export_caches(conn):
                 db_charset_unsafe = bool(_EXPORT_CHARSET_AMBIGUITY.search(use))
             except ValueError:
                 use = "Database name could not be exported as runnable SQL."
-                db_safe_no_charset = False
-            db_safe = db_safe_no_charset and not db_charset_unsafe
-            if not db_safe or db_redacted:
+                db_safe = False
+            if not db_safe:
                 use = "-- " + _review_text(use)
             else:
                 last_db = db
+                needs_utf8 = needs_utf8 or db_charset_unsafe
             lines.append(use)
-        else:
-            db_safe = db_safe_no_charset
         stmt = q if q.endswith(";") else (q + ";")
-        runnable = db_safe and _runnable_export_sql(stmt)
+        runnable = db_safe and _runnable_export_sql(stmt, check_charset=False)
+        if runnable and not redacted and _EXPORT_CHARSET_AMBIGUITY.search(stmt):
+            needs_utf8 = True
         if not runnable:
-            charset_only = False
-            if db_safe_no_charset and (db_charset_unsafe or _EXPORT_CHARSET_AMBIGUITY.search(stmt)):
-                if _runnable_export_sql(stmt, check_charset=False):
-                    charset_only = True
-                elif prefix_db is None:
-                    alt_db, alt_q = _split_export_use(source_q, check_charset=False)
-                    if alt_db is not None and _export_db_safe(alt_db):
-                        alt_stmt, _ = _redact_export_sql(alt_q, pw)
-                        if not alt_stmt.endswith(";"):
-                            alt_stmt += ";"
-                        charset_only = _runnable_export_sql(alt_stmt, check_charset=False)
-            lines.append(_EXPORT_CHARSET_COMMENT if charset_only else _EXPORT_UNSAFE_COMMENT)
+            lines.append(_EXPORT_UNSAFE_COMMENT)
         if redacted:
             lines.append(_EXPORT_REDACTED_COMMENT)
         if redacted or not runnable:
@@ -1611,6 +1576,12 @@ def export_caches(conn):
             stmt = "-- " + _review_text(stmt)
         lines.append(stmt)
         items.append({"database": db, "statement": stmt})
+    if needs_utf8:
+        # Unlike SET NAMES alone, mysql's charset command synchronizes its
+        # own lexer with the server. Only this fixed exporter-owned command
+        # may precede definitions containing ambiguous legacy-charset bytes.
+        lines[2:2] = ["-- Import with a mysql-compatible client; use UTF-8 for these definitions.",
+                      _EXPORT_UTF8_COMMAND]
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "version": version,

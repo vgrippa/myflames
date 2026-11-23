@@ -102,8 +102,20 @@ def probe(name, binary, refresh=False, job=None):
             result.update(version=banner, version_tuple=list(version),
                           engine=server_info.detect_flavor(banner),
                           available=child.returncode == 0 and version != (0, 0, 0))
+            if name == 'mysqlsh' and result['available']:
+                # mysql clients print argv[0] in their version banner. A
+                # mysqlsh symlink therefore cannot establish tool identity.
+                real_name = os.path.basename(os.path.realpath(binary)).lower()
+                if real_name.endswith('.exe'):
+                    real_name = real_name[:-4]
+                shell_banner = bool(re.search(r'\b(?:mysqlsh|MySQL Shell)\b', banner, re.I))
+                other_banner = bool(re.search(
+                    r'\b(?:mysql|mariadb|mysqldump|mariadb-dump)\s+(?:Ver|Distrib)\b', banner, re.I))
+                if ((real_name in PROGRAMS and real_name != 'mysqlsh') or other_banner or
+                        (real_name != 'mysqlsh' and not shell_banner)):
+                    result.update(available=False, error='The resolved program is not MySQL Shell.')
             if not result['available']:
-                result['error'] = 'Version probe failed or returned an unrecognized version.'
+                result.setdefault('error', 'Version probe failed or returned an unrecognized version.')
         except (OSError, subprocess.TimeoutExpired, connector.ClientMissingError) as exc:
             result['error'] = str(exc) if isinstance(exc, connector.ClientMissingError) else type(exc).__name__
         with _PROBE_LOCK:
