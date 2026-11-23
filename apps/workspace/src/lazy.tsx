@@ -53,21 +53,20 @@ type Loadable = ComponentType<any> | ExoticComponent<any>;
  * mounted part is never remounted, and never loses state, because its chunk
  * arrived. Refs are forwarded (the Query editor's handle). A failed load keeps
  * its failure notice and Reload control mounted in the part's own boundary.
- * *reload*, when given, reads the same chunk under a cache-busted name: a
- * failed module fetch is cached for the window, so re-importing the first
- * address can never retry. Only a new load after a failure uses it, so the
- * retry below keeps one fresh address in reserve (updateStatus.ts
- * UpdateDialogView). */
-export function lazyComponent<T extends Loadable>(load: () => Promise<T>, reload?: () => Promise<T>): T & { preload: () => Promise<T> } {
+ * *reload*, when given, reads the attempt's cache-busted copy of the same
+ * chunk: a failed module fetch is cached for the window, so a retry needs a
+ * fresh address each time (updateStatus.ts UpdateDialogView). Only a new
+ * load after a failure uses it. */
+export function lazyComponent<T extends Loadable>(load: () => Promise<T>, reload?: (attempt: number) => Promise<T>): T & { preload: () => Promise<T> } {
   let loaded: T | null = null;
   let pending: Promise<T> | null = null;
-  let failed = false;
+  let failures = 0;
   const preload = () => {
     if (!pending) {
       // A transient read failure (the local server reset a connection under
       // load) gets two retries; a chunk gone after an update fails again and
       // the mount shows LoadFailed, as before.
-      const loader = failed && reload ? reload : load;
+      const loader = failures && reload ? () => reload(failures) : load;
       pending = (async () => {
         let lastError: unknown;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -82,7 +81,7 @@ export function lazyComponent<T extends Loadable>(load: () => Promise<T>, reload
       })().then(
         (component) => (loaded = component),
         (error) => {
-          failed = true;
+          failures += 1;
           pending = null;
           throw error;
         },

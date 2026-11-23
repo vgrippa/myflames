@@ -17,12 +17,18 @@ import { lazyComponent } from "./lazy";
 // or at the latest when one of them is clicked. Every opener goes through
 // openUpdateDialog, which awaits this preload, so no entry point can open the
 // dialog before its chunk is ready. A failed module fetch is cached for the
-// window, so the retry reads a cache-busted copy of the same chunk (Vite
-// bundles the ?open-retry variant too).
+// window, so every retry reads its own cache-busted copy of the same chunk
+// (Vite bundles one chunk per ?open-retry variant; lazyComponent counts the
+// failures and asks for the attempt's copy).
 const loadUpdateDialog = () => import("./UpdateDialog").then((m) => m.UpdateDialog);
-const reloadUpdateDialog = Object.values(
+const retryUpdateDialog = [
   import.meta.glob("./UpdateDialog.tsx", { query: "?open-retry", import: "UpdateDialog" }),
-)[0] as () => ReturnType<typeof loadUpdateDialog>;
+  import.meta.glob("./UpdateDialog.tsx", { query: "?open-retry=2", import: "UpdateDialog" }),
+  import.meta.glob("./UpdateDialog.tsx", { query: "?open-retry=3", import: "UpdateDialog" }),
+  import.meta.glob("./UpdateDialog.tsx", { query: "?open-retry=4", import: "UpdateDialog" }),
+].map((variant) => Object.values(variant)[0] as () => ReturnType<typeof loadUpdateDialog>);
+const reloadUpdateDialog = (attempt: number): ReturnType<typeof loadUpdateDialog> =>
+  retryUpdateDialog[Math.min(attempt, retryUpdateDialog.length) - 1]();
 export const UpdateDialogView = lazyComponent(loadUpdateDialog, reloadUpdateDialog);
 
 /** What the desktop app answers about updating this copy in place. */
@@ -298,6 +304,9 @@ export async function restartToUpdate(): Promise<void> {
  * download). */
 export async function openUpdateDialog(from?: HTMLElement | null, launcher = "badge"): Promise<boolean> {
   if (state.opening) return false;
+  // A Retry launches while its error is still on screen: it keeps focus when
+  // the attempt fails again.
+  const retried = state.openError !== null;
   returnFocus = from ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
   set({ opening: true, openError: null });
   try {
@@ -307,12 +316,21 @@ export async function openUpdateDialog(from?: HTMLElement | null, launcher = "ba
     return true;
   } catch {
     set({ opening: false, openError: { from: launcher, message: "The Software update window could not be loaded." } });
+    if (retried) {
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(".update-open-error .update-open-retry")?.focus();
+      });
+    }
     return false;
   }
 }
-/** Dismiss the error a failed opening left at its launching control. */
+/** Dismiss the error a failed opening left at its launching control. Focus
+ * returns to the control that opened the dialog. */
 export function dismissUpdateOpenError() {
-  if (state.openError) set({ openError: null });
+  if (!state.openError) return;
+  set({ openError: null });
+  const back = returnFocus;
+  if (back && back.isConnected) requestAnimationFrame(() => back.focus());
 }
 /** Check again from Software update: a successful answer replaces what the open dialog shows. */
 export async function checkAgainInDialog() {
