@@ -1357,6 +1357,102 @@ class TestRedaction(unittest.TestCase):
                     self.assertNotIn('old-private', clean)
                     self.assertTrue(clean.endswith('; SELECT 37'), clean)
 
+    def test_r352_set_password_replace_stays_redacted_across_quote_readings(self):
+        # F1: merging backslash and NO_BACKSLASH_ESCAPES spans must not hide
+        # the REPLACE keyword from the current-password redaction pass.
+        cases = (
+            ("SET PASSWORD FOR 'o\\'brien'@'%' = 'bmV3cGFzc3c=' REPLACE 'S3cr3t'",
+             ('bmV3cGFzc3c=', 'S3cr3t')),
+            ("SET PASSWORD /* don't */ FOR app = 'x=' REPLACE 'S3cr3t'",
+             ('x=', 'S3cr3t')),
+            ("SET PASSWORD FOR 'it\\'s'@'h' = 'NEW' REPLACE 'CUR=''S3cr3t'",
+             ('NEW', 'CUR', 'S3cr3t')),
+            ("don't forget: SET PASSWORD = '' REPLACE 'S3cr3t'",
+             ('S3cr3t',)),
+        )
+        for raw, secrets in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertIn('[redacted]', clean)
+                for secret in secrets:
+                    self.assertNotIn(secret, clean)
+        self.assertEqual(
+            dbops.redact("SET PASSWORD FOR 'it\\'s'@'h' = 'NEW' REPLACE 'CUR=''S3cr3t'"),
+            "SET PASSWORD FOR 'it\\'s'@'h' = '[redacted]' REPLACE '[redacted]'")
+        # Dynamic SQL REPLACE values must pass through the same enclosing-string
+        # rule so doubled or backslash-escaped inner quotes cannot leak tails.
+        dynamic_cases = (
+            "PREPARE s FROM 'SET PASSWORD = \"new-pw\" REPLACE ''S3cr3t'''; SELECT 37",
+            "PREPARE s FROM 'SET PASSWORD = \"new-pw\" REPLACE \\'S3cr3t\\''; SELECT 37",
+            'PREPARE s FROM "SET PASSWORD = \'new-pw\' REPLACE ""S3cr3t"""; SELECT 37',
+            'PREPARE s FROM "SET PASSWORD = \'new-pw\' REPLACE \\"S3cr3t\\""; SELECT 37',
+            "PREPARE s FROM 'ALTER USER u IDENTIFIED BY \"new-pw\" REPLACE ''S3cr3t'''; SELECT 37",
+        )
+        for raw in dynamic_cases:
+            with self.subTest(dynamic=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('new-pw', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+                self.assertTrue(clean.endswith('; SELECT 37'), clean)
+        # Ordinary SQL REPLACE(...) function calls stay intact.
+        ordinary = "SET PASSWORD FOR 'o\\'brien'@'%' = 'new-pw'; SELECT REPLACE(col, 'old', 'new')"
+        clean = dbops.redact(ordinary)
+        self.assertNotIn('new-pw', clean)
+        self.assertTrue(clean.endswith("; SELECT REPLACE(col, 'old', 'new')"), clean)
+
+    def test_r352_comment_and_backtick_apostrophes_preserve_later_secret_assignments(self):
+        # F2: an apostrophe in a comment or backtick identifier must not open a
+        # false enclosing string that skips a following secret assignment.
+        body = ('SET STATEMENT wsrep_sst_auth = "sst:first" FOR SELECT 1;\n'
+                "SET STATEMENT s3_secret_key = 'S3cr3t' FOR SELECT 1")
+        expected_body = ('SET STATEMENT wsrep_sst_auth = "[redacted]" FOR SELECT 1;\n'
+                         "SET STATEMENT s3_secret_key = '[redacted]' FOR SELECT 1")
+        for prefix in ("-- it's the SST setup\n",
+                       "# it's the SST setup\n",
+                       "/* it's the SST setup */\n",
+                       "SELECT `it's` FROM t;\n"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + body), prefix + expected_body)
+        # Even when an apostrophe appears in plain prose outside any comment or
+        # backtick, resuming at match.end() after an extension still hides the
+        # second secret assignment.
+        prose = ("don't run: SET STATEMENT wsrep_sst_auth = \"sst:first\" FOR SELECT 1; "
+                 "SET STATEMENT s3_secret_key = 'S3cr3t' FOR SELECT 1")
+        clean_prose = dbops.redact(prose)
+        self.assertNotIn('sst:first', clean_prose)
+        self.assertNotIn('S3cr3t', clean_prose)
+        # Comment and backtick apostrophes also must not break quote parity for
+        # a subsequent PREPARE dynamic SQL literal.
+        for prefix in ("-- don't forget\n",
+                       "# it's\n",
+                       "/* isn't */ ",
+                       "SELECT `it's` FROM t; "):
+            with self.subTest(prepare_prefix=prefix):
+                raw = prefix + "PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''; SELECT 37"
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_context_scanner_keeps_dynamic_sql_in_comments_fail_closed(self):
+        cases = (
+            ("-- PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''\nSELECT 37", '\nSELECT 37'),
+            ("/* PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("/*!50000 PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("/*M!100500 PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("Run `PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''`; SELECT 37", '`; SELECT 37'),
+            ("SELECT 1 -- note;SET @q = 'CREATE USER u IDENTIFIED\n  BY ''S3cr3t'''; PREPARE s FROM @q",
+             '; PREPARE s FROM @q'),
+            ("SELECT 2 # note;PREPARE s FROM 'SET GLOBAL wsrep_sst_auth =\n  ''S3cr3t'''; EXECUTE s",
+             '; EXECUTE s'),
+        )
+        for raw, suffix in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+                self.assertTrue(clean.endswith(suffix), clean)
+
     def test_r352_credential_clauses_hide_encoded_literal_forms(self):
         literals = (("X'616263'", '616263'), ("x'616263'", '616263'),
                     ('0x707731', '707731'), ('0X707731', '707731'),

@@ -3359,12 +3359,31 @@ _SECRET_VARIABLE_LITERAL = re.compile(
 # Keep original enclosing-string boundaries, including whether the final
 # quote closed the string or was escaped. The ordinary literal fallback
 # cannot distinguish a doubled quote in dynamic SQL from an empty value.
-_SECRET_LITERAL_CONTEXT = re.compile(
+# Bound quotes inside ordinary comments and backtick identifiers to those
+# tokens so prose apostrophes never open false strings across later SQL,
+# while keeping executable comments transparent.
+_SECRET_LITERAL_CONTEXT_STRING = (
     r"'(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"
     r'|"(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)')
-_SECRET_LITERAL_CONTEXT_NO_BACKSLASH = re.compile(
+_SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH = (
     r"'(?:''|[^'])*(?P<single_end>'|\Z)"
     r'|"(?:""|[^"])*(?P<double_end>"|\Z)')
+_SECRET_LITERAL_CONTEXT_SKIP = (
+    r"|(?P<backtick>`(?:``|[^`])*(?:`|\Z))"
+    r"|(?P<block>/\*(?!!|[mM]!)[\s\S]*?(?:\*/|\Z))"
+    r"|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)")
+_SECRET_LITERAL_CONTEXT_PLAIN = re.compile(_SECRET_LITERAL_CONTEXT_STRING)
+_SECRET_LITERAL_CONTEXT_PLAIN_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH)
+_SECRET_LITERAL_CONTEXT = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING + _SECRET_LITERAL_CONTEXT_SKIP)
+_SECRET_LITERAL_CONTEXT_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH + _SECRET_LITERAL_CONTEXT_SKIP)
+_REPLACE_FOLLOW = re.compile(
+    r"(\s+REPLACE\s+)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
+_REPLACE_FOLLOW_NO_BACKSLASH = re.compile(
+    _REPLACE_FOLLOW.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
+    .replace(r"|\\['\"]", ''), _REPLACE_FOLLOW.flags)
 _SECRET_CONCAT_PREFIX = re.compile(
     r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
 _SECRET_CONCAT_QUOTE = re.compile(
@@ -3772,6 +3791,58 @@ def _redact_literal(match):
     return match.group(1) + quote + REDACTED + quote
 
 
+def _secret_literal_contexts(text, backslash_escapes=True):
+    """Yield enclosing single/double-quoted string matches in order.
+
+    Block comments and backtick identifiers bound their own quotes so quotes
+    inside them never open false strings across later SQL. Line comments bound
+    prose apostrophes (``it's``, ``don't``) and closed strings to the line,
+    while allowing an unclosed standalone quote opener at line end to span
+    into a following line so multiline dynamic SQL after a stray ``--`` or
+    ``#`` still keeps its enclosing-string boundary. Executable comments
+    remain transparent.
+    """
+    context = (_SECRET_LITERAL_CONTEXT if backslash_escapes
+               else _SECRET_LITERAL_CONTEXT_NO_BACKSLASH)
+    plain = (_SECRET_LITERAL_CONTEXT_PLAIN if backslash_escapes
+             else _SECRET_LITERAL_CONTEXT_PLAIN_NO_BACKSLASH)
+    cursor = 0
+    while cursor < len(text):
+        token = context.search(text, cursor)
+        if token is None:
+            return
+        group = token.lastgroup
+        if group in ('single_end', 'double_end'):
+            yield token
+            cursor = token.end()
+            continue
+        start, end = token.start(), token.end()
+        if group == 'block':
+            body_start = start + 2
+            body_end = (end - 2 if end - start >= 4
+                        and text.endswith('*/', body_start, end) else end)
+        elif group == 'line':
+            body_start = start + (2 if text.startswith('--', start) else 1)
+            body_end = end
+        else:
+            body_start = start + 1
+            body_end = end - 1 if end - start >= 2 and text[end - 1] == '`' else end
+        cursor = end
+        if (text.find("'", body_start, body_end) == -1
+                and text.find('"', body_start, body_end) == -1):
+            continue
+        for inner in plain.finditer(text, body_start, body_end):
+            if group == 'line' and inner.group(inner.lastgroup) != text[inner.start()]:
+                prev = text[inner.start() - 1] if inner.start() > body_start else ''
+                if not (text[inner.start()] == "'" and (prev.isalnum() or prev == '_')):
+                    extended = plain.match(text, inner.start())
+                    if extended is not None:
+                        yield extended
+                        cursor = extended.end()
+                        break
+            yield inner
+
+
 def _secret_literal_spans(text, pattern, backslash_escapes=True):
     """Extend ambiguous dynamic values through their original enclosing string.
 
@@ -3780,15 +3851,18 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
     QUOTE(@value)) statement: its closing quote is not a value opener. An
     arbitrary diagnostic must still take the conservative fallback.
     """
-    context = _SECRET_LITERAL_CONTEXT if backslash_escapes else _SECRET_LITERAL_CONTEXT_NO_BACKSLASH
-    strings = context.finditer(text)
-    enclosing, context_start = next(strings, None), 0
-    cursor = 0
+    follow_pattern = _REPLACE_FOLLOW if backslash_escapes else _REPLACE_FOLLOW_NO_BACKSLASH
+    strings = None
+    enclosing, context_start = None, 0
+    cursor, forced = 0, None
     while cursor < len(text):
-        match = pattern.search(text, cursor)
+        match, forced = forced or pattern.search(text, cursor), None
         if match is None:
             break
         start, end = match.start("secret"), match.end()
+        if strings is None:
+            strings = _secret_literal_contexts(text, backslash_escapes)
+            enclosing = next(strings, None)
         while enclosing is not None and enclosing.end() <= match.start():
             context_start = enclosing.end()
             enclosing = next(strings, None)
@@ -3820,7 +3894,14 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
             # trustworthy end. Never leave its trailing value visible.
             end = len(text)
         yield start, end, quote
-        cursor = end
+        if end < len(text):
+            # Capture a following REPLACE literal in the original text before
+            # merged spans from another quote reading can cover its keyword,
+            # and run it through the same enclosing-string rule on the next step.
+            forced = follow_pattern.match(text, match.end())
+        # Resume at match.end() after an extension so a later assignment whose
+        # name fell inside an extended false enclosing string is still scanned.
+        cursor = match.end() if end > match.end() and end < len(text) else end
 
 
 def _secret_literal_readings(text, pattern):
