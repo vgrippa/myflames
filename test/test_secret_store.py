@@ -50,6 +50,8 @@ class IsolatedHome(unittest.TestCase):
         self.addCleanup(patcher.stop)
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.vault = Vault(self.home / '.myflames')
+        secret_store._reset_windows_acl_cache()
+        self.addCleanup(secret_store._reset_windows_acl_cache)
 
 
 class TestVault(IsolatedHome):
@@ -58,13 +60,19 @@ class TestVault(IsolatedHome):
         files = ['workspace.sqlite3', 'workspace.sqlite3-wal', 'workspace.sqlite3-shm', 'workspace.sqlite3-journal']
         for name in files:
             (self.vault.directory / name).write_bytes(b'existing data')
+        # Model the first read in a new process, including on Windows where
+        # the setup save above has already installed real ACLs.
+        secret_store._reset_windows_acl_cache()
         with mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(secret_store, '_windows_owner_only', create=True) as protect:
             self.assertEqual(self.vault.get('p1'), SECRET)
-        calls = {(str(c[0][0]), bool(c[1].get('directory'))) for c in protect.call_args_list}
-        self.assertIn((str(self.vault.directory), True), calls)
-        for name in files + ['vault.key', 'credentials.vault', 'vault.lock']:
-            self.assertIn((str(self.vault.directory / name), False), calls)
+            calls = [(str(c[0][0]), bool(c[1].get('directory'))) for c in protect.call_args_list]
+            expected = [(str(self.vault.directory), True)] + [
+                (str(self.vault.directory / name), False)
+                for name in files + ['vault.key', 'credentials.vault', 'vault.lock']]
+            self.assertCountEqual(calls, expected)
+            self.assertEqual(Vault(self.vault.directory).get('p1'), SECRET)
+            self.assertEqual(protect.call_count, len(expected))
 
     def test_windows_protects_new_files_before_writing_secrets(self):
         protected = []
@@ -77,12 +85,189 @@ class TestVault(IsolatedHome):
         with mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(secret_store, '_windows_owner_only', side_effect=protect, create=True):
             self.vault.save('p1', SECRET)
+            self.assertEqual(self.vault.get('p1'), SECRET)
         self.assertIn(('vault.key', 0), protected)
+        self.assertEqual(sum(name == 'vault.key' for name, _size in protected), 1)
         self.assertTrue(any(name.startswith('.credentials.') and size == 0 for name, size in protected))
+
+    def test_windows_replaced_and_recreated_vault_files_are_protected_again(self):
+        self.vault.save('p1', SECRET)
+        sidecar = self.vault.directory / 'workspace.sqlite3-wal'
+        sidecar.write_bytes(b'')
+        secret_store._reset_windows_acl_cache()
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            self.assertEqual(self.vault.get('p1'), SECRET)
+            for path in (self.vault.key_path, self.vault.path,
+                         self.vault.directory / 'vault.lock', sidecar):
+                for remove_first in (False, True):
+                    with self.subTest(name=path.name, remove_first=remove_first):
+                        replacement = path.with_name('replacement')
+                        replacement.write_bytes(path.read_bytes())
+                        replacement.chmod(0o600)
+                        old, new = path.stat(), replacement.stat()
+                        self.assertNotEqual((old.st_dev, old.st_ino), (new.st_dev, new.st_ino))
+                        # Allocate the replacement before unlinking, so the
+                        # filesystem cannot reuse the old object's identity.
+                        if remove_first:
+                            path.unlink()
+                        replacement.replace(path)
+                        protect.reset_mock()
+                        self.assertEqual(self.vault.get('p1'), SECRET)
+                        self.assertEqual(self.vault.get('p1'), SECRET)
+                        protect.assert_called_once_with(path, directory=False)
+
+    def test_windows_recreated_directory_is_protected_again(self):
+        path = self.vault.directory
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            secret_store._ensure_private_directory(path)
+            original = path.stat()
+            path.rename(path.with_name('retired'))
+            secret_store._ensure_private_directory(path)
+            replacement = path.stat()
+            self.assertNotEqual((original.st_dev, original.st_ino),
+                                (replacement.st_dev, replacement.st_ino))
+            secret_store._ensure_private_directory(path)
+            self.assertEqual(protect.call_args_list,
+                             [mock.call(path, directory=True), mock.call(path, directory=True)])
+
+    def test_windows_failed_acl_is_retried_on_the_next_vault_read(self):
+        self.vault.save('p1', SECRET)
+        secret_store._reset_windows_acl_cache()
+        failed = []
+
+        def protect(path, directory=False):
+            if Path(path) == self.vault.key_path and not failed:
+                failed.append(True)
+                raise SecretStoreError('Cannot enforce owner-only Windows permissions')
+
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only', side_effect=protect) as acl:
+            with self.assertRaisesRegex(SecretStoreError, 'Cannot enforce owner-only'):
+                self.vault.get('p1')
+            self.assertEqual(self.vault.get('p1'), SECRET)
+            self.assertEqual(self.vault.get('p1'), SECRET)
+            calls = [Path(call[0][0]) for call in acl.call_args_list]
+            self.assertCountEqual(calls, [self.vault.directory, self.vault.directory / 'vault.lock',
+                                         self.vault.key_path, self.vault.key_path, self.vault.path])
+
+    def test_windows_sidecar_removed_before_the_cached_acl_check_is_tolerated(self):
+        self.vault.save('p1', SECRET)
+        journal = self.vault.directory / 'workspace.sqlite3-journal'
+        journal.write_bytes(b'journal')
+        secret_store._reset_windows_acl_cache()
+        real_lstat = os.lstat
+        removed = []
+
+        def remove_after_check(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if str(path) == str(journal) and not removed:
+                journal.unlink()
+                removed.append(True)
+            return info
+
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            with mock.patch.object(os, 'lstat', side_effect=remove_after_check):
+                self.assertEqual(self.vault.get('p1'), SECRET)
+            self.assertEqual(removed, [True])
+            self.assertNotIn(journal, [Path(call[0][0]) for call in protect.call_args_list])
+            journal.write_bytes(b'new journal')
+            protect.reset_mock()
+            self.assertEqual(self.vault.get('p1'), SECRET)
+            self.assertEqual(self.vault.get('p1'), SECRET)
+            protect.assert_called_once_with(journal, directory=False)
+            # The same disappearance must be tolerated with an existing
+            # cache entry, without bypassing the fresh identity check.
+            removed.clear()
+            protect.reset_mock()
+            with mock.patch.object(os, 'lstat', side_effect=remove_after_check):
+                self.assertEqual(self.vault.get('p1'), SECRET)
+            self.assertEqual(removed, [True])
+            protect.assert_not_called()
+
+    def test_windows_acl_cache_normalizes_absolute_paths(self):
+        path = self.home / 'private-file'
+        path.write_bytes(b'')
+        aliases = [str(path), str(self.home) + os.sep + '.' + os.sep + path.name]
+        # Windows CI may put the checkout and temporary HOME on different
+        # drives, between which no relative path exists.
+        if os.path.splitdrive(str(path))[0].lower() == os.path.splitdrive(os.getcwd())[0].lower():
+            aliases.append(os.path.relpath(str(path)))
+        if os.name == 'nt':
+            aliases.append(str(path).swapcase())
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            for alias in aliases:
+                secret_store._protect_private_path(alias, 0o600)
+            protect.assert_called_once_with(aliases[0], directory=False)
+
+    def test_windows_acl_cache_is_bounded_and_evicts_the_least_recent_path(self):
+        limit = secret_store._WINDOWS_ACL_CACHE_SIZE
+        paths = [self.home / ('private-%d' % index) for index in range(limit + 1)]
+        for path in paths:
+            path.write_bytes(b'')
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            for path in paths[:-1]:
+                secret_store._protect_private_path(path, 0o600)
+            self.assertEqual(protect.call_count, limit)
+            secret_store._protect_private_path(paths[0], 0o600)  # retain the most recently used
+            secret_store._protect_private_path(paths[-1], 0o600)  # evict paths[1]
+            secret_store._protect_private_path(paths[0], 0o600)
+            self.assertEqual(protect.call_count, limit + 1)
+            secret_store._protect_private_path(paths[1], 0o600)
+            self.assertEqual(protect.call_count, limit + 2)
+            self.assertEqual(len(secret_store._WINDOWS_ACL_CACHE), limit)
+            secret_store._reset_windows_acl_cache()
+            secret_store._protect_private_path(paths[1], 0o600)
+            self.assertEqual(protect.call_count, limit + 3)
+
+    def test_windows_replacement_during_acl_application_is_not_cached(self):
+        path = self.home / 'private-file'
+        replacement = self.home / 'replacement'
+        path.write_bytes(b'old')
+        replacement.write_bytes(b'new')
+        replaced = []
+
+        def replace_during_protect(path, directory=False):
+            if not replaced:
+                replacement.replace(path)
+                replaced.append(True)
+
+        with mock.patch.object(sys, 'platform', 'win32'), \
+                mock.patch.object(secret_store, '_windows_owner_only', side_effect=replace_during_protect) as protect:
+            with self.assertRaisesRegex(SecretStoreError, 'changed while it was being protected'):
+                secret_store._protect_private_path(path, 0o600)
+            secret_store._protect_private_path(path, 0o600)
+            secret_store._protect_private_path(path, 0o600)
+            self.assertEqual(protect.call_count, 2)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
+    def test_posix_permissions_are_checked_even_with_a_windows_cache_entry(self):
+        path = self.home / 'private-file'
+        path.write_bytes(b'')
+        with mock.patch.object(secret_store, '_windows_owner_only') as protect:
+            with mock.patch.object(sys, 'platform', 'win32'):
+                secret_store._ensure_private_directory(self.home)
+                fd, _created = secret_store._open_private_file(path, os.O_RDONLY)
+                os.close(fd)
+            protect.reset_mock()
+            for _ in range(2):
+                self.home.chmod(0o755)
+                path.chmod(0o666)
+                secret_store._ensure_private_directory(self.home)
+                fd, _created = secret_store._open_private_file(path, os.O_RDONLY)
+                os.close(fd)
+                self.assertEqual(stat.S_IMODE(self.home.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            protect.assert_not_called()
 
     def test_windows_acl_failure_stops_reads_and_writes(self):
         self.vault.save('p1', SECRET)
         before = self.vault.path.read_bytes()
+        secret_store._reset_windows_acl_cache()
         with mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(secret_store, '_windows_owner_only', create=True,
                                   side_effect=SecretStoreError('Cannot enforce owner-only Windows permissions')):
@@ -94,21 +279,26 @@ class TestVault(IsolatedHome):
     def test_windows_sidecar_removed_during_acl_update_is_not_an_error(self):
         self.vault.save('p1', SECRET)
         journal = self.vault.directory / 'workspace.sqlite3-journal'
-        journal.write_bytes(b'journal')
+        for acl_failed in (True, False):
+            journal.write_bytes(b'journal')
+            secret_store._reset_windows_acl_cache()
 
-        def protect(path, directory=False):
-            if Path(path) == journal:
-                # SQLite removed the journal between the check and the ACL call.
-                journal.unlink()
-                raise SecretStoreError('Cannot enforce owner-only Windows permissions')
+            def protect(path, directory=False):
+                if Path(path) == journal:
+                    # Cover removal during the Win32 call and after a
+                    # successful call, before the cache's final identity check.
+                    journal.unlink()
+                    if acl_failed:
+                        raise SecretStoreError('Cannot enforce owner-only Windows permissions')
 
-        with mock.patch.object(sys, 'platform', 'win32'), \
-                mock.patch.object(secret_store, '_windows_owner_only', side_effect=protect, create=True):
-            self.assertEqual(self.vault.get('p1'), SECRET)
+            with self.subTest(acl_failed=acl_failed), mock.patch.object(sys, 'platform', 'win32'), \
+                    mock.patch.object(secret_store, '_windows_owner_only', side_effect=protect, create=True):
+                self.assertEqual(self.vault.get('p1'), SECRET)
 
         # A sidecar that is still there, or any other file, keeps the failure fatal.
         journal.write_bytes(b'journal')
         for failing in (journal, self.vault.key_path):
+            secret_store._reset_windows_acl_cache()
             def refuse(path, directory=False, failing=failing):
                 if Path(path) == failing:
                     raise SecretStoreError('Cannot enforce owner-only Windows permissions')

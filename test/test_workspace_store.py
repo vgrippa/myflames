@@ -7,11 +7,14 @@ import errno
 from pathlib import Path
 import contextlib
 import sqlite3
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
-from myflames import workspace_store
+from myflames import secret_store, workspace_store
 from myflames.workspace_store import WorkspaceStore, validate_bundle
 
 PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
@@ -34,6 +37,173 @@ class TestWorkspaceStore(unittest.TestCase):
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
+        secret_store._reset_windows_acl_cache()
+        self.addCleanup(secret_store._reset_windows_acl_cache)
+
+    def test_windows_concurrent_connections_apply_each_acl_once(self):
+        # Set up SQLite before the race, then model a fresh backend process.
+        # Only the Win32 ACL call is mocked; every connection is real.
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        barrier = threading.Barrier(20, timeout=10)
+        results, errors = [], []
+        result_lock = threading.Lock()
+
+        def connect():
+            try:
+                barrier.wait()
+                with contextlib.closing(WorkspaceStore(self.path)._connect()) as conn:
+                    value = conn.execute('SELECT 1').fetchone()[0]
+                with result_lock:
+                    results.append(value)
+            except BaseException as exc:
+                with result_lock:
+                    errors.append(exc)
+
+        def protect(path, directory=False):
+            # A slow ACL call makes simultaneous cache misses overlap reliably.
+            time.sleep(0.01)
+
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only', side_effect=protect) as acl:
+            threads = [threading.Thread(target=connect) for _ in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(20)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [1] * 20)
+            calls = [(Path(call[0][0]), bool(call[1].get('directory'))) for call in acl.call_args_list]
+            self.assertCountEqual(calls, [(self.path.parent, True), (self.path, False)])
+            # A warm connection must not write either ACL again.
+            self.store._connect().close()
+            self.assertEqual(acl.call_count, 2)
+
+    def test_windows_replaced_database_gets_its_own_acl(self):
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only') as acl:
+            self.store._connect().close()
+            self.store._connect().close()
+            self.assertEqual(acl.call_count, 2)
+            replacement = self.path.with_name('replacement.sqlite3')
+            replacement.write_bytes(self.path.read_bytes())
+            before, after = self.path.stat(), replacement.stat()
+            self.assertNotEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+            replacement.replace(self.path)
+            self.store._connect().close()
+            self.store._connect().close()
+            calls = [(Path(call[0][0]), bool(call[1].get('directory'))) for call in acl.call_args_list]
+            self.assertEqual(calls, [(self.path.parent, True), (self.path, False), (self.path, False)])
+
+    def test_windows_failed_acl_is_retried_before_sqlite_connect(self):
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        fail = [True]
+
+        def protect(path, directory=False):
+            if Path(path) == self.path and fail[0]:
+                fail[0] = False
+                raise secret_store.SecretStoreError('Cannot enforce owner-only Windows permissions')
+
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only', side_effect=protect) as acl, \
+                patch.object(workspace_store.sqlite3, 'connect', wraps=sqlite3.connect) as connect:
+            with self.assertRaisesRegex(secret_store.SecretStoreError, 'Cannot enforce owner-only'):
+                self.store._connect()
+            connect.assert_not_called()
+            self.store._connect().close()
+            self.store._connect().close()
+            self.assertEqual(connect.call_count, 2)
+            calls = [(Path(call[0][0]), bool(call[1].get('directory'))) for call in acl.call_args_list]
+            self.assertEqual(calls, [(self.path.parent, True), (self.path, False), (self.path, False)])
+
+    def test_windows_cached_acl_still_rejects_links_and_wrong_file_types(self):
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        real_lstat = os.lstat
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only') as acl:
+            self.store._connect().close()
+            acl.reset_mock()
+            for target in (self.path.parent, self.path):
+                for mode in (stat.S_IFLNK, stat.S_IFREG if target == self.path.parent else stat.S_IFDIR):
+                    # Keep the identity unchanged, so an early cache return
+                    # would incorrectly bypass the refusal. No symlink privilege
+                    # is needed to exercise this on the Windows CI runner.
+                    def invalid(path, *args, **kwargs):
+                        info = real_lstat(path, *args, **kwargs)
+                        if str(path) == str(target):
+                            fields = list(info)
+                            fields[0] = mode | 0o600
+                            return os.stat_result(fields)
+                        return info
+
+                    with self.subTest(target=target, mode=mode), \
+                            patch.object(os, 'lstat', side_effect=invalid), \
+                            patch.object(workspace_store.sqlite3, 'connect') as connect:
+                        with self.assertRaisesRegex(secret_store.SecretStoreError, 'symbolic link|wrong file type'):
+                            self.store._connect()
+                        connect.assert_not_called()
+                        acl.assert_not_called()
+
+    def test_windows_cached_acl_still_checks_the_opened_database_identity(self):
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        identity = self.path.stat()
+        real_fstat = os.fstat
+        descriptors = []
+
+        def replaced(fd):
+            info = real_fstat(fd)
+            if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+                descriptors.append(fd)
+                fields = list(info)
+                fields[1] += 1
+                return os.stat_result(fields)
+            return info
+
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only') as acl:
+            self.store._connect().close()
+            acl.reset_mock()
+            with patch.object(os, 'fstat', side_effect=replaced), \
+                    patch.object(workspace_store.sqlite3, 'connect') as connect:
+                with self.assertRaisesRegex(secret_store.SecretStoreError, 'changed while it was being opened'):
+                    self.store._connect()
+                connect.assert_not_called()
+                acl.assert_not_called()
+        self.assertTrue(descriptors)
+        for fd in set(descriptors):
+            with self.assertRaises(OSError):
+                real_fstat(fd)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX storage ownership')
+    def test_windows_cached_acl_still_checks_posix_ownership(self):
+        self.store._connect().close()
+        secret_store._reset_windows_acl_cache()
+        real_lstat = os.lstat
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(secret_store, '_windows_owner_only') as acl:
+            self.store._connect().close()
+            acl.reset_mock()
+            for target in (self.path.parent, self.path):
+                def foreign(path, *args, **kwargs):
+                    info = real_lstat(path, *args, **kwargs)
+                    if str(path) == str(target):
+                        fields = list(info)
+                        fields[4] = os.geteuid() + 1
+                        return os.stat_result(fields)
+                    return info
+
+                with self.subTest(target=target), patch.object(os, 'lstat', side_effect=foreign), \
+                        patch.object(workspace_store.sqlite3, 'connect') as connect:
+                    with self.assertRaisesRegex(secret_store.SecretStoreError, 'owned'):
+                        self.store._connect()
+                    connect.assert_not_called()
+                    acl.assert_not_called()
 
     def test_gate65_session_restore_keeps_clauses_and_redacts_restarted_set(self):
         cases = (
