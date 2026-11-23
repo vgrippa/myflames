@@ -777,7 +777,7 @@ def _build_map(entries, probes, profiles):
             return found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
-    def edge(observer, source, destination, kind, evidence, verified, state, label):
+    def edge(observer, source, destination, kind, evidence, verified, state, label, reason=None):
         if not source or not destination or source == destination:
             return
         key = (source, destination, kind, '' if kind == 'replication' else label)
@@ -785,6 +785,8 @@ def _build_map(entries, probes, profiles):
             label = 'server ID match, not verified'
         value = dict(**{'from': source, 'to': destination}, kind=kind, evidence=evidence,
                      verified=verified, state=state, label=label)
+        if reason:
+            value['reason'] = reason
         old = edges.get(key)
         if old is None:
             if edge_counts.get(observer, 0) >= MAP_EDGES_PER_MEMBER:
@@ -794,9 +796,14 @@ def _build_map(entries, probes, profiles):
         if old is None or verified and not old['verified']:
             if old is not None and state is None:
                 value['state'] = old['state']
+            if old is not None and 'reason' not in value and 'reason' in old:
+                value['reason'] = old['reason']
             edges[key] = value
-        elif old['state'] is None and state is not None:
-            old['state'] = state
+        else:
+            if old['state'] is None and state is not None:
+                old['state'] = state
+            if reason and 'reason' not in old:
+                old['reason'] = reason
 
     attestations, observations = {}, {}
     for pid, probe in probes.items():
@@ -885,9 +892,8 @@ def _build_map(entries, probes, profiles):
                 if hostgroup in no_online and not probe.get('servers_incomplete'):
                     reasons.append('No ONLINE member in this hostgroup.')
                 label = 'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?')
-                if reasons:
-                    label += ': ' + ' '.join(reasons)
-                edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label)
+                edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label,
+                     ' '.join(reasons) if reasons else None)
         if probe.get('kind') == 'readyset':
             upstreams = list(probe.get('upstreams') or [])
             if not upstreams:

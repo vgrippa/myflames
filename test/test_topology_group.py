@@ -2850,9 +2850,10 @@ class TopologyReadTests(GroupCase):
                             edge['verified'] is False and edge['evidence'] == 'endpoint'
                             for edge in edges.values()))
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
+        self.assertNotIn('reason', edges['a'])
         self.assertEqual(edges['b']['state'], 'SHUNNED')
-        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
-        self.assertIn('No ONLINE member', edges['b']['label'])
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('No ONLINE member', edges['b']['reason'])
 
     def test_map_proxysql_offline_runtime_rows_keep_reason_and_ignore_online_pool(self):
         self.save('a', 'G')
@@ -2873,10 +2874,11 @@ class TopologyReadTests(GroupCase):
                 self.assert_map_schema(report)
                 edges = {edge['to']: edge for edge in report['map']['edges']}
                 self.assertEqual(edges['a']['state'], status)
-                self.assertTrue(edges['a']['label'].startswith('hostgroup 10'))
-                self.assertNotIn('No ONLINE member', edges['a']['label'])
-                self.assertRegex(edges['a']['label'].lower(), 'no new traffic|out of traffic|stops using')
+                self.assertEqual(edges['a']['label'], 'hostgroup 10')
+                self.assertNotIn('No ONLINE member', edges['a']['reason'])
+                self.assertRegex(edges['a']['reason'].lower(), 'no new traffic|out of traffic|stops using')
                 self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
+                self.assertNotIn('reason', edges['b'])
 
     def test_map_proxysql_monitor_offline_hostgroup_is_offline_even_with_online_row(self):
         self.save('a', 'G')
@@ -2896,7 +2898,8 @@ class TopologyReadTests(GroupCase):
                 self.assertTrue(any('FROM ' + table in sql for sql in self.statements(observed, 'active.example')))
                 edges = {edge['to']: edge for edge in report['map']['edges']}
                 self.assertEqual(edges['a']['state'], 'offline')
-                self.assertIn('offline hostgroup', edges['a']['label'])
+                self.assertEqual(edges['a']['label'], 'hostgroup 40')
+                self.assertIn('offline hostgroup', edges['a']['reason'])
                 self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
 
     def test_map_proxysql_pool_lag_reason_and_hostgroup_health_are_scoped_per_route(self):
@@ -2921,14 +2924,15 @@ class TopologyReadTests(GroupCase):
         edges = report['map']['edges']
         self.assertEqual(len(edges), 3)
         online = next(edge for edge in edges if edge['label'] == 'hostgroup 10')
-        lagged = next(edge for edge in edges if edge['to'] == 'a' and edge['label'].startswith('hostgroup 20'))
+        lagged = next(edge for edge in edges if edge['to'] == 'a' and edge['label'] == 'hostgroup 20')
         offline = next(edge for edge in edges if edge['to'] == 'b')
         self.assertEqual(online['state'], 'ONLINE')
+        self.assertNotIn('reason', online)
         self.assertEqual(lagged['state'], 'SHUNNED_REPLICATION_LAG')
-        self.assertIn('Shunned for replication lag', lagged['label'])
-        self.assertIn('No ONLINE member', lagged['label'])
+        self.assertIn('Shunned for replication lag', lagged['reason'])
+        self.assertIn('No ONLINE member', lagged['reason'])
         self.assertEqual(offline['state'], 'OFFLINE_HARD')
-        self.assertIn('No ONLINE member', offline['label'])
+        self.assertIn('No ONLINE member', offline['reason'])
 
     def test_map_proxysql_pool_online_recovers_runtime_shunned_backend(self):
         self.save('a', 'G')
@@ -3026,9 +3030,9 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(set(edges), {'a', 'b'})
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
         self.assertEqual(edges['b']['state'], 'SHUNNED_REPLICATION_LAG')
-        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
-        self.assertIn('Shunned for replication lag', edges['b']['label'])
-        self.assertIn('No ONLINE member', edges['b']['label'])
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('Shunned for replication lag', edges['b']['reason'])
+        self.assertIn('No ONLINE member', edges['b']['reason'])
 
     def test_map_proxysql_runtime_keeps_shunned_aws_bgd_and_config_drops_it(self):
         self.save('a', 'G')
@@ -3044,8 +3048,8 @@ class TopologyReadTests(GroupCase):
         edges = {edge['to']: edge for edge in report['map']['edges']}
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
         self.assertEqual(edges['b']['state'], 'SHUNNED_AWS_BGD')
-        self.assertTrue(edges['b']['label'].startswith('hostgroup 20'))
-        self.assertIn('No ONLINE member', edges['b']['label'])
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('No ONLINE member', edges['b']['reason'])
 
         proxy_cfg = member_fixture(
             proxy='proxysql',
@@ -3230,7 +3234,7 @@ class MapBoundsTests(unittest.TestCase):
                            dict(self.route('unknown.example'), **unknown)]
                 result = self.build([profile], {'proxy': {'kind': 'proxysql', 'servers': servers}})
                 self.assertEqual(len(result['edges']), 2)
-                self.assertFalse(any('No ONLINE member' in edge['label'] for edge in result['edges']))
+                self.assertFalse(any('No ONLINE member' in edge.get('reason', '') for edge in result['edges']))
                 states = {edge['to']: edge['state'] for edge in result['edges']}
                 self.assertEqual(states['peer:shunned.example:3306'], 'SHUNNED')
                 self.assertIsNone(states['peer:unknown.example:3306'])
@@ -3249,7 +3253,7 @@ class MapBoundsTests(unittest.TestCase):
                 result = self.build([profile], {'proxy': probe})
                 self.assertEqual(len(result['edges']), 1)
                 self.assertEqual(result['edges'][0]['state'], 'SHUNNED')
-                self.assertNotIn('No ONLINE member', result['edges'][0]['label'])
+                self.assertNotIn('No ONLINE member', result['edges'][0].get('reason', ''))
                 self.assertTrue(any('rows capped' in note['message'] for note in result['notes']))
 
     def test_ssh_loopback_proxy_route_cannot_match_a_local_saved_server(self):

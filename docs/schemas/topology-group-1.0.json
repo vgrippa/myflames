@@ -1003,6 +1003,11 @@
           ]
         },
         "label": {
+          "description": "Short text drawn beside the link (a ProxySQL route keeps just its hostgroup here).",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why a ProxySQL route is in its state (monitor offline hostgroup, no ONLINE member, offline or lag shunning), joined sentences. Absent when there is nothing to explain. The link list and tooltip carry it; the drawn label stays the short label.",
           "type": "string"
         }
       },

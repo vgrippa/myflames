@@ -65,7 +65,7 @@ export function mapEdgeVerification(edge: MapEdge): string {
 export function mapEdgeText(edge: MapEdge): string {
   if (edge.kind === "alias") return mapEdgeLabel(edge);
   return [mapEdgeLabel(edge), edge.state || "State not reported",
-    mapEdgeVerification(edge)].join(" · ");
+    mapEdgeVerification(edge), edge.reason || ""].filter(Boolean).join(" · ");
 }
 
 function stateTone(state: string | null): string {

@@ -232,6 +232,9 @@ export function createZoom(options: ZoomOptions): ZoomController {
   }
 
   function zoom(factor: number, px: number, py: number) {
+    // Settle a wheel gesture first: paint() changes the viewBox, and the
+    // gesture's transform must not still scale the root over it.
+    stopWheel();
     applyZoom(factor, px, py);
     paint();
   }
