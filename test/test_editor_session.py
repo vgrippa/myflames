@@ -244,6 +244,30 @@ PLAN_FAKE = r'''
 '''
 
 
+class ReaperShutdownTests(unittest.TestCase):
+    def test_close_wakes_and_joins_sleeping_reaper_under_200ms(self):
+        registry = ed.EditorSessions(reap_every=15.0)
+        self.addCleanup(registry.close)
+        waiting = threading.Event()
+        wait = registry._reaper_stop.wait
+
+        def observed_wait(timeout):
+            waiting.set()
+            return wait(timeout)
+
+        with mock.patch.object(registry._reaper_stop, 'wait', side_effect=observed_wait), \
+                mock.patch.object(registry, 'reap') as reap:
+            registry._start_reaper()
+            self.assertTrue(waiting.wait(1))
+            began = time.monotonic()
+            registry.close()
+            self.assertLess(time.monotonic() - began, 0.2)
+            self.assertFalse(registry._reaper.is_alive())
+            reap.assert_not_called()
+        registry._start_reaper()
+        self.assertFalse(registry._reaper.is_alive(), 'shutdown must not restart the reaper')
+
+
 class InsightTests(unittest.TestCase):
     """History attribution and transaction reads, with hand-authored engine
     shapes. No sockets, user's workspace, keychain or real database writes.

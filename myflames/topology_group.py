@@ -1095,7 +1095,7 @@ def read_group(store, group_name, section, active_member_profile_id,
                     entry['message'] = exclusion or 'Read from this member.'
         except _NotReached:
             exclusion = entry['message']
-        except Exception as exc:
+        except (ConnectorError, ValueError, OSError) as exc:
             # No observed identity, role or inventory from a rejected read
             # may influence the group summary or another member's comparison.
             entry = _entry(profile)

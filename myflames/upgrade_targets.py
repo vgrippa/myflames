@@ -64,7 +64,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 
 from .perf_common import Reader, literal
 from .server_info import product_identity, tool_version_tuple as version_tuple
-from .tls import https_context
+from .tls import Watchdog, WatchedHTTPSHandler, https_context
 
 TAG = '/*myflames:upgrade_targets*/ '
 SCHEMA = 'upgrade-targets-1.0'
@@ -125,24 +125,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def _fetch(url):
     if not any(re.fullmatch(pattern, url) for pattern in _ALLOWED):
         raise ValueError('Unsupported release source.')
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                         urllib.request.HTTPSHandler(context=https_context()), _NoRedirect())
-    request = urllib.request.Request(url, headers={'Accept-Encoding': 'identity'})
     started = time.monotonic()
-    with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
-        if response.geturl() != url or response.status != 200:
-            raise ValueError('Unexpected release source response.')
-        chunks, size = [], 0
-        while True:
-            chunk = response.read(65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > MAX_BYTES:
-                raise ValueError('The release source exceeded the size limit.')
-            if time.monotonic() - started > READ_TIMEOUT:
-                raise ValueError('The release source was too slow.')
+    watchdog = Watchdog(started + READ_TIMEOUT)
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+            WatchedHTTPSHandler(watchdog, https_context()), _NoRedirect())
+        request = urllib.request.Request(url, headers={'Accept-Encoding': 'identity'})
+        with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
+            if response.geturl() != url or response.status != 200:
+                raise ValueError('Unexpected release source response.')
+            chunks, size = [], 0
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    raise ValueError('The release source exceeded the size limit.')
+                if time.monotonic() - started > READ_TIMEOUT:
+                    raise ValueError('The release source was too slow.')
+    except Exception:
+        if watchdog.expired:
+            raise ValueError('The release source was too slow.') from None
+        raise
+    finally:
+        watchdog.stop()
+    if watchdog.expired:
+        raise ValueError('The release source was too slow.')
     return b''.join(chunks).decode('utf-8', 'replace')
 
 

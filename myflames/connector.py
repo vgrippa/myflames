@@ -43,6 +43,8 @@ from .server_info import detect_flavor, server_version_tuple
 # Bound both pipes independently: stderr can be large even for a tiny result.
 MAX_STDOUT_BYTES = 64 * 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
+# One shared budget for reaping the killed client and joining its pipe workers.
+PROCESS_CLEANUP_TIMEOUT = 1.0
 
 # Keep client byte encoding independent of the locale. SET NAMES also fixes
 # MariaDB 10.11's server-default fallback when a MySQL client negotiates an
@@ -140,7 +142,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
 
     A separate stdin writer prevents a large script from blocking output
     drainage. On timeout, overflow or interruption, kill and reap the client
-    and join every pipe worker before returning to the caller. A read-only
+    and join pipe workers within a shared cleanup deadline. A read-only
     caller may give (raw marker row, seconds) to start a separate tail budget
     once that complete row arrives. Only that mode retains stdout on timeout.
     Its optional on_tail_start callback runs once in the stdout reader at
@@ -169,6 +171,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     failed = []
     buffers = [bytearray(), bytearray()]
     workers = []
+    pipe_workers = {}
     tail_deadline = []
     timed_out = None
 
@@ -222,13 +225,15 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     try:
         for args in ((proc.stdout, 0, stdout_limit, "stdout"),
                      (proc.stderr, 1, stderr_limit, "stderr")):
-            worker = threading.Thread(target=drain, args=args)
+            worker = threading.Thread(target=drain, args=args, daemon=True)
             worker.start()
             workers.append(worker)
+            pipe_workers[args[0]] = worker
         if input is not None:
-            worker = threading.Thread(target=send)
+            worker = threading.Thread(target=send, daemon=True)
             worker.start()
             workers.append(worker)
+            pipe_workers[proc.stdin] = worker
         while True:
             changed.clear()
             read_cancel.check()
@@ -267,14 +272,21 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
                     pass
         if proc.poll() is None:
             proc.kill()
-        proc.wait()
+        cleanup_deadline = time.monotonic() + PROCESS_CLEANUP_TIMEOUT
+        try:
+            proc.wait(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass  # A killed child can still be stuck in an OS operation.
         for worker in workers:
-            worker.join()
+            worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            if pipe is not None:
+            worker = pipe_workers.get(pipe)
+            # Closing a buffered stream while another thread holds its lock
+            # can block too. Each worker closes its own pipe when it exits.
+            if pipe is not None and (worker is None or not worker.is_alive()):
                 pipe.close()
         if timed_out is not None and tail_timeout is not None:
-            # The child is reaped and readers joined before exposing output.
+            # Preserve only the bounded output captured before cleanup ends.
             timed_out.output = bytes(buffers[0])
 
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".

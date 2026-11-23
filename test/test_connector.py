@@ -2857,6 +2857,82 @@ class TestBoundedTransport(unittest.TestCase):
                 self.assertIsNotNone(self.children[0].poll())
 
 
+class TestBoundedTransportCleanup(unittest.TestCase):
+    def test_killed_client_wait_and_blocked_pipe_joins_are_bounded(self):
+        # Stand in for descendants retaining the pipe after the client dies.
+        # Release every real test thread even if an assertion fails.
+        release = threading.Event()
+
+        class Pipe:
+            def __init__(self):
+                self.closed = False
+                self.reader = None
+
+            def read(self, size):
+                self.reader = threading.current_thread()
+                release.wait(2)
+                return b''
+
+            def close(self):
+                self.closed = True
+
+        stdout, stderr = Pipe(), Pipe()
+        proc = mock.Mock(stdin=None, stdout=stdout, stderr=stderr)
+        proc.poll.return_value = None
+
+        def wait(timeout=None):
+            self.assertIsNotNone(timeout, 'post-kill wait must have a deadline')
+            time.sleep(timeout)
+            raise subprocess.TimeoutExpired('client', timeout)
+
+        proc.wait.side_effect = wait
+        try:
+            with mock.patch.object(subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(connector, 'PROCESS_CLEANUP_TIMEOUT', 0.05):
+                started = time.monotonic()
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    connector._run_bounded(['client'], timeout=0.03, kill_tree=False)
+                self.assertLess(time.monotonic() - started, 0.75)
+            proc.kill.assert_called_once_with()
+            self.assertEqual(proc.wait.call_count, 1)
+            self.assertFalse(stdout.closed, 'a live reader owns its pipe')
+            self.assertFalse(stderr.closed, 'a live reader owns its pipe')
+        finally:
+            release.set()
+            for pipe in (stdout, stderr):
+                if pipe.reader is not None:
+                    pipe.reader.join(timeout=2)
+                    self.assertFalse(pipe.reader.is_alive())
+        self.assertTrue(stdout.closed)
+        self.assertTrue(stderr.closed)
+
+    def test_successful_client_cleanup_joins_all_pipe_workers(self):
+        import io
+        real_thread = threading.Thread
+        workers = []
+
+        def thread(*args, **kwargs):
+            worker = real_thread(*args, **kwargs)
+            worker.join = mock.Mock(wraps=worker.join)
+            workers.append(worker)
+            return worker
+
+        proc = mock.Mock(stdin=io.BytesIO(), stdout=io.BytesIO(b'result'),
+                         stderr=io.BytesIO(), returncode=0)
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        with mock.patch.object(subprocess, 'Popen', return_value=proc), \
+                mock.patch.object(threading, 'Thread', side_effect=thread):
+            result = connector._run_bounded(['client'], timeout=1, input=b'SELECT 1')
+        self.assertEqual(result.stdout, b'result')
+        self.assertEqual(len(workers), 3)
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertTrue(all(worker.join.called and worker.join.call_args[1].get('timeout') is not None
+                            for worker in workers))
+        self.assertTrue(all(pipe.closed for pipe in (proc.stdin, proc.stdout, proc.stderr)))
+        self.assertTrue(all(call[1].get('timeout') is not None for call in proc.wait.call_args_list))
+
+
 class TestClientText(unittest.TestCase):
     """Windows clients write CRLF line ends; other systems keep data as is."""
 

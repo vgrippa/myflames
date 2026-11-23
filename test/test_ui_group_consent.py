@@ -4,6 +4,7 @@ Only the client process boundary is replayed. SQL classification, saved
 credentials, policy, token claims, per-login guards and audits stay real.
 """
 import contextlib
+import threading
 import types
 from unittest import mock
 
@@ -338,9 +339,11 @@ class RemainingWriteConsentTests(groups.GroupCase):
                 plan['review_token'] = ui._review_tokens(self.workspace).issue(
                     'lifecycle', ui._review_identity(self.connection, self.workspace), ui._lifecycle_review_details(plan))
                 def run(job, target):
+                    with self.workspace.lifecycle.lock:
+                        self.workspace.lifecycle.jobs[job.id] = job
                     self.revoke('removed')
                     return job.run()
-                self.workspace.lifecycle = types.SimpleNamespace(add=run)
+                self.workspace.lifecycle = types.SimpleNamespace(add=run, lock=threading.Lock(), jobs={})
                 with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
                         mock.patch.object(connector, '_run_bounded') as spawn:
                     result = ui.api_response('/api/lifecycle/start', payload, self.workspace)

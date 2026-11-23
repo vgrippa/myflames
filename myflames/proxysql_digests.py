@@ -165,6 +165,7 @@ WORKER_RESTARTS = 3
 WORKER_ARG = "__myflames_regex_worker"
 #: The worker's first answer also waits for it to start.
 WORKER_START = 10.0
+WORKER_CLEANUP_TIMEOUT = 1.0
 ITERATION_LIMIT = 10
 
 
@@ -229,10 +230,12 @@ def _run_worker(patterns, texts, start, out):
     import queue
     import subprocess
     import threading
+    import time
     env = dict((k, v) for k, v in os.environ.items() if k in ("SYSTEMROOT", "PATH", "TMPDIR", "TEMP", "LANG"))
     env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.Popen(_worker_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, env=env)
+    workers = []
     try:
         lines = queue.Queue()
         payload = json.dumps({"patterns": patterns[start:], "texts": texts}).encode("utf-8")
@@ -240,9 +243,13 @@ def _run_worker(patterns, texts, start, out):
         def feed():
             try:
                 proc.stdin.write(payload)
-                proc.stdin.close()
             except (OSError, ValueError):
                 pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except (OSError, ValueError):
+                    pass
 
         def drain():
             try:
@@ -251,9 +258,17 @@ def _run_worker(patterns, texts, start, out):
                     lines.put(raw.decode("utf-8", "replace").rstrip("\r\n"))
             except (OSError, ValueError):
                 pass
-            lines.put(None)
-        for target in (feed, drain):
-            threading.Thread(target=target, daemon=True).start()
+            finally:
+                try:
+                    proc.stdout.close()
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    lines.put(None)
+        for target, stream in ((feed, proc.stdin), (drain, proc.stdout)):
+            worker = threading.Thread(target=target, daemon=True)
+            worker.start()
+            workers.append((worker, stream))
         try:
             ready = lines.get(timeout=WORKER_START)
         except queue.Empty:
@@ -276,8 +291,18 @@ def _run_worker(patterns, texts, start, out):
             proc.kill()
         except OSError:
             pass
-        proc.wait()
+        cleanup_deadline = time.monotonic() + WORKER_CLEANUP_TIMEOUT
+        try:
+            proc.wait(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        for worker, stream in workers:
+            worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         for stream in (proc.stdin, proc.stdout):
+            # A live worker owns its stream. Closing it here could wait on
+            # the very buffered-I/O lock whose deadline just expired.
+            if any(pipe is stream and worker.is_alive() for worker, pipe in workers):
+                continue
             try:
                 stream.close()
             except (OSError, ValueError):

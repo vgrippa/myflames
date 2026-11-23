@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest import mock
 from myflames import tool_updates as tu
+from _tls_servers import TrickleTLSServer, anonymous_contexts
 
 
 def tool(name='mysql', version=(8, 4, 10), engine='mysql', **extra):
@@ -30,6 +31,34 @@ class ToolUpdates(unittest.TestCase):
             result = tu.enrich_tools(tool())['tools']['mysql']
         self.assertEqual(result['download_url'], tu.MYSQL_DOWNLOAD)
         self.assertEqual(result['update']['status'], 'not_checked')
+
+    def test_trickled_https_deadline_releases_inflight_slot(self):
+        contexts = anonymous_contexts()
+        if contexts is None:
+            self.skipTest('this OpenSSL has no anonymous TLS cipher')
+        server_context, client_context = contexts
+        for part, head, answer in (
+                ('headers', b'', b'HTTP/1.1 200 OK\r\n' + b'X-Slow: 1\r\n' * 100),
+                ('body', b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n', b'x')):
+            with self.subTest(part=part):
+                server = TrickleTLSServer(server_context, answer, head=head, interval=0.02)
+                try:
+                    with mock.patch('socket.create_connection', side_effect=server.connect), \
+                            mock.patch.object(tu, 'https_context', return_value=client_context), \
+                            mock.patch.object(tu, 'REQUEST_TIMEOUT', 0.3):
+                        with tu._LOCK:
+                            tu._CACHE.clear()
+                        began = time.monotonic()
+                        latest, error, unused = tu._cached(('shell', ''), began + 2)
+                        self.assertLess(time.monotonic() - began, 1.5)
+                        self.assertIsNone(latest)
+                        self.assertIsNotNone(error)
+                        with tu._LOCK:
+                            self.assertNotIn(('shell', ''), tu._INFLIGHT)
+                    self.assertIsNotNone(server.wait(2))
+                    self.assertGreaterEqual(server.dripped, 3)
+                finally:
+                    server.close()
 
     def test_statuses(self):
         for installed, expected in [((8,4,10),'available'), ((8,4,11),'current'), ((8,4,12),'unknown')]:

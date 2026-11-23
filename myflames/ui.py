@@ -1030,12 +1030,19 @@ def _lifecycle_add(workspace, job, target, connection):
     owners = _lifecycle_owners(workspace)
     with _LIFECYCLE_OWNERS_LOCK:
         owners[job.id] = _lifecycle_owner(connection)
-    try:
-        return workspace.lifecycle.add(job, target)
-    except Exception:
-        with _LIFECYCLE_OWNERS_LOCK:
+        try:
+            result = workspace.lifecycle.add(job, target)
+        except Exception:
             owners.pop(job.id, None)
-        raise
+            raise
+        # add() expires finished jobs. Prune every owner's entries here, even
+        # if no page ever polls /jobs, without racing another registration.
+        with workspace.lifecycle.lock:
+            live = set(workspace.lifecycle.jobs)
+        for job_id in list(owners):
+            if job_id not in live:
+                del owners[job_id]
+        return result
 
 
 def _lifecycle_jobs_response(payload, workspace):
@@ -1763,7 +1770,7 @@ def _connect_response(payload, workspace):
             try:
                 _report, facts = open_member(profile, True)
                 return profile["id"], facts, True
-            except Exception:
+            except (ConnectorError, ValueError, OSError):
                 # A member that cannot be read is reported unreachable; its
                 # error (and any secret in it) leaves this process nowhere.
                 return profile["id"], None, False
@@ -1918,7 +1925,7 @@ def _client_settings_response(path, payload, workspace):
                 server = lc.read_server(conn, options)
                 client_tools.remember_server(client_tools.endpoint_key(options), server['engine'], server['version'])
             result['server'] = {k: server[k] for k in ('engine', 'version', 'product')}
-        except Exception as exc:
+        except (ConnectorError, ValueError, OSError) as exc:
             missing = connector.client_missing_error(exc)
             result['server_error'] = dict(code=missing.code if missing else 'server-read',
                                          error=lc._safe(str(missing or exc), passwords))
@@ -3351,6 +3358,22 @@ def _secret_values(value, store=None, found=None, depth=0):
                 saved = None
             if isinstance(saved, str) and saved:
                 found.add(saved)
+        # Group probes have only group_name and active_member_profile_id in
+        # their request. A failure can originate in any saved member, whose
+        # password must be hidden too. Read only the explicitly named group;
+        # this opens no server connection and never scans unrelated secrets.
+        group = value.get("group_name")
+        if store is not None and isinstance(group, str) and group:
+            try:
+                from .workspace_store import ENDPOINT_FIELDS
+                for profile in store.list("profile"):
+                    if not isinstance(profile, dict) or profile.get("group") != group:
+                        continue
+                    member = {key: profile.get(key) for key in ENDPOINT_FIELDS}
+                    member["profile_id"] = profile.get("id")
+                    _secret_values(member, store, found, depth + 1)
+            except Exception:
+                pass
     elif isinstance(value, (list, tuple)):
         for item in value:
             _secret_values(item, store, found, depth + 1)
@@ -3648,7 +3671,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                                  if session and size > 0 else "Request must be between 1 byte and %s."
                                  % ("64 MiB" if large else "12 MiB")})
                 return
-            payload = json.loads(self._read_body(size).decode("utf-8"))
+            try:
+                payload = json.loads(self._read_body(size).decode("utf-8"))
+            except RecursionError:
+                # Decoder limits describe malformed input. A RecursionError
+                # from endpoint code still reaches the logged 500 below.
+                raise ValueError("Request JSON is too deeply nested.") from None
             if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
                     and hasattr(self, "connection")):
                 result = self._cancellable_read(payload)
@@ -3672,13 +3700,13 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             # reason attribute (UnicodeError, SSLError, URLError) are not codes.
             reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
             missing = (client_missing_error(exc) if isinstance(
-                exc, (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError))
+                exc, (ConnectorError, ValueError))
                 else None)
             if missing is not None:
                 self._send(400, {"error": str(missing), "code": missing.code})
             elif isinstance(reason, str) and reason:
                 self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
-            elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
+            elif isinstance(exc, ValueError):
                 self._send(400, {"error": request_error_text(exc)})
             elif isinstance(exc, ConnectorError):
                 self._send(400, {"error": request_error_text(exc, prefix=False)})

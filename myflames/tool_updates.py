@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .tls import https_context
+from .tls import Watchdog, WatchedHTTPSHandler, https_context
 
 MYSQL_DOWNLOAD = 'https://dev.mysql.com/downloads/mysql/'
 SHELL_DOWNLOAD = 'https://dev.mysql.com/downloads/shell/'
@@ -50,14 +50,25 @@ def _fetch(url):
             re.fullmatch(re.escape(MYSQL_DOWNLOAD) + r'\?version=[0-9]{1,4}\.[0-9]{1,4}', url) is None and
             re.fullmatch(re.escape(MARIA_API) + r'[0-9]{1,4}\.[0-9]{1,4}/latest/', url) is None):
         raise ValueError('Unsupported release source.')
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=https_context()), _NoRedirect())
-    request = urllib.request.Request(url, headers={'Accept-Encoding': 'identity'})
-    with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
-        if response.geturl() != url or response.status != 200:
-            raise ValueError('Unexpected release source response.')
-        body = response.read(MAX_BYTES + 1)
-        if len(body) > MAX_BYTES:
-            raise ValueError('Release source exceeded the size limit.')
+    watchdog = Watchdog(time.monotonic() + REQUEST_TIMEOUT)
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+            WatchedHTTPSHandler(watchdog, https_context()), _NoRedirect())
+        request = urllib.request.Request(url, headers={'Accept-Encoding': 'identity'})
+        with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
+            if response.geturl() != url or response.status != 200:
+                raise ValueError('Unexpected release source response.')
+            body = response.read(MAX_BYTES + 1)
+            if len(body) > MAX_BYTES:
+                raise ValueError('Release source exceeded the size limit.')
+    except Exception:
+        if watchdog.expired:
+            raise ValueError('The release source was too slow.') from None
+        raise
+    finally:
+        watchdog.stop()
+    if watchdog.expired:
+        raise ValueError('The release source was too slow.')
     return body.decode('utf-8')
 
 

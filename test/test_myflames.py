@@ -107,6 +107,37 @@ class TestParser(unittest.TestCase):
         root = parse_explain(self.sample_text)
         self.assertIsInstance(root, dict)
 
+    def test_deep_plans_raise_clean_value_error_before_parsing(self):
+        # Construct JSON as text: json.dumps itself recurses at 1,000 levels.
+        for depth in (41, 1000):
+            text = ('{"operation":"Filter","inputs":[' * depth +
+                    '{"operation":"Table scan on t"}' + ']}' * depth)
+            with self.subTest(depth=depth), self.assertRaisesRegex(
+                    ValueError, r'^This plan is too deeply nested \(maximum 80 levels\)\.$'):
+                analyze_plan(parse_explain(text))
+
+    def test_plan_depth_boundary_matches_workspace(self):
+        from myflames.plan_input import _plan
+        # Both metadata and operator arrays count toward the input limit.
+        for depth, accepted in ((79, True), (80, False)):
+            text = ('{"operation":"Table scan on t","metadata":' +
+                    '[' * depth + '0' + ']' * depth + '}')
+            with self.subTest(depth=depth):
+                if accepted:
+                    self.assertEqual(parse_explain(text)['engine'], 'mysql')
+                    _plan({'plan': text})
+                else:
+                    for parse in (parse_explain, lambda text: _plan({'plan': text})):
+                        with self.assertRaisesRegex(ValueError, 'maximum 80 levels'):
+                            parse(text)
+
+    def test_flat_mariadb_join_cannot_overflow_normalized_tree(self):
+        text = ('{"query_block":{"nested_loop":[' + ','.join(
+            '{"table":{"table_name":"t%d","access_type":"ALL","rows":1}}' % number
+            for number in range(1000)) + ']}}')
+        with self.assertRaisesRegex(ValueError, 'maximum 80 levels'):
+            analyze_plan(parse_explain(text))
+
     def test_parse_simple_has_positive_total_time(self):
         root = parse_explain(self.sample_text)
         self.assertGreater(root["total_time"], 0)

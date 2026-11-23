@@ -3267,19 +3267,20 @@ class EditorSessions(object):
         self.reap_every = reap_every
         self._reaper = None
         self._closed = False
+        self._reaper_stop = threading.Event()
 
     def get(self, tab_id):
         with self.lock:
             return self.sessions.get(tab_id)
 
     def _start_reaper(self):
-        if self._reaper is None and self.reap_every:
-            self._reaper = threading.Thread(target=self._reap_loop, daemon=True)
-            self._reaper.start()
+        with self.lock:
+            if not self._closed and self._reaper is None and self.reap_every:
+                self._reaper = threading.Thread(target=self._reap_loop, daemon=True)
+                self._reaper.start()
 
     def _reap_loop(self):
-        while not self._closed:
-            time.sleep(self.reap_every)
+        while not self._reaper_stop.wait(self.reap_every):
             self.reap()
 
     def reap(self):
@@ -3348,8 +3349,12 @@ class EditorSessions(object):
         """End every session (workspace exit)."""
         with self.lock:
             self._closed = True
+            self._reaper_stop.set()
             sessions = list(self.sessions.values())
             self.sessions = {}
+            reaper = self._reaper
+        if reaper is not None and reaper is not threading.current_thread():
+            reaper.join(timeout=0.1)
         for session in sessions:
             try:
                 session.end("server_exit")

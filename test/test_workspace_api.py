@@ -1,10 +1,13 @@
 """Authenticated workspace persistence and capture routes over real HTTP."""
 import http.client
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import threading
+import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -34,14 +37,15 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def request(self, path, payload=None, headers=None, method='POST'):
+    def request(self, path, payload=None, headers=None, method='POST', raw_body=None):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         default = {'Content-Type': 'application/json', 'X-Myflames-Token': self.server.token,
                     'Origin': self.server.origin,
                     'Cookie': self.server.cookie_name + '=' + self.server.session_secret}
         default.update(headers or {})
         try:
-            conn.request(method, path, json.dumps(payload or {}) if method == 'POST' else None, default)
+            body = raw_body if raw_body is not None else json.dumps(payload or {}) if method == 'POST' else None
+            conn.request(method, path, body, default)
             response = conn.getresponse()
             raw = response.read()
             body = json.loads(raw) if response.getheader('Content-Type').startswith('application/json') else raw
@@ -59,6 +63,115 @@ class TestWorkspaceAPI(unittest.TestCase):
                 self.assertEqual(set(body['secret_store']) - {'error'}, {'backend', 'label', 'available'})
             self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertFalse(self.path.exists())
+
+    def test_backend_programming_errors_are_logged_redacted_500s(self):
+        from myflames import ui
+        secret = 'request-password-for-redaction'
+        for error_type in (TypeError, KeyError, AttributeError, RecursionError, OverflowError):
+            with self.subTest(error_type=error_type.__name__):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=error_type('bug with ' + secret)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list',
+                        {'connection': {'password': secret}})
+                self.assertEqual(status, 500)
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+                self.assertIn('unexpected error in POST /api/profiles/list', log.getvalue())
+                self.assertIn(error_type.__name__, log.getvalue())
+                self.assertIn('[redacted]', log.getvalue())
+                self.assertNotIn(secret, log.getvalue())
+                self.assertNotIn(secret, json.dumps(body))
+
+    def test_malformed_and_overdeep_request_json_stay_400(self):
+        from myflames import ui
+        for raw in ('{"broken":', '[' * 1000):
+            with self.subTest(raw_length=len(raw)):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response') as endpoint, patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list', raw_body=raw)
+                self.assertEqual(status, 400)
+                self.assertIn('error', body)
+                endpoint.assert_not_called()
+                self.assertEqual(log.getvalue(), '')
+
+        loads = json.loads
+        def decode(raw):
+            if raw == '{"deep":true}':
+                raise RecursionError('decoder stack exhausted')
+            return loads(raw)
+
+        with patch.object(ui.json, 'loads', side_effect=decode), patch.object(ui, 'api_response') as endpoint:
+            status, body, unused = self.request('/api/profiles/list', raw_body='{"deep":true}')
+        self.assertEqual(status, 400)
+        self.assertIn('too deeply nested', body['error'])
+        endpoint.assert_not_called()
+
+    def test_overdeep_plan_text_stays_a_validation_400(self):
+        plan = ('{"operation":"Filter","inputs":[' * 1000 +
+                '{"operation":"Table scan on t"}' + ']}' * 1000)
+        status, body, unused = self.request('/api/analyze', {'plan': plan})
+        self.assertEqual(status, 400)
+        self.assertIn('maximum 80 levels', body['error'])
+
+    def test_lifecycle_add_prunes_all_owners_without_jobs_polling(self):
+        from myflames import ui
+        for number in range(60):
+            job = types.SimpleNamespace(id='finished-%d' % number, state='done', thread=None,
+                created=time.monotonic(), start=lambda: None, snapshot=lambda: {}, close=lambda: None)
+            ui._lifecycle_add(self.server, job, 'target',
+                {'host': 'host-%d' % (number % 6), 'port': 3306, 'user': 'app'})
+            self.assertLessEqual(len(self.server.lifecycle_owners), self.server.lifecycle.KEEP)
+        self.assertEqual(set(self.server.lifecycle_owners), set(self.server.lifecycle.jobs))
+        self.assertEqual(len(self.server.lifecycle_owners), self.server.lifecycle.KEEP)
+
+    def test_client_settings_internal_error_reaches_logged_500(self):
+        from myflames import client_tools, lifecycle, ui
+        secret = 'client-settings-redaction-secret'
+        discovered = {'installations': [], 'shells': [], 'skipped': []}
+        log = io.StringIO()
+        with patch.object(client_tools, 'discover_choices', return_value=discovered), \
+                patch.object(client_tools, 'choice_keys', return_value=(
+                    {'mysql': None, 'mariadb': None}, {'mysql': None, 'mariadb': None})), \
+                patch.object(lifecycle, '_connect'), \
+                patch.object(lifecycle, 'read_server', side_effect=KeyError(secret)), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/client/tools',
+                {'connection': {'host': 'db', 'port': 3306, 'user': 'app', 'password': secret}})
+        self.assertEqual(status, 500)
+        self.assertIn('KeyError', log.getvalue())
+        self.assertIn('[redacted]', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn('server-read', json.dumps(body))
+
+    def test_group_probe_and_topology_internal_errors_reach_logged_500(self):
+        from myflames import topology_group, ui
+        from myflames.workspace_store import ENDPOINT_FIELDS
+        secret = 'saved-group-redaction-secret'
+        profiles = []
+        for name in ('first', 'second'):
+            profiles.append(self.server.store.save('profile',
+                {'name': name, 'host': name + '.example', 'port': 3306, 'user': 'app'},
+                name, password=secret if name == 'second' else 'first-member-password', remember=True))
+        self.server.store.save_connection_group('G', ['first', 'second'])
+        active = self.server.store.get('profile', 'first')
+        connection = dict({key: active.get(key) for key in ENDPOINT_FIELDS},
+                          profile_id='first', group_name='G')
+        for path, payload, fault in (
+                ('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'first',
+                                 'probe_members': True},
+                 patch.object(ui, '_member_live_facts', side_effect=[{}, KeyError(secret)])),
+                ('/api/live/topology', {'connection': connection, 'section': 'members'},
+                 patch.object(topology_group, '_identity', side_effect=KeyError(secret)))):
+            with self.subTest(path=path):
+                log = io.StringIO()
+                with fault, patch.object(ui, '_connection_test_report', return_value={}), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request(path, payload)
+                self.assertEqual(status, 500)
+                self.assertIn('KeyError', log.getvalue())
+                self.assertIn('[redacted]', log.getvalue())
+                self.assertNotIn(secret, log.getvalue())
+                self.assertNotIn(secret, json.dumps(body))
 
     def test_investigation_save_update_list_and_delete(self):
         value = {'schema_version': 'investigation-1.0', 'name': 'Before index',
