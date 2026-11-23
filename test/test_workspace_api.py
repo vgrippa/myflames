@@ -64,7 +64,7 @@ class TestWorkspaceAPI(unittest.TestCase):
             self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertFalse(self.path.exists())
 
-    def test_backend_programming_errors_are_logged_redacted_500s(self):
+    def test_request_shape_errors_are_logged_redacted_400s(self):
         from myflames import ui
         secret = 'request-password-for-redaction'
         for error_type in (TypeError, KeyError, AttributeError, RecursionError, OverflowError):
@@ -74,13 +74,49 @@ class TestWorkspaceAPI(unittest.TestCase):
                         patch.object(ui.sys, 'stderr', log):
                     status, body, unused = self.request('/api/profiles/list',
                         {'connection': {'password': secret}})
-                self.assertEqual(status, 500)
+                self.assertEqual(status, 400)
                 self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
                 self.assertIn('unexpected error in POST /api/profiles/list', log.getvalue())
                 self.assertIn(error_type.__name__, log.getvalue())
                 self.assertIn('[redacted]', log.getvalue())
                 self.assertNotIn(secret, log.getvalue())
                 self.assertNotIn(secret, json.dumps(body))
+
+    def test_other_backend_errors_remain_logged_redacted_500s(self):
+        from myflames import ui
+        secret = 'unexpected-request-password'
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=RuntimeError(secret)), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/profiles/list',
+                {'connection': {'password': secret}})
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+        self.assertIn('RuntimeError', log.getvalue())
+        self.assertIn('[redacted]', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn(secret, json.dumps(body))
+
+    def test_incomplete_report_and_wrong_plan_field_types_are_400s(self):
+        from myflames import ui
+        cases = (
+            ('/api/report/export', {'report': {'schema_version': 'report-1.0'}, 'format': 'text'}),
+            ('/api/report/export', {'report': {'schema_version': 'report-1.0', 'summary': {}},
+                                    'format': 'text'}),
+            ('/api/analyze', {'plan': json.dumps({'operation': 'Table scan on t',
+                                                'actual_last_row_ms': 1,
+                                                'actual_loops': {'invalid': 1}})}),
+        )
+        for path, payload in cases:
+            with self.subTest(path=path, payload=payload), patch.object(ui.sys, 'stderr', io.StringIO()):
+                status, body, unused = self.request(path, payload)
+                self.assertEqual(status, 400)
+                if path == '/api/report/export':
+                    self.assertEqual(body, {'error': ui._unexpected_error_message(path)})
+                else:
+                    # The parser already validates numeric plan fields and
+                    # keeps its useful ValueError message at this boundary.
+                    self.assertIn('actual_loops', body['error'])
 
     def test_malformed_and_overdeep_request_json_stay_400(self):
         from myflames import ui
@@ -124,7 +160,7 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(set(self.server.lifecycle_owners), set(self.server.lifecycle.jobs))
         self.assertEqual(len(self.server.lifecycle_owners), self.server.lifecycle.KEEP)
 
-    def test_client_settings_internal_error_reaches_logged_500(self):
+    def test_client_settings_internal_key_error_reaches_logged_400(self):
         from myflames import client_tools, lifecycle, ui
         secret = 'client-settings-redaction-secret'
         discovered = {'installations': [], 'shells': [], 'skipped': []}
@@ -137,7 +173,8 @@ class TestWorkspaceAPI(unittest.TestCase):
                 patch.object(ui.sys, 'stderr', log):
             status, body, unused = self.request('/api/client/tools',
                 {'connection': {'host': 'db', 'port': 3306, 'user': 'app', 'password': secret}})
-        self.assertEqual(status, 500)
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/client/tools')})
         self.assertIn('KeyError', log.getvalue())
         self.assertIn('[redacted]', log.getvalue())
         self.assertNotIn(secret, log.getvalue())

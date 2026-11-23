@@ -589,6 +589,30 @@ class TestLiveCancellationHTTP(unittest.TestCase):
             self.assertEqual(self.answer(self.open_request('/api/live/health')), (200, {'run': 1}))
             self.assertEqual(self.answer(self.open_request('/api/live/health')), (200, {'run': 2}))
 
+    def test_read_watcher_error_does_not_cancel_connected_caller(self):
+        for phase in ('create', 'register', 'select'):
+            for error_type in (ValueError, OSError):
+                with self.subTest(phase=phase, error=error_type.__name__):
+                    observed = threading.Event()
+
+                    def fail(*args):
+                        observed.set()
+                        raise error_type('watcher unavailable')
+
+                    def read(path, payload, workspace=None):
+                        self.assertTrue(observed.wait(2), 'watcher did not check the socket')
+                        return {'still_here': True}
+
+                    with patch.object(ui.selectors, 'DefaultSelector') as factory, \
+                            patch.object(ui, '_discover_response', side_effect=read):
+                        selector = factory.return_value.__enter__.return_value
+                        if phase == 'create':
+                            factory.side_effect = fail
+                        else:
+                            getattr(selector, phase).side_effect = fail
+                        self.assertEqual(self.answer(self.open_request('/api/live/health')),
+                                         (200, {'still_here': True}))
+
     def test_read_watcher_peeks_without_consuming_extra_request_bytes(self):
         entered, release = threading.Event(), threading.Event()
         sockets, observed = [], []

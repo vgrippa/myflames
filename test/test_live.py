@@ -556,6 +556,68 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertEqual(job.state, 'cancelled')
         self.assertNotIn('password', job.options)
 
+    def test_cancel_during_invocation_setup_never_launches_client_or_sends_sql(self):
+        job = LiveJob(payload())
+        self.conn._build_argv.return_value = ['mysql', '-e', '']
+        self.conn._invocation_defaults.return_value.__enter__.side_effect = job.cancelled.set
+        proc = MagicMock()
+        proc.stdin.write.side_effect = len
+        proc.stdout = io.BytesIO()
+        proc.stderr = io.BytesIO()
+        proc.poll.return_value = proc.returncode = 0
+        with patch('myflames.live.subprocess.Popen', return_value=proc) as popen, \
+                patch('myflames.live.threading.Thread', self._InlineThread), \
+                patch('myflames.live.threading.Timer'):
+            with self.assertRaisesRegex(ConnectorError, 'Capture cancelled or its time limit was reached'):
+                job._run_script(self.conn, 'SELECT 1;', 'marker')
+        popen.assert_not_called()
+        proc.stdin.write.assert_not_called()
+        self.assertIsNone(job.process)
+        self.conn._invocation_defaults.return_value.__exit__.assert_called_once()
+
+    def test_cleanup_leaves_each_live_pipe_worker_owning_its_stream(self):
+        # Simulate one worker still blocked after its bounded join. No actual
+        # thread or subprocess can outlive the test, and finished workers'
+        # streams still need closing by the caller.
+        for blocked_name in ('stdin', 'stdout', 'stderr'):
+            with self.subTest(blocked=blocked_name):
+                job = LiveJob(payload())
+                self.conn._build_argv.return_value = ['mysql', '-e', '']
+                proc = MagicMock()
+                proc.poll.return_value = proc.returncode = 0
+                blocked = getattr(proc, blocked_name)
+                workers = []
+
+                class PipeWorker:
+                    def __init__(self, target, args=(), daemon=None):
+                        self.pipe = args[0] if args else proc.stdin
+                        self.started = False
+                        self.join = MagicMock()
+                        workers.append(self)
+
+                    def start(self):
+                        self.started = True
+
+                    def is_alive(self):
+                        return self.started and self.pipe is blocked
+
+                timer = MagicMock()
+                timer.start.side_effect = job.cancelled.set
+                with patch('myflames.live.subprocess.Popen', return_value=proc), \
+                        patch('myflames.live.threading.Thread', PipeWorker), \
+                        patch('myflames.live.threading.Timer', return_value=timer):
+                    with self.assertRaisesRegex(ConnectorError, 'cancelled|time limit'):
+                        job._run_script(self.conn, 'SELECT 1;', 'marker')
+                self.assertEqual(len(workers), 3)
+                for worker in workers:
+                    worker.join.assert_called_once()
+                    if worker.pipe is blocked:
+                        worker.pipe.close.assert_not_called()
+                    else:
+                        worker.pipe.close.assert_called_once_with()
+                self.assertIsNone(job.process)
+                timer.cancel.assert_called_once_with()
+
     def test_cancel_targets_only_owned_connection_and_process(self):
         job = LiveJob(payload())
         job.connection_id = 42

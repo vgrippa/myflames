@@ -561,6 +561,10 @@ class LiveJob:
         if self._login_guard is not None:
             self._login_guard()
         deadline = time.monotonic() + self.timeout
+        # Tunnel setup and client discovery can outlive a cancellation.
+        # Recheck after all setup, before a client can receive any SQL.
+        if self.cancelled.is_set():
+            raise ConnectorError('Capture cancelled or its time limit was reached.')
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=env, bufsize=0)
         self.process = proc
@@ -622,6 +626,7 @@ class LiveJob:
                    threading.Thread(target=drain, args=(proc.stderr, err, MAX_STDERR_BYTES, 'stderr', False),
                                     daemon=True)]
         writer = threading.Thread(target=send, daemon=True)
+        pipe_workers = {proc.stdout: readers[0], proc.stderr: readers[1], proc.stdin: writer}
         workers = []
         timer = threading.Timer(self.timeout, self.cancel)
         timer.daemon = True
@@ -664,14 +669,16 @@ class LiveJob:
             timer.cancel()
             stopped = _stop_client(proc)
             # Share one join budget across pipe and cancellation workers.
-            # Raw (unbuffered) streams have no buffered-I/O lock that close()
-            # could block on while another thread is in read() or write().
             join_deadline = time.monotonic() + _WORKER_JOIN_SECONDS
             for worker in workers + [timer, self._cancel_thread]:
                 if worker is not None:
                     worker.join(timeout=max(0, join_deadline - time.monotonic()))
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
-                pipe.close()
+                # A surviving worker owns its pipe until its finally block.
+                # Closing it here can race its pending read/write or block on
+                # a stream lock beyond the shared cleanup deadline.
+                if not pipe_workers[pipe].is_alive():
+                    pipe.close()
             if stopped:
                 self.process = None
             self.connection_id = None

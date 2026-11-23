@@ -6,7 +6,7 @@ import json
 import os
 import re
 import secrets
-import select
+import selectors
 import socket
 import socketserver
 import sqlite3
@@ -3576,22 +3576,29 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         MSG_PEEK never consumes bytes, including a pipelined request. The
         socket is nonblocking until the watcher is joined; response writes
         begin only after its original timeout has been restored.
+        TCP write half-close also looks like EOF; the workspace client never
+        half-closes its requests, so it is treated as a disconnected caller.
         """
         cancel, stopped = threading.Event(), threading.Event()
         timeout = self.connection.gettimeout()
 
         def watch():
-            while not stopped.wait(0.1):
-                try:
-                    readable, _, _ = select.select([self.connection], [], [], 0)
-                    if readable and self.connection.recv(1, socket.MSG_PEEK) == b"":
-                        cancel.set()
-                        return
-                except (BlockingIOError, InterruptedError):
-                    continue
-                except (OSError, ValueError):
-                    cancel.set()
-                    return
+            try:
+                # kqueue/epoll avoid select()'s FD_SETSIZE limit when many
+                # database clients or workspace requests are open.
+                with selectors.DefaultSelector() as selector:
+                    selector.register(self.connection, selectors.EVENT_READ)
+                    while not stopped.wait(0.1):
+                        try:
+                            if selector.select(0) and self.connection.recv(1, socket.MSG_PEEK) == b"":
+                                cancel.set()
+                                return
+                        except (BlockingIOError, InterruptedError):
+                            continue
+            except (OSError, ValueError):
+                # A failed watcher is not evidence of a disconnect. Leave
+                # the read running under its ordinary query deadline.
+                return
 
         watcher = threading.Thread(target=watch, name="myflames-read-disconnect", daemon=True)
         self.connection.setblocking(False)
@@ -3677,7 +3684,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 payload = json.loads(self._read_body(size).decode("utf-8"))
             except RecursionError:
                 # Decoder limits describe malformed input. A RecursionError
-                # from endpoint code still reaches the logged 500 below.
+                # from endpoint code still reaches the logged 400 below.
                 raise ValueError("Request JSON is too deeply nested.") from None
             if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
                     and hasattr(self, "connection")):
@@ -3714,6 +3721,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": request_error_text(exc, prefix=False)})
             elif isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
                 return
+            elif isinstance(exc, (TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
+                # Handlers may detect malformed request fields by indexing
+                # or using their expected type. Preserve the 400 contract,
+                # while logging redacted diagnostics for possible code bugs.
+                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                self._send(400, {"error": _unexpected_error_message(self.path)})
             else:
                 _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
                 self._send(500, {"error": _unexpected_error_message(self.path)})

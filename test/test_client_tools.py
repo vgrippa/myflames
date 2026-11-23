@@ -1081,6 +1081,136 @@ class DiscoveryTests(unittest.TestCase):
                 mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('no probe')):
             self.discover(self.root, job=job)
 
+    def test_read_cancellation_stops_discovery_before_second_probe(self):
+        from myflames import read_cancel
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        cancel = threading.Event()
+
+        def probe_and_cancel(*args, **kwargs):
+            cancel.set()
+            return dict(available=True, version='mysql Ver 8.4.13',
+                        version_tuple=[8, 4, 13], engine='mysql')
+
+        with mock.patch.object(ct, 'probe', side_effect=probe_and_cancel) as probe:
+            with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                self.discover(*folders)
+        self.assertEqual(probe.call_count, 1)
+
+    def test_read_cancellation_stops_snapshot_between_candidates(self):
+        from myflames import read_cancel
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        cancel = threading.Event()
+        checked = ct.connector.checked_program
+
+        def check_and_cancel(*args, **kwargs):
+            result = checked(*args, **kwargs)
+            cancel.set()
+            return result
+
+        with mock.patch.object(ct.connector, 'checked_program', side_effect=check_and_cancel) as check:
+            with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                ct.snapshot(path=os.pathsep.join(str(folder) for folder in folders),
+                            common_dirs=(), bundled=False, names=('mysql',))
+        self.assertEqual(check.call_count, 1)
+
+    def test_read_cancellation_prevents_direct_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        cancel = threading.Event()
+        result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n')
+        with mock.patch.object(ct.subprocess, 'run', return_value=result) as run:
+            with read_cancel.scope(cancel):
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+        run.assert_not_called()
+
+    def test_read_cancellation_interrupts_wait_for_shared_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        cancel = threading.Event()
+        done = mock.Mock()
+
+        def wait(timeout):
+            cancel.set()
+            # A second wait completes so the unfixed implementation fails
+            # deterministically instead of leaving a test thread blocked.
+            return done.wait.call_count > 1
+
+        done.wait.side_effect = wait
+        flight = dict(done=done, result=dict(available=True, version='mysql Ver 8.4.13',
+                                            version_tuple=[8, 4, 13], engine='mysql'))
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.subprocess, 'run') as run:
+                with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_read_cancellation_wins_when_shared_version_probe_finishes(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        cancel = threading.Event()
+        done = mock.Mock()
+
+        def finish_and_cancel(timeout):
+            cancel.set()
+            return True
+
+        done.wait.side_effect = finish_and_cancel
+        flight = dict(done=done, result=dict(available=True, version='mysql Ver 8.4.13',
+                                            version_tuple=[8, 4, 13], engine='mysql'))
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.subprocess, 'run') as run:
+                with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+            # A cancelled waiter must leave the shared result for other callers.
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS[key], flight)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_uncancelled_probe_waiter_retries_a_cancelled_owner(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        done = mock.Mock()
+        flight = dict(done=done, result=None, error=read_cancel.CancelledRead())
+
+        def finish_cancelled_owner(timeout):
+            # The original owner removes its completed flight in finally.
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS.pop(key), flight)
+            return True
+
+        done.wait.side_effect = finish_cancelled_owner
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n')
+            with read_cancel.scope(threading.Event()), \
+                    mock.patch.object(ct.subprocess, 'run', return_value=result) as run:
+                found = ct.probe('mysql', str(binary))
+            self.assertTrue(found['available'])
+            self.assertEqual(found['version_tuple'], [8, 4, 13])
+            run.assert_called_once()
+            self.assertEqual(done.wait.call_count, 1)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
     def test_stop_event_stops_discover_between_candidates(self):
         folders = [self.make(self.root / str(i)).parent for i in range(3)]
         stop = threading.Event()

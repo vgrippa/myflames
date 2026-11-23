@@ -913,6 +913,54 @@ class TestVersionAwareClients(unittest.TestCase):
         os.environ['PATH'] = os.path.dirname(second)
         self.assertEqual(conn._resolve_binary(), second)
 
+    def test_resolution_retries_binary_replaced_after_version_probe(self):
+        from myflames import client_tools as ct
+        path = self.binary(folder='replace-probed', body='print("mysql Ver 8.4.13")')
+        other = self.binary(folder='other-probed', body='print("mysql Ver 8.0.45")')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (path, other)))
+        conn = MySQLConnection(host='probe-publication-race')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        probe, replaced = ct.probe, []
+
+        def replace_after_probe(name, binary, **kwargs):
+            result = probe(name, binary, **kwargs)
+            if binary == path and not replaced:
+                replacement = self.binary(folder='replacement', body='print("mysql Ver 9.7.0")')
+                os.replace(replacement, path)
+                replaced.append(True)
+            return result
+
+        with mock.patch.object(ct, 'probe', side_effect=replace_after_probe):
+            self.assertEqual(conn._resolve_binary(), path)
+        self.assertEqual(conn._client_use['version'], '9.7.0')
+        self.assertEqual(conn._binary_identity, ct._probe_key('mysql', path))
+        # Another connection must receive metadata for the replacement too.
+        shared = MySQLConnection(host=conn.host)
+        self.assertEqual(shared._resolve_binary(), path)
+        self.assertEqual(shared._client_use['version'], '9.7.0')
+
+    def test_resolution_retries_replacement_after_final_trust_check(self):
+        from myflames import client_tools as ct
+        path = self.binary(folder='replace-checked', body='print("mysql Ver 8.4.13")')
+        os.environ['PATH'] = os.path.dirname(path)
+        connector.set_client_choices({'mysql': path})
+        conn = MySQLConnection(host='trust-publication-race')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        checked, replaced = conn._checked_client, []
+
+        def replace_after_check(used, keys):
+            result = checked(used, keys)
+            if not replaced:
+                replacement = self.binary(folder='replacement', body='print("mysql Ver 9.7.0")')
+                os.replace(replacement, path)
+                replaced.append(True)
+            return result
+
+        with mock.patch.object(conn, '_checked_client', side_effect=replace_after_check):
+            self.assertEqual(conn._resolve_binary(), path)
+        self.assertEqual(conn._client_use['version'], '9.7.0')
+        self.assertEqual(conn._binary_identity, ct._probe_key('mysql', path))
+
     def test_resolution_cache_invalidates_after_choices_change_back(self):
         from myflames import client_tools as ct
         path = self.binary()
@@ -1348,6 +1396,281 @@ class TestVersionAwareClients(unittest.TestCase):
                     with self.assertRaises(ConnectorError):
                         conn.run('SELECT 1')
                 self.assertEqual(run.call_count, 2)
+
+    def test_first_contact_transient_session_and_account_errors_are_never_cached(self):
+        from myflames import client_tools as ct
+        self.layout()
+        errors = (
+            (1045, 'Access denied'), (1053, 'Server shutdown in progress'),
+            (1158, 'Error reading packets'), (1159, 'Timeout reading packets'),
+            (1160, 'Error writing packets'), (1161, 'Timeout writing packets'),
+            (1317, 'Query interrupted'), (1820, 'Reset your password'),
+            (1927, 'Connection killed'), (3169, 'Session killed'),
+            (4031, 'Disconnected by server'), (9999, 'Unrecognized server failure'),
+            (1045, "Access denied for user 'ProxySQL Admin Error: example'"),
+        )
+        for index, (code, message) in enumerate(errors):
+            with self.subTest(code=code, message=message):
+                failure = _fake_completed(stderr=(
+                    'ERROR %d (HY000) at line 1: %s' % (code, message)).encode(), returncode=1)
+                first = MySQLConnection(host='uncached-statement-' + str(index), user='first')
+                second = MySQLConnection(host=first.host, user='second')
+                with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+                    for conn in (first, first, second):
+                        with self.assertRaisesRegex(ConnectorError, 'ERROR %d' % code):
+                            conn._resolve_binary()
+                        self.assertFalse(ct.first_contact_unidentified(conn._endpoint_key()))
+                    self.assertEqual(run.call_count, 3)
+
+    def test_first_contact_caches_only_supported_statement_refusals(self):
+        from myflames import client_tools as ct
+        latest, _, _ = self.layout()
+        for code, message in ((1045, 'ProxySQL Admin Error: near "@version": syntax error'),
+                              (1064, 'Syntax error'), (1146, 'Table does not exist'),
+                              (1193, 'Unknown system variable'), (1235, 'Not supported yet')):
+            with self.subTest(code=code):
+                failure = _fake_completed(stderr=(
+                    'ERROR %d (HY000) at line 1: %s' % (code, message)).encode(), returncode=1)
+                first = MySQLConnection(host='cached-refusal-' + str(code))
+                with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+                    for conn in (first, first, MySQLConnection(host=first.host)):
+                        self.assertEqual(conn._resolve_binary(), latest)
+                        self.assertTrue(ct.first_contact_unidentified(conn._endpoint_key()))
+                    self.assertEqual(run.call_count, 1)
+
+    def test_unidentified_endpoint_still_retries_auth_plugin_for_another_account(self):
+        from myflames import client_tools as ct
+        mysql = self.binary()
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='maria')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (mysql, maria)))
+        first = MySQLConnection(host='unknown-auth-retry', user='first')
+        second = MySQLConnection(host=first.host, user='second')
+        failure = _fake_completed(stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded", returncode=1)
+        with mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(b'ProxySQL\n')):
+            self.assertEqual(first._resolve_binary(), mysql)
+        self.assertTrue(ct.first_contact_unidentified(first._endpoint_key()))
+        with mock.patch.object(connector, '_run_bounded', side_effect=[failure, _fake_completed(b'1\n')]) as run:
+            self.assertEqual(second.run('SELECT 1').strip(), '1')
+        self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+        self.assertEqual([call[0][0][-1] for call in run.call_args_list], ['SELECT 1'] * 2)
+        # Account-specific authentication success must not overwrite facts
+        # or publish the alternate as an endpoint-wide automatic choice.
+        self.assertIsNone(ct.server_facts(first._endpoint_key()))
+        self.assertEqual(first._resolve_binary(), mysql)
+
+    def _unknown_auth_clients(self, host):
+        from myflames import client_tools as ct
+        connector.set_client_choices({})
+        mysql = self.binary(folder=host + '-mysql')
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")',
+                            folder=host + '-maria')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (mysql, maria)))
+        conn = MySQLConnection(host=host)
+        ct.remember_unidentified_server(conn._endpoint_key())
+        self.assertEqual(conn._resolve_binary(), mysql)
+        failure = _fake_completed(
+            stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded",
+            returncode=1)
+        return conn, mysql, maria, failure
+
+    def test_unknown_marker_auth_retry_rechecks_settings_at_each_selection_boundary(self):
+        from myflames import client_tools as ct
+        for stage in ('discover', 'select', 'check'):
+            for replacement in ('valid', 'broken'):
+                with self.subTest(stage=stage, replacement=replacement):
+                    label = 'unknown-settings-' + stage + '-' + replacement
+                    conn, mysql, old, failure = self._unknown_auth_clients(label)
+                    new = (self.binary('mariadb', body='print("mariadb Ver 11.4.9-MariaDB")',
+                                       folder=label + '-new') if replacement == 'valid' else
+                           os.path.join(self.temp.name, label + '-missing', 'mariadb'))
+                    connector.set_client_choices({'mysql': mysql, 'mariadb': old})
+                    self.assertEqual(conn._resolve_binary(), mysql)
+                    changed = []
+
+                    def change():
+                        if not changed:
+                            changed.append(True)
+                            connector.set_client_choices({'mysql': mysql, 'mariadb': new})
+
+                    if stage == 'discover':
+                        original = ct.discover_choices
+
+                        def hook(*args, **kwargs):
+                            result = original(*args, **kwargs)
+                            change()
+                            return result
+
+                        patcher = mock.patch.object(ct, 'discover_choices', side_effect=hook)
+                    elif stage == 'select':
+                        original = conn._other_auth_client
+
+                        def hook(*args, **kwargs):
+                            result = original(*args, **kwargs)
+                            change()
+                            return result
+
+                        patcher = mock.patch.object(conn, '_other_auth_client', side_effect=hook)
+                    else:
+                        original = conn._checked_client
+
+                        def hook(used, keys):
+                            result = original(used, keys)
+                            if used['path'] == old:
+                                change()
+                            return result
+
+                        patcher = mock.patch.object(conn, '_checked_client', side_effect=hook)
+                    caught = None
+                    with patcher, mock.patch.object(connector, '_run_bounded', side_effect=[
+                            failure, _fake_completed(b'1\n')]) as run:
+                        try:
+                            result = conn.run('SELECT 1')
+                        except ConnectorError as exc:
+                            caught = exc
+                    self.assertTrue(changed)
+                    self.assertEqual([call[0][0][0] for call in run.call_args_list],
+                                     [mysql, new] if replacement == 'valid' else [mysql])
+                    if replacement == 'valid':
+                        self.assertIsNone(caught)
+                        self.assertEqual(result, '1\n')
+                    else:
+                        self.assertIsInstance(caught, connector.ClientMissingError)
+                        self.assertIn(new, str(caught))
+
+    def test_unknown_marker_auth_retry_uses_failed_invocations_engine(self):
+        from myflames import client_tools as ct
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                conn, mysql, maria, failure = self._unknown_auth_clients('unknown-metadata-' + method)
+                inventory = ct.discover(names=ct.QUERY_DISCOVERY_NAMES)
+                other_use = ct.select(inventory, dict(engine='mariadb', version='11.4.2'))['client']
+                calls = []
+
+                def read(argv, **kwargs):
+                    calls.append(argv[0])
+                    if len(calls) == 1:
+                        # Another invocation can resolve a different client
+                        # while this invocation is still awaiting its result.
+                        conn._client_use = dict(other_use)
+                        return failure
+                    return _fake_completed(b'1\n')
+
+                with mock.patch.object(connector, '_run_bounded', side_effect=read):
+                    result = getattr(conn, method)('SELECT 1')
+                self.assertEqual(calls, [mysql, maria])
+                self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+
+    def test_unknown_marker_auth_retry_preserves_sql_flags_and_option_file_family(self):
+        sql = "SELECT 'snowman \u2603';\nSELECT 2;\n"
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                conn, mysql, maria, failure = self._unknown_auth_clients('unknown-protocol-' + method)
+                options = []
+
+                def read(argv, **kwargs):
+                    with open(argv[1].split('=', 1)[1], encoding='utf-8') as handle:
+                        options.append(handle.read())
+                    return failure if len(options) == 1 else _fake_completed(b'1\n')
+
+                with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
+                    result = getattr(conn, method)(sql, extra_flags=['--raw'], timeout=17)
+                self.assertEqual(result[0] if method == 'run_script' else result, '1\n')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+                self.assertIn('get-server-public-key', options[0])
+                self.assertNotIn('get-server-public-key', options[1])
+                for call in run.call_args_list:
+                    argv, kwargs = call[0][0], call[1]
+                    self.assertEqual(kwargs['timeout'], 17)
+                    self.assertIn('--raw', argv)
+                    if method == 'run':
+                        self.assertEqual(argv[-2:], ['-e', sql])
+                    else:
+                        self.assertEqual(kwargs['input'], sql.encode('utf-8'))
+                        self.assertNotIn('-e', argv)
+                        self.assertNotIn(sql, argv)
+                        self.assertIn('--skip-reconnect', argv)
+                        self.assertIn('--binary-mode', argv)
+                        self.assertEqual('--force' in argv, method == 'run_script')
+
+    def test_unknown_marker_auth_retry_rechecks_login_consent(self):
+        from myflames.connection_groups import ProfileReadError
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                conn, mysql, maria, failure = self._unknown_auth_clients('unknown-consent-' + method)
+                revoked = []
+
+                def guard():
+                    if revoked:
+                        raise ProfileReadError('Consent revoked.')
+
+                def read(argv, **kwargs):
+                    revoked.append(True)
+                    return failure
+
+                conn._login_guard = guard
+                with mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
+                    with self.assertRaisesRegex(ProfileReadError, 'Consent revoked'):
+                        getattr(conn, method)('SELECT 1')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+
+    def test_unknown_marker_auth_retry_is_limited_to_one_alternate(self):
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                conn, mysql, maria, failure = self._unknown_auth_clients('unknown-limit-' + method)
+                with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+                    with self.assertRaises(connector.ClientAuthPluginError):
+                        getattr(conn, method)('SELECT 1')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+
+    def test_unknown_marker_cannot_enable_fallback_for_explicit_binary(self):
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                automatic, mysql, maria, failure = self._unknown_auth_clients('unknown-override-' + method)
+                conn = MySQLConnection(host=automatic.host, binary=mysql)
+                with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+                    with self.assertRaises(connector.ClientAuthPluginError):
+                        getattr(conn, method)('SELECT 1')
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+
+    def test_unknown_marker_never_launches_alternate_that_becomes_untrusted(self):
+        for method in ('run', 'run_script', 'run_write'):
+            with self.subTest(method=method):
+                conn, mysql, maria, failure = self._unknown_auth_clients('unknown-untrusted-' + method)
+                original = conn._other_auth_client
+
+                def select(*args, **kwargs):
+                    alternate = original(*args, **kwargs)
+                    os.chmod(os.path.dirname(maria), 0o777)
+                    return alternate
+
+                try:
+                    with mock.patch.object(conn, '_other_auth_client', side_effect=select), \
+                            mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+                        with self.assertRaises(ConnectorError):
+                            getattr(conn, method)('SELECT 1')
+                    self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+                finally:
+                    os.chmod(os.path.dirname(maria), 0o700)
+
+    def test_unknown_marker_statement_errors_cannot_spoof_an_auth_retry(self):
+        cases = (
+            "ERROR 2059 (HY000) at line 1: Authentication plugin 'client_ed25519' cannot be loaded",
+            "ERROR 1644 (45000) at line 1: SIGNAL\n"
+            "ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded",
+            "ERROR 1146 (42S02) at line 1: Table 'app.ERROR 2059' does not exist")
+        for method in ('run', 'run_script', 'run_write'):
+            conn, mysql, maria, _ = self._unknown_auth_clients('unknown-spoof-' + method)
+            for stderr in cases:
+                with self.subTest(method=method, stderr=stderr), mock.patch.object(
+                        connector, '_run_bounded', return_value=_fake_completed(
+                            stderr=stderr.encode(), returncode=1)) as run:
+                    if method == 'run_script':
+                        self.assertEqual(conn.run_script('SELECT 1'), ('', stderr))
+                    else:
+                        with self.assertRaises(ConnectorError) as caught:
+                            getattr(conn, method)('SELECT 1')
+                        self.assertNotIsInstance(caught.exception, connector.ClientAuthPluginError)
+                    self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
 
     def test_2059_retries_other_engine_only_during_first_contact(self):
         from myflames import client_tools as ct
