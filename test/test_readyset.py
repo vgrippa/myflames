@@ -2343,6 +2343,100 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
         self.assertNotIn("s3cr3t", json.dumps(result))
         self.assertEqual(conn.writes, [])
 
+    def test_export_literal_redaction_reading1_url_fails_closed(self):
+        # Leak 1: reading 1 (backslash escapes) exposes the URL credential while
+        # reading 2 puts it in backticks; consuming the backslash in the literal
+        # password pass must not leave the URL secret visible.
+        sql = "SELECT '\\''pw'`mysql://u:TOPSECRET@h`"
+        output, changed = readyset._redact_export_sql(sql, "pw")
+        self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+        self.assertNotIn("TOPSECRET", output)
+        # End to end through export_caches.
+        conn = FakeCacheExport()
+        conn.password = "pw"
+        conn.definition = "CREATE CACHE c FROM " + sql + ";"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertNotIn("TOPSECRET", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+        # Even without a literal password match, a quote/backslash inside a
+        # reading-ambiguous URL password fails closed.
+        unsafe_url = "SELECT 'a\\', '`mysql://u:TOP\\'SECRET@h`';"
+        output, changed = readyset._redact_export_sql(unsafe_url)
+        self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+        self.assertNotIn("TOP", output)
+        self.assertNotIn("SECRET", output)
+
+    def test_export_reading1_credential_clause_after_backslash_consumed_fails_closed(self):
+        # Leak 2: reading 1 hides IDENTIFIED BY 'TOPSECRET' while reading 2 puts
+        # it in backticks; consuming the backslash in the literal-password pass
+        # (or in a URL pass) must still fail closed.
+        for sql, password in (
+                ("SELECT '\\''\\pw', `IDENTIFIED BY 'TOPSECRET'`", "pw"),
+                ("SELECT 'mysql://u:\\''@h', `IDENTIFIED BY 'TOPSECRET'`", None),
+        ):
+            with self.subTest(sql=sql, password=password):
+                output, changed = readyset._redact_export_sql(sql, password)
+                self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+                self.assertNotIn("TOPSECRET", output)
+        # Direct symmetric check in _check_export_second_reading when reading 2
+        # masks out a credential that reading 1 redacted.
+        raw = "SELECT '\\''\\pw', `IDENTIFIED BY 'TOPSECRET'`"
+        spans1 = readyset._export_identifier_spans(raw, backslash_escapes=True)
+        spans2 = readyset._export_identifier_spans(raw, backslash_escapes=False)
+        m1, ids1 = readyset._mask_export_identifiers(raw, spans1)
+        res1 = readyset._restore_export_identifiers(dbops.redact(m1), ids1)
+        self.assertNotIn("TOPSECRET", res1)
+        self.assertEqual(
+            readyset._check_export_second_reading(raw, spans1, res1, ident_spans2=spans2),
+            (True, False),
+        )
+        # End to end through export_caches.
+        conn = FakeCacheExport()
+        conn.password = "pw"
+        conn.definition = "CREATE CACHE c FROM " + raw + ";"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertNotIn("TOPSECRET", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
+    def test_export_literal_or_url_redaction_never_swallows_credential_keyword(self):
+        # Leak 3 and variants: literal-password or URL spans evaluated on the
+        # original SQL must never erase a credential keyword or URL prefix while
+        # leaving the secret value visible.
+        cases = (
+            ("SELECT '''`\\pw`IDENTIFIED BY 'TOPSECRET'`", "pw", "SELECT '[redacted]'`"),
+            ("SELECT 'pw IDENTIFIED BY 'TOPSECRET'", "pw", "SELECT '[redacted]'"),
+            ("SELECT 'pw SET PASSWORD' = 'TOPSECRET'", "pw", "SELECT '[redacted]' = '[redacted]'"),
+            ("SELECT 'mysql://u:SET PASSWORD@h' = 'TOPSECRET'", None,
+             "SELECT 'mysql://u:[redacted]@h' = '[redacted]'"),
+            ("SELECT 'pw mysql://u:'TOPSECRET@h", "pw", "SELECT '[redacted]'@h"),
+            ("SELECT 'pw IDENTIFIED BY '0x544f50534543524554", "pw", "SELECT '[redacted]'"),
+            ("SELECT '[redacted]''[redacted]', 'mysql://u:TOPSECRET@h'", None,
+             "SELECT '[redacted]''[redacted]', 'mysql://u:[redacted]@h'"),
+        )
+        for sql, password, expected in cases:
+            with self.subTest(sql=sql, password=password):
+                output, changed = readyset._redact_export_sql(sql, password)
+                self.assertTrue(changed)
+                self.assertEqual(output, expected)
+                self.assertNotIn("TOPSECRET", output)
+                self.assertNotIn("0x544f50534543524554", output)
+                if password:
+                    self.assertNotIn(password, output)
+        # End to end through export_caches for Leak 3.
+        conn = FakeCacheExport()
+        conn.password = "pw"
+        conn.definition = "CREATE CACHE c FROM SELECT '''`\\pw`IDENTIFIED BY 'TOPSECRET'`;"
+        result = readyset.export_caches(conn)
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertTrue(result["caches"][0]["statement"].startswith("-- "))
+        self.assertNotIn("TOPSECRET", json.dumps(result))
+        self.assertNotIn("\\pw", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
     def test_export_ordinary_definitions_with_and_without_backslashes_unchanged(self):
         # Ordinary definitions without backslashes stay unchanged.
         for sql, expected, changed in (
@@ -2416,6 +2510,20 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
                 self.assertNotIn("pw@h", output)
                 self.assertNotIn("IDENTIFIED BY 'x'", output)
                 self.assertNotEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
+        # Also verify linear time when literal-password, URL and SQL-credential
+        # passes all match across 200 KB with escaped quotes.
+        combined_sql = escaped_quote_unit * ((204800 // len(escaped_quote_unit)) + 1)
+        with self.subTest(label="escaped_quote_backslash_literal_pw_200kb", size=len(combined_sql)):
+            started = time.monotonic()
+            output, changed = readyset._redact_export_sql(combined_sql, "o'reilly")
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 2.0, "combined 200 KB took %.3f s" % elapsed)
+            self.assertTrue(changed)
+            self.assertNotIn("reilly", output)
+            self.assertNotIn("pw@h", output)
+            self.assertNotIn("IDENTIFIED BY 'x'", output)
+            self.assertIn("`other`", output)
+            self.assertNotEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
 
     def test_export_redaction_password_matches_redaction_marker(self):
         # An existing marker counts as a credential only in a credential form
