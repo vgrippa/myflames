@@ -2262,6 +2262,161 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
         self.assertNotIn(password, output)
         self.assertIn(dbops.REDACTED, output)
 
+    def test_export_urls_use_both_backslash_readings(self):
+        # A string ending in a backslash closes only without backslash
+        # escapes. The escapes reading keeps the URL inside a complete
+        # backticked identifier, while the NO_BACKSLASH_ESCAPES reading puts
+        # it in a string literal: the URL union hides the password.
+        for token, expected in (
+                ("'`mysql://u:s3cr3t@h`';", "'`mysql://u:[redacted]@h`';"),
+                ("', `mysql://u:s3cr3t@h`';", "', `mysql://u:[redacted]@h`';"),
+                ("'`mysql://u:s3cr3t@h`, 'b';", "'`mysql://u:[redacted]@h`, 'b';"),
+                ("'mysql://u:@h';", "'mysql://u:[redacted]@h';"),
+        ):
+            with self.subTest(token=token):
+                sql = "SELECT 'a\\', " + token
+                output, changed = readyset._redact_export_urls(sql)
+                self.assertTrue(changed)
+                self.assertEqual(output, "SELECT 'a\\', " + expected)
+                output, changed = readyset._redact_export_sql(sql)
+                self.assertTrue(changed)
+                self.assertEqual(output, "SELECT 'a\\', " + expected)
+                self.assertNotIn("s3cr3t", output)
+        # End to end through export_caches: URL union preserves the definition
+        # structure with the secret replaced and comments it out as redacted.
+        conn = FakeCacheExport()
+        conn.definition = "CREATE CACHE c FROM SELECT 'a\\', '`mysql://u:s3cr3t@h`';"
+        result = readyset.export_caches(conn)
+        self.assertEqual(
+            result["caches"][0]["statement"],
+            "-- CREATE CACHE c FROM SELECT 'a\\', '`mysql://u:[redacted]@h`';")
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertNotIn("s3cr3t", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+        # When literal password redaction consumes the backslash before a
+        # quote-ambiguous URL, fail closed instead of exposing the URL secret.
+        conn = FakeCacheExport()
+        conn.password = "a"
+        conn.definition = "CREATE CACHE c FROM SELECT 'a\\', '`mysql://u:s3cr3t@h`';"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertNotIn("s3cr3t", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
+    def test_export_credential_clauses_fail_closed_across_backslash_readings(self):
+        # The escapes reading lexes `IDENTIFIED BY '...'` as one backticked
+        # identifier and masks it before dbops.redact; NO_BACKSLASH_ESCAPES
+        # exposes the credential clause. Fail closed to a single comment line.
+        for sql in (
+                "SELECT 'a\\', '`IDENTIFIED BY 's3cr3t'`';",
+                'SELECT \'a\\\', \'`IDENTIFIED BY "s3cr3t"`\';',
+                "SELECT 'a\\', '`PASSWORD('s3cr3t')`';",
+                "SELECT 'a\\', '`SET PASSWORD = 's3cr3t'`';",
+                "SELECT 1 FROM t WHERE password = 'first'; SELECT 'a\\', '`IDENTIFIED BY 's3cr3t'`';",
+                "SELECT 'mysql://u:pw\\'@h, '`IDENTIFIED BY 's3cr3t'`';",
+        ):
+            with self.subTest(sql=sql):
+                output, changed = readyset._redact_export_sql(sql)
+                self.assertTrue(changed)
+                self.assertEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
+                self.assertNotIn("s3cr3t", output)
+        # Also when connection-password redaction consumes the backslash first.
+        output, changed = readyset._redact_export_sql(
+            "SELECT 'a\\', '`IDENTIFIED BY 's3cr3t'`';", "a")
+        self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+        # An already-redacted marker hidden inside a reading-2 credential
+        # clause still marks the definition redacted.
+        output, changed = readyset._redact_export_sql(
+            "SELECT 'a\\', '`IDENTIFIED BY '[redacted]'`';")
+        self.assertTrue(changed)
+        # End to end through export_caches: hidden as one comment line, marked
+        # redacted, with no double comment prefix and no secret anywhere.
+        conn = FakeCacheExport()
+        conn.definition = "CREATE CACHE c FROM SELECT 'a\\', '`IDENTIFIED BY 's3cr3t'`';"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+        self.assertIn(readyset._EXPORT_REDACTED_COMMENT + "\n" + readyset._EXPORT_AMBIGUOUS_COMMENT,
+                      result["sql"])
+        self.assertNotIn("-- -- ", result["sql"])
+        self.assertTrue(all(line.startswith("-- ") for line in result["sql"].splitlines()))
+        self.assertNotIn("s3cr3t", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
+    def test_export_ordinary_definitions_with_and_without_backslashes_unchanged(self):
+        # Ordinary definitions without backslashes stay unchanged.
+        for sql, expected, changed in (
+                ("CREATE CACHE c FROM SELECT `col` FROM `orders` WHERE status = 'open';",
+                 "CREATE CACHE c FROM SELECT `col` FROM `orders` WHERE status = 'open';", False),
+                ("CREATE CACHE `IDENTIFIED BY 'id'` FROM SELECT `mysql://u:p@h` FROM t;",
+                 "CREATE CACHE `IDENTIFIED BY 'id'` FROM SELECT `mysql://u:p@h` FROM t;", False),
+                ("SELECT 1 FROM t WHERE c = 'mysql://u:pw@h/db' AND d IDENTIFIED BY 'x';",
+                 "SELECT 1 FROM t WHERE c = 'mysql://u:[redacted]@h/db' AND d IDENTIFIED BY '[redacted]';", True),
+                # Ordinary definitions with backslashes keep exact behavior.
+                ("CREATE CACHE c FROM SELECT `col` FROM t WHERE path = 'C:\\\\dir\\\\file';",
+                 "CREATE CACHE c FROM SELECT `col` FROM t WHERE path = 'C:\\\\dir\\\\file';", False),
+                ("CREATE CACHE c FROM SELECT `col` FROM t WHERE a = 'o\\'reilly' AND b = `other`;",
+                 "CREATE CACHE c FROM SELECT `col` FROM t WHERE a = 'o\\'reilly' AND b = `other`;", False),
+                ("SELECT `col` FROM t WHERE c = 'a\\b' AND u = 'mysql://u:pw@h/db' AND d IDENTIFIED BY 'x';",
+                 "SELECT `col` FROM t WHERE c = 'a\\b' AND u = 'mysql://u:[redacted]@h/db' AND d IDENTIFIED BY '[redacted]';",
+                 True),
+                ("CREATE CACHE c FROM SELECT `col` FROM t WHERE a = 'o\\'reilly' AND b = `other` AND password = 'secret';",
+                 "CREATE CACHE c FROM SELECT `col` FROM t WHERE a = 'o\\'reilly' AND b = `other` AND password = '[redacted]';",
+                 True),
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(readyset._redact_export_sql(sql), (expected, changed))
+        # Safe backslash definition remains runnable end to end.
+        conn = FakeCacheExport()
+        conn.definition = r"CREATE CACHE c FROM SELECT `col`, 'x\\', '\! id #' FROM `orders`;"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"], conn.definition)
+        self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+        self.assertNotIn(readyset._EXPORT_UNSAFE_COMMENT, result["sql"])
+        self.assertEqual(conn.writes, [])
+        # Ordinary escaped-apostrophe definition with a credential redacts in
+        # place rather than collapsing to the quote-mode-ambiguous comment.
+        conn = FakeCacheExport()
+        conn.definition = (
+            "CREATE CACHE c FROM SELECT `col` FROM t "
+            "WHERE a = 'o\\'reilly' AND b = `other` AND password = 'secret';"
+        )
+        result = readyset.export_caches(conn)
+        self.assertEqual(
+            result["caches"][0]["statement"],
+            "-- CREATE CACHE c FROM SELECT `col` FROM t "
+            "WHERE a = 'o\\'reilly' AND b = `other` AND password = '[redacted]';")
+        self.assertNotIn(readyset._EXPORT_AMBIGUOUS_COMMENT, result["sql"])
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertEqual(conn.writes, [])
+
+    def test_export_redaction_200kb_credential_definitions_stay_linear(self):
+        # Ordinary 200 KB credential definitions and 200 KB backslash-plus-
+        # credential definitions must both stay linear (well under 2 s).
+        ordinary_unit = "SELECT 1 FROM t WHERE c = 'mysql://u:pw@h/db' AND d IDENTIFIED BY 'x'; "
+        backslash_unit = "SELECT `col` FROM t WHERE c = 'a\\b' AND u = 'mysql://u:pw@h/db' AND d IDENTIFIED BY 'x'; "
+        escaped_quote_unit = (
+            "SELECT `col` FROM t WHERE a = 'o\\'reilly' AND b = `other` "
+            "AND u = 'mysql://u:pw@h/db' AND d IDENTIFIED BY 'x'; "
+        )
+        for label, unit in (
+                ("ordinary_200kb", ordinary_unit),
+                ("backslash_200kb", backslash_unit),
+                ("escaped_quote_backslash_200kb", escaped_quote_unit),
+        ):
+            repeats = (204800 // len(unit)) + 1
+            sql = unit * repeats
+            self.assertGreaterEqual(len(sql), 204800)
+            with self.subTest(label=label, size=len(sql)):
+                started = time.monotonic()
+                output, changed = readyset._redact_export_sql(sql)
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 2.0, "%s (%d B) took %.3f s" % (label, len(sql), elapsed))
+                self.assertTrue(changed)
+                self.assertNotIn("pw@h", output)
+                self.assertNotIn("IDENTIFIED BY 'x'", output)
+                self.assertNotEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
+
     def test_export_redaction_password_matches_redaction_marker(self):
         # An existing marker counts as a credential only in a credential form
         # when the connection password is unrelated; when the connection
