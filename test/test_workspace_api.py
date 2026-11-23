@@ -143,34 +143,60 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertNotIn(secret, log.getvalue())
         self.assertNotIn('server-read', json.dumps(body))
 
-    def test_group_probe_and_topology_internal_errors_reach_logged_500(self):
+    def test_group_probe_and_topology_member_internal_errors_mark_only_that_member_failed(self):
         from myflames import topology_group, ui
         from myflames.workspace_store import ENDPOINT_FIELDS
         secret = 'saved-group-redaction-secret'
-        profiles = []
+        first_uuid = '11111111-1111-4111-8111-111111111111'
         for name in ('first', 'second'):
-            profiles.append(self.server.store.save('profile',
+            self.server.store.save('profile',
                 {'name': name, 'host': name + '.example', 'port': 3306, 'user': 'app'},
-                name, password=secret if name == 'second' else 'first-member-password', remember=True))
+                name, password=secret if name == 'second' else 'first-member-password', remember=True)
         self.server.store.save_connection_group('G', ['first', 'second'])
         active = self.server.store.get('profile', 'first')
         connection = dict({key: active.get(key) for key in ENDPOINT_FIELDS},
                           profile_id='first', group_name='G')
+
+        def fake_identity(_conn, member, read_position=True):
+            if member['profile_id'] == 'second':
+                raise KeyError(secret)
+            member.update(engine='mysql', product='MySQL', version='8.0.36',
+                          role='primary', state='ONLINE', server_uuid=first_uuid)
+            return {}, 'first member read'
+
         for path, payload, fault in (
                 ('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'first',
                                  'probe_members': True},
-                 patch.object(ui, '_member_live_facts', side_effect=[{}, KeyError(secret)])),
+                 patch.object(ui, '_member_live_facts', side_effect=[
+                     {'server_uuid': first_uuid, 'role': 'PRIMARY', 'state': 'ONLINE'},
+                     KeyError(secret)])),
                 ('/api/live/topology', {'connection': connection, 'section': 'members'},
-                 patch.object(topology_group, '_identity', side_effect=KeyError(secret)))):
+                 patch.object(topology_group, '_identity', side_effect=fake_identity))):
             with self.subTest(path=path):
                 log = io.StringIO()
                 with fault, patch.object(ui, '_connection_test_report', return_value={}), \
                         patch.object(ui.sys, 'stderr', log):
                     status, body, unused = self.request(path, payload)
-                self.assertEqual(status, 500)
-                self.assertIn('KeyError', log.getvalue())
-                self.assertIn('[redacted]', log.getvalue())
-                self.assertNotIn(secret, log.getvalue())
+                self.assertEqual(status, 200)
+                if path == '/api/connect':
+                    members = {m['profile_id']: m for m in body['group_connection']['members']}
+                    self.assertTrue(members['first']['reachable'])
+                    self.assertEqual(members['first']['server_uuid'], first_uuid)
+                    self.assertFalse(members['second']['reachable'])
+                    self.assertIsNone(members['second']['server_uuid'])
+                else:
+                    members = {m['profile_id']: m for m in body['members']}
+                    self.assertEqual(members['first']['outcome'], 'read')
+                    self.assertEqual(members['first']['server_uuid'], first_uuid)
+                    self.assertEqual(members['second']['outcome'], 'failed')
+                    self.assertIsNone(members['second']['server_uuid'])
+                    self.assertEqual(body['summary']['read'], 1)
+                    self.assertEqual(body['summary']['failed'], 1)
+                logged = log.getvalue()
+                self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                self.assertIn('KeyError', logged)
+                self.assertIn('[redacted]', logged)
+                self.assertNotIn(secret, logged)
                 self.assertNotIn(secret, json.dumps(body))
 
     def test_investigation_save_update_list_and_delete(self):

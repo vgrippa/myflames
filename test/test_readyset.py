@@ -1591,25 +1591,32 @@ class TestExplainAndExportCaches(ReadysetBase):
                     self.assertEqual(conn.writes, [])
 
     def test_export_redacts_password_in_every_token_kind(self):
-        # A coincidental password match in SQL data is not a credential.
-        # Preserve every token kind while retaining ordinary framing checks.
+        # Bare words, identifiers and executable SQL tokens equal to the
+        # password stay visible; string literals and comments containing it
+        # are replaced as a whole and marked redacted.
         for password in ("MyPassw0rd", "a`b", "\ue000"):
-            for template, value in (
-                    ("SELECT %s FROM t", password),
-                    ("SELECT 1 AS %s", password),
-                    ("SELECT `%s` FROM t", password.replace("`", "``")),
-                    ("SELECT 1 /*!50000 %s */", password),
-                    ("SELECT 1 /* %s */", password),
-                    ("SELECT '%s'", password)):
+            for template, value, expected_redacted in (
+                    ("SELECT %s FROM t", password, False),
+                    ("SELECT 1 AS %s", password, False),
+                    ("SELECT `%s` FROM t", password.replace("`", "``"), False),
+                    ("SELECT 1 /*!50000 %s */", password, False),
+                    ("SELECT 1 /* %s */", password, True),
+                    ("SELECT '%s'", password, True)):
                 with self.subTest(password=password, template=template):
                     conn = FakeCacheExport()
                     conn.password = password
                     conn.definition = "CREATE CACHE c FROM " + template % value + ";"
                     result = readyset.export_caches(conn)
-                    for text in (result["sql"], result["caches"][0]["statement"]):
-                        self.assertIn(value, text)
-                    self.assertNotIn(dbops.REDACTED, result["caches"][0]["statement"])
-                    self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                    if expected_redacted:
+                        self.assertNotIn(value, json.dumps(result))
+                        self.assertIn(dbops.REDACTED, result["caches"][0]["statement"])
+                        self.assertTrue(result["caches"][0]["statement"].startswith("-- "))
+                        self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                    else:
+                        for text in (result["sql"], result["caches"][0]["statement"]):
+                            self.assertIn(value, text)
+                        self.assertNotIn(dbops.REDACTED, result["caches"][0]["statement"])
+                        self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
                     self.assertEqual(conn.writes, [])
 
     def test_export_applies_safety_and_redaction_to_generated_use(self):
@@ -1858,18 +1865,25 @@ class TestExplainAndExportCaches(ReadysetBase):
     def test_export_password_word_preserves_sql_data_but_hides_credential_values(self):
         conn = FakeCacheExport()
         conn.password = "orders"
-        clean = ("CREATE CACHE `orders` FROM SELECT orders, 'orders', `orders_archive` "
-                 "FROM orders /* orders */;")
+        clean = "CREATE CACHE `orders` FROM SELECT orders, `orders_archive` FROM orders;"
+        literal = "CREATE CACHE `lit` FROM SELECT orders, 'orders' FROM orders;"
+        comment = "CREATE CACHE `cmt` FROM SELECT orders FROM orders /* orders */;"
         credentials = "CREATE CACHE c FROM SELECT orders FROM orders WHERE password = 'orders';"
         conn.export_rows = [{"database": "orders", "query": clean},
+                            {"database": "orders", "query": literal},
+                            {"database": "orders", "query": comment},
                             {"database": "orders", "query": credentials}]
         result = readyset.export_caches(conn)
         self.assertEqual(result["caches"], [
             {"database": "orders", "statement": clean},
             {"database": "orders", "statement":
+             "-- CREATE CACHE `lit` FROM SELECT orders, '[redacted]' FROM orders;"},
+            {"database": "orders", "statement":
+             "-- CREATE CACHE `cmt` FROM SELECT orders FROM orders /* [redacted] */;"},
+            {"database": "orders", "statement":
              "-- CREATE CACHE c FROM SELECT orders FROM orders WHERE password = '[redacted]';"},
         ])
-        self.assertEqual(result["sql"].count(readyset._EXPORT_REDACTED_COMMENT), 1)
+        self.assertEqual(result["sql"].count(readyset._EXPORT_REDACTED_COMMENT), 3)
         self.assertIn("USE `orders`;\n" + clean + "\n", result["sql"])
         self.assertEqual(conn.writes, [])
 
@@ -1936,7 +1950,7 @@ class TestExplainAndExportCaches(ReadysetBase):
                     self.assertIn(statement + "\n", result["sql"])
                     self.assertEqual(conn.writes, [])
         self.assertEqual(readyset._redact_export_sql("SELECT 'Pr0d@Tail99';", "Pr0d@Tail99"),
-                         ("SELECT 'Pr0d@Tail99';", False))
+                         ("SELECT '[redacted]';", True))
 
     def test_export_url_pattern_handles_400kb_in_under_two_seconds(self):
         # A failed bounded match must not retry a long scheme at each byte,
@@ -1991,21 +2005,30 @@ class TestExplainAndExportCaches(ReadysetBase):
                     self.assertEqual(conn.writes, [])
 
     def test_export_redacts_connection_password_in_comments(self):
-        for comment in ("/* before PASSWORD='rs-secret-pw' after */",
-                        "-- before PASSWORD='rs-secret-pw' after",
-                        "# before PASSWORD='rs-secret-pw' after",
-                        "/* before\nPASSWORD='rs-secret-pw'\nafter */"):
+        for comment, replacement in (
+                ("/* before PASSWORD='rs-secret-pw' after */", "/* [redacted] */"),
+                ("-- before PASSWORD='rs-secret-pw' after", "-- [redacted]"),
+                ("# before PASSWORD='rs-secret-pw' after", "# [redacted]"),
+                ("/* before\nPASSWORD='rs-secret-pw'\nafter */", "/* [redacted] */")):
             with self.subTest(comment=comment):
                 conn = FakeCacheExport()
                 conn.definition = "CREATE CACHE c FROM SELECT 1 %s\n;" % comment
                 result = readyset.export_caches(conn)
                 statement = result["caches"][0]["statement"]
-                replacement = comment.replace(conn.password, dbops.REDACTED).replace("\n", "\\u000a")
                 self.assertEqual(statement, "-- CREATE CACHE c FROM SELECT 1 %s\\u000a;" % replacement)
                 self.assertTrue(all(line.startswith("-- ") for line in statement.splitlines()))
                 self.assertIn(readyset._EXPORT_REDACTED_COMMENT + "\n" + statement, result["sql"])
                 self.assertNotIn(conn.password, json.dumps(result))
                 self.assertEqual(conn.writes, [])
+        # Even without the connection password, credential syntax in comments is still redacted.
+        conn = FakeCacheExport()
+        conn.password = "unrelated"
+        conn.definition = "CREATE CACHE c FROM SELECT 1 /* before PASSWORD='other-secret' after */;"
+        result = readyset.export_caches(conn)
+        self.assertEqual(result["caches"][0]["statement"],
+                         "-- CREATE CACHE c FROM SELECT 1 /* before PASSWORD='[redacted]' after */;")
+        self.assertNotIn("other-secret", json.dumps(result))
+        self.assertEqual(conn.writes, [])
 
     def test_explain_collision_keeps_exact_server_name(self):
         for name in (" c_orders_deep ", "   ", "`literal`", "a``b", None, ""):
@@ -2109,9 +2132,10 @@ class TestExplainAndExportCaches(ReadysetBase):
             "CREATE DEEP CACHE `sales` FROM SELECT `sales` FROM `sales` WHERE status = 'open';",
         ])
 
-        # A matching word inside data stays intact. Only the URL credential
-        # changes and disables its definition within this same export.
-        ident_stmt = "CREATE SHALLOW CACHE orders_summary FROM SELECT * FROM orders;"
+        # Matching words inside identifiers/bare code stay intact, while
+        # string literals containing the password and URL credentials are
+        # hidden and disable their definitions.
+        ident_stmt = "CREATE SHALLOW CACHE orders_summary FROM SELECT sales FROM sales;"
         mixed = readyset.export_caches(CustomExportConn("sales", [
             {"database": "shop", "query": ident_stmt},
             {"database": "shop", "query": "CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = 'sales';"},
@@ -2120,8 +2144,8 @@ class TestExplainAndExportCaches(ReadysetBase):
         ]))
         self.assertEqual(mixed["caches"], [
             {"database": "shop", "statement": ident_stmt},
-            {"database": "shop", "statement": "CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = 'sales';"},
-            {"database": "shop", "statement": 'CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = "my-sales-pw";'},
+            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = '[redacted]';"},
+            {"database": "shop", "statement": '-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = "[redacted]";'},
             {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `url` FROM SELECT 'mysql://u:[redacted]@h:3306/db' FROM orders;"},
         ])
         flag = "-- Credentials in this definition are shown as [redacted]; it will not run as is."
@@ -2130,28 +2154,30 @@ class TestExplainAndExportCaches(ReadysetBase):
             "-- Recognized credentials in query text are shown as [redacted].",
             "USE `shop`;",
             ident_stmt,
-            "CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = 'sales';",
-            'CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = "my-sales-pw";',
+            flag,
+            "-- CREATE SHALLOW CACHE `by_region` FROM SELECT * FROM orders WHERE region = '[redacted]';",
+            flag,
+            '-- CREATE SHALLOW CACHE `dq` FROM SELECT * FROM orders WHERE region = "[redacted]";',
             flag,
             "-- CREATE SHALLOW CACHE `url` FROM SELECT 'mysql://u:[redacted]@h:3306/db' FROM orders;",
         ])
 
-        # Ordinary escaped data is preserved, but ambiguous backslash quote
-        # framing still disables the definition. Identifiers remain intact.
+        # Doubled quotes and backslash escapes inside string literals still match
+        # the connection password and redact the whole literal; identifiers stay intact.
         escaped = readyset.export_caches(CustomExportConn("o'reilly", [
             {"database": "shop", "query": "CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = 'o''reilly' AND b = 'o\\'reilly';"},
             {"database": "shop", "query": "CREATE SHALLOW CACHE `ok` FROM SELECT `o'reilly` FROM `mysql://u:p@h`;"},
         ]))
         self.assertEqual(escaped["caches"], [
-            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = 'o''reilly' AND b = 'o\\'reilly';"},
+            {"database": "shop", "statement": "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = '[redacted]' AND b = '[redacted]';"},
             {"database": "shop", "statement": "CREATE SHALLOW CACHE `ok` FROM SELECT `o'reilly` FROM `mysql://u:p@h`;"},
         ])
         self.assertEqual(escaped["sql"].splitlines(), [
             "-- Readyset cache definitions exported by myflames (Readyset stable-250605)",
             "-- Recognized credentials in query text are shown as [redacted].",
             "USE `shop`;",
-            readyset._EXPORT_UNSAFE_COMMENT,
-            "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = 'o''reilly' AND b = 'o\\'reilly';",
+            flag,
+            "-- CREATE SHALLOW CACHE `esc` FROM SELECT * FROM t WHERE a = '[redacted]' AND b = '[redacted]';",
             "CREATE SHALLOW CACHE `ok` FROM SELECT `o'reilly` FROM `mysql://u:p@h`;",
         ])
 
@@ -2183,9 +2209,11 @@ class TestExplainAndExportCaches(ReadysetBase):
         self.assertEqual(readyset._redact_export_sql(mixed), (expected, True))
 
     def test_export_redaction_password_matches_redaction_marker(self):
-        # An existing marker counts as a credential only in a credential
-        # form, and must disable that definition even if text is identical.
-        cases = (
+        # An existing marker counts as a credential only in a credential form
+        # when the connection password is unrelated; when the connection
+        # password literally equals [redacted], strings and comments holding it
+        # are still marked redacted even though the text looks identical.
+        unrelated_cases = (
             ("SELECT '[redacted]';", "SELECT '[redacted]';", False),
             ('SELECT "[redacted]";', 'SELECT "[redacted]";', False),
             ("SELECT 'prefix[redacted]suffix';", "SELECT 'prefix[redacted]suffix';", False),
@@ -2198,8 +2226,32 @@ class TestExplainAndExportCaches(ReadysetBase):
             ("SELECT [redacted];", "SELECT [redacted];", False),
             ("SELECT 'unrelated';", "SELECT 'unrelated';", False),
         )
-        for sql, expected, changed in cases:
-            with self.subTest(sql=sql):
+        for sql, expected, changed in unrelated_cases:
+            with self.subTest(password="other-pw", sql=sql):
+                self.assertEqual(readyset._redact_export_sql(sql, "other-pw"),
+                                 (expected, changed))
+                conn = FakeCacheExport()
+                conn.password = "other-pw"
+                conn.definition = "CREATE CACHE c FROM " + sql
+                result = readyset.export_caches(conn)
+                statement = ("-- " if changed else "") + "CREATE CACHE c FROM " + expected
+                self.assertEqual(result["caches"][0]["statement"], statement)
+                self.assertEqual(readyset._EXPORT_REDACTED_COMMENT in result["sql"], changed)
+                self.assertEqual(conn.writes, [])
+
+        marker_cases = (
+            ("SELECT '[redacted]';", "SELECT '[redacted]';", True),
+            ('SELECT "[redacted]";', 'SELECT "[redacted]";', True),
+            ("SELECT 'prefix[redacted]suffix';", "SELECT '[redacted]';", True),
+            ("SELECT 1 /* [redacted] */;", "SELECT 1 /* [redacted] */;", True),
+            ("SELECT 'mysql://u:p@h';", "SELECT 'mysql://u:[redacted]@h';", True),
+            ("SELECT PASSWORD('[redacted]');", "SELECT PASSWORD('[redacted]');", True),
+            ("SELECT `[redacted]`;", "SELECT `[redacted]`;", False),
+            ("SELECT [redacted];", "SELECT [redacted];", False),
+            ("SELECT 'unrelated';", "SELECT 'unrelated';", False),
+        )
+        for sql, expected, changed in marker_cases:
+            with self.subTest(password=dbops.REDACTED, sql=sql):
                 self.assertEqual(readyset._redact_export_sql(sql, dbops.REDACTED),
                                  (expected, changed))
                 conn = FakeCacheExport()
@@ -2210,6 +2262,72 @@ class TestExplainAndExportCaches(ReadysetBase):
                 self.assertEqual(result["caches"][0]["statement"], statement)
                 self.assertEqual(readyset._EXPORT_REDACTED_COMMENT in result["sql"], changed)
                 self.assertEqual(conn.writes, [])
+
+    def test_export_redacts_table_and_keyword_passwords_only_in_strings_and_comments(self):
+        # Passwords equal to a table name ("orders") or SQL keyword ("select")
+        # stay visible in identifiers, keywords and bare words, while the same
+        # text inside string literals or comments (raw, quote-collapsed or
+        # backslash-decoded) is hidden and marks the definition redacted.
+        for password in ("orders", "select"):
+            clean = "CREATE CACHE `%s` FROM SELECT %s FROM orders WHERE orders = 1;" % (password, password)
+            with self.subTest(kind="clean", password=password):
+                self.assertEqual(readyset._redact_export_sql(clean, password), (clean, False))
+                conn = FakeCacheExport()
+                conn.password = password
+                conn.definition = clean
+                res = readyset.export_caches(conn)
+                self.assertEqual(res["caches"][0]["statement"], clean)
+                self.assertNotIn(readyset._EXPORT_REDACTED_COMMENT, res["sql"])
+            for variant_sql, expected_sql in (
+                    ("CREATE CACHE c FROM SELECT 'prefix %s suffix' FROM orders;" % password,
+                     "CREATE CACHE c FROM SELECT '[redacted]' FROM orders;"),
+                    ('CREATE CACHE c FROM SELECT "prefix %s suffix" FROM orders;' % password,
+                     'CREATE CACHE c FROM SELECT "[redacted]" FROM orders;'),
+                    ("CREATE CACHE c FROM SELECT 1 /* note %s */ FROM orders;" % password,
+                     "CREATE CACHE c FROM SELECT 1 /* [redacted] */ FROM orders;"),
+                    ("CREATE CACHE c FROM SELECT 1 -- note %s\nFROM orders;" % password,
+                     "CREATE CACHE c FROM SELECT 1 -- [redacted]\nFROM orders;"),
+                    ("CREATE CACHE c FROM SELECT 1 # note %s\nFROM orders;" % password,
+                     "CREATE CACHE c FROM SELECT 1 # [redacted]\nFROM orders;"),
+            ):
+                with self.subTest(password=password, variant=variant_sql):
+                    self.assertEqual(readyset._redact_export_sql(variant_sql, password),
+                                     (expected_sql, True))
+                    conn = FakeCacheExport()
+                    conn.password = password
+                    conn.definition = variant_sql
+                    res = readyset.export_caches(conn)
+                    stmt = res["caches"][0]["statement"]
+                    self.assertTrue(stmt.startswith("-- "))
+                    self.assertIn(readyset._EXPORT_REDACTED_COMMENT, res["sql"])
+                    self.assertNotIn("prefix", stmt)
+                    self.assertNotIn("note", stmt)
+
+        # Doubled quotes, backslash escapes, empty passwords, and credential clauses.
+        for pw, sql, expected in (
+                ("a'b", "CREATE CACHE c FROM SELECT 'a''b', 'a\\'b' FROM orders;",
+                 "CREATE CACHE c FROM SELECT '[redacted]', '[redacted]' FROM orders;"),
+                ('a"b', 'CREATE CACHE c FROM SELECT "a""b", \'a\\"b\' FROM orders;',
+                 'CREATE CACHE c FROM SELECT "[redacted]", \'[redacted]\' FROM orders;'),
+                ("a\\b", "CREATE CACHE c FROM SELECT 'a\\\\b' FROM orders;",
+                 "CREATE CACHE c FROM SELECT '[redacted]' FROM orders;"),
+                ("a\nb", "CREATE CACHE c FROM SELECT 'a\\nb' FROM orders;",
+                 "CREATE CACHE c FROM SELECT '[redacted]' FROM orders;"),
+                ("a'b", "CREATE CACHE c FROM SELECT 'unclosed a\\'b",
+                 "CREATE CACHE c FROM SELECT '[redacted]'"),
+                ("a'b", "CREATE CACHE c FROM SELECT 1 /* unclosed a\\'b",
+                 "CREATE CACHE c FROM SELECT 1 /* [redacted] */"),
+        ):
+            with self.subTest(pw=repr(pw), sql=sql):
+                self.assertEqual(readyset._redact_export_sql(sql, pw), (expected, True))
+        self.assertEqual(readyset._redact_export_sql("SELECT 'ok' FROM orders;", ""),
+                         ("SELECT 'ok' FROM orders;", False))
+        self.assertEqual(
+            readyset._redact_export_sql(
+                "CREATE CACHE c FROM SELECT 'mysql://u:urlpw@h:3306/db'; CREATE USER a IDENTIFIED BY 'idpw';",
+                "orders"),
+            ("CREATE CACHE c FROM SELECT 'mysql://u:[redacted]@h:3306/db'; CREATE USER a IDENTIFIED BY '[redacted]';",
+             True))
 
     def test_redacted_export_comments_every_line_in_sql_and_structured_items(self):
         class MultilineExportConn(FakeReadyset):

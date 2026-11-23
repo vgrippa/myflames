@@ -1361,15 +1361,115 @@ def _redact_export_urls(sql):
     return ("".join(parts) + sql[kept:], bool(parts)) if parts else (sql, False)
 
 
-def _redact_export_sql(sql, password=None):
-    """Redact credential syntax, preserving unrelated SQL and identifiers.
+_EXPORT_SQL_ESCAPES = {
+    "0": "\x00",
+    "'": "'",
+    '"': '"',
+    "b": "\b",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "Z": "\x1a",
+    "\\": "\\",
+}
 
-    A connection password can also be an ordinary table, column or literal
-    value. Do not pass it as the shared redactor's substring scrubber. URL
-    user-info and the credential clauses recognized by dbops.redact remain
-    sensitive regardless of whether they contain that particular password.
+
+def _decode_export_sql_escapes(text, quote=None):
+    """Decode MySQL backslash escapes (and doubled *quote* if given) in one pass."""
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            out.append(_EXPORT_SQL_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        if quote and ch == quote and i + 1 < n and text[i + 1] == quote:
+            out.append(quote)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _export_token_has_password(body, password, quote=None):
+    """True when *password* appears in raw, quote-collapsed or unescaped *body*."""
+    if not password:
+        return False
+    if password in body:
+        return True
+    if quote:
+        doubled = quote * 2
+        if doubled in body and password in body.replace(doubled, quote):
+            return True
+    elif ("''" in body and password in body.replace("''", "'")) or (
+            '""' in body and password in body.replace('""', '"')):
+        return True
+    if "\\" in body:
+        if password in _decode_export_sql_escapes(body):
+            return True
+        if quote and (quote * 2) in body and password in _decode_export_sql_escapes(body, quote):
+            return True
+    return False
+
+
+def _redact_export_literal_passwords(sql, password):
+    """Hide connection *password* inside string literals and comments only.
+
+    Identifiers, keywords and bare SQL words stay visible even when they equal
+    *password*. Checks the original token before URL substitution.
     """
-    sql, changed = _redact_export_urls(sql)
+    if not isinstance(password, str) or not password:
+        return sql, False
+    scan = dbops.lex_sql(sql)
+    unclosed = set(scan["unclosed"])
+    parts = []
+    kept = 0
+    changed = False
+    for kind, start, end in scan["tokens"]:
+        tok = sql[start:end]
+        replacement = None
+        if kind == "string":
+            closed = (start, end) not in unclosed and len(tok) >= 2 and tok[-1] == tok[0]
+            quote = tok[0] if tok[:1] in ("'", '"') else "'"
+            body = tok[1:-1] if closed else tok[1:]
+            if _export_token_has_password(body, password, quote):
+                replacement = quote + dbops.REDACTED + quote
+        elif kind == "comment":
+            closed = (start, end) not in unclosed
+            if tok.startswith("/*"):
+                body = tok[2:-2] if closed and tok.endswith("*/") and len(tok) >= 4 else tok[2:]
+                if _export_token_has_password(body, password):
+                    replacement = "/* %s */" % dbops.REDACTED
+            elif tok.startswith("--"):
+                if _export_token_has_password(tok[2:], password):
+                    replacement = "-- %s" % dbops.REDACTED
+            elif tok.startswith("#"):
+                if _export_token_has_password(tok[1:], password):
+                    replacement = "# %s" % dbops.REDACTED
+        if replacement is not None:
+            parts.extend((sql[kept:start], replacement))
+            kept = end
+            changed = True
+    return ("".join(parts) + sql[kept:], True) if changed else (sql, False)
+
+
+def _redact_export_sql(sql, password=None):
+    """Redact credential syntax and password-bearing literals or comments.
+
+    A connection password can also be an ordinary table, column, keyword or
+    identifier. Do not pass it as the shared redactor's substring scrubber, and
+    never run a global replace over the definition. String literals and
+    comments containing the password are replaced as a whole; URL user-info and
+    the credential clauses recognized by dbops.redact remain sensitive
+    regardless of whether they contain that particular password.
+    """
+    sql, literal_changed = _redact_export_literal_passwords(sql, password)
+    sql, url_changed = _redact_export_urls(sql)
+    changed = literal_changed or url_changed
     parts, identifiers = [], {}
     used, mask_codepoint = set(sql), 0xe000
     scan = dbops.lex_sql(sql)
