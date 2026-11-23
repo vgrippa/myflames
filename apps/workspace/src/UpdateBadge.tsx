@@ -9,11 +9,34 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./components";
 import { Checkbox } from "./kit";
-import { UpdateOpenError, useMinuteClock } from "./UpdateCheck";
 import {
-  closeUpdateDialog, openUpdateDialog, setAutoCheck, stagingPercent, startAutomaticChecks,
-  UpdateDialogView, updateDialogReturnFocus, updatePhase, updatePhaseLabel, useUpdateStatus,
+  closeUpdateDialog, dismissUpdateOpenError, openUpdateDialog, setAutoCheck, stagingPercent,
+  startAutomaticChecks, UpdateDialogView, updateDialogReturnFocus, updatePhase, updatePhaseLabel,
+  useUpdateStatus,
 } from "./updateStatus";
+
+/** Re-render once a minute so "today" and the 24-hour limit stay true. */
+export function useMinuteClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/** A failed opening of Software update, at the control that launched it. */
+export function UpdateOpenError({ from, retry }: { from: string; retry: () => void }) {
+  const s = useUpdateStatus();
+  if (!s.openError || s.openError.from !== from) return null;
+  return (
+    <p className="hint error update-open-error" role="alert">
+      <span>{s.openError.message}</span>
+      <button type="button" className="text-button update-open-retry" onClick={retry}>Retry</button>
+      <button type="button" className="text-button" onClick={dismissUpdateOpenError}>Dismiss</button>
+    </p>
+  );
+}
 
 // Pointing at or focusing an opener starts the chunk on its way, so a click
 // rarely waits. A failed warm-up is quiet: the click's own load reports it.

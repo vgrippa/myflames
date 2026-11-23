@@ -9,11 +9,18 @@ import { Icon } from "./components";
 import { groupConnectionLabel } from "./binding";
 
 const GroupEditorSheet = lazy(() => import("./GroupEditorSheet").then(module => ({ default: module.GroupEditorSheet })));
-import { ReadinessFacts, checkReadiness, copyReadiness, readinessHint, readinessLine } from "./readiness";
+// Readiness (the per-server facts strip and its checks) is most of its own
+// module; the strip rides with the first screen the way the editor chunk
+// does (preload beside the first render), and Check/test runs import it on
+// demand. lazyComponent keeps a mounted strip from remounting when the chunk
+// lands (lazy.tsx).
+const ReadinessFacts = lazyComponent(() => import("./readiness").then((m) => m.ReadinessFacts));
+void ReadinessFacts.preload().catch(() => {});
 import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
+import { lazyComponent } from "./lazy";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
 
 const ImportConnections = lazy(() => import("./ImportConnections").then(module => ({ default: module.ImportConnections })));
@@ -655,7 +662,7 @@ export function Connections({
         password: storeTyped ? password : undefined,
         remember_password: storeTyped || keepExisting,
       });
-      copyReadiness(formConnection, { ...settings, profile_id: p.id });
+      (await import("./readiness")).copyReadiness(formConnection, { ...settings, profile_id: p.id });
       await refresh();
       // The edited connection stays in use, and a first saved connection
       // becomes the one in use, unless the user chose another connection
@@ -708,9 +715,10 @@ export function Connections({
     // The result line belongs to this test from now on.
     if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
+      const readinessModule = await import("./readiness");
       const [test, readiness] = await Promise.allSettled([
         api<ConnectionTestResult>("connection/test", { connection: formConnection }),
-        checkReadiness(formConnection),
+        readinessModule.checkReadiness(formConnection),
       ]);
       if (test.status === "rejected") throw test.reason;
       const r = test.value;
@@ -721,8 +729,8 @@ export function Connections({
       setTypingSchema(false);
       setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database));
       statusFromTest.current = true;
-      setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessLine(readiness.value)}` : testedText(r));
-      setReadinessNote(readiness.status === "fulfilled" ? readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");
+      setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessModule.readinessLine(readiness.value)}` : testedText(r));
+      setReadinessNote(readiness.status === "fulfilled" ? readinessModule.readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -821,7 +829,8 @@ export function Connections({
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
       const [test] = await Promise.allSettled([
-        api<ConnectionTestResult>("connection/test", { connection }), checkReadiness(connection),
+        api<ConnectionTestResult>("connection/test", { connection }),
+        import("./readiness").then((m) => m.checkReadiness(connection)),
       ]);
       if (test.status === "rejected") throw test.reason;
       const r = test.value;
@@ -918,8 +927,8 @@ export function Connections({
           <button role="menuitem" onClick={() => act(() => openForm(row.profile))} aria-label={`Edit ${name}`}>Edit</button>
           <button role="menuitem" onClick={() => act(() => duplicate(row))} aria-label={`Duplicate ${name}`}>Duplicate</button>
           <button role="menuitem" disabled={busy} onClick={() => act(() => {
-            void checkReadiness({ ...row.fields, type: row.profile?.type, profile_id: row.key,
-              password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" }).catch(() => {});
+            void import("./readiness").then((m) => m.checkReadiness({ ...row.fields, type: row.profile?.type, profile_id: row.key,
+              password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" }).catch(() => {}));
           })} aria-label={`Check now ${name}`}>Check now</button>
           <button role="menuitem" disabled={busy} onClick={() => act(() => {
             openForm(row.profile);
@@ -1567,8 +1576,8 @@ export function ConnectionPicker({
               const chosen = profiles.find(p => p.id === id);
               // The probe sends the connection fields only (connectionFields):
               // stored group metadata never leaves the profile list.
-              if (chosen) void checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
-                password: id === active.id ? active.password : "" }).catch(() => {});
+              if (chosen) void import("./readiness").then((m) => m.checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
+                password: id === active.id ? active.password : "" }).catch(() => {}));
             }} options={[
               ...(activeGroup ? [["group-connection", name] as [string, string]] : []),
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),

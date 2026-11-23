@@ -30,14 +30,13 @@ import { Icon, ImportDialog, type IconName } from "./components";
 import { currentUiPreferences, loadUiPreferencesWithin, setUiPreference, useUiPreferences } from "./uiPreferences";
 import { THEME_CHOICES, applyTheme } from "./themes";
 import "./fonts";
-import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
+import type { WorkspaceCommand } from "./CommandPalette";
 import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
 import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS, ALL_SERVER_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
-import { showCreateSql } from "./sqlHighlight";
 import { useSchemaCatalog } from "./PerfShared";
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
@@ -86,7 +85,6 @@ import {
   type SlowState,
 } from "./session";
 import { engineName, metrics, views } from "./planDisplay";
-import example from "./example.json";
 import logo from "../../../docs/brand/myflames-app-logo.png";
 // Places and views that are not on the first screen load their chunk when
 // they first mount (lazy.tsx); Home, the sidebar and the shell stay here.
@@ -114,6 +112,14 @@ const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 // command palette), not a place in the sidebar's navigation.
 const SettingsPage = lazyComponent(() => import("./SettingsPage").then((m) => m.SettingsPage));
 const Teach = lazyComponent(() => import("./Teach").then((m) => m.Teach));
+// The command palette renders only while open (⌘K / Ctrl+K or the toolbar
+// button), so its chunk loads on first use.
+const CommandPalette = lazyComponent(() => import("./CommandPalette").then((m) => m.CommandPalette));
+// Pointing at or focusing the toolbar opener starts the chunk on its way, so
+// a click rarely waits (the UpdateBadge pattern); the ⌘K path is covered by
+// the idle preload below. A failed warm-up is quiet: the open itself shows
+// the lazy fallback, then LoadFailed if the chunk cannot be read.
+const warmCommandPalette = () => { void CommandPalette.preload().catch(() => {}); };
 // Start the screen and its chart chunks together, but only the screen gates
 // the place. A stale chart must fail inside its own boundary, not hide the
 // empty state or prevent other Plans controls from opening.
@@ -1946,7 +1952,7 @@ function App() {
     // A session restored on Plans or Compare gets its chunks now (all three
     // together), not when the idle queue reaches them.
     if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
+    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -2122,7 +2128,9 @@ function App() {
   };
   const openSample = () => {
     if (busy) return;
-    void sampleAction.run((signal) => importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample", signal }),
+    // The sample plan text loads on demand: the first screen never shows it.
+    void sampleAction.run((signal) => import("./example.json").then(({ default: example }) =>
+      importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample", signal })),
       { pending: "Analyzing the sample plan…" });
   };
   // Account and privileges of the connection in use (picker and palette).
@@ -2269,7 +2277,9 @@ function App() {
       }
       const kind = o.kind;
       if (kind === "procedure" || kind === "function" || kind === "trigger" || kind === "event")
-        lab.openSql(showCreateSql(kind, o.schema, o.name));
+        // The highlighter belongs to the editor chunks; this cross-link is
+        // the shell's only use, so it loads on demand.
+        void import("./sqlHighlight").then(({ showCreateSql }) => lab.openSql(showCreateSql(kind, o.schema, o.name)));
       else lab.revealInSchemaBrowser(o.schema, kind === "schema" ? null : o.name);
       finishLink(back);
     });
@@ -2506,6 +2516,7 @@ function App() {
               aria-label={`Search or jump to (${MAC ? "Cmd+K" : "Ctrl+K"})`}
               title={`Search or jump to (${MAC ? "Cmd+K" : "Ctrl+K"})`}
               onClick={() => setCommandPaletteOpen(true)}
+              onPointerEnter={warmCommandPalette} onFocus={warmCommandPalette}
             >
               <Icon name="search" size={13} />
               <span>Search…</span>

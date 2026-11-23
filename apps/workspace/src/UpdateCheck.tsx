@@ -2,34 +2,12 @@
 // Updates and news section and in About myflames. GitHub is asked when the
 // button is clicked and by the automatic check (updateStatus.ts); the last
 // check (kept in the workspace store) is shown with its local time.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { UpdateOpenError, useMinuteClock } from "./UpdateBadge";
 import {
-  checkForUpdates, checkedWhen, dismissUpdateOpenError, loadUpdateStatus, openUpdateDialog, updateStatusText,
+  checkForUpdates, checkedWhen, loadUpdateStatus, openUpdateDialog, updateStatusText,
   useUpdateStatus,
 } from "./updateStatus";
-
-/** A failed opening of Software update, at the control that launched it. */
-export function UpdateOpenError({ from, retry }: { from: string; retry: () => void }) {
-  const s = useUpdateStatus();
-  if (!s.openError || s.openError.from !== from) return null;
-  return (
-    <p className="hint error update-open-error" role="alert">
-      <span>{s.openError.message}</span>
-      <button type="button" className="text-button update-open-retry" onClick={retry}>Retry</button>
-      <button type="button" className="text-button" onClick={dismissUpdateOpenError}>Dismiss</button>
-    </p>
-  );
-}
-
-/** Re-render once a minute so "today" and the 24-hour limit stay true. */
-export function useMinuteClock() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return now;
-}
 
 /** The last check's outcome and time, plus the next step when a newer release was found. */
 export function UpdateCheckStatus() {

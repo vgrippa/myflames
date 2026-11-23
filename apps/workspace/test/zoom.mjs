@@ -120,9 +120,16 @@ try {
   assert.deepEqual(await box(), initial, 'Fit cancels pending wheel motion');
   await wheel(10000, 0, 80);
   const beforeButton = await page.$eval('[data-action="in"]', el => {
-    const width = Number(document.querySelector('.wb-viewport').getAttribute('viewBox').split(' ')[2]);
+    const viewport = document.querySelector('.wb-viewport');
+    const width = Number(viewport.getAttribute('viewBox').split(' ')[2]);
+    // Mid-gesture in the workspace the viewBox still shows the gesture's
+    // first frame and a CSS transform on the root carries the zoom
+    // (core/zoom.ts); the effective width is the viewBox width divided by
+    // that scale. Report pages paint the viewBox per frame: scale 1.
+    const transform = (viewport.ownerSVGElement && viewport.ownerSVGElement.style.transform) || '';
+    const scale = Number((transform.match(/scale\(([^)]+)\)/) || [])[1] || 1);
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return width;
+    return width / scale;
   });
   const buttonBox = await box();
   await settle();
