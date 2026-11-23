@@ -777,7 +777,165 @@ def _healthy_mysql_entries(count, prefix='u'):
     } for i in range(count)]
 
 
+def _capture_unchecked(conn):
+    """Exercise the legacy script/per-account paths after connection selection.
+
+    Public capture now selects evidence on ordinary servers. Keep the existing
+    parity tests covering the unchecked fallback's readers independently.
+    """
+    return A._capture(P.BoundedConnection(conn), conn)
+
+
 class BatchedCaptureParityTest(unittest.TestCase):
+    def test_evidence_batch_uses_remaining_member_budget(self):
+        from myflames.topology_group import _ReadConnection
+        state = _BatchServerState(entries=_healthy_mysql_entries(50))
+        for seconds, succeeds in ((90, True), (50, False)):
+            with self.subTest(seconds=seconds):
+                clock = [1000.0]
+
+                class SlowEvidenceConn(_EvidenceFakeConn):
+                    def __init__(self):
+                        super(SlowEvidenceConn, self).__init__(state)
+                        self.batch_limits = []
+
+                    def run(self, sql, extra_flags=None, timeout=None, retain_partial_stdout=False):
+                        # The 100 account reads take 60 s together, but each
+                        # individual statement fits the normal 30 s limit.
+                        reads = sql.count('SHOW GRANTS FOR ') + sql.count('SHOW CREATE USER ')
+                        cost = reads * 0.6 if reads else 1.0
+                        limit = self.query_timeout if timeout is None else timeout
+                        if reads:
+                            self.batch_limits.append((reads, limit))
+                        clock[0] += min(cost, limit)
+                        if cost > limit:
+                            raise ConnectorError('Query timed out after %ss.' % limit)
+                        return super(SlowEvidenceConn, self).run(
+                            sql, extra_flags=extra_flags, timeout=timeout,
+                            retain_partial_stdout=retain_partial_stdout)
+
+                with mock.patch.object(A.time, 'monotonic', side_effect=lambda: clock[0]):
+                    transport = SlowEvidenceConn()
+                    bounded = P.BoundedConnection(transport, seconds=seconds)
+                    # Use the same wrapper chain as a Group member read.
+                    evidence = dbops.TargetEvidenceConnection(_ReadConnection(bounded))
+                    if succeeds:
+                        result = A.capture(evidence)
+                        evidence.check()
+                        self.assertEqual(len(result['items']), 50)
+                        self.assertFalse(any(A.incomplete_account(item) for item in result['items']))
+                    else:
+                        with self.assertRaises(ConnectorError):
+                            A.capture(evidence)
+                        with self.assertRaises(ConnectorError):
+                            evidence.check()
+                    self.assertEqual(transport.batch_limits, [(100, seconds - 2)])
+                    self.assertLessEqual(clock[0], bounded.deadline)
+
+    def test_compare_capture_checks_an_ordinary_server(self):
+        state = _BatchServerState(entries=_healthy_mysql_entries(2))
+        transport = _ScriptFakeConn(state)
+        result = A.capture(transport)
+        self.assertEqual([item['name'] for item in result['items']], ['u000', 'u001'])
+        self.assertFalse(any(A.incomplete_account(item) for item in result['items']))
+        self.assertEqual(transport.scripts, [])
+        self.assertFalse(any('without the single-server check' in note for note in result['notes']))
+
+    def test_compare_capture_refuses_a_router_that_changes_identity(self):
+        state = _BatchServerState(entries=_healthy_mysql_entries(2))
+
+        class RouterConn(_ScriptFakeConn):
+            packets = 0
+
+            @evidence_options
+            def run(self, sql, extra_flags=None, timeout=None):
+                identity = state.evidence_identity()
+                if sql.startswith('DELIMITER '):
+                    self.packets += 1
+                    if self.packets > 1:
+                        identity['server_uuid'] = 'bbbbbbbb-2222-3333-4444-555555555555'
+                output = answer_evidence(
+                    sql, extra_flags, timeout,
+                    lambda body, flags, limit: self.run(body, extra_flags=flags, timeout=limit), identity)
+                if output is not None:
+                    return output
+                return super(RouterConn, self).run(sql, extra_flags=extra_flags, timeout=timeout)
+
+        transport = RouterConn(state)
+        with self.assertRaises(ConnectorError):
+            A.capture(transport)
+        self.assertEqual(transport.packets, 2)
+        self.assertEqual(transport.scripts, [])
+
+    def test_compare_capture_identity_refusal_keeps_unchecked_reads_with_note(self):
+        state = _BatchServerState(entries=_healthy_mysql_entries(2))
+
+        class UnidentifiedConn(_ScriptFakeConn):
+            @evidence_options
+            def run(self, sql, extra_flags=None, timeout=None):
+                output = answer_evidence(
+                    sql, extra_flags, timeout,
+                    lambda body, flags, limit: self.run(body, extra_flags=flags, timeout=limit), {})
+                if output is not None:
+                    return output
+                return super(UnidentifiedConn, self).run(sql, extra_flags=extra_flags, timeout=timeout)
+
+        transport = UnidentifiedConn(state)
+        result = A.capture(transport)
+        self.assertEqual([item['name'] for item in result['items']], ['u000', 'u001'])
+        self.assertEqual(len(transport.scripts), 1)
+        self.assertIn('Accounts were read without the single-server check.', result['notes'])
+
+    def test_compare_capture_keeps_proxy_sides_without_account_catalogs_unavailable(self):
+        class ProxySideConn(object):
+            query_timeout = 30
+
+            def __init__(self, version):
+                self.version = version
+                self.calls = []
+
+            def run(self, sql, extra_flags=None, timeout=None, **kwargs):
+                self.calls.append(sql)
+                if sql.startswith('DELIMITER '):
+                    # Admin/cache endpoints cannot supply the database node
+                    # identity prefix. Their ordinary reads remain usable.
+                    raise ConnectorError('ERROR 1064 (42000) at line 2: Unsupported statement')
+                if sql == 'SELECT @@version':
+                    return self.version + '\n'
+                if 'FROM mysql.user ORDER BY User, Host' in sql:
+                    raise ConnectorError("ERROR 1146 (42S02) at line 1: Table 'mysql.user' does not exist")
+                raise AssertionError('Unexpected proxy-side SQL: ' + sql)
+
+        for product, version, error_type, message in (
+                ('ProxySQL Admin', '3.0.11-797-g7c91137', ValueError,
+                 'Users and roles needs MySQL 5.7.6 or later, or MariaDB 10.11 or later.'),
+                ('Readyset', '8.0.26', ConnectorError, 'Could not list accounts (error 1146).')):
+            with self.subTest(product=product):
+                # Check the old reader's outcome as well as public capture:
+                # failed identity setup must not fabricate an empty inventory.
+                for reader in (_capture_unchecked, A.capture):
+                    transport = ProxySideConn(version)
+                    with self.assertRaises(error_type) as caught:
+                        reader(transport)
+                    self.assertEqual(str(caught.exception), message)
+                    self.assertFalse(any('SHOW GRANTS FOR ' in sql or 'SHOW CREATE USER ' in sql
+                                         for sql in transport.calls))
+
+    def test_batch_markers_have_independent_nonces_and_match_exactly(self):
+        chunk = _healthy_mysql_entries(2)
+        _results, _valid, _lines, _spans, markers, slots = A._build_batch_plan(
+            chunk, 'mysql', '8.4.11', False)
+        tokens = [marker.split(':', 1)[0] for marker in markers]
+        self.assertEqual(len(set(tokens)), len(markers))
+        # Knowing the first marker and the next slot label must not let a
+        # server end the grants slot by printing a predicted later marker.
+        predicted = tokens[0] + ':0:C'
+        output = [markers[0], predicted, 'grant row', markers[1], 'create row',
+                  markers[2], 'second grant', markers[3], 'second create', markers[4]]
+        parsed = A._parse_framed_output('\n'.join(output) + '\n', markers, slots)
+        self.assertEqual(parsed[('grants', 0)], [predicted, 'grant row'])
+        self.assertEqual(parsed[('create', 0)], ['create row'])
+
     def test_batched_capture_parity_with_per_account_path(self):
         scenarios = (
             ('mysql84', _mysql84_parity_state(), False),
@@ -797,8 +955,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
                     transport = _ScriptFakeConn(state)
                     c2 = transport
                 with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-                    expected = A.capture(per_account_conn)
-                    actual = A.capture(c2)
+                    expected = _capture_unchecked(per_account_conn)
+                    actual = A.capture(c2) if use_evidence else _capture_unchecked(c2)
                 if use_evidence:
                     c2.check()
                     self.assertFalse(hasattr(transport, 'run_script'))
@@ -860,7 +1018,7 @@ class BatchedCaptureParityTest(unittest.TestCase):
                 transport = _EvidenceFakeConn(state)
                 evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
                 with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-                    expected = A.capture(per_account)
+                    expected = _capture_unchecked(per_account)
                     actual = A.capture(evidence)
                 evidence.check()
                 self.assertEqual(actual, expected)
@@ -900,7 +1058,7 @@ class BatchedCaptureParityTest(unittest.TestCase):
         transport = _EvidenceFakeConn(state)
         evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(per_account)
+            expected = _capture_unchecked(per_account)
             actual = A.capture(evidence)
         evidence.check()
         self.assertEqual(actual, expected)
@@ -935,7 +1093,7 @@ class BatchedCaptureParityTest(unittest.TestCase):
         transport = _EvidenceFakeConn(state, corrupt_packet={2: truncate})
         evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(per_account)
+            expected = _capture_unchecked(per_account)
             actual = A.capture(evidence)
         evidence.check()
         self.assertEqual(actual, expected)
@@ -991,8 +1149,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'OFF', entries)
         c1, c2 = _PerAccountFakeConn(state), _ScriptFakeConn(state)
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(c1)
-            actual = A.capture(c2)
+            expected = _capture_unchecked(c1)
+            actual = _capture_unchecked(c2)
         self.assertEqual(actual, expected)
         self.assertEqual(len(c2.scripts), 2)
         self.assertNotIn('CAFEBABE', json.dumps(actual))
@@ -1004,8 +1162,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         broken_script_conn.run_script = lambda sql, extra_flags=None, timeout=None: (
             'garbled-unframed-output\n', 'ERROR 1064: unnumbered syntax error\n')
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(expected_conn)
-            actual = A.capture(broken_script_conn)
+            expected = _capture_unchecked(expected_conn)
+            actual = _capture_unchecked(broken_script_conn)
         self.assertEqual(actual, expected)
         # Fallback still reads partial_revokes only once per capture.
         self.assertEqual(sum('partial_revokes' in s for s in broken_script_conn.calls), 1)
@@ -1030,7 +1188,7 @@ class BatchedCaptureParityTest(unittest.TestCase):
         transport = _EvidenceFakeConn(state)
         evidence = dbops.TargetEvidenceConnection(P.BoundedConnection(transport))
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(per_account)
+            expected = _capture_unchecked(per_account)
             actual = A.capture(evidence)
         # The member did not fail: the scope is intact and every account read.
         evidence.check()
@@ -1052,8 +1210,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         per_account = _PerAccountFakeConn(state)
         slow = _SlowScriptFakeConn(state, 0.25)
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(per_account)
-            actual = A.capture(slow)
+            expected = _capture_unchecked(per_account)
+            actual = _capture_unchecked(slow)
         self.assertEqual(actual, expected)
         self.assertFalse(any(item.get('error') for item in actual['items']))
         # The 50-account batch timed out once; the two 25-account halves fit
@@ -1071,8 +1229,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         per_account = _PerAccountFakeConn(state)
         slow = _SlowScriptFakeConn(state, 5.5)
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(per_account)
-            actual = A.capture(slow)
+            expected = _capture_unchecked(per_account)
+            actual = _capture_unchecked(slow)
         self.assertEqual(actual, expected)
         self.assertFalse(any(item.get('error') for item in actual['items']))
         self.assertEqual(len(slow.scripts), 0)
@@ -1092,8 +1250,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         state = _BatchServerState('mysql', '8.4.11', 'MySQL Community Server - GPL', 'OFF', entries)
         c1, c2 = _PerAccountFakeConn(state), _ScriptFakeConn(state)
         with mock.patch.object(A, 'now', return_value='2026-11-23T09:00:00+00:00'):
-            expected = A.capture(c1)
-            actual = A.capture(c2)
+            expected = _capture_unchecked(c1)
+            actual = _capture_unchecked(c2)
         self.assertEqual(actual, expected)
         self.assertFalse(actual['items'][0]['attributes_checked'])
         self.assertFalse(actual['items'][0]['defaults_checked'])

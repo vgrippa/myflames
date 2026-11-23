@@ -112,7 +112,7 @@ def _unwrap_non_evidence(conn):
     return chain
 
 
-def _script_timeout(bounded):
+def _capture_timeout(bounded, per_query=True):
     default_timeout = getattr(bounded, 'query_timeout', 30) or 30
     deadlines = [c.deadline for c in _unwrap_non_evidence(bounded) if getattr(c, 'deadline', None) is not None]
     if not deadlines:
@@ -120,7 +120,9 @@ def _script_timeout(bounded):
     remaining = min(deadlines) - time.monotonic()
     if remaining <= 0:
         raise ConnectorError('The comparison read time budget expired.')
-    return min(remaining, default_timeout)
+    # Evidence failures poison the scope, so its whole packet gets the
+    # remaining member budget rather than one statement's timeout.
+    return min(remaining, default_timeout) if per_query else remaining
 
 
 def _decode_row(line):
@@ -223,7 +225,6 @@ def _build_batch_plan(chunk, engine, version, read_partial):
     if not valid:
         return results, valid, [], [], [], []
 
-    nonce = 'myflames_acct_' + uuid.uuid4().hex
     tag = accounts.TAG
     lines, spans, markers, slot_keys = [], [], [], []
     line_no = 1
@@ -236,7 +237,9 @@ def _build_batch_plan(chunk, engine, version, read_partial):
         line_no += breaks + 1
 
     def add_marker(label):
-        marker = '%s:%s' % (nonce, label)
+        # Script clients send statements separately. An earlier marker must
+        # not reveal the token that can terminate a later result slot.
+        marker = 'myflames_acct_%s:%s' % (uuid.uuid4().hex, label)
         add(tag + "SELECT '%s';" % marker, 'marker')
         markers.append(marker)
 
@@ -363,7 +366,8 @@ def _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial):
         # instead of failing the member.
         return _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
     try:
-        stdout = bounded.run(sql, extra_flags=['--comments'])
+        stdout = bounded.run(sql, extra_flags=['--comments'],
+                             timeout=_capture_timeout(bounded, per_query=False))
     except ConnectorError:
         # Identity failures, consent errors, timeouts and transport errors
         # poison TargetEvidenceConnection, so check() re-raises them unchanged.
@@ -381,7 +385,7 @@ def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
     if not valid:
         return results, partial
     script = '\n'.join(lines) + '\n'
-    timeout = _script_timeout(bounded)
+    timeout = _capture_timeout(bounded)
     try:
         stdout, stderr = bounded.run_script(script, timeout=timeout)
     except ConnectorError as exc:
@@ -390,7 +394,7 @@ def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
         # One packet runs every statement of the chunk under a single client
         # timeout, where the per-account path gives each statement its own.
         # A slow but healthy server fits smaller chunks inside the same call
-        # timeout and the remaining overall deadline; _script_timeout raises
+        # timeout and the remaining overall deadline; _capture_timeout raises
         # the budget error once that deadline is spent.
         if len(chunk) <= 1:
             return _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
@@ -404,10 +408,32 @@ def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
 
 
 def capture(conn, server=None):
-    # Group reads already bound this evidence scope's transport. Preserve its
-    # type so read_account reuses it instead of nesting identity packets.
-    is_evidence = isinstance(conn, dbops.TargetEvidenceConnection)
-    bounded = conn if is_evidence else BoundedConnection(conn)
+    if isinstance(conn, dbops.TargetEvidenceConnection):
+        # Group reads own the evidence scope. Never downgrade their identity
+        # checks, including when an optional inventory read catches a failure.
+        result = _capture(conn, conn, server)
+        conn.check()
+        return result
+    bounded = BoundedConnection(conn)
+    evidence = dbops.TargetEvidenceConnection(bounded)
+    try:
+        evidence.server_version()
+    except ConnectorError as exc:
+        if getattr(exc, 'identity_outcome', None) != 'identity_unavailable':
+            raise
+        # Some comparison sides cannot supply a supported server identity.
+        # Preserve their existing read behavior within the SAME deadline,
+        # explicitly distinguishing it from a checked account inventory.
+        result = _capture(bounded, conn, server)
+        result['notes'].append('Accounts were read without the single-server check.')
+        return result
+    result = _capture(evidence, conn, server)
+    evidence.check()
+    return result
+
+
+def _capture(bounded, conn, server=None):
+    is_evidence = isinstance(bounded, dbops.TargetEvidenceConnection)
     listing = accounts.list_accounts(bounded, include_tls=True, include_role_details=False)
     version, engine = listing['version'], listing['engine']
     comment = _reuse_version_comment(bounded, conn, server)
