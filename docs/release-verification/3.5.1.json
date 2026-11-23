@@ -1,0 +1,2685 @@
+{
+ "version": "3.5.1",
+ "items": [
+  {
+   "entry": "Adds a Topology place to the sidebar for Group connections. Map draws the group's",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; map and members reads)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_02_map_galera_cluster",
+       "outcome": "pass in 1.6 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_03_members_all_synced",
+       "outcome": "pass in 1.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_04_parameters_accounts_plugins",
+       "outcome": "pass in 4.9 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_05_rolling_change_global_and_restore",
+       "outcome": "pass in 38.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "topology-map (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-map-1440-light.png",
+       "sha256": "56d954446a9cf5fa99d544cfff79fdb56d7b2b6167fc2607f82cdf1198e3201d"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-map-1440-dark.png",
+       "sha256": "b98f82f75b578a0a3fec75909b5075dc3cc553575958bc06b2178dfb73b775fe"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-map-720-light.png",
+       "sha256": "ce4280b431f1df34c929c7c23c1ac8cab013a18349318c1174774227763c52f6"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-map-720-dark.png",
+       "sha256": "37ed3e2d26b40c98e5c10227acbdf67cf83dd631183b616ae3020aa5b61813b7"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "topology-members (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-members-1440-light.png",
+       "sha256": "eb63f2b630cee330938be1ac86f6e851e5c997e02ea203e731fe9aff71ad53bc"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-members-1440-dark.png",
+       "sha256": "ef1dbf106ed0a0b1455dd7f83dce0842e4a2bc8133966c6dd96ea71c52dae2a5"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-members-720-light.png",
+       "sha256": "4ce19270dcdbad08e7e2fad9de7ebde302eaa4ad4bbb90c71644b8a3c7bd785f"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-members-720-dark.png",
+       "sha256": "3b6ae47f17d52e419d2b686bf657a7beabd9bd988ba3f8a2bc6b76d2d8d5b1b6"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Adds Parameters, Accounts and Plugins tabs to Topology. Each lists what differs between",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; parameters, accounts and plugins reads)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_02_map_galera_cluster",
+       "outcome": "pass in 1.6 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_03_members_all_synced",
+       "outcome": "pass in 1.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_04_parameters_accounts_plugins",
+       "outcome": "pass in 4.9 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_05_rolling_change_global_and_restore",
+       "outcome": "pass in 38.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "topology-parameters (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-parameters-1440-light.png",
+       "sha256": "ca3caed6641686c08b2806b07500e13bf1f761e6d3c333c59db417e5a11cf850"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-parameters-1440-dark.png",
+       "sha256": "6e44365efbaef4fe9c7eb7b05efb7b3c0cf911271416aa6a777e2d485fd92c14"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-parameters-720-light.png",
+       "sha256": "1401b22d48afcb4dceec1897c571e023dbb11df63b76e456df43ed79577de6fa"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-parameters-720-dark.png",
+       "sha256": "1bb14d72d7842ad768b86f87329eccdef2bad47e106d4509f19bf837ea2355c3"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Adds New group\u2026 and Group (N)\u2026 to Home to create a connection group from saved",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "home-groups (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/home-groups-1440-light.png",
+       "sha256": "26b68d474ffd1db5de77dd86679ae8167d746705e8d0a061f5df042fecc5eaee"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/home-groups-1440-dark.png",
+       "sha256": "3404a9931947f9525ac8f2b85932a20eb6f3f6d2e22f8f5fef64427c8931fec2"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/home-groups-720-light.png",
+       "sha256": "5429b785c99c9c9dd1a8cfe333d76c688ab37c1c99c8ff5f6e62fea000880457"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/home-groups-720-dark.png",
+       "sha256": "e94e8c6e5010c37b147e514e0e4e665cecb5ce6f42983a9d8dd85f5f2d21b40b"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "group-editor-sheet (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-1440-light.png",
+       "sha256": "072f33eed2d5621a1a73a64b1ac73ca8a3ed4431a4a8b1f5f09bd858203dce2d"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-1440-dark.png",
+       "sha256": "746580f0278bc5ef7505db64d7022611fcfdc0c6f216b7a556f4a94a4e413dc2"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-720-light.png",
+       "sha256": "b18d761fc5771ade411b2b23cc291497438a2a5cef1305d7d649c5c334df6a84"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-720-dark.png",
+       "sha256": "dadac4e1916eb612f67e71ad1a7e74fb6ae003afc33fb326ebfd18e2ca79e0e1"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Adds Change on every member\u2026 to Topology > Parameters. One review covers a parameter",
+   "section": "New features",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; rolling PERSIST and SET GLOBAL changes applied and reverted)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_02_map_galera_cluster",
+       "outcome": "pass in 1.6 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_03_members_all_synced",
+       "outcome": "pass in 1.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_04_parameters_accounts_plugins",
+       "outcome": "pass in 4.9 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_05_rolling_change_global_and_restore",
+       "outcome": "pass in 38.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "topology-rolling-review (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-rolling-review-1440-light.png",
+       "sha256": "eda9fdc342ee5fb8ef5472b808a9e740e53fea6bd2a2e0637778e13468c0cbf0"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-rolling-review-1440-dark.png",
+       "sha256": "51d56ec98047a5071aa1fc226154752f16a918a145ee641894aa88919908469e"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-rolling-review-720-light.png",
+       "sha256": "87996cdf64b5d58844324606933dbb68dc2ac2b80effd520055608ee2f425553"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-rolling-review-720-dark.png",
+       "sha256": "da0d18a74120e4d2e6f337ecb90a8bb074404b914069b751ccda8c4014f21229"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Improves Readyset, ProxySQL, and the upstream tiers above Cluster and Replication to",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-topology (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-topology-1440-light.png",
+       "sha256": "f6c87af80c24f776f7f98268cd56f591bf258dde02eea38fb511c85d0317d8ea"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-topology-1440-dark.png",
+       "sha256": "e2de00094599a4f0f45a4a5513ac84ae31f30cda6e9c00050c3775a38ba807d9"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-topology-720-light.png",
+       "sha256": "64177e739a9b29db4054636bdfdd8ad0066a33b13c11d313918ce1bb759e08fb"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-topology-720-dark.png",
+       "sha256": "60efb6d3e93c7848f61d853b40fd2358c2fd964607d1108a0021a5ed33ef1d8c"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "cluster-upstream-tiers (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/cluster-upstream-tiers-1440-light.png",
+       "sha256": "c8645b49356b8891cfa137f03465d39375a4fc7beaf40afaaf1a2225ca00f31d"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/cluster-upstream-tiers-1440-dark.png",
+       "sha256": "80ff1f9622526f95da20ac4acd8aed47592e837a9cefe88277cd9680cea4257a"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/cluster-upstream-tiers-720-light.png",
+       "sha256": "e69da0554069f4c2d0b56d106b5acaca877290bcd5f2f00710bc367cf2baf3a3"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/cluster-upstream-tiers-720-dark.png",
+       "sha256": "9f956398b6eaf10de84f3ec99e4a762ec1da3e9adf4fa25064587da4ec567d56"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "replication-upstream-tiers (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/replication-upstream-tiers-1440-light.png",
+       "sha256": "015c4cf066c3dce566b60b2332f98e3c4fdcaa2579a9c9285e8bb23c06b54b54"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/replication-upstream-tiers-1440-dark.png",
+       "sha256": "324919b38e247eed71b3de2f25573b2c524a3b50f266a9b2e12967e946d92580"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/replication-upstream-tiers-720-light.png",
+       "sha256": "2894f5f3c3f6d417f1af413360332ce54f70a472fbaf82abff49122a80ae3f55"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/replication-upstream-tiers-720-dark.png",
+       "sha256": "68d714168667968e103df9a409551d2d02ede24490243f545b4a2d8bb6e14aeb"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "topology-proxysql (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-proxysql-1440-light.png",
+       "sha256": "574613732c6f5e26b8c7c6fd57b9b8f939ecd4ee7bb7b19f8208e17512419183"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-proxysql-1440-dark.png",
+       "sha256": "a4169828c7be5c2a602004cf85ae143712eca44cc78771ed7a93bb9e7bbcd074"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/topology-proxysql-720-light.png",
+       "sha256": "bc336c12d31419f3c704fadb452ee05c03d69ee47d8a7b10b58c46e1ea8dd8db"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/topology-proxysql-720-dark.png",
+       "sha256": "2adfd0853ff59af5167d1901aeba820f14440642497ddd7e1e139918c2d29d15"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Improves Readyset findings and action controls so findings appear worst first with",
+   "section": "Improvements",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-problem (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-1440-light.png",
+       "sha256": "b2a8e61abcf25cfb436bb0981276bc343b13a595cd76e20fa827c46c9b7414c7"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-1440-dark.png",
+       "sha256": "81dc82529d030c7fbdbd1b1973f4c7a9251d56edab984d41923ef660d36f11de"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-720-light.png",
+       "sha256": "7b19caefa1bffdf1d7f6d67000a088f9c73018cefd1cbdfb5708eacc15c3c758"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-720-dark.png",
+       "sha256": "7a6a80ef504fa37fd7a379706887df57f0ca378ccbc1be54d533fb0c2bde83ec"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-caches (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-caches-1440-light.png",
+       "sha256": "aabca72d91e68134a67a3c5c89b2dd2fe01efc4e2a1e9a7d54d7d4e3ad98f2fd"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-caches-1440-dark.png",
+       "sha256": "070e9100b82b9b0a49a5a55a6016062a60bba3a0d3f71ecb378700055c07693a"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-caches-720-light.png",
+       "sha256": "a0d07c03ec42e8cd418024f79f3b9ae37ed6558e0cadc70fa9c5aa3a1fe84bae"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-caches-720-dark.png",
+       "sha256": "82e236c947d28917c5700071372ea6653dd17058e7a61cdd636f17f113cccc9f"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-parameters (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-1440-light.png",
+       "sha256": "1689f6531f2012ade91e5c45093318f36b6495123e1c5dc95b0e22948bfb8a53"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-1440-dark.png",
+       "sha256": "f69ddc2626899d4c5573d9da88806d605c21ea618e24c2635d8fa443c50b8987"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-720-light.png",
+       "sha256": "cfa02407a75dc10565a002f0fd20572b4955006ee027cc16e65f3db26404244a"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-720-dark.png",
+       "sha256": "76b9f9c921154d9ce9ed7406baf03a690d60cdac2b939fbe4ada22383ad32e3b"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Settings, Maintenance and query connections could choose different",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "client-tools-shell (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/client-tools-shell-1440-light.png",
+       "sha256": "a46d7188e395302ad171764c71811879f952a95d8bcffc0d9d422a1e45c807c9"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/client-tools-shell-1440-dark.png",
+       "sha256": "02a5f34888c8aa235c377d9bffb3438b26d394ba8fdb8a6544fe0d8a5c180095"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/client-tools-shell-720-light.png",
+       "sha256": "9085161488755fdb2ea14412ecf48eef1aacaa372186dbcc20b417474fd00654"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/client-tools-shell-720-dark.png",
+       "sha256": "75b58629aeb2172b80c5c64183b8b64039f6bbc012e9a1cd9b10a8ae28e8e5c8"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where every server read took longer when MySQL Shell was installed on the",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; whole lab run in 191.7 s with MySQL Shell installed)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_01_group_saved",
+       "outcome": "pass in 0.6 s"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_02_node_identities_recorded",
+       "outcome": "pass in 3.8 s"
+      },
+      {
+       "action": "live_galera.GaleraGroupRoutingTest.test_03_desync_and_resync_route_through_the_peers_own_connection",
+       "outcome": "pass in 2.5 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_02_map_galera_cluster",
+       "outcome": "pass in 1.6 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_03_members_all_synced",
+       "outcome": "pass in 1.0 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_04_parameters_accounts_plugins",
+       "outcome": "pass in 4.9 s"
+      },
+      {
+       "action": "live_topology_galera.TopologyGaleraTest.test_05_rolling_change_global_and_restore",
+       "outcome": "pass in 38.0 s"
+      },
+      {
+       "action": "live_editor_proxysql.EditorProxySQLTest.test_01_runs_work",
+       "outcome": "pass in 1.3 s"
+      },
+      {
+       "action": "live_editor_proxysql.EditorProxySQLTest.test_02_stop_during_a_sleep_refuses_without_a_phantom_kill",
+       "outcome": "pass in 6.0 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_01_group_saved",
+       "outcome": "pass in 0.4 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_02_identities_recorded",
+       "outcome": "pass in 7.8 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_03_stop_and_start_member_routes_through_its_own_connection",
+       "outcome": "pass in 15.0 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_04_two_connections_claiming_one_member_fail_closed",
+       "outcome": "pass in 2.8 s"
+      },
+      {
+       "action": "live_shell.ShellLabTest.test_01_rejoin_through_the_group",
+       "outcome": "pass in 18.0 s"
+      },
+      {
+       "action": "live_shell.ShellLabTest.test_02_line1_identity_mismatch_stops_before_line2",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      },
+      {
+       "action": "live_writes.MariaDBWritesTest.test_01_users_and_roles",
+       "outcome": "pass in 4.4 s"
+      },
+      {
+       "action": "live_writes.MariaDBWritesTest.test_02_variable_global",
+       "outcome": "pass in 1.7 s"
+      },
+      {
+       "action": "live_writes.MariaDBWritesTest.test_03_editor_writes_and_stop",
+       "outcome": "pass in 2.5 s"
+      },
+      {
+       "action": "live_writes.MySQLWritesTest.test_01_users_and_roles",
+       "outcome": "pass in 3.4 s"
+      },
+      {
+       "action": "live_writes.MySQLWritesTest.test_02_variable_global",
+       "outcome": "pass in 1.4 s"
+      },
+      {
+       "action": "live_writes.MySQLWritesTest.test_03_editor_writes_and_stop",
+       "outcome": "pass in 2.2 s"
+      }
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh ga (GA matrix)",
+     "servers": [
+      "MySQL 5.7",
+      "MySQL 8.0",
+      "MySQL 8.4",
+      "MySQL 9.7",
+      "Percona Server 8.4",
+      "MariaDB 10.11",
+      "MariaDB 11.4",
+      "MariaDB 11.8"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB1011WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB114WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MariaDB118WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL57WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL80WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.MySQL97WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_01_users_and_roles",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_02_expired_password",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_03_variable_global",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_04_editor_refusals",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_05_editor_dump_routine",
+       "outcome": "pass"
+      },
+      {
+       "action": "live_writes_ga.Percona84WritesTest.test_06_editor_resynchronizes_status_after_stored_function",
+       "outcome": "pass"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where loading a database in Database diagram could leave keyboard focus",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where an action could fail with \"Private storage changed while it was",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Parameters and Compare servers could compare, or allow inline",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where secret system variables (for example wsrepsstauth) could appear in",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where replication source matching could read a source server ID as a",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; replication and cluster links)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_galera",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_proxysql",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_replication_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_01_group_saved",
+       "outcome": "pass in 0.4 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_02_identities_recorded",
+       "outcome": "pass in 7.8 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_03_stop_and_start_member_routes_through_its_own_connection",
+       "outcome": "pass in 15.0 s"
+      },
+      {
+       "action": "live_ic_group_routing.GroupRoutingTest.test_04_two_connections_claiming_one_member_fail_closed",
+       "outcome": "pass in 2.8 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where saving a connection group that moved a server out of the Group",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "layout"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "group-editor-sheet (apps/workspace/test/release-shots.mjs)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-1440-light.png",
+       "sha256": "072f33eed2d5621a1a73a64b1ac73ca8a3ed4431a4a8b1f5f09bd858203dce2d"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-1440-dark.png",
+       "sha256": "746580f0278bc5ef7505db64d7022611fcfdc0c6f216b7a556f4a94a4e413dc2"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-720-light.png",
+       "sha256": "b18d761fc5771ade411b2b23cc291497438a2a5cef1305d7d649c5c334df6a84"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots/group-editor-sheet-720-dark.png",
+       "sha256": "dadac4e1916eb612f67e71ad1a7e74fb6ae003afc33fb326ebfd18e2ca79e0e1"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Software update dialog showed release notes as raw Markdown,",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Locks blocking tree scrolled sideways at 1440 px when the",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Connections table on Home gave its Name column none of the",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Workload > Top statements scrolled sideways at 1440 px when the",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where choosing another source in Import connections right after opening",
+   "section": "Bug fixes",
+   "needs": [
+    "tests"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Readyset showed OK, Online, empty lists, zero telemetry counts, or",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-read-fail (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-read-fail-1440-light.png",
+       "sha256": "0033a21cb0118b20857a79db772d982d7e2a15cd83c0fc9dd52e245e5d473f7f"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-read-fail-1440-dark.png",
+       "sha256": "c21b1752e8529d6230850b836a46e56d80d5c683f3bb4d04d081e821520e63bc"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-read-fail-720-light.png",
+       "sha256": "fb459ed2c8f598e8bb99fee7b90674cf9efe3544da132a3984b48dc4ca72143c"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-read-fail-720-dark.png",
+       "sha256": "a7a9c26c8442642fffdfa6bef2bf4778a43d543c7cac1401218506212f14cf23"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Readyset Base replication tile, CDC link, and upstream Readyset",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-problem (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-1440-light.png",
+       "sha256": "b2a8e61abcf25cfb436bb0981276bc343b13a595cd76e20fa827c46c9b7414c7"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-1440-dark.png",
+       "sha256": "81dc82529d030c7fbdbd1b1973f4c7a9251d56edab984d41923ef660d36f11de"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-720-light.png",
+       "sha256": "7b19caefa1bffdf1d7f6d67000a088f9c73018cefd1cbdfb5708eacc15c3c758"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-problem-720-dark.png",
+       "sha256": "7a6a80ef504fa37fd7a379706887df57f0ca378ccbc1be54d533fb0c2bde83ec"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Readyset guessed the SQL adapter or admin listener role from the",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where ProxySQL and Readyset topologies treated configuration-only rows as",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; ProxySQL report with status_source)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_galera",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_proxysql",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_replication_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "ProxySQL Servers tab with SHUNNED standby writers (file proxysql-topology, Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/proxysql-topology-1440-light.png",
+       "sha256": "9e14db1caf825a177ca6490abca0642d9a2d5273c84ab1d6f0fb8c595b6ed7ea"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/proxysql-topology-1440-dark.png",
+       "sha256": "6e262baf3e867717cb047484f9c769590f90a7b62fe2f63b83b54bcc9064989e"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/proxysql-topology-720-light.png",
+       "sha256": "c55b19187f5149cb2239d12cde6becb1c769331ca91ff796cd6534a85ee7f513"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/proxysql-topology-720-dark.png",
+       "sha256": "5323ccbbfe25e0359b5b0162bb345b4383d7747228f642a749f2f9c7f4a4762a"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where ProxySQL and Readyset topologies labelled address matches as",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/live-tests.sh all (evidence local/live-evidence/23026a9755fe593eac7f29702c2845e5db248b90.json; verified and unverified links)",
+     "servers": [
+      "MySQL 8.4.13 InnoDB Cluster, 3 members, with MySQL Router (scripts/cluster-matrix.sh)",
+      "MariaDB 11.8.9 Galera cluster, 3 nodes (scripts/cluster-matrix.sh)",
+      "ProxySQL 3.0.11-797-g7c91137 in front of both clusters"
+     ],
+     "tools": [
+      "mysqlsh Ver 8.4.10 for Linux on aarch64",
+      "MySQL Router (lab ic-router)"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_galera",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_cluster_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_proxysql",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_expected.ExpectedReportsTest.test_replication_ic",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_01_group_saved",
+       "outcome": "pass in 0.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_02_map_cluster_and_router_alias",
+       "outcome": "pass in 3.9 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_03_map_proxysql_routes",
+       "outcome": "pass in 3.5 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_04_members",
+       "outcome": "pass in 2.0 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_05_parameters_accounts_plugins",
+       "outcome": "pass in 13.6 s"
+      },
+      {
+       "action": "live_topology_ic.TopologyICTest.test_06_rolling_change_persist_and_restore",
+       "outcome": "pass in 44.5 s"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Readyset maintenance mode was described as bypassing caches and",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "layout",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "layout": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "view": "readyset-parameters (Readyset views captured on the release code)",
+     "looked_at": true,
+     "shots": [
+      {
+       "width": 1440,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-1440-light.png",
+       "sha256": "1689f6531f2012ade91e5c45093318f36b6495123e1c5dc95b0e22948bfb8a53"
+      },
+      {
+       "width": 1440,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-1440-dark.png",
+       "sha256": "f69ddc2626899d4c5573d9da88806d605c21ea618e24c2635d8fa443c50b8987"
+      },
+      {
+       "width": 720,
+       "theme": "light",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-720-light.png",
+       "sha256": "cfa02407a75dc10565a002f0fd20572b4955006ee027cc16e65f3db26404244a"
+      },
+      {
+       "width": 720,
+       "theme": "dark",
+       "file": "local/release-3.5.1/shots-readyset-final/readyset-parameters-720-dark.png",
+       "sha256": "76b9f9c921154d9ce9ed7406baf03a690d60cdac2b939fbe4ada22383ad32e3b"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where Readyset trimmed reported names, allowed dotted cache names in DROP",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "Claude security-reviewer (Fable, max): release gate on da8ec7c7, PR #65 gate on 3cc73155 (do-not-ship, fixed in round 2), re-pass on 23026a97",
+     "scope": "Every trust boundary the release touches: saved secrets and redaction (audit, editor history, saved queries, saved session, Readyset values, Parameters), group consent and saved-password logins, the local HTTP server, Electron shell, client discovery and Shell launches, release flow, rendered server text. Re-pass: no Critical, High or Medium.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Redaction (Low): a URL user name containing [ is not redacted; a secret SET after a SET word with no assignment in a script without semicolons keeps a non-literal value; doubled or backslash-escaped quotes inside dynamic SQL strings; custom DELIMITER scripts can lose text after a hidden value in stored copies (fails closed); MariaDB /*!! reversed comments; a validated prototype exists.",
+      "Topology (Low): the Replication place's tier identity lacks ssh_host, which can link a local Readyset to an SSH-reached server as verified when host names collide."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where a support check in Create cache could apply results to an edited",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  },
+  {
+   "entry": "Fixed an issue where the Readyset and ProxySQL tiers above Replication could be missing",
+   "section": "Bug fixes",
+   "needs": [
+    "tests",
+    "live",
+    "reviews"
+   ],
+   "tests": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "./run-tests.sh (throwaway HOME, MYFLAMES_SECRET_BACKEND=vault)",
+     "result": "Ran 9050 tests, OK (skipped=18)",
+     "outcome": "pass",
+     "executed": 9050,
+     "skipped": 18
+    },
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "command": "node scripts/run_workspace_suites.mjs --no-build --jobs 4 --retries 1 (every registered workspace browser suite, against the committed build)",
+     "result": "168 of 168 suites ran, exit 0: 167 passed, 1 flaky (health.mjs, a 30 s click timed out while the Python suite, both live labs and four browser jobs ran at once; passed on retry), 0 failed; bundle-split.mjs no longer quarantined",
+     "outcome": "pass",
+     "executed": 168,
+     "skipped": 0
+    }
+   ],
+   "live": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "driver": "scripts/readyset-matrix.sh --keep on the release code (log rs-lab-final.log)",
+     "servers": [
+      "MySQL 8.4.13 primary and GTID replica",
+      "Readyset public.ecr.aws/readyset/readyset:latest-stable",
+      "ProxySQL 3.0.11-797-g7c91137"
+     ],
+     "tools": [
+      "bundled mysql 8.4.13 client"
+     ],
+     "outcome": "pass",
+     "checks": [
+      {
+       "action": "step 1",
+       "outcome": "live SQL traffic through Readyset and ProxySQL: passed"
+      },
+      {
+       "action": "step 2",
+       "outcome": "ProxySQL, Readyset and Replication tier discovery: passed"
+      },
+      {
+       "action": "step 3",
+       "outcome": "EXPLAIN CREATE CACHE supported, unsupported and collisions: passed"
+      },
+      {
+       "action": "step 4",
+       "outcome": "shallow and deep caches, collisions, telemetry and export: passed"
+      },
+      {
+       "action": "step 5",
+       "outcome": "CLI and MCP reads: passed"
+      },
+      {
+       "action": "step 6",
+       "outcome": "ALTER READYSET parameters, allowlists, maintenance mode, resnapshot, flush and drop: passed"
+      },
+      {
+       "action": "step 7",
+       "outcome": "Admin port capabilities and audit trail (shutdown skipped with --keep): passed"
+      }
+     ]
+    }
+   ],
+   "reviews": [
+    {
+     "commit": "23026a9755fe593eac7f29702c2845e5db248b90",
+     "reviewer": "3.5.1 release review gates: Codex gpt-6.1-terra max and Gemini (gemini-pro-orchestrator-neon, gemini-4-neon-xhigh, gemini-4-argon-high) on v3.5.0..da8ec7c7, then on PR #65 rounds 1 (3cc73155) and 2 (23026a97); findings triaged by the release coordinator. Each feature PR (#53 to #64) passed its own review and security gates before merge.",
+     "scope": "Cross-PR interactions, release claims and packaging over v3.5.0..23026a97; the round-2 re-review covered 3cc73155..23026a97. Confirmed findings were fixed in PR #65 (stylesheet cascade, entry bundle budget, Map label size, Map loopback across SSH, CHANGELOG claims, redaction regressions, update dialog openers, test stability); the remaining edge cases are follow-ups.",
+     "verdict": "ship-with-follow-ups",
+     "follow_ups": [
+      "Topology: the Replication place's tier identity lacks ssh_host; hexadecimal IPv4 forms are not canonical; a remote direct replica reporting a loopback source can filter a local saved proxy at that address (pre-existing rule).",
+      "Software update dialog: Retry after two failed chunk loads stays failed until reload; focus after Retry or Dismiss; busy spinner hidden on the 720 px rail badge.",
+      "Test tooling: perf-harness force-kill reaches only the browser parent; the suite runner's ps and lsof checks block its event loop up to 30 s; health.mjs remains load-sensitive; import-csv.mjs keyboard path timed out once on Linux CI."
+     ]
+    }
+   ]
+  }
+ ]
+}
